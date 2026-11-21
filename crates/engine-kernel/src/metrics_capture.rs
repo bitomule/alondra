@@ -2,7 +2,8 @@
 //! ends. A `result` carries `modelUsage`: per model, the running totals of the whole call,
 //! subagents included, and of the session's earlier calls when it resumed one. Each step is one
 //! assistant message id (`message.id`), which parallel tool calls share.
-use crate::domain_runtime::DomainRuntime;
+use crate::Runtime;
+use crate::domain_runtime::RuntimeRecords as _;
 use crate::domain_store::metrics_fold::Spent;
 use alondra_core::Millis;
 use alondra_domain_rules::AgentId;
@@ -45,7 +46,7 @@ pub fn claude_step(message: &Value) -> Option<&str> {
 }
 
 /// A node's turn ended with `result`: what it spent, for the task the node works on.
-pub fn node_turn(domain: &DomainRuntime, agent: &AgentId, result: &Value, steps: StepCounts, now: Millis) {
+pub fn node_turn(domain: &dyn Runtime, agent: &AgentId, result: &Value, steps: StepCounts, now: Millis) {
     let usage = claude_usage(result);
     let snapshot = domain.read();
     let task_id = snapshot.index().task_of_node(agent).map(|task| task.0.as_str());
@@ -56,11 +57,11 @@ pub fn node_turn(domain: &DomainRuntime, agent: &AgentId, result: &Value, steps:
 }
 
 /// An orchestrator batch ended: what its session spent so far.
-pub fn orchestrator_batch(domain: &DomainRuntime, session: &str, usage: &[Usage], now: Millis) {
+pub fn orchestrator_batch(domain: &dyn Runtime, session: &str, usage: &[Usage], now: Millis) {
     orchestrator_provider_batch(domain, session, alondra_core::accounts::Provider::Claude, usage, now);
 }
 
-pub fn orchestrator_provider_batch(domain: &DomainRuntime, session: &str, provider: alondra_core::accounts::Provider, usage: &[Usage], now: Millis) {
+pub fn orchestrator_provider_batch(domain: &dyn Runtime, session: &str, provider: alondra_core::accounts::Provider, usage: &[Usage], now: Millis) {
     let spent = Spent { session_id: session, task_id: None, role: Role::Orchestrator, provider: provider.as_str(), usage, steps: StepCounts::default(), at: now };
     if let Err(error) = domain.record_spend(&spent) {
         log!("could not record what the orchestrator's session {session} spent: {error:#}");
@@ -68,7 +69,7 @@ pub fn orchestrator_provider_batch(domain: &DomainRuntime, session: &str, provid
 }
 
 /// Asks GitHub once per pass for the size of each merged PR folded without it.
-pub async fn pr_sizes(domain: &DomainRuntime, gh: &dyn alondra_engine_ports::github::Gh, now: Millis) {
+pub async fn pr_sizes(domain: &dyn Runtime, gh: &dyn alondra_engine_ports::github::Gh, now: Millis) {
     let prs = match domain.prs_without_size(now, PR_SIZES_PER_PASS) {
         Ok(prs) => prs,
         Err(error) => {

@@ -1,6 +1,7 @@
 //! What the daemon observes of each Claude session through its hooks and its node mod. The
 //! domain never records it: it is the live state a client shows next to the projection, kept in
 //! memory with the legacy reducer so a node keeps the shape every client already reads.
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use crate::locks::{Poisonable as _, AfterPanic as _};
 use alondra_core::{Event, HookEvent, Node, View, now_millis};
 use serde_json::{Value, json};
@@ -710,9 +711,9 @@ pub trait LiveOf {
     fn forget_ended_session(&self, agent: &str) -> anyhow::Result<()>;
 }
 
-impl LiveOf for crate::domain_runtime::DomainRuntime {
+impl<R: alondra_engine_ports::Runtime + ?Sized> LiveOf for R {
     fn live(&self) -> &Live {
-        self.extension()
+        alondra_engine_ports::extension(self.as_runtime())
     }
 
     fn connect_node(&self, hello: crate::node_reports::Hello, at: alondra_core::Millis) -> u64 {
@@ -727,10 +728,10 @@ impl LiveOf for crate::domain_runtime::DomainRuntime {
     }
 
     fn launched_by_alondra(&self, agent: &alondra_domain_rules::AgentId) -> anyhow::Result<bool> {
-        if self.store.lock_or_exit("the domain store").launched_by_alondra(&agent.0)? || self.live().mods.started_with_a_launch_key(&agent.0) {
+        if self.store().lock_or_exit("the domain store").launched_by_alondra(&agent.0)? || self.live().mods.started_with_a_launch_key(&agent.0) {
             return Ok(true);
         }
-        Ok(self.state()?.schedule.runs.values().any(|run| run.launch.as_ref().is_some_and(|launch| launch.agent_id.as_ref() == Some(agent))))
+        Ok(self.state().schedule.runs.values().any(|run| run.launch.as_ref().is_some_and(|launch| launch.agent_id.as_ref() == Some(agent))))
     }
 
     fn forget_ended_session(&self, agent: &str) -> anyhow::Result<()> {

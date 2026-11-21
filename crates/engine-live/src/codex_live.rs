@@ -159,7 +159,7 @@ fn update_context(contexts:&crate::contexts::Contexts,task:&alondra_domain_rules
         _=>{}
     }
 }
-pub fn feed(domain: &crate::domain_runtime::DomainRuntime, reports: &crate::node_reports::Reports, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
+pub fn feed(domain: &dyn alondra_engine_ports::Runtime, reports: &crate::node_reports::Reports, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
     if let Some(message) = alondra_provider_codex::native_message(observation) {
         let before=reports.session(&agent.0).and_then(|session|session.codex);
         let now=alondra_core::now_millis();reports.apply_codex(&agent.0,&message,now);

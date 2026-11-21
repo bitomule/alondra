@@ -9,8 +9,8 @@ fn the_over_pace_card_has_the_numbers_and_two_options_and_reads_in_each_devices_
     super::wired();
     use alondra_views::{Lang, push_content};
     let (domain, home) = over_pace_domain();
-    raise_over_pace_card(&domain, now_millis());
-    let card = the_card(&domain, "over-pace-").expect("a card for the day");
+    raise_over_pace_card(&*domain, now_millis());
+    let card = the_card(&*domain, "over-pace-").expect("a card for the day");
     assert_eq!(card.id.0, format!("over-pace-{}", alondra_daemon_engine_model::local_day(now_millis())));
     assert_eq!(card.card.kind, alondra_domain_rules::CardKind::Decide);
     assert_eq!(card.author, alondra_domain_rules::Author::System);

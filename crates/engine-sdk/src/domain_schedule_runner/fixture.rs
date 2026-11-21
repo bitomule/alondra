@@ -1,6 +1,7 @@
 //! The schedule and the runtime the scheduler's tests run on: over the doubles of the engine in
 //! `engine_sdk_test`, over the whole engine in `engine_sdk_engine_test`.
 use super::*;
+use crate::domain_runtime::DomainRuntime;
 use alondra_domain_rules::{Schedule, ScheduleFrequency};
 use std::collections::BTreeMap;
 
@@ -36,7 +37,7 @@ impl Fixture {
         .unwrap();
         let domain = std::sync::Arc::new(Self::open(&home));
         execute_system(
-            &domain,
+            &*domain,
             Command::CreateSchedule {
                 schedule: Schedule {
                     paid_account_grant: None,
@@ -64,7 +65,7 @@ impl Fixture {
     }
     pub fn claim(&self, id: &str) {
         execute_system(
-            &self.domain,
+            &*self.domain,
             Command::ClaimScheduleRun {
                 schedule_id: "schedule-1".into(),
                 run_id: id.into(),
@@ -90,7 +91,7 @@ impl Fixture {
         let mut schedule = self.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
         schedule.project = Some(name.into());
         schedule.revision += 1;
-        execute_system(&self.domain, Command::UpdateSchedule { schedule }).unwrap();
+        execute_system(&*self.domain, Command::UpdateSchedule { schedule }).unwrap();
         project
     }
 

@@ -135,13 +135,19 @@ none on the piece that implements a port it uses.
   `alondrad` calls all of them (`domain_bootstrap::wire`), and its test
   `the_daemon_implements_every_port` fails when a port is left without an implementation.
 - Every port is called on a `&dyn Runtime`, the context the engine keeps its state in, as
-  rust-analyzer's queries take `db: &dyn HirDatabase`. The context says what a piece may ask of the
-  kernel: its home, the committed state, a command as Alondra itself, the registry, the wake-up of
-  the SDK hosts' owners, a task's launch plan and the extensions (`extensions()`: the state each piece
-  keeps in the runtime, by type, in `engine-ports/src/extensions.rs`). `DomainRuntime` implements it. Most implementations are still written
-  against `DomainRuntime` and reach it through one bridge, `DomainRuntime::of`; each piece moves to
-  the context's methods as it stops depending on the kernel (phase 4), and the bridge then goes.
-  Generics would compile each piece into its callers and stop the ports being `dyn` in the registry.
+  rust-analyzer's queries take `db: &dyn HirDatabase`. The trait (`engine-ports/src/runtime.rs`)
+  says what a piece may ask of the kernel: its home, the committed state and the live read with its
+  index, the journal with its launch queue, the subscriptions to revisions, snapshots and schedules,
+  a command as Alondra itself or as an authorized actor, an owner transaction, the seals of a task's
+  observations, the registry, a task's launch plan and the extensions (`extensions()`: the state
+  each piece keeps in the runtime, by type, in `engine-ports/src/extensions.rs`). The cards Alondra
+  raises and withdraws (`raise_problem`, `withdraw_problem`, `tell_orchestrator`, `ask_user`…) are
+  methods of the trait built on its system commands. `DomainRuntime` implements it, and no piece is
+  written against `DomainRuntime`: what each keeps in the runtime it reaches through an extension
+  trait implemented for every `Runtime` (`LiveOf`, `SdkOf`, `OrchestratorOf`, `RuntimeRecords`…).
+  The test double `engine_doubles::runtime::Forwarded`, a runtime that is not the kernel's, shows a
+  port runs on any `Runtime`. Generics would compile each piece into its callers and stop the ports
+  being `dyn` in the registry.
 - `AgentHost` (`agent_host.rs`) is how the providers and the engine start, adopt, stop and reclaim
   the processes their agents run in, and run a provider's command line to its end. `agent-runtime`
   implements it (`ProcessHosts`) and `alondra_agent_runtime::wire(&Registry, launcher)` provides it:
@@ -576,6 +582,33 @@ Measured on the shared Mac under load, one run each:
   play yet (decisions, background commands, refusals, resumption without history).
 - No check fails when a host executable goes back into `engine_sdk_test`'s `data`:
   `crate_layers_test` only follows the root.
+
+## No port written against the concrete runtime (phase 4d, 2026-11-21)
+
+`DomainRuntime::of`, the bridge that turned the `&dyn Runtime` a port is called on back into the
+kernel's own type, is gone. Every implementation of a port in `engine-admission`, `engine-sdk` and
+`daemon-engine` works on any `Runtime`, and so do the pieces they call (`engine-live`,
+`engine-github`, `engine-worktrees`, `engine-orchestrator`'s view of the engine, the kernel's commit
+observers and settings projection).
+
+- `Runtime` (`engine-ports/src/runtime.rs`) gained the concrete methods the pieces used on the
+  kernel, rust-analyzer style: the live read and the read index, the journal with its launch queue,
+  the subscriptions to revisions, snapshots and schedules, commands as Alondra or as an authorized
+  actor, owner transactions (with or without a projection outside the journal), the seals of a
+  task's observations, the held messages, the capabilities (bind, revoke, resolve a bearer, admit a
+  change, a session's digest), a transport's receipt and a task's public conversation. The cards
+  Alondra raises and withdraws are default methods built on its system commands.
+- What only reads or writes the journal is `RuntimeRecords` in `engine-kernel`, implemented for every
+  `Runtime` (a task's worktree, the inherited worktrees, spend and PR sizes, model decisions, session
+  starts, request launches, the stored launch plan with its storage error, attachments).
+- `Principal` and `Capability` moved to `foundation/src/principal.rs`, so the trait can name them;
+  `daemon-support`'s authority re-exports them. The hooks' worker pools are `daemon-engine`
+  extensions (`TransportWork`) instead of kernel fields.
+- `the_ports_run_on_a_runtime_that_is_not_the_kernels` (`alondrad`) calls a port of each piece on
+  `engine_doubles::runtime::Forwarded`, a runtime that hands every call to the kernel's: with the
+  bridge back in one port it panics on the downcast, without it it passes.
+- `engine-admission` no longer depends on `engine-kernel` outside its tests: `LAYER_EXCEPTIONS` drops
+  `engine-admission → engine-kernel` (54 → 53 entries).
 
 ## `engine-sdk` asks the engine through `SdkEngine` (phase 4c-1, 2026-11-21)
 

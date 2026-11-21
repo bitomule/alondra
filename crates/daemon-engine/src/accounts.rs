@@ -4,6 +4,7 @@
 //! it. An added account gets its folder, linked to the user's `~/.claude`; a removed one is signed
 //! out and its folder deleted. `~/.claude` itself is never changed. Each launch starts on the
 //! account the user's distribution picks (`choose_for_launch`).
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
@@ -25,7 +26,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::reply::Reply;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 
 pub use alondra_engine_kernel::accounts_file::{config, profiles, registered, registered_provider, share_sessions};
 
@@ -49,7 +50,7 @@ pub(crate) struct Claude {
 }
 
 impl Claude {
-    fn of(domain: &DomainRuntime) -> Option<Self> {
+    fn of(domain: &dyn Runtime) -> Option<Self> {
         let (backend, _) = domain.sdk()?;
         let backend = backend.for_provider(Provider::Claude, domain.home()).ok()?;
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
@@ -64,7 +65,7 @@ impl Claude {
     }
 
     /// The HOME the nodes' Claude runs in, whose `~/.claude` the default account is.
-    pub(crate) fn user_home(domain: &DomainRuntime) -> PathBuf {
+    pub(crate) fn user_home(domain: &dyn Runtime) -> PathBuf {
         alondra_engine_kernel::accounts_file::claude_user_home(domain)
     }
 
@@ -100,7 +101,7 @@ impl Codex {
             .unwrap_or_else(|| PathBuf::from(".codex"));
         self.user_home.join(profile)
     }
-    pub(crate) fn of(domain: &DomainRuntime) -> Option<Self> {
+    pub(crate) fn of(domain: &dyn Runtime) -> Option<Self> {
         let (backend, _) = domain.sdk()?;
         let backend = backend.for_provider(Provider::Codex, domain.home()).ok()?;
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
@@ -175,7 +176,7 @@ pub(crate) fn observe(home: &Path, claude: Option<&Claude>, config: &AccountsCon
 /// from what the domain knows at `now`. When none can work, the Mac waits until the soonest one can
 /// again, or until one has a session when none has: every launch, batch and schedule holds until
 /// then, as for a usage limit. One that can work ends a wait for a session.
-pub fn choose_for_launch(domain: &DomainRuntime, home: &Path, now: alondra_core::Millis) -> Option<AccountId> {
+pub fn choose_for_launch(domain: &dyn Runtime, home: &Path, now: alondra_core::Millis) -> Option<AccountId> {
     let policy = config(home).map(|config| config.distribution.policy).unwrap_or_default();
     let read = domain.read();
     let state = read.state();
@@ -189,25 +190,25 @@ pub fn choose_for_launch(domain: &DomainRuntime, home: &Path, now: alondra_core:
     chosen
 }
 
-pub(crate) fn selection_evidence(domain: &DomainRuntime, account: &AccountKey, now: alondra_core::Millis) -> String {
+pub(crate) fn selection_evidence(domain: &dyn Runtime, account: &AccountKey, now: alondra_core::Millis) -> String {
     let read = domain.read();
     let state = read.state();
     alondra_core::usage::choice_line(account, &state.accounts, &state.account_usage, state.account_reserve, now, &alondra_daemon_engine_model::local_day(now))
 }
 
 /// Full provider provenance and timestamps stay in the daemon log.
-pub fn log_choice(domain: &DomainRuntime, what: &str, account: &AccountKey, now: alondra_core::Millis) {
+pub fn log_choice(domain: &dyn Runtime, what: &str, account: &AccountKey, now: alondra_core::Millis) {
     let line = selection_evidence(domain, account, now);
     log!("{what}: {line}");
 }
 
-pub fn select_for_launch(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection, now: alondra_core::Millis)
+pub fn select_for_launch(domain: &dyn Runtime, home: &Path, intent: &alondra_core::model_selection::TaskSelection, now: alondra_core::Millis)
     -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
     select_for_node(domain, home, intent, None, None, now)
 }
 
-pub fn select_for_active_model(domain: &DomainRuntime, task_id: &alondra_domain_rules::TaskId,
+pub fn select_for_active_model(domain: &dyn Runtime, task_id: &alondra_domain_rules::TaskId,
     intent: &alondra_core::model_selection::TaskSelection) -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
     use alondra_domain_rules::DomainError;
@@ -224,35 +225,35 @@ pub fn select_for_active_model(domain: &DomainRuntime, task_id: &alondra_domain_
     Ok(decision)
 }
 
-pub fn select_for_launch_with_tools(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
+pub fn select_for_launch_with_tools(domain: &dyn Runtime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
     denied_tools: &[String], now: alondra_core::Millis) -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
     select_for_node_with_tools(domain, home, intent, None, None, denied_tools, now)
 }
 
-pub fn select_for_node(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
+pub fn select_for_node(domain: &dyn Runtime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
     preferred_account: Option<&AccountKey>, provider: Option<Provider>, now: alondra_core::Millis) -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
     select_for_node_with_tools(domain, home, intent, preferred_account, provider, &[], now)
 }
 
-pub fn begin_initial_check(domain: &DomainRuntime) {
+pub fn begin_initial_check(domain: &dyn Runtime) {
     domain.live().initial_account_check_pending.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// The check after startup is done: a scenario has no account to probe, so it says so itself.
-pub fn finish_initial_check(domain: &DomainRuntime) {
+pub fn finish_initial_check(domain: &dyn Runtime) {
     domain.live().initial_account_check_pending.store(false, std::sync::atomic::Ordering::Release);
 }
 
-pub fn require_initial_check(domain: &DomainRuntime) -> Result<(), alondra_domain_rules::DomainError> {
+pub fn require_initial_check(domain: &dyn Runtime) -> Result<(), alondra_domain_rules::DomainError> {
     if domain.live().initial_account_check_pending.load(std::sync::atomic::Ordering::Acquire) {
         return Err(alondra_domain_rules::DomainError::new("account_check_in_progress", "Accounts are being checked after startup. New nodes will wait for current authentication and billing information."));
     }
     Ok(())
 }
 
-pub(crate) fn select_for_node_with_tools(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
+pub(crate) fn select_for_node_with_tools(domain: &dyn Runtime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
     preferred_account: Option<&AccountKey>, provider: Option<Provider>, denied_tools: &[String], now: alondra_core::Millis) -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
     use alondra_domain_rules::DomainError;
@@ -283,7 +284,7 @@ pub(crate) fn select_for_node_with_tools(domain: &DomainRuntime, home: &Path, in
 
 /// Claude answered while no account had a session: the accounts are checked now, not at the next
 /// round, so the wait ends as soon as the check sees the session.
-pub fn answered(domain: &DomainRuntime) {
+pub fn answered(domain: &dyn Runtime) {
     if domain.live().usage_pause.waits_for_session() {
         domain.live().account_check.notify_one();
     }
@@ -309,7 +310,7 @@ pub(crate) struct ProbeFence {
     options: Option<String>,
 }
 
-pub(crate) fn probe_fence(domain: &DomainRuntime, home: &Path) -> Result<(ProbeFence, alondra_core::options::OptionsFile), String> {
+pub(crate) fn probe_fence(domain: &dyn Runtime, home: &Path) -> Result<(ProbeFence, alondra_core::options::OptionsFile), String> {
     let options = crate::domain_store::provider_settings::read_options(home)?;
     let file = match options.as_deref() {
         Some(text) => alondra_core::options::OptionsFile::parse(text)?,
@@ -318,19 +319,19 @@ pub(crate) fn probe_fence(domain: &DomainRuntime, home: &Path) -> Result<(ProbeF
     Ok((ProbeFence { state: Arc::clone(domain.read().state()), options }, file))
 }
 
-pub(crate) fn publish_probe(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>) -> Result<(), String> {
+pub(crate) fn publish_probe(domain: &dyn Runtime, home: &Path, fence: ProbeFence, commands: Vec<Command>) -> Result<(), String> {
     publish_probe_with(domain, home, fence, commands, |_| Ok(()))
 }
 
-fn publish_probe_with<T>(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>, finish: impl FnOnce(&mut dyn crate::domain_store::OwnerJournal) -> Result<T, crate::domain_store::StoreError>) -> Result<T, String> {
+fn publish_probe_with<T>(domain: &dyn Runtime, home: &Path, fence: ProbeFence, commands: Vec<Command>, finish: impl FnOnce(&mut dyn crate::domain_store::OwnerJournal) -> Result<T, crate::domain_store::StoreError>) -> Result<T, String> {
     commit_probe(domain, home, fence, commands, finish).map_err(|why| why.to_string())
 }
 
-pub(crate) fn publish_current_probe(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>) -> Result<(), crate::domain_store::StoreError> {
+pub(crate) fn publish_current_probe(domain: &dyn Runtime, home: &Path, fence: ProbeFence, commands: Vec<Command>) -> Result<(), crate::domain_store::StoreError> {
     commit_probe(domain, home, fence, commands, |_| Ok(()))
 }
 
-fn commit_probe<T>(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>, finish: impl FnOnce(&mut dyn crate::domain_store::OwnerJournal) -> Result<T, crate::domain_store::StoreError>) -> Result<T, crate::domain_store::StoreError> {
+fn commit_probe<T>(domain: &dyn Runtime, home: &Path, fence: ProbeFence, commands: Vec<Command>, finish: impl FnOnce(&mut dyn crate::domain_store::OwnerJournal) -> Result<T, crate::domain_store::StoreError>) -> Result<T, crate::domain_store::StoreError> {
     use crate::domain_store::{Attached, StoreError};
     use alondra_domain_rules::DomainError;
     let scope = alondra_store::AuthorityScope::new(fence.state.data_epoch.clone()).map_err(StoreError::from)?;
@@ -385,7 +386,7 @@ impl NativeAuthAccount {
 }
 
 /// Refreshes only the account of this existing native session, including when disabled for new work.
-pub fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_domain_rules::TaskId, hold: Option<alondra_domain_rules::ClaudeHold>) -> Result<bool, String> {
+pub fn probe_current_codex(domain: &dyn Runtime, task_id: &alondra_domain_rules::TaskId, hold: Option<alondra_domain_rules::ClaudeHold>) -> Result<bool, String> {
     use alondra_domain_rules::{ClaudeHold, DomainError};
     use crate::domain_store::{Attached, StoreError};
     if hold == Some(ClaudeHold::SignedOut) { return Err("Only the user's answer checks a signed-out native session".into()); }
@@ -463,7 +464,7 @@ pub fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_domain_rule
 
 /// Records how new work is spread, and whether nodes move between accounts, when the domain
 /// holds another way.
-pub fn record_distribution(domain: &DomainRuntime, policy: Policy, move_when_exhausted: bool) {
+pub fn record_distribution(domain: &dyn Runtime, policy: Policy, move_when_exhausted: bool) {
     let state = domain.read();
     if state.state().account_policy == policy && state.state().account_moves == move_when_exhausted {
         return;
@@ -481,16 +482,16 @@ pub fn record_distribution(domain: &DomainRuntime, policy: Policy, move_when_exh
     }
 }
 
-pub fn refresh_models(domain: &DomainRuntime, home: &Path, key: &AccountKey) -> Result<(), String> {
+pub fn refresh_models(domain: &dyn Runtime, home: &Path, key: &AccountKey) -> Result<(), String> {
     refresh_models_current(domain, home, key).map_err(|why| why.to_string())
 }
 
-fn refresh_models_current(domain: &DomainRuntime, home: &Path, key: &AccountKey) -> Result<(), crate::domain_store::StoreError> {
+fn refresh_models_current(domain: &dyn Runtime, home: &Path, key: &AccountKey) -> Result<(), crate::domain_store::StoreError> {
     let (fence, catalog) = read_models(domain, home, key).map_err(|why| crate::domain_store::StoreError::Storage(anyhow::anyhow!(why)))?;
     publish_current_probe(domain, home, fence, vec![Command::RecordModelCatalog { catalog }])
 }
 
-fn read_models(domain: &DomainRuntime, home: &Path, key: &AccountKey) -> Result<(ProbeFence, alondra_core::model_selection::AccountModelCatalog), String> {
+fn read_models(domain: &dyn Runtime, home: &Path, key: &AccountKey) -> Result<(ProbeFence, alondra_core::model_selection::AccountModelCatalog), String> {
     let (fence, file) = probe_fence(domain, home)?;
     if !file.accounts.accounts(key.provider).iter().any(|account| account.id == key.account && account.enabled) {
         return Err("The account is not connected and enabled".into());
@@ -513,13 +514,13 @@ fn read_models(domain: &DomainRuntime, home: &Path, key: &AccountKey) -> Result<
 }
 
 /// Checks every account's sign-in and records what it saw.
-pub fn check(domain: &DomainRuntime, home: &Path) {
+pub fn check(domain: &dyn Runtime, home: &Path) {
     if check_current(domain, home) == crate::native_probe::Outcome::Stale {
         domain.live().account_check.notify_one();
     }
 }
 
-pub fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Outcome {
+pub fn check_current(domain: &dyn Runtime, home: &Path) -> crate::native_probe::Outcome {
     if let Err(why) = migrate_legacy_settings(domain, home) { log!("Provider settings migration needs repair: {why}"); return crate::native_probe::Outcome::Finished; }
     match probe_fence(domain, home) {
         Ok((fence, file)) => {
@@ -625,7 +626,7 @@ fn uncrossed(before: &[AccountStatus], now: &[AccountStatus]) -> Vec<(AccountKey
 
 /// While an account answered with another's profile, its sessions recorded that other identity:
 /// they ran on it. Their conversations are shared, so they go on, under the account's own identity.
-pub fn correct_crossed_sessions(domain: &DomainRuntime, before: &[AccountStatus]) {
+pub fn correct_crossed_sessions(domain: &dyn Runtime, before: &[AccountStatus]) {
     let state = domain.read().state().clone();
     let crossed = uncrossed(before, &state.accounts);
     if crossed.is_empty() { return; }
@@ -646,7 +647,7 @@ pub fn correct_crossed_sessions(domain: &DomainRuntime, before: &[AccountStatus]
 
 /// Two Claude accounts with one email: one of them answered with the other's profile, and the
 /// sessions of the account it really is would be refused. They are checked before any is taken over.
-pub fn check_if_crossed(domain: &DomainRuntime) {
+pub fn check_if_crossed(domain: &dyn Runtime) {
     let crossed = {
         let read = domain.read();
         let emails: Vec<_> = read.state().accounts.iter().filter(|account| account.provider == Provider::Claude)
@@ -666,7 +667,7 @@ fn seed_claude_orchestrator(profiles: &mut alondra_core::model_selection::ModelP
     true
 }
 
-pub(crate) fn migrate_legacy_settings(domain: &DomainRuntime, home: &Path) -> Result<(), String> {
+pub(crate) fn migrate_legacy_settings(domain: &dyn Runtime, home: &Path) -> Result<(), String> {
     let _writing = crate::settings_file::WRITER.lock_or_recover("the settings writer");
     recover_settings(domain, home)?;
     let Some(previous) = crate::domain_store::provider_settings::read_options(home)? else { return Ok(()) };
@@ -701,15 +702,15 @@ pub enum ChangeRefused {
 
 /// Makes a change the user asked for from Settings: judged by the guard of its command, written
 /// to `options.toml`, recorded in the domain, and the accounts checked again.
-pub fn change(domain: &DomainRuntime, home: &Path, actor: &Actor, change: &AccountChange) -> Result<(), ChangeRefused> {
+pub fn change(domain: &dyn Runtime, home: &Path, actor: &Actor, change: &AccountChange) -> Result<(), ChangeRefused> {
     change_for_provider(domain, home, actor, Provider::Claude, change)
 }
 
-pub fn change_for_provider(domain: &DomainRuntime, home: &Path, actor: &Actor, provider: Provider, change: &AccountChange) -> Result<(), ChangeRefused> {
+pub fn change_for_provider(domain: &dyn Runtime, home: &Path, actor: &Actor, provider: Provider, change: &AccountChange) -> Result<(), ChangeRefused> {
     change_for_provider_authorized(domain, home, actor, provider, change, || Ok(()))
 }
 
-pub fn change_for_provider_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, provider: Provider, change: &AccountChange,
+pub fn change_for_provider_authorized(domain: &dyn Runtime, home: &Path, actor: &Actor, provider: Provider, change: &AccountChange,
     authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused>
 {
     let current = config(home).map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?;
@@ -725,13 +726,13 @@ pub fn change_for_provider_authorized(domain: &DomainRuntime, home: &Path, actor
 
 /// Connects `provider` with the session the user signed in to on this Mac with the provider's own
 /// tool: only the settings change, then every account is checked. Alondra never signs in.
-pub fn connect(domain: &DomainRuntime, home: &Path, actor: &Actor, provider: Provider, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused> {
+pub fn connect(domain: &dyn Runtime, home: &Path, actor: &Actor, provider: Provider, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused> {
     let current = config(home).map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?;
     if domain.read().state().account_config_version != version(&current) { check(domain, home); }
     change_for_provider_authorized(domain, home, actor, provider, &AccountChange::Connect, authorize)
 }
 
-pub(crate) fn replace_configuration_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, seen: &str, proposed: &AccountsConfig,
+pub(crate) fn replace_configuration_authorized(domain: &dyn Runtime, home: &Path, actor: &Actor, seen: &str, proposed: &AccountsConfig,
     authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused>
 {
     let _writing = crate::settings_file::WRITER.lock_or_recover("the settings writer");
@@ -778,11 +779,11 @@ pub(crate) fn replace_configuration_authorized(domain: &DomainRuntime, home: &Pa
     }
 }
 
-pub(crate) fn set_order(domain: &DomainRuntime, home: &Path, actor: &Actor, order: &[AccountKey], expected_config_version: &str) -> Result<(), ChangeRefused> {
+pub(crate) fn set_order(domain: &dyn Runtime, home: &Path, actor: &Actor, order: &[AccountKey], expected_config_version: &str) -> Result<(), ChangeRefused> {
     set_order_authorized(domain, home, actor, order, expected_config_version, || Ok(()))
 }
 
-pub fn set_order_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, order: &[AccountKey], expected_config_version: &str, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused> {
+pub fn set_order_authorized(domain: &dyn Runtime, home: &Path, actor: &Actor, order: &[AccountKey], expected_config_version: &str, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused> {
     let _writing = crate::settings_file::WRITER.lock_or_recover("the settings writer");
     recover_settings(domain, home).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
     let previous = crate::domain_store::provider_settings::read_options(home).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
@@ -796,14 +797,14 @@ pub fn set_order_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, 
     apply_settings_authorized(domain, home, actor, command, previous, target, vec![Command::RecordAccountConfiguration { order: order.to_vec(), version: version(&next) }], authorize)
 }
 
-pub(crate) fn set_model_profile(domain: &DomainRuntime, home: &Path, actor: &Actor, provider: Provider, profile: alondra_core::model_selection::ModelProfile,
+pub(crate) fn set_model_profile(domain: &dyn Runtime, home: &Path, actor: &Actor, provider: Provider, profile: alondra_core::model_selection::ModelProfile,
     policy: &alondra_core::model_selection::RoleModelPolicy, expected_config_version: &str) -> Result<(), ChangeRefused>
 {
     set_model_profile_authorized(domain, home, actor, provider, profile, policy, expected_config_version, || Ok(()))
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn set_model_profile_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, provider: Provider, profile: alondra_core::model_selection::ModelProfile,
+pub fn set_model_profile_authorized(domain: &dyn Runtime, home: &Path, actor: &Actor, provider: Provider, profile: alondra_core::model_selection::ModelProfile,
     policy: &alondra_core::model_selection::RoleModelPolicy, expected_config_version: &str, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused>
 {
     let _writing = crate::settings_file::WRITER.lock_or_recover("the settings writer");
@@ -818,7 +819,7 @@ pub fn set_model_profile_authorized(domain: &DomainRuntime, home: &Path, actor: 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn apply_settings_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, command: Command, previous: Option<String>, target: String, recorded: Vec<Command>, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused> {
+fn apply_settings_authorized(domain: &dyn Runtime, home: &Path, actor: &Actor, command: Command, previous: Option<String>, target: String, recorded: Vec<Command>, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused> {
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: domain.read().state().data_epoch.clone(),
         command_id: format!("provider-settings-{}", crate::auth::random_hex(16)).into(), expected_revision: 0, command };
     crate::settings_projection::apply_authorized(domain, home, actor, envelope, previous, target, recorded, authorize, |_| Ok(())).map_err(|why| match why {
@@ -827,18 +828,18 @@ fn apply_settings_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor,
     })
 }
 
-pub(crate) fn recover_settings(domain: &DomainRuntime, home: &Path) -> Result<(), String> {
+pub(crate) fn recover_settings(domain: &dyn Runtime, home: &Path) -> Result<(), String> {
     crate::settings_projection::recover(domain, home).map_err(|why| format!("Could not reconcile the settings change: {why:#}"))
 }
 
 /// Checks the accounts when the daemon starts, then every ten minutes, and at once when Claude
 /// answered or refused a sign-in while no account had a session.
-pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
+pub async fn run(domain: Arc<dyn Runtime>, home: PathBuf) {
     loop {
         crate::native_probe::retry(|| {
             let (checking, at) = (domain.clone(), home.clone());
             async move {
-                tokio::task::spawn_blocking(move || check_current(&checking, &at)).await.unwrap_or_else(|_| {
+                tokio::task::spawn_blocking(move || check_current(&*checking, &at)).await.unwrap_or_else(|_| {
                     log!("the accounts check stopped");
                     crate::native_probe::Outcome::Finished
                 })
@@ -854,7 +855,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
 /// Ends what older daemons left of a Codex device sign-in: Alondra no longer signs in, so an
 /// unfinished one is recorded as failed, and a credential it was publishing, or its staging
 /// folder, is removed. The provider's own session stays as it is.
-pub fn end_abandoned_sign_ins(domain: &DomainRuntime) {
+pub fn end_abandoned_sign_ins(domain: &dyn Runtime) {
     let logins = domain.read().state().account_logins.clone();
     let codex = (!logins.is_empty()).then(|| Codex::of(domain)).flatten();
     for login in logins {
@@ -879,7 +880,7 @@ pub(crate) fn move_risk(lang: Lang) -> &'static str {
     }
 }
 
-pub fn read(domain: &DomainRuntime, home: &Path, lang: Lang) -> Reply {
+pub fn read(domain: &dyn Runtime, home: &Path, lang: Lang) -> Reply {
     let config = match config(home) {
         Ok(config) => config,
         Err(why) => return Reply { status: StatusCode::INTERNAL_SERVER_ERROR, body: json!({"error": "file", "message": why}) },
@@ -933,11 +934,11 @@ struct Change {
 
 /// Replaces the `[accounts]` section with the one a client sent, if it saw the current one. A new
 /// account links the `~/.claude` of the HOME the nodes' Claude runs in.
-pub fn write(domain: &DomainRuntime, home: &Path, body: &serde_json::Value, lang: Lang) -> Reply {
+pub fn write(domain: &dyn Runtime, home: &Path, body: &serde_json::Value, lang: Lang) -> Reply {
     write_authorized(domain, home, &Actor::User { user_id: "local-user".into() }, body, lang, || Ok(()))
 }
 
-pub(crate) fn write_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, body: &serde_json::Value, lang: Lang, authorize: impl Fn() -> anyhow::Result<()>) -> Reply {
+pub(crate) fn write_authorized(domain: &dyn Runtime, home: &Path, actor: &Actor, body: &serde_json::Value, lang: Lang, authorize: impl Fn() -> anyhow::Result<()>) -> Reply {
     let change = match serde_json::from_value::<Change>(body.clone()) {
         Ok(change) => change,
         Err(e) => return Refused::Invalid(e.to_string()).reply(lang),

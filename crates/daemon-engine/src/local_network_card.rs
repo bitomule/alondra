@@ -13,6 +13,8 @@ use alondra_domain_rules::local_network_card::{
 };
 use alondra_view_model::Lang;
 
+use alondra_engine_ports::Runtime;
+#[cfg(test)]
 use crate::domain_runtime::DomainRuntime;
 
 /// Longer than the last check after start, so an update that macOS lets through by itself never
@@ -45,27 +47,27 @@ pub(crate) fn under_launcher() -> bool {
     written > 0 && std::str::from_utf8(&path[..written as usize]).is_ok_and(|parent| parent.ends_with(&format!("/{}", alondra_host::launcher::NAME)))
 }
 
-pub async fn run(domain: Arc<DomainRuntime>) {
+pub async fn run(domain: Arc<dyn Runtime>) {
     let launcher = under_launcher();
     watch(domain, || (crate::local_network::current(), crate::local_network::denied_for()), || crate::local_network::check(), launcher, TICK).await
 }
 
-fn open_cards(domain: &DomainRuntime) -> Vec<InteractionId> {
-    let Ok(state) = domain.state() else { return vec![] };
+fn open_cards(domain: &dyn Runtime) -> Vec<InteractionId> {
+    let state = domain.state();
     state.interactions.values()
         .filter(|card| card.system_card == Some(SystemCard::LocalNetwork) && !card.withdrawn && matches!(card.payload, InteractionPayload::Question { answer: None, .. }))
         .map(|card| card.id.clone())
         .collect()
 }
 
-fn answered(domain: &DomainRuntime, id: &InteractionId) -> bool {
-    domain.state().ok().is_some_and(|state| matches!(
-        state.interactions.get(id).map(|card| &card.payload),
+fn answered(domain: &dyn Runtime, id: &InteractionId) -> bool {
+    matches!(
+        domain.state().interactions.get(id).map(|card| &card.payload),
         Some(InteractionPayload::Question { answer: Some(_), .. })
-    ))
+    )
 }
 
-fn raise(domain: &DomainRuntime, launcher: bool, still: bool) -> Option<InteractionId> {
+fn raise(domain: &dyn Runtime, launcher: bool, still: bool) -> Option<InteractionId> {
     let id = format!("{LOCAL_NETWORK_PREFIX}{}", alondra_core::now_millis());
     let card = LocalNetworkCard { launcher, still };
     let (need, why) = card.text(Lang::En);
@@ -80,7 +82,7 @@ fn raise(domain: &DomainRuntime, launcher: bool, still: bool) -> Option<Interact
 }
 
 async fn watch(
-    domain: Arc<DomainRuntime>,
+    domain: Arc<dyn Runtime>,
     read: impl Fn() -> (&'static str, Option<Duration>) + Send + Sync + 'static,
     recheck: impl Fn() -> &'static str + Send + Sync + 'static,
     launcher: bool,
@@ -89,7 +91,7 @@ async fn watch(
     let (read, recheck) = (Arc::new(read), Arc::new(recheck));
     let starting = domain.clone();
     tokio::task::spawn_blocking(move || {
-        for id in open_cards(&starting) {
+        for id in open_cards(&*starting) {
             let _ = starting.withdraw_problem(&id);
         }
     }).await.expect("local network card worker failed");
@@ -97,7 +99,7 @@ async fn watch(
     loop {
         let (domain, read, recheck, card) = (domain.clone(), read.clone(), recheck.clone(), open.clone());
         open = tokio::task::spawn_blocking(move || {
-            let answered = card.as_ref().is_some_and(|id| answered(&domain, id));
+            let answered = card.as_ref().is_some_and(|id| answered(&*domain, id));
             let (found, denied_for) = if answered { (recheck(), read().1) } else { read() };
             match step(card.is_some(), answered, found, denied_for) {
                 Step::Withdraw => {
@@ -110,7 +112,7 @@ async fn watch(
                     if let Some(id) = &card {
                         let _ = domain.withdraw_problem(id);
                     }
-                    raise(&domain, launcher, still)
+                    raise(&*domain, launcher, still)
                 }
                 Step::Nothing if answered => None,
                 Step::Nothing => card,
@@ -222,7 +224,7 @@ mod tests {
     #[tokio::test]
     async fn a_card_left_open_by_an_earlier_daemon_is_withdrawn_at_start() {
         let (_home, domain) = world();
-        raise(&domain, true, false).unwrap();
+        raise(&*domain, true, false).unwrap();
         assert_eq!(cards(&domain).len(), 1);
         let watcher = tokio::spawn(watch(domain.clone(), || ("allowed", None), || "allowed", true, Duration::from_millis(10)));
         until("the stray withdrawn", || cards(&domain).is_empty()).await;

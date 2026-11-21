@@ -1,5 +1,6 @@
 //! What the orchestrator reads when a decision of the user holds the tasks that wait for the one
 //! decided on, and why a launch of one of them is refused until it reviews their plans.
+use alondra_engine_ports::Runtime;
 use alondra_domain_rules::{DomainState, TaskId};
 
 /// Why a held task does not start now, or nothing if no decision holds it.
@@ -21,8 +22,8 @@ pub mod fixtures {
     use std::collections::{BTreeMap, BTreeSet};
 
 
-    pub fn run(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) -> Result<(), alondra_domain_rules::DomainError> {
-        let state = domain.state().unwrap();
+    pub fn run(domain: &dyn Runtime, actor: Actor, id: &str, command: Command) -> Result<(), alondra_domain_rules::DomainError> {
+        let state = domain.state();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
             expected_revision: state.revision, command,
@@ -32,7 +33,7 @@ pub mod fixtures {
         })
     }
 
-    pub fn must(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
+    pub fn must(domain: &dyn Runtime, actor: Actor, id: &str, command: Command) {
         let shown = format!("{command:?}");
         if let Err(error) = run(domain, actor, id, command) {
             panic!("{shown} was refused: {error:?}");
@@ -47,7 +48,7 @@ pub mod fixtures {
         LaunchPlan { mission: Some(mission.into()), ..LaunchPlan::new(name, "/tmp") }
     }
 
-    pub fn task(domain: &DomainRuntime, id: &str, agent: Option<&str>, dependencies: &[&str], mission: &str) {
+    pub fn task(domain: &dyn Runtime, id: &str, agent: Option<&str>, dependencies: &[&str], mission: &str) {
         must(domain, orchestrator(), &format!("create-{id}"), Command::CreateTask {
             task_id: id.into(), request_id: "r".into(), title: format!("Redraft index · Phase {}", id.to_uppercase()), agent_id: agent.map(Into::into),
             review_prs: false, dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None, launch: Some(plan(id, mission)),
@@ -83,7 +84,7 @@ pub mod fixtures {
         (home, domain)
     }
 
-    pub fn settle(domain: &DomainRuntime, id: &str, task: &str, outcome: PlanReviewOutcome) -> Result<(), alondra_domain_rules::DomainError> {
+    pub fn settle(domain: &dyn Runtime, id: &str, task: &str, outcome: PlanReviewOutcome) -> Result<(), alondra_domain_rules::DomainError> {
         run(domain, orchestrator(), id, Command::SettlePlanReview { review_id: "decision-1".into(), task_id: task.into(), outcome })
     }
 }

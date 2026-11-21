@@ -17,15 +17,15 @@ async fn a_due_schedule_and_a_pending_launch_wait_out_the_usage_limit_and_each_l
     let now = alondra_core::now_millis();
     fixture.domain.live().usage_pause.exhaust(Some(now + 3_600_000), now);
     let runs = || fixture.domain.state().unwrap().schedule.runs.len();
-    run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+    run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
     let mut due = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
     due.enabled = true;
     due.next_run = Some(now);
     due.revision += 1;
-    execute_system(&fixture.domain, Command::UpdateSchedule { schedule: due }).unwrap();
+    execute_system(&*fixture.domain, Command::UpdateSchedule { schedule: due }).unwrap();
 
-    run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
-    run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+    run_cycle(&*fixture.domain, &fixture.home, true).await.unwrap();
+    run_cycle(&*fixture.domain, &fixture.home, true).await.unwrap();
     assert_eq!(fixture.launches(), 0, "paused: Claude is not called");
     assert_eq!(runs(), 1, "the due schedule starts no run: it is deferred, not failed");
     let state = fixture.domain.state().unwrap();
@@ -35,10 +35,10 @@ async fn a_due_schedule_and_a_pending_launch_wait_out_the_usage_limit_and_each_l
     assert_eq!(state.schedule.schedules[&ScheduleId::from("schedule-1")].next_run, Some(now), "still due");
 
     fixture.domain.live().usage_pause.resume(alondra_core::now_millis());
-    run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+    run_cycle(&*fixture.domain, &fixture.home, true).await.unwrap();
     assert_eq!(fixture.launches(), 2, "back: the deferred launch and the due schedule go, one each");
     assert_eq!(runs(), 2);
-    run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+    run_cycle(&*fixture.domain, &fixture.home, true).await.unwrap();
     assert_eq!(fixture.launches(), 2, "and never again");
     assert_eq!(runs(), 2);
     let state = fixture.domain.state().unwrap();
@@ -53,30 +53,30 @@ async fn a_due_schedule_and_a_pending_launch_wait_while_the_disk_is_nearly_full(
     fixture.claim("manual-1");
     let now = alondra_core::now_millis();
     fixture.domain.machine_watch().set_disk_low(true);
-    run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+    run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
     let mut due = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
     due.enabled = true;
     due.next_run = Some(now);
     due.revision += 1;
-    execute_system(&fixture.domain, Command::UpdateSchedule { schedule: due }).unwrap();
+    execute_system(&*fixture.domain, Command::UpdateSchedule { schedule: due }).unwrap();
 
-    run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
-    run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+    run_cycle(&*fixture.domain, &fixture.home, true).await.unwrap();
+    run_cycle(&*fixture.domain, &fixture.home, true).await.unwrap();
     assert_eq!(fixture.launches(), 0, "no node starts on a nearly full disk");
     let state = fixture.domain.state().unwrap();
     assert_eq!(state.schedule.runs[&ScheduleRunId::from("manual-1")].launch.as_ref().unwrap().state, ScheduleLaunchState::Pending);
     assert!(state.schedule.runs.values().all(|run| run.state != ScheduleRunState::Failed), "nothing is recorded as failed");
 
     fixture.domain.machine_watch().set_disk_low(false);
-    run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
+    run_cycle(&*fixture.domain, &fixture.home, true).await.unwrap();
     assert_eq!(fixture.launches(), 2, "space again: the deferred launch and the due schedule go");
 }
 
 
 /// Puts a run back as a daemon before the fix left it: still waiting to launch after its Task
 /// was cancelled.
-pub fn leave_launch_waiting(domain: &DomainRuntime, run: &str) {
-    let store = domain.store.lock().unwrap();
+pub fn leave_launch_waiting(domain: &dyn Runtime, run: &str) {
+    let store = domain.store().lock().unwrap();
     let conn = store.sqlite().conn_for_test();
     let triggers: Vec<(String, String)> = conn
         .prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name IN ('schedule_run_result_transition','schedule_launch_transition')")
@@ -103,10 +103,10 @@ pub fn leave_launch_waiting(domain: &DomainRuntime, run: &str) {
 async fn a_launch_left_waiting_by_a_cancelled_task_never_passes_the_gate_and_ends_on_the_next_start() {
     let fixture = Fixture::new();
     fixture.claim("stuck");
-    finish_claim(&fixture.domain, &fixture.home, &"stuck".into()).unwrap();
+    finish_claim(&*fixture.domain, &fixture.home, &"stuck".into()).unwrap();
     let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("stuck")].task_id.clone().unwrap();
-    execute_system(&fixture.domain, Command::CancelTask { task_id: task.clone(), reason: None }).unwrap();
-    leave_launch_waiting(&fixture.domain, "stuck");
+    execute_system(&*fixture.domain, Command::CancelTask { task_id: task.clone(), reason: None }).unwrap();
+    leave_launch_waiting(&*fixture.domain, "stuck");
 
     let restarted = Fixture::open(&fixture.home);
     let state = restarted.state().unwrap();

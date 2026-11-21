@@ -1,22 +1,24 @@
 use crate::domain_store::provider_settings::{PendingProjection, ProjectionIdentity, read_optional};
 use alondra_daemon_engine_model::options::{prepare_pending, replace};
 use crate::domain_store::{Attached, StoreError};
+use crate::Runtime;
+#[cfg(test)]
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
 use alondra_domain_rules::{Actor, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
 use anyhow::Result;
 use std::path::Path;
 
-pub fn recover(domain: &DomainRuntime, home: &Path) -> Result<()> {
-    domain.store.lock_or_exit("the domain store").recover_settings(home)
+pub fn recover(domain: &dyn Runtime, home: &Path) -> Result<()> {
+    domain.store().lock_or_exit("the domain store").recover_settings(home)
 }
 
-pub fn apply(domain: &DomainRuntime, home: &Path, actor: &Actor, command: CommandEnvelope, previous: Option<String>, target: String, recorded: Vec<Command>) -> Result<(), StoreError> {
+pub fn apply(domain: &dyn Runtime, home: &Path, actor: &Actor, command: CommandEnvelope, previous: Option<String>, target: String, recorded: Vec<Command>) -> Result<(), StoreError> {
     apply_authorized(domain, home, actor, command, previous, target, recorded, || Ok(()), |_| Ok(()))
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn apply_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, command: CommandEnvelope, previous: Option<String>, target: String, recorded: Vec<Command>,
+pub fn apply_authorized(domain: &dyn Runtime, home: &Path, actor: &Actor, command: CommandEnvelope, previous: Option<String>, target: String, recorded: Vec<Command>,
     authorize: impl Fn() -> anyhow::Result<()>, prepare_accounts: impl FnOnce(&alondra_domain_rules::DomainState) -> Result<(), StoreError>) -> Result<(), StoreError>
 {
     recover(domain, home)?;
@@ -46,7 +48,7 @@ pub fn apply_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, comm
     match result {
         Ok(_) => Ok(()),
         Err(why) => {
-            let was_committed = { let store = domain.store.lock_or_exit("the domain store"); store.settings_committed(&identity)? };
+            let was_committed = { let store = domain.store().lock_or_exit("the domain store"); store.settings_committed(&identity)? };
             recover(domain, home)?;
             if was_committed { Ok(()) } else { Err(why) }
         }

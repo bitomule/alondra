@@ -233,8 +233,8 @@ impl Client {
             Ok(resolved) => resolved,
             Err(error) => return Ok(refused(error)),
         };
-        crate::domain_orchestrator_tools::authorize_user_request_selection(&self.domain, &mut resolved, body.options.contains_key("account"));
-        if let Err(error) = crate::domain_orchestrator_tools::validate_request_selection(&self.domain, &resolved) { return Ok(refused(error.message)); }
+        crate::domain_orchestrator_tools::authorize_user_request_selection(&*self.domain, &mut resolved, body.options.contains_key("account"));
+        if let Err(error) = crate::domain_orchestrator_tools::validate_request_selection(&*self.domain, &resolved) { return Ok(refused(error.message)); }
         let github = self.github.lock_or_recover("the GitHub backend").clone();
         let issue_text = match &issue {
             Some((repo, number)) => {

@@ -1,7 +1,7 @@
 //! The Agent SDK hosts as the rest of the engine sees them: what it asks of `engine-sdk`, which owns
 //! every host, through the port `engine-sdk` gives the registry when the daemon is put together.
 //! A test registers a double of it.
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_core::accounts::{AccountId, Provider};
 use alondra_daemon_engine_model::Failed;
 use alondra_domain_rules::{AgentId, DomainError, DomainState, TaskId};
@@ -13,16 +13,16 @@ pub trait HostsOf {
     fn hosts(&self) -> Hosts<'_>;
 }
 
-impl HostsOf for DomainRuntime {
+impl<R: alondra_engine_ports::Runtime + ?Sized> HostsOf for R {
     fn hosts(&self) -> Hosts<'_> {
         let port = self.ports().port::<dyn SdkHosts>();
-        Hosts { domain: self, port: port.expect("the daemon gives the runtime the owner of its SDK hosts") }
+        Hosts { domain: self.as_runtime(), port: port.expect("the daemon gives the runtime the owner of its SDK hosts") }
     }
 }
 
 /// The SDK hosts of one runtime.
 pub struct Hosts<'a> {
-    domain: &'a DomainRuntime,
+    domain: &'a dyn Runtime,
     port: Arc<dyn SdkHosts>,
 }
 

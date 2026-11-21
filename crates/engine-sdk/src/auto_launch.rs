@@ -7,13 +7,14 @@
 //! closed for a reason of its own (a replacement that stopped short, a node closed while the user
 //! asked for changes) is relaunched the same way, in the folder that node worked in.
 use crate::engine::EngineOf as _;
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use alondra_engine_ports::gate::GateOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use alondra_daemon_engine_model::LaunchBody;
 use alondra_engine_ports::sdk::Relaunch;
 use alondra_engine_kernel::start_failures;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_domain_rules::{DomainError, DomainState, Task, TaskId, TaskState};
 use anyhow::Result;
@@ -25,15 +26,15 @@ const TICK: Duration = Duration::from_secs(60);
 const FIRST_BACKOFF: Duration = Duration::from_secs(5);
 const LAST_BACKOFF: Duration = Duration::from_secs(5 * 60);
 
-pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
-    if let Err(error) = recover(&domain) {
+pub async fn run(domain: Arc<dyn Runtime>, home: PathBuf) {
+    if let Err(error) = recover(&*domain) {
         log!("could not look at the automatic launches a restart interrupted: {error:#}");
     }
     let mut changed = domain.subscribe();
     let mut turn = domain.gate().subscribe();
     let mut backoff = FIRST_BACKOFF;
     loop {
-        let pause = match pass(&domain, &home).await {
+        let pause = match pass(&*domain, &home).await {
             Ok(()) => {
                 backoff = FIRST_BACKOFF;
                 TICK
@@ -59,11 +60,11 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
 /// A launch the daemon stopped in the middle of: kept when its node was assigned, else tried again.
 /// A task an older daemon let exist without a launch plan is cancelled, saying so, and the
 /// orchestrator is told to create it again with one if it is still needed.
-pub(crate) fn recover(domain: &DomainRuntime) -> Result<()> {
-    let state = domain.state()?;
-    let rows = domain.store.lock_or_exit("the domain store").auto_launches()?;
+pub(crate) fn recover(domain: &dyn Runtime) -> Result<()> {
+    let state = domain.state();
+    let rows = domain.store().lock_or_exit("the domain store").auto_launches()?;
     for row in rows.into_iter().filter(|row| row.state == AutoLaunchState::Launching) {
-        let mut store = domain.store.lock_or_exit("the domain store");
+        let mut store = domain.store().lock_or_exit("the domain store");
         if state.tasks.get(&row.task_id).is_some_and(|task| task.agent_id.is_some()) {
             store.set_auto_launch(&row.task_id, AutoLaunchState::Launched, None, None, alondra_core::now_millis())?;
         } else {
@@ -71,14 +72,14 @@ pub(crate) fn recover(domain: &DomainRuntime) -> Result<()> {
             store.forget_auto_launch(&row.task_id)?;
         }
     }
-    domain.store.lock_or_exit("the domain store").forget_planless_blocks()?;
-    cancel_planless(domain, &*domain.state()?)
+    domain.store().lock_or_exit("the domain store").forget_planless_blocks()?;
+    cancel_planless(domain, &*domain.state())
 }
 
 const PLANLESS: &str = "It had no launch plan, so nothing would ever start it";
 
-fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
-    let planned = domain.store.lock_or_exit("the domain store").planned_tasks()?;
+fn cancel_planless(domain: &dyn Runtime, state: &DomainState) -> Result<()> {
+    let planned = domain.store().lock_or_exit("the domain store").planned_tasks()?;
     let planless: Vec<&Task> = state.tasks.values()
         .filter(|task| matches!(task.state, TaskState::NotStarted | TaskState::WaitingDependency) && !task.started && task.agent_id.is_none() && !task.archived)
         .filter(|task| !planned.contains_key(&task.id) && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id)))
@@ -89,7 +90,7 @@ fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
             log!("could not cancel {}, which has no launch plan: {error:?}", task.id);
             continue;
         }
-        domain.store.lock_or_exit("the domain store").set_cancel_reason(&task.id, PLANLESS)?;
+        domain.store().lock_or_exit("the domain store").set_cancel_reason(&task.id, PLANLESS)?;
         tell(domain, &format!("planless-cancelled-{}", task.id), format!(
             "Alondra cancelled “{}” ({}): it had no launch plan, so nothing would ever start it. If it is still needed, create it again with create_task and its launch plan.",
             task.title, task.id));
@@ -99,12 +100,12 @@ fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
 
 pub use alondra_engine_ports::launch::candidate;
 
-pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
+pub async fn pass(domain: &dyn Runtime, home: &Path) -> Result<()> {
     crate::start_retries::react(domain, home).await?;
-    let state = domain.state()?;
+    let state = domain.state();
     let now = alondra_core::now_millis();
     let (planned, retries) = {
-        let store = domain.store.lock_or_exit("the domain store");
+        let store = domain.store().lock_or_exit("the domain store");
         (store.planned_tasks()?, store.start_retries()?)
     };
     let mut ready: Vec<&Task> = state.tasks.values().filter(|task| candidate(&state, task)).collect();
@@ -115,11 +116,11 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
             Some(Relaunch::ByItself) => true,
             None => false,
         };
-        if domain.gate().held_by_user(&task.id) || (!relaunching && domain.store.lock_or_exit("the domain store").task_was_launched(&task.id)?) {
+        if domain.gate().held_by_user(&task.id) || (!relaunching && domain.store().lock_or_exit("the domain store").task_was_launched(&task.id)?) {
             continue;
         }
         let (row, plan) = {
-            let store = domain.store.lock_or_exit("the domain store");
+            let store = domain.store().lock_or_exit("the domain store");
             (store.auto_launch(&task.id)?, store.launch_plan(&task.id)?)
         };
         if retries.get(&task.id).is_some_and(|(_, at)| *at > now) {
@@ -132,7 +133,7 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         let retry = match row.as_ref().map(|row| (row.state, row.reason)) {
             None => false,
             Some((AutoLaunchState::Launched, _)) if relaunching => {
-                domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
+                domain.store().lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
                 false
             }
             Some((AutoLaunchState::Launched | AutoLaunchState::Launching, _)) => continue,
@@ -140,7 +141,7 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
             Some((AutoLaunchState::Blocked, _)) => continue,
         };
         let block = |reason: AutoLaunchReason, detail: Option<&str>| -> Result<()> {
-            domain.store.lock_or_exit("the domain store").set_auto_launch(&task.id, AutoLaunchState::Blocked, Some(reason), detail, now)
+            domain.store().lock_or_exit("the domain store").set_auto_launch(&task.id, AutoLaunchState::Blocked, Some(reason), detail, now)
         };
         if plan.is_none() && !relaunching { continue; }
         if usage_out {
@@ -152,19 +153,19 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         if domain.gate().ask(waiting, now).is_err() {
             continue;
         }
-        if !domain.store.lock_or_exit("the domain store").claim_auto_launch(&task.id, now, retry)? {
+        if !domain.store().lock_or_exit("the domain store").claim_auto_launch(&task.id, now, retry)? {
             continue;
         }
         let Some(_launching) = domain.engine().begin_launch(&task.id) else {
-            domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
+            domain.store().lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
             continue;
         };
-        let plan = domain.launch_plan(&task.id)?;
+        let plan = domain.stored_launch_plan(&task.id)?;
         let launched = match &plan {
             _ if relaunching => domain.engine().relaunch(home, &task.id, true).await,
             Some(plan) => domain.engine().launch_planned(home, LaunchBody::from_plan(task.id.clone(), plan).to_queue()).await,
             None => {
-                domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
+                domain.store().lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
                 continue;
             }
         };
@@ -175,23 +176,23 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
 
 /// What an automatic launch leaves behind: a refusal that clears by itself waits for a later pass,
 /// a task that ended while it started just leaves, and any other refusal is a failed start.
-pub fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched: Result<serde_json::Value, DomainError>, now: i64) -> Result<()> {
+pub fn settle(domain: &dyn Runtime, task: &TaskId, cwd: Option<&str>, launched: Result<serde_json::Value, DomainError>, now: i64) -> Result<()> {
     let block = |reason: AutoLaunchReason| -> Result<()> {
-        domain.store.lock_or_exit("the domain store").set_auto_launch(task, AutoLaunchState::Blocked, Some(reason), None, now)
+        domain.store().lock_or_exit("the domain store").set_auto_launch(task, AutoLaunchState::Blocked, Some(reason), None, now)
     };
     match launched {
-        Ok(_) => domain.store.lock_or_exit("the domain store").set_start_retry(task, None)?,
+        Ok(_) => domain.store().lock_or_exit("the domain store").set_start_retry(task, None)?,
         Err(_) if start_failures::ended(domain, task)? => {}
         Err(error) => match error.code.as_str() {
             "usage_exhausted" => block(AutoLaunchReason::UsageExhausted)?,
             "account_unavailable" | "account_check_in_progress" => {
                 domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(task.clone()));
-                domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?;
+                domain.store().lock_or_exit("the domain store").forget_auto_launch(task)?;
             }
-            "worktrees_unavailable" | "disk_low" | "plan_review_pending" => domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?,
+            "worktrees_unavailable" | "disk_low" | "plan_review_pending" => domain.store().lock_or_exit("the domain store").forget_auto_launch(task)?,
             "conflict" => {
-                let taken = domain.state()?.tasks.get(task).is_some_and(|task| task.agent_id.is_some());
-                let mut store = domain.store.lock_or_exit("the domain store");
+                let taken = domain.state().tasks.get(task).is_some_and(|task| task.agent_id.is_some());
+                let mut store = domain.store().lock_or_exit("the domain store");
                 if taken {
                     store.set_auto_launch(task, AutoLaunchState::Launched, None, None, now)?;
                 } else {
@@ -210,7 +211,7 @@ pub fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched
     Ok(())
 }
 
-fn tell(domain: &DomainRuntime, id: &str, body: String) {
+fn tell(domain: &dyn Runtime, id: &str, body: String) {
     if let Err(error) = domain.tell_orchestrator(id, None, body) {
         log!("could not tell the orchestrator about {id}: {error:?}");
     }

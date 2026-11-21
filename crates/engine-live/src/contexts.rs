@@ -4,7 +4,6 @@
 //! instead. The last request of each task is kept in Alondra's home, so a restarted daemon still
 //! knows how large the conversation is and until when its cache holds; and the first answer of each
 //! new host says what starting it wrote to the cache.
-use crate::domain_runtime::DomainRuntime;
 use crate::locks::AfterPanic as _;
 use alondra_core::Millis;
 use alondra_domain_rules::TaskId;
@@ -228,9 +227,9 @@ pub trait ContextsOf {
     fn contexts(&self) -> &Contexts;
 }
 
-impl ContextsOf for DomainRuntime {
+impl<R: alondra_engine_ports::Runtime + ?Sized> ContextsOf for R {
     fn contexts(&self) -> &Contexts {
-        self.extension()
+        alondra_engine_ports::extension(self.as_runtime())
     }
 }
 

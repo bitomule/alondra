@@ -6,7 +6,7 @@
 //! nodes and this one still fails after every retry. The hook itself cannot make Claude go on
 //! (code.claude.com/docs/en/hooks), so going on is always a message to the node.
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_rules::AgentId;
 use anyhow::Result;
 
@@ -18,8 +18,8 @@ pub(crate) fn proves_an_answer(event: &str) -> bool {
 pub use alondra_engine_ports::api::{ApiWatch, outage_probe, resume_text};
 
 /// A turn ended normally: the API answers this node again.
-pub(crate) fn turn_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> {
-    let store = domain.store.lock_or_exit("the domain store");
+pub(crate) fn turn_ended(domain: &dyn Runtime, agent: &AgentId) -> Result<()> {
+    let store = domain.store().lock_or_exit("the domain store");
     if store.api_failures()?.get(agent).is_some_and(|streak| streak.card.is_none()) {
         store.set_api_failures(agent, None)?;
     }

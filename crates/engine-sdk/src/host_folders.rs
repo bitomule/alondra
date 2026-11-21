@@ -7,7 +7,8 @@
 //! it waits for a receipt only that host's journal can settle. When the daemon starts it deletes
 //! what already meets those conditions. The folders hosts that ended leave beside a node's are
 //! `ended_hosts`'s.
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
+use alondra_engine_ports::Runtime;
 use crate::sdk_backend::SdkBackend;
 use alondra_core::accounts::Provider;
 use alondra_daemon_engine_model::NativeAccountIdentity;
@@ -78,7 +79,7 @@ impl<'a> DomainClaims<'a> {
         Self { open, claimants, owing: RefCell::default(), owned: Box::new(owned), owes: Box::new(owes) }
     }
 
-    fn of(domain: &'a DomainRuntime, state: &'a DomainState, closed: Option<&TaskId>, owned: Owned<'a>) -> Self {
+    fn of(domain: &'a dyn Runtime, state: &'a DomainState, closed: Option<&TaskId>, owned: Owned<'a>) -> Self {
         Self::new(state, closed, move |name| owned(&AgentId(name.to_owned())), |task| owes_receipts(domain, task))
     }
 }
@@ -95,8 +96,8 @@ impl Claims for DomainClaims<'_> {
 /// Whether a command of `task`'s execution still waits for a receipt that only the journal of its
 /// host can settle: a dispatch or control claimed for the host with no answer recorded, or a
 /// handoff left uncertain. A store that cannot answer counts as one that waits.
-pub fn owes_receipts(domain: &DomainRuntime, task: &TaskId) -> bool {
-    let Ok(state) = domain.state() else { return true };
+pub fn owes_receipts(domain: &dyn Runtime, task: &TaskId) -> bool {
+    let state = domain.state();
     let Ok(scope) = AuthorityScope::new(state.data_epoch.clone()) else { return true };
     let owes = domain.own(scope, |owner| {
         if owner.lifecycle(task)?.execution().is_none() {
@@ -180,7 +181,7 @@ impl Folders<'_> {
 }
 
 /// The state root of each provider, as the hosts of its nodes and batches use it.
-fn roots(domain: &DomainRuntime, backend: &SdkBackend) -> Vec<(PathBuf, Provider)> {
+fn roots(domain: &dyn Runtime, backend: &SdkBackend) -> Vec<(PathBuf, Provider)> {
     let mut roots: Vec<(PathBuf, Provider)> = Vec::new();
     for provider in [Provider::Claude, Provider::Codex] {
         if let Ok(selected) = backend.for_provider(provider, domain.home())
@@ -192,28 +193,29 @@ fn roots(domain: &DomainRuntime, backend: &SdkBackend) -> Vec<(PathBuf, Provider
     roots
 }
 
-fn with_folders<T: Default>(domain: &DomainRuntime, closed: Option<&TaskId>, owned: Owned<'_>, run: impl FnOnce(&Folders, &DomainClaims, &DomainState) -> T) -> T {
-    let (Some((backend, _)), Ok(state), Ok(hosts)) = (domain.sdk(), domain.state(), alondra_engine_ports::agent_host::of(domain.ports())) else {
+fn with_folders<T: Default>(domain: &dyn Runtime, closed: Option<&TaskId>, owned: Owned<'_>, run: impl FnOnce(&Folders, &DomainClaims, &DomainState) -> T) -> T {
+    let (Some((backend, _)), Ok(hosts)) = (domain.sdk(), alondra_engine_ports::agent_host::of(domain.ports())) else {
         return T::default();
     };
+    let state = domain.state();
     let folders = Folders { hosts: &*hosts, roots: roots(domain, backend) };
     run(&folders, &DomainClaims::of(domain, &state, closed, owned), &state)
 }
 
 /// When the daemon starts: deletes every folder that already meets the conditions.
-pub fn sweep(domain: &DomainRuntime, owned: Owned<'_>) -> usize {
+pub fn sweep(domain: &dyn Runtime, owned: Owned<'_>) -> usize {
     with_folders(domain, None, owned, |folders, claims, _| folders.sweep(claims))
 }
 
 /// The host of a node that ran in `folder` ended.
-pub fn host_ended(domain: &DomainRuntime, folder: &Path, owned: Owned<'_>) {
+pub fn host_ended(domain: &dyn Runtime, folder: &Path, owned: Owned<'_>) {
     if with_folders(domain, None, owned, |folders, claims, _| folders.host_ended(folder, claims)) {
         log!("deleted the folder of the host that ran in {}: nothing needs it any more", folder.display());
     }
 }
 
 /// `task` closed or was cancelled: the folders it claimed go.
-pub fn task_closed(domain: &DomainRuntime, task: &TaskId, owned: Owned<'_>) {
+pub fn task_closed(domain: &dyn Runtime, task: &TaskId, owned: Owned<'_>) {
     let removed = with_folders(domain, Some(task), owned, |folders, claims, state| {
         let names = state.tasks.get(task).map(|task| folders_of(state, task)).unwrap_or_default();
         folders.task_closed(&names, claims)

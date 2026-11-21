@@ -1,10 +1,13 @@
 //! User messages reach a node through its task lifecycle, or through its mod for legacy nodes.
 //! A task with no node keeps its inputs until its first execution starts.
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use crate::domain_store::IntoDomainError as _;
 use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
+use alondra_engine_ports::Runtime;
+#[cfg(test)]
 use crate::domain_runtime::DomainRuntime;
 pub use alondra_core::config::user_name;
 use alondra_core::delivery::State;
@@ -114,12 +117,12 @@ fn message_task<'a>(state: &'a alondra_domain_rules::DomainState, agent: &AgentI
 /// writing it until the session takes it). An Agent with no connection is refused, so the user
 /// can send again. `as_user` is for the user's own words, which also end a pause the user put on
 /// the node; Alondra's notices go without it, so the model sees who sent them.
-pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, agent: &AgentId, body: MessageBody,
+pub async fn deliver(domain: &dyn Runtime, home: &Path, user: &Actor, name: &str, agent: &AgentId, body: MessageBody,
     as_user: bool) -> Result<Value, DomainError> {
     if body.text.trim().is_empty() {
         return Err(refused("invalid_input", "message text is empty"));
     }
-    let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
+    let state = domain.state();
     if !state.agents.contains_key(agent) {
         return Err(refused("not_found", "agent does not exist"));
     }
@@ -182,7 +185,7 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
 /// leaves: it reaches the node's Claude inside the turn that runs, or as a turn of its own, and
 /// waits for the host that resumes the session when the host is gone. Its delivery is the
 /// lifecycle's to follow, so it answers `dispatching`, and `reaches` says where it stands.
-fn tell_through_sdk(domain: &DomainRuntime, state: &alondra_domain_rules::DomainState, home: &Path, user: &Actor, name: &str,
+fn tell_through_sdk(domain: &dyn Runtime, state: &alondra_domain_rules::DomainState, home: &Path, user: &Actor, name: &str,
     agent: &AgentId, body: MessageBody, as_user: bool) -> Result<Value, DomainError> {
     let task = message_task(state, agent, body.task_id.as_ref()).ok_or_else(|| match &body.task_id {
         Some(id) => refused("not_assigned", format!("{id} is not this node's task")),
@@ -204,7 +207,7 @@ fn tell_through_sdk(domain: &DomainRuntime, state: &alondra_domain_rules::Domain
     Ok(read_after(domain, user, &body, json!({"delivery_state": State::Dispatching, "reaches": reaches})))
 }
 
-fn tell_about_pr(domain: &DomainRuntime, state: &alondra_domain_rules::DomainState, user: &Actor,
+fn tell_about_pr(domain: &dyn Runtime, state: &alondra_domain_rules::DomainState, user: &Actor,
     task: &alondra_domain_rules::Task, body: &MessageBody, text: &str, command_id: &str) -> Result<bool, DomainError> {
     if matches!(body.kind, Kind::PrQuestion | Kind::PrChanges) {
         let pr = state.pull_requests.get(body.pr_id.as_ref().ok_or_else(|| refused("invalid_input", "pr_id is required"))?)
@@ -228,7 +231,7 @@ fn tell_about_pr(domain: &DomainRuntime, state: &alondra_domain_rules::DomainSta
     Ok(false)
 }
 
-fn tell_scheduled(domain: &DomainRuntime, user: &Actor, body: &MessageBody, task: &alondra_domain_rules::Task,
+fn tell_scheduled(domain: &dyn Runtime, user: &Actor, body: &MessageBody, task: &alondra_domain_rules::Task,
     author: &str, text: &str, command_id: &str) -> Result<Value, DomainError> {
     let mut launch = domain.request_launch(&task.request_id)
         .map_err(|error| refused("storage_unavailable", error.to_string()))?;
@@ -238,7 +241,7 @@ fn tell_scheduled(domain: &DomainRuntime, user: &Actor, body: &MessageBody, task
         return Err(refused("storage_unavailable", "the launch options for the run are unavailable: no message or attachments were sent"));
     }
     let outcome = tell_node(domain, &task.id, author, text, command_id, true, None, launch.as_ref())?;
-    let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
+    let state = domain.state();
     let followup = outcome.created_ids.iter().find_map(|id| state.tasks.get(&TaskId(id.clone())))
         .ok_or_else(|| refused("storage_unavailable", "the saved message task could not be read"))?;
     Ok(read_after(domain, user, body, json!({
@@ -270,21 +273,21 @@ fn reaches(lifecycle: &alondra_domain::TaskLifecycle) -> &'static str {
 
 /// Tells the node of the SDK task `task` `text`, stamped with who sent it and when. A retry with
 /// the same `command_id` tells it once. `from_user` is for the user's own words.
-pub fn tell_sdk_node(domain: &DomainRuntime, task: &alondra_domain_rules::TaskId, author: &str, text: &str, command_id: &str, from_user: bool)
+pub fn tell_sdk_node(domain: &dyn Runtime, task: &alondra_domain_rules::TaskId, author: &str, text: &str, command_id: &str, from_user: bool)
     -> Result<(), DomainError> {
     tell_sdk_node_answering(domain, task, author, text, command_id, from_user, None)
 }
 
 /// Tells the node of the SDK task `task` `text` as `tell_sdk_node` does; `answers` names the
 /// node's own answered card whose answer `text` carries.
-pub fn tell_sdk_node_answering(domain: &DomainRuntime, task: &alondra_domain_rules::TaskId, author: &str, text: &str, command_id: &str,
+pub fn tell_sdk_node_answering(domain: &dyn Runtime, task: &alondra_domain_rules::TaskId, author: &str, text: &str, command_id: &str,
     from_user: bool, answers: Option<alondra_domain_rules::InteractionId>) -> Result<(), DomainError> {
     tell_node(domain, task, author, text, command_id, from_user, answers, None).map(|_| ())
 }
 
-fn tell_node(domain: &DomainRuntime, task: &TaskId, author: &str, text: &str, command_id: &str,
+fn tell_node(domain: &dyn Runtime, task: &TaskId, author: &str, text: &str, command_id: &str,
     from_user: bool, answers: Option<InteractionId>, launch: Option<&crate::domain_store::RequestLaunch>) -> Result<alondra_domain_rules::CommandOutcome, DomainError> {
-    let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
+    let state = domain.state();
     let envelope = alondra_domain_rules::CommandEnvelope {
         protocol_version: alondra_domain_rules::PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
@@ -309,8 +312,8 @@ fn tell_node(domain: &DomainRuntime, task: &TaskId, author: &str, text: &str, co
 
 /// Asks the Agent that owns an open pull request to resolve its conflicts with its base, sent
 /// to its session like any other message about its Task.
-pub async fn resolve_conflicts(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, pr_id: &PrId) -> Result<Value, DomainError> {
-    let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
+pub async fn resolve_conflicts(domain: &dyn Runtime, home: &Path, user: &Actor, name: &str, pr_id: &PrId) -> Result<Value, DomainError> {
+    let state = domain.state();
     let pr = state.pull_requests.get(pr_id).ok_or_else(|| refused("not_found", "PR does not exist"))?;
     if pr.state != alondra_domain_rules::PrState::Open {
         return Err(refused("pr_not_open", format!("{} is no longer open", pr_url(pr))));
@@ -337,7 +340,7 @@ pub fn conflicts_text(name: &str, pr: &alondra_domain_rules::PullRequest, update
 }
 
 /// The same message relayed from a paired device, answered as a local response.
-pub async fn relayed(domain: &DomainRuntime, home: &Path, sender: &str, agent: AgentId, body: Option<&Value>) -> Value {
+pub async fn relayed(domain: &dyn Runtime, home: &Path, sender: &str, agent: AgentId, body: Option<&Value>) -> Value {
     let Some(body) = body.cloned().and_then(|body| serde_json::from_value::<MessageBody>(body).ok()) else {
         return json!({"status": 422, "body": refused("invalid_input", "invalid message")});
     };
@@ -350,7 +353,7 @@ pub async fn relayed(domain: &DomainRuntime, home: &Path, sender: &str, agent: A
 
 /// A message relayed from a paired device to a task no node runs: kept on the task, it reaches
 /// the node that starts it, after what the task was told before.
-pub fn relayed_to_task(domain: &DomainRuntime, home: &Path, sender: &str, task: &TaskId, body: Option<&Value>) -> Value {
+pub fn relayed_to_task(domain: &dyn Runtime, home: &Path, sender: &str, task: &TaskId, body: Option<&Value>) -> Value {
     let Some(body) = body.cloned().and_then(|body| serde_json::from_value::<MessageBody>(body).ok()) else {
         return json!({"status": 422, "body": refused("invalid_input", "invalid message")});
     };
@@ -361,14 +364,14 @@ pub fn relayed_to_task(domain: &DomainRuntime, home: &Path, sender: &str, task: 
     }
 }
 
-fn keep_for_task(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, task: &TaskId, body: MessageBody) -> Result<Value, DomainError> {
+fn keep_for_task(domain: &dyn Runtime, home: &Path, user: &Actor, name: &str, task: &TaskId, body: MessageBody) -> Result<Value, DomainError> {
     if body.text.trim().is_empty() {
         return Err(refused("invalid_input", "message text is empty"));
     }
     if body.task_id.as_ref().is_some_and(|id| id != task) {
         return Err(refused("invalid_input", "the message is about another task"));
     }
-    let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
+    let state = domain.state();
     let task = state.tasks.get(task).ok_or_else(|| refused("not_found", "task does not exist"))?;
     let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
     if tell_about_pr(domain, &state, user, task, &body, &text, &format!("tell-{}", crate::auth::random_hex(16)))? {
@@ -389,7 +392,7 @@ fn keep_for_task(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, 
     Ok(read_after(domain, user, &body, json!({"delivery_state": State::Dispatching, "reaches": reaches(&lifecycle)})))
 }
 
-fn read_after(domain: &DomainRuntime, user: &Actor, body: &MessageBody, mut answer: Value) -> Value {
+fn read_after(domain: &dyn Runtime, user: &Actor, body: &MessageBody, mut answer: Value) -> Value {
     if let (true, Some(interaction)) = (body.mark_read, body.interaction_id.clone()) {
         if let Err(error) = mark_read(domain, user, interaction) {
             answer["mark_read_error"] = json!(error);
@@ -399,12 +402,12 @@ fn read_after(domain: &DomainRuntime, user: &Actor, body: &MessageBody, mut answ
 }
 
 /// What the user wrote to this session while it was in its own terminal, once.
-pub(crate) fn take_held(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> {
-    domain.held.lock_or_recover("the held messages").remove(agent).unwrap_or_default()
+pub(crate) fn take_held(domain: &dyn Runtime, agent: &AgentId) -> Vec<String> {
+    domain.held().lock_or_recover("the held messages").remove(agent).unwrap_or_default()
 }
 
-fn mark_read(domain: &DomainRuntime, user: &Actor, interaction_id: InteractionId) -> Result<(), DomainError> {
-    let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
+fn mark_read(domain: &dyn Runtime, user: &Actor, interaction_id: InteractionId) -> Result<(), DomainError> {
+    let state = domain.state();
     let envelope = CommandEnvelope {
         protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
         command_id: format!("mark-read-{}", crate::auth::random_hex(8)).into(), expected_revision: state.revision,
@@ -488,7 +491,7 @@ mod tests {
         let digest: String = sha2::Sha256::digest(b"brief").iter().map(|b| format!("{b:02x}")).collect();
         let attachment = json!({"id":"brief", "name":"brief.txt", "bytes":5, "content_reference":"files/brief.txt", "content_digest":digest});
         let original = domain.state().unwrap().lifecycle_of(&"weekly-task".into()).unwrap();
-        let answer = relayed_to_task(&domain, &fixture.0, "phone", &"weekly-task".into(), Some(&json!({
+        let answer = relayed_to_task(&*domain, &fixture.0, "phone", &"weekly-task".into(), Some(&json!({
             "text":"Prepare a follow-up", "attachments":[attachment.clone()],
         })));
         assert_eq!(answer["status"], 200, "{answer}");
@@ -576,9 +579,9 @@ mod tests {
             let task_count = state.tasks.len();
             let message = body(json!({"kind":"pr_question", "pr_id":"pr-a", "task_id":"weekly-task", "text":"Explain this change"}));
             if connected {
-                tell_through_sdk(&domain, &state, &fixture.0, &user(), "User", &"scheduled-agent".into(), message, true).unwrap();
+                tell_through_sdk(&*domain, &state, &fixture.0, &user(), "User", &"scheduled-agent".into(), message, true).unwrap();
             } else {
-                keep_for_task(&domain, &fixture.0, &user(), "User", &"weekly-task".into(), message).unwrap();
+                keep_for_task(&*domain, &fixture.0, &user(), "User", &"weekly-task".into(), message).unwrap();
             }
             let state = domain.state().unwrap();
             assert_eq!(state.tasks.len(), task_count, "the PR question belongs to the existing delivery");
@@ -614,7 +617,7 @@ mod tests {
         let observer = rusqlite::Connection::open(crate::domain_store::active_path(&fixture.0)).unwrap();
         observer.execute_batch("CREATE TRIGGER fail_mark_read BEFORE INSERT ON semantic_receipts
             BEGIN SELECT RAISE(ABORT,'injected mark read cause'); END;").unwrap();
-        let error = mark_read(&domain, &user(), "info".into()).unwrap_err();
+        let error = mark_read(&*domain, &user(), "info".into()).unwrap_err();
         assert_eq!(error.code, "storage_unavailable");
         assert_eq!(error.message, "domain transaction could not be completed");
     }
@@ -632,8 +635,8 @@ mod tests {
             task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(), number: 7,
             head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
             allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash] });
-        let node = Node::connect(&domain, "agent-a");
-        let answer = resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap();
+        let node = Node::connect(domain.clone(), "agent-a");
+        let answer = resolve_conflicts(&*domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "handed"}));
         let sent = node.texts();
         assert_eq!(sent.len(), 1);
@@ -641,27 +644,27 @@ mod tests {
         assert!(sent[0].contains("git rebase origin/main") && sent[0].contains("git push --force-with-lease"), "rebase by default: {}", sent[0]);
         assert_eq!(node.lines.lock().unwrap()[0]["as_user"], false, "a notice from Alondra is not the user's words");
         run(user(), "merge", Command::SetBranchUpdate { update: alondra_domain_rules::BranchUpdate::Merge });
-        resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap();
+        resolve_conflicts(&*domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap();
         let sent = node.texts();
         assert!(sent[1].contains("git merge origin/main") && !sent[1].contains("rebase"), "the method the user picked: {}", sent[1]);
-        assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"none".into()).await.unwrap_err().code, "not_found");
+        assert_eq!(resolve_conflicts(&*domain, &fixture.0, &user(), "Ana", &"none".into()).await.unwrap_err().code, "not_found");
         run(Actor::System, "closed", Command::ObservePrState { pr_id: "pr".into(), head: "0123456789abcdef0123456789abcdef01234567".into(),
             base: "main".into(), state: alondra_domain_rules::PrState::Closed, merged_head: None });
-        assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap_err().code, "pr_not_open");
+        assert_eq!(resolve_conflicts(&*domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap_err().code, "pr_not_open");
         assert_eq!(node.texts().len(), 2, "a refusal sends nothing");
     }
 
     #[tokio::test]
     async fn a_lingering_connection_cannot_take_work_for_a_cancelled_task() {
         let (fixture, domain) = world();
-        let node = Node::connect(&domain, "agent-a");
+        let node = Node::connect(domain.clone(), "agent-a");
         let state = domain.state().unwrap();
         let envelope = CommandEnvelope { protocol_version: alondra_domain_rules::PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(), command_id: "cancel".into(), expected_revision: state.revision,
             command: Command::CancelTask { task_id: "t".into(), reason: None } };
         domain.execute(&user(), &envelope, None, || Ok(())).unwrap();
         for message in [json!({"text": "More work", "task_id": "t"}), json!({"text": "More work"})] {
-            let error = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(message), true)
+            let error = deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(message), true)
                 .await.unwrap_err();
             assert_eq!(error.code, "task_not_active");
         }
@@ -691,9 +694,9 @@ mod tests {
     #[tokio::test]
     async fn a_session_without_read_receipts_refuses_user_work_without_claiming_it_was_sent() {
         let (fixture, domain) = world();
-        let node = Node::connect(&domain, "agent-a");
+        let node = Node::connect(domain.clone(), "agent-a");
         let before = domain.state().unwrap();
-        let error = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
+        let error = deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
             body(json!({"text":"Prepare another report", "task_id":"t"})), true).await.unwrap_err();
         assert_eq!(error.code, "message_receipt_unavailable");
         assert!(node.texts().is_empty());
@@ -703,14 +706,14 @@ mod tests {
     #[tokio::test]
     async fn notices_reach_the_connection_without_claiming_user_work() {
         let (fixture, domain) = world();
-        let node = Node::connect(&domain, "agent-a");
+        let node = Node::connect(domain.clone(), "agent-a");
         let before = domain.state().unwrap();
-        let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
+        let answer = deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
             body(json!({"text": "Use the new API", "task_id": "t"})), false).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "handed"}));
         assert_eq!(node.texts(), ["[Task t “Build it”] Use the new API"]);
         assert_eq!(node.lines.lock().unwrap()[0]["as_user"], false);
-        deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
+        deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
             body(json!({"text": "Push your work", "task_id": "t", "from_claude": true})), false).await.unwrap();
         assert_eq!(node.authors(), ["Ana", "Claude, for Ana"], "every message says who sent it");
         let after = domain.state().unwrap();
@@ -720,12 +723,12 @@ mod tests {
     #[tokio::test]
     async fn a_message_the_session_has_not_taken_yet_is_dispatching_and_is_resent_on_the_next_connection() {
         let (fixture, domain) = world();
-        let node = Node::connect(&domain, "agent-a");
+        let node = Node::connect(domain.clone(), "agent-a");
         node.silent.store(true, std::sync::atomic::Ordering::Relaxed);
-        let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), false).await.unwrap();
+        let answer = deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), false).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "dispatching"}));
         domain.live().pushes.detach("agent-a", 1);
-        let again = Node::connect(&domain, "agent-a");
+        let again = Node::connect(domain.clone(), "agent-a");
         tokio::task::yield_now().await;
         assert_eq!(again.texts(), ["hi"], "unacknowledged, so written again");
     }
@@ -733,17 +736,17 @@ mod tests {
     #[tokio::test]
     async fn a_session_whose_turn_stopped_is_refused_instead_of_reported_handed() {
         let (fixture, domain) = world();
-        let node = Node::connect(&domain, "agent-a");
+        let node = Node::connect(domain.clone(), "agent-a");
         let now = alondra_core::now_millis();
         let hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
         domain.connect_node(hello, now);
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "turn.start", "turn_id": "t"})).unwrap(), now);
-        let quiet = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "quiet"})), false).await;
+        let quiet = deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "quiet"})), false).await;
         assert!(quiet.is_ok(), "a quiet turn takes messages however long it has been quiet");
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "tool.start", "tool": "Bash", "tool_use_id": "call"})).unwrap(), now + 1);
         domain.live().mods.set_shell_alive("agent-a", Some(false), now + 2);
         domain.live().mods.set_shell_alive("agent-a", Some(false), now + 3);
-        let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), false).await.unwrap_err();
+        let refused = deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), false).await.unwrap_err();
         assert_eq!(refused.code, "session_stalled");
         assert_eq!(node.texts(), ["quiet"], "nothing more was written down its connection");
     }
@@ -751,11 +754,11 @@ mod tests {
     #[tokio::test]
     async fn a_reply_is_worded_for_its_interaction() {
         let (fixture, domain) = world();
-        let node = Node::connect(&domain, "agent-a");
-        deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
+        let node = Node::connect(domain.clone(), "agent-a");
+        deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
             body(json!({"text": "Yes", "kind": "reply", "interaction_id": "q-1"})), false).await.unwrap();
         assert_eq!(node.texts()[0], "[Reply to q-1] Yes");
-        let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
+        let refused = deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
             body(json!({"text": "Yes", "kind": "pr_changes"})), false).await.unwrap_err();
         assert_eq!(refused.code, "invalid_input");
     }
@@ -763,7 +766,7 @@ mod tests {
     #[tokio::test]
     async fn refusals_send_nothing() {
         let (fixture, domain) = world();
-        let node = Node::connect(&domain, "agent-a");
+        let node = Node::connect(domain.clone(), "agent-a");
         let cases = [
             ("agent-z", json!({"text": "hi"}), "not_found"),
             ("agent-a", json!({"text": "  "}), "invalid_input"),
@@ -772,7 +775,7 @@ mod tests {
             ("agent-b", json!({"text": "hi"}), "session_unreachable"),
         ];
         for (agent, request, code) in cases {
-            let error = deliver(&domain, &fixture.0, &user(), "Ana", &agent.into(), body(request.clone()), false).await.unwrap_err();
+            let error = deliver(&*domain, &fixture.0, &user(), "Ana", &agent.into(), body(request.clone()), false).await.unwrap_err();
             assert_eq!(error.code, code, "{agent} {request}");
         }
         assert!(node.texts().is_empty());
@@ -787,8 +790,8 @@ mod tests {
             expected_revision: state.revision, command: Command::PublishInformation { attachments: vec![], interaction_id: "info-1".into(),
                 scope: alondra_domain_rules::Scope::Task { task_id: "t".into() }, recipient: alondra_domain_rules::Recipient::User, body: "Done".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update") },
         }, None, || Ok(())).unwrap();
-        let _node = Node::connect(&domain, "agent-a");
-        let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
+        let _node = Node::connect(domain.clone(), "agent-a");
+        let answer = deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
             body(json!({"text": "Thanks", "kind": "reply", "interaction_id": "info-1", "mark_read": true})), false).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "handed"}));
         let read = &domain.state().unwrap().interactions[&InteractionId::from("info-1")].payload;
@@ -803,14 +806,14 @@ mod tests {
         std::fs::write(fixture.0.join("files/shot.png"), b"png").unwrap();
         let digest: String = sha2::Sha256::digest(b"png").iter().map(|b| format!("{b:02x}")).collect();
         let attachment = json!({"id": "att-1", "name": "shot.png", "content_digest": digest, "content_reference": "files/shot.png", "bytes": 3});
-        let node = Node::connect(&domain, "agent-a");
-        deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
+        let node = Node::connect(domain.clone(), "agent-a");
+        deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
             body(json!({"text": "Look", "attachments": [attachment]})), false).await.unwrap();
         let sent = node.texts()[0].clone();
         assert!(sent.starts_with("Look\n\nAttached files:"), "{sent}");
         assert!(sent.contains(&fixture.0.join("files/shot.png").display().to_string()), "{sent}");
         let forged = json!({"id": "att-1", "name": "shot.png", "content_digest": "0".repeat(64), "content_reference": "files/shot.png", "bytes": 3});
-        let error = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
+        let error = deliver(&*domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
             body(json!({"text": "Look", "attachments": [forged]})), false).await.unwrap_err();
         assert_eq!(error.code, "invalid_input");
         assert_eq!(node.texts().len(), 1);
@@ -819,9 +822,9 @@ mod tests {
     #[tokio::test]
     async fn a_relayed_message_answers_with_the_local_status() {
         let (fixture, domain) = world();
-        let invalid = relayed(&domain, &fixture.0, "phone", "agent-a".into(), Some(&json!({"txt": "hi"}))).await;
+        let invalid = relayed(&*domain, &fixture.0, "phone", "agent-a".into(), Some(&json!({"txt": "hi"}))).await;
         assert_eq!((invalid["status"].as_u64(), invalid["body"]["code"].as_str()), (Some(422), Some("invalid_input")));
-        let unknown = relayed(&domain, &fixture.0, "phone", "agent-z".into(), Some(&json!({"text": "hi"}))).await;
+        let unknown = relayed(&*domain, &fixture.0, "phone", "agent-z".into(), Some(&json!({"text": "hi"}))).await;
         assert_eq!((unknown["status"].as_u64(), unknown["body"]["code"].as_str()), (Some(404), Some("not_found")));
     }
 

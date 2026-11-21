@@ -20,9 +20,9 @@ pub trait EngineOf {
     fn engine(&self) -> Engine<'_>;
 }
 
-impl<R: Runtime> EngineOf for R {
+impl<R: Runtime + ?Sized> EngineOf for R {
     fn engine(&self) -> Engine<'_> {
-        Engine { runtime: self, port: self.ports().port::<dyn SdkEngine>().expect("the daemon gives the runtime what the SDK hosts ask of the engine") }
+        Engine { runtime: self.as_runtime(), port: self.ports().port::<dyn SdkEngine>().expect("the daemon gives the runtime what the SDK hosts ask of the engine") }
     }
 }
 

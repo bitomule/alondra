@@ -99,12 +99,79 @@ mod tests {
         fn state(&self) -> Arc<DomainState> {
             unreachable!("no extension here reads the state")
         }
+        fn read(&self) -> Arc<alondra_domain_rules::ReadSnapshot> {
+            unreachable!("no extension here reads the index")
+        }
+        fn live_read(&self) -> crate::journal::ReadTransaction<'_> {
+            unreachable!("no extension here reads the journal")
+        }
+        fn store(&self) -> &alondra_foundation::runtime_mutex::RuntimeMutex<Box<dyn crate::journal::Journal>> {
+            unreachable!("no extension here writes the journal")
+        }
+        fn subscribe(&self) -> tokio::sync::watch::Receiver<alondra_domain_rules::Revision> {
+            unreachable!("no extension here waits for a commit")
+        }
+        fn subscribe_snapshots(&self) -> tokio::sync::watch::Receiver<u64> {
+            unreachable!("no extension here waits for a snapshot")
+        }
+        fn subscribe_schedules(&self) -> tokio::sync::watch::Receiver<alondra_domain_rules::Revision> {
+            unreachable!("no extension here waits for a schedule")
+        }
+        fn wake_subscribers(&self) {}
+        fn execute_as_system(&self, _: CommandEnvelope) -> Result<CommandOutcome, crate::journal::StoreError> {
+            unreachable!("no extension here commits")
+        }
+        fn execute_authorized(&self, _: &alondra_domain_rules::Actor, _: &CommandEnvelope, _: Option<crate::journal::TransportIdentity<'_>>, _: Option<&crate::journal::RequestLaunch>, _: &mut dyn FnMut() -> Result<(), crate::journal::StoreError>) -> Result<CommandOutcome, crate::journal::StoreError> {
+            unreachable!("no extension here commits")
+        }
+        fn own_with(&self, _: alondra_store::AuthorityScope, _: &mut dyn FnMut(&mut dyn crate::journal::OwnerJournal) -> Result<(), crate::journal::StoreError>) -> Result<Vec<crate::journal::owner::StagedOutcome>, crate::journal::StoreError> {
+            unreachable!("no extension here commits")
+        }
+        fn own_projected_with(&self, _: alondra_store::AuthorityScope, _: &mut dyn FnMut(&mut dyn crate::journal::OwnerJournal) -> Result<(), crate::journal::StoreError>, _: &mut dyn FnMut(&mut dyn crate::journal::Journal) -> anyhow::Result<()>) -> Result<Vec<crate::journal::owner::StagedOutcome>, crate::journal::StoreError> {
+            unreachable!("no extension here commits")
+        }
+        fn take_seals(&self, _: &alondra_domain_rules::TaskId) -> alondra_store::Committed {
+            unreachable!("no extension here takes seals")
+        }
+        fn wait_for_seals(&self, _: &alondra_domain_rules::TaskId, _: std::time::Duration, _: &dyn Fn() -> bool) -> alondra_store::Committed {
+            unreachable!("no extension here takes seals")
+        }
+        fn pause_for_seals(&self, _: std::time::Duration, _: &dyn Fn() -> bool) {}
+        fn forget_sealed_observations(&self, _: &alondra_domain_rules::TaskId) {}
+        fn held(&self) -> &std::sync::Mutex<std::collections::BTreeMap<alondra_domain_rules::AgentId, Vec<String>>> {
+            unreachable!("no extension here holds messages")
+        }
         fn system_command(&self, _: CommandEnvelope) -> Result<CommandOutcome, DomainError> {
             unreachable!("no extension here commits")
         }
         fn wake_seals(&self) {}
         fn launch_plan(&self, _: &alondra_domain_rules::TaskId) -> Option<alondra_domain_rules::LaunchPlan> {
             None
+        }
+        fn bind_agent(&self, _: &str) -> Result<alondra_foundation::principal::Capability, crate::journal::StoreError> {
+            unreachable!("no extension here issues capabilities")
+        }
+        fn revoke_agent(&self, _: &str) -> Result<(), crate::journal::StoreError> {
+            unreachable!("no extension here revokes capabilities")
+        }
+        fn admit_change(&self, _: &str, _: &str) -> Result<alondra_foundation::principal::Principal, crate::journal::StoreError> {
+            unreachable!("no extension here reads bearers")
+        }
+        fn resolve_bearer(&self, _: &str) -> Result<alondra_foundation::principal::Principal, crate::journal::StoreError> {
+            unreachable!("no extension here reads bearers")
+        }
+        fn agent_capability(&self, _: &str) -> Option<[u8; 32]> {
+            unreachable!("no extension here reads capabilities")
+        }
+        fn revoke_capability(&self, _: &[u8; 32]) -> Result<(), crate::journal::StoreError> {
+            unreachable!("no extension here revokes capabilities")
+        }
+        fn transport_receipt(&self, _: crate::journal::TransportIdentity<'_>, _: &mut dyn FnMut() -> Result<(), crate::journal::StoreError>) -> Result<Option<CommandOutcome>, crate::journal::StoreError> {
+            unreachable!("no extension here reads receipts")
+        }
+        fn before_acknowledge(&self) {}
+        fn read_current_task_context(&self, _: &str, _: &alondra_domain_rules::TaskId, _: Option<&alondra_store::ContextRef>, _: usize) -> Result<alondra_store::ContextPage, DomainError> {
+            unreachable!("no extension here reads a conversation")
         }
     }
 

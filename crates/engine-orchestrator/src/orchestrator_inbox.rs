@@ -399,7 +399,7 @@ fn settle_answers(runtime: &dyn Runtime, state: &DomainState, due: &BTreeSet<Tas
 /// The command that carries out `step`, for the steps one command settles.
 pub fn command_of(step: &Step) -> Option<Command> {
     Some(match step {
-        Step::Tell { id, card, text } | Step::Remind { id, card, text, .. } => crate::domain_runtime::problems::tell_command(id, Some(card.clone()), text.clone()),
+        Step::Tell { id, card, text } | Step::Remind { id, card, text, .. } => alondra_engine_ports::runtime::tell_command(id, Some(card.clone()), text.clone()),
         Step::Withdraw { question } => Command::Withdraw { interaction_id: question.clone() },
         Step::SettleStall { case, task, outcome } => Command::SettleStall { case_id: case.clone(), task_id: task.clone(), outcome: outcome.clone() },
         Step::ReleaseUnreviewed { review, task, note } => Command::SettlePlanReview {
@@ -456,7 +456,7 @@ fn carry_out(runtime: &dyn Runtime, state: &DomainState, step: &Step) -> bool {
 }
 
 fn told(id: &str, card: &SystemCard, text: String) -> Command {
-    crate::domain_runtime::problems::tell_command(id, Some(card.clone()), text)
+    alondra_engine_ports::runtime::tell_command(id, Some(card.clone()), text)
 }
 
 /// Whether `step` creates the card its id names, which must not exist yet.
@@ -828,30 +828,6 @@ mod tests {
     /// answers are settled through the runtime's context alone, never by taking it for the kernel's.
     #[test]
     fn the_clock_settles_what_the_orchestrator_owes_on_any_runtime() {
-        struct Context(std::sync::Arc<DomainRuntime>);
-        impl Runtime for Context {
-            fn ports(&self) -> &alondra_engine_ports::Registry {
-                self.0.ports()
-            }
-            fn extensions(&self) -> &alondra_engine_ports::extensions::Extensions {
-                Runtime::extensions(&*self.0)
-            }
-            fn home(&self) -> &std::path::Path {
-                Runtime::home(&*self.0)
-            }
-            fn state(&self) -> std::sync::Arc<DomainState> {
-                Runtime::state(&*self.0)
-            }
-            fn system_command(&self, envelope: CommandEnvelope) -> Result<alondra_domain_rules::CommandOutcome, alondra_domain_rules::DomainError> {
-                self.0.system_command(envelope)
-            }
-            fn wake_seals(&self) {
-                self.0.wake_seals();
-            }
-            fn launch_plan(&self, task: &TaskId) -> Option<alondra_domain_rules::LaunchPlan> {
-                Runtime::launch_plan(&*self.0, task)
-            }
-        }
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = std::sync::Arc::new(crate::wiring::open(&home).unwrap());
@@ -861,7 +837,7 @@ mod tests {
         settle(&domain);
         let state = domain.state().unwrap();
         use alondra_engine_ports::orchestrator::OrchestratorAnswers as _;
-        Answers.settle_answers(&Context(domain.clone()), &state, &BTreeSet::from(["t".into()]));
+        Answers.settle_answers(&alondra_engine_doubles::runtime::Forwarded(domain.clone()), &state, &BTreeSet::from(["t".into()]));
         assert_eq!(cards(&domain, UNANSWERED_NOTICE_PREFIX), [format!("{UNANSWERED_NOTICE_PREFIX}q-1")]);
     }
 

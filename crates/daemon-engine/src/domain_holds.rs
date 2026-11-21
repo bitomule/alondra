@@ -7,7 +7,7 @@
 //! mode's classifier: it posts the same kind of card, dials again across a daemon restart, and its
 //! card is withdrawn when the hook goes away. An MCP elicitation has no mod answer, so its
 //! settings hook keeps waiting and a hook that goes away withdraws its card.
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::hook_text::{card_subject, elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
 use alondra_domain_rules::{
     clip, without_recommended_suffix, Actor, AgentId, Answer, CardKind, CardSpec, Command, CommandEnvelope,
@@ -70,7 +70,7 @@ fn interaction_id(kind: &str, call: &str) -> InteractionId {
 
 /// An MCP elicitation of a background session working on an active Task is held; a session in the
 /// user's own terminal answers there.
-pub(crate) fn hold_elicitation(domain: &DomainRuntime, payload: &Value, background: bool) -> Result<Option<Held>> {
+pub(crate) fn hold_elicitation(domain: &dyn Runtime, payload: &Value, background: bool) -> Result<Option<Held>> {
     if str_field(payload, "hook_event_name").as_deref() != Some("Elicitation") || !background {
         return Ok(None);
     }
@@ -92,14 +92,14 @@ pub enum Posted {
 /// never falls through to the other plan hooks of the user's machine. Anything else of a session
 /// that is not a background one working on a Task is not held. A card posted again is the card
 /// already open.
-pub fn post(domain: &DomainRuntime, card: &Card, background: bool) -> Result<Posted> {
+pub fn post(domain: &dyn Runtime, card: &Card, background: bool) -> Result<Posted> {
     let (hold, kind) = match card.kind {
         Kind::Question => (Hold::Question, KINDS[0]),
         Kind::Plan => (Hold::Plan, KINDS[1]),
         Kind::Permission => (Hold::Permission, KINDS[2]),
     };
     let id = interaction_id(kind, &card.id);
-    let state = domain.state()?;
+    let state = domain.state();
     if state.interactions.contains_key(&id) {
         return Ok(Posted::Held(id));
     }
@@ -147,8 +147,8 @@ fn capitalized(text: &str) -> String {
 const NO_TASK_FOR_PLAN: &str = "No open Alondra task can review this plan: do not go on with it. Stop.";
 
 /// Why a node's plan whose card stopped waiting is turned down rather than left to Claude Code.
-pub(crate) fn plan_gone(domain: &DomainRuntime, session_id: &str) -> Result<String> {
-    Ok(cancelled_task(&*domain.state()?, session_id)
+pub(crate) fn plan_gone(domain: &dyn Runtime, session_id: &str) -> Result<String> {
+    Ok(cancelled_task(&*domain.state(), session_id)
         .unwrap_or_else(|| "This plan is no longer waiting for the user's review: do not go on with it.".into()))
 }
 
@@ -232,10 +232,10 @@ fn hold_card(hold: Hold, body: &str, options: &[QuestionOption], recommended: Op
     }
 }
 
-fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold, tool: Option<String>, input: Value,
+fn open(domain: &dyn Runtime, session_id: &str, id: InteractionId, hold: Hold, tool: Option<String>, input: Value,
     allow: Option<AllowAlways>, elicitation: Option<&Value>) -> Result<Option<Held>> {
     let agent_id = AgentId(session_id.to_owned());
-    let state = domain.state()?;
+    let state = domain.state();
     let Some(task) = state.tasks.values()
         .find(|task| task.agent_id.as_ref() == Some(&agent_id) && !task.over())
     else {
@@ -415,9 +415,9 @@ fn task_folders<'a>(worktrees: impl Iterator<Item = &'a str>, home: &Path) -> Ve
 
 /// A card Alondra itself puts to the user about the session's open task, with the options it
 /// gives; `None` when the session has no open task.
-pub(crate) fn ask(domain: &DomainRuntime, session_id: &str, body: String, options: Vec<QuestionOption>) -> Result<Option<InteractionId>> {
+pub(crate) fn ask(domain: &dyn Runtime, session_id: &str, body: String, options: Vec<QuestionOption>) -> Result<Option<InteractionId>> {
     let agent_id = AgentId(session_id.to_owned());
-    let state = domain.state()?;
+    let state = domain.state();
     let Some(task) = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent_id) && !task.over()) else {
         return Ok(None);
     };
@@ -433,10 +433,10 @@ pub(crate) fn ask(domain: &DomainRuntime, session_id: &str, body: String, option
 /// The user's answers, one per question and in the order asked, or `None` once the card can no
 /// longer be answered. Questions asked together are given only when every one is answered, so
 /// the node never gets part of them; an answer taken back makes this wait again.
-pub(crate) async fn wait(domain: &DomainRuntime, id: &InteractionId) -> Result<Option<Vec<Answer>>> {
+pub(crate) async fn wait(domain: &dyn Runtime, id: &InteractionId) -> Result<Option<Vec<Answer>>> {
     let mut changed = domain.subscribe();
     loop {
-        let state = domain.state()?;
+        let state = domain.state();
         let Some(interaction) = state.interactions.get(id) else { return Ok(None) };
         let members = state.group_members(interaction);
         if members.iter().any(|member| member.withdrawn) {
@@ -457,8 +457,8 @@ pub(crate) async fn wait(domain: &DomainRuntime, id: &InteractionId) -> Result<O
 
 /// The card stops waiting for an answer; so do the questions asked together with it, answered
 /// or not, since the node will not be given any of the answers.
-pub(crate) fn withdraw(domain: &DomainRuntime, id: &InteractionId) -> Result<()> {
-    let state = domain.state()?;
+pub(crate) fn withdraw(domain: &dyn Runtime, id: &InteractionId) -> Result<()> {
+    let state = domain.state();
     let Some(interaction) = state.interactions.get(id) else { return Ok(()) };
     let open = state.group_members(interaction).into_iter().find(|member| !member.withdrawn
         && matches!(member.payload, InteractionPayload::Question { answer: None, .. }));
@@ -470,8 +470,8 @@ pub(crate) fn withdraw(domain: &DomainRuntime, id: &InteractionId) -> Result<()>
 
 /// No hook survives a daemon restart, so every elicitation still held is withdrawn at start. The
 /// cards the mod holds are not: their helpers dial again and find them.
-pub(crate) fn release_orphans(domain: &DomainRuntime) -> Result<()> {
-    for (id, hold) in &domain.state()?.holds {
+pub(crate) fn release_orphans(domain: &dyn Runtime) -> Result<()> {
+    for (id, hold) in &domain.state().holds {
         if *hold == Hold::Elicitation {
             withdraw(domain, id)?;
         }
@@ -484,8 +484,8 @@ use alondra_engine_ports::admission::asked_by;
 pub use alondra_engine_ports::admission::waits_on_user;
 
 /// The tool call that asked is over, so its cards stop waiting.
-pub fn release_call(domain: &DomainRuntime, session_id: &str, call: &str) -> Result<()> {
-    let state = domain.state()?;
+pub fn release_call(domain: &dyn Runtime, session_id: &str, call: &str) -> Result<()> {
+    let state = domain.state();
     for kind in KINDS {
         let id = interaction_id(kind, call);
         for id in [QuestionGroup::card_id(&id, 1), id] {
@@ -499,8 +499,8 @@ pub fn release_call(domain: &DomainRuntime, session_id: &str, call: &str) -> Res
 
 /// The session's turn was aborted or the session ended: nothing it asked through its mod is
 /// still waiting.
-pub(crate) fn release_session(domain: &DomainRuntime, session_id: &str) -> Result<()> {
-    let state = domain.state()?;
+pub(crate) fn release_session(domain: &dyn Runtime, session_id: &str) -> Result<()> {
+    let state = domain.state();
     for (id, hold) in &state.holds {
         if *hold != Hold::Elicitation && asked_by(&state, id, session_id) {
             withdraw(domain, id)?;
@@ -509,7 +509,7 @@ pub(crate) fn release_session(domain: &DomainRuntime, session_id: &str) -> Resul
     Ok(())
 }
 
-fn execute(domain: &DomainRuntime, state: &DomainState, command: Command) -> Result<()> {
+fn execute(domain: &dyn Runtime, state: &DomainState, command: Command) -> Result<()> {
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
         command_id: format!("hold-{}", crate::auth::random_hex(16)).into(),

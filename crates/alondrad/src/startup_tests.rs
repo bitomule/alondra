@@ -13,7 +13,7 @@ async fn workers_receive_the_configured_admission_gate() {
     config.home = home.to_path_buf();
     config.fast_timing = true;
     let PreparedWorkers(ready) = prepare_workers(&config, domain.clone(), None).await;
-    assert_eq!(ready.admission().snapshot(&ready, 0).unwrap().limit, admission::UNPACED);
+    assert_eq!(ready.admission().snapshot(&*ready, 0).unwrap().limit, admission::UNPACED);
 }
 
 #[tokio::test]
@@ -107,6 +107,34 @@ fn the_daemon_implements_every_port() {
     crate::wire(runtime.ports());
     let daemon = domain_bootstrap::DomainDaemon::over(&home, runtime).unwrap();
     assert_eq!(daemon.domain().ports().missing(), Vec::<&str>::new(), "a port nothing implements");
+}
+
+/// Each piece's ports run on a runtime that is not the kernel's: none is written against the
+/// concrete runtime, so none reaches for it.
+#[test]
+fn the_ports_run_on_a_runtime_that_is_not_the_kernels() {
+    use alondra_engine_ports::admission::{AdmissionEngine, AdmissionGate};
+    use alondra_engine_ports::hosts::SdkHosts;
+    use alondra_engine_ports::orchestrator::OrchestratorEngine;
+    use alondra_engine_ports::sdk::SdkEngine;
+    let home = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    drop(crate::engine::open(&home).unwrap());
+    alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    let runtime = domain_runtime::DomainRuntime::open_unwired_at(&home, &alondra_engine_ports::journal::active_path(&home)).unwrap();
+    crate::wire(runtime.ports());
+    let daemon = domain_bootstrap::DomainDaemon::over(&home, runtime).unwrap();
+    let domain = daemon.domain();
+    let ports = domain.ports();
+    let forwarded = alondra_engine_doubles::runtime::Forwarded(domain.clone());
+
+    assert!(!ports.port::<dyn AdmissionGate>().unwrap().paused_by_user(&forwarded, "s"), "admission");
+    assert!(!ports.port::<dyn SdkHosts>().unwrap().owns(&forwarded, &"a".into()), "sessions");
+    let engine = ports.port::<dyn AdmissionEngine>().unwrap();
+    assert!(!engine.is_launching(&forwarded, &"t".into()), "engine");
+    assert!(!engine.usage_paused(&forwarded), "engine");
+    assert!(!ports.port::<dyn SdkEngine>().unwrap().waits_for_session(&forwarded), "engine");
+    assert!(ports.port::<dyn OrchestratorEngine>().unwrap().usage_pause(&forwarded).is_none(), "engine");
 }
 
 /// The server's wiring and the root's, on an empty registry, leave no port to nothing.

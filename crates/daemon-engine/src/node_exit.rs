@@ -2,25 +2,25 @@
 //! replaced or closed it. Its open tasks go back to not started with no node, and the node closes.
 use crate::live::LiveOf as _;
 use crate::live::Relaunch;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_rules::{AgentId, Command, CommandEnvelope, NodeEvent, TaskId, PROTOCOL_VERSION};
 
 /// Whether the user stopped, killed or deleted the session in Claude agents: its job file says
 /// `stopped`, or the job folder Alondra last saw is gone. A session whose job was never seen is
 /// not known to be closed.
-pub(crate) fn session_ended(domain: &DomainRuntime, session: &str) -> bool {
+pub(crate) fn session_ended(domain: &dyn Runtime, session: &str) -> bool {
     session_ended_in(domain, &crate::watcher::claude_home(), session)
 }
 
 /// `session_ended` with Claude Code's home at `claude_home`.
-pub(crate) fn session_ended_in(domain: &DomainRuntime, claude_home: &std::path::Path, session: &str) -> bool {
+pub(crate) fn session_ended_in(domain: &dyn Runtime, claude_home: &std::path::Path, session: &str) -> bool {
     let known = domain.live().mods.session(session).and_then(|reported| reported.job_dir);
     let Some(dir) = known.or_else(|| crate::job_state::locate(claude_home, session)) else { return false };
     !dir.exists() || crate::job_state::read_in(&dir, session).is_some_and(|job| job.phase == crate::job_state::Phase::Stopped)
 }
 
-pub(crate) fn has_open_task(domain: &DomainRuntime, session: &str) -> bool {
-    domain.state().is_ok_and(|state| open_task(&state, session))
+pub(crate) fn has_open_task(domain: &dyn Runtime, session: &str) -> bool {
+    open_task(&domain.state(), session)
 }
 
 fn open_task(state: &alondra_domain_rules::DomainState, session: &str) -> bool {
@@ -33,7 +33,7 @@ fn open_task(state: &alondra_domain_rules::DomainState, session: &str) -> bool {
 /// the node is kept.
 /// A session whose replacement stopped short because it could not be stopped ends for that
 /// reason, and Alondra starts its tasks' next node by itself.
-pub fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Result<()> {
+pub fn user_closed(domain: &dyn Runtime, session: &str) -> anyhow::Result<()> {
     let cwd = domain.live().mods.session(session).and_then(|reported| reported.cwd);
     let Some(why) = domain.live().take_aborted_replace(session) else {
         take_out(domain, session, "node closed by the user", cwd, Relaunch::AskUser)?;
@@ -49,9 +49,9 @@ pub const REPLACE_ABORTED: &str = "node ended after the orchestrator's replaceme
 
 /// `user_closed` for a session that ends for `reason`; a relaunch of its tasks starts in `cwd`,
 /// by whoever `relaunch` names. The tasks it frees.
-pub fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd: Option<String>, relaunch: Relaunch) -> anyhow::Result<Vec<TaskId>> {
+pub fn take_out(domain: &dyn Runtime, session: &str, reason: &str, cwd: Option<String>, relaunch: Relaunch) -> anyhow::Result<Vec<TaskId>> {
     let agent = AgentId(session.to_owned());
-    let state = domain.state()?;
+    let state = domain.state();
     let name = state.agents.get(&agent).map_or_else(|| format!("node/{}", &session[..session.len().min(8)]), |known| known.name.clone());
     let node = crate::live::ClosedNode { name, cwd, relaunch };
     let released: Vec<_> = state.tasks.values()
@@ -60,7 +60,7 @@ pub fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd: Option
         .collect();
     let mut freed = vec![];
     for task_id in released {
-        let state = domain.state()?;
+        let state = domain.state();
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("release-{}-{}", task_id.0, crate::auth::random_hex(8)).into(),
             expected_revision: state.revision, command: Command::ReleaseTask { task_id: task_id.clone(), reason: reason.into() },

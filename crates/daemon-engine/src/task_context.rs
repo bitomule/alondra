@@ -1,5 +1,5 @@
 use crate::domain_authority::Principal;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_rules::{AgentId, DomainError, TaskId};
 use alondra_store::ContextRef;
 use serde::Deserialize;
@@ -16,11 +16,11 @@ pub struct Query {
 }
 fn page_size() -> usize { 32 }
 
-pub fn read(domain: &DomainRuntime, bearer: &str, query: Query) -> Result<Value, DomainError> {
+pub fn read(domain: &dyn Runtime, bearer: &str, query: Query) -> Result<Value, DomainError> {
     read_after_check(domain, bearer, query, || {})
 }
 
-fn read_after_check(domain: &DomainRuntime, bearer: &str, query: Query, after_check: impl FnOnce()) -> Result<Value, DomainError> {
+fn read_after_check(domain: &dyn Runtime, bearer: &str, query: Query, after_check: impl FnOnce()) -> Result<Value, DomainError> {
     let principal = domain.resolve_bearer(bearer).map_err(|_| DomainError::new("forbidden", "A current node capability is required"))?;
     let Principal::Agent { session_id, task_binding, .. } = principal else { return Err(DomainError::new("forbidden", "Only a task's own node reads its portable conversation")); };
     let read = domain.read();

@@ -24,8 +24,8 @@ mod cancelled_dependencies {
         open_task(&f, "f0");
         create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
         command(&f.domain, user(), Command::CancelTask { task_id: "f0".into(), reason: None });
-        pass(&f.domain, &f.home).await.unwrap();
-        pass(&f.domain, &f.home).await.unwrap();
+        pass(&*f.domain, &f.home).await.unwrap();
+        pass(&*f.domain, &f.home).await.unwrap();
         assert_eq!(launches(&f), 0);
         assert!(problem(&f, "f1").is_none(), "the orchestrator re-plans it first");
 
@@ -43,11 +43,11 @@ mod cancelled_dependencies {
         }
         assert_eq!(notices().len(), 4);
         assert!(problem(&f, "f1").is_none(), "the user is never asked");
-        pass(&f.domain, &f.home).await.unwrap();
+        pass(&*f.domain, &f.home).await.unwrap();
         assert_eq!(launches(&f), 0);
 
         command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies { task_id: "f1".into(), dependencies: Default::default(), stack: None, reason: None });
-        pass(&f.domain, &f.home).await.unwrap();
+        pass(&*f.domain, &f.home).await.unwrap();
         assert_eq!(launches(&f), 1, "the orchestrator let it start without the cancelled task");
     }
 
@@ -68,7 +68,7 @@ mod cancelled_dependencies {
         rest(&f);
         assert!(f.domain.state().unwrap().interactions[&card.id].withdrawn, "the card no longer asks anything");
         assert!(problem(&f, "f1").is_none());
-        pass(&f.domain, &f.home).await.unwrap();
+        pass(&*f.domain, &f.home).await.unwrap();
         assert_eq!(launches(&f), 0, "it waits for its replacement");
         assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::WaitingDependency);
         let before = told(&f).len();
@@ -101,7 +101,7 @@ mod cancelled_dependencies {
         create(&f, "after", &[], Some(&plan(&f, "app/after")));
         command(&f.domain, user(), Command::SetRelations { task_id: "after".into(), delivered_dependencies: ["a".into()].into(), blocks: Default::default() });
         command(&f.domain, user(), Command::CancelTask { task_id: "a".into(), reason: None });
-        pass(&f.domain, &f.home).await.unwrap();
+        pass(&*f.domain, &f.home).await.unwrap();
         assert!(problem(&f, "after").is_none());
         for _ in 0..4 {
             rest(&f);
@@ -109,7 +109,7 @@ mod cancelled_dependencies {
         assert!(problem(&f, "after").is_none(), "the user is never asked");
         command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "after".into(), reason: None });
         assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("after")].state, TaskState::Cancelled);
-        pass(&f.domain, &f.home).await.unwrap();
+        pass(&*f.domain, &f.home).await.unwrap();
         assert_eq!(launches(&f), 0);
     }
 }

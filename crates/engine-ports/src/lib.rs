@@ -25,9 +25,11 @@ pub mod sdk;
 pub mod usage;
 pub mod worktrees;
 mod registry;
+pub mod runtime;
 
 pub use extensions::extension;
-pub use registry::{Registry, Runtime};
+pub use registry::Registry;
+pub use runtime::{AsRuntime, Runtime};
 
 #[cfg(test)]
 #[path = "../../test_support.rs"]

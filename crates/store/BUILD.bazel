@@ -11,7 +11,7 @@ port_crate(
     compile_data = ["src/controls.sql", "src/controls_before_mcp.sql", "src/controls_before_force_stop.sql", "src/controls_before_clear_auth.sql", "src/observations_before_retention.sql", "src/inputs_and_commands_before_compaction.sql", "src/cards_before_orchestrator.sql", "src/schema.sql"],
     crate_name = "alondra_store",
     version = "0.1.0",
-    test_visibility = ["//crates/provider-conformance:__pkg__"],
+    test_visibility = ["//crates/engine-doubles:__pkg__", "//crates/provider-conformance:__pkg__"],
     deps = ["//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract"] + all_crate_deps(normal = True),
 )
 

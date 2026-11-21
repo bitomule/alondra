@@ -6,12 +6,14 @@
 //! and its exit seen by the process's identity, the SDK execution admitted in the transaction
 //! that records it, then the old node closed. A daemon that comes back goes on from the last step
 //! recorded, so no step's effect happens twice, and the task never has two live owners.
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::engine::EngineOf as _;
 use alondra_engine_kernel::bg_sessions::{EVERY, HandoversOf as _, handover_of};
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::domain_store::{Handover, HandoverProcess, HandoverStep};
 use alondra_domain_rules::*;
 use serde::Serialize;
@@ -80,10 +82,10 @@ fn judge_node(task: &Task) -> Verdict {
 
 /// Takes `agent`'s move as far as the facts let it: from the step recorded to the end, or to a
 /// step that waits for a fact (the node at rest again). An error leaves the move at its step.
-pub(crate) async fn advance(domain: &Arc<DomainRuntime>, agent: &AgentId) -> Result<HandoverStep, String> {
+pub(crate) async fn advance(domain: &Arc<dyn Runtime>, agent: &AgentId) -> Result<HandoverStep, String> {
     let _one = domain.handovers().moving.lock().await;
     loop {
-        let handover = handover_of(domain, agent).ok_or_else(|| format!("{agent} has no move"))?;
+        let handover = handover_of(&**domain, agent).ok_or_else(|| format!("{agent} has no move"))?;
         let step = handover.step;
         if *domain.handovers().crash_after.lock().unwrap() == Some(step) && step != HandoverStep::SdkAdmitted {
             return Err(format!("the daemon died after {step:?}"));
@@ -103,7 +105,7 @@ pub(crate) async fn advance(domain: &Arc<DomainRuntime>, agent: &AgentId) -> Res
 
 /// Stops the `claude --bg` process of the move and records its exit, seen by its identity: the
 /// process seen at the plan and any Claude Code lists now must both be gone.
-async fn stop(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<bool, String> {
+async fn stop(domain: &Arc<dyn Runtime>, handover: &Handover) -> Result<bool, String> {
     let node = &handover.node;
     let sessions = domain.handovers().sessions();
     let mut processes: Vec<HandoverProcess> = handover.plan.process.into_iter().collect();
@@ -117,18 +119,18 @@ async fn stop(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<bool, 
     if let Some(listed) = sessions.listed(&node.0).await?.filter(|listed| sessions.alive(listed)) {
         return Err(format!("Claude Code still runs {node} as pid {}", listed.pid));
     }
-    domain.store.lock_or_exit("the domain store").record_bg_stopped(node, &handover.task, processes.first().copied())
+    domain.store().lock_or_exit("the domain store").record_bg_stopped(node, &handover.task, processes.first().copied())
         .map_err(|error| format!("recording that the claude --bg process stopped: {error:#}"))?;
     Ok(true)
 }
 
 /// Admits the SDK execution that resumes the node's session with the move's input, and records the
 /// admission in the same transaction; its owner starts at once.
-async fn admit(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), String> {
+async fn admit(domain: &Arc<dyn Runtime>, handover: &Handover) -> Result<(), String> {
     let (backend, runtime) = domain.sdk().ok_or("this daemon has no SDK backend")?;
     let backend = backend.clone();
     let plugin = domain.ports().plugins().node(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
-    let state = domain.state().map_err(|error| format!("{error:#}"))?;
+    let state = domain.state();
     let task = state.tasks.get(&handover.task).ok_or("the task is gone")?;
     let options = alondra_daemon_engine_model::LaunchOptions {
         provider: alondra_core::accounts::Provider::Claude,
@@ -159,7 +161,7 @@ async fn admit(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), S
 
 /// Makes sure the SDK node runs the task, hands the outbox message the move carried, closes the
 /// old node and records the end of the move.
-async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), String> {
+async fn finish(domain: &Arc<dyn Runtime>, handover: &Handover) -> Result<(), String> {
     let agent = handover.agent.clone().ok_or("the admission names no SDK node")?;
     if !domain.owns_sdk_host(&agent) {
         let (backend, runtime) = domain.sdk().ok_or("this daemon has no SDK backend")?;
@@ -167,7 +169,7 @@ async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), 
         let plugin = domain.ports().plugins().node(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
         let task = handover.task.clone();
         let driver = tokio::task::spawn_blocking(move || {
-            if crate::sdk_owner::host_started(&backend, &runtime, &task) {
+            if crate::sdk_owner::host_started(&backend, &*runtime, &task) {
                 crate::sdk_owner::adopt(runtime, &backend, task, Some(&plugin))
             } else {
                 crate::sdk_owner::launch_admitted(runtime, &backend, task, &plugin)
@@ -179,7 +181,7 @@ async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), 
         domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
     }
     let node = &handover.node;
-    let mut store = domain.store.lock_or_exit("the domain store");
+    let mut store = domain.store().lock_or_exit("the domain store");
     if let Some(id) = handover.plan.outbox {
         store.hand_carried_message(id).map_err(|error| format!("handing the message the move carried: {error:#}"))?;
     }
@@ -190,16 +192,16 @@ async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), 
     domain.engine().session_ended(node).map_err(|error| format!("ending the old node's session: {error:#}"))?;
     domain.engine().node_removed(&node.0);
     domain.engine().forget_ended_session(&node.0).map_err(|error| format!("{error:#}"))?;
-    domain.store.lock_or_exit("the domain store").record_handover_done(node, &handover.task)
+    domain.store().lock_or_exit("the domain store").record_handover_done(node, &handover.task)
         .map_err(|error| format!("recording the end of the move: {error:#}"))?;
     log!("{node} ({}) moved to the Agent SDK: {agent} resumes its Claude session", handover.task);
     Ok(())
 }
 
 /// Every task in progress and what the move does with it, without doing anything.
-pub fn dry_run(domain: &DomainRuntime) -> anyhow::Result<Vec<Row>> {
-    let state = domain.state()?;
-    let handovers = domain.store.lock_or_exit("the domain store").handovers()?;
+pub fn dry_run(domain: &dyn Runtime) -> anyhow::Result<Vec<Row>> {
+    let state = domain.state();
+    let handovers = domain.store().lock_or_exit("the domain store").handovers()?;
     let mut rows = vec![];
     for task in state.tasks.values().filter(|task| !task.state.terminal() && !task.archived) {
         let node = task.agent_id.as_ref();
@@ -218,7 +220,7 @@ pub fn dry_run(domain: &DomainRuntime) -> anyhow::Result<Vec<Row>> {
 }
 
 /// Goes on with every move a previous daemon left. Runs only with an SDK backend.
-pub async fn run(domain: Arc<DomainRuntime>) {
+pub async fn run(domain: Arc<dyn Runtime>) {
     if domain.sdk().is_none() {
         return;
     }
@@ -232,8 +234,8 @@ pub async fn run(domain: Arc<DomainRuntime>) {
     }
 }
 
-async fn tick(domain: &Arc<DomainRuntime>) {
-    let open: Vec<AgentId> = domain.store.lock_or_exit("the domain store").handovers().unwrap_or_default().into_iter()
+async fn tick(domain: &Arc<dyn Runtime>) {
+    let open: Vec<AgentId> = domain.store().lock_or_exit("the domain store").handovers().unwrap_or_default().into_iter()
         .filter(|handover| handover.step != HandoverStep::Done).map(|handover| handover.node).collect();
     for node in open {
         if let Err(why) = advance(domain, &node).await {

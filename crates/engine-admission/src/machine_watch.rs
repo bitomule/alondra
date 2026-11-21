@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use alondra_engine_ports::disk::Disk;
 use std::time::Duration;
 
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::machine_state::{MacState, NoRoom};
 use alondra_engine_ports::usage::Alerts;
 
@@ -879,9 +879,9 @@ impl MachineWatch {
 
 /// The nodes still waiting: a node that took another turn since it declared, or that the user
 /// closed, went on and is forgotten.
-fn waiters(domain: &DomainRuntime) -> Vec<Waiter> {
+fn waiters(domain: &dyn Runtime) -> Vec<Waiter> {
     let watch = &domain.machine_watch();
-    let state = domain.state().ok();
+    let state = Some(domain.state());
     let mut gone = vec![];
     let mut waiting = vec![];
     for (session, declared) in watch.declared() {
@@ -903,8 +903,8 @@ fn waiters(domain: &DomainRuntime) -> Vec<Waiter> {
 
 /// Machine cards still open that are not the open incident's card, such as the ones an earlier
 /// daemon raised for a wait no gauge measured: none of them asks the user anything real.
-fn withdraw_strays(domain: &DomainRuntime) {
-    let Ok(state) = domain.state() else { return };
+fn withdraw_strays(domain: &dyn Runtime) {
+    let state = domain.state();
     let current = domain.machine_watch().incident().filter(|incident| incident.cause != MachineCause::Declared).and_then(|incident| incident.card);
     for (id, card) in &state.interactions {
         let open = !card.withdrawn && matches!(card.payload, alondra_domain_rules::InteractionPayload::Question { answer: None, .. });
@@ -916,16 +916,16 @@ fn withdraw_strays(domain: &DomainRuntime) {
 }
 
 /// The answer "I've fixed it" on the open card, taken once.
-fn fixed(domain: &DomainRuntime, incident: Option<&Incident>) -> bool {
+fn fixed(domain: &dyn Runtime, incident: Option<&Incident>) -> bool {
     use alondra_domain_rules::{InteractionId, InteractionPayload};
     let Some(card) = incident.and_then(|incident| incident.card.as_ref()) else { return false };
-    let Ok(state) = domain.state() else { return false };
+    let state = domain.state();
     matches!(state.interactions.get(&InteractionId(card.clone())).map(|card| &card.payload),
         Some(InteractionPayload::Question { answer: Some(answer), .. }) if answer.option_id == MACHINE_FIXED_OPTION)
 }
 
 /// Carries out one step's actions.
-async fn act(domain: &std::sync::Arc<DomainRuntime>, _alerts: &impl Alerts, actions: Vec<Action>) {
+async fn act(domain: &std::sync::Arc<dyn Runtime>, _alerts: &impl Alerts, actions: Vec<Action>) {
     for action in actions {
         match action {
             Action::Log { id, card } => {
@@ -947,7 +947,7 @@ async fn act(domain: &std::sync::Arc<DomainRuntime>, _alerts: &impl Alerts, acti
 
 /// A new sample of the Mac: kept in the samples file, and when memory gains or loses room for one
 /// more node, one line in the log and a look of the gate.
-pub fn pace(domain: &DomainRuntime, machine: &Machine) {
+pub fn pace(domain: &dyn Runtime, machine: &Machine) {
     if let Some(threads) = domain.machine_watch().sample_threads.lock_or_recover("the sampling threads").as_mut() {
         threads.push(std::thread::current().id());
     }
@@ -959,7 +959,7 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
         Err(error) => watch.nodes_unavailable(&error),
     }
     let mac = watch.mac();
-    let working = domain.state().map(|state| crate::admission::working_projects(domain, &state)).unwrap_or_default();
+    let working = crate::admission::working_projects(domain, &domain.state());
     let usable = disk_space(machine).usable();
     let measured_disk = valid_disk(disk_space(machine));
     let freed = measured_disk && watch.measure_peaks(usable, &working, now);
@@ -967,7 +967,7 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
         domain.admission().poke();
     }
     if let Some(home) = watch.home() {
-        let reserving = domain.state().map(|state| crate::admission::reserving_tasks(&state, working.keys())).unwrap_or_default();
+        let reserving = crate::admission::reserving_tasks(&domain.state(), working.keys());
         let disk = measured_disk.then(|| (usable, watch.disk_reserved(&reserving)));
         crate::machine_state::record(&home.join(crate::machine_state::SAMPLES_DIR), now, &mac, working.len(), disk);
     }
@@ -984,7 +984,7 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
 
 /// One look at a sample of the machine: the incident it opens, keeps or ends, and the actions that
 /// follow. A sample that measures space on the disk takes over the executions that found it full.
-pub fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
+pub fn look(domain: &dyn Runtime, machine: Machine) -> Vec<Action> {
     let watch = &domain.machine_watch();
     watch.record().volume_readings_fresh = false;
     pace(domain, &machine);
@@ -1043,18 +1043,18 @@ fn has_space(machine: &Machine, incident: Option<&Incident>) -> bool {
 }
 
 /// Looks at the machine on every sample and whenever a node declares a wait or the user answers.
-pub async fn run(domain: std::sync::Arc<DomainRuntime>, gauges: alondra_daemon_engine_machine::machine::Gauges, alerts: impl Alerts) {
+pub async fn run(domain: std::sync::Arc<dyn Runtime>, gauges: alondra_daemon_engine_machine::machine::Gauges, alerts: impl Alerts) {
     watch(domain, move || gauges.lock_or_recover("the machine gauges").as_ref().map(|(machine, _, _)| machine.clone()), alerts, TICK).await
 }
 
-async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Option<Machine>, alerts: impl Alerts, tick: Duration) {
+async fn watch(domain: std::sync::Arc<dyn Runtime>, sample: impl Fn() -> Option<Machine>, alerts: impl Alerts, tick: Duration) {
     let starting = domain.clone();
-    tokio::task::spawn_blocking(move || withdraw_strays(&starting)).await.expect("machine startup worker failed");
+    tokio::task::spawn_blocking(move || withdraw_strays(&*starting)).await.expect("machine startup worker failed");
     let mut cards = domain.subscribe();
     loop {
         if let Some(machine) = sample() {
             let measuring = domain.clone();
-            let actions = tokio::task::spawn_blocking(move || look(&measuring, machine)).await.expect("machine watch worker failed");
+            let actions = tokio::task::spawn_blocking(move || look(&*measuring, machine)).await.expect("machine watch worker failed");
             act(&domain, &alerts, actions).await;
         }
         tokio::select! {
@@ -1183,16 +1183,16 @@ mod tests {
         watch.give_volumes(vec![(cache, space(30 * GB))]);
         let base = now_millis();
         let unknown = |at| Machine { at, disk_total: 0, disk_available: 0, ..machine(0, 60) };
-        let _ = look(&domain, unknown(base));
+        let _ = look(&*domain, unknown(base));
         assert_eq!(watch.record().boot_disk, None);
         assert!(watch.disk_room(&BTreeMap::new(), None, base).is_some(), "a healthy external volume is not a system disk measurement");
 
-        let _ = look(&domain, Machine { at: base + SAMPLE, ..machine(100 * GB, 60) });
+        let _ = look(&*domain, Machine { at: base + SAMPLE, ..machine(100 * GB, 60) });
         assert!(watch.disk_room(&BTreeMap::new(), None, base + SAMPLE).is_none());
-        let _ = look(&domain, Machine { at: base + 2 * SAMPLE, ..machine(0, 60) });
+        let _ = look(&*domain, Machine { at: base + 2 * SAMPLE, ..machine(0, 60) });
         assert!(watch.disk_room(&BTreeMap::new(), None, base + 2 * SAMPLE).is_some());
         for at in [base + 3 * SAMPLE, base + 4 * SAMPLE] {
-            let _ = look(&domain, unknown(at));
+            let _ = look(&*domain, unknown(at));
             assert_eq!(watch.incident().expect("unknown system disk cannot close its incident").healthy, 0);
             assert!(watch.disk_room(&BTreeMap::new(), None, at).is_some(), "a missing system probe cannot recover a low system disk");
         }
@@ -1591,11 +1591,11 @@ mod tests {
             watch.record().volumes.insert(mount.clone());
             watch.give_volumes(vec![(mount.clone(), space(GB))]);
             let reading = |at, free: Option<u64>| Machine { at, disk_total: if free.is_some() { 500 * GB } else { 0 }, disk_available: free.unwrap_or(0), ..machine(0, 60) };
-            let _ = look(&domain, reading(SAMPLE, boot));
+            let _ = look(&*domain, reading(SAMPLE, boot));
             assert_eq!(watch.record().incident_volume.as_ref(), Some(&mount));
             assert!(watch.disk_room(&BTreeMap::new(), None, SAMPLE).is_some());
             if boot == Some(12 * GB) {
-                let _ = look(&domain, reading(2 * SAMPLE, Some(14 * GB)));
+                let _ = look(&*domain, reading(2 * SAMPLE, Some(14 * GB)));
                 assert!(watch.disk_room(&BTreeMap::new(), None, 2 * SAMPLE).is_some());
             }
             if other {
@@ -1603,7 +1603,7 @@ mod tests {
                 watch.record().volumes.insert(other_mount.clone());
             }
             watch.give_volumes(if other { vec![(other_mount, space(GB))] } else { vec![] });
-            let actions = look(&domain, reading(3 * SAMPLE, None));
+            let actions = look(&*domain, reading(3 * SAMPLE, None));
             assert!(actions.iter().any(|action| matches!(action, Action::Withdraw(_))), "confirmed absence retires only the absent volume's incident");
             assert_eq!(watch.disk_room(&BTreeMap::new(), None, 3 * SAMPLE).is_some(), held, "own budget and other volumes retain their independent restrictions");
             if !other { assert!(watch.incident().is_none()); }
@@ -1639,22 +1639,22 @@ mod tests {
         watch.record().volumes.insert(mount.clone());
         watch.declare("waiting-node", None, "disk full", 0, 0);
         watch.give_volumes(vec![(mount.clone(), space(GB))]);
-        let _ = look(&domain, Machine { at: SAMPLE, ..machine(100 * GB, 60) });
+        let _ = look(&*domain, Machine { at: SAMPLE, ..machine(100 * GB, 60) });
         assert_eq!(watch.incident().unwrap().healthy, 0);
         watch.give_volumes(vec![(mount.clone(), space(30 * GB))]);
-        let _ = look(&domain, Machine { at: 2 * SAMPLE, ..machine(100 * GB, 60) });
+        let _ = look(&*domain, Machine { at: 2 * SAMPLE, ..machine(100 * GB, 60) });
         assert_eq!(watch.incident().unwrap().healthy, 1);
         for (index, mounts) in [Some(vec![mount.clone()]), None].into_iter().enumerate() {
             watch.record().candidates = Candidates::Probed { mounts, spaces: vec![] };
-            let actions = look(&domain, Machine { at: (index as Millis + 3) * SAMPLE, ..machine(100 * GB, 60) });
+            let actions = look(&*domain, Machine { at: (index as Millis + 3) * SAMPLE, ..machine(100 * GB, 60) });
             assert_eq!(watch.incident().expect("failed readings cannot recover the incident").healthy, 0);
             assert!(!actions.iter().any(|action| matches!(action, Action::Release(_))));
             assert!(watch.disk_room(&BTreeMap::new(), None, 0).is_some());
         }
         watch.give_volumes(vec![(mount, space(30 * GB))]);
-        let _ = look(&domain, Machine { at: 5 * SAMPLE, ..machine(100 * GB, 60) });
+        let _ = look(&*domain, Machine { at: 5 * SAMPLE, ..machine(100 * GB, 60) });
         assert_eq!(watch.incident().unwrap().healthy, 1);
-        let actions = look(&domain, Machine { at: 6 * SAMPLE, ..machine(100 * GB, 60) });
+        let actions = look(&*domain, Machine { at: 6 * SAMPLE, ..machine(100 * GB, 60) });
         assert!(watch.incident().is_none());
         assert!(actions.iter().any(|action| matches!(action, Action::Release(_))));
         assert_eq!(watch.disk_room(&BTreeMap::new(), None, 0), None);
@@ -1739,7 +1739,7 @@ mod tests {
         watch.measure_volumes(&t1, 2);
         watch.declare("agent-t1", None, "the build ran out of disk", 0, 3);
 
-        let actions = look(&domain, machine(19 * GB, 50));
+        let actions = look(&*domain, machine(19 * GB, 50));
         let incident = watch.incident().expect("the volume builds write to is nearly full");
         assert_eq!(incident.cause, MachineCause::Disk);
         assert_eq!(raised(&actions)[0].text(Lang::Es).0, "Libera espacio en disco: quedan 659 MB en BuildCache");
@@ -2039,7 +2039,7 @@ mod tests {
         }
     }
 
-    fn world() -> (Home, Arc<DomainRuntime>) {
+    fn world() -> (Home, Arc<dyn Runtime>) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::wiring::open(&home).unwrap());
@@ -2054,14 +2054,14 @@ mod tests {
         }
     }
 
-    fn open_machine_cards(domain: &DomainRuntime) -> Vec<alondra_domain_rules::Interaction> {
-        let state = domain.state().unwrap();
+    fn open_machine_cards(domain: &dyn Runtime) -> Vec<alondra_domain_rules::Interaction> {
+        let state = domain.state();
         state.interactions.values().filter(|card| card.system_card == Some(SystemCard::Machine) && !card.withdrawn
             && matches!(card.payload, InteractionPayload::Question { answer: None, .. })).cloned().collect()
     }
 
-    fn orchestrator_inbox(domain: &DomainRuntime) -> Vec<String> {
-        domain.store.lock().unwrap().pending_messages().unwrap().iter()
+    fn orchestrator_inbox(domain: &dyn Runtime) -> Vec<String> {
+        domain.store().lock().unwrap().pending_messages().unwrap().iter()
             .filter(|message| message.recipient_kind == "orchestrator")
             .map(|message| message.message.clone()).collect()
     }
@@ -2113,7 +2113,7 @@ mod tests {
         }
     }
 
-    fn watching(domain: &Arc<DomainRuntime>, clock: &Clock, machine: impl Fn(Millis) -> Machine + Send + 'static, told: &Told) -> tokio::task::JoinHandle<()> {
+    fn watching(domain: &Arc<dyn Runtime>, clock: &Clock, machine: impl Fn(Millis) -> Machine + Send + 'static, told: &Told) -> tokio::task::JoinHandle<()> {
         tokio::spawn(watch(domain.clone(), clock.source(machine), told.clone(), Duration::from_millis(1)))
     }
 
@@ -2128,17 +2128,17 @@ mod tests {
         let watcher = watching(&domain, &clock, move |at| Machine { at, ..machine(*reading.lock().unwrap(), 50) }, &told);
         clock.samples(1).await;
         assert!(domain.machine_watch().incident().is_some());
-        assert!(open_machine_cards(&domain).is_empty());
+        assert!(open_machine_cards(&*domain).is_empty());
         clock.samples(5).await;
-        assert!(open_machine_cards(&domain).is_empty());
+        assert!(open_machine_cards(&*domain).is_empty());
         assert!(told.0.lock().unwrap().is_empty());
-        assert!(orchestrator_inbox(&domain).is_empty());
+        assert!(orchestrator_inbox(&*domain).is_empty());
         *disk.lock().unwrap() = 50 * GB;
         clock.samples(HEALTHY_SAMPLES as Millis).await;
         watcher.abort();
         assert!(domain.machine_watch().incident().is_none());
         assert!(domain.machine_watch().declared().is_empty());
-        assert!(open_machine_cards(&domain).is_empty());
+        assert!(open_machine_cards(&*domain).is_empty());
         assert!(told.0.lock().unwrap().is_empty());
     }
 
@@ -2151,8 +2151,8 @@ mod tests {
         clock.samples(10).await;
         watcher.abort();
         assert!(domain.machine_watch().incident().is_none());
-        assert!(open_machine_cards(&domain).is_empty());
-        assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
+        assert!(open_machine_cards(&*domain).is_empty());
+        assert!(orchestrator_inbox(&*domain).is_empty(), "{:?}", orchestrator_inbox(&*domain));
         assert!(told.0.lock().unwrap().is_empty());
     }
 
@@ -2162,8 +2162,8 @@ mod tests {
         let options = || vec![alondra_domain_rules::QuestionOption { id: "x".into(), label: "x".into(), description: None }];
         domain.raise_worded_problem("machine-setup", None, "setup", "Choose the setup".into(), "Two ways to set it up".into(), "{}".into(), options(), None).unwrap();
         domain.raise_worded_problem("machine-1", Some(SystemCard::Machine), MACHINE_CAUSE, "Free up memory".into(), "Nodes wait".into(), "{}".into(), options(), None).unwrap();
-        withdraw_strays(&domain);
-        let state = domain.state().unwrap();
+        withdraw_strays(&*domain);
+        let state = domain.state();
         assert!(!state.interactions[&"machine-setup".into()].withdrawn, "a card is not a machine card by its id");
         assert!(state.interactions[&"machine-1".into()].withdrawn, "a machine card no incident shows is withdrawn");
     }
@@ -2171,11 +2171,11 @@ mod tests {
     #[tokio::test]
     async fn recording_a_machine_incident_does_not_write_the_domain_or_push() {
         let (_home, domain) = world();
-        let before = domain.state().unwrap();
+        let before = domain.state();
         let told = Told::default();
         let (_, actions) = step(None, &machine(0, 50), &[], false, 0);
         act(&domain, &told, actions).await;
-        let after = domain.state().unwrap();
+        let after = domain.state();
         assert_eq!(after.revision, before.revision);
         assert_eq!(after.interactions, before.interactions);
         assert!(told.0.lock().unwrap().is_empty());
@@ -2239,10 +2239,10 @@ mod tests {
     fn a_node_that_took_another_turn_no_longer_waits() {
         let (_home, domain) = world();
         domain.machine_watch().declare("s", None, "RAM", 0, now_millis());
-        assert_eq!(waiters(&domain).len(), 1);
-        crate::wiring::engine(&domain).script().turns.insert("s".into(), 1);
-        assert!(waiters(&domain).is_empty());
-        assert!(waiters(&domain).is_empty(), "and it is forgotten");
+        assert_eq!(waiters(&*domain).len(), 1);
+        crate::wiring::engine(&*domain).script().turns.insert("s".into(), 1);
+        assert!(waiters(&*domain).is_empty());
+        assert!(waiters(&*domain).is_empty(), "and it is forgotten");
     }
 
     fn pressed(at: Millis, under: bool) -> Machine {
@@ -2250,7 +2250,7 @@ mod tests {
         Machine { at, memory_pressure: Some(if under { MemoryPressure::Critical } else { MemoryPressure::Normal }), ..machine(100 * GB, free) }
     }
 
-    fn holds(domain: &DomainRuntime, now: Millis) -> bool {
+    fn holds(domain: &dyn Runtime, now: Millis) -> bool {
         let head = crate::admission::Waiting { key: crate::admission::Key::Task("t".into()), priority: Default::default(), resuming: false, since: 0 };
         crate::admission::decide(&head, 0, 4, &domain.machine_watch().mac(), 0, None, 0, now).is_err()
     }
@@ -2266,20 +2266,20 @@ mod tests {
         let watcher = watching(&domain, &clock, move |at| pressed(at, reading.load(std::sync::atomic::Ordering::SeqCst)), &told);
 
         clock.sample_until(2 * MIN).await;
-        assert!(holds(&domain, 2 * MIN), "the gate holds starts while memory has no room");
+        assert!(holds(&*domain, 2 * MIN), "the gate holds starts while memory has no room");
         clock.sample_until(60 * MIN).await;
-        assert!(holds(&domain, 60 * MIN));
+        assert!(holds(&*domain, 60 * MIN));
         assert!(domain.machine_watch().incident().is_none());
-        assert!(open_machine_cards(&domain).is_empty(), "{:?}", open_machine_cards(&domain));
+        assert!(open_machine_cards(&*domain).is_empty(), "{:?}", open_machine_cards(&*domain));
         assert!(told.0.lock().unwrap().is_empty(), "no push: {:?}", told.0.lock().unwrap());
-        assert!(orchestrator_inbox(&domain).is_empty(), "pacing asks nothing of the orchestrator: {:?}", orchestrator_inbox(&domain));
+        assert!(orchestrator_inbox(&*domain).is_empty(), "pacing asks nothing of the orchestrator: {:?}", orchestrator_inbox(&*domain));
 
         under.store(false, std::sync::atomic::Ordering::SeqCst);
         clock.sample_until(62 * MIN).await;
         watcher.abort();
-        assert!(!holds(&domain, 62 * MIN), "the gate lets nodes start and resume once memory is back");
-        assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
-        let state = domain.state().unwrap();
+        assert!(!holds(&*domain, 62 * MIN), "the gate lets nodes start and resume once memory is back");
+        assert!(orchestrator_inbox(&*domain).is_empty(), "{:?}", orchestrator_inbox(&*domain));
+        let state = domain.state();
         let cards = state.interactions.values().filter(|card| card.system_card == Some(SystemCard::Machine) && matches!(card.payload, InteractionPayload::Question { .. })).count();
         assert_eq!(cards, 0, "never a machine card, open or withdrawn");
         assert!(told.0.lock().unwrap().is_empty());
@@ -2296,15 +2296,15 @@ mod tests {
         domain.raise_worded_problem("machine-1000", Some(SystemCard::Machine), MACHINE_CAUSE, "Free up memory: macOS reports memory pressure (38% free) with a single node working".into(), "something outside Alondra uses the memory".into(), body.into(), vec![
             alondra_domain_rules::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None },
         ], None).unwrap();
-        assert_eq!(open_machine_cards(&domain).len(), 1);
+        assert_eq!(open_machine_cards(&*domain).len(), 1);
         assert!(domain.machine_watch().incident().is_none(), "the memory incident is dropped on load");
 
         let told = Told::default();
         let clock = Clock::default();
-        let watcher = watching(&domain, &clock, |at| pressed(at, true), &told);
+        let watcher = watching(&(domain.clone() as Arc<dyn Runtime>), &clock, |at| pressed(at, true), &told);
         clock.samples(5).await;
         watcher.abort();
-        assert!(open_machine_cards(&domain).is_empty(), "no new card in its place");
+        assert!(open_machine_cards(&*domain).is_empty(), "no new card in its place");
         assert!(told.0.lock().unwrap().is_empty());
     }
 
@@ -2312,8 +2312,8 @@ mod tests {
     fn a_sample_already_taken_writes_no_second_row() {
         let (home, domain) = world();
         let sample = Machine { at: 1_792_662_011_421, ..machine(400 * GB, 50) };
-        pace(&domain, &sample);
-        pace(&domain, &sample);
+        pace(&*domain, &sample);
+        pace(&*domain, &sample);
         let day = alondra_daemon_engine_model::local_day(sample.at);
         let csv = std::fs::read_to_string(home.0.join(crate::machine_state::SAMPLES_DIR).join(format!("{day}.csv"))).unwrap();
         let rows: Vec<_> = csv.lines().skip(1).collect();
@@ -2333,7 +2333,7 @@ mod tests {
                     swap_used: (1 << 30) + growth, swap_total: Some((2 << 30) + growth),
                     swapouts: growth / 16384, ..Default::default() }),
                 ..machine(100 * GB, 60) };
-            assert!(look(&domain, sample).is_empty());
+            assert!(look(&*domain, sample).is_empty());
         }
         let mac = domain.machine_watch().mac();
         assert!(matches!(mac.room(0, base + MIN), Err(NoRoom::SwapGrowth { .. })));
@@ -2342,8 +2342,8 @@ mod tests {
             assert!(detail.contains(expected), "{detail}");
         }
         assert!(domain.machine_watch().disk_detail(&BTreeMap::new(), None, base + MIN).unwrap().contains("container free"));
-        assert!(open_machine_cards(&domain).is_empty());
-        assert!(orchestrator_inbox(&domain).is_empty());
+        assert!(open_machine_cards(&*domain).is_empty());
+        assert!(orchestrator_inbox(&*domain).is_empty());
         assert!(domain.machine_watch().incident().is_none());
     }
 

@@ -3,6 +3,7 @@
 //! with the session it resumed and its folder. The node's `claude --bg` process is a real child
 //! process, named by its identity; Claude Code's `claude stop` is the double here. Every wait is
 //! on a fact the domain publishes, never on a clock.
+use crate::domain_runtime::DomainRuntime;
 use alondra_store_sqlite::AsSqlite as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
@@ -214,11 +215,11 @@ impl World {
         self.domain.stop_sdk_owners();
         self.domain = Self::boot(&self.home, &self.database, &self.backend, &self.bg);
         let (domain, backend) = (Arc::clone(&self.domain), self.backend.clone());
-        tokio::task::spawn_blocking(move || crate::sdk_owner::adopt_all(&domain, &backend)).await.unwrap();
+        tokio::task::spawn_blocking(move || crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &backend)).await.unwrap();
     }
 
     fn step(&self) -> Option<HandoverStep> {
-        handover_of(&self.domain, &AgentId(SESSION.into())).map(|handover| handover.step)
+        handover_of(&*self.domain, &AgentId(SESSION.into())).map(|handover| handover.step)
     }
 
     /// Ticks the moves, as the daemon's loop does, until the move records `step`: a step that
@@ -227,7 +228,7 @@ impl World {
     async fn tick_until(&self, step: HandoverStep) {
         const TICKS: usize = 5;
         for _ in 0..TICKS {
-            tick(&self.domain).await;
+            tick(&(self.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
             if self.step() == Some(step) {
                 return;
             }
@@ -270,7 +271,7 @@ impl World {
     }
 
     fn verdict(&self) -> Verdict {
-        dry_run(&self.domain).unwrap().into_iter().find(|row| row.task.0 == TASK).unwrap().verdict
+        dry_run(&*self.domain).unwrap().into_iter().find(|row| row.task.0 == TASK).unwrap().verdict
     }
 }
 
@@ -312,12 +313,12 @@ async fn a_journaled_move_resumes_the_same_claude_session_with_its_input() {
     let world = World::new();
     world.rest();
     world.answer();
-    tick(&world.domain).await;
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert_eq!(world.step(), None, "no new move is planned");
     assert_eq!(world.verdict(), Verdict::Stays(Reason::SessionClosed));
     world.plan_move();
     assert_eq!(world.verdict(), Verdict::Passes(Reason::Moving(HandoverStep::Planned)));
-    tick(&world.domain).await;
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert_moved(&world).await;
     assert_eq!(world.bg.stops.load(Ordering::SeqCst), 1);
     assert_eq!(world.verdict(), Verdict::Stays(Reason::ThroughSdk));
@@ -335,7 +336,7 @@ async fn a_move_cut_after_its_admission_starts_the_host_and_claude_code_a_releas
     *world.domain.handovers().crash_after.lock().unwrap() = Some(HandoverStep::SdkAdmitted);
     world.tick_until(HandoverStep::SdkAdmitted).await;
     world.restart().await;
-    tick(&world.domain).await;
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert_eq!(world.launch_status().as_deref(), Some("handed"), "the launch goes out after the crash");
     assert_moved(&world).await;
 }
@@ -351,12 +352,12 @@ async fn a_crash_after_each_step_of_the_move_goes_on_from_that_step_and_repeats_
         world.answer();
         world.plan_move();
         *world.domain.handovers().crash_after.lock().unwrap() = Some(step);
-        tick(&world.domain).await;
+        tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
         assert_eq!(world.step(), Some(step), "the move stopped at {step:?}");
         assert!(world.live_owners() <= 1, "two live owners after a crash at {step:?}");
         assert!(world.starts().is_empty(), "no SDK Claude ran before the crash at {step:?}");
         world.restart().await;
-        tick(&world.domain).await;
+        tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
         assert_eq!(world.launch_status().as_deref(), Some("handed"), "the launch goes out after the crash at {step:?}");
         assert_moved(&world).await;
         assert_eq!(world.bg.stops.load(Ordering::SeqCst), 1, "claude --bg is stopped once across the crash at {step:?}");
@@ -372,11 +373,11 @@ async fn the_sdk_takes_the_session_only_once_the_claude_bg_process_has_exited() 
     world.answer();
     world.plan_move();
     world.bg.early_answers.store(1, Ordering::SeqCst);
-    tick(&world.domain).await;
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert!(world.bg.running(), "claude stop answered, the process goes on");
     assert_eq!(world.step(), Some(HandoverStep::Planned), "the move waits for the process's exit");
     assert!(world.sdk_node().is_none() && world.starts().is_empty(), "no SDK node runs beside the claude --bg process");
-    tick(&world.domain).await;
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert_moved(&world).await;
     assert_eq!(world.bg.stops.load(Ordering::SeqCst), 2);
 }
@@ -396,13 +397,13 @@ proptest::proptest! {
             world.bg.early_answers.store(early, Ordering::SeqCst);
             *world.domain.handovers().crash_after.lock().unwrap() = crash.map(|at| [HandoverStep::Planned, HandoverStep::BgStopped, HandoverStep::SdkAdmitted][at]);
             for _ in 0..=early {
-                tick(&world.domain).await;
+                tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
                 assert!(world.live_owners() <= 1, "two live owners");
             }
             if crash.is_some() {
                 world.restart().await;
                 for _ in 0..=early {
-                    tick(&world.domain).await;
+                    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
                     assert!(world.live_owners() <= 1, "two live owners after the restart");
                 }
             }

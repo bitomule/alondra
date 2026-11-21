@@ -881,7 +881,7 @@ impl Context<'_> {
                 is_default: true, hidden: false,
             }],
         } })?;
-        alondra_daemon_engine::accounts::finish_initial_check(&self.daemon().domain);
+        alondra_daemon_engine::accounts::finish_initial_check(&*self.daemon().domain);
         let model = ModelKey { provider: Provider::Codex, model: "demo-model".into() };
         let mut selection = TaskSelection::automatic(ModelProfile::General);
         selection.request_model(Some(model.clone()));
@@ -898,7 +898,7 @@ impl Context<'_> {
             provider: Provider::Codex, model: Some("demo-model".into()), effort: Some("high".into()), selection: Some(selection),
             ..Default::default()
         };
-        alondra_engine_sdk::sdk_owner::launch(&self.daemon().domain, alondra_engine_sdk::sdk_owner::Launch {
+        alondra_engine_sdk::sdk_owner::launch(&*self.daemon().domain, alondra_engine_sdk::sdk_owner::Launch {
             task: task.to_owned().into(), name: task.to_owned(), directory: directory.display().to_string(), prompt: title, plugin, options,
             model: None, account: AccountId::default_account(),
         })
@@ -940,7 +940,7 @@ impl Context<'_> {
         let domain = self.daemon().domain.clone();
         let checked = tokio::task::spawn_blocking(move || {
             let done = || {
-                alondra_daemon_engine::accounts::require_initial_check(&domain).is_ok()
+                alondra_daemon_engine::accounts::require_initial_check(&*domain).is_ok()
                     && domain.read().state().accounts.iter().any(|account| account.provider == Provider::Claude && account.state != AccountState::Unchecked)
             };
             for _ in 0..PATIENCE_MS / 2 {
@@ -1018,7 +1018,7 @@ impl Context<'_> {
     async fn start_claude_node(&mut self, index: usize, task: &str, account: &str, model: Option<&str>) -> Result<(), ScenarioError> {
         use alondra_core::accounts::{AccountId, Provider};
         for _ in 0..30 {
-            if alondra_daemon_engine::accounts::require_initial_check(&self.daemon().domain).is_ok() {
+            if alondra_daemon_engine::accounts::require_initial_check(&*self.daemon().domain).is_ok() {
                 break;
             }
             self.pass(Duration::from_secs(1), index).await?;
@@ -1045,7 +1045,7 @@ impl Context<'_> {
             selection.effective = Some(effective);
             options.selection = Some(selection);
         }
-        alondra_engine_sdk::sdk_owner::launch(&self.daemon().domain, alondra_engine_sdk::sdk_owner::Launch {
+        alondra_engine_sdk::sdk_owner::launch(&*self.daemon().domain, alondra_engine_sdk::sdk_owner::Launch {
             task: task.to_owned().into(), name: task.to_owned(), directory: directory.display().to_string(), prompt: title, plugin, options,
             model: None, account,
         })

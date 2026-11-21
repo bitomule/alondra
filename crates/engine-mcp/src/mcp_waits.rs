@@ -422,8 +422,8 @@ pub trait McpReturnsOf {
     fn mcp_returns(&self) -> &Returns;
 }
 
-impl McpReturnsOf for crate::domain_runtime::DomainRuntime {
+impl<R: alondra_engine_ports::Runtime + ?Sized> McpReturnsOf for R {
     fn mcp_returns(&self) -> &Returns {
-        self.extension()
+        alondra_engine_ports::extension(self.as_runtime())
     }
 }

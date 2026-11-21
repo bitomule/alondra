@@ -68,7 +68,7 @@ fn clock_key(now: i64) -> (i64, String, Option<String>) {
 
 fn has_external_source(client: &Client, read: &ReadSnapshot, id: &AgentId) -> bool {
     read.index().live_node(id).is_some_and(|reading| reading.reported_wait.as_ref().is_some_and(|(provider, instance)|
-        alondra_daemon_engine::sdk_live::wait_file(&client.domain, *provider, instance).is_some()))
+        alondra_daemon_engine::sdk_live::wait_file(&*client.domain, *provider, instance).is_some()))
         || client.domain.live().mods.session(&id.0).is_some_and(|report|
             report.work.workflows.iter().any(|workflow| workflow.transcript_dir.is_some()))
 }

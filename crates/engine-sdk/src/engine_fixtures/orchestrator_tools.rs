@@ -68,7 +68,7 @@ pub fn bare_world() -> Fixture {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
     let domain = Arc::new(super::open(&home).unwrap());
-    alondra_engine_admission::measure_machine(&domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
+    alondra_engine_admission::measure_machine(&*domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
         memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
         disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() }, alondra_engine_ports::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
     let sessions = Arc::new(FakeSessions::default());
@@ -180,7 +180,7 @@ pub fn refused_plan(f: &Fixture) -> alondra_daemon_engine_model::LaunchPlan {
 }
 
 pub async fn refuse_its_start(f: &Fixture) -> alondra_domain_rules::Interaction {
-    alondra_engine_sdk::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    alondra_engine_sdk::auto_launch::pass(&*f.domain, &f.home).await.unwrap();
     assert!(f.sdk().starts().is_empty());
     assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty(), "no retry is promised for a start that cannot work");
     let state = f.domain.state().unwrap();

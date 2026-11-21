@@ -6,6 +6,7 @@
 //! one-time durable attempt per device ID so a relay-side revocation survives reconnects and
 //! restarts; the direct transport needs only the local approval.
 #[cfg(test)]
+use alondra_daemon_engine::domain_runtime::RuntimeRecords as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use crate::locks::{Poisonable as _, PoisonableRw as _};
 use crate::auth::Auth;
@@ -765,7 +766,7 @@ impl Service {
             )?
         } else if let Some(agent) = agent_message(&request.path) {
             crate::domain_messages::relayed(
-                &domain,
+                &*domain,
                 &home,
                 &sender,
                 agent,
@@ -805,7 +806,7 @@ impl Service {
             request.body.is_some(),
         ) {
             crate::domain_schedule_api::encrypted_mutation(
-                &domain,
+                &*domain,
                 &home,
                 &sender,
                 &request.method,
@@ -1551,7 +1552,7 @@ impl Service {
                 request.body.is_some(),
             ) {
                 let result = crate::domain_schedule_api::mutation(
-                    domain,
+                    &**domain,
                     &self.home,
                     &request.method,
                     &request.path,

@@ -43,7 +43,7 @@ pub fn suspend_for(home: &Path, agent: &AgentId) -> Result<()> {
 
 /// A restarted session connected under a settings file that kept no bearer: it gets a new one.
 /// True when it was issued.
-pub fn reissue(domain: &crate::domain_runtime::DomainRuntime, key: &str, agent: &AgentId) -> Result<bool> {
+pub fn reissue(domain: &dyn alondra_engine_ports::Runtime, key: &str, agent: &AgentId) -> Result<bool> {
     anyhow::ensure!(!key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "invalid session settings key");
     let path = domain.home().join(DIR).join(format!("{key}.json"));
     let Ok(bytes) = std::fs::read(&path) else { return Ok(false) };

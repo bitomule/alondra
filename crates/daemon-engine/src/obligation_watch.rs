@@ -9,7 +9,7 @@ use crate::gate::GateOf as _;
 use crate::hosts::HostsOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::locks::Poisonable as _;
 use crate::untaken;
 use alondra_store::AuthorityScope;
@@ -197,7 +197,7 @@ impl Watch {
 }
 
 struct GateWorld<'a> {
-    domain: &'a DomainRuntime,
+    domain: &'a dyn Runtime,
     state: &'a DomainState,
 }
 
@@ -217,8 +217,8 @@ impl World for GateWorld<'_> {
 }
 
 /// One pass of the clock at `now`: what is past its deadline is logged and, where enforced, acted on.
-pub fn pass(domain: &DomainRuntime, watch: &mut Watch, now: Millis) {
-    let Ok(state) = domain.state() else { return };
+pub fn pass(domain: &dyn Runtime, watch: &mut Watch, now: Millis) {
+    let state = domain.state();
     let late = watch.step(&state, &GateWorld { domain, state: &state }, now);
     for overdue in &late {
         log!("{} has waited {} s for {:?} owed by {:?}: past its deadline", overdue.task, overdue.age / 1000, overdue.owed, overdue.party);
@@ -240,7 +240,7 @@ pub fn pass(domain: &DomainRuntime, watch: &mut Watch, now: Millis) {
 }
 
 /// The orchestrator settles what it owes past its deadline.
-fn settle_answers(domain: &DomainRuntime, state: &DomainState, due: &std::collections::BTreeSet<TaskId>) {
+fn settle_answers(domain: &dyn Runtime, state: &DomainState, due: &std::collections::BTreeSet<TaskId>) {
     match domain.ports().port::<dyn alondra_engine_ports::orchestrator::OrchestratorAnswers>() {
         Some(orchestrator) => orchestrator.settle_answers(domain, state, due),
         None => log!("no orchestrator settles what it owes {} past its deadline", due.iter().map(|task| task.0.as_str()).collect::<Vec<_>>().join(", ")),
@@ -248,8 +248,8 @@ fn settle_answers(domain: &DomainRuntime, state: &DomainState, due: &std::collec
 }
 
 /// Does `action` for `task`. Requeueing is the owner's to do, on its next step.
-pub fn apply(domain: &DomainRuntime, task: &TaskId, action: Action) -> Result<(), String> {
-    let state = domain.state().map_err(|error| format!("{error:#}"))?;
+pub fn apply(domain: &dyn Runtime, task: &TaskId, action: Action) -> Result<(), String> {
+    let state = domain.state();
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| format!("{error:?}"))?;
     let agent = state.tasks.get(task).and_then(|task| task.agent_id.clone());
     match action {
@@ -270,10 +270,10 @@ pub fn apply(domain: &DomainRuntime, task: &TaskId, action: Action) -> Result<()
     Ok(())
 }
 
-pub async fn run(domain: Arc<DomainRuntime>) {
+pub async fn run(domain: Arc<dyn Runtime>) {
     loop {
         let domain = Arc::clone(&domain);
-        let passed = tokio::task::spawn_blocking(move || pass(&domain, &mut domain.live().obligations.lock_or_recover("the obligation watch"), now_millis())).await;
+        let passed = tokio::task::spawn_blocking(move || pass(&*domain, &mut domain.live().obligations.lock_or_recover("the obligation watch"), now_millis())).await;
         if let Err(error) = passed {
             log!("a pass of the obligation watch stopped: {error}");
         }

@@ -9,9 +9,10 @@
 //! The decision reads the task's lifecycle alone (`DomainState::host_releasable`). What is measured
 //! lives in memory: a restarted daemon counts each rest from its start. A resume waits for a free
 //! node slot like any turn.
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use crate::sdk_owner::SdkOwners as _;
 use alondra_core::clock;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_rules::{DomainState, TaskId};
 use alondra_core::{Millis, now_millis};
 use std::collections::BTreeMap;
@@ -67,7 +68,7 @@ impl Rests {
 }
 
 /// The tasks whose host this daemon owns and may close, with their lifecycle revision.
-fn resting(domain: &DomainRuntime, state: &DomainState) -> Vec<(TaskId, u64)> {
+fn resting(domain: &dyn Runtime, state: &DomainState) -> Vec<(TaskId, u64)> {
     state.tasks.values().filter(|task| !task.over()).filter_map(|task| {
         let agent = task.agent_id.as_ref()?;
         (domain.owns_sdk_host(agent) && state.host_releasable(&task.id)).then(|| state.lifecycle_of(&task.id).ok().map(|lifecycle| (task.id.clone(), lifecycle.revision())))?
@@ -77,7 +78,7 @@ fn resting(domain: &DomainRuntime, state: &DomainState) -> Vec<(TaskId, u64)> {
 /// Asks to close what rested long enough, and says when to look again. A closed node with work
 /// comes back through the gate: its turn waits for a slot (`Admission::may_take_turn`), and the gate
 /// takes the task over when it gives one. `since` is when the changes this look reads began.
-pub fn pass(domain: &DomainRuntime, rests: &mut Rests, since: Millis, now: Millis, timing: &Timing) -> Option<Millis> {
+pub fn pass(domain: &dyn Runtime, rests: &mut Rests, since: Millis, now: Millis, timing: &Timing) -> Option<Millis> {
     let read = domain.read();
     let state = read.state();
     let (due, next) = rests.due(resting(domain, state), since, now, timing);
@@ -91,7 +92,7 @@ pub fn pass(domain: &DomainRuntime, rests: &mut Rests, since: Millis, now: Milli
 /// task: what `TellNode` brings resumes without waiting for a look.
 const LOOK_SPACING: Duration = Duration::from_secs(1);
 
-pub async fn run(domain: Arc<DomainRuntime>, timing: &'static Timing) {
+pub async fn run(domain: Arc<dyn Runtime>, timing: &'static Timing) {
     if domain.sdk().is_none() {
         return;
     }
@@ -102,7 +103,7 @@ pub async fn run(domain: Arc<DomainRuntime>, timing: &'static Timing) {
     let mut changed = None;
     loop {
         let now = now_millis();
-        let next = pass(&domain, &mut rests, changed.take().unwrap_or(now), now, timing);
+        let next = pass(&*domain, &mut rests, changed.take().unwrap_or(now), now, timing);
         match next {
             Some(at) => tokio::select! {
                 _ = changes.changed() => changed = Some(now_millis()),

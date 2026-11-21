@@ -1,6 +1,7 @@
 //! The vertical slice through the real owner: the daemon's store, commands and `own`, the pinned
 //! Node host with the official SDK, and a fake native Claude that answers each prompt with a
 //! result. Each step waits on the host's next event, never on a clock.
+use crate::domain_runtime::DomainRuntime;
 use alondra_store_sqlite::AsSqlite as _;
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use crate::gate::GateOf as _;
@@ -146,7 +147,7 @@ fn the_orchestrators_instruction_on_a_stopped_node_commits_and_reaches_the_sdk()
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    let (case, _) = Slice::read_cards(&slice.domain).pop().unwrap();
+    let (case, _) = Slice::read_cards(&*slice.domain).pop().unwrap();
     let state = slice.domain.state().unwrap();
     let by_user = Command::AnswerQuestion {
         interaction_id: case.as_str().into(),
@@ -165,18 +166,18 @@ fn the_orchestrators_instruction_on_a_stopped_node_commits_and_reaches_the_sdk()
     slice.settle(&mut driver);
     let prompts = slice.prompts();
     assert_eq!(prompts, ["Write the release notes", "Add the tests first"], "it reaches the host's Claude as written");
-    let mut cards = Slice::read_cards(&slice.domain);
+    let mut cards = Slice::read_cards(&*slice.domain);
     cards.sort();
     assert_eq!(cards.len(), 2, "{cards:?}");
     assert_eq!(cards.iter().filter(|(_, settled)| *settled).count(), 1, "the first case is settled, the second waits: {cards:?}");
-    instruct(&slice.domain, "Write the changelog too");
+    instruct(&*slice.domain, "Write the changelog too");
     assert_eq!(driver.pending_permits(), 1);
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     assert_eq!(slice.prompts().last().map(String::as_str), Some("Write the changelog too"), "it reaches the host's Claude as written");
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Also update the changelog"})).unwrap();
     let told = tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
+        .block_on(crate::domain_messages::deliver(&*slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
         .unwrap();
     assert_eq!((told["delivery_state"].as_str(), told["reaches"].as_str()), (Some("dispatching"), Some("now")), "the resting node starts on it: {told}");
     assert_eq!(driver.pending_permits(), 1, "what the user told the resting node left for its host");
@@ -195,13 +196,13 @@ fn a_huge_tool_result_is_kept_shrunk_and_the_node_goes_on() {
     let mut driver = slice.launch_with("huge-tool-result");
     slice.settle(&mut driver);
     assert_eq!(slice.observations_with("\"code\":\"truncated_sdk_message\""), 1, "the tool result is kept, shrunk");
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "its turn ended with its card");
-    instruct(&slice.domain, "Summarize the log");
+    assert_eq!(Slice::read_cards(&*slice.domain).len(), 1, "its turn ended with its card");
+    instruct(&*slice.domain, "Summarize the log");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     let prompts = slice.prompts();
     assert!(prompts.len() == 2 && prompts[1].ends_with("Summarize the log"), "the next message reaches the same Claude: {prompts:?}");
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 2);
+    assert_eq!(Slice::read_cards(&*slice.domain).len(), 2);
     driver.stop().unwrap();
 }
 
@@ -225,7 +226,7 @@ fn a_message_mid_turn_reaches_claude_inside_the_turn() {
     assert_eq!(turns(&slice.domain), 1);
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Rebase on main before you push"})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
+        .block_on(crate::domain_messages::deliver(&*slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
         .unwrap();
     assert_eq!(driver.pending_permits(), 1, "it leaves while the turn runs, without waiting for the turn to end");
     driver.step(&|| false).unwrap();
@@ -233,8 +234,8 @@ fn a_message_mid_turn_reaches_claude_inside_the_turn() {
     let prompts = slice.prompts();
     assert!(prompts.last().is_some_and(|last| last.ends_with("Rebase on main before you push")), "{prompts:?}");
     assert_eq!(turns(&slice.domain), 1, "Claude took it inside the turn that ran");
-    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty(), "nothing is left waiting");
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "the turn ends with one card");
+    assert!(Slice::lifecycle(&*slice.domain).pending_inputs().is_empty(), "nothing is left waiting");
+    assert_eq!(Slice::read_cards(&*slice.domain).len(), 1, "the turn ends with one card");
     driver.stop().unwrap();
 }
 
@@ -260,16 +261,16 @@ fn a_crash_between_commit_and_publication_reconciles_without_a_second_card() {
     };
     assert_eq!(crash.downcast_ref::<&str>(), Some(&"the daemon stopped after the commit"));
     assert_eq!(slice.stored_cards(), 1, "the turn end committed its card");
-    assert!(Slice::read_cards(&slice.domain).is_empty(), "nothing of it was published");
+    assert!(Slice::read_cards(&*slice.domain).is_empty(), "nothing of it was published");
     let restarted = slice.restart();
     let acknowledged = Arc::new(Mutex::new(0));
     let counter = Arc::clone(&acknowledged);
     restarted.on_acknowledge(move || *counter.lock().unwrap() += 1);
-    driver.rebind(Arc::clone(&restarted));
+    driver.rebind(restarted.clone());
     assert_eq!(driver.observe_written().unwrap(), alondra_store::ObservationAcceptance::Duplicate,
         "the host's unacknowledged turn end comes again, and the store knows it already");
     assert_eq!(*acknowledged.lock().unwrap(), 1, "the replay acknowledges the event once");
-    assert_eq!(Slice::read_cards(&restarted).len(), 1, "readers see the one card");
+    assert_eq!(Slice::read_cards(&*restarted).len(), 1, "readers see the one card");
     assert_eq!(slice.stored_cards(), 1, "the replay adds no second card");
     assert!(!driver.waits_for_host(), "the turn is over");
     driver.stop().unwrap();
@@ -367,17 +368,17 @@ fn the_orchestrators_node_and_tasks_in_progress_show_an_sdk_node_as_the_domain_h
     let state = slice.domain.state().unwrap();
     assert_eq!(state.agents[&agent].phase, NodePhase::ThroughSdk, "no event moves its phase");
     let live = alondra_domain_rules::TaskActivity::Live(state.sdk_live(&agent).expect("its task is open")).key();
-    let shown = crate::domain_orchestrator_reads::node(&slice.domain, &agent.0).unwrap()["node"].clone();
+    let shown = crate::domain_orchestrator_reads::node(&*slice.domain, &agent.0).unwrap()["node"].clone();
     assert_eq!((shown["alive"].as_bool(), shown["state"].as_str(), shown["sdk_host"].as_bool()), (Some(true), Some(live), Some(true)), "{shown}");
     assert_eq!(shown["task"]["activity"].as_str(), Some(live), "the node's state is its task's");
     assert_eq!(shown["name"], "Release notes");
     assert_eq!(shown["task"]["id"], TASK);
     assert!(shown["last_message"].as_str().is_some_and(|said| !said.is_empty()), "what its Claude said last: {shown}");
-    let in_progress = crate::domain_orchestrator_reads::tasks_in_progress(&slice.domain, serde_json::Value::Null, serde_json::Value::Null).unwrap();
+    let in_progress = crate::domain_orchestrator_reads::tasks_in_progress(&*slice.domain, serde_json::Value::Null, serde_json::Value::Null).unwrap();
     let listed: Vec<&str> = in_progress["nodes"].as_array().unwrap().iter().filter_map(|node| node["session_id"].as_str()).collect();
     assert_eq!(listed, [agent.0.as_str()], "tasks_in_progress lists the SDK node");
     slice.domain.stop_sdk_owners();
-    let shown = crate::domain_orchestrator_reads::node(&slice.domain, &agent.0).unwrap()["node"].clone();
+    let shown = crate::domain_orchestrator_reads::node(&*slice.domain, &agent.0).unwrap()["node"].clone();
     assert_eq!(shown["sdk_host"].as_bool(), Some(false), "no host runs it once its owner stopped: {shown}");
 }
 
@@ -396,7 +397,7 @@ async fn cancelling_an_sdk_task_with_background_work_stops_its_host_and_ends_the
     slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
     let task = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();
     assert!(task.ending(), "the cancelled task waits for the receipts of its node's end");
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
     let state = slice.domain.state().unwrap();
     let task = &state.tasks[&TaskId::from(TASK)];
     assert_eq!((task.state, task.wrap_up.node), (TaskState::Cancelled, Some(NodeEnd::Closed)), "the cancelled task with background work ended");
@@ -418,7 +419,7 @@ async fn cancelling_an_sdk_task_mid_turn_interrupts_the_turn_stops_its_host_and_
     let agent = driver.agent().clone();
     slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
     slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude's turn was interrupted before its host closed");
     let state = slice.domain.state().unwrap();
     let task = &state.tasks[&TaskId::from(TASK)];
@@ -448,10 +449,10 @@ async fn accepting_a_task_whose_host_died_closes_it() {
     slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
     assert!(!slice.domain.owns_sdk_host(&agent), "no host of this daemon is left for the node");
     let timing = crate::task_closer::Timing::new(Some(std::time::Duration::ZERO));
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
-    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Resting, "the end of the host its journal kept is committed: nothing runs");
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Resting, "the end of the host its journal kept is committed: nothing runs");
     assert!(slice.domain.owns_sdk_host(&agent), "a host that resumes the session took the execution");
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
     let state = slice.domain.state().unwrap();
     let task = &state.tasks[&TaskId::from(TASK)];
     assert_eq!((task.state, task.wrap_up.node), (TaskState::Done, Some(NodeEnd::Closed)), "the accepted task closes although its session had ended");
@@ -480,12 +481,12 @@ async fn a_session_no_host_can_take_over_is_tried_once_per_retry_and_its_node_is
     let timing = crate::task_closer::Timing::new(Some(std::time::Duration::ZERO));
     let now = alondra_core::now_millis();
     for pass in 0..3 {
-        crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, now + pass).await.unwrap();
+        crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, now + pass).await.unwrap();
     }
     assert_eq!(failures(), 1, "one take-over until the retry is due");
     assert_eq!(journal(), told, "the node nothing runs is told nothing");
     let retry = i64::try_from(timing.retry.as_millis()).unwrap();
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, now + retry).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, now + retry).await.unwrap();
     assert_eq!(failures(), 2, "the take-over is tried again once the retry is due");
     assert_eq!(journal(), told);
     assert!(!slice.domain.owns_sdk_host(&agent));
@@ -518,7 +519,7 @@ async fn a_closing_task_that_owes_nothing_ends_its_unowned_host_without_resuming
     std::fs::remove_dir_all(&slice.worktree).unwrap();
     slice.domain.enable_sdk(slice.backend.clone());
     let prompts = slice.prompts();
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
     assert_eq!(slice.starts().len(), 1, "no host resumed the session: {:?}", slice.starts());
     assert_eq!(slice.prompts(), prompts, "no notice reached Claude");
     let left: Vec<String> = stranded.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
@@ -561,13 +562,13 @@ async fn an_sdk_node_is_told_once_about_its_unsaved_worktree_and_its_confirmatio
     let retry = i64::try_from(timing.retry.as_millis()).unwrap();
     let now = alondra_core::now_millis();
     for attempt in 0..2 {
-        crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, now + attempt * retry).await.unwrap();
+        crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, now + attempt * retry).await.unwrap();
     }
     let failures = slice.domain.store.lock().unwrap().task_closing(&TASK.into()).unwrap().unwrap().failures;
     assert_eq!((failures, told()), (2, 1), "tried after each pause, told once");
     std::fs::remove_file(dirty.join("draft.txt")).unwrap();
     slice.run(&node, "cleaned-again", Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, now + retry + 1).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, now + retry + 1).await.unwrap();
     let state = slice.domain.state().unwrap();
     let task = &state.tasks[&TaskId::from(TASK)];
     assert_eq!((task.state, task.wrap_up.node), (TaskState::Done, Some(NodeEnd::Closed)), "the confirmation closes it before the pause is over");
@@ -603,7 +604,7 @@ async fn a_task_that_closes_while_its_node_is_handed_an_input_closes_at_once() {
     slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
     handed.recv().unwrap();
     slice.run(&node, "cleaned", Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
     let state = slice.domain.state().unwrap();
     let task = &state.tasks[&TaskId::from(TASK)];
     assert_eq!((task.state, task.wrap_up.node), (TaskState::Done, Some(NodeEnd::Closed)), "the node's end is recorded at once");
@@ -663,7 +664,7 @@ async fn cancelling_an_sdk_task_that_waits_on_its_card_stops_its_host_and_ends_t
     let state = slice.domain.state().unwrap();
     let cancelled = slice.domain.execute_with(&user(), &envelope(&state, "client-cancel", Command::CancelTask { task_id: TASK.into(), reason: None }), None, None, || Ok(()));
     assert!(cancelled.is_ok(), "the user's cancellation commits: {cancelled:?}");
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
     let state = slice.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from(TASK)].state, TaskState::Cancelled);
     let left: Vec<String> =
@@ -672,9 +673,9 @@ async fn cancelling_an_sdk_task_that_waits_on_its_card_stops_its_host_and_ends_t
 }
 
 /// The orchestrator settles the case the task rests on: its node gets `instruction`.
-fn instruct(domain: &DomainRuntime, instruction: &str) {
+fn instruct(domain: &dyn alondra_engine_ports::Runtime, instruction: &str) {
     let (case, _) = Slice::read_cards(domain).into_iter().find(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)).expect("an open case");
-    let state = domain.state().unwrap();
+    let state = domain.state();
     let settle = Command::SettleStall { case_id: case.as_str().into(), task_id: TASK.into(), outcome: StallOutcome::Instruct { text: instruction.into() } };
     let orchestrator = Actor::Orchestrator { generation: state.orchestrator_generation };
     assert!(domain.execute_with(&orchestrator, &envelope(&state, &format!("settle-{case}"), settle), None, None, || Ok(())).unwrap().changed);
@@ -695,15 +696,15 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
     // The daemon dies: drop its driver without stopping the host, which keeps running.
     drop(driver);
     let restarted = slice.restart();
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(owner_generation(&slice.database), 2, "adoption reserved the next owner generation");
-    instruct(&restarted, "Add the tests first");
+    instruct(&*restarted, "Add the tests first");
     adopted.step(&|| false).unwrap();
     slice.settle(&mut adopted);
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 2, "the same Claude got the launch and the instruction, no restart: {prompts:?}");
     assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
-    assert_eq!(Slice::read_cards(&restarted).len(), 2, "the adopted turn ended with its own card");
+    assert_eq!(Slice::read_cards(&*restarted).len(), 2, "the adopted turn ended with its own card");
     restarted.sdk_owners().held.lock().unwrap().push(Owner::spawn(adopted));
     assert_eq!(restarted.node_groups(), [group], "the adopted host is measured as the node it runs");
     restarted.stop_sdk_owners();
@@ -717,7 +718,7 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
 fn assert_replaced(slice: &Slice, domain: &Arc<DomainRuntime>, mut driver: Driver, session: &str, stranded: &[alondra_process_group::Member]) {
     let left: Vec<String> = stranded.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
     assert!(left.is_empty(), "the stranded host's processes survived: {left:?}");
-    instruct(domain, "Add the tests first");
+    instruct(&**domain, "Add the tests first");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     let starts = slice.starts();
@@ -739,7 +740,7 @@ fn at_start_a_live_host_that_refuses_its_adoption_is_ended_and_replaced_by_one_t
     let agent = driver.agent().clone();
     let (session, stranded) = strand_host(&slice, driver);
     let restarted = slice.restart();
-    let mut taken = take_all(&restarted, &slice.backend);
+    let mut taken = take_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
     let (task, driver) = taken.pop().expect("the daemon's start takes the execution");
     assert_eq!(task, TaskId::from(TASK));
     let driver = driver.unwrap_or_else(|Failed { why, .. }| panic!("the execution was left as it was: {why}"));
@@ -782,7 +783,7 @@ pub fn assert_stopped_whole(slice: &Slice, agent: &AgentId, commands: &Backgroun
     assert_eq!(commands.running(), Vec::<String>::new(), "the background command and its child ended");
     assert_eq!(survivors(host), Vec::<String>::new(), "the host and its Claude ended");
     assert_eq!(slice.starts().len(), 1, "no Claude runs: nothing can wake a turn");
-    assert_ne!(lifecycle(&slice.domain).activity(), ActivityView::OwnWork, "nothing waits for the work that ended");
+    assert_ne!(lifecycle(&*slice.domain).activity(), ActivityView::OwnWork, "nothing waits for the work that ended");
     assert!(slice.domain.owns_sdk_host(agent), "a host waits with no Claude for what the pause holds");
     assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
 }
@@ -810,10 +811,10 @@ fn background_work_its_replaced_host_ended_is_reported_to_the_resumed_session_wh
     until_own_work(&slice, &mut driver);
     let (session, _) = strand_host(&slice, driver);
     let restarted = slice.restart();
-    let (_, driver) = take_all(&restarted, &slice.backend).pop().expect("the daemon's start takes the execution");
+    let (_, driver) = take_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend).pop().expect("the daemon's start takes the execution");
     let driver = driver.unwrap_or_else(|Failed { why, .. }| panic!("the execution was left as it was: {why}"));
     assert_told_the_work_ended(&slice, &restarted, driver, &session);
-    assert_eq!(Slice::read_cards(&restarted).iter().filter(|(_, answered)| !answered).count(), 1, "the task goes on: its turn ended on a card");
+    assert_eq!(Slice::read_cards(&*restarted).iter().filter(|(_, answered)| !answered).count(), 1, "the task goes on: its turn ended on a card");
 }
 
 
@@ -844,10 +845,10 @@ fn a_task_cancelled_with_a_turn_end_unread_is_cancelled_and_its_host_is_taken_ov
     let driver = ending_on_a_read_notification(&slice);
     let (_, stranded) = strand_host(&slice, driver);
     slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
-    assert!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].cancelled() || lifecycle(&slice.domain).phase() == alondra_domain::TaskPhase::Finishing, "the cancel applies");
+    assert!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].cancelled() || lifecycle(&*slice.domain).phase() == alondra_domain::TaskPhase::Finishing, "the cancel applies");
     let mut replaced = slice.take_over(&slice.domain);
     assert!(stranded.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "the stopped host is gone");
-    assert_eq!(lifecycle(&slice.domain).phase(), alondra_domain::TaskPhase::Finishing, "the cancel stands");
+    assert_eq!(lifecycle(&*slice.domain).phase(), alondra_domain::TaskPhase::Finishing, "the cancel stands");
     replaced.stop().unwrap();
 }
 
@@ -876,10 +877,10 @@ fn an_unacknowledged_turn_end_comes_back_to_the_adopting_owner_once() {
     let acknowledged = Arc::new(Mutex::new(0));
     let counter = Arc::clone(&acknowledged);
     restarted.on_acknowledge(move || *counter.lock().unwrap() += 1);
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(adopted.observe_written().unwrap(), alondra_store::ObservationAcceptance::Duplicate, "the host re-sends the unacknowledged turn end and the store knows it");
     assert_eq!(*acknowledged.lock().unwrap(), 1, "the replay acknowledges the event once");
-    assert_eq!(Slice::read_cards(&restarted).len(), 1, "readers see the one card");
+    assert_eq!(Slice::read_cards(&*restarted).len(), 1, "readers see the one card");
     assert_eq!(slice.stored_cards(), 1, "the replay adds no second card");
     adopted.stop().unwrap();
 }
@@ -892,12 +893,12 @@ fn a_send_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    instruct(&slice.domain, "Add the tests first");
+    instruct(&*slice.domain, "Add the tests first");
     assert!(driver.claim_and_record_without_sending(), "the owner claimed and recorded the dispatch");
     drop(driver);
     assert_eq!(slice.prompts().len(), 1, "the host's Claude never got the answer");
     let restarted = slice.restart();
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     slice.settle(&mut adopted);
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 2, "reconciliation sent the answer to the same Claude exactly once: {prompts:?}");
@@ -913,11 +914,11 @@ fn an_answer_whose_permit_the_dead_daemon_never_claimed_is_sent_by_the_adopting_
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    instruct(&slice.domain, "Add the tests first");
+    instruct(&*slice.domain, "Add the tests first");
     assert_eq!(driver.pending_permits(), 1, "the store issued the answer's permit to this daemon");
     drop(driver);
     let restarted = slice.restart();
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(adopted.pending_permits(), 1, "the adopting owner holds the permit again");
     adopted.step(&|| false).unwrap();
     slice.settle(&mut adopted);
@@ -935,35 +936,35 @@ fn a_send_the_host_offered_is_not_offered_again_when_its_receipt_was_lost() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    instruct(&slice.domain, "Add the tests first");
+    instruct(&*slice.domain, "Add the tests first");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
     drop(driver);
     let restarted = slice.restart();
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     slice.settle(&mut adopted);
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 2, "the answer reached the host once; reconciliation did not offer it again: {prompts:?}");
     assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
-    assert_eq!(Slice::read_cards(&restarted).len(), 2, "the reconciled turn ended with its own card");
+    assert_eq!(Slice::read_cards(&*restarted).len(), 2, "the reconciled turn ended with its own card");
     adopted.stop().unwrap();
 }
 
 fn archived_receipt_after_an_empty_successor(slice: &Slice, mut driver: Driver) -> Driver {
     slice.settle(&mut driver);
-    instruct(&driver.domain, "Keep the archived receipt");
+    instruct(&*driver.domain, "Keep the archived receipt");
     assert!(driver.claim_record_and_offer_without_receipt());
     let (intent, input): (i64, String) = slice.observer().query_row(
         "SELECT id,input_id FROM lifecycle_dispatches WHERE task_id=?1 AND status='claimed' ORDER BY id DESC LIMIT 1",
         [TASK], |row| Ok((row.get(0)?, row.get(1)?)),
     ).unwrap();
-    let stamp = lifecycle(&driver.domain).execution().unwrap().clone();
+    let stamp = lifecycle(&*driver.domain).execution().unwrap().clone();
     let generation = driver.worker.owner_generation().unwrap();
     driver.domain.own(driver.scope.clone(), |owner| owner.resolve(&stamp, intent, generation, DispatchReceipt::Uncertain)).unwrap();
-    while lifecycle(&driver.domain).pending_inputs().iter().any(|pending| pending.as_str() == input) {
+    while lifecycle(&*driver.domain).pending_inputs().iter().any(|pending| pending.as_str() == input) {
         driver.observe_written().unwrap();
     }
     slice.settle(&mut driver);
-    assert!(Slice::read_cards(&driver.domain).iter().any(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)),
+    assert!(Slice::read_cards(&*driver.domain).iter().any(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)),
         "the original turn reached its case before its host is stopped");
     driver.stop().unwrap();
     drop(driver);
@@ -989,8 +990,8 @@ fn archived_receipt_after_an_empty_successor(slice: &Slice, mut driver: Driver) 
         "the current host cannot answer for the original, but its complete archive can");
     assert_eq!(observer.query_row("SELECT status FROM lifecycle_dispatches WHERE id=?1", [intent], |row| row.get::<_, String>(0)).unwrap(), "uncertain");
     assert_eq!(observer.query_row("SELECT status FROM lifecycle_dispatch_certainty WHERE id=?1", [intent], |row| row.get::<_, String>(0)).unwrap(), "handed");
-    instruct(&restarted, "Continue after the archived receipt");
-    assert!(lifecycle(&restarted).pending_inputs().iter().any(|input|
+    instruct(&*restarted, "Continue after the archived receipt");
+    assert!(lifecycle(&*restarted).pending_inputs().iter().any(|input|
         observer.query_row("SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2", rusqlite::params![TASK, input.as_str()], |row| row.get::<_, String>(0)).unwrap() == "Continue after the archived receipt"),
         "the later message waits for actual provider consumption");
     resumed.step(&|| false).unwrap();
@@ -1021,7 +1022,7 @@ fn a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs() {
     assert_eq!(slice.observations_with(&"x".repeat(900_000)), 24, "every large answer was committed");
     // Each explicit input and its three empty-turn wakes cross the old 256-input limit.
     for turn in 1..=64 {
-        crate::domain_messages::tell_sdk_node(&slice.domain, &TASK.into(), "Alice", &format!("Next step {turn}"), &format!("tell-{turn}"), true).unwrap();
+        crate::domain_messages::tell_sdk_node(&*slice.domain, &TASK.into(), "Alice", &format!("Next step {turn}"), &format!("tell-{turn}"), true).unwrap();
         driver.step(&|| false).unwrap();
         slice.settle(&mut driver);
     }
@@ -1030,7 +1031,7 @@ fn a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs() {
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 65, "every explicit input reached the same Claude");
     assert!(prompts[64].ends_with("Next step 64"), "{}", prompts[64]);
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 65, "every stop after its wake ended on its own case");
+    assert_eq!(Slice::read_cards(&*slice.domain).len(), 65, "every stop after its wake ended on its own case");
     driver.stop().unwrap();
 }
 
@@ -1044,7 +1045,7 @@ fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("bulky:6");
     slice.settle(&mut driver);
-    instruct(&slice.domain, "Add the tests first stall-before-starting");
+    instruct(&*slice.domain, "Add the tests first stall-before-starting");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
@@ -1068,7 +1069,7 @@ fn a_signed_out_turn_waits_on_the_sign_in_card_until_claude_answers_again() {
     let acknowledged = watch_acknowledgements(&slice);
     let mut driver = slice.launch_with("Write the release notes signed-out");
     slice.settle(&mut driver);
-    assert_eq!(Slice::read_cards(&slice.domain), [], "no card that tells the task to go on");
+    assert_eq!(Slice::read_cards(&*slice.domain), [], "no card that tells the task to go on");
     let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
     assert_eq!(held, [(TASK.to_owned(), ClaudeHold::SignedOut)]);
     let listed = |domain: &DomainRuntime| -> Vec<InteractionId> {
@@ -1106,9 +1107,9 @@ fn an_overloaded_api_holds_the_task_until_the_scheduled_probe_finds_claude_answe
     slice.settle(&mut driver);
     let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
     assert_eq!(held, [(TASK.to_owned(), ClaudeHold::Outage)]);
-    assert_eq!(Slice::read_cards(&slice.domain), [], "no card that tells the task to go on");
+    assert_eq!(Slice::read_cards(&*slice.domain), [], "no card that tells the task to go on");
     std::fs::write(format!("{}.recovered", slice.capture.display()), "").unwrap();
-    crate::claude_access::probe(&slice.domain, ClaudeHold::Outage, None);
+    crate::claude_access::probe(&*slice.domain, ClaudeHold::Outage, None);
     assert_eq!(driver.pending_permits(), 1, "the probe's dispatch reached the owner");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
@@ -1150,7 +1151,7 @@ fn usage_coming_back_lets_a_task_of_the_agent_sdk_the_limit_held_go_on() {
     let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
     assert_eq!(held, [(TASK.to_owned(), ClaudeHold::Usage)]);
     std::fs::write(format!("{}.recovered", slice.capture.display()), "").unwrap();
-    crate::usage_pause::wake_nodes(&slice.domain);
+    crate::usage_pause::wake_nodes(&*slice.domain);
     assert_eq!(driver.pending_permits(), 1, "the probe's dispatch reached the owner");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
@@ -1178,7 +1179,7 @@ fn a_second_task_starts_through_the_same_sdk_host() {
     });
     let mut first = slice.launch();
     slice.settle(&mut first);
-    let mut second = start(Arc::clone(&slice.domain), &slice.backend, Launch {
+    let mut second = start(slice.domain.clone(), &slice.backend, Launch {
         task: "sdk-slice-second".into(),
         name: "Upgrade guide".into(),
         directory: slice.worktree.to_str().unwrap().into(),
@@ -1246,7 +1247,7 @@ fn an_execution_runs_on_its_accounts_folder_and_is_bound_to_that_account() {
 fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_session() {
     let slice = Slice::new();
     let options = LaunchOptions { provider: alondra_core::accounts::Provider::Claude, selection: None, model: Some("fixture-model".into()), effort: Some("high".into()), disallowed_tools: vec!["WebFetch".into()] };
-    let mut driver = start_bound(Arc::clone(&slice.domain), &slice.backend, Launch {
+    let mut driver = start_bound(slice.domain.clone(), &slice.backend, Launch {
         task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
         prompt: "Write the release notes".into(), plugin: slice.plugin.clone(), options,
         model: None, account: AccountId::default_account(),
@@ -1266,7 +1267,7 @@ fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
-    instruct(&restarted, "Add the tests first");
+    instruct(&*restarted, "Add the tests first");
     resumed.step(&|| false).unwrap();
     slice.settle(&mut resumed);
     let args = launched(&slice);
@@ -1300,24 +1301,24 @@ fn a_node_may_edit_only_inside_its_own_worktree_without_asking() {
 fn native_recovery_preserves_every_queued_user_input_and_stages_the_whole_new_generation_before_offer() {
     let slice=Slice::new();let mut driver=slice.launch_working();let original_agent=driver.agent().clone();
     let original_account=slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].account_key();
-    let native=native_recovery(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&original_account.account,slice.worktree.to_str().unwrap()).unwrap().unwrap().session;
+    let native=native_recovery(&*slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&original_account.account,slice.worktree.to_str().unwrap()).unwrap().unwrap().session;
     for (id,text) in [("queued-first","First exact queued instruction"),("queued-second","Second exact queued instruction")]{
         slice.run(&Actor::System,id,Command::TellNode{task_id:TASK.into(),text:text.into(), from_user: false, answers: None});
     }
     driver.stop().unwrap();drop(driver);
-    end_unowned_host(Arc::clone(&slice.domain),&slice.backend,TASK.into()).unwrap();
-    crate::node_exit::user_closed(&slice.domain,&original_agent.0).unwrap();
-    let pending:Vec<_>=lifecycle(&slice.domain).pending_inputs().into_iter().cloned().collect();
+    end_unowned_host(slice.domain.clone(),&slice.backend,TASK.into()).unwrap();
+    crate::node_exit::user_closed(&*slice.domain,&original_agent.0).unwrap();
+    let pending:Vec<_>=lifecycle(&*slice.domain).pending_inputs().into_iter().cloned().collect();
     assert_eq!(pending.len(),2,"the two existing instructions authorize continuation and survive release without an invented third input");
     let expected:Vec<String>=pending.iter().map(|input|slice.observer().query_row(
         "SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2",rusqlite::params![TASK,input.as_str()],|row|row.get(0)).unwrap()).collect();
     assert_eq!(&expected[..2],["First exact queued instruction","Second exact queued instruction"]);
-    let mut replacement=start(Arc::clone(&slice.domain),&slice.backend,Launch{
+    let mut replacement=start(slice.domain.clone(),&slice.backend,Launch{
         task:TASK.into(),name:"Recovered release notes".into(),directory:slice.worktree.to_str().unwrap().into(),
         prompt:"This launch summary must not replace any queued user input".into(),plugin:slice.plugin.clone(),
         options:LaunchOptions::default(),model:None,account:original_account.account.clone(),
     }).unwrap();
-    let stamp=lifecycle(&slice.domain).execution().unwrap().clone();
+    let stamp=lifecycle(&*slice.domain).execution().unwrap().clone();
     let rows:Vec<(String,String,String,i64)>=slice.observer().prepare(
         "SELECT d.input_id,d.kind,d.status,(SELECT count(*) FROM provider_input_metadata m WHERE m.task_id=d.task_id AND m.input_id=d.input_id AND m.conversation_id=?3) FROM lifecycle_dispatches d WHERE d.task_id=?1 AND d.generation=?2 ORDER BY d.id"
     ).unwrap().query_map(rusqlite::params![TASK,i64::try_from(stamp.generation()).unwrap(),stamp.conversation().as_str()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap().map(Result::unwrap).collect();
@@ -1327,8 +1328,8 @@ fn native_recovery_preserves_every_queued_user_input_and_stages_the_whole_new_ge
         if at>0{assert_eq!(status,"prepared","later inputs remain unoffered when start returns");}
     }
     slice.settle(&mut replacement);
-    assert_eq!(lifecycle(&slice.domain).resource(),Some(alondra_domain::ResourceEvidence::Available),"the current generation has positively resumed its native session");
-    assert!(lifecycle(&slice.domain).pending_inputs().is_empty(),"both real queued inputs have been consumed before checking the native witness");
+    assert_eq!(lifecycle(&*slice.domain).resource(),Some(alondra_domain::ResourceEvidence::Available),"the current generation has positively resumed its native session");
+    assert!(lifecycle(&*slice.domain).pending_inputs().is_empty(),"both real queued inputs have been consumed before checking the native witness");
     let delivered:Vec<String>=slice.prompts().into_iter().skip(1).collect();
     assert_eq!(delivered,expected,"every original payload reaches the same native session exactly once and in order");
     assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].account_key(),original_account);
@@ -1343,10 +1344,10 @@ fn native_recovery_preserves_every_queued_user_input_and_stages_the_whole_new_ge
 #[test]
 fn replacement_requires_positive_original_native_session_evidence_before_stopping_its_host() {
     let slice=Slice::new();let mut driver=slice.launch();let original=driver.agent().clone();
-    assert!(require_recoverable_session(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).is_err(), "an admitted UUID alone is not a native session witness");
+    assert!(require_recoverable_session(&*slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).is_err(), "an admitted UUID alone is not a native session witness");
     assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.as_ref(),Some(&original));
     slice.settle(&mut driver);
-    require_recoverable_session(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).unwrap();
+    require_recoverable_session(&*slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).unwrap();
     driver.stop().unwrap();
 }
 
@@ -1355,14 +1356,14 @@ fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() 
     let slice = Slice::new();
     let (driver, card) = slice.asked("decide:bash make test");
     let old = driver.agent().clone();
-    let native=native_recovery(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).unwrap().unwrap().session;
-    assert!(require_recoverable_session(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::parse("another").unwrap(),slice.worktree.to_str().unwrap()).is_err(), "a different account is refused while the original host and card remain live");
+    let native=native_recovery(&*slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).unwrap().unwrap().session;
+    assert!(require_recoverable_session(&*slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::parse("another").unwrap(),slice.worktree.to_str().unwrap()).is_err(), "a different account is refused while the original host and card remain live");
     assert!(open_card(&slice.domain,"decision-").is_some());
     slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
     slice.domain.stop_sdk_host(&old).unwrap();
-    end_unowned_host(Arc::clone(&slice.domain), &slice.backend, TASK.into()).unwrap();
+    end_unowned_host(slice.domain.clone(), &slice.backend, TASK.into()).unwrap();
     assert!(open_card(&slice.domain, "decision-").is_none(), "the stopped host's request is closed with its card");
-    let mut replacement = start(Arc::clone(&slice.domain), &slice.backend, Launch {
+    let mut replacement = start(slice.domain.clone(), &slice.backend, Launch {
         task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(),
         prompt: "Write the release notes".into(), plugin: slice.plugin.clone(), options: LaunchOptions::default(),
         model: None, account: AccountId::default_account(),
@@ -1374,7 +1375,7 @@ fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() 
     let state = slice.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from(TASK)].agent_id.as_ref(), Some(replacement.agent()), "the task is the new node's");
     assert_ne!(replacement.agent(), &old);
-    assert_eq!(lifecycle(&slice.domain).execution().map(|stamp| stamp.generation()), Some(2), "a new generation runs it");
+    assert_eq!(lifecycle(&*slice.domain).execution().map(|stamp| stamp.generation()), Some(2), "a new generation runs it");
     assert!(slice.answer(&card, Hold::ALLOW, None).is_err(), "the old generation's card takes no answer");
     replacement.stop().unwrap();
 }
@@ -1387,12 +1388,12 @@ async fn the_orchestrators_replace_stops_the_sdk_node_and_closes_its_request_bef
     slice.domain.enable_sdk(slice.backend.clone());
     let (driver, card) = slice.asked("decide:bash make test");
     let old = driver.agent().clone();
-    let native=native_recovery(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).unwrap().unwrap().session;
-    assert!(require_recoverable_session(&slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::parse("another").unwrap(),slice.worktree.to_str().unwrap()).is_err(), "a different account is refused while the original host and card remain live");
+    let native=native_recovery(&*slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::default_account(),slice.worktree.to_str().unwrap()).unwrap().unwrap().session;
+    assert!(require_recoverable_session(&*slice.domain,&slice.backend,&TASK.into(),Provider::Claude,&AccountId::parse("another").unwrap(),slice.worktree.to_str().unwrap()).is_err(), "a different account is refused while the original host and card remain live");
     assert!(open_card(&slice.domain,"decision-").is_some());
     slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
     let body = serde_json::from_value(serde_json::json!({"task": TASK, "replace": true, "model": "sonnet", "effort": "high", "reason": "Release notes are short prose"})).unwrap();
-    let launched = crate::domain_orchestrator_tools::launch(&slice.domain, &slice._home, body, |_| None).await;
+    let launched = crate::domain_orchestrator_tools::launch(&*slice.domain, &slice._home, body, |_| None).await;
     assert!(launched.is_ok(), "{launched:?}");
     let state=slice.domain.state().unwrap();let stamp=state.lifecycle_of(&TASK.into()).unwrap().execution().unwrap().clone();
     let metadata=slice.domain.store.lock().unwrap().conversation_metadata(&TASK.into(),stamp.conversation().as_str()).unwrap().unwrap();
@@ -1402,7 +1403,7 @@ async fn the_orchestrators_replace_stops_the_sdk_node_and_closes_its_request_bef
     assert!(!slice.domain.owns_sdk_host(&old), "the old host is stopped");
     let new = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().expect("the task has a node");
     assert_ne!(new, old);
-    assert_eq!(lifecycle(&slice.domain).execution().map(|stamp| stamp.generation()), Some(2), "a new generation runs it");
+    assert_eq!(lifecycle(&*slice.domain).execution().map(|stamp| stamp.generation()), Some(2), "a new generation runs it");
     assert!(slice.answer(&card, Hold::ALLOW, None).is_err(), "the old generation's card takes no answer");
     slice.domain.stop_sdk_host(&new).unwrap();
 }
@@ -1428,7 +1429,7 @@ async fn a_cancelled_sdk_task_with_unsaved_files_in_a_subagents_worktree_is_clos
     slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
     slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
     let timing = crate::task_closer::Timing::new(None);
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
     let state = slice.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from(TASK)].state, TaskState::Cancelled);
     assert!(!slice.domain.owns_sdk_host(&agent), "the host is closed: the node has nothing to settle");
@@ -1462,7 +1463,7 @@ async fn a_cancelled_sdk_task_settles_a_subagent_worktree_only_its_conversations
     slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
     slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
     let timing = crate::task_closer::Timing::new(None);
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
     let state = slice.domain.state().unwrap();
     assert!(subagent.join("draft.txt").exists(), "nothing with unsaved files is deleted unasked");
     let cards: Vec<_> = state.interactions.values().filter(|i| i.system_card == Some(alondra_domain_rules::SystemCard::DiscardWorktrees)).collect();
@@ -1537,7 +1538,7 @@ fn a_dead_host_is_replaced_by_one_that_resumes_the_same_claude_session() {
     assert_eq!(owner_generation(&slice.database), 2, "the replacement owns the execution with the next generation");
     assert_eq!(slice.starts().len(), 1, "no Claude starts before the orchestrator settles the case");
     let node = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
-    instruct(&restarted, "Add the tests first");
+    instruct(&*restarted, "Add the tests first");
     resumed.step(&|| false).unwrap();
     slice.settle(&mut resumed);
     let starts = slice.starts();
@@ -1547,7 +1548,7 @@ fn a_dead_host_is_replaced_by_one_that_resumes_the_same_claude_session() {
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 2, "{prompts:?}");
     assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);
-    assert_eq!(Slice::read_cards(&restarted).len(), 2, "the resumed turn ended with its own card");
+    assert_eq!(Slice::read_cards(&*restarted).len(), 2, "the resumed turn ended with its own card");
     resumed.stop().unwrap();
 }
 
@@ -1602,7 +1603,7 @@ fn unknown_native_commands_recover_after_rollback_unacknowledged_commit_and_host
     assert_eq!(crash.downcast_ref::<&str>(), Some(&"committed before acknowledgement"));
     assert_eq!(head(), i64::try_from(queued.cursor).unwrap());
     let restarted = slice.restart();
-    driver.rebind(Arc::clone(&restarted));
+    driver.rebind(restarted.clone());
     assert_eq!(driver.observe_written().unwrap(), alondra_store::ObservationAcceptance::Duplicate);
     assert_eq!(observer.query_row("SELECT count(*) FROM provider_observations WHERE cursor=?1", [i64::try_from(queued.cursor).unwrap()], |r| r.get::<_, i64>(0)).unwrap(), 1);
     let started = driver.worker.poll().unwrap().unwrap();
@@ -1660,7 +1661,7 @@ fn a_takeover_keeps_no_seal_of_what_its_ended_host_observed() {
             seen.fetch_max(domain.seals.observations_of(&TASK.into()), std::sync::atomic::Ordering::SeqCst);
         }
     });
-    end_unowned_host(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    end_unowned_host(restarted.clone(), &slice.backend, TASK.into()).unwrap();
     let committed = slice.observer().query_row("SELECT count(*) FROM provider_observations", [], |row| row.get::<_, i64>(0)).unwrap();
     assert!(committed >= 2, "the takeover committed what the daemon before it read but never committed: {committed}");
     assert_eq!(most.load(std::sync::atomic::Ordering::SeqCst), 0, "no commit waits behind the seals of the events committed before it");
@@ -1759,7 +1760,7 @@ fn resumed_with_an_unread_message(slice: &Slice) -> (Arc<DomainRuntime>, Driver)
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
     resumed.step(&|| false).unwrap();
-    while lifecycle(&restarted).activity() != ActivityView::Working {
+    while lifecycle(&*restarted).activity() != ActivityView::Working {
         resumed.observe_written().unwrap();
     }
     let state = restarted.state().unwrap();
@@ -1770,7 +1771,7 @@ fn resumed_with_an_unread_message(slice: &Slice) -> (Arc<DomainRuntime>, Driver)
     while !slice.prompts().last().is_some_and(|prompt| prompt.ends_with("Keep the journal's old rows")) {
         resumed.observe_written().unwrap();
     }
-    assert_eq!(lifecycle(&restarted).pending_inputs().len(), 1, "it is not read yet");
+    assert_eq!(lifecycle(&*restarted).pending_inputs().len(), 1, "it is not read yet");
     (restarted, resumed)
 }
 
@@ -1870,7 +1871,7 @@ async fn a_replacement_that_gives_up_with_a_claimed_message_leaves_no_claim_hold
         .query_map([TASK], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect();
     assert!(!rows.iter().any(|(_, status)| status == "claimed"), "no claim is left with no owner: {rows:?}");
     assert!(rows.iter().any(|(_, status)| status == "rejected"), "the dead host never received the claimed message: {rows:?}");
-    assert!(!Slice::lifecycle(&restarted).pending_inputs().is_empty(), "the message waits for the next host");
+    assert!(!Slice::lifecycle(&*restarted).pending_inputs().is_empty(), "the message waits for the next host");
 }
 
 // The daemon's start could not take the execution over (here no new host can get its folder): the
@@ -1888,7 +1889,7 @@ async fn an_execution_the_start_could_not_take_over_gets_a_card_and_try_again_re
     refuse(true);
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
-    adopt_all(&restarted, &slice.backend);
+    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
     let card = open_card(&restarted, HOST_LOST_PREFIX).expect("the task has a card");
     assert_eq!(card.card.content.as_ref().map(|content| content.body.as_str()), Some("Its new host could not start (Disconnected)"));
     assert_eq!(restarted.state().unwrap().tasks[&TaskId::from(TASK)].state, TaskState::NeedsYou);
@@ -1919,10 +1920,10 @@ async fn a_takeover_that_works_without_the_user_closes_the_host_lost_card_and_th
     refuse(true);
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
-    adopt_all(&restarted, &slice.backend);
+    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
     assert!(open_card(&restarted, HOST_LOST_PREFIX).is_some(), "the failed takeover put its card");
     refuse(false);
-    crate::sdk_owner::retake(&restarted, TASK.into());
+    crate::sdk_owner::retake(&*restarted, TASK.into());
     restarted.join_retakes();
     let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
     assert!(restarted.owns_sdk_host(&agent), "the execution was taken over again");
@@ -1943,7 +1944,7 @@ async fn an_execution_that_stays_lost_has_one_open_card_and_one_push_however_man
     refuse(true);
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
-    adopt_all(&restarted, &slice.backend);
+    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
     let pushes = |domain: &DomainRuntime| domain.store.lock().unwrap().sqlite().conn.query_row(
         "SELECT COUNT(*) FROM domain_message_user_targets t JOIN domain_messages m ON m.id=t.message_id WHERE m.interaction_id LIKE 'host-lost-%'", [], |row| row.get::<_, i64>(0)).unwrap();
     let try_again = |attempt: u32| {
@@ -1978,7 +1979,7 @@ fn sessions_that_recorded_the_account_their_host_really_ran_on_go_on_under_their
     let slice = Slice::new();
     slice.domain.enable_sdk(slice.backend.clone());
     let mut driver = slice.launch();
-    let instance = lifecycle(&slice.domain).execution().unwrap().instance().as_str().to_owned();
+    let instance = lifecycle(&*slice.domain).execution().unwrap().instance().as_str().to_owned();
     let folder = slice.backend.state_root.join(instance);
     let account = |id: AccountId, email: &str| AccountStatus { provider: Provider::Claude, id, name: "Account".into(), state: AccountState::SignedIn, native_identity: None,
         email: Some(email.into()), plan: None, billing: alondra_core::accounts::AccountBilling::default(), sign_ins: 0, profile: None };
@@ -1999,14 +2000,14 @@ fn sessions_that_recorded_the_account_their_host_really_ran_on_go_on_under_their
 
     let before = accounts("own@example.test", shared);
     record("added-crossed", accounts("own@example.test", "third@example.test"));
-    crate::accounts::correct_crossed_sessions(&slice.domain, &before);
+    crate::accounts::correct_crossed_sessions(&*slice.domain, &before);
     assert_eq!(change(&slice.domain), Some("identity"), "another account's change is no crossing of this one");
 
     record("crossed", accounts(shared, shared));
     let before = accounts(shared, shared);
     record("own-identity", accounts("own@example.test", shared));
     assert_eq!(change(&slice.domain), Some("identity"), "the guard would refuse it");
-    crate::accounts::correct_crossed_sessions(&slice.domain, &before);
+    crate::accounts::correct_crossed_sessions(&*slice.domain, &before);
     assert_eq!(change(&slice.domain), None, "the session goes on under the account's own identity");
     driver.stop().unwrap();
 }
@@ -2017,7 +2018,7 @@ fn refused_turn_end_reactions_keep_the_same_host_and_record_its_next_turn() {
     let slice = Slice::new();
     let acknowledged = watch_acknowledgements(&slice);
     let mut driver = slice.launch();
-    let execution = lifecycle(&slice.domain).execution().cloned().unwrap();
+    let execution = lifecycle(&*slice.domain).execution().cloned().unwrap();
     let group = driver.worker.host_group().unwrap();
     let mut native = None;
     for round in 0..2 {
@@ -2032,8 +2033,8 @@ fn refused_turn_end_reactions_keep_the_same_host_and_record_its_next_turn() {
         let journal = &state.lifecycle_journal[&TaskId::from(TASK)];
         assert!(journal.iter().filter(|record| matches!(record, LifecycleRecord::TurnEnded { .. })).count() > before,
             "the actual observed end remains recorded after its reaction was refused");
-        assert!(lifecycle(&slice.domain).turn().is_none(), "no ended turn remains open");
-        assert_eq!(lifecycle(&slice.domain).execution(), Some(&execution));
+        assert!(lifecycle(&*slice.domain).turn().is_none(), "no ended turn remains open");
+        assert_eq!(lifecycle(&*slice.domain).execution(), Some(&execution));
         assert_eq!(driver.worker.host_group(), Some(group));
         assert!(!driver.host_to_replace());
         assert!(!journal.iter().any(|record| matches!(record, LifecycleRecord::HostEnded { .. })));
@@ -2074,7 +2075,7 @@ async fn a_turn_claude_starts_while_its_task_rests_is_read_as_it_comes() {
     std::fs::write(format!("{}.own-turn", slice.capture.display()), "").unwrap();
     let reader = Arc::clone(&slice.domain);
     changed.wait_for(|_| reader.read().state().interactions[&card].withdrawn).await.unwrap();
-    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Working, "the node works");
+    assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Working, "the node works");
     assert_eq!(slice.prompts().len(), 1, "nothing was sent to it");
     drop(owner);
 }
@@ -2097,7 +2098,7 @@ async fn try_again_on_a_task_whose_ended_host_left_a_refused_plan_resumes_its_se
     slice.settle(&mut driver);
     let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Submit your plan"})).unwrap();
-    crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true).await.unwrap();
+    crate::domain_messages::deliver(&*slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true).await.unwrap();
     driver.step(&|| false).unwrap();
     while !driver.worker.poll().unwrap().is_some_and(|batch| String::from_utf8_lossy(&batch.evidence).contains("decision_requested")) {
         driver.observe_written().unwrap();
@@ -2107,7 +2108,7 @@ async fn try_again_on_a_task_whose_ended_host_left_a_refused_plan_resumes_its_se
     refuse(true);
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
-    adopt_all(&restarted, &slice.backend);
+    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
     let card = open_card(&restarted, HOST_LOST_PREFIX).expect("the task has the card to try again");
     refuse(false);
     answer(&restarted, &card.id, RETAKE);
@@ -2195,7 +2196,7 @@ fn a_doubtful_answer_goes_again_to_the_resumed_session_flagged_unasked() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    instruct(&slice.domain, "Add the tests first unread");
+    instruct(&*slice.domain, "Add the tests first unread");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
     while slice.prompts().len() < 2 {
         driver.observe_written().unwrap();
@@ -2211,7 +2212,7 @@ fn a_doubtful_answer_goes_again_to_the_resumed_session_flagged_unasked() {
     assert_eq!(prompts.len(), 3, "{prompts:?}");
     assert!(prompts[2].starts_with("Your session was cut off when its host stopped") && prompts[2].ends_with(&prompts[1]), "{prompts:?}");
     assert!(slice.starts()[1]["resume"].is_string(), "to the resumed session");
-    assert_eq!(Slice::read_cards(&restarted).len(), 2, "its turn ended with its own card");
+    assert_eq!(Slice::read_cards(&*restarted).len(), 2, "its turn ended with its own card");
     resumed.stop().unwrap();
 }
 
@@ -2222,7 +2223,7 @@ fn an_answer_the_ended_host_never_took_goes_to_the_resumed_session_unasked() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    instruct(&slice.domain, "Add the tests first");
+    instruct(&*slice.domain, "Add the tests first");
     assert!(driver.claim_and_record_without_sending(), "the owner claimed and recorded the dispatch");
     kill_host_and_daemon(driver);
     let restarted = slice.restart();
@@ -2272,9 +2273,9 @@ fn a_prompt_claude_never_delivers_goes_again_without_a_card_and_a_second_time_ch
     let mut driver = slice.launch_with("failed-delivery");
     until_the_owner_fails(&mut driver);
     assert!(open_card(&slice.domain, DROPPED_PREFIX).is_none(), "nobody is asked");
-    assert_eq!(Slice::read_cards(&slice.domain), [], "no card at all");
+    assert_eq!(Slice::read_cards(&*slice.domain), [], "no card at all");
     assert_eq!(slice.prompts(), ["failed-delivery", "failed-delivery"], "the same words went again once");
-    assert_eq!(Slice::lifecycle(&slice.domain).pending_inputs().len(), 1, "a host that resumes the session still has it to take");
+    assert_eq!(Slice::lifecycle(&*slice.domain).pending_inputs().len(), 1, "a host that resumes the session still has it to take");
     let _ = driver.stop();
 }
 
@@ -2285,12 +2286,12 @@ fn a_message_claude_completes_without_starting_it_goes_again_without_a_card() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    instruct(&slice.domain, "complete-unstarted");
+    instruct(&*slice.domain, "complete-unstarted");
     driver.step(&|| false).unwrap();
     until_the_owner_fails(&mut driver);
     assert!(open_card(&slice.domain, DROPPED_PREFIX).is_none(), "nobody is asked");
     assert_eq!(slice.prompts().len(), 3, "the message went twice: {:?}", slice.prompts());
-    assert_eq!(Slice::lifecycle(&slice.domain).pending_inputs().len(), 1);
+    assert_eq!(Slice::lifecycle(&*slice.domain).pending_inputs().len(), 1);
     let _ = driver.stop();
 }
 
@@ -2346,7 +2347,7 @@ fn model_permission_mode_and_mcp_status_controls_reach_claude_and_the_status_is_
     assert_eq!(statuses, ["handed", "handed", "handed"]);
     assert_eq!(slice.observations_with("control_result"), 1, "the MCP status is kept as the host's evidence");
     assert_eq!(slice.observations_with("\"status\":\"connected\""), 1, "with the servers Claude listed");
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "no control adds a card");
+    assert_eq!(Slice::read_cards(&*slice.domain).len(), 1, "no control adds a card");
     driver.stop().unwrap();
 }
 
@@ -2402,11 +2403,11 @@ fn ending_a_host_rejects_controls_whose_preparation_left_no_command() {
     assert_eq!(slice.control_rows().into_iter().map(|row| row.2).collect::<Vec<_>>(), ["claimed", "claimed"]);
     assert!(slice.controls().is_empty());
     drop(driver);
-    let mut driver = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut driver = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(slice.control_rows().into_iter().map(|row| row.2).collect::<Vec<_>>(), ["claimed", "claimed"], "adopting a live host does not discard its requests");
     driver.stop().unwrap();
     drop(driver);
-    end_unowned_host(Arc::clone(&slice.domain), &slice.backend, TASK.into()).unwrap();
+    end_unowned_host(slice.domain.clone(), &slice.backend, TASK.into()).unwrap();
     assert_eq!(slice.control_rows().into_iter().map(|row| row.2).collect::<Vec<_>>(), ["rejected", "rejected"]);
     assert!(slice.controls().is_empty(), "the ended host never received either control");
 }
@@ -2456,7 +2457,7 @@ fn a_control_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     assert!(slice.controls().is_empty(), "the host never got it");
     assert_eq!(slice.control_rows()[0].2, "claimed");
     let restarted = slice.restart();
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(slice.control_rows()[0].2, "handed", "reconciled with the host's answer");
     slice.settle(&mut adopted);
     assert_eq!(subtypes(&slice.controls()), ["mcp_status"], "Claude got it exactly once");
@@ -2478,14 +2479,14 @@ fn an_interrupt_whose_turn_already_ended_is_revoked_and_never_sent() {
     driver.step(&|| false).unwrap();
     assert_eq!(statuses(&slice), ["handed", "prepared"]);
     slice.settle(&mut driver);
-    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the first interrupt ended the turn");
+    assert_eq!(Slice::lifecycle(&*slice.domain).activity(), ActivityView::Resting, "the first interrupt ended the turn");
     while driver.pending_controls() > 0 {
         driver.step(&|| false).unwrap();
     }
     assert_eq!(statuses(&slice), ["handed", "revoked"]);
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "only the first reached Claude");
-    assert!(Slice::read_cards(&slice.domain).is_empty());
-    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
+    assert!(Slice::read_cards(&*slice.domain).is_empty());
+    assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     driver.stop().unwrap();
 }
 
@@ -2501,8 +2502,8 @@ fn a_step_on_a_quiet_turn_returns_to_send_the_interrupt_that_comes_next() {
     driver.step(&|| false).unwrap();
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "the interrupt went out on the next step");
     slice.settle(&mut driver);
-    assert!(Slice::read_cards(&slice.domain).is_empty());
-    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
+    assert!(Slice::read_cards(&*slice.domain).is_empty());
+    assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     driver.stop().unwrap();
 }
 
@@ -2553,7 +2554,7 @@ fn a_permission_card_commits_before_the_ack_and_allowing_it_runs_the_command_cla
     assert_eq!(slice.control_rows()[0].2, "handed");
     assert!(Slice::open_decision_cards(&slice.domain).is_empty());
     assert_eq!(slice.decision_requests().into_iter().map(|(_, kind)| kind).collect::<Vec<_>>(), ["permission"]);
-    let cards = Slice::read_cards(&slice.domain);
+    let cards = Slice::read_cards(&*slice.domain);
     assert_eq!(cards.len(), 1, "the turn ended with its one card: {cards:?}");
     driver.stop().unwrap();
 }
@@ -2744,7 +2745,7 @@ fn a_plan_claude_never_wrote_sends_it_back_to_write_one_without_a_card() {
 fn tell(slice: &Slice, driver: &Driver, text: &str) {
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
+        .block_on(crate::domain_messages::deliver(&*slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
         .unwrap();
 }
 
@@ -2770,7 +2771,7 @@ fn a_plan_refused_in_a_turn_claude_started_by_itself_reaches_claude_and_its_shor
     slice.rest(&mut driver);
     assert_eq!(slice.decisions()[1]["response"]["behavior"], "allow");
     assert!(slice.prompts().last().is_some_and(|prompt| prompt.ends_with("Submit your plan")), "{:?}", slice.prompts());
-    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty(), "nothing is left waiting");
+    assert!(Slice::lifecycle(&*slice.domain).pending_inputs().is_empty(), "nothing is left waiting");
     driver.stop().unwrap();
 }
 
@@ -2788,8 +2789,8 @@ fn a_request_alondra_cannot_ask_is_denied_to_claude_with_why_and_the_node_goes_o
     let message = response["message"].as_str().unwrap_or_default();
     assert_eq!(message, format!("{}: the test refuses it", alondra_domain_rules::UNASKABLE));
     assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "its turn ended with its one card");
-    instruct(&slice.domain, "Ask it again");
+    assert_eq!(Slice::read_cards(&*slice.domain).len(), 1, "its turn ended with its one card");
+    instruct(&*slice.domain, "Ask it again");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     assert!(slice.prompts().last().is_some_and(|prompt| prompt.ends_with("Ask it again")), "the same Claude goes on");
@@ -2894,7 +2895,7 @@ fn an_interrupt_cancels_the_decision_withdraws_its_card_and_refuses_a_late_answe
         .map(|card| card.id.0.as_str())
         .collect();
     assert!(waiting.is_empty(), "no process card asks how the task goes on: {waiting:?}");
-    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
+    assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     driver.stop().unwrap();
 }
 
@@ -2909,7 +2910,7 @@ fn an_answer_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     drop(driver);
     assert!(slice.decisions().is_empty(), "the host never got it");
     let restarted = slice.restart();
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(slice.control_rows()[0].2, "handed", "reconciled with the host's answer");
     slice.rest(&mut adopted);
     assert_eq!(only_response(&slice), serde_json::json!({"behavior": "allow", "toolUseID": "toolu_fixture_1", "updatedInput": {"command": "make test"}}));
@@ -2952,7 +2953,7 @@ fn a_response_to_a_request_claude_no_longer_waits_on_is_rejected_and_never_reach
 /// The stopped node's case is the orchestrator's, never a card of the user's: the orchestrator
 /// closes the task from it with its result, which the case keeps.
 fn assert_the_orchestrator_closes_it_from_its_case(slice: &Slice) {
-    let (case, _) = Slice::read_cards(&slice.domain).into_iter().find(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)).expect("an open case");
+    let (case, _) = Slice::read_cards(&*slice.domain).into_iter().find(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)).expect("an open case");
     let state = slice.domain.state().unwrap();
     let open_for_user = |state: &DomainState| state.interactions.values()
         .filter(|card| card.recipient == alondra_domain_rules::Recipient::User && card.scope == alondra_domain_rules::Scope::Task { task_id: TASK.into() } && state.open(card))
@@ -3061,7 +3062,7 @@ pub fn deliver_and_accept(slice: &Slice, agent: &AgentId, targets: Vec<DeliveryT
 }
 
 pub async fn close_pass(slice: &Slice) {
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
 }
 
 // 22 October: the user accepted a task and Alondra closed its node; the node's owner was reading
@@ -3160,10 +3161,10 @@ async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before
     slice.release_background_command();
     let reader = Arc::clone(&upgraded);
     let gone = |old: &[alondra_process_group::Member]| old.iter().all(|process| !alondra_process_group::alive(process).unwrap());
-    changed.wait_for(|_| lifecycle(&reader).activity() == ActivityView::Resting && gone(&old_host)).await.unwrap();
-    let rested = Slice::read_cards(&upgraded).len();
-    instruct(&upgraded, "Add the tests first");
-    changed.wait_for(|_| Slice::read_cards(&reader).len() > rested).await.unwrap();
+    changed.wait_for(|_| lifecycle(&*reader).activity() == ActivityView::Resting && gone(&old_host)).await.unwrap();
+    let rested = Slice::read_cards(&*upgraded).len();
+    instruct(&*upgraded, "Add the tests first");
+    changed.wait_for(|_| Slice::read_cards(&*reader).len() > rested).await.unwrap();
     slice.assert_moved_to_this_release(&upgraded, &session, &old_host);
     upgraded.add_sdk_owner(owner);
     upgraded.stop_sdk_owners();
@@ -3193,11 +3194,11 @@ async fn an_answer_that_comes_as_the_node_rests_on_a_host_of_the_release_before_
     while !adopted.moves_to_this_release {
         adopted.step(&|| false).unwrap();
     }
-    assert_eq!(lifecycle(&upgraded).activity(), ActivityView::Resting, "the node rests on the host of the release before");
+    assert_eq!(lifecycle(&*upgraded).activity(), ActivityView::Resting, "the node rests on the host of the release before");
     adopted.moves_to_this_release = false;
-    let rested = Slice::read_cards(&upgraded).len();
-    instruct(&upgraded, "Add the tests first");
-    let instruction = lifecycle(&upgraded).pending_inputs().last().unwrap().as_str().to_owned();
+    let rested = Slice::read_cards(&*upgraded).len();
+    instruct(&*upgraded, "Add the tests first");
+    let instruction = lifecycle(&*upgraded).pending_inputs().last().unwrap().as_str().to_owned();
     let dispatch: i64 = slice.observer().query_row(
         "SELECT id FROM lifecycle_dispatches WHERE task_id=?1 AND input_id=?2 ORDER BY id DESC LIMIT 1",
         rusqlite::params![TASK, instruction], |row| row.get(0),
@@ -3210,12 +3211,12 @@ async fn an_answer_that_comes_as_the_node_rests_on_a_host_of_the_release_before_
         "SELECT status FROM lifecycle_dispatches WHERE id=?1", [dispatch], |row| row.get(0),
     ).unwrap();
     assert_eq!(status, "prepared", "the late completion must be read before the new instruction is handed to the old host");
-    assert!(lifecycle(&upgraded).pending_inputs().iter().any(|input| input.as_str() == instruction), "the new instruction remains pending");
+    assert!(lifecycle(&*upgraded).pending_inputs().iter().any(|input| input.as_str() == instruction), "the new instruction remains pending");
     assert_eq!(slice.prompts(), ["Write the release notes"], "the old host receives no new instruction");
     let mut changed = upgraded.subscribe();
     let owner = Owner::spawn(adopted);
     let reader = Arc::clone(&upgraded);
-    tokio::time::timeout(std::time::Duration::from_secs(60), changed.wait_for(|_| Slice::read_cards(&reader).len() > rested))
+    tokio::time::timeout(std::time::Duration::from_secs(60), changed.wait_for(|_| Slice::read_cards(&*reader).len() > rested))
         .await
         .expect("the answer's turn did not end within 60 s on a host of this release")
         .unwrap();
@@ -3246,7 +3247,7 @@ fn a_daemon_gone_while_it_moved_a_resting_node_to_this_release_leaves_it_to_the_
     let started = slice.restart();
     let mut taken = slice.take_over(&started);
     assert!(!taken.worker.runs_another_release(), "the next start launched a host of this release");
-    instruct(&started, "Add the tests first");
+    instruct(&*started, "Add the tests first");
     taken.step(&|| false).unwrap();
     slice.settle(&mut taken);
     let starts = slice.starts();
@@ -3351,7 +3352,7 @@ async fn the_users_message_to_a_task_whose_host_was_lost_is_its_try_again() {
     refuse(true);
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
-    adopt_all(&restarted, &slice.backend);
+    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
     let card = open_card(&restarted, HOST_LOST_PREFIX).expect("the task has the card to try again");
     refuse(false);
     let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
@@ -3391,7 +3392,7 @@ async fn an_owner_whose_thread_panicked_owns_nothing_and_a_message_takes_its_exe
 fn reopen_without_native_witness(slice: &Slice) -> (AgentId, String) {
     let mut original = slice.launch();
     let old_node = original.agent().clone();
-    let refusal = require_recoverable_session(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+    let refusal = require_recoverable_session(&*slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
         &AccountId::default_account(), slice.worktree.to_str().unwrap()).unwrap_err();
     assert!(refusal.to_string().contains("The original native session cannot be proven"), "{refusal}");
     slice.run(&user(), "cancel-original", Command::CancelTask { task_id: TASK.into(), reason: None });
@@ -3420,14 +3421,14 @@ fn reopening_unproven_claude_history_starts_a_new_node_and_clean_session_with_th
     let before = slice.starts().len();
     let old_execution = slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().rev()
         .find_map(|record| match record { LifecycleRecord::Admitted { execution: Some(execution), .. } => Some(execution.clone()), _ => None }).unwrap();
-    let reopening = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+    let reopening = prepare_reopening(&*slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
         &AccountId::default_account(), &slice.worktree, input, true).unwrap();
     let mission = "Write the complete release notes, keeping the approved release scope and requested corrections.";
-    let mut replacement = start_bound(Arc::clone(&slice.domain), &slice.backend,
+    let mut replacement = start_bound(slice.domain.clone(), &slice.backend,
         prepared_reopened_launch(&slice, mission), capabilities(), None, Some(reopening)).unwrap();
     slice.settle(&mut replacement);
     let state = slice.domain.state().unwrap();
-    let execution = lifecycle(&slice.domain).execution().unwrap().clone();
+    let execution = lifecycle(&*slice.domain).execution().unwrap().clone();
     assert_ne!(replacement.agent(), &old_node);
     assert_eq!(state.tasks[&TaskId::from(TASK)].agent_id.as_ref(), Some(replacement.agent()));
     assert_ne!(execution.conversation().as_str(), old_execution.conversation);
@@ -3455,7 +3456,7 @@ fn another_reopening_after_preparation_cannot_admit_a_node_for_the_previous_reop
 fn stale_reopening_does_not_admit(reopen_again: bool) {
     let slice = Slice::new();
     let (_, input) = reopen_without_native_witness(&slice);
-    let reopening = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+    let reopening = prepare_reopening(&*slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
         &AccountId::default_account(), &slice.worktree, input.clone(), true).unwrap();
     if reopen_again {
         slice.run(&Actor::Orchestrator { generation: 0 }, "keep-request-open", Command::CreateTask {
@@ -3475,7 +3476,7 @@ fn stale_reopening_does_not_admit(reopen_again: bool) {
     }
     let before_records = slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].clone();
     let before_starts = slice.starts();
-    let result = start_bound(Arc::clone(&slice.domain), &slice.backend,
+    let result = start_bound(slice.domain.clone(), &slice.backend,
         prepared_reopened_launch(&slice, "This stale reopening must not reach Claude"), capabilities(), None, Some(reopening));
     let failure = match result {
         Ok(mut unexpected) => {
@@ -3498,7 +3499,7 @@ fn reopening_a_session_whose_native_history_disappeared_starts_clean_without_a_r
     slice.settle(&mut original);
     let old_node = original.agent().clone();
     let native = slice.starts()[0]["session"].as_str().unwrap().to_owned();
-    require_recoverable_session(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+    require_recoverable_session(&*slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
         &AccountId::default_account(), slice.worktree.to_str().unwrap()).unwrap();
     slice.run(&user(), "cancel-history-original", Command::CancelTask { task_id: TASK.into(), reason: None });
     original.stop().unwrap();
@@ -3513,11 +3514,11 @@ fn reopening_a_session_whose_native_history_disappeared_starts_clean_without_a_r
     std::fs::remove_file(format!("{}.transcript-{native}", slice.capture.display())).unwrap();
     slice.run(&user(), "reopen-missing-history", Command::ReopenTask { task_id: TASK.into() });
     let input = slice.domain.state().unwrap().pending_reopening(&TASK.into()).unwrap().to_owned();
-    let reopening = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+    let reopening = prepare_reopening(&*slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
         &AccountId::default_account(), &slice.worktree, input, true).unwrap();
     assert!(reopening.recovery.is_none(), "a retained session UUID cannot prove a missing native transcript");
     let mission = "Publish the retained release scope after the previous native history disappeared.";
-    let mut replacement = start_bound(Arc::clone(&slice.domain), &slice.backend,
+    let mut replacement = start_bound(slice.domain.clone(), &slice.backend,
         prepared_reopened_launch(&slice, mission), capabilities(), None, Some(reopening)).unwrap();
     slice.settle(&mut replacement);
     let starts = slice.starts();
@@ -3547,17 +3548,17 @@ fn a_failed_reopening_workspace_cannot_replace_the_original_admissions_native_di
     slice.run(&user(), "reopen-directory-original", Command::ReopenTask { task_id: TASK.into() });
     let failed_workspace = alondra_engine_doubles::worktrees::testing::task_worktree(&slice._home.join("failed-reopening"), "failed-reopening-workspace");
     slice.domain.set_task_worktree(&TASK.into(), failed_workspace.to_str().unwrap()).unwrap();
-    assert_eq!(original_directory(&slice.domain, &TASK.into()).unwrap().as_deref(), slice.worktree.to_str(),
+    assert_eq!(original_directory(&*slice.domain, &TASK.into()).unwrap().as_deref(), slice.worktree.to_str(),
         "only the admitted launch placement identifies the original native session's directory");
-    require_recoverable_session(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+    require_recoverable_session(&*slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
         &AccountId::default_account(), slice.worktree.to_str().unwrap()).unwrap();
-    assert!(require_recoverable_session(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+    assert!(require_recoverable_session(&*slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
         &AccountId::default_account(), failed_workspace.to_str().unwrap()).is_err());
     let input = slice.domain.state().unwrap().pending_reopening(&TASK.into()).unwrap().to_owned();
-    let reopening = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
+    let reopening = prepare_reopening(&*slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
         &AccountId::default_account(), &slice.worktree, input, true).unwrap();
     assert!(reopening.recovery.is_some());
-    let mut replacement = start_bound(Arc::clone(&slice.domain), &slice.backend,
+    let mut replacement = start_bound(slice.domain.clone(), &slice.backend,
         prepared_reopened_launch(&slice, "Continue in the original admission's directory"), capabilities(), None, Some(reopening)).unwrap();
     slice.settle(&mut replacement);
     let starts = slice.starts();
@@ -3587,22 +3588,22 @@ async fn a_takeover_its_host_never_answered_hands_the_same_input_to_a_fresh_host
     slice.domain.enable_sdk(slice.backend.clone());
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    instruct(&slice.domain, "Add the tests first");
+    instruct(&*slice.domain, "Add the tests first");
     kill_host_and_daemon(driver);
     let fake = hold_prompts(&slice);
-    let mut held = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut held = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     slice.run(&Actor::System, "taken-over", Command::RecordRuntimeFacts {
-        task_id: TASK.into(), generation: lifecycle(&slice.domain).generation(), facts: vec![RuntimeObservation::TakenOver] });
+        task_id: TASK.into(), generation: lifecycle(&*slice.domain).generation(), facts: vec![RuntimeObservation::TakenOver] });
     while held.pending_permits() > 0 {
         held.step(&|| false).unwrap();
     }
     let ignoring = alondra_process_group::members(held.worker.host_group().unwrap()).unwrap();
     held.let_go();
     drop(held);
-    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Starting, "the input waits for a host to take it");
+    assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Starting, "the input waits for a host to take it");
     std::fs::copy(&fake, &slice.backend.native).unwrap();
 
-    crate::sdk_owner::take_working_unowned(&slice.domain, &slice.domain.state().unwrap(), alondra_core::now_millis());
+    crate::sdk_owner::take_working_unowned(&*slice.domain, &slice.domain.state().unwrap(), alondra_core::now_millis());
     slice.domain.join_retakes();
     assert!(ignoring.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "the host that never took the input was ended");
     until_last_prompt_ends_with(&slice.domain, &slice.capture, "Add the tests first").await;
@@ -3649,7 +3650,7 @@ fn a_session_that_never_opened_gets_its_mission_and_the_queued_message_from_the_
     let slice = Slice::new();
     let fake = hold_prompts(&slice);
     let driver = slice.launch();
-    assert_eq!(lifecycle(&slice.domain).resource(), Some(alondra_domain::ResourceEvidence::Reserved));
+    assert_eq!(lifecycle(&*slice.domain).resource(), Some(alondra_domain::ResourceEvidence::Reserved));
     kill_host_and_daemon(driver);
     std::fs::copy(&fake, &slice.backend.native).unwrap();
     let restarted = slice.restart();
@@ -3725,15 +3726,15 @@ fn an_uncertain_mission_whose_session_never_opened_reaches_claude_without_a_card
     kill_host_and_daemon(driver);
     std::fs::copy(&fake, &slice.backend.native).unwrap();
     let restarted = slice.restart();
-    end_unowned_host(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    end_unowned_host(restarted.clone(), &slice.backend, TASK.into()).unwrap();
     assert!(open_card(&restarted, HANDOFF_DOUBT_PREFIX).is_none());
-    assert_eq!(lifecycle(&restarted).resource(), Some(alondra_domain::ResourceEvidence::Reserved));
+    assert_eq!(lifecycle(&*restarted).resource(), Some(alondra_domain::ResourceEvidence::Reserved));
     let mut resumed = slice.take_over(&restarted);
     slice.settle(&mut resumed);
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 1, "{prompts:?}");
     assert!(prompts[0].ends_with("Write the release notes"), "{prompts:?}");
-    assert_eq!(lifecycle(&restarted).resource(), Some(alondra_domain::ResourceEvidence::Available));
+    assert_eq!(lifecycle(&*restarted).resource(), Some(alondra_domain::ResourceEvidence::Available));
     resumed.stop().unwrap();
 }
 
@@ -3799,17 +3800,17 @@ async fn a_pause_by_the_user_stops_the_host_its_background_commands_and_every_tu
     let slice = Slice::new();
     let (agent, session, commands, host) = node_with_a_background_group(&slice);
     let gate = &slice.domain.admission();
-    gate.pause_by_user(&slice.domain, &agent.0, alondra_core::now_millis()).unwrap();
+    gate.pause_by_user(&*slice.domain, &agent.0, alondra_core::now_millis()).unwrap();
     slice.domain.join_retakes();
     assert_stopped_whole(&slice, &agent, &commands, &host);
     assert!(slice.domain.state().unwrap().host_ended_since_pause(&TASK.into()));
-    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    crate::admission::pass_at(&*slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
     slice.domain.join_retakes();
-    assert!(gate.paused(&slice.domain, &agent.0).is_some(), "only the user ends it");
+    assert!(gate.paused(&*slice.domain, &agent.0).is_some(), "only the user ends it");
     assert_eq!(slice.starts().len(), 1, "a later look at the pauses starts nothing");
 
-    assert!(gate.resume_now(&slice.domain, &agent.0, alondra_core::now_millis()));
-    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    assert!(gate.resume_now(&*slice.domain, &agent.0, alondra_core::now_millis()));
+    crate::admission::pass_at(&*slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
     until_last_prompt_ends_with(&slice.domain, &slice.capture, "run again what was cut.").await;
     slice.domain.stop_sdk_owners();
     assert_eq!(slice.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session goes on: {:?}", slice.starts());
@@ -3824,7 +3825,7 @@ async fn no_pause_but_the_users_kills_what_the_node_runs() {
         let (agent, _, commands, host) = node_with_a_background_group(&slice);
         slice.domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
         assert!(slice.domain.gate().hold_back(&agent.0, reason.clone(), alondra_core::now_millis()));
-        crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+        crate::admission::pass_at(&*slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
         slice.domain.join_retakes();
         assert_eq!(commands.running().len(), 2, "{reason:?}: the background command and its child go on");
         assert_eq!(survivors(&host).len(), host.len(), "{reason:?}: the host and its Claude go on");
@@ -3846,9 +3847,9 @@ async fn a_host_a_restarted_daemon_adopts_for_a_paused_node_stops_at_the_gates_n
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
     restarted.admission().ignore_mac();
-    adopt_all(&restarted, &slice.backend);
+    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
     assert_eq!(commands.running().len(), 2, "the adopted host still runs them");
-    crate::admission::pass_at(&restarted, &slice._home, alondra_core::now_millis()).await.unwrap();
+    crate::admission::pass_at(&*restarted, &slice._home, alondra_core::now_millis()).await.unwrap();
     restarted.join_retakes();
     assert_eq!(commands.running(), Vec::<String>::new(), "the background command and its child ended");
     assert_eq!(survivors(&host), Vec::<String>::new());
@@ -3865,7 +3866,7 @@ async fn a_takeover_the_full_disk_refused_waits_for_space_and_then_resumes_the_s
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
     restarted.full_disk.store(true, std::sync::atomic::Ordering::SeqCst);
-    adopt_all(&restarted, &slice.backend);
+    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
     let task = TaskId::from(TASK);
     let agent = restarted.state().unwrap().tasks[&task].agent_id.clone().unwrap();
     assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none(), "a full disk is not the task's failure: no card");
@@ -3874,12 +3875,12 @@ async fn a_takeover_the_full_disk_refused_waits_for_space_and_then_resumes_the_s
     assert!(restarted.sdk_owners().waiting_for_space.lock().unwrap().contains(&task), "the takeover waits for space");
     restarted.full_disk.store(false, std::sync::atomic::Ordering::SeqCst);
     let disk = |free: u64| alondra_core::Machine { disk_total: 500_000_000_000, disk_available: free, ..alondra_core::Machine::default() };
-    crate::machine_watch::look(&restarted, disk(900_000_000));
+    crate::machine_watch::look(&*restarted, disk(900_000_000));
     restarted.join_retakes();
     assert!(!restarted.owns_sdk_host(&agent), "a sample that measures the disk full takes nothing over");
     assert!(restarted.sdk_owners().waiting_for_space.lock().unwrap().contains(&task));
     loop {
-        crate::machine_watch::look(&restarted, disk(400_000_000_000));
+        crate::machine_watch::look(&*restarted, disk(400_000_000_000));
         if !restarted.gate().disk_low() {
             break;
         }
@@ -3923,15 +3924,15 @@ fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() 
     for driver in &drivers[..5] {
         assert!(state.node_waits_on_user(driver.agent()), "the log lists it as waiting on the user");
     }
-    assert_eq!(crate::admission::working_tasks(&slice.domain, &state), BTreeSet::from([TaskId::from("busy")]), "only busy works");
+    assert_eq!(crate::admission::working_tasks(&*slice.domain, &state), BTreeSet::from([TaskId::from("busy")]), "only busy works");
     let now = alondra_core::now_millis();
-    assert_eq!(gate.snapshot(&slice.domain, now).unwrap().working, 1);
-    assert_eq!(gate.live(&slice.domain, now).unwrap().working, 1, "the apps show the gate's count");
+    assert_eq!(gate.snapshot(&*slice.domain, now).unwrap().working, 1);
+    assert_eq!(gate.live(&*slice.domain, now).unwrap().working, 1, "the apps show the gate's count");
 
     slice.task("high");
     slice.run(&user(), "priority-high", Command::SetPriority { task_id: "high".into(), priority: TaskPriority::High });
     let high = Waiting { key: Key::Task("high".into()), priority: TaskPriority::High, resuming: false, since: now };
-    assert_eq!(gate.ask(&slice.domain, high, now), Ok(()), "the queued High task starts");
+    assert_eq!(gate.ask(&*slice.domain, high, now), Ok(()), "the queued High task starts");
     drivers.push(slice.launch_until("high", "consume-and-hold", works));
 
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(2)) });
@@ -3944,10 +3945,10 @@ fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() 
     assert!(!slice.decisions().iter().any(|decision| decision["response"]["behavior"] == "allow"), "the approval waits for a slot");
     slice.task("next");
     let next = Waiting { key: Key::Task("next".into()), priority: TaskPriority::High, resuming: false, since: now };
-    assert_eq!(gate.ask(&slice.domain, next, now), Err(Held::Slots { working: 2, limit: 2 }), "the waiting approval takes no slot");
+    assert_eq!(gate.ask(&*slice.domain, next, now), Err(Held::Slots { working: 2, limit: 2 }), "the waiting approval takes no slot");
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(3)) });
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), now)).unwrap();
+        .block_on(crate::admission::pass_at(&*slice.domain, slice.worktree.as_path(), now)).unwrap();
     let p1 = &mut drivers[0];
     while !slice.decisions().iter().any(|decision| decision["response"]["behavior"] == "allow") {
         p1.step(&|| false).unwrap();
@@ -3972,7 +3973,7 @@ fn an_approved_plan_reaches_claude_only_when_the_gate_has_a_slot() {
     assert!(slice.control_rows().iter().all(|(kind, _, status)| kind != "respond" || status == "prepared"), "{:?}", slice.control_rows());
     slice.domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
+        .block_on(crate::admission::pass_at(&*slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
     slice.rest(&mut driver);
     assert_eq!(only_response(&slice)["behavior"], "allow");
     driver.stop().unwrap();
@@ -3991,7 +3992,7 @@ fn an_answered_permission_goes_on_when_a_slot_frees_with_nobody_asking() {
     slots(&slice.domain, 0);
     slice.answer(&card, Hold::ALLOW, None).unwrap();
     gate_pass(&slice.domain, slice.worktree.as_path());
-    let snapshot = gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
+    let snapshot = gate.snapshot(&*slice.domain, alondra_core::now_millis()).unwrap();
     assert!(!snapshot.working_tasks.contains(&TaskId::from(TASK)), "a turn whose answer has not reached it takes no slot: {:?}", snapshot.working_tasks);
     assert!(snapshot.queue.iter().any(|waiting| waiting.key == alondra_engine_ports::admission::Key::Turn(TASK.into())), "its answer waits for a slot, though its owner never asked");
     assert!(slice.decisions().is_empty());
@@ -3999,7 +4000,7 @@ fn an_answered_permission_goes_on_when_a_slot_frees_with_nobody_asking() {
     slots(&slice.domain, 1);
     gate_pass(&slice.domain, slice.worktree.as_path());
     assert!(gate.gave_slot(&TASK.into()), "the slot that freed went to the answer in that pass");
-    assert_eq!(gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap().working, 1, "the slot given counts until the answer reaches its turn");
+    assert_eq!(gate.snapshot(&*slice.domain, alondra_core::now_millis()).unwrap().working, 1, "the slot given counts until the answer reaches its turn");
     slice.rest(&mut driver);
     assert_eq!(only_response(&slice)["behavior"], "allow");
     driver.stop().unwrap();
@@ -4029,14 +4030,14 @@ fn a_host_that_ends_with_a_slot_it_never_used_gives_it_back() {
     let gate = &slice.domain.admission();
     gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
     slice.run(&Actor::System, "tell", Command::TellNode { task_id: TASK.into(), text: "Go on".into(), from_user: false, answers: None });
-    assert!(!gate.may_take_turn(&slice.domain, &TASK.into(), alondra_core::now_millis()));
+    assert!(!gate.may_take_turn(&*slice.domain, &TASK.into(), alondra_core::now_millis()));
     gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
-    assert_eq!(gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap().working, 1, "the slot is given and not taken yet");
+        .block_on(crate::admission::pass_at(&*slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
+    assert_eq!(gate.snapshot(&*slice.domain, alondra_core::now_millis()).unwrap().working, 1, "the slot is given and not taken yet");
     kill_host(&driver);
     drop(driver);
-    assert_eq!(gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap().working, 0);
+    assert_eq!(gate.snapshot(&*slice.domain, alondra_core::now_millis()).unwrap().working, 0);
 }
 
 /// The orchestrator's answer to a node that stopped is one more input: it waits for a slot like any
@@ -4046,7 +4047,7 @@ fn the_orchestrators_instruction_waits_for_a_slot_like_any_turn() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    let (case, _) = Slice::read_cards(&slice.domain).pop().unwrap();
+    let (case, _) = Slice::read_cards(&*slice.domain).pop().unwrap();
     let gate = &slice.domain.admission();
     gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
     let state = slice.domain.state().unwrap();
@@ -4059,7 +4060,7 @@ fn the_orchestrators_instruction_waits_for_a_slot_like_any_turn() {
     assert_eq!(slice.prompts(), ["Write the release notes"], "nothing reaches Claude without a slot");
     gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
+        .block_on(crate::admission::pass_at(&*slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
     slice.settle(&mut driver);
     assert_eq!(slice.prompts(), ["Write the release notes", "Add the tests first"]);
     driver.stop().unwrap();
@@ -4081,7 +4082,7 @@ fn an_adopted_host_without_a_process_is_ended_at_adoption() {
     let replaced = slice.take_over(&restarted);
     let journal = restarted.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].clone();
     assert!(journal.iter().any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::HostEnded { .. })), "{journal:?}");
-    assert!(!crate::admission::working_tasks(&restarted, &restarted.state().unwrap()).contains(&TaskId::from(TASK)));
+    assert!(!crate::admission::working_tasks(&*restarted, &restarted.state().unwrap()).contains(&TaskId::from(TASK)));
     assert!(processes.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "nothing of the host is left running");
     kill_host_and_daemon(replaced);
 }
@@ -4098,7 +4099,7 @@ fn an_answered_permission_of_a_task_without_an_owner_is_retaken() {
     slice.domain.enable_sdk(slice.backend.clone());
     slots(&slice.domain, 1);
     slice.answer(&card, Hold::ALLOW, None).unwrap();
-    let revision = Slice::lifecycle(&slice.domain).revision();
+    let revision = Slice::lifecycle(&*slice.domain).revision();
     slice.domain.sdk_owners().unowned_takes.lock().unwrap().insert(TASK.into(), (alondra_core::now_millis(), revision));
     assert!(!slice.domain.owns_sdk_host(&agent));
     gate_pass(&slice.domain, slice.worktree.as_path());

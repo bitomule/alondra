@@ -9,7 +9,7 @@ foundation_crate(
     srcs = production_sources(),
     crate_name = "alondra_foundation",
     version = "0.1.0",
-    test_visibility = ["//crates/machine-model:__pkg__", "//crates/provider-conformance:__pkg__"],
+    test_visibility = ["//crates/engine-doubles:__pkg__", "//crates/machine-model:__pkg__", "//crates/provider-conformance:__pkg__"],
     deps = all_crate_deps(normal = True),
 )
 

@@ -15,13 +15,13 @@ pub trait EngineOf {
     fn engine(&self) -> Engine<'_>;
 }
 
-impl<R: Runtime> EngineOf for R {
+impl<R: Runtime + ?Sized> EngineOf for R {
     fn hosts(&self) -> Hosts<'_> {
-        Hosts { runtime: self, port: self.ports().port::<dyn SdkHosts>().expect("the daemon gives the runtime the owner of its SDK hosts") }
+        Hosts { runtime: self.as_runtime(), port: self.ports().port::<dyn SdkHosts>().expect("the daemon gives the runtime the owner of its SDK hosts") }
     }
 
     fn engine(&self) -> Engine<'_> {
-        Engine { runtime: self, port: self.ports().port::<dyn AdmissionEngine>().expect("the daemon gives the runtime what the admission gate asks of the engine") }
+        Engine { runtime: self.as_runtime(), port: self.ports().port::<dyn AdmissionEngine>().expect("the daemon gives the runtime what the admission gate asks of the engine") }
     }
 }
 
