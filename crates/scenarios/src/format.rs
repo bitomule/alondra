@@ -107,9 +107,10 @@ pub enum Step {
     Task { id: String, title: String, #[serde(default)] stack_on: Option<StackOn> },
     /// The node of `task` registers a pull request it opened.
     RegisterPr { task: String, number: u64 },
-    /// The node of `task` presents the pull requests as its result. With `refused`, the daemon must
-    /// turn the delivery down with that code, and nothing is presented.
-    Present { task: String, id: String, prs: Vec<u64>, body: String, #[serde(default)] refused: Option<String> },
+    /// The node of `task` presents the pull requests as its result, and `text` when it says what it
+    /// delivers in words. With `refused`, the daemon must turn the delivery down with that code, and
+    /// nothing is presented.
+    Present { task: String, id: String, #[serde(default)] prs: Vec<u64>, #[serde(default)] text: Option<String>, body: String, #[serde(default)] refused: Option<String> },
     /// The node of `task` tells the pull request is ready for others to stack on.
     StackReady { task: String, presentation: String, pr: u64 },
     /// The task starts on Codex: the daemon launches its node as it does in production, and the

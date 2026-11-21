@@ -570,11 +570,12 @@ impl Context<'_> {
                     allowed_methods: vec![MergeMethod::Squash, MergeMethod::Merge],
                 }).await?;
             }
-            Step::Present { task, id, prs, body, refused } => {
+            Step::Present { task, id, prs, text, body, refused } => {
                 let mut targets = Vec::new();
                 for number in prs {
                     targets.push(DeliveryTarget::PullRequest { pr_id: self.pr_id(*number), head: self.head(index, *number)? });
                 }
+                targets.extend(text.iter().map(|text| DeliveryTarget::Text { text: text.clone() }));
                 self.node_command(index, task, &format!("/tasks/{task}/results"), refused.as_deref(), Command::PresentResult {
                     checklist: Vec::new(),
                     attachments: Vec::new(),

@@ -182,6 +182,34 @@ fn a_task_completes_only_once_its_cleanup_and_its_node_are_drained() {
     assert_aggregate_rules(&s);
 }
 
+// 2026-11-21: the user accepted a result and Alondra asked its node to clean up. The node's prompt
+// cache had expired, so Alondra ended its host and admitted a fresh session for that cleanup, and
+// the admission took the user's acceptance back: the result card came back for review, the task
+// was no longer closing, so the node's cleanup_done was refused, and pressing the card again said
+// it was already answered.
+#[test]
+fn a_fresh_session_for_the_cleanup_keeps_the_users_acceptance() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    deliver(&mut s, "t", "a", "d1");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "d1".into(), targets: vec![DeliveryTarget::Text { text: "Done".into() }] });
+    assert!(s.tasks[&"t".into()].wrap_up.asked_at.is_some(), "the node is asked to clean up");
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![], by_alondra: true });
+    must(&mut s, Actor::System, Command::AdmitExecution { provider: Default::default(), task_id: "t".into(), agent_id: "b".into(),
+        conversation: "conversation-fresh".into(), instance: "instance-fresh".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
+
+    let InteractionPayload::Delivery { acceptance: Some(acceptance), .. } = &s.interactions[&InteractionId::from("d1")].payload else { panic!("accepted") };
+    assert!(acceptance.valid, "a session that only cleans up changes nothing the user accepted");
+    assert!(!s.open(&s.interactions[&InteractionId::from("d1")]), "the accepted result stays off the inbox");
+    assert_eq!(lifecycle(&s, "t").0, TaskState::Closing);
+    assert!(s.tasks[&"t".into()].wrap_up.asked_at.is_some(), "the task still waits for its cleanup");
+    must(&mut s, node("b"), Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() });
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("b".into()) });
+    assert_eq!(lifecycle(&s, "t").0, TaskState::Done);
+    assert_aggregate_rules(&s);
+}
+
 #[test]
 fn a_delivered_task_whose_node_closed_is_done_as_soon_as_the_user_accepts() {
     let mut s = world();

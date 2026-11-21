@@ -1281,7 +1281,7 @@ fn unavailable(state: &alondra_domain_rules::DomainState, action: &ActionId) -> 
     match &interaction.payload {
         _ if interaction.withdrawn => Refusal::Withdrawn,
         InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. } => Refusal::AlreadyAnswered,
-        InteractionPayload::Delivery { acceptance: Some(_), .. } => Refusal::AlreadyAnswered,
+        InteractionPayload::Delivery { acceptance: Some(acceptance), .. } if acceptance.valid => Refusal::AlreadyAnswered,
         _ => Refusal::NoLongerAvailable,
     }
 }
@@ -1528,7 +1528,8 @@ fn map_action(
                 return Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id: Hold::APPROVE.into(),
                     inputs: Default::default(), attachments: vec![] }, stamp("Approved", "Aprobado")));
             }
-            let InteractionPayload::Delivery { targets, acceptance: None, .. } = &interaction.payload else { return None; };
+            let InteractionPayload::Delivery { targets, acceptance, .. } = &interaction.payload else { return None; };
+            if acceptance.as_ref().is_some_and(|acceptance| acceptance.valid) { return None; }
             if interaction.card.plan.is_some() {
                 let choice = alondra_view_model::action_id::plan_choice(action.extra.as_deref()?)?;
                 return Some((Command::DecideProposedPlan { presentation_id: interaction.id.clone(), targets: targets.clone(), choice },
@@ -2917,6 +2918,31 @@ for line in sys.stdin:
         let state = accepting_card("result", Some(pull_request_targets()));
         assert_eq!(accept_title(&state, "result", Lang::En), "Result accepted.");
         assert_eq!(accept_title(&state, "result", Lang::Es), "Resultado aceptado.");
+    }
+
+    // 2026-11-21: an accepted report came back to the inbox once its acceptance was taken back, and
+    // its Seen button answered "You already answered this." while the card stayed open.
+    #[test]
+    fn a_result_whose_acceptance_was_taken_back_is_accepted_again_and_only_a_standing_one_is_answered() {
+        use alondra_domain_rules::{Acceptance, DeliveryTarget};
+        let mut state = accepting_card("result", Some(vec![DeliveryTarget::Text { text: "The report".into() }]));
+        let accept = ActionId::new(Verb::Accept, "result", 1, None).unwrap();
+        let request = ActionRequest {
+            protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
+            data_epoch: "epoch".into(), client: "ios".into(), lang: "en".into(),
+            action_id: accept.to_string(), option_id: None, input: ActionInput::default(),
+        };
+        let mut accepted = |valid: bool| {
+            let InteractionPayload::Delivery { acceptance, .. } = &mut state.interactions.get_mut(&"result".into()).unwrap().payload else { unreachable!() };
+            *acceptance = Some(Acceptance { user_id: "device:1".into(), at_revision: 1, valid });
+            (mapped(&state, &accept, &request, &[], Lang::En), unavailable(&state, &accept))
+        };
+        let (taken_back, _) = accepted(false);
+        let Some((Command::AcceptDelivery { presentation_id, .. }, stamp)) = taken_back else { panic!("the open result is accepted again") };
+        assert_eq!((presentation_id.0.as_str(), stamp.as_str()), ("result", "Seen"));
+        let (standing, why) = accepted(true);
+        assert!(standing.is_none(), "a standing acceptance is not accepted twice");
+        assert_eq!(why, Refusal::AlreadyAnswered);
     }
 
     struct ActionHome(crate::test_support::Directory);
