@@ -1,5 +1,5 @@
-name = "large conversations the usage limit held past their prompt cache go on in new sessions, which write little to the cache, though the request that hit the limit answered with no tokens"
-max_virtual = "6h"
+name = "large conversations the usage limit held past their prompt cache go on in new sessions, which write little to the cache, though the request that hit the limit answered with no tokens; a result accepted hours later still closes, and its cleanup goes on in another new session that does not read the whole conversation again"
+max_virtual = "10h"
 
 [[step]]
 do = "request"
@@ -120,3 +120,70 @@ sessions = 2
 check = "cache_written"
 task = "t2"
 max = 20000
+
+[[step]]
+do = "conversation"
+task = "t1"
+tokens = 250000
+
+[[step]]
+do = "present"
+task = "t1"
+id = "notes"
+text = "The release notes and the changelog"
+body = "The release notes and the changelog are written"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "advance"
+by = "2h"
+
+[[step]]
+do = "press"
+presentation = "notes"
+action = "accept"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "accepted-hours-later"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "closing"
+
+[[step.expect]]
+check = "cache_written"
+task = "t1"
+max = 20000
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "The release notes and the changelog are written"
+present = false
+
+[[step]]
+do = "cleanup_done"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "30m"
+
+[[step]]
+do = "checkpoint"
+name = "closed-after-the-cleanup"
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "done"
