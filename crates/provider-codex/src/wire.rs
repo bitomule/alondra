@@ -11,11 +11,33 @@ use std::collections::VecDeque;
 use std::io::{Cursor, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// What the host may hold without acknowledgement: events that arrive while a command waits for its receipt.
 const MAX_QUEUED_EVENTS: usize = 16_384;
 const MAX_QUEUED_BYTES: usize = 64 * 1024 * 1024;
+
+/// How long a command waits for its receipt.
+pub(super) enum ReceiptWait {
+    /// The write and the receipt, both by this deadline.
+    Within(Instant),
+    /// As long as the host lives, for a receipt the host gives only once its native process has
+    /// done its part. The I/O timeout bounds the write, and the read of each frame once the host
+    /// began writing it; a host that ends closes its end, which answers the wait at once.
+    WhileTheHostLives(Duration),
+}
+impl ReceiptWait {
+    /// When the next frame must have arrived, once the host may be read.
+    fn next_frame(&self, probe: &UnixStream) -> Result<Instant, AdapterError> {
+        match self {
+            Self::Within(deadline) => Ok(*deadline),
+            Self::WhileTheHostLives(io) => {
+                while !alondra_foundation::readable(probe, *io).map_err(disconnected)? {}
+                Instant::now().checked_add(*io).ok_or(AdapterError::Disconnected)
+            }
+        }
+    }
+}
 
 /// Who may command an owned host: what its fence and execution name, and the owner's generation.
 /// The store's `OwnerGrant` owns a task's host; an orchestrator batch's claim owns its own.
@@ -187,10 +209,10 @@ impl Connection {
         &mut self,
         owner: &impl HostOwner,
         prepared: &PreparedCommand,
-        deadline: Instant,
+        wait: ReceiptWait,
     ) -> Result<Handoff, AdapterError> {
         self.check_owner(owner)?;
-        let result = self.submit_inner(prepared, deadline);
+        let result = self.submit_inner(prepared, wait);
         if result.is_err() {
             self.failed = true;
         }
@@ -199,7 +221,7 @@ impl Connection {
     fn submit_inner(
         &mut self,
         prepared: &PreparedCommand,
-        deadline: Instant,
+        wait: ReceiptWait,
     ) -> Result<Handoff, AdapterError> {
         let mut input = FramedReader::new(Cursor::new(prepared.bytes()));
         let received = input
@@ -221,9 +243,14 @@ impl Connection {
         if self.commands.record(command).map_err(protocol)? == CommandStatus::Duplicate {
             return Err(invalid("command replay requires positive reconciliation"));
         }
-        write(&mut self.writer, prepared.bytes(), deadline)?;
+        let written = match wait {
+            ReceiptWait::Within(deadline) => deadline,
+            ReceiptWait::WhileTheHostLives(io) => Instant::now().checked_add(io).ok_or(AdapterError::Disconnected)?,
+        };
+        write(&mut self.writer, prepared.bytes(), written)?;
         let expected_command = command.command_id.clone();
         loop {
+            let deadline = wait.next_frame(&self.probe)?;
             let received = receive(&mut self.reader, &self.read_deadline, deadline)?;
             match &received.frame().body {
                 Body::Receipt(receipt) => {
@@ -570,7 +597,6 @@ fn read_bounded<R: Read + TimeoutReader>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     #[test]
     fn lane_replay_precedes_durable_commit_without_skipping_wire_evidence() {
         let mut cursor = LaneCursor {
@@ -646,16 +672,16 @@ mod tests {
             })
         }
     }
-    // A host of an earlier release announces the capabilities it was built with. An action it did
-    // not announce is refused before any offer, and not a byte of it reaches the host, which might
-    // not even read it.
-    #[test]
-    fn an_action_the_host_did_not_announce_is_refused_without_reaching_it() {
-        let owner = FixtureOwner("epoch-test".into());
+    /// A host on the other end of a pair, past its hello, challenge and the owner's attach: it hands
+    /// its reader and writer to `then` and returns what that returns.
+    fn attached_host<T: Send + 'static>(
+        owner: &FixtureOwner,
+        then: impl FnOnce(FramedReader<UnixStream>, alondra_codex_protocol::FramedWriter<UnixStream>) -> T + Send + 'static,
+    ) -> (Connection, std::thread::JoinHandle<T>) {
         let control = ControlIdentity { profile_id: "default".into(), account_id: "account-test".into(), host_instance_id: "instance-test".into(), secret: [7; 32], host_release: "0.3.5".into() };
         let launched = LaunchedAs { host_sha256: "b".repeat(64), executable_sha256: "c".repeat(64), sdk_version: SDK_VERSION.into() };
         let (daemon, host) = UnixStream::pair().unwrap();
-        let (fence, execution) = (fence(&owner, &control), execution(&owner));
+        let (fence, execution) = (fence(owner, &control), execution(owner));
         let hello = Frame::new(Body::Hello(alondra_codex_protocol::Hello {
             protocol_versions: vec![alondra_codex_protocol::PROTOCOL_VERSION],
             capabilities: ["streaming_input", "owner_attach", "commit_ack", "exact_decisions", "native_account_policy", "causal_child_continuations"].map(String::from).to_vec(),
@@ -665,8 +691,8 @@ mod tests {
             sdk_version: launched.sdk_version.clone(),
         }));
         let challenge = Frame::new(Body::Challenge(alondra_codex_protocol::Challenge {
-            fence: fence.clone(),
-            execution: execution.clone(),
+            fence,
+            execution,
             host_instance_id: control.host_instance_id.clone(),
             nonce: "d".repeat(64),
             executable_sha256: launched.executable_sha256.clone(),
@@ -686,20 +712,52 @@ mod tests {
                 owner_generation: attach.owner_generation,
                 proof,
             }))).unwrap();
-            std::iter::from_fn(|| reader.read().ok().flatten()).count()
+            then(reader, writer)
         });
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let mut connection = Connection::attach(daemon, &owner, &launched, &control, 0, deadline).unwrap();
-        let clear = connection.prepare(&owner, Command {
-            fence,
-            execution,
+        let connection = Connection::attach(daemon, owner, &launched, &control, 0, Instant::now() + Duration::from_secs(30)).unwrap();
+        (connection, host)
+    }
+    fn command(connection: &Connection, owner: &FixtureOwner, action: alondra_codex_protocol::Action) -> PreparedCommand {
+        connection.prepare(owner, Command {
+            fence: connection.pending_attach.fence.clone(),
+            execution: connection.pending_attach.execution.clone(),
             command_id: "command-test".into(),
             deadline_ms: 123_456_789,
-            action: alondra_codex_protocol::Action::McpClearAuth { server: "linear".into() },
-        }).unwrap();
-        assert_eq!(connection.submit(&owner, &clear, deadline).unwrap(), Handoff::RefusedBeforeOffer);
+            action,
+        }).unwrap()
+    }
+    fn first_input(connection: &Connection, owner: &FixtureOwner) -> PreparedCommand {
+        command(connection, owner, alondra_codex_protocol::Action::Start {
+            cwd: "/Users/ana/work".into(),
+            input_id: alondra_foundation::MessageUuid::new("00000000-0000-4000-8000-000000000001").unwrap(),
+            prompt: "Write the release notes".into(),
+        })
+    }
+    // A host of an earlier release announces the capabilities it was built with. An action it did
+    // not announce is refused before any offer, and not a byte of it reaches the host, which might
+    // not even read it.
+    #[test]
+    fn an_action_the_host_did_not_announce_is_refused_without_reaching_it() {
+        let owner = FixtureOwner("epoch-test".into());
+        let (mut connection, host) = attached_host(&owner, |mut reader, _| std::iter::from_fn(|| reader.read().ok().flatten()).count());
+        let clear = command(&connection, &owner, alondra_codex_protocol::Action::McpClearAuth { server: "linear".into() });
+        assert_eq!(connection.submit(&owner, &clear, ReceiptWait::Within(Instant::now() + Duration::from_secs(30))).unwrap(), Handoff::RefusedBeforeOffer);
         drop(connection);
         assert_eq!(host.join().unwrap(), 0, "the host got nothing after the attach");
+    }
+    // An input waits for its receipt as long as the host lives, and the host that ends answers
+    // that wait at once: the input is in doubt, and nothing waited on a clock to know it.
+    #[test]
+    fn a_host_that_ends_before_its_receipt_ends_the_wait_for_it() {
+        let owner = FixtureOwner("epoch-test".into());
+        let (mut connection, host) = attached_host(&owner, |mut reader, _| {
+            let Some(Frame { body: Body::Command(_), .. }) = reader.read().unwrap() else { panic!("the owner sends its input") };
+        });
+        let start = first_input(&connection, &owner);
+        let wait = ReceiptWait::WhileTheHostLives(Duration::from_secs(24 * 60 * 60));
+        let answer = connection.submit(&owner, &start, wait);
+        assert!(answer.is_err(), "{answer:?}");
+        host.join().unwrap();
     }
     #[test]
     fn a_task_host_that_cannot_carry_decisions_is_refused_and_an_orchestrator_host_needs_none() {

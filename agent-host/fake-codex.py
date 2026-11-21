@@ -92,6 +92,9 @@ for line in sys.stdin:
     result = {}
     if method == 'config/read': result = fixture.get('configRead', {'config': {'mcp_servers': {name: {'command': '/untrusted'} for name in json.loads(os.environ.get('ALONDRA_FAKE_INHERITED_MCP_NAMES', '["inherited-danger"]'))}}})
     elif method in ['thread/start', 'thread/resume']:
+        if fixture.get('threadOpenBarrier'):
+            with open(fixture['threadOpenReady'], 'wb', buffering=0) as ready: ready.write(b'R')
+            with open(fixture['threadOpenBarrier'], 'rb', buffering=0) as release: release.read(1)
         if method == 'thread/start': thread = fixture.get('freshThreadId', thread)
         else: thread = message.get('params', {}).get('threadId', thread)
         retain_thread(thread, message.get('params', {}).get('cwd'))

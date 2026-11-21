@@ -1,6 +1,6 @@
 use crate::normalizer::Normalizer;
 use crate::records::{InputRecord, SessionRecord};
-use crate::wire::{Connection, ControlIdentity, LaunchedAs, execution, fence};
+use crate::wire::{Connection, ControlIdentity, LaunchedAs, ReceiptWait, execution, fence};
 use alondra_agent_application::{DurableAdapter, InputMetadata, ObservationNormalizer, invocation};
 use alondra_codex_protocol::{
     Action, Body, Command, ControlResult, Decision as WireDecision, DecisionKind as WireKind, FramedReader,
@@ -738,6 +738,9 @@ impl CodexAdapter {
     }
     fn send(&mut self, stamp: &ExecutionStamp, command: &PreparedCommand) -> Result<Handoff, AdapterError> {
         let deadline = self.deadline()?;
+        self.send_waiting(stamp, command, ReceiptWait::Within(deadline))
+    }
+    fn send_waiting(&mut self, stamp: &ExecutionStamp, command: &PreparedCommand, wait: ReceiptWait) -> Result<Handoff, AdapterError> {
         let host = self.host.as_ref().ok_or(AdapterError::Disconnected)?;
         if stamp != host.owner().execution() {
             return Err(AdapterError::InvalidObservation);
@@ -745,7 +748,7 @@ impl CodexAdapter {
         self.connection
             .as_mut()
             .ok_or(AdapterError::Disconnected)?
-            .submit(host.owner(), command, deadline)
+            .submit(host.owner(), command, wait)
     }
     /// Re-sends the exact recorded command bytes of an unresolved dispatch and reads the host's
     /// definitive answer. The owner is rechecked; the lane is the adopted one.
@@ -988,7 +991,10 @@ impl Adapter for CodexAdapter {
         if invocation.binding != &self.binding {
             return Err(AdapterError::InvalidObservation);
         }
-        self.send(invocation.execution, command)
+        // The host answers an input once Codex has the thread it goes to, which a new host opens
+        // first: what that takes is Codex's, as is the time a turn takes, and the host says how
+        // it went, or ends.
+        self.send_waiting(invocation.execution, command, ReceiptWait::WhileTheHostLives(self.configuration.io_timeout))
     }
     fn next(&mut self) -> Result<Option<OrderedObservation>, AdapterError> {
         let deadline = self.deadline()?;

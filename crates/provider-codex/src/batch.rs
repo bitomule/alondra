@@ -3,7 +3,7 @@
 //! host. What the batch achieved is decided by the caller from these messages, never here.
 use crate::adapter::{CodexConfiguration, bootstrap, random_uuid};
 use crate::records::SessionRecord;
-use crate::wire::{Connection, ControlIdentity, HostOwner, execution, fence};
+use crate::wire::{Connection, ControlIdentity, HostOwner, ReceiptWait, execution, fence};
 use alondra_codex_protocol::{Action, Body, Command, FailureSurface, Observation, SdkEventKind, SdkFailure};
 use alondra_engine_ports::agent_host::{HostLaunch, OwnedHost};
 use alondra_foundation::{CommandId, MessageUuid};
@@ -219,7 +219,7 @@ impl<O: HostOwner> BatchHost<O> {
             action,
         };
         let prepared = self.connection.prepare(owner, command)?;
-        self.connection.submit(owner, &prepared, deadline(self.io_timeout)?)
+        self.connection.submit(owner, &prepared, ReceiptWait::Within(deadline(self.io_timeout)?))
     }
 }
 
