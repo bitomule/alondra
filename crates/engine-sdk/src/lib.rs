@@ -38,6 +38,8 @@ pub mod engine_fixtures;
 mod engine_tests;
 pub mod idle_release;
 pub mod machine_hooks;
+#[cfg(all(test, not(feature = "real-hosts")))]
+pub mod model_fixture;
 pub mod provider_transition;
 pub mod sdk_owner;
 pub mod start_retries;

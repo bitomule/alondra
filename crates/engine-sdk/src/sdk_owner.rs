@@ -2718,7 +2718,7 @@ impl Drop for Owner {
 
 #[path = "sdk_owner/fixtures.rs"]
 pub mod fixtures;
-#[cfg(test)]
+#[cfg(all(test, feature = "real-hosts"))]
 #[path = "sdk_owner/tests.rs"]
 mod tests;
 
@@ -3084,5 +3084,5 @@ impl crate::hosts::SdkHosts for Hosts {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "real-hosts"))]
 mod pause_tests;

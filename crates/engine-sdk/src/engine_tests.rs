@@ -1,14 +1,18 @@
 //! The tests of the engine's and the gate's modules that start nodes through the SDK, so they run
 //! with this crate: each file is named after the module it tests.
-#[cfg(test)]
+#[cfg(all(test, feature = "real-hosts"))]
 mod accounts_tests;
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod orchestrator_tools_tests;
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod owner_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "real-hosts"))]
 mod pauses_tests;
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod system_command_tests;
 
 /// The SQLite-backed fixtures of an SDK node's owner, which the engine's tests share.
+#[cfg(all(test, not(feature = "real-hosts")))]
 #[path = "../../daemon-engine/src/wiring/owner_fixtures.rs"]
 pub(crate) mod owner_fixtures;
 
@@ -24,7 +28,10 @@ pub fn wired() {
 pub fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<crate::domain_runtime::DomainRuntime> {
     let runtime = crate::wiring::open_at(home, database, files)?;
     alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
+    #[cfg(feature = "real-hosts")]
     alondra_agent_runtime::wire(runtime.ports(), Default::default());
+    #[cfg(not(feature = "real-hosts"))]
+    alondra_engine_doubles::agent_host::wire(runtime.ports());
     alondra_engine_admission::for_tests(&runtime);
     Ok(runtime)
 }

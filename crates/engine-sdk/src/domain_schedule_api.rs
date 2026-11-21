@@ -381,7 +381,7 @@ fn mutation_response(method: &str, path: &str, body: Option<&Value>, outcome: &d
     json!({"status":if method == "POST" {201} else {200},"body":body})
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod tests {
     use super::*;
     use std::fs;
@@ -437,7 +437,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn encrypted_crud_and_manual_run_replay_original_receipts() {
         let fixture = Fixture::new();
-        let _sdk = crate::sdk_owner::fixtures::SdkLaunches::enable(&fixture.domain, &fixture.home);
+        let _sdk = crate::model_fixture::SdkLaunches::enable(&fixture.domain, &fixture.home);
         let draft = Fixture::draft();
         let digest = [7u8; 32];
         let create = || encrypted_mutation(&fixture.domain, &fixture.home, "phone",

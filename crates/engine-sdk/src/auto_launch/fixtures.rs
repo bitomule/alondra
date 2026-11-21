@@ -6,6 +6,9 @@ use super::*;
 use alondra_engine_admission::AdmissionOf as _;
 use crate::domain_orchestrator_tools::{LaunchBody, launch};
 use alondra_daemon_engine_model::LaunchPlan;
+#[cfg(all(test, not(feature = "real-hosts")))]
+use crate::model_fixture::SdkLaunches;
+#[cfg(any(not(test), feature = "real-hosts"))]
 use crate::sdk_owner::fixtures::SdkLaunches;
 use alondra_domain_rules::{
     Actor, StartProblem,

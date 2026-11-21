@@ -17,7 +17,7 @@ import re
 import sys
 from pathlib import Path
 
-TEST_ONLY = re.compile(r"#\[cfg\(test\)\]")
+TEST_ONLY = re.compile(r'#\[cfg\((?:test|all\(test,\s*(?:not\()?feature\s*=\s*"real-hosts"\)?\))\)\]')
 MOD = re.compile(r"((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+([a-z_0-9]+)\s*;")
 PATH = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 FIXTURES = re.compile(r"(?:fixtures|testing|fake|[a-z_0-9]+_fixtures)")

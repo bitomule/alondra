@@ -230,11 +230,12 @@ moves of a task to another provider or account (`provider_transition`, `account_
   node whose input was not taken (`untaken`) and the record of a failed start (`start_failures`).
 - `sdk_handover` keeps in the engine what reaches a `claude --bg` node that is moving and how Alondra
   stops one; the moves themselves are `bg_handover`.
-- Each crate of the engine has one test target. The engine's and the gate's tests that start nodes
-  through the SDK run in `//crates/engine-sdk:engine_sdk_test`, next to its own, with the hosts and
-  the fake Claude and Codex they need, and never a binary of the root (see "Tests leave the root");
-  the engine's own target needs only the Node host and a fake native Claude, and no test runs on a
-  name filter any more.
+- The SDK's tests run in two targets of the same sources, split by the feature `real-hosts`:
+  `//crates/engine-sdk:engine_sdk_test` launches nodes on the doubled hosts with the Claude host
+  model and carries no host executable; `//crates/engine-sdk:engine_sdk_host_test` compiles only
+  the tests that need the real Node or Codex host or a fake native Claude or Codex (see "The SDK's
+  tests on the double"). Neither carries a binary of the root (see "Tests leave the root"), and no
+  test runs on a name filter.
 
 ## Output adapters
 
@@ -524,6 +525,51 @@ needs. No test runs on the double yet.
 - Still around the port, for the steps that move tests onto the double: the Codex provider asks
   `process-group` for its native process, and the engine and the providers read a host folder's
   `host.lock` by its path in a few places, which is why the double writes the bootstrap there too.
+
+## The SDK's tests on the double (phase 5, 2026-11-19)
+
+- `//crates/provider-claude:claude_host_model` is the Claude host the scenarios faked, out of
+  `scenarios/src/claude_host.rs`: it speaks the host protocol (hello, challenge, attach, receipts,
+  journalled events, acknowledgements) and plays the native Claude behind it. It serves the
+  doubled hosts of `engine-doubles` through `Serve`, and the scenarios' relay processes through
+  `Process`, so the scenarios use it unchanged. How a turn goes is `Turns`: the test ends it
+  (`Played`, the scenarios), Claude answers each prompt at once as the fake native Claude does
+  (`Answered`, with `consume-and-hold` kept open and the prompt written to the session's
+  transcript), or Claude never takes a prompt up (`Ignored`). It records each native start (its
+  session, the one it resumes, the history it had, its folder, command line and environment) and
+  every prompt, which is what the tests read of the fake's capture files.
+- `engine-sdk/src/model_fixture.rs` (`SdkLaunches`) gives a test's domain the doubled hosts and the
+  model, with files nobody runs in place of the executables. `auto_launch` (28 tests), the
+  orchestrator's launch tools (110) and the scheduler (29) use it and start no process.
+- `engine_sdk_test` and `engine_sdk_host_test` are the same sources; the feature `real-hosts`
+  compiles the tests that need the real Node or Codex host or a fake native Claude or Codex
+  (`sdk_owner`'s tests, Codex's among them, `account_move`, `bg_handover`, the engine's pause and
+  account tests) and leaves the rest out, and without it the engine's test runtime wires the
+  doubled hosts in place of `agent-runtime`. The fixtures other crates' tests link
+  (`auto_launch::fixtures`, `engine_fixtures::orchestrator_tools`) are production modules and keep
+  the real hosts; only this crate's own tests build them on the model.
+- `provider-claude/src/host_cases/` holds the behaviour cases, one file per family (turns, the
+  native command line): `sdk_worker_test` runs them on the real Node host with the fake native
+  Claude, `claude_host_model_test` on the model, with the same expectations. A model that answered
+  a prompt without starting it failed the turns case while the real host passed it.
+  `agent-host:sdk_worker_test` checks the worker's `--model`, `--effort`, `--disallowedTools`,
+  `--session-id` and `--resume` itself.
+
+Measured on the shared Mac under load, one run each:
+
+| | Before | After |
+|---|---:|---:|
+| `engine_sdk_test` | 222 s, about 550 tests | 18.8 s, 260 tests |
+| `engine_sdk_host_test` | (none) | 144.5 s alone, 164 s in the edit below |
+| Median per test run serially: `auto_launch` / launch tools / scheduler | 0.9 to 1.8 s with a host | 0.079 / 0.062 / 0.037 s |
+| `edit_bench` on `engine-sdk/src/sdk_owner.rs`: edit + test | 247 s (main at 92cc6f1, above) | 187 s, critical path 171 s |
+
+- The edit + test still waits for `engine_sdk_host_test`, now the longest target; its goal
+  (≤ 110 s) is not met. What is left in it is `sdk_owner`'s own tests (144, Codex's 70 among
+  them), which need the real hosts or behaviours of the fake native Claude the model does not
+  play yet (decisions, background commands, refusals, resumption without history).
+- No check fails when a host executable goes back into `engine_sdk_test`'s `data`:
+  `crate_layers_test` only follows the root.
 
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 

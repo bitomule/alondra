@@ -6,7 +6,7 @@ use super::*;
 use alondra_engine_admission::AdmissionOf as _;
 use crate::domain_orchestrator_tools::{LaunchBody, launch};
 use alondra_daemon_engine_model::LaunchPlan;
-use crate::sdk_owner::fixtures::SdkLaunches;
+use crate::model_fixture::SdkLaunches;
 use alondra_domain_rules::{
     Actor, StartProblem,
     Command, CommandEnvelope, DeliveryTarget, InteractionId, MergeMethod, NodeEnd, PROTOCOL_VERSION, PrState, TaskId,

@@ -1149,6 +1149,9 @@ fn storage(error: alondra_store::Error) -> AdapterError {
 #[cfg(all(test, feature = "sdk_fixture"))]
 #[path = "sdk_tests.rs"]
 mod sdk_tests;
+#[cfg(all(test, any(feature = "sdk_fixture", feature = "host_model")))]
+#[path = "host_cases_tests.rs"]
+mod host_cases_tests;
 
 #[cfg(test)]
 #[path = "facade_tests.rs"]

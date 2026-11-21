@@ -70,7 +70,7 @@ pub fn sweep(domain: &DomainRuntime, root: &Path) -> std::io::Result<usize> {
     Ok(removed)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod tests {
     use super::*;
     use std::time::Duration;

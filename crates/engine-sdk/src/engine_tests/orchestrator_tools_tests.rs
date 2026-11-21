@@ -20,7 +20,7 @@ use crate::node_close::Answer;
 use crate::node_push::testing::Node;
 use crate::sdk_handover::BgSessions;
 use alondra_daemon_engine_model::LaunchOptions;
-use crate::sdk_owner::fixtures::SdkLaunches;
+use crate::model_fixture::SdkLaunches;
 use crate::test_support::Directory;
 use alondra_domain_rules::{AttachmentRef, Command, CommandEnvelope, ModelChooser, PROTOCOL_VERSION, TaskModel, TaskState};
 use alondra_core::options::OptionsFile;
@@ -323,7 +323,7 @@ async fn a_launch_carries_the_requests_choices_a_bound_capability_and_takes_the_
     let state = f.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(agent.clone()));
     assert_eq!(state.agents[&agent].name, "editor");
-    let capture: Value = serde_json::from_slice(&std::fs::read(&f.sdk().capture).unwrap()).unwrap();
+    let capture: Value = f.sdk().capture();
     assert!(capture["env_keys"].as_array().unwrap().iter().any(|key| key == "ALONDRA_DOMAIN_CAPABILITY"), "the node gets its capability");
     use sha2::Digest;
     let bound: String = sha2::Sha256::digest(agent.0.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
@@ -1845,7 +1845,7 @@ fn week_used(f: &Fixture, account: &str, used: f64) {
 }
 
 fn config_dir_sha256(f: &Fixture) -> Option<String> {
-    let capture: Value = serde_json::from_slice(&std::fs::read(&f.sdk().capture).unwrap()).unwrap();
+    let capture: Value = f.sdk().capture();
     capture["env_value_sha256"]["CLAUDE_CONFIG_DIR"].as_str().map(str::to_owned)
 }
 

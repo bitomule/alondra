@@ -749,7 +749,7 @@ fn raise_card(domain: &DomainRuntime, task: &Task, stop: CloseStop, detail: &str
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod tests;
 
 /// Settles the tasks a commit left due with nobody to close them.

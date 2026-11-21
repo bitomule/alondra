@@ -162,7 +162,7 @@ fn escaped(text: &str) -> String {
     text.lines().map(|line| if line.starts_with(TURN) { format!("\\{line}") } else { line.to_owned() }).collect::<Vec<_>>().join("\n")
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod tests {
     use super::*;
 

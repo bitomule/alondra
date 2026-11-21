@@ -3,7 +3,7 @@ load("//tools:tree.bzl", "repo_tree")
 load(":build_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_doc_test")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library")
 load("//tools:rust_sources.bzl", "production_sources")
 
 _PROVIDER_SOURCES = glob(["src/*.rs"], exclude = ["src/*_tests.rs"])
@@ -48,11 +48,15 @@ low_opt_rust_test(
     env = {"HOME": "."},
 )
 
+# The behaviour cases of a Claude host: sdk_worker_test runs them on the real Node host,
+# claude_host_model_test on the model.
+_HOST_CASES = ["src/host_cases_tests.rs"] + glob(["src/host_cases/*_tests.rs"])
+
 low_opt_rust_test(
     name = "sdk_worker_test",
     size = "small",
     crate_root = "src/lib.rs",
-    srcs = _PROVIDER_TEST_SOURCES + ["src/sdk_tests.rs"],
+    srcs = _PROVIDER_TEST_SOURCES + ["src/sdk_tests.rs"] + _HOST_CASES,
     crate_name = "alondra_provider_claude",
     version = "0.1.0",
     crate_features = ["sdk_fixture"],
@@ -75,6 +79,53 @@ low_opt_rust_test(
         "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
         "TEST_EXECS": "$(rootpath //agent-host:pinned_node) /usr/bin/python3 tmpdir",
     },
+)
+
+# The Claude host and its native Claude played in a test's own process: the doubled hosts of
+# engine-doubles serve with it, and the scenarios' relays too. Tests only.
+rust_library(
+    name = "claude_host_model",
+    testonly = True,
+    srcs = glob(["model/**/*.rs"]),
+    compile_data = ["//crates/agent-protocol:fixtures/sdk-errors.json"],
+    crate_name = "alondra_claude_host_model",
+    crate_root = "model/fake_claude_host.rs",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//crates/engine-sdk:__pkg__", "//crates/scenarios:__pkg__"],
+    deps = [
+        "//crates/agent-protocol:agent_protocol",
+        "//crates/core:alondra_core",
+        "//crates/engine-doubles:engine_doubles",
+        "//crates/engine-ports:engine_ports",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:tokio",
+    ],
+)
+
+low_opt_rust_test(
+    name = "claude_host_model_test",
+    size = "small",
+    crate_root = "src/lib.rs",
+    srcs = _PROVIDER_TEST_SOURCES + _HOST_CASES,
+    crate_name = "alondra_provider_claude",
+    version = "0.1.0",
+    crate_features = ["host_model"],
+    edition = "2024",
+    deps = _PROVIDER_DEPS + [
+        ":claude_host_model",
+        "//crates/domain:domain",
+        "//crates/engine-doubles:engine_doubles",
+        "//crates/scenarios-transcript:scenarios_transcript",
+        "//crates/provider-conformance:provider_conformance",
+    ] + all_crate_deps(normal_dev = True),
+    compile_data = [
+        "//crates/domain-store-schema:schema.sql",
+        "//crates/agent-protocol:fixtures/hello.json",
+        "//fixtures/transcripts",
+    ],
+    env = {"HOME": "."},
 )
 
 rust_doc_test(
