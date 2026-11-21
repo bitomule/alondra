@@ -124,7 +124,7 @@ fn an_input_the_provider_holds_is_never_given_up() {
     let mut driver = hand(&slice, "Add the tests first stall-while-held");
     drive_by_hand(&slice, &driver);
     while lifecycle(&slice.domain).obligation().is_some_and(|obligation| obligation.owed != Owed::ReadInput) {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
     wrote_at(&slice, 0);
     assert_eq!(lifecycle(&slice.domain).obligation().map(|obligation| (obligation.party, obligation.owed)), Some((Party::Provider, Owed::ReadInput)));
@@ -146,7 +146,7 @@ fn a_session_that_is_running_is_not_reoffered() {
     let slice = Slice::new();
     let mut driver = hand(&slice, "Add the tests first running-then-silent");
     while lifecycle(&slice.domain).activity() != ActivityView::Working && driver.worker.readable(Duration::from_secs(5)).unwrap() {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
     let mut watch = enforcing_every_deadline();
     for at in [0, 2, 121, 242, 400] {
@@ -168,7 +168,7 @@ fn finished_work_wakes_a_claude_node_after_two_minutes() {
     until_own_work(&slice, &mut driver);
     slice.release_background_command();
     while lifecycle(&slice.domain).activity() != ActivityView::Continuation {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
     let mut watch = Watch::default();
     pass(&slice.domain, &mut watch, 0);
@@ -191,7 +191,7 @@ fn a_notification_turn_that_opens_in_time_gets_no_second_wake() {
     let mut watch = Watch::default();
     let mut seen = false;
     while !seen || matches!(lifecycle(&slice.domain).activity(), ActivityView::Continuation | ActivityView::OwnWork) {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
         if !seen && lifecycle(&slice.domain).activity() == ActivityView::Continuation {
             pass(&slice.domain, &mut watch, 0);
             seen = true;

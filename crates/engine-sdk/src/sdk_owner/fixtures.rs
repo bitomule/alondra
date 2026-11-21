@@ -92,7 +92,7 @@ pub fn advance(driver: &mut Driver) {
     if driver.pending_permits() > 0 {
         driver.step(&|| false).unwrap();
     } else {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
 }
 
@@ -278,7 +278,7 @@ impl Slice {
     pub fn launch_working(&self) -> Driver {
         let mut driver = self.launch_told("consume-and-hold", capabilities());
         while Self::lifecycle(&self.domain).activity() != ActivityView::Working {
-            driver.observe().unwrap();
+            driver.observe_written().unwrap();
         }
         driver
     }
@@ -324,7 +324,7 @@ impl Slice {
     /// Reads the host until Claude's turn has its result, whatever the lifecycle then waits for.
     pub fn read_turn_result(&self, driver: &mut Driver) {
         while self.observations_with("\"type\":\"result\"") == 0 {
-            driver.observe().unwrap();
+            driver.observe_written().unwrap();
         }
     }
 
@@ -451,7 +451,7 @@ pub fn running(pid: libc::pid_t) -> bool {
 /// Reads the host until the task's lifecycle waits only on the background work Claude left running.
 pub fn until_own_work(slice: &Slice, driver: &mut Driver) {
     while lifecycle(&slice.domain).activity() != ActivityView::OwnWork {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
     assert!(background_commands(slice).into_iter().all(running), "the background command runs");
 }
@@ -551,7 +551,7 @@ impl Slice {
     /// Reads the host until its turn is running.
     pub fn until_working(&self, driver: &mut Driver) {
         while lifecycle(&self.domain).activity() != ActivityView::Working {
-            driver.observe().unwrap();
+            driver.observe_written().unwrap();
         }
     }
 }
@@ -734,7 +734,7 @@ impl Slice {
         let before = self.release_before();
         let mut driver = self.launch_with_backend(&before, "background-command", capabilities());
         while lifecycle(&self.domain).activity() != ActivityView::OwnWork {
-            driver.observe().unwrap();
+            driver.observe_written().unwrap();
         }
         let command = self.background_command();
         let session = self.starts()[0]["session"].as_str().unwrap().to_owned();

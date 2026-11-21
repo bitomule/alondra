@@ -47,7 +47,7 @@ pub fn settle(driver: &mut crate::sdk_owner::Driver) {
         if driver.pending_permits() > 0 {
             driver.step(&|| false).unwrap();
         } else {
-            driver.observe().unwrap();
+            driver.observe_written().unwrap();
         }
     }
 }
@@ -68,7 +68,7 @@ impl SdkNode {
     pub fn working() -> Self {
         let mut node = Self::told("consume-and-hold");
         while node.lifecycle().activity() != alondra_domain::ActivityView::Working {
-            node.driver.observe().unwrap();
+            node.driver.observe_written().unwrap();
         }
         node
     }
@@ -110,7 +110,7 @@ impl SdkNode {
     pub fn beside(&self, task: &str) -> crate::sdk_owner::Driver {
         let mut driver = self.beside_told(task, "consume-and-hold");
         while self.activity(task) != alondra_domain::ActivityView::Working {
-            driver.observe().unwrap();
+            driver.observe_written().unwrap();
         }
         driver
     }

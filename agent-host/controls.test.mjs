@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ownedHosts } from './owned-host.mjs';
 import { HOST_CAPABILITIES } from './persistent.js';
 
-const { wire, startHost, own, lines, cleanup, stderr } = ownedHosts('ct-');
+const { root, wire, startHost, own, lines, cleanup, stderr } = ownedHosts('ct-');
 const batch = wire('attach-orchestrator');
 const orchestrator = { model: 'opus', tools: ['Read'], disallowed_tools: [], mcp_servers: {}, plugins: [], settings: {} };
 const controls = (host) => lines(host.capture + '.controls');
@@ -136,7 +138,19 @@ try {
     }
     assert.deepEqual(controls(host), []);
   }
-  console.log('Host controls: each declared control reaches Claude with its receipt; refusals have no effect; a force stop ends a Claude that ignores its interrupt');
+  {
+    // The owner writes a command with its deadline; the Mac sleeps longer than that before the
+    // host reads it. Neither process ran meanwhile: the command is not late, and Claude gets it.
+    const host = startHost('asleep', { nativeEnv: { FIXTURE_SLEPT_FILE: join(root, 'asleep-slept') } });
+    const owner = await own(host);
+    writeFileSync(join(root, 'asleep-slept'), '60000');
+    const launch = await owner.command({ type: 'start', cwd: host.config.native.cwd, input_id: input(1), prompt: 'written before the sleep' }, { deadline_ms: Date.now() + 30000 });
+    assert.deepEqual(launch.outcome, { status: 'accepted', phase: 'offered' }, host.stderr());
+    await sdk(owner, 'result');
+    const late = owner.command({ type: 'mcp_status' }, { deadline_ms: Date.now() - 1 });
+    await assert.rejects(late, /lane closed before expected frame/, 'a command late in the time the Mac was awake is still refused');
+  }
+  console.log('Host controls: each declared control reaches Claude with its receipt; refusals have no effect; a force stop ends a Claude that ignores its interrupt; a command written before the Mac slept is not late');
 } catch (error) {
   console.error(error, stderr());
   process.exitCode = 1;

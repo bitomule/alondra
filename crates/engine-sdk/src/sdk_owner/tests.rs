@@ -266,7 +266,7 @@ fn a_crash_between_commit_and_publication_reconciles_without_a_second_card() {
     let counter = Arc::clone(&acknowledged);
     restarted.on_acknowledge(move || *counter.lock().unwrap() += 1);
     driver.rebind(Arc::clone(&restarted));
-    assert_eq!(driver.observe().unwrap(), alondra_store::ObservationAcceptance::Duplicate,
+    assert_eq!(driver.observe_written().unwrap(), alondra_store::ObservationAcceptance::Duplicate,
         "the host's unacknowledged turn end comes again, and the store knows it already");
     assert_eq!(*acknowledged.lock().unwrap(), 1, "the replay acknowledges the event once");
     assert_eq!(Slice::read_cards(&restarted).len(), 1, "readers see the one card");
@@ -297,7 +297,7 @@ fn the_slice_counts_its_aggregate_loads_decodes_and_index_builds() {
     eprintln!("launch: {launch:?}");
     let mut observations = vec![];
     while driver.pending_permits() == 0 && driver.waits_for_host() {
-        let (_, work) = measured(&slice.domain, || driver.observe().unwrap());
+        let (_, work) = measured(&slice.domain, || driver.observe_written().unwrap());
         eprintln!("observation: {work:?}");
         observations.push(work);
     }
@@ -386,7 +386,7 @@ async fn cancelling_an_sdk_task_with_background_work_stops_its_host_and_ends_the
     let slice = Slice::new();
     let mut driver = slice.launch_with("background");
     while !slice.domain.state().unwrap().lifecycle_journal[&TASK.into()].iter().any(|record| matches!(record, LifecycleRecord::WorkStarted { .. })) {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
     let group = driver.worker.host_group().unwrap();
     let processes = alondra_process_group::members(group).unwrap();
@@ -787,7 +787,7 @@ fn ending_on_a_read_notification(slice: &Slice) -> Driver {
     until_own_work(slice, &mut driver);
     slice.release_background_command();
     while slice.observations_with("\"subtype\":\"task_notification\"") == 0 {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
     slice.run(&system(), "tell-after-notification", Command::TellNode { task_id: TASK.into(), text: "max-turns".into(), from_user: false, answers: None });
     driver.step(&|| false).unwrap();
@@ -840,7 +840,7 @@ fn an_unacknowledged_turn_end_comes_back_to_the_adopting_owner_once() {
     let counter = Arc::clone(&acknowledged);
     restarted.on_acknowledge(move || *counter.lock().unwrap() += 1);
     let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
-    assert_eq!(adopted.observe().unwrap(), alondra_store::ObservationAcceptance::Duplicate, "the host re-sends the unacknowledged turn end and the store knows it");
+    assert_eq!(adopted.observe_written().unwrap(), alondra_store::ObservationAcceptance::Duplicate, "the host re-sends the unacknowledged turn end and the store knows it");
     assert_eq!(*acknowledged.lock().unwrap(), 1, "the replay acknowledges the event once");
     assert_eq!(Slice::read_cards(&restarted).len(), 1, "readers see the one card");
     assert_eq!(slice.stored_cards(), 1, "the replay adds no second card");
@@ -923,7 +923,7 @@ fn archived_receipt_after_an_empty_successor(slice: &Slice, mut driver: Driver) 
     let generation = driver.worker.owner_generation().unwrap();
     driver.domain.own(driver.scope.clone(), |owner| owner.resolve(&stamp, intent, generation, DispatchReceipt::Uncertain)).unwrap();
     while lifecycle(&driver.domain).pending_inputs().iter().any(|pending| pending.as_str() == input) {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
     slice.settle(&mut driver);
     assert!(Slice::read_cards(&driver.domain).iter().any(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)),
@@ -1093,7 +1093,7 @@ fn a_turn_claude_opens_by_itself_on_the_usage_limit_that_holds_its_task_keeps_th
     let ended = |slice: &Slice| slice.domain.read().state().lifecycle_journal[&TaskId::from(TASK)].iter()
         .filter(|record| matches!(record, LifecycleRecord::TurnEnded { .. })).count();
     while ended(&slice) < 2 {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
     assert!(!driver.host_to_replace(), "the owner keeps its host");
     let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
@@ -1509,7 +1509,7 @@ fn unknown_native_commands_recover_after_rollback_unacknowledged_commit_and_host
             message["command_uuid"] == "30000000-0000-4000-8000-000000000001") {
             break batch;
         }
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     };
     let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
     let observer = slice.observer();
@@ -1535,11 +1535,11 @@ fn unknown_native_commands_recover_after_rollback_unacknowledged_commit_and_host
     assert_eq!(head(), i64::try_from(queued.cursor).unwrap());
     let restarted = slice.restart();
     driver.rebind(Arc::clone(&restarted));
-    assert_eq!(driver.observe().unwrap(), alondra_store::ObservationAcceptance::Duplicate);
+    assert_eq!(driver.observe_written().unwrap(), alondra_store::ObservationAcceptance::Duplicate);
     assert_eq!(observer.query_row("SELECT count(*) FROM provider_observations WHERE cursor=?1", [i64::try_from(queued.cursor).unwrap()], |r| r.get::<_, i64>(0)).unwrap(), 1);
     let started = driver.worker.poll().unwrap().unwrap();
     assert_eq!(alondra_provider_claude::sdk_message(&started).unwrap()["state"], "started");
-    driver.observe().unwrap();
+    driver.observe_written().unwrap();
     let completed = driver.worker.poll().unwrap().unwrap();
     assert_eq!(alondra_provider_claude::sdk_message(&completed).unwrap()["state"], "completed");
     kill_host_and_daemon(driver);
@@ -1692,7 +1692,7 @@ fn resumed_with_an_unread_message(slice: &Slice) -> (Arc<DomainRuntime>, Driver)
     let mut resumed = slice.take_over(&restarted);
     resumed.step(&|| false).unwrap();
     while lifecycle(&restarted).activity() != ActivityView::Working {
-        resumed.observe().unwrap();
+        resumed.observe_written().unwrap();
     }
     let state = restarted.state().unwrap();
     let tell = Command::TellNode { task_id: TASK.into(), text: "[From the orchestrator · 17:42] Keep the journal's old rows".into(), from_user: false, answers: None };
@@ -1700,7 +1700,7 @@ fn resumed_with_an_unread_message(slice: &Slice) -> (Arc<DomainRuntime>, Driver)
     assert_eq!(resumed.pending_permits(), 1, "the message goes to the host while the turn runs");
     resumed.step(&|| false).unwrap();
     while !slice.prompts().last().is_some_and(|prompt| prompt.ends_with("Keep the journal's old rows")) {
-        resumed.observe().unwrap();
+        resumed.observe_written().unwrap();
     }
     assert_eq!(lifecycle(&restarted).pending_inputs().len(), 1, "it is not read yet");
     (restarted, resumed)
@@ -2032,7 +2032,7 @@ async fn try_again_on_a_task_whose_ended_host_left_a_refused_plan_resumes_its_se
     crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true).await.unwrap();
     driver.step(&|| false).unwrap();
     while !driver.worker.poll().unwrap().is_some_and(|batch| String::from_utf8_lossy(&batch.evidence).contains("decision_requested")) {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
     kill_host_and_daemon(driver);
     let refuse = |refused: bool| std::fs::set_permissions(&slice.backend.state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
@@ -2130,7 +2130,7 @@ fn a_doubtful_answer_goes_again_to_the_resumed_session_flagged_unasked() {
     instruct(&slice.domain, "Add the tests first unread");
     assert!(driver.claim_record_and_offer_without_receipt(), "the host offered the answer");
     while slice.prompts().len() < 2 {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
     kill_host_and_daemon(driver);
     let restarted = slice.restart();

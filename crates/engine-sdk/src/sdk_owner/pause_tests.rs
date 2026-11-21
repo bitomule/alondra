@@ -141,7 +141,7 @@ fn idle_driver_steps_reach_the_event_wait_without_querying_pause_again() {
     let message = alondra_provider_claude::sdk_message(&completed).unwrap();
     assert_eq!(message["type"], "command_lifecycle");
     assert_eq!(message["state"], "completed");
-    driver.observe().unwrap();
+    driver.observe_written().unwrap();
     assert!(!driver.paused());
     assert_eq!(driver.pending_permits(), 0);
     assert!(!driver.waits_for_host());

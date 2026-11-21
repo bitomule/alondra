@@ -90,9 +90,9 @@ export function ownedHosts(prefix) {
     await owner.send(attach);
     await owner.next((frame) => frame.body.type === 'attached');
     let serial = 0;
-    owner.command = async (action) => {
+    owner.command = async (action, { deadline_ms = Date.now() + 60000 } = {}) => {
       const id = `command-${++serial}`;
-      await owner.send({ type: 'command', fence: config.fence, execution: config.execution, command_id: id, deadline_ms: Date.now() + 60000, action });
+      await owner.send({ type: 'command', fence: config.fence, execution: config.execution, command_id: id, deadline_ms, action });
       const receipt = await owner.next((frame) => frame.body.type === 'receipt' && frame.body.command_id === id);
       return { id, outcome: receipt.body.outcome, at: owner.frames.indexOf(receipt) };
     };
