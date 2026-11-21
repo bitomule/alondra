@@ -547,9 +547,10 @@ needs. No test runs on the double yet.
   compiles the tests that need the real Node or Codex host or a fake native Claude or Codex
   (`sdk_owner`'s tests, Codex's among them, `account_move`, `bg_handover`, the engine's pause and
   account tests) and leaves the rest out, and without it the engine's test runtime wires the
-  doubled hosts in place of `agent-runtime`. The fixtures other crates' tests link
-  (`auto_launch::fixtures`, `engine_fixtures::orchestrator_tools`) are production modules and keep
-  the real hosts; only this crate's own tests build them on the model.
+  doubled hosts in place of `agent-runtime`. The fixtures other crates' tests use
+  (`engine_fixtures`: the owner's slice, the automatic launches, the orchestrator's tools) are in no
+  library: each test crate compiles them as a module of its own and says which hosts they launch on
+  (`crate::engine_tests::SdkLaunches`), the real ones above this crate and the model here.
 - `provider-claude/src/host_cases/` holds the behaviour cases, one file per family (turns, the
   native command line): `sdk_worker_test` runs them on the real Node host with the fake native
   Claude, `claude_host_model_test` on the model, with the same expectations. A model that answered
@@ -587,15 +588,19 @@ one runtime. `the_daemon_implements_every_port` requires it.
   them, so its other callers did not change.
 - The engine is put together in `alondrad` (`open`, `open_at` and the ordered commit observers);
   `daemon-server` receives the opener from the root (`preflight::run`, `DomainDaemon::open`). The
-  engine's tests open it with a copy of the observers (`engine_sdk::engine_fixtures`), and
+  engine's tests open it with a copy of the observers (`engine-sdk/src/engine_assembly.rs`), and
   `the_engines_tests_hear_of_commits_as_the_daemon_does` fails when the two lists differ or change order.
-- **Not removed yet:** the fixtures compiled into the `engine-sdk` library still open the whole
-  engine, so its Bazel target keeps `daemon-engine` and `engine-admission` as dependencies and
-  `LAYER_EXCEPTIONS` keeps their two entries. Moving those fixtures is the per-layer tests task
-  (`engine_tests/*`, `bg_handover`, the `claude --bg` close, `auto_launch`'s real start and the
-  `sdk_owner` tests that need the engine go to `daemon-server`; the rest run on doubles of
-  `SdkEngine`, `AdmissionEngine` and `OrchestratorEngine`; `HostRoot` and `auto_launch::tests::Fixture`
-  receive the opener).
+- The fixtures that open the whole engine left the `engine-sdk` library: `engine_fixtures.rs` and
+  the files it names are sources of the test targets that use them (`engine_sdk_test`,
+  `engine_sdk_host_test`, `daemon_server_test`, `codex_adoption_process_test`), which compile them
+  by path, as they do `owner_fixtures.rs`. The library no longer depends on `daemon-engine` or
+  `engine-admission`, their two entries left `LAYER_EXCEPTIONS`, and an edit of either crate no
+  longer rebuilds `engine-sdk` or what links it.
+- **Not done yet:** `engine-sdk`'s own tests still link the whole engine, so they rerun on an edit
+  of `daemon-engine` or `engine-admission`. The ones that need it (`engine_tests/*`, `bg_handover`,
+  the `claude --bg` close, `auto_launch`'s real start and part of `sdk_owner`'s) go to
+  `daemon-server`; the rest run on doubles of `SdkEngine`, `AdmissionEngine` and
+  `OrchestratorEngine`.
 
 Measured with `edit_bench`, one run each on the shared Mac under load (load average about 14).
 

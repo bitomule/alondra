@@ -163,11 +163,9 @@ LAYER_EXCEPTIONS = {
         "crates/provider-codex",
     ],
     "crates/engine-sdk": [
-        "crates/daemon-engine",
         "crates/daemon-engine-machine",
         "crates/daemon-engine-model",
         "crates/daemon-support",
-        "crates/engine-admission",
         "crates/engine-github",
         "crates/engine-kernel",
         "crates/provider-claude",

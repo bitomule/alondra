@@ -5,18 +5,24 @@
 //! result. Each step waits on the host's next event, never on a clock.
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use alondra_daemon_engine::gate::GateOf as _;
-use crate::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::idle_compaction::ContextsOf as _;
-use super::*;
+use alondra_engine_sdk::sdk_owner::*;
+use alondra_engine_sdk::domain_runtime::DomainRuntime;
+use alondra_engine_sdk::domain_store::StoreError;
+use alondra_daemon_engine_model::LaunchPlan;
+use alondra_domain::ActivityView;
+use alondra_domain_rules::*;
+use alondra_provider_contract::Capability;
 use alondra_engine_admission::AdmissionOf as _;
 use crate::test_support::Directory;
-use alondra_core::accounts::{AccountId, AccountState, AccountStatus, Provider};
+use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountStatus, Provider};
 use rusqlite::Connection;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub use alondra_daemon_engine::host_fixtures::{HostRoot, fixture_backend, runfile};
 
@@ -212,7 +218,7 @@ impl Slice {
         std::fs::DirBuilder::new().mode(0o700).create(&plugin).unwrap();
         let (backend, capture) = fixture_backend(&home, &state);
         let database = home.join(name);
-        let domain = Arc::new(crate::engine_fixtures::open_at(&home, &database).unwrap());
+        let domain = Arc::new(super::open_at(&home, &database).unwrap());
         measure_healthy_machine(&domain);
         let slice = Self { domain, database, capture, worktree, plugin, backend, kept: Arc::default(), _home: home, _state: state };
         slice.on_acknowledge(|| {});
@@ -539,7 +545,7 @@ impl Slice {
     }
 
     pub fn restart(&self) -> Arc<DomainRuntime> {
-        let domain = Arc::new(crate::engine_fixtures::open_at(&self._home, &self.database).unwrap());
+        let domain = Arc::new(super::open_at(&self._home, &self.database).unwrap());
         measure_healthy_machine(&domain);
         domain
     }
@@ -657,7 +663,7 @@ impl Slice {
         while driver.pending_controls() > 0 || driver.pending_permits() > 0 || driver.waits_for_host() {
             driver.step(&|| false).unwrap();
         }
-        assert_eq!(Slice::lifecycle(&driver.domain).activity(), ActivityView::Resting);
+        assert_eq!(Slice::lifecycle(driver.domain()).activity(), ActivityView::Resting);
     }
 
     pub fn decision_requests(&self) -> Vec<(i64, String)> {

@@ -20,7 +20,7 @@ pub fn open_at(home: &Path, database: &Path, files: &dyn JournalFiles) -> Result
 }
 
 /// Every subsystem that hears of the runtime's commits, in the order they hear of each one. The
-/// engine's tests open it with their copy, `alondra_engine_sdk::engine_fixtures::observers`.
+/// engine's tests open it with their copy, `engine-sdk/src/engine_assembly.rs`.
 pub fn observers() -> Vec<Box<dyn CommitObserver>> {
     vec![
         Box::new(alondra_daemon_engine::gate::PauseResume),

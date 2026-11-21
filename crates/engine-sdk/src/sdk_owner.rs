@@ -761,7 +761,7 @@ pub(crate) async fn launch_prepared(domain: &DomainRuntime, launch: Launch, reop
 /// Alondra's node plugin, which that fresh host's Claude loads.
 pub(crate) fn adopt_for_transition(domain: Arc<DomainRuntime>, backend:&SdkBackend,task:TaskId,plugin:Option<&std::path::Path>)->Result<Option<Driver>,Failed>{take_host(domain,backend,task,plugin,true,false,false)}
 
-pub(crate) fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>) -> Result<Driver, Failed> {
+pub fn adopt(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>) -> Result<Driver, Failed> {
     let mut driver = take(domain, backend, task, plugin, true)?.ok_or_else(|| Failed::new("the ended host was not replaced".into()))?;
     driver.plugin = plugin.map(std::path::Path::to_path_buf);
     Ok(driver)
@@ -1698,6 +1698,16 @@ impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
         let pause = Mutex::new(PauseSubscription::new(&domain, &agent));
         Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, panic_next_step: false }
+    }
+
+    /// The runtime of the daemon that owns this host.
+    pub fn domain(&self) -> &Arc<DomainRuntime> {
+        &self.domain
+    }
+
+    /// Alondra's node plugin, which the host that replaces this one loads.
+    pub fn replaced_with(&mut self, plugin: PathBuf) {
+        self.plugin = Some(plugin);
     }
 
     pub fn agent(&self) -> &AgentId {
@@ -2724,8 +2734,8 @@ impl Drop for Owner {
     }
 }
 
-#[path = "sdk_owner/fixtures.rs"]
-pub mod fixtures;
+#[cfg(test)]
+pub use crate::engine_fixtures::owner as fixtures;
 #[cfg(all(test, feature = "real-hosts"))]
 #[path = "sdk_owner/tests.rs"]
 mod tests;

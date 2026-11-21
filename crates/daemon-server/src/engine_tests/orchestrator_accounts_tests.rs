@@ -19,7 +19,7 @@ fn fixture() -> Fixture {
     std::fs::create_dir_all(&home).unwrap();
     let domain = Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
     alondra_engine_orchestrator::wire(domain.ports());
-    Fixture::over(root, domain, home, alondra_engine_sdk::sdk_owner::fixtures::HostRoot::new())
+    Fixture::over(root, domain, home, crate::engine_tests::engine_fixtures::owner::HostRoot::new())
 }
 
 fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {

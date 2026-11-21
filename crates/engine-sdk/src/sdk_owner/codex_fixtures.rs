@@ -1,8 +1,8 @@
 //! Codex hosts as the tests here and in the crates above configure them.
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
-use crate::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
-use crate::provider_transition::TransitionsOf as _;
+use alondra_engine_sdk::provider_transition::TransitionsOf as _;
 use super::*;
 use alondra_engine_admission::AdmissionOf as _;
 
@@ -61,7 +61,7 @@ pub fn launch_selected(slice: &Slice, selected: alondra_core::model_selection::T
         options,
         model: None, account: AccountId::default_account(),
     }).unwrap();
-    driver.plugin = Some(slice.plugin.clone());
+    driver.replaced_with(slice.plugin.clone());
     driver
 }
 pub fn transcript(path: &Path) -> Vec<serde_json::Value> {

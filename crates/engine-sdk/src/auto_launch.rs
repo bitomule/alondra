@@ -216,6 +216,7 @@ fn tell(domain: &DomainRuntime, id: &str, body: String) {
     }
 }
 
-pub mod fixtures;
+#[cfg(test)]
+pub use crate::engine_fixtures::launches as fixtures;
 #[cfg(all(test, not(feature = "real-hosts")))]
 mod tests;

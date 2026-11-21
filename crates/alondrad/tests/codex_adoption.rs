@@ -5,8 +5,8 @@ use alondra_core::accounts::Provider;
 use alondra_domain::ActivityView;
 use alondra_domain_rules::Scope;
 use alondra_store_sqlite::domain_database_migration::DATABASE;
-use alondra_engine_sdk::sdk_owner::fixtures::codex::{configured, launch, transcript};
-use alondra_engine_sdk::sdk_owner::fixtures::{DECISION_CARDS, HostRoot, Slice, TASK, advance, owner_generation, runfile};
+use engine_fixtures::owner::codex::{configured, launch, transcript};
+use engine_fixtures::owner::{DECISION_CARDS, HostRoot, Slice, TASK, advance, owner_generation, runfile};
 use alondra_engine_sdk::sdk_owner::{Driver, backend};
 use rusqlite::Connection;
 use std::io::{BufRead, BufReader};
@@ -17,9 +17,23 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+#[path = "../../engine-sdk/src/engine_fixtures.rs"]
+mod engine_fixtures;
+use alondra_daemon_engine::test_support;
+
+/// What the fixtures ask of the test crate that compiles them.
+mod engine_tests {
+    pub use crate::engine_fixtures::owner::SdkLaunches;
+
+    pub fn wired() {
+        alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+        alondra_daemon_engine::wiring::open_with(crate::open_at);
+    }
+}
+
 /// The engine the slice of this test opens: the daemon's, over the doubles of the Mac.
 fn open_at(home: &Path, database: &Path, files: &dyn alondra_engine_sdk::domain_store::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
-    let runtime = alondra_engine_sdk::engine_fixtures::open_engine_at(home, database, files)?;
+    let runtime = alondrad::wiring::open_at(home, database, files)?;
     alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
     alondra_agent_runtime::wire(runtime.ports(), Default::default());
     alondra_engine_admission::for_tests(&runtime);

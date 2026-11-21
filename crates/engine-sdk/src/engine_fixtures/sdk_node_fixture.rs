@@ -1,11 +1,11 @@
 //! A node of the Agent SDK driven step by step, for the tests of pauses here and of what the
 //! screens show of it in `daemon-server`.
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_sdk::domain_runtime::DomainRuntime;
 use alondra_domain_rules::{DomainState, TaskState};
 use alondra_core::Millis;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use crate::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_engine_admission::pauses::*;
 use alondra_engine_admission::AdmissionOf as _;
@@ -30,7 +30,7 @@ impl Drop for Home {
 pub fn run(domain: &DomainRuntime, actor: Actor, command: Command) {
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: crate::auth::random_hex(8).into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: alondra_daemon_support::auth::random_hex(8).into(),
         expected_revision: state.revision, command,
     }, None, || Ok(())).unwrap();
 }
@@ -42,7 +42,7 @@ pub fn user() -> Actor {
 pub const SDK_TASK: &str = "t-sdk-paused";
 
 /// Drives an owner until it has nothing to send and its host owes nothing.
-pub fn settle(driver: &mut crate::sdk_owner::Driver) {
+pub fn settle(driver: &mut alondra_engine_sdk::sdk_owner::Driver) {
     while driver.pending_permits() > 0 || driver.waits_for_host() {
         if driver.pending_permits() > 0 {
             driver.step(&|| false).unwrap();
@@ -55,7 +55,7 @@ pub fn settle(driver: &mut crate::sdk_owner::Driver) {
 /// A task of the Agent SDK whose turn runs, on the pinned host with the fake native Claude. Its
 /// owner is driven here step by step, so nothing reaches Claude unless a step hands it over.
 pub struct SdkNode {
-    pub driver: crate::sdk_owner::Driver,
+    pub driver: alondra_engine_sdk::sdk_owner::Driver,
     pub domain: Arc<DomainRuntime>,
     pub capture: PathBuf,
     pub backend: alondra_daemon_engine::sdk_backend::SdkBackend,
@@ -87,7 +87,7 @@ impl SdkNode {
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         let (backend, capture) = alondra_daemon_engine::host_fixtures::fixture_backend(&home, &state);
-        let domain = Arc::new(crate::engine_fixtures::open(&home).unwrap());
+        let domain = Arc::new(super::open(&home).unwrap());
         domain.enable_sdk(backend.clone());
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateRequest {
             request_id: "r".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });
@@ -95,7 +95,7 @@ impl SdkNode {
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
             task_id: SDK_TASK.into(), request_id: "r".into(), title: "Write the release notes".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())) });
-        let driver = crate::sdk_owner::start(Arc::clone(&domain), &backend, crate::sdk_owner::Launch {
+        let driver = alondra_engine_sdk::sdk_owner::start(Arc::clone(&domain), &backend, alondra_engine_sdk::sdk_owner::Launch {
             task: SDK_TASK.into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
             prompt: prompt.into(), plugin: home.join("plugin"), options: Default::default(),
             model: None, account: alondra_core::accounts::AccountId::default_account(),
@@ -107,7 +107,7 @@ impl SdkNode {
     }
 
     /// One more node of the same host root whose first turn the fake Claude holds open.
-    pub fn beside(&self, task: &str) -> crate::sdk_owner::Driver {
+    pub fn beside(&self, task: &str) -> alondra_engine_sdk::sdk_owner::Driver {
         let mut driver = self.beside_told(task, "consume-and-hold");
         while self.activity(task) != alondra_domain::ActivityView::Working {
             driver.observe_written().unwrap();
@@ -116,19 +116,19 @@ impl SdkNode {
     }
 
     /// One more node of the same host root, resting after its first turn.
-    pub fn beside_resting(&self, task: &str) -> crate::sdk_owner::Driver {
+    pub fn beside_resting(&self, task: &str) -> alondra_engine_sdk::sdk_owner::Driver {
         let mut driver = self.beside_told(task, "Write the notes");
         settle(&mut driver);
         driver
     }
 
-    pub fn beside_told(&self, task: &str, prompt: &str) -> crate::sdk_owner::Driver {
+    pub fn beside_told(&self, task: &str, prompt: &str) -> alondra_engine_sdk::sdk_owner::Driver {
         let worktree = self.home.join(task);
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         run(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
             task_id: task.into(), request_id: "r".into(), title: format!("Task {task}"), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())) });
-        let driver = crate::sdk_owner::start(Arc::clone(&self.domain), &self.backend, crate::sdk_owner::Launch {
+        let driver = alondra_engine_sdk::sdk_owner::start(Arc::clone(&self.domain), &self.backend, alondra_engine_sdk::sdk_owner::Launch {
             task: task.into(), name: format!("Task {task}"), directory: worktree.to_str().unwrap().into(),
             prompt: prompt.into(), plugin: self.home.join("plugin"), options: Default::default(),
             model: None, account: alondra_core::accounts::AccountId::default_account(),
@@ -173,7 +173,7 @@ impl SdkNode {
 
     /// The prompts Claude got, besides the wake Alondra sends after a turn that ended empty.
     pub fn prompts(&self) -> Vec<String> {
-        crate::sdk_owner::fixtures::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
+        super::owner::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
     }
 
     pub fn pending_inputs(&self) -> usize {
@@ -197,7 +197,7 @@ impl SdkNode {
 
     /// How many of the task's inputs the owner claimed to hand to its host.
     pub fn dispatched_inputs(&self) -> i64 {
-        rusqlite::Connection::open(crate::domain_store::active_path(&self.home)).unwrap()
+        rusqlite::Connection::open(alondra_engine_sdk::domain_store::active_path(&self.home)).unwrap()
             .query_row("SELECT count(*) FROM lifecycle_dispatches WHERE task_id=?1 AND kind='input' AND status NOT IN ('prepared','revoked')", [SDK_TASK], |row| row.get(0)).unwrap()
     }
 
@@ -233,7 +233,7 @@ impl SdkNode {
     /// The node's host dies while it is paused and no owner of the daemon is left to replace it.
     pub fn lose_host(&mut self) {
         std::fs::DirBuilder::new().mode(0o700).create(self.home.join("plugin")).unwrap();
-        crate::sdk_owner::fixtures::kill_host(&self.driver);
+        super::owner::kill_host(&self.driver);
         self.domain.sdk_owners().driven_by_hand.lock().unwrap().remove(self.driver.agent());
         self.driver.let_go();
         assert!(!self.domain.owns_sdk_host(&AgentId(self.agent())));
@@ -254,7 +254,7 @@ impl SdkNode {
     }
 
     pub fn host_lost_card(&self) -> Option<alondra_domain_rules::Interaction> {
-        crate::sdk_owner::fixtures::open_card(&self.domain, alondra_domain_rules::HOST_LOST_PREFIX)
+        super::owner::open_card(&self.domain, alondra_domain_rules::HOST_LOST_PREFIX)
     }
 }
 
@@ -272,7 +272,7 @@ pub fn node_pause_card(domain: &DomainRuntime) -> Option<alondra_domain_rules::I
 pub fn answer_resume(domain: &DomainRuntime, card: &alondra_domain_rules::InteractionId) -> Result<(), String> {
     let state = domain.state().unwrap();
     domain.execute(&user(), &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: crate::auth::random_hex(8).into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: alondra_daemon_support::auth::random_hex(8).into(),
         expected_revision: state.revision,
         command: Command::AnswerQuestion { interaction_id: card.clone(), option_id: "resume".into(), inputs: Default::default(), attachments: vec![] },
     }, None, || Ok(())).map(drop).map_err(|error| format!("{error:?}"))

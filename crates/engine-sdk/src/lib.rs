@@ -4,9 +4,13 @@
 //! scheduled runs (`auto_launch`, `start_retries`, `domain_schedule_runner`, `domain_schedule_api`),
 //! and the closing of tasks and the release of resting hosts (`task_closer`, `idle_release`). It
 //! asks the rest of the engine through the port `SdkEngine` (`engine`), and the rest of the engine
-//! asks it through `SdkHosts` (`wiring`); `alondrad` puts them together. Its fixtures and tests
-//! still open the whole engine.
+//! asks it through `SdkHosts` (`wiring`); `alondrad` puts them together. The library names no other
+//! piece of the engine; its tests still open the whole engine, on the fixtures of `engine_fixtures`.
 
+#[cfg(test)]
+extern crate self as alondra_engine_sdk;
+
+#[cfg(test)]
 #[path = "../../test_support.rs"]
 pub mod test_support;
 
@@ -36,6 +40,9 @@ pub mod domain_schedule_api;
 pub mod domain_schedule_runner;
 pub mod engine;
 pub mod ended_hosts;
+#[cfg(test)]
+pub mod engine_assembly;
+#[cfg(test)]
 pub mod engine_fixtures;
 #[cfg(test)]
 mod engine_tests;
