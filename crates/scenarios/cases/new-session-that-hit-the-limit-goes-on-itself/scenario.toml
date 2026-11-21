@@ -1,0 +1,67 @@
+name = "a large conversation whose new session started while the usage limit held it, so that its first request answered with no tokens, goes on in that same new session when the limit renews"
+max_virtual = "6h"
+
+[[step]]
+do = "request"
+text = "Write the API reference"
+task = "t1"
+title = "Write the API reference"
+
+[[step]]
+do = "node"
+task = "t1"
+model = "demo-model"
+
+[[step]]
+do = "conversation"
+task = "t1"
+tokens = 250000
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "provider_down"
+error = "rate_limit"
+status = 429
+tasks = ["t1"]
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "advance"
+by = "2h"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "provider_up"
+
+[[step]]
+do = "advance"
+by = "1h"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "the-new-session-goes-on-after-the-limit"
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 4
+running = 1
+sessions = 2
+
+[[step.expect]]
+check = "cache_written"
+task = "t1"
+max = 20000

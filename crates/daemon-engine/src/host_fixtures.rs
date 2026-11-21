@@ -68,20 +68,30 @@ impl HostRoot {
 
     /// Kills the process group of every host still running here and waits for each to end: the
     /// hosts it killed.
+    ///
+    /// The tests of a binary run side by side in one process, and a child it forks to start a host
+    /// of another test holds every descriptor of this process, the lock of a host here included,
+    /// until it runs its own program. That child is not a host of this folder: once it has run its
+    /// program, only a process that opened the lock itself still holds it.
     pub fn kill_hosts(&self) -> Vec<String> {
         use std::os::unix::fs::MetadataExt;
         let Ok(folders) = std::fs::read_dir(self.directory.join("h")) else {
             return Vec::new();
         };
         let me = std::process::id() as i32;
+        let program = executable(me);
         let mut killed = Vec::new();
         for folder in folders {
             let folder = folder.unwrap().path();
             let Ok(lock) = std::fs::metadata(folder.join("host.lock")) else {
                 continue;
             };
+            let holds = |pid: i32| alondra_process_group::holders(lock.dev(), lock.ino()).unwrap().iter().any(|holder| holder.pid == pid);
             for holder in alondra_process_group::holders(lock.dev(), lock.ino()).unwrap() {
                 if holder.pid == me || holder.zombie || alondra_process_group::group(holder.pid).unwrap() != Some(holder.pid) {
+                    continue;
+                }
+                if (program.is_some() && executable(holder.pid) == program) || !holds(holder.pid) {
                     continue;
                 }
                 let held = holding(holder.pid, &folder.join("host.lock"));
@@ -96,6 +106,18 @@ impl HostRoot {
         }
         killed
     }
+}
+
+/// The program `pid` runs, which is still this process's own while a child it forked has not run
+/// another.
+fn executable(pid: i32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: the buffer holds exactly the bytes it says and outlives the call, which writes at
+    // most that many and returns how many it wrote.
+    let written = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+    let written = usize::try_from(written).ok().filter(|written| *written > 0)?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&path[..written])))
 }
 
 /// Who `pid` is and how it holds `lock`, so a host left running says which process it was: its
@@ -179,3 +201,43 @@ pub fn fixture_backend(home: &Path, state: &HostRoot) -> (SdkBackend, PathBuf) {
     (backend, capture)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 21 November: a test that ended while another test of its binary started a host took the child
+    // forked for that host, which held the lock of a host of the first test until it ran its own
+    // program, for a host it left running: it killed it, and the other test waited for a host that
+    // was gone. A child of this process that still runs this program is no host of a test's folder.
+    #[test]
+    fn a_child_forked_for_another_tests_host_is_no_host_of_this_folder() {
+        let root = HostRoot::new();
+        let folder = root.join("h").join("sdk-left");
+        std::fs::create_dir_all(&folder).unwrap();
+        let lock = std::fs::File::create(folder.join("host.lock")).unwrap();
+        let (mut ready, written) = std::os::unix::net::UnixStream::pair().unwrap();
+        // SAFETY: the child only calls functions that are safe after a fork in a process with
+        // threads: it leads a group of its own, says so, and waits for the signal that ends it.
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "fork: {}", std::io::Error::last_os_error());
+        if child == 0 {
+            unsafe {
+                libc::setpgid(0, 0);
+                libc::write(std::os::fd::AsRawFd::as_raw_fd(&written), b"x".as_ptr().cast(), 1);
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        drop(written);
+        let mut byte = [0u8; 1];
+        std::io::Read::read_exact(&mut ready, &mut byte).unwrap();
+        let killed = root.kill_hosts();
+        unsafe { libc::kill(child, libc::SIGKILL) };
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        drop(lock);
+        assert_eq!(killed, Vec::<String>::new(), "the fork holds the lock only as a copy of this process");
+    }
+}
