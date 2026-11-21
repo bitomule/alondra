@@ -109,12 +109,28 @@ impl Contexts {
     }
 
     /// A new host of `task` runs its conversation as `kind`: its first answer says what starting
-    /// it cost.
+    /// it cost. A host that does not resume the conversation before it holds a conversation of its
+    /// own: until it answers, nothing is known of its size or its cache, and the reading of the one
+    /// it replaced no longer says anything of the task's.
     pub fn launched(&self, task: &TaskId, kind: StartKind) {
-        let mut inner = self.lock();
+        let mut guard = self.lock();
+        let inner = &mut *guard;
         let previous = inner.last.get(task).map(|last| last.requested_at);
         let measured = inner.measured.entry(task.clone()).or_default();
         measured.started = Some(Started { kind, previous });
+        if kind == StartKind::Resumed {
+            return;
+        }
+        let measured_size = measured.tokens.take().is_some();
+        measured.cache = None;
+        let kept = inner.last.remove(task).is_some();
+        if kept {
+            self.save(inner);
+        }
+        if measured_size || kept {
+            self.version.fetch_add(1, Ordering::Relaxed);
+            self.changes.record(task.clone());
+        }
     }
 
     /// The driver handed the host an input at `at`.
@@ -508,5 +524,34 @@ mod tests {
         assert_eq!(contexts.last_request(&"t-limited".into()), None);
         assert!(contexts.readings().is_empty());
         assert_eq!(contexts.last_request(&"t-measured".into()).map(|last| last.tokens), Some(250_000));
+    }
+
+    // 21 November: a large conversation whose cache had expired went on in a new session, and the
+    // next input of that session, which had not answered yet, found the old conversation's reading
+    // and started yet another new session. A host that does not resume the conversation before it
+    // knows nothing of the size and cache of its own until it answers.
+    #[test]
+    fn a_host_that_starts_a_conversation_of_its_own_leaves_the_reading_of_the_one_before() {
+        for kind in [StartKind::Handoff, StartKind::New] {
+            let home = crate::test_support::Directory::new();
+            std::fs::create_dir_all(&*home).unwrap();
+            let task = TaskId::from("t-1");
+            let contexts = Contexts::persisted_in(&home);
+            contexts.handed(&task, 1_000);
+            contexts.observed(&task, hour(250_000, Cached::default()), 2_000);
+            contexts.launched(&task, StartKind::Resumed);
+            assert_eq!(contexts.last_request(&task).map(|last| last.tokens), Some(250_000), "a resumed conversation is the same one");
+            let cursor = contexts.change_cursor();
+            contexts.launched(&task, kind);
+            assert_eq!(contexts.last_request(&task), None, "{kind:?}");
+            changed(&contexts, &cursor, &["t-1"]);
+            assert_eq!(contexts.used(&task), None, "{kind:?}");
+            assert!(contexts.readings().is_empty(), "nothing of the old conversation is compacted: {kind:?}");
+            assert_eq!(Contexts::persisted_in(&home).last_request(&task), None, "a restarted daemon does not find it either: {kind:?}");
+            contexts.handed(&task, 4 * HOUR);
+            let started = contexts.observed(&task, hour(4_000, Cached::default()), 4 * HOUR + 1).expect("the new conversation's first answer");
+            assert_eq!((started.kind, started.since_previous), (kind, Some(4 * HOUR - 1_000)), "what starting it cost is still measured from the request before");
+            assert_eq!(contexts.last_request(&task).map(|last| (last.tokens, last.requested_at)), Some((4_000, 4 * HOUR)));
+        }
     }
 }

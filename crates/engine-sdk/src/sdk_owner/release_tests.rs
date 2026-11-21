@@ -682,6 +682,34 @@ async fn a_large_conversation_whose_cache_expired_goes_on_in_a_new_session_that_
     assert!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].pending_selection.is_none(), "the task keeps its own selection, with nothing pending");
 }
 
+// 21 November: the next input of the new session that took over a large conversation whose cache
+// expired came before that session answered with the size of its own, and found the old
+// conversation's reading: it started yet another new session, and each input after it one more.
+// The new session holds a conversation of its own, and goes on with the next input itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_new_session_that_took_over_a_large_conversation_goes_on_with_the_next_input_itself() {
+    let mut slice = Slice::new();
+    let resumed = resumed_after(&mut slice, 250_403, HOURS_AGO, true).await;
+    let task = TaskId::from(TASK);
+    let first = slice.domain.store.lock_or_exit("the domain store").latest_provider_transition(&task).unwrap().expect("the new session's transition").plan.id;
+    tell(&slice, TASK, "And the release date.").await;
+    let mut changed = slice.domain.subscribe();
+    let latest = || slice.domain.store.lock_or_exit("the domain store").latest_provider_transition(&task).unwrap().unwrap().plan.id;
+    let reached = async {
+        while !prompts_at(&slice.capture).iter().any(|prompt| prompt.ends_with("And the release date.")) && latest() == first {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(100), changed.changed()).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(60), reached).await.unwrap_or_else(|_| panic!("the next input never reached Claude: {:?}", prompts_at(&slice.capture)));
+    slice.domain.stop_sdk_owners();
+    assert_eq!(latest(), first, "no other new session was requested");
+    let prompts = prompts_at(&slice.capture);
+    let next = prompts.iter().find(|prompt| prompt.ends_with("And the release date.")).unwrap();
+    assert!(!next.contains("Current input:"), "the input went to the session as it is, not in another handoff: {next}");
+    assert_eq!(slice.starts().len(), resumed.starts.len(), "no other session started: {:?}", slice.starts());
+    assert!(slice.domain.state().unwrap().tasks[&task].pending_selection.is_none());
+}
+
 // 20 November: the task's records came to 64,085 tokens with the message that continued it, 85 over
 // what the handoff could take, and the new session was refused: its conversation resumed and wrote
 // 178,677 tokens to the cache again. The handoff of a new session is a few thousand tokens however
