@@ -86,7 +86,23 @@ impl Worktrees {
         let Ok(meta) = std::fs::symlink_metadata(dir) else { return Ok(TaskWorktree::Absent) };
         let link = meta.file_type().is_symlink();
         if link && !dir.exists() {
-            return Ok(TaskWorktree::Unavailable(unreachable(dir)));
+            if !folder_of_target_is_there(dir) {
+                return Ok(TaskWorktree::Unavailable(unreachable(dir)));
+            }
+            if remove {
+                std::fs::remove_file(dir).map_err(|why| format!("could not delete the link {}: {why}", dir.display()))?;
+            }
+            return Ok(TaskWorktree::Removed { freed: 0 });
+        }
+        if self.is_empty_shell(dir) && alondras(dir) && named(dir) {
+            if remove {
+                let top = canonical(dir);
+                std::fs::remove_dir(&top).map_err(|why| format!("could not delete {}: {why}", top.display()))?;
+                if link {
+                    std::fs::remove_file(dir).map_err(|why| format!("could not delete the link {}: {why}", dir.display()))?;
+                }
+            }
+            return Ok(TaskWorktree::Removed { freed: 0 });
         }
         let place = if link { Some(dir.to_path_buf()) } else { linked_top(dir) };
         let Some(place) = place.filter(|place| alondras(place) && named(place)) else {
@@ -345,6 +361,13 @@ fn unreachable(dir: &Path) -> String {
     format!("{} is a link to {}, which cannot be reached now", dir.display(), target.display())
 }
 
+/// The folder that holds what the link `dir` points to can be reached, so a target that is not
+/// there is gone for good, and not on a volume that is not mounted.
+fn folder_of_target_is_there(dir: &Path) -> bool {
+    let target = std::fs::read_link(dir).unwrap_or_default();
+    dir.parent().map(|parent| parent.join(target)).and_then(|target| target.parent().map(Path::to_path_buf)).is_some_and(|folder| folder.is_dir())
+}
+
 const RECORD: &str = ".alondra-repository.json";
 
 /// The worktrees folder, while its volume is there: a test takes the volume away by removing it.
@@ -439,7 +462,7 @@ impl Port for Worktrees {
     }
     fn unreachable_link(&self, dir: &Path) -> Option<String> {
         let meta = std::fs::symlink_metadata(dir).ok()?;
-        (meta.file_type().is_symlink() && !dir.exists()).then(|| unreachable(dir))
+        (meta.file_type().is_symlink() && !dir.exists() && !folder_of_target_is_there(dir)).then(|| unreachable(dir))
     }
 
     fn uncommitted_files_of_alondras_worktree<'a>(&'a self, dir: &'a Path) -> Git<'a, Result<Option<usize>, String>> {

@@ -1714,3 +1714,87 @@ async fn a_closing_task_whose_folder_is_gone_is_given_no_host() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(held(), "its folder is gone: no host can start in it");
 }
+
+fn emptied_link_to_folder(rig: &Rig, root: &crate::test_support::Directory) -> (std::path::PathBuf, std::path::PathBuf) {
+    let (link, moved) = alondra_engine_doubles::worktrees::testing::linked_task_worktree(root, "t", &root.join("volume"));
+    rig.domain.set_task_worktree(&"t".into(), link.to_str().unwrap()).unwrap();
+    std::fs::remove_dir_all(&moved).unwrap();
+    std::fs::create_dir(&moved).unwrap();
+    (link, moved)
+}
+
+#[tokio::test]
+async fn closing_a_task_whose_worktree_git_already_removed_deletes_the_empty_link_and_folder_it_left() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let (link, moved) = emptied_link_to_folder(&rig, &root);
+    rig.confirm();
+    rig.pass(T0).await;
+    assert!(std::fs::symlink_metadata(&link).is_err() && !moved.exists(), "the link and the empty folder are gone");
+    rig.assert_done(NodeEnd::Closed);
+    assert_eq!(rig.task().worktrees[link.to_str().unwrap()].end, Some(alondra_domain_rules::WorktreeEnd::Removed), "not the user's own");
+}
+
+#[tokio::test]
+async fn cancelling_a_task_whose_worktree_git_already_removed_deletes_the_empty_link_and_folder_it_left() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let (link, moved) = emptied_link_to_folder(&rig, &root);
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
+    rig.pass(T0).await;
+    rig.pass(T0 + MINUTE).await;
+    assert!(std::fs::symlink_metadata(&link).is_err() && !moved.exists());
+    assert_eq!(rig.task().worktrees[link.to_str().unwrap()].end, Some(alondra_domain_rules::WorktreeEnd::Removed));
+}
+
+#[tokio::test]
+async fn what_ended_tasks_left_of_a_worktree_recorded_as_the_users_own_is_deleted_when_the_daemon_starts() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let (link, moved) = emptied_link_to_folder(&rig, &root);
+    let path = link.to_str().unwrap().to_owned();
+    rig.domain.execute_system_command(Command::ReleaseTaskWorktree { task_id: "t".into(), path: path.clone(), end: alondra_domain_rules::WorktreeEnd::UsersOwn }).unwrap();
+    rig.confirm();
+    rig.pass(T0).await;
+    rig.assert_done(NodeEnd::Closed);
+    assert!(std::fs::symlink_metadata(&link).is_ok() && moved.is_dir(), "an earlier daemon left it, ended as the user's own");
+
+    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 1);
+    assert!(std::fs::symlink_metadata(&link).is_err() && !moved.exists());
+    assert_eq!(rig.task().worktrees[&path].end, Some(alondra_domain_rules::WorktreeEnd::Removed));
+    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 0, "nothing is left to delete");
+}
+
+#[tokio::test]
+async fn a_link_to_a_folder_that_no_longer_exists_is_deleted_once_its_task_ended_but_one_with_work_in_it_never_is() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let (link, moved) = alondra_engine_doubles::worktrees::testing::linked_task_worktree(&root, "t", &root.join("volume"));
+    let path = link.to_str().unwrap().to_owned();
+    rig.domain.set_task_worktree(&"t".into(), &path).unwrap();
+    rig.domain.execute_system_command(Command::ReleaseTaskWorktree { task_id: "t".into(), path: path.clone(), end: alondra_domain_rules::WorktreeEnd::KeptByUser }).unwrap();
+    rig.confirm();
+    rig.pass(T0).await;
+    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 0, "a worktree with its files is not a shell");
+    assert!(moved.join(".git").is_file());
+
+    std::fs::remove_dir_all(&moved).unwrap();
+    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 1, "the link to nothing goes");
+    assert!(std::fs::symlink_metadata(&link).is_err());
+}
+
+#[tokio::test]
+async fn a_folder_an_open_continuation_launches_in_is_never_swept_even_when_it_looks_empty() {
+    let (rig, _root, dir) = moved(Some("t"));
+    let path = dir.to_str().unwrap().to_owned();
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::create_dir(&dir).unwrap();
+    rig.domain.execute_system_command(Command::ReleaseTaskWorktree { task_id: "t".into(), path, end: alondra_domain_rules::WorktreeEnd::UsersOwn }).unwrap();
+    rig.pass(T0).await;
+    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 0, "the task that goes on in it owns it");
+    assert!(dir.is_dir());
+
+    command(&rig.domain, user(), "cancel-continuation", Command::CancelTask { task_id: "t-claude".into(), reason: None });
+    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 1, "once nobody goes on in it, it is a leftover");
+    assert!(!dir.exists());
+}
