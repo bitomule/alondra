@@ -85,7 +85,8 @@ SDK_TEST_COMPILE_DATA = [
 ]
 
 # The SDK's tests run on the doubled hosts of engine-doubles, which the Claude host model plays:
-# no process starts and no host executable is an input. It never carries a binary of the root:
+# no host starts and no host executable is an input; the only program they run is the git the
+# close asks about a worktree after a failed `claude rm`. It never carries a binary of the root:
 # they link every crate, so an edit anywhere would rerun these tests.
 low_opt_rust_test(
     name = "engine_sdk_test",
@@ -95,7 +96,7 @@ low_opt_rust_test(
     crate_name = "alondra_engine_sdk",
     crate_root = "src/lib.rs",
     edition = "2024",
-    env = {"HOME": "."},
+    env = {"HOME": ".", "TEST_EXECS": "/usr/bin/git"},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/provider-claude:claude_host_model"] + TEST_HOOKS_DEPS,
 )
