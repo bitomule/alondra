@@ -149,21 +149,21 @@ final class TriageSnapshotTests: XCTestCase {
         let store = try single(try Fixtures.card(Fixtures.questionID)) {
             $0.setAside = SetAsideAnswers(cards: [Fixtures.questionID], otherActions: 0, complete: true)
         }
-        assertScreen([.light, .dark], inWindow: true) { Harness(store: store) }
+        assertScreen([.light, .dark], inWindow: true, pixelPrecision: glassTextPixelPrecision) { Harness(store: store) }
     }
 
     func test_answersSetAsideNameTheCardWaitingAgain_es() throws {
         let store = try single(try Fixtures.spanishCard(Fixtures.questionID), spanish: true) {
             $0.setAside = SetAsideAnswers(cards: [Fixtures.questionID], otherActions: 0, complete: true)
         }
-        assertScreen([.light], language: .spanish, inWindow: true) { Harness(store: store) }
+        assertScreen([.light], language: .spanish, inWindow: true, pixelPrecision: glassTextPixelPrecision) { Harness(store: store) }
     }
 
     func test_answersSetAsideFromAStoreThatShowedNothing() throws {
         let store = try single(try Fixtures.card(Fixtures.questionID)) {
             $0.setAside = SetAsideAnswers(cards: [], otherActions: 0, complete: false)
         }
-        assertScreen([.light], inWindow: true) { Harness(store: store) }
+        assertScreen([.light], inWindow: true, pixelPrecision: glassTextPixelPrecision) { Harness(store: store) }
     }
 
     func test_offlineWithTheSavedQueueSaysWhy() throws {
@@ -653,7 +653,7 @@ final class TriageSnapshotTests: XCTestCase {
         let alone = try single(try Fixtures.card(Fixtures.questionID))
         let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID]
         let stacked = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))
-        assertScreen([.light], inWindow: true) {
+        assertScreen([.light], inWindow: true, pixelPrecision: nativeLabelPixelPrecision) {
             VStack(spacing: 0) {
                 Harness(store: alone, tabBarHeight: 83)
                 Harness(store: stacked, tabBarHeight: 83)

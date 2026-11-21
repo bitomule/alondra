@@ -24,6 +24,60 @@ final class RecordedComparisonTests: XCTestCase {
         XCTAssertNotNil(asCaptured, "the library compared the capture as it is without failing: the pitfall asRecorded avoids is gone")
     }
 
+    /// The two captures that failed `TriageSnapshotTests` on a machine under load, kept as they were
+    /// taken: the notice's glass text with 1.2% of its pixels a few levels off, and the buttons'
+    /// native labels with a handful. The screens are the same; only the renderer's anti-aliasing moved.
+    func test_triageRendererNoiseOnGlassTextAndNativeLabelsDoesNotFailButAMovedLineDoes() throws {
+        let strict = Snapshotting<UIImage, UIImage>.image(precision: 1, perceptualPrecision: 0.98).diffing
+        let glass = Snapshotting<UIImage, UIImage>.image(precision: glassTextPixelPrecision, perceptualPrecision: 0.98).diffing
+        let label = Snapshotting<UIImage, UIImage>.image(precision: nativeLabelPixelPrecision, perceptualPrecision: 0.98).diffing
+
+        let notice = try recording("TriageSnapshotTests/test_answersSetAsideFromAStoreThatShowedNothing.light.png")
+        let noticeNoise = try fixture("set-aside-banner-glass-text.png")
+        XCTAssertNotNil(strict.diffV2(notice, noticeNoise), "the retained rendering noise must exercise the comparison")
+        XCTAssertNil(glass.diffV2(notice, noticeNoise), "anti-aliasing noise on glass text must not fail the notice")
+        XCTAssertNotNil(glass.diffV2(notice, try movingRows(of: notice, rows: 272..<411, by: 14)), "a notice line that moved must fail")
+
+        let stack = try recording("TriageSnapshotTests/test_aCardAloneIsAsTallAsTheFrontOfAStack.light.png")
+        let stackNoise = try fixture("triage-native-button-label.png")
+        XCTAssertNotNil(strict.diffV2(stack, stackNoise), "the retained rendering noise must exercise the comparison")
+        XCTAssertNil(label.diffV2(stack, stackNoise), "anti-aliasing noise on native labels must not fail the stack")
+        XCTAssertNotNil(label.diffV2(stack, try movingRows(of: stack, rows: 1300..<1500, by: 14)), "a label that moved must fail")
+    }
+
+    private func snapshotsRoot() throws -> URL {
+        URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["TEST_SRCDIR"]))
+            .appendingPathComponent("_main/apple/Testing/Snapshots")
+    }
+
+    private func recording(_ path: String) throws -> UIImage {
+        try XCTUnwrap(UIImage(data: Data(contentsOf: snapshotsRoot().appendingPathComponent("Tests/__Snapshots__/\(path)"))))
+    }
+
+    private func fixture(_ name: String) throws -> UIImage {
+        try XCTUnwrap(UIImage(data: Data(contentsOf: snapshotsRoot().appendingPathComponent("Fixtures/\(name)"))))
+    }
+
+    private func movingRows(of image: UIImage, rows: Range<Int>, by offset: Int) throws -> UIImage {
+        let original = try XCTUnwrap(image.cgImage)
+        let space = try XCTUnwrap(original.colorSpace)
+        var pixels = [UInt8](repeating: 0, count: original.width * original.height * 4)
+        let moved: CGImage = try pixels.withUnsafeMutableBytes { raw in
+            let context = try XCTUnwrap(CGContext(
+                data: raw.baseAddress, width: original.width, height: original.height, bitsPerComponent: 8,
+                bytesPerRow: original.width * 4, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            context.draw(original, in: CGRect(x: 0, y: 0, width: original.width, height: original.height))
+            let rowBytes = original.width * 4
+            let band = Array(raw[(rows.lowerBound * rowBytes)..<(rows.upperBound * rowBytes)])
+            for (index, byte) in band.enumerated() {
+                raw[rows.lowerBound * rowBytes + offset * rowBytes + index] = byte
+            }
+            return try XCTUnwrap(context.makeImage())
+        }
+        return UIImage(cgImage: moved, scale: image.scale, orientation: .up)
+    }
+
     private func referenceWithOneByteChanged(of image: UIImage) throws -> UIImage {
         let recorded = try XCTUnwrap(image.pngData().flatMap { UIImage(data: $0, scale: image.scale)?.cgImage })
         let space = try XCTUnwrap(recorded.colorSpace)
