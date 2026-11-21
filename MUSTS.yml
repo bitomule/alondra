@@ -2653,6 +2653,19 @@ checks:
       targets:
         - //tools:reap_test_hosts_test
 
+  footprint:
+    uses: bazel/test
+    paths:
+      - "tools/BUILD.bazel"
+      - "tools/footprint.py"
+      - "tools/footprint_events.swift"
+      - "tools/tests/test_footprint.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
+    with:
+      targets:
+        - //tools:footprint_test
+
   native-fixture-lifecycle:
     uses: bazel/test
     paths:
