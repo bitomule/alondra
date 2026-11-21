@@ -226,6 +226,8 @@ pub enum Expect {
     /// The calls Alondra made to GitHub that change something, in order, as `gh` is typed.
     GhCalls { calls: Vec<String> },
     PrMergedInto { pr: u64, branch: String },
+    /// The searches of open PRs and reads of their branches the daemon made, in order.
+    SweepReads { reads: Vec<String> },
     TaskState { task: String, state: alondra_domain_rules::TaskState },
     /// Each start-problem decision pass reads at most this many times the card population.
     StartProblemReads { max_passes: u64 },
