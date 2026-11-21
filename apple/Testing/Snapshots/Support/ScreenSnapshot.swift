@@ -62,6 +62,11 @@ extension ScreenFeature.State {
 /// keeps a real one): this share of a screen's pixels may differ for it.
 let nativeLabelPixelPrecision: Float = 0.9995
 
+/// Text drawn over Liquid Glass, as in the notice above the queue, is anti-aliased a few levels
+/// differently from one test process to the next; every glyph of the notice can differ and move
+/// no pixel by more than a few percent of the screen (`RecordedComparisonTests` keeps a real one).
+let glassTextPixelPrecision: Float = 0.98
+
 /// `assertVariants` for a whole screen: one point a pixel keep a tall screen's baseline small, and
 /// `variants` leaves out the accessibility size where one screen already shows how it grows.
 @MainActor

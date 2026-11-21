@@ -104,6 +104,8 @@ TRIAGE_SUITE = "TriageSnapshotTests"
         bundle_id = "com.bitomule.alondra.snapshottests",
         data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [
             "Fixtures/pairing-native-label.png",
+            "Fixtures/set-aside-banner-glass-text.png",
+            "Fixtures/triage-native-button-label.png",
             "//apple:iOS/Resources/Localizable.xcstrings",
             "//apple/Testing/Samples:all",
             "//fixtures/diffs",
