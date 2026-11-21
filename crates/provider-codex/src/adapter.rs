@@ -1,6 +1,6 @@
 use crate::normalizer::Normalizer;
 use crate::records::{InputRecord, SessionRecord};
-use crate::wire::{Connection, ControlIdentity, LaunchedAs, execution, fence};
+use crate::wire::{Connection, ControlIdentity, LaunchedAs, ReceiptWait, execution, fence};
 use alondra_agent_application::{DurableAdapter, InputMetadata, ObservationNormalizer, invocation};
 use alondra_codex_protocol::{
     Action, Body, Command, ControlResult, Decision as WireDecision, DecisionKind as WireKind, FramedReader,
@@ -20,10 +20,6 @@ use alondra_store::{
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-/// How long a Codex host gives its app-server and thread to open before it refuses the input
-/// that waits for them, as `OPENING_TIMEOUT_MS` in `agent-host/codex-session.ts`.
-const NATIVE_OPENING: Duration = Duration::from_secs(90);
 
 /// Configuration carries no dispatch or process-launch authority.
 pub struct CodexConfiguration {
@@ -742,9 +738,9 @@ impl CodexAdapter {
     }
     fn send(&mut self, stamp: &ExecutionStamp, command: &PreparedCommand) -> Result<Handoff, AdapterError> {
         let deadline = self.deadline()?;
-        self.send_until(stamp, command, deadline)
+        self.send_waiting(stamp, command, ReceiptWait::Within(deadline))
     }
-    fn send_until(&mut self, stamp: &ExecutionStamp, command: &PreparedCommand, deadline: Instant) -> Result<Handoff, AdapterError> {
+    fn send_waiting(&mut self, stamp: &ExecutionStamp, command: &PreparedCommand, wait: ReceiptWait) -> Result<Handoff, AdapterError> {
         let host = self.host.as_ref().ok_or(AdapterError::Disconnected)?;
         if stamp != host.owner().execution() {
             return Err(AdapterError::InvalidObservation);
@@ -752,7 +748,7 @@ impl CodexAdapter {
         self.connection
             .as_mut()
             .ok_or(AdapterError::Disconnected)?
-            .submit(host.owner(), command, deadline)
+            .submit(host.owner(), command, wait)
     }
     /// Re-sends the exact recorded command bytes of an unresolved dispatch and reads the host's
     /// definitive answer. The owner is rechecked; the lane is the adopted one.
@@ -995,12 +991,10 @@ impl Adapter for CodexAdapter {
         if invocation.binding != &self.binding {
             return Err(AdapterError::InvalidObservation);
         }
-        // The host answers an input once it is offered, and a host whose thread has not opened yet
-        // opens it first: on a loaded Mac that alone outlasts the I/O timeout. The host bounds the
-        // opening itself, refusing the input when it does not open in time, so the wait for its
-        // answer is the I/O timeout beyond that bound.
-        let deadline = self.deadline()?.checked_add(NATIVE_OPENING).ok_or(AdapterError::Disconnected)?;
-        self.send_until(invocation.execution, command, deadline)
+        // The host answers an input once Codex has the thread it goes to, which a new host opens
+        // first: what that takes is Codex's, as is the time a turn takes, and the host says how
+        // it went, or ends.
+        self.send_waiting(invocation.execution, command, ReceiptWait::WhileTheHostLives(self.configuration.io_timeout))
     }
     fn next(&mut self) -> Result<Option<OrderedObservation>, AdapterError> {
         let deadline = self.deadline()?;
