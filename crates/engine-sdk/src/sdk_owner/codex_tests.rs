@@ -1335,6 +1335,47 @@ fn stopping_a_codex_host_after_native_death_drains_unread_acceptance_and_final_e
 }
 
 
+// 21 November: on a loaded Mac the Codex host of a node's first input took longer than the I/O
+// timeout to open its app-server and thread. The host answers that input only once its thread is
+// open, so the owner gave the connection up while the host was still opening, and the node lost
+// its host. The host bounds the opening itself: the owner waits for its answer past the timeout.
+#[test]
+fn a_codex_thread_that_opens_after_the_io_timeout_takes_the_first_input() {
+    use std::io::{Read as _, Write as _};
+    use std::time::{Duration, Instant};
+    let mut slice = Slice::new();
+    slice.backend.io_timeout_seconds = 5;
+    let trace = configured(&slice, "complete");
+    let ready_path = slice._home.join("thread-open-ready");
+    let release_path = slice._home.join("thread-open-release");
+    for path in [&ready_path, &release_path] {
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: the path is a new name inside the test's own folder.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    }
+    let mut ready = std::fs::OpenOptions::new().read(true).write(true).open(&ready_path).unwrap();
+    let mut release = std::fs::OpenOptions::new().read(true).write(true).open(&release_path).unwrap();
+    std::fs::write(slice._home.join("codex-native.account.json"), serde_json::to_vec(&serde_json::json!({
+        "threadOpenReady": ready_path, "threadOpenBarrier": release_path,
+    })).unwrap()).unwrap();
+    let io = Duration::from_secs(slice.backend.io_timeout_seconds);
+    // The input was sent before Codex was asked for its thread: once a whole I/O timeout passed
+    // after that ask, the owner's own wait for the input's answer is past its I/O timeout too.
+    let opener = std::thread::spawn(move || {
+        ready.read_exact(&mut [0]).unwrap();
+        let late = Instant::now() + io;
+        while Instant::now() <= late {
+            std::thread::sleep(late.saturating_duration_since(Instant::now()) + Duration::from_millis(1));
+        }
+        release.write_all(b"R").unwrap();
+    });
+    let mut driver = launch(&slice);
+    slice.settle(&mut driver);
+    opener.join().unwrap();
+    assert!(transcript(&trace).iter().any(|message| message["method"] == "turn/start"), "the first input reached the thread");
+    driver.stop().unwrap();
+}
+
 fn signal_codex_process(pid: libc::pid_t, signal: libc::c_int) {
     // SAFETY: these tests signal only a kernel-identified process they launched in their fixture.
     assert_eq!(unsafe { libc::kill(pid, signal) }, 0, "{}", std::io::Error::last_os_error());

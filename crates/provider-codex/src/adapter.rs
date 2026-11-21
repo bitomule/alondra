@@ -21,6 +21,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// How long a Codex host gives its app-server and thread to open before it refuses the input
+/// that waits for them, as `OPENING_TIMEOUT_MS` in `agent-host/codex-session.ts`.
+const NATIVE_OPENING: Duration = Duration::from_secs(90);
+
 /// Configuration carries no dispatch or process-launch authority.
 pub struct CodexConfiguration {
     pub artifact: VerifiedArtifact,
@@ -738,6 +742,9 @@ impl CodexAdapter {
     }
     fn send(&mut self, stamp: &ExecutionStamp, command: &PreparedCommand) -> Result<Handoff, AdapterError> {
         let deadline = self.deadline()?;
+        self.send_until(stamp, command, deadline)
+    }
+    fn send_until(&mut self, stamp: &ExecutionStamp, command: &PreparedCommand, deadline: Instant) -> Result<Handoff, AdapterError> {
         let host = self.host.as_ref().ok_or(AdapterError::Disconnected)?;
         if stamp != host.owner().execution() {
             return Err(AdapterError::InvalidObservation);
@@ -988,7 +995,12 @@ impl Adapter for CodexAdapter {
         if invocation.binding != &self.binding {
             return Err(AdapterError::InvalidObservation);
         }
-        self.send(invocation.execution, command)
+        // The host answers an input once it is offered, and a host whose thread has not opened yet
+        // opens it first: on a loaded Mac that alone outlasts the I/O timeout. The host bounds the
+        // opening itself, refusing the input when it does not open in time, so the wait for its
+        // answer is the I/O timeout beyond that bound.
+        let deadline = self.deadline()?.checked_add(NATIVE_OPENING).ok_or(AdapterError::Disconnected)?;
+        self.send_until(invocation.execution, command, deadline)
     }
     fn next(&mut self) -> Result<Option<OrderedObservation>, AdapterError> {
         let deadline = self.deadline()?;
