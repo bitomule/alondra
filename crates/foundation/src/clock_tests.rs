@@ -246,6 +246,38 @@ fn a_thread_the_clock_wakes_from_a_blocking_sleep_works_until_it_ends() {
     });
 }
 
+/// A job of the blocking pool counts from the moment it is submitted: a test that moves virtual time
+/// waits for it, so what it reads and commits lands at the instant that started it.
+#[test]
+fn a_blocking_job_works_from_its_submission_until_it_ends() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let (reading, read) = std::sync::mpsc::channel::<()>();
+        let job = spawn_blocking(move || {
+            reading.send(()).unwrap();
+            gone.recv().ok();
+            now_millis()
+        });
+        assert_eq!(working(), 1, "it counts before its thread even starts");
+        tokio::task::spawn_blocking(move || read.recv().unwrap()).await.unwrap();
+        advance(Duration::from_secs(1)).await;
+        assert_eq!(working(), 1);
+        go.send(()).unwrap();
+        assert_eq!(job.await.unwrap(), EPOCH + 1_000);
+        assert_eq!(working(), 0);
+    });
+}
+
+#[test]
+fn a_blocking_job_that_panics_gives_its_unit_back() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        assert!(spawn_blocking(|| panic!("a failed job")).await.unwrap_err().is_panic());
+        assert_eq!(working(), 0);
+    });
+}
+
 /// A wait for a stream ends when its writer writes, never on the clock: the thread does not hold
 /// virtual time while it waits, and works again once it reads.
 #[test]
