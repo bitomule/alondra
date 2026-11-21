@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
+import { AwakeClock } from './awake-clock.js';
 import { Channel } from './channel.js';
 import { assertBootstrap, prepareSocket, secureSocket, releaseBootstrap, type Bootstrap } from './bootstrap.js';
 import { ACTION_CAPABILITIES, commandDigest, executionSegments, fitObservation, framingProblem, MAX_MCP_SERVERS, MAX_MCP_URL_BYTES, MAX_SIGN_IN_URL_BYTES, PROTOCOL_VERSION, HOST_CAPABILITIES, type Capability, type ControlResult, type Frame, type McpServer, type SignIn } from './frame.js';
@@ -67,6 +68,7 @@ export class PersistentHost {
   private session?: HostSession;
   private operations: Promise<void> = Promise.resolve();
   private journal: Journal;
+  private awake = new AwakeClock();
   private unavailable = false;
   private stopping = false;
   private sessionEnd?: { cursor: number; acknowledged: number; resolve: () => void; progress?: () => void };
@@ -125,6 +127,7 @@ export class PersistentHost {
     })().catch(() => socket.destroy());
   }
   private receive(lane: Lane, frame: Frame, raw: Buffer): void {
+    this.awake.observe();
     try {
       const body = frame.body;
       if (body.type === 'attach') { this.attach(lane, body); return; }
@@ -176,7 +179,7 @@ export class PersistentHost {
       if (receipt) { this.current(lane); await lane.channel.write(receipt); }
       return;
     }
-    if (this.journal.commands.size >= MAX_COMMANDS || command.deadline_ms < Date.now()) throw new Error('Command admission refused');
+    if (this.journal.commands.size >= MAX_COMMANDS || this.awake.passed(command.deadline_ms)) throw new Error('Command admission refused');
     this.persist({ protocol_version: PROTOCOL_VERSION, body: command }, raw);
     const record = this.journal.commands.get(command.command_id)!;
     this.receipt(record, { status: 'accepted', phase: 'admitted' });

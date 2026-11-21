@@ -370,7 +370,7 @@ fn interrupting_a_command_claude_code_tracks_as_work_pauses_without_a_card() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("foreground-command-hold");
     while slice.observations_with("\"subtype\":\"task_started\"") == 0 {
-        driver.observe().unwrap();
+        driver.observe_written().unwrap();
     }
     assert!(node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "the running command offers Interrupt");
     let reply = press_interrupt(&slice, driver.agent());

@@ -106,7 +106,7 @@ fn a_codex_app_server_survives_owner_and_log_reader_loss_and_adopts_without_reof
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let group = driver.worker.host_group().unwrap();
     let processes = alondra_process_group::members(group).unwrap();
     assert!(processes.len() >= 2, "the real persistent host and fake native app-server must both be running");
@@ -152,7 +152,7 @@ fn an_accepted_native_request_stays_pending_until_its_exact_native_user_item_is_
     let slice = Slice::new();
     let trace = configured(&slice, "accepted_without_consumption");
     let mut driver = launch(&slice);
-    while slice.observations_with("alondra/inputAccepted") == 0 { driver.observe().unwrap(); }
+    while slice.observations_with("alondra/inputAccepted") == 0 { driver.observe_written().unwrap(); }
     let state = slice.domain.state().unwrap();
     assert_eq!(Slice::lifecycle(&slice.domain).pending_inputs().len(), 1);
     assert!(!state.lifecycle_journal[&TaskId::from(TASK)].iter().any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TurnStarted { .. } | alondra_domain_rules::LifecycleRecord::InputConsumed { .. })));
@@ -778,7 +778,7 @@ async fn codex_node_after_a_restart(meanwhile: impl FnOnce(&Slice)) -> (Slice, A
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     kill_host_and_daemon(driver);
     meanwhile(&slice);
     let restarted = slice.restart();
@@ -820,7 +820,7 @@ fn an_unopened_codex_replacement_remains_unopened_after_reconciling_a_control() 
     let slice = Slice::new();
     configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     kill_host_and_daemon(driver);
     let mut replacement = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(replacement.worker.native_liveness().unwrap(), Some(alondra_provider_codex::NativeLiveness::NotStarted));
@@ -844,7 +844,7 @@ fn adopting_a_legacy_codex_host_with_a_dead_native_replaces_it_before_reconcilin
     backend.host = host; backend.host_sha256 = backend.node_sha256.clone();
     std::fs::write(&path, serde_json::to_vec(&backend).unwrap()).unwrap();
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     slice.run(&system(), "legacy-mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
     assert!(driver.claim_and_record_control_without_sending());
     let old_host = driver.worker.stopper().unwrap();
@@ -876,7 +876,7 @@ fn a_codex_transport_failure_ends_the_host_and_the_same_thread_goes_on_in_a_new_
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     kill_native(&native_process(&mut driver));
     let error = loop {
         if let Err(error) = driver.observe() { break error; }
@@ -900,7 +900,7 @@ fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken
     backend.host = host; backend.host_sha256 = backend.node_sha256.clone();
     std::fs::write(&path, serde_json::to_vec(&backend).unwrap()).unwrap();
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     kill_host_and_daemon(driver);
     let mut replacement = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     let bootstrap: serde_json::Value = serde_json::from_slice(&std::fs::read(replacement.worker.state_directory().join("host.lock")).unwrap()).unwrap();
@@ -943,7 +943,7 @@ async fn a_codex_app_server_killed_mid_turn_resumes_the_same_thread_without_a_se
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let original = transcript(&trace).into_iter().find(|request| request["method"] == "turn/start").unwrap()["params"]["clientUserMessageId"].as_str().unwrap().to_owned();
     let group = driver.worker.host_group().unwrap();
     let old_host = driver.worker.stopper().unwrap();
@@ -1047,7 +1047,7 @@ async fn killed_codex_host_is_replaced(signal: libc::c_int, adopted: bool) {
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     if adopted {
         drop(driver);
         driver = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
@@ -1128,7 +1128,7 @@ async fn a_codex_session_that_never_starts_is_relaunched_past_the_old_limit_with
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     kill_host_and_daemon(driver);
     for saved in std::fs::read_dir(slice.backend.state_root.join("native-threads")).unwrap() {
         std::fs::remove_file(saved.unwrap().path()).unwrap();
@@ -1181,7 +1181,7 @@ async fn codex_node_restarted_with_its_folder(meanwhile: impl FnOnce(&Path)) -> 
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let folder = driver.worker.state_directory().to_path_buf();
     kill_host_and_daemon(driver);
     meanwhile(&folder);
@@ -1244,7 +1244,7 @@ fn a_codex_takeover_that_fails_after_launching_its_host_leaves_no_host_running()
     let slice = Slice::new();
     configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let folder = driver.worker.state_directory().to_path_buf();
     kill_host_and_daemon(driver);
     std::fs::rename(&folder, archive(&folder, "first")).unwrap();
@@ -1267,7 +1267,7 @@ fn a_host_left_running_for_a_task_that_ended_is_ended_when_the_daemon_starts() {
     let slice = Slice::new();
     configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let folder = driver.worker.state_directory().to_path_buf();
     let generation = Slice::lifecycle(&slice.domain).execution().unwrap().generation();
     let agent = driver.agent().clone();
@@ -1386,7 +1386,7 @@ pub fn working_on_codex(slice:&Slice)->AgentId{
     git(&slice.worktree,&["init","-q","-b","release-notes"]);
     slice.domain.enable_sdk(slice.backend.clone());
     let mut driver=launch(slice);
-    while Slice::lifecycle(&slice.domain).activity()!=ActivityView::Working{driver.observe().unwrap();}
+    while Slice::lifecycle(&slice.domain).activity()!=ActivityView::Working{driver.observe_written().unwrap();}
     std::fs::write(slice.worktree.join("draft.md"),"unfinished notes").unwrap();
     let source=driver.agent.clone();slice.domain.add_sdk_owner(Owner::spawn(driver));
     source
@@ -2063,7 +2063,7 @@ async fn a_paused_codex_session_loses_its_app_server_and_delivers_resume_and_mes
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
+    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let native = native_process(&mut driver);
     slice.domain.enable_sdk(slice.backend.clone());
     slice.domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
