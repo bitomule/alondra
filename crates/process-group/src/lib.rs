@@ -675,7 +675,7 @@ mod tests {
     #[test]
     fn the_holders_of_a_file_are_the_processes_that_keep_it_open() {
         use std::os::unix::fs::MetadataExt;
-        let file = std::fs::File::open("/etc/hosts").unwrap();
+        let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
         let (device, inode) = (file.metadata().unwrap().dev(), file.metadata().unwrap().ino());
         let mut child = Command::new("/bin/sleep").arg("600").stdin(Stdio::from(file)).spawn().unwrap();
         let pid = i32::try_from(child.id()).unwrap();
