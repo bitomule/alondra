@@ -74,6 +74,9 @@ pub async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing
     if let Err(error) = crate::cancelled_worktrees::sweep(&domain).await {
         log!("could not settle the worktrees of cancelled tasks: {error:#}");
     }
+    if let Err(error) = crate::task_worktrees::sweep_shells(&domain).await {
+        log!("could not delete what ended tasks left of their worktrees: {error:#}");
+    }
     loop {
         let pause = match pass(&domain, sessions.as_ref(), &timing, alondra_core::now_millis()).await {
             Ok(()) => {

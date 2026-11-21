@@ -130,6 +130,26 @@ pub fn worktrees(worktrees: &dyn Worktrees, repository: &dyn Fn(&Path)) {
     assert!(matches!(ready(worktrees.release_recorded_worktree(&kept, true)).unwrap(), TaskWorktree::Removed { .. }), "one given up goes as it is");
     assert!(!kept.exists());
 
+    let shells = repo.join(".claude/worktrees");
+    std::fs::create_dir_all(&shells).unwrap();
+    let hollow = scratch.join("hollow");
+    std::fs::create_dir_all(&hollow).unwrap();
+    let hollow_link = shells.join("hollow");
+    std::os::unix::fs::symlink(&hollow, &hollow_link).unwrap();
+    assert!(worktrees.is_empty_shell(&hollow_link), "a link to a folder with nothing in it is what git leaves after removing a worktree");
+    assert!(matches!(ready(worktrees.release_recorded_worktree(&hollow_link, false)).unwrap(), TaskWorktree::Removed { .. }), "nothing in it can be lost");
+    assert!(std::fs::symlink_metadata(&hollow_link).is_err() && !hollow.exists(), "the link and the folder it points to go");
+    let emptied = shells.join("emptied");
+    std::fs::create_dir(&emptied).unwrap();
+    assert!(matches!(ready(worktrees.release_recorded_worktree(&emptied, false)).unwrap(), TaskWorktree::Removed { .. }));
+    assert!(!emptied.exists());
+    let held = shells.join("held");
+    std::fs::create_dir(&held).unwrap();
+    std::fs::write(held.join("notes.txt"), "mine\n").unwrap();
+    assert!(!worktrees.is_empty_shell(&held));
+    assert_eq!(ready(worktrees.release_recorded_worktree(&held, true)).unwrap(), TaskWorktree::NotAlondras, "a folder with anything in it that is no worktree is never deleted");
+    assert!(held.join("notes.txt").is_file());
+
     let root = worktrees.capture_root(&plain).expect("an existing folder can hold worktrees");
     assert_eq!(root.path, plain.canonicalize().unwrap());
     assert!(worktrees.capture_root(&scratch.join("missing")).is_err());

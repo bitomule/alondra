@@ -2,7 +2,7 @@
 //! launched: recorded from what Claude Code says it made, and settled when the task closes.
 use std::path::Path;
 
-use alondra_domain_rules::{AgentId, Command, Task, TaskId, WorktreeEnd, WorktreeOrigin};
+use alondra_domain_rules::{AgentId, Command, DomainState, Task, TaskId, WorktreeEnd, WorktreeOrigin};
 use alondra_engine_ports::worktrees::TaskWorktree;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -196,10 +196,58 @@ pub async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(Str
     Ok(left)
 }
 
-/// Whether Alondra may look into or delete the recorded `path`: it is gone, or still a worktree.
+/// What ended tasks left of their worktrees once git removed the contents: a link to nothing, or a
+/// folder with nothing in it. Whoever ended the task (`kept_by_user`, `users_own`, or Alondra
+/// itself) left it recorded as ended, so no later close would ever look at it again. It goes, and
+/// the record says so. A worktree with anything in it, one an open task still holds, and one on a
+/// volume that is not mounted are never touched. Returns how many went.
+pub async fn sweep_shells(domain: &DomainRuntime) -> Result<usize> {
+    let state = domain.state()?;
+    let worktrees = domain.ports().worktrees();
+    let mut gone = 0;
+    for task in state.tasks.values().filter(|task| task.over()) {
+        for (path, worktree) in &task.worktrees {
+            if !matches!(worktree.end, Some(WorktreeEnd::KeptByUser | WorktreeEnd::UsersOwn | WorktreeEnd::Removed)) {
+                continue;
+            }
+            let dir = Path::new(path);
+            let dangling = std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.file_type().is_symlink()) && !dir.exists();
+            if !(dangling || worktrees.is_empty_shell(dir)) || in_use(domain, &state, &task.id, path) {
+                continue;
+            }
+            if ready(domain, path).await.is_err() || worktrees.unreachable_link(dir).is_some() {
+                continue;
+            }
+            match worktrees.release_recorded_worktree(dir, false).await {
+                Ok(TaskWorktree::Removed { .. } | TaskWorktree::Absent) => {
+                    gone += 1;
+                    log!("deleted what was left of the worktree {path} of {}", task.id);
+                    if worktree.end != Some(WorktreeEnd::Removed) {
+                        let command = Command::ReleaseTaskWorktree { task_id: task.id.clone(), path: path.clone(), end: WorktreeEnd::Removed };
+                        domain.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))?;
+                    }
+                }
+                Ok(_) => {}
+                Err(why) => log!("could not delete what was left of the worktree {path} of {}: {why}", task.id),
+            }
+        }
+    }
+    Ok(gone)
+}
+
+/// Whether another task that has not ended works in `path`, or will start there.
+pub(crate) fn in_use(domain: &DomainRuntime, state: &DomainState, task: &TaskId, path: &str) -> bool {
+    state.worktree_held_by_other(path, task).is_some()
+        || state.tasks.values().filter(|other| &other.id != task && !other.over())
+            .any(|other| domain.launch_plan(&other.id).ok().flatten().is_some_and(|plan| Path::new(&plan.cwd) == Path::new(path)))
+}
+
+/// Whether Alondra may look into or delete the recorded `path`: it is gone, an empty folder git
+/// left behind, or still a worktree.
 /// Why not, otherwise.
 pub fn may_handle(domain: &DomainRuntime, path: &str) -> std::result::Result<(), String> {
-    match domain.ports().worktrees().exists(Path::new(path)) {
+    let worktrees = domain.ports().worktrees();
+    match worktrees.exists(Path::new(path)) && !worktrees.is_empty_shell(Path::new(path)) {
         true => domain.registrable_worktree(Path::new(path)),
         false => Ok(()),
     }

@@ -126,6 +126,11 @@ pub trait Worktrees: Send + Sync {
     /// Why the link `dir` is cannot be followed now, if it cannot.
     /// Whether anything is at `dir` still: a worktree the user deleted is gone.
     fn exists(&self, dir: &Path) -> bool;
+    /// Whether `dir`, or the folder the link `dir` is points to, is a folder with nothing in it: all
+    /// that is left of a worktree git already removed. Nothing in it can be lost.
+    fn is_empty_shell(&self, dir: &Path) -> bool {
+        dir.is_dir() && std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none())
+    }
     fn unreachable_link(&self, dir: &Path) -> Option<String>;
     fn uncommitted_files_of_alondras_worktree<'a>(&'a self, dir: &'a Path) -> Git<'a, Result<Option<usize>, String>>;
     /// What the worktree at `top` holds that no remote has.

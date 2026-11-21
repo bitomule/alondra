@@ -5700,6 +5700,7 @@ impl DomainState {
                 match t.worktrees.get(path) {
                     None => return fail("not_found", &format!("{path} is not a worktree of task {}", task_id.0)),
                     Some(known) if known.end == Some(*end) => return Ok(()),
+                    Some(known) if *end == WorktreeEnd::Removed && matches!(known.end, Some(WorktreeEnd::KeptByUser | WorktreeEnd::UsersOwn)) => {}
                     Some(known) if known.end.is_some() => return fail("conflict", "The worktree already ended"),
                     Some(_) => {}
                 }

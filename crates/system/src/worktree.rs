@@ -327,6 +327,12 @@ async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remov
             None => Ok(TaskWorktree::Absent),
         };
     }
+    if empty_folder(dir) && named(dir) && kept_for_worktrees(dir) {
+        if remove {
+            remove_empty_folder(dir)?;
+        }
+        return Ok(TaskWorktree::Removed { freed: 0 });
+    }
     let Some(top) = alondras_top(dir, &named).await else {
         return Ok(TaskWorktree::NotAlondras);
     };
@@ -391,6 +397,13 @@ async fn release_linked(linked: Linked, named: &impl Fn(&Path) -> bool, give_up:
     let Ok(target) = linked.target.canonicalize() else {
         return release_gone_link(&linked, remove).await;
     };
+    if empty_folder(&target) {
+        if remove {
+            remove_empty_folder(&target)?;
+            remove_link(&linked.link)?;
+        }
+        return Ok(TaskWorktree::Removed { freed: 0 });
+    }
     if !worktree_of_repository(&target, linked.repository()).await {
         return Ok(TaskWorktree::NotAlondras);
     }
@@ -427,6 +440,25 @@ async fn release_gone_link(linked: &Linked, remove: bool) -> Result<TaskWorktree
     }
     remove_link(&linked.link)?;
     Ok(TaskWorktree::Removed { freed: 0 })
+}
+
+/// A folder with nothing in it: what a worktree leaves when git removes it through a link or
+/// something else keeps the folder, so there is nothing left to lose.
+fn empty_folder(dir: &Path) -> bool {
+    dir.is_dir() && std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none())
+}
+
+/// A folder where Alondra keeps task worktrees: `.claude/worktrees` of a repository, or its
+/// recorded storage folder.
+fn kept_for_worktrees(dir: &Path) -> bool {
+    dir.parent().is_some_and(|parent| parent.ends_with(".claude/worktrees")) || crate::worktrees_root::repository(dir).is_some()
+}
+
+fn remove_empty_folder(dir: &Path) -> Result<(), String> {
+    match std::fs::remove_dir(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("could not delete the empty folder {}: {e}", dir.display())),
+        _ => Ok(()),
+    }
 }
 
 fn remove_link(link: &Path) -> Result<(), String> {

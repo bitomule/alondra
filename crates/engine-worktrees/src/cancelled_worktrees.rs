@@ -113,13 +113,6 @@ fn asked_paths(state: &DomainState) -> HashSet<String> {
     covering_cards(state).flat_map(|(_, listed)| listed.tasks.into_iter().flat_map(|entry| entry.paths)).collect()
 }
 
-/// Whether another task that has not ended works in `path`, or will start there.
-fn in_use(domain: &DomainRuntime, state: &DomainState, task: &TaskId, path: &str) -> bool {
-    state.worktree_held_by_other(path, task).is_some()
-        || state.tasks.values().filter(|other| &other.id != task && !other.over())
-            .any(|other| domain.launch_plan(&other.id).ok().flatten().is_some_and(|plan| Path::new(&plan.cwd) == Path::new(path)))
-}
-
 /// Deletes the worktrees the user chose to delete on each answered card: all of them, or only
 /// the ones ticked. Keep needs nothing: the answered card is what stops anyone from asking again.
 /// A worktree already gone is nothing to do.
@@ -130,7 +123,7 @@ pub async fn apply_answers(domain: &DomainRuntime) -> Result<()> {
         for entry in listed.deleted_by(&answer.option_id, answer.form_values()) {
             let task_id = TaskId(entry.task_id.clone());
             let keeps_branch = state.tasks.get(&task_id).is_some_and(|task| keeps_branch(&state, task));
-            for path in entry.paths.iter().filter(|path| !in_use(domain, &state, &task_id, path)) {
+            for path in entry.paths.iter().filter(|path| !crate::task_worktrees::in_use(domain, &state, &task_id, path)) {
                 if crate::task_worktrees::ready(domain, path).await.is_err() || crate::task_worktrees::may_handle(domain, path).is_err() { continue; }
                 match domain.ports().worktrees().discard_worktree(Path::new(path), keeps_branch).await {
                     Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {path} of {task_id}, as the user asked, freed {}",
@@ -161,7 +154,7 @@ pub async fn sweep(domain: &DomainRuntime) -> Result<()> {
         paths.sort();
         paths.dedup();
         let mut held = CancelledWorktree { task_id: task.id.0.clone(), title: task.title.clone(), files: 0, paths: vec![] };
-        for path in paths.into_iter().filter(|path| domain.ports().worktrees().exists(Path::new(path.as_str())) && !in_use(domain, &state, &task.id, path)) {
+        for path in paths.into_iter().filter(|path| domain.ports().worktrees().exists(Path::new(path.as_str())) && !crate::task_worktrees::in_use(domain, &state, &task.id, path)) {
             if asked.contains(path.as_str()) {
                 continue;
             }
