@@ -186,9 +186,9 @@ fn a_task_completes_only_once_its_cleanup_and_its_node_are_drained() {
 // cache had expired, so Alondra ended its host and admitted a fresh session for that cleanup, and
 // the admission took the user's acceptance back: the result card came back for review, the task
 // was no longer closing, so the node's cleanup_done was refused, and pressing the card again said
-// it was already answered.
+// it was already answered. A session starting is never something the user decided against.
 #[test]
-fn a_fresh_session_for_the_cleanup_keeps_the_users_acceptance() {
+fn a_fresh_session_keeps_the_users_acceptance() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
     deliver(&mut s, "t", "a", "d1");
@@ -200,7 +200,7 @@ fn a_fresh_session_for_the_cleanup_keeps_the_users_acceptance() {
         conversation: "conversation-fresh".into(), instance: "instance-fresh".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
 
     let InteractionPayload::Delivery { acceptance: Some(acceptance), .. } = &s.interactions[&InteractionId::from("d1")].payload else { panic!("accepted") };
-    assert!(acceptance.valid, "a session that only cleans up changes nothing the user accepted");
+    assert!(acceptance.valid, "a new session changes nothing the user accepted");
     assert!(!s.open(&s.interactions[&InteractionId::from("d1")]), "the accepted result stays off the inbox");
     assert_eq!(lifecycle(&s, "t").0, TaskState::Closing);
     assert!(s.tasks[&"t".into()].wrap_up.asked_at.is_some(), "the task still waits for its cleanup");
