@@ -141,6 +141,20 @@ pub fn open_task_of(state: &DomainState, session: &str) -> Option<TaskId> {
         && !matches!(task.state, TaskState::Closing)).map(|task| task.id.clone())
 }
 
+/// Whether `session`'s node wrote the card `id`.
+pub fn asked_by(state: &DomainState, id: &alondra_domain_rules::InteractionId, session_id: &str) -> bool {
+    state.interactions.get(id)
+        .is_some_and(|interaction| matches!(&interaction.author, alondra_domain_rules::Author::Agent { agent_id } if agent_id.0 == session_id))
+}
+
+/// The session has a held card still open: it waits for the user, however silent it is. Read
+/// from the domain, so it holds across a daemon restart that forgot which call the session is in.
+pub fn waits_on_user(state: &DomainState, session_id: &str) -> bool {
+    state.holds.keys().any(|id| asked_by(state, id, session_id) && state.interactions.get(id).is_some_and(|interaction| {
+        !interaction.withdrawn && matches!(interaction.payload, alondra_domain_rules::InteractionPayload::Question { answer: None, .. })
+    }))
+}
+
 /// The priority a schedule asks its runs to start with: its `priority` option, else the priority of
 /// the run's task, Normal without one.
 pub fn run_priority(state: &DomainState, run: &ScheduleRun) -> TaskPriority {
@@ -223,10 +237,12 @@ pub trait AdmissionEngine: Send + Sync {
     fn api_watch<'a>(&self, runtime: &'a dyn Runtime) -> &'a crate::api::ApiWatch;
     /// Whether the account `task` runs on may take work again after the limit that paused it at `since`.
     fn usage_ready(&self, state: &DomainState, task: &TaskId, since: Millis, now: Millis) -> bool;
-    /// Gives `text` from Alondra to the node of the Agent SDK of `task`, as an input with `command`.
-    fn tell_node(&self, runtime: &dyn Runtime, task: &TaskId, text: &str, command: &str) -> bool;
-    /// Sends `text` from Alondra to `session`'s node down its connection.
-    fn tell_session(&self, runtime: &dyn Runtime, session: &str, text: &str) -> bool;
+    /// Gives `text` from Alondra to the node of the Agent SDK of `task`, as an input with `command`;
+    /// why not, when it could not.
+    fn tell_node(&self, runtime: &dyn Runtime, task: &TaskId, text: &str, command: &str) -> Result<(), String>;
+    /// Sends `text` from Alondra to `session`'s node down its connection, typed as the user's when
+    /// `as_user` says so.
+    fn tell_session(&self, runtime: &dyn Runtime, session: &str, text: &str, as_user: bool) -> bool;
     /// Records `event` on `agent`'s node. True when it changed the node.
     fn node_event(&self, runtime: &dyn Runtime, agent: &AgentId, event: NodeEvent) -> Result<bool, String>;
     /// Starts the launch the gate's queue kept, `queued` as it was stored.

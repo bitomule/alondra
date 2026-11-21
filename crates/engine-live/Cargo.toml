@@ -11,6 +11,7 @@ alondra-core.workspace = true
 alondra-daemon-support.workspace = true
 alondra-domain-rules.workspace = true
 alondra-engine-kernel.workspace = true
+alondra-engine-ports.workspace = true
 alondra-provider-claude.workspace = true
 alondra-provider-codex.workspace = true
 alondra-provider-contract.workspace = true

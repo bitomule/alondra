@@ -3,80 +3,13 @@
 //! session is not a job `claude rm` knows: it only closes and its terminal stays open.
 //! Shared by the close route and by Alondra closing the node of a finished task.
 use crate::live::LiveOf as _;
-use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use alondra_domain_rules::AgentId;
 use axum::http::StatusCode;
-use serde::Serialize;
 use serde_json::Value;
-use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::time::Duration;
-
-pub type Answer<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-/// What a `claude` command answered: whether it exited with 0, and what it printed.
-#[derive(Clone, Debug, Default)]
-pub struct Ran {
-    pub success: bool,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-impl Ran {
-    pub fn ok(stdout: impl Into<String>) -> Self {
-        Self { success: true, stdout: stdout.into(), stderr: String::new() }
-    }
-
-    pub fn failed(stderr: impl Into<String>) -> Self {
-        Self { success: false, stdout: String::new(), stderr: stderr.into() }
-    }
-
-    /// What it printed, to show.
-    pub(crate) fn text(&self) -> String {
-        format!("{}{}", self.stdout, self.stderr).trim().to_string()
-    }
-}
-
-/// What closing a session asks of the machine, so a test can stand in for Claude Code and git.
-pub trait Sessions: Send + Sync + 'static {
-    /// Err when `claude` could not run or did not answer in time.
-    fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<Ran, String>>;
-    fn leftovers<'a>(&'a self, session_id: &'a str) -> Answer<'a, Option<String>>;
-
-    /// The JSON of `claude agents --json --all`, only when it exited with 0.
-    fn agents<'a>(&'a self) -> Answer<'a, Result<String, String>> {
-        Box::pin(async move { listing(self.claude(agents_args()).await?) })
-    }
-}
-
-fn agents_args() -> Vec<String> {
-    vec!["agents".into(), "--json".into(), "--all".into()]
-}
-
-fn listing(ran: Ran) -> Result<String, String> {
-    if ran.success { Ok(ran.stdout) } else { Err(format!("claude agents failed: {}", ran.text())) }
-}
-
-/// The JSON of `claude agents --json --all` on this Mac.
-pub async fn agents() -> Result<String, String> {
-    listing(claude(agents_args()).await?)
-}
-
-/// Runs `claude` on this Mac; Err when it could not run or did not answer in 60 s.
-pub async fn claude(args: Vec<String>) -> Result<Ran, String> {
-    let run = tokio::process::Command::new("claude").args(&args).kill_on_drop(true).output();
-    match clock::timeout(Duration::from_secs(60), run).await {
-        Ok(Ok(out)) => Ok(Ran {
-            success: out.status.success(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        }),
-        Ok(Err(e)) => Err(e.to_string()),
-        Err(_) => Err(format!("claude {} did not answer in 60 s", args.join(" "))),
-    }
-}
+pub use alondra_engine_ports::node_close::{Answer, CloseOutcome, Ran, Reason, Sessions, agents_args, listing};
+pub use alondra_engine_kernel::bg_sessions::{agents, claude};
 
 /// Claude Code and git on this Mac.
 pub struct Machine(pub std::sync::Arc<dyn alondra_engine_ports::worktrees::Worktrees>);
@@ -89,15 +22,6 @@ impl Sessions for Machine {
     fn leftovers<'a>(&'a self, session_id: &'a str) -> Answer<'a, Option<String>> {
         self.0.leftovers(session_id)
     }
-}
-
-/// A machine-readable reason a close was refused, so each client can show it in the user's
-/// language instead of the English `error` string.
-#[derive(Serialize, Debug, PartialEq)]
-pub struct Reason {
-    pub kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
 }
 
 /// Real risks a close must not paper over: the session still doing something (busy or a live
@@ -123,19 +47,8 @@ pub(crate) fn listed(agents_json: &str, short: &str) -> bool {
         .is_some_and(|a| a.iter().any(|x| x.get("id").and_then(Value::as_str) == Some(short)))
 }
 
-pub enum CloseOutcome {
-    /// `claude rm` removed it and `claude agents` no longer lists it.
-    Closed { output: String },
-    /// `claude agents` does not list it: an interactive session, or one already deleted.
-    NotListed,
-    /// Something real stops the close: busy, a pending permission, unsaved work.
-    Refused { reasons: Vec<Reason>, message: String },
-    /// `claude` failed or its answer was not the expected one.
-    Failed { status: StatusCode, message: String },
-}
-
 fn failed(status: StatusCode, message: impl Into<String>) -> CloseOutcome {
-    CloseOutcome::Failed { status, message: message.into() }
+    CloseOutcome::Failed { status: status.as_u16(), message: message.into() }
 }
 
 /// Closes the session of `agent`. A session `claude agents` does not list is left alone, and

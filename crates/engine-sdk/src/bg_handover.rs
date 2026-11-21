@@ -7,8 +7,8 @@
 //! that records it, then the old node closed. A daemon that comes back goes on from the last step
 //! recorded, so no step's effect happens twice, and the task never has two live owners.
 use crate::sdk_owner::SdkOwners as _;
-use crate::live::LiveOf as _;
-use crate::sdk_handover::{EVERY, HandoversOf as _, handover_of};
+use crate::engine::EngineOf as _;
+use alondra_engine_kernel::bg_sessions::{EVERY, HandoversOf as _, handover_of};
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -153,7 +153,7 @@ async fn admit(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), S
         .map_err(|error| format!("the admission stopped: {error}"))?
         .map_err(|crate::sdk_owner::Failed { why, .. }| format!("the SDK execution was not admitted: {why}"))?;
     domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
-    domain.live().forget_closed_task(&handover.task.0);
+    domain.engine().forget_closed_task(&handover.task);
     Ok(())
 }
 
@@ -184,13 +184,12 @@ async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), 
         store.hand_carried_message(id).map_err(|error| format!("handing the message the move carried: {error:#}"))?;
     }
     drop(store);
-    if let Err(failure) = crate::domain_agent_lifecycle::node_event(domain, node, NodeEvent::SessionClosed) {
+    if let Err(failure) = domain.engine().node_event(node, NodeEvent::SessionClosed) {
         log!("could not close {node} after its move to the Agent SDK: {failure}");
     }
-    crate::domain_transport::session_ended(domain, node).map_err(|error| format!("ending the old node's session: {error:#}"))?;
-    domain.live().mark_closed(&node.0);
-    domain.live().apply(&alondra_core::Event::NodeRemoved { session_id: node.0.clone() });
-    domain.forget_ended_session(&node.0).map_err(|error| format!("{error:#}"))?;
+    domain.engine().session_ended(node).map_err(|error| format!("ending the old node's session: {error:#}"))?;
+    domain.engine().node_removed(&node.0);
+    domain.engine().forget_ended_session(&node.0).map_err(|error| format!("{error:#}"))?;
     domain.store.lock_or_exit("the domain store").record_handover_done(node, &handover.task)
         .map_err(|error| format!("recording the end of the move: {error:#}"))?;
     log!("{node} ({}) moved to the Agent SDK: {agent} resumes its Claude session", handover.task);

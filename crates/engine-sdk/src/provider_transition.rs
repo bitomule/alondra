@@ -1,8 +1,7 @@
 //! A requested selection stays durable while its current execution drains, is fenced and hands off.
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
-use crate::gate::GateOf as _;
+use alondra_engine_ports::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
-use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -184,7 +183,7 @@ fn drained(domain:&DomainRuntime,plan:&Plan)->Result<bool,DomainError>{
 }
 /// The task's canonical context, or why it cannot move: Alondra no longer has part of it.
 pub(crate) fn critical_context(state:&DomainState,task:&alondra_domain_rules::Task)->Result<String,DomainError>{
-    let canonical=crate::domain_orchestrator_tools::canonical_task_context(state,task);
+    let canonical=alondra_engine_kernel::launches::canonical_task_context(state,task);
     if !canonical.missing_sources.is_empty(){return Err(failure(format!("Critical task context is missing: {}",canonical.missing_sources.join(", "))))}
     Ok(canonical.text)
 }
@@ -212,7 +211,7 @@ fn refresh_handoff(state:&DomainState,plan:&Plan,canonical:&str,entries:&[Contex
         Ok(file.display().to_string())
     };
     let records_file=write("task-records.md",canonical)?;
-    let approved=crate::domain_orchestrator_tools::approved_plan(state,task);
+    let approved=alondra_engine_kernel::launches::approved_plan(state,task);
     let plan_file=if approved.is_empty(){None}else{Some(write("approved-plan.md",&approved)?)};
     let parts=alondra_store::RefreshParts{
         worktree:plan.source.directory.clone(),

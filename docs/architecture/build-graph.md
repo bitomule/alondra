@@ -111,7 +111,7 @@ speak in, and the registry that holds one implementation of each. It depends onl
 none on the piece that implements a port it uses.
 
 - The ports: `AdmissionGate` and `AdmissionEngine` (`admission.rs`), `OrchestratorEngine` and
-  `OrchestratorAnswers` (`orchestrator.rs`), `SdkHosts` (`hosts.rs`), `AgentHost` (`agent_host.rs`) and `GitHub` (`github.rs`, see "Output adapters"). The values they carry moved with them:
+  `OrchestratorAnswers` (`orchestrator.rs`), `SdkHosts` (`hosts.rs`), `SdkEngine` (`sdk.rs`), `AgentHost` (`agent_host.rs`) and `GitHub` (`github.rs`, see "Output adapters"). The values they carry moved with them:
   `LaunchOptions` and `Failed` (`launch.rs`), `NoRoom` (`machine.rs`) and `OutboxMessage`
   (`outbox.rs`). The crates they came from re-export them, so their callers did not change.
 - `Journal` (`journal.rs`) is how the runtime speaks to where the domain is kept: the writer that
@@ -217,8 +217,10 @@ moves of a task to another provider or account (`provider_transition`, `account_
 `claude --bg` nodes an earlier release left (`bg_handover`), the automatic launch and its retries
 (`auto_launch`, `start_retries`), the scheduled runs (`domain_schedule_runner`,
 `domain_schedule_api`), the closing of tasks and the release of resting hosts (`task_closer`,
-`idle_release`) and the wiring. It depends on `daemon-engine` and `engine-admission`; only
-`alondrad`, the machine model and the scenarios see it.
+`idle_release`) and its own wiring, which provides `SdkHosts`. Its code asks the rest of the engine
+only through the port `SdkEngine` (see "`engine-sdk` asks the engine through `SdkEngine`"); only
+`alondrad`, the machine model and the scenarios see it. `alondrad` puts the engine together
+(`alondrad/src/wiring.rs`).
 
 - The engine and the gate ask it through the port `SdkHosts` (`daemon-engine/src/hosts.rs`): whether
   a node's host runs, stop or halt it, take over the tasks no owner runs, check and prepare the
@@ -570,6 +572,43 @@ Measured on the shared Mac under load, one run each:
   play yet (decisions, background commands, refusals, resumption without history).
 - No check fails when a host executable goes back into `engine_sdk_test`'s `data`:
   `crate_layers_test` only follows the root.
+
+## `engine-sdk` asks the engine through `SdkEngine` (phase 4c-1, 2026-11-21)
+
+`engine-sdk`'s code no longer calls `daemon-engine` or `engine-admission`: what it asks of the engine
+goes through the port `SdkEngine` (`engine-ports/src/sdk.rs`), which `daemon-engine` implements
+(`wiring::Engine`, like `AdmissionEngine`), in four groups: accounts for a launch, launching and
+relaunching, the `claude --bg` nodes, and the hosts' reports. `domain.engine()` is that port for
+one runtime. `the_daemon_implements_every_port` requires it.
+
+- What was pure moved down: the admission gate's wrapper (`GateOf`/`Gate`) and the node-close types
+  to `engine-ports`; `untaken`, `start_failures`, the accounts file, the launches and the background
+  sessions to `engine-kernel`; `claude_trust` to `daemon-engine-model`. `daemon-engine` re-exports
+  them, so its other callers did not change.
+- The engine is put together in `alondrad` (`open`, `open_at` and the ordered commit observers);
+  `daemon-server` receives the opener from the root (`preflight::run`, `DomainDaemon::open`). The
+  engine's tests open it with a copy of the observers (`engine_sdk::engine_fixtures`), and
+  `the_engines_tests_hear_of_commits_as_the_daemon_does` fails when the two lists differ or change order.
+- **Not removed yet:** the fixtures compiled into the `engine-sdk` library still open the whole
+  engine, so its Bazel target keeps `daemon-engine` and `engine-admission` as dependencies and
+  `LAYER_EXCEPTIONS` keeps their two entries. Moving those fixtures is the per-layer tests task
+  (`engine_tests/*`, `bg_handover`, the `claude --bg` close, `auto_launch`'s real start and the
+  `sdk_owner` tests that need the engine go to `daemon-server`; the rest run on doubles of
+  `SdkEngine`, `AdmissionEngine` and `OrchestratorEngine`; `HostRoot` and `auto_launch::tests::Fixture`
+  receive the opener).
+
+Measured with `edit_bench`, one run each on the shared Mac under load (load average about 14).
+
+| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Edit + build | Longest test target | Edit + test |
+|---|---:|---:|---|---:|---|---:|
+| `engine-sdk/src/sdk_owner.rs` (before, main at 97f5f5f) | 10 | 43 | 86 (12 / 6 / 67) | 26 s | `engine_sdk_test` 189 s | 206 s |
+| `engine-sdk/src/sdk_owner.rs` (after) | 10 | 43 | 84 (12 / 6 / 65) | 38 s | `engine_sdk_test` 290 s | 349 s |
+
+- No build-time win, as expected: the edit reaches the same crates and test targets, because the
+  library's fixtures keep the engine among `engine-sdk`'s dependencies. The slower "after" figures
+  come from the load; the same targets took 263 s (`engine_sdk_test`) when run again. A test failed
+  in each run (`scenarios_test` before; `relaunch_test` and `scenarios_test` after); each passed when
+  run again alone.
 
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 

@@ -4,9 +4,9 @@
 //! Node host with the official SDK, and a fake native Claude that answers each prompt with a
 //! result. Each step waits on the host's next event, never on a clock.
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
-use crate::gate::GateOf as _;
+use alondra_daemon_engine::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
-use crate::idle_compaction::ContextsOf as _;
+use alondra_daemon_engine::idle_compaction::ContextsOf as _;
 use super::*;
 use alondra_engine_admission::AdmissionOf as _;
 use crate::test_support::Directory;
@@ -411,11 +411,11 @@ pub struct Work {
 /// The closer reaches an SDK node only through its owner: `claude rm` and the session listing are
 /// never asked about one.
 pub struct NoClaudeSessions;
-impl crate::node_close::Sessions for NoClaudeSessions {
-    fn claude<'a>(&'a self, args: Vec<String>) -> crate::node_close::Answer<'a, Result<crate::node_close::Ran, String>> {
+impl alondra_daemon_engine::node_close::Sessions for NoClaudeSessions {
+    fn claude<'a>(&'a self, args: Vec<String>) -> alondra_daemon_engine::node_close::Answer<'a, Result<alondra_daemon_engine::node_close::Ran, String>> {
         panic!("the closer ran claude {args:?} for an SDK node")
     }
-    fn leftovers<'a>(&'a self, session_id: &'a str) -> crate::node_close::Answer<'a, Option<String>> {
+    fn leftovers<'a>(&'a self, session_id: &'a str) -> alondra_daemon_engine::node_close::Answer<'a, Option<String>> {
         panic!("the closer looked for leftovers of {session_id}, an SDK node")
     }
 }

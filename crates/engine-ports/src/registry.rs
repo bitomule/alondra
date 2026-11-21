@@ -10,6 +10,7 @@ use crate::machine::MachineProbe;
 use crate::orchestrator::{OrchestratorAnswers, OrchestratorEngine};
 use crate::plugins::Plugins;
 use crate::processes::Processes;
+use crate::sdk::SdkEngine;
 use crate::sign_in_returns::SignInReturns;
 use alondra_view_model::Screens;
 use crate::worktrees::Worktrees;
@@ -94,7 +95,7 @@ impl Registry {
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 15] {
+fn every_port() -> [(TypeId, &'static str); 16] {
     [
         (TypeId::of::<dyn Accounts>(), "Accounts"),
         (TypeId::of::<dyn AgentHost>(), "AgentHost"),
@@ -107,6 +108,7 @@ fn every_port() -> [(TypeId, &'static str); 15] {
         (TypeId::of::<dyn OrchestratorEngine>(), "OrchestratorEngine"),
         (TypeId::of::<dyn Plugins>(), "Plugins"),
         (TypeId::of::<dyn Processes>(), "Processes"),
+        (TypeId::of::<dyn SdkEngine>(), "SdkEngine"),
         (TypeId::of::<dyn SdkHosts>(), "SdkHosts"),
         (TypeId::of::<dyn Screens>(), "Screens"),
         (TypeId::of::<dyn SignInReturns>(), "SignInReturns"),
@@ -141,12 +143,12 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorAnswers", "OrchestratorEngine", "Plugins", "Processes", "SdkHosts", "Screens", "SignInReturns", "Worktrees"]);
+        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorAnswers", "OrchestratorEngine", "Plugins", "Processes", "SdkEngine", "SdkHosts", "Screens", "SignInReturns", "Worktrees"]);
         struct Answers;
         impl OrchestratorAnswers for Answers {
             fn settle_answers(&self, _: &dyn Runtime, _: &alondra_domain_rules::DomainState, _: &std::collections::BTreeSet<alondra_domain_rules::TaskId>) {}
         }
         registry.provide::<dyn OrchestratorAnswers>(Arc::new(Answers));
-        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "Plugins", "Processes", "SdkHosts", "Screens", "SignInReturns", "Worktrees"]);
+        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "Plugins", "Processes", "SdkEngine", "SdkHosts", "Screens", "SignInReturns", "Worktrees"]);
     }
 }

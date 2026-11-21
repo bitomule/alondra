@@ -28,13 +28,18 @@ use alondra_daemon_support::{
 pub use alondra_daemon_engine_model::options;
 pub use alondra_engine_ports::{Runtime, extension};
 
+pub mod accounts_file;
+pub mod bg_sessions;
 pub mod domain_runtime;
 pub mod domain_sessions;
 pub mod domain_store;
+pub mod launches;
 pub mod metrics_capture;
 pub mod retention;
 pub mod sdk_backend;
 pub mod settings_projection;
+pub mod start_failures;
+pub mod untaken;
 
 /// The journal the tests of the engine open their runtimes on: a test of a crate above the kernel
 /// sets it once, before its first runtime.

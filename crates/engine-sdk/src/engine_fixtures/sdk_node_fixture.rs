@@ -6,13 +6,13 @@ use alondra_core::Millis;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use crate::sdk_owner::SdkOwners as _;
-use crate::live::LiveOf as _;
+use alondra_daemon_engine::live::LiveOf as _;
 use alondra_engine_admission::pauses::*;
 use alondra_engine_admission::AdmissionOf as _;
-use crate::admission::{Hold, Key, Limit, SPACING, Tuning, Waiting};
-use crate::machine_state::NoRoom;
-use crate::node_push::testing::Node;
-use crate::node_reports::{Envelope, Report};
+use alondra_engine_admission::admission::{Hold, Key, Limit, SPACING, Tuning, Waiting};
+use alondra_daemon_engine::machine_state::NoRoom;
+use alondra_daemon_engine::node_push::testing::Node;
+use alondra_daemon_engine::node_reports::{Envelope, Report};
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure};
 use alondra_domain_rules::{API_RETRIES, Actor, AgentId, ApiRetry, Command, CommandEnvelope, NodePhase, OUTAGE_PROBE, PROTOCOL_VERSION, Pause, PauseReason, TaskId, TaskPriority};
 use std::os::unix::fs::DirBuilderExt;
@@ -60,7 +60,7 @@ pub struct SdkNode {
     pub capture: PathBuf,
     pub backend: alondra_daemon_engine::sdk_backend::SdkBackend,
     pub home: crate::test_support::Directory,
-    pub _state: crate::host_fixtures::HostRoot,
+    pub _state: alondra_daemon_engine::host_fixtures::HostRoot,
 }
 
 impl SdkNode {
@@ -83,10 +83,10 @@ impl SdkNode {
     pub fn told(prompt: &str) -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
-        let state = crate::host_fixtures::HostRoot::new();
+        let state = alondra_daemon_engine::host_fixtures::HostRoot::new();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
-        let (backend, capture) = crate::host_fixtures::fixture_backend(&home, &state);
+        let (backend, capture) = alondra_daemon_engine::host_fixtures::fixture_backend(&home, &state);
         let domain = Arc::new(crate::engine_fixtures::open(&home).unwrap());
         domain.enable_sdk(backend.clone());
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateRequest {
@@ -138,14 +138,14 @@ impl SdkNode {
     }
 
     pub fn tell(&self, task: &str, text: &str) {
-        crate::domain_messages::tell_sdk_node(&self.domain, &task.into(), crate::node_push::ALONDRA, text, &format!("tell-{task}"), false).unwrap();
+        alondra_daemon_engine::domain_messages::tell_sdk_node(&self.domain, &task.into(), alondra_daemon_engine::node_push::ALONDRA, text, &format!("tell-{task}"), false).unwrap();
     }
 
     pub fn set_limit(&self, limit: u32) {
         self.domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(limit)) });
     }
 
-    pub fn gate(&self) -> crate::admission::Snapshot {
+    pub fn gate(&self) -> alondra_engine_admission::admission::Snapshot {
         self.domain.admission().snapshot(&self.domain, alondra_core::now_millis()).unwrap()
     }
 
@@ -213,7 +213,7 @@ impl SdkNode {
 
     /// One look of the gate, which lets the node go on once it has a slot.
     pub async fn gate_look(&self) {
-        crate::admission::pass_at(&self.domain, &self.home, alondra_core::now_millis()).await.unwrap();
+        alondra_engine_admission::admission::pass_at(&self.domain, &self.home, alondra_core::now_millis()).await.unwrap();
     }
 
     /// The user pauses the node from its task; its turn is interrupted and ends.

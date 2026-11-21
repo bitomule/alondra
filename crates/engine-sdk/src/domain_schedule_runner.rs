@@ -1,9 +1,9 @@
 //! Schedule v2's local-calendar and launch preparation adapter. The command
 //! carrying this intent must be committed with its Run, Request, and Task before
 //! a technical launch claim can call Claude.
-use crate::domain_orchestrator_tools::{MissionAuthor, producer_prompt};
-use crate::gate::GateOf as _;
-use crate::live::LiveOf as _;
+use alondra_engine_kernel::launches::{MissionAuthor, producer_prompt};
+use crate::engine::EngineOf as _;
+use alondra_engine_ports::gate::GateOf as _;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
@@ -115,7 +115,7 @@ async fn prepare_sdk(
 ) -> Result<Prepared, alondra_domain_rules::DomainError> {
     let mut resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|why| alondra_domain_rules::DomainError::new("invalid_input", why.to_string()))?;
     let account = if let Some(intent) = resolved.selection.clone() {
-        let decision = crate::accounts::select_for_launch_with_tools(domain, home, &intent, disallowed_tools, alondra_core::now_millis())?;
+        let decision = domain.engine().select_account(home, &intent, disallowed_tools, alondra_core::now_millis())?;
         let mut intent = intent;
         intent.effective = Some(decision.selection.clone());
         resolved.flags.model = (decision.account.provider == alondra_core::accounts::Provider::Claude).then(|| decision.selection.model.model.clone());
@@ -123,16 +123,16 @@ async fn prepare_sdk(
         resolved.selection = Some(intent);
         decision.account
     } else {
-        let id = crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis())
-            .ok_or_else(|| alondra_domain_rules::DomainError::new("account_unavailable", if domain.live().usage_pause.waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }))?;
+        let id = domain.engine().choose_account(home, alondra_core::now_millis())
+            .ok_or_else(|| alondra_domain_rules::DomainError::new("account_unavailable", if domain.engine().waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }))?;
         alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Claude, id)
     };
-    crate::accounts::log_choice(domain, "scheduled run", &account, alondra_core::now_millis());
+    domain.engine().log_account_choice("scheduled run", &account, alondra_core::now_millis());
     let profile = alondra_core::accounts::provider_folder(home, &account);
     let mut selected_launch = launch.clone();
     selected_launch.options_json = serde_json::to_string(&resolved).map_err(|why| alondra_domain_rules::DomainError::new("invalid_input", why.to_string()))?;
     let (workplace, plugin, resolved) = prepare_claimed(domain, &selected_launch, task, home, profile.as_deref()).await?;
-    crate::domain_orchestrator_tools::own_worktree(domain, task, &workplace).await?;
+    alondra_engine_kernel::launches::own_worktree(domain, task, &workplace).await?;
     Ok(Prepared { workplace, plugin, resolved, account })
 }
 
@@ -195,7 +195,7 @@ async fn prepare_claimed(
     let known = domain.task_worktree(task).map_err(|why| storage_error(why.to_string()))?;
     let recorded = match &known {
         Some(path) => {
-            crate::task_worktrees::ready(domain, path).await.map_err(|why| storage_error(why.to_string()))?;
+            domain.engine().worktree_ready(path).await.map_err(|why| storage_error(why.to_string()))?;
             domain.store.lock_or_exit("the domain store").worktree_storage(path).map_err(|why| storage_error(why.to_string()))?
         },
         None => None,
@@ -204,9 +204,9 @@ async fn prepare_claimed(
         return Err(alondra_domain_rules::DomainError::new("invalid_input", "schedule project directory does not exist"));
     }
     let resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|error| alondra_domain_rules::DomainError::new("invalid_input", error.to_string()))?;
-    let projects_root = options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
+    let projects_root = options_at(home).ok().map(|file| file.projects_root(&alondra_daemon_engine_model::options::user_home()));
     if let Some(repository) = (resolved.selected_provider() == Some(alondra_core::accounts::Provider::Claude)).then(|| domain.ports().accounts().ensure_trusted(profile, Path::new(&launch.cwd), projects_root.as_deref())).flatten() {
-        return Err(alondra_domain_rules::DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
+        return Err(alondra_domain_rules::DomainError::new("workspace_untrusted", alondra_daemon_engine_model::claude_trust::instructions(&repository)));
     }
     let file = options_at(home).map_err(|why| alondra_domain_rules::DomainError::new("invalid_input", why.to_string()))?;
     let root = recorded.map(|record| record.root).or(file.worktrees_root);
@@ -237,7 +237,7 @@ fn ordinary_conflict(error: &StoreError) -> bool {
     matches!(error, StoreError::Domain(domain) if matches!(domain.code.as_str(), "conflict" | "not_found" | "stale_revision"))
 }
 
-pub use crate::options::options_at;
+pub use alondra_daemon_engine_model::options::options_at;
 
 fn scheduled_task_name(title: &str, at: i64) -> Result<String> {
     let seconds = at.div_euclid(1000) as libc::time_t;
@@ -316,7 +316,7 @@ pub fn finish_claim(domain: &DomainRuntime, home: &Path, run_id: &ScheduleRunId)
         .context("claimed Run has no definition")?;
     let prepared = (|| -> Result<ScheduleLaunchIntent> {
         let file = options_at(home)?;
-        let root = file.projects_root(&crate::options::user_home());
+        let root = file.projects_root(&alondra_daemon_engine_model::options::user_home());
         prepare_intent(&run.schedule_id, run_id, snapshot, &file, &root).map_err(anyhow::Error::msg)
     })();
     let mut launch = match prepared {
@@ -388,13 +388,13 @@ async fn dispatch_pending(
     let now = alondra_core::now_millis();
     let resolved: Resolved = serde_json::from_str(&launch.intent.options_json)?;
     let ready = if let Some(intent) = &resolved.selection {
-        match crate::accounts::select_for_launch_with_tools(domain, home, intent, &policy, now) {
+        match domain.engine().select_account(home, intent, &policy, now) {
             Ok(_) => true,
             Err(error) if error.code == "paid_authorization_required" || error.code == "unsupported_capability" => { fail_run(domain, run_id, error.message)?; return Ok(()); }
             Err(_) => false,
         }
-    } else { crate::accounts::choose_for_launch(domain, home, now).is_some() };
-    let paused = domain.live().usage_pause.current().is_some_and(|pause| pause.by_user || resolved.selection.is_none());
+    } else { domain.engine().choose_account(home, now).is_some() };
+    let paused = domain.engine().usage_pause().is_some_and(|pause| pause.by_user || resolved.selection.is_none());
     if !ready || paused || domain.gate().disk_low() {
         return Ok(());
     }
@@ -423,7 +423,7 @@ async fn dispatch_pending(
     let configured = root.is_some() || retained.is_some();
     if configured {
         if let Some(path) = &known {
-            if crate::task_worktrees::ready(domain, path).await.is_err() {
+            if domain.engine().worktree_ready(path).await.is_err() {
                 domain.gate().not_started(&key);
                 domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
                 return Ok(());
@@ -633,7 +633,7 @@ pub async fn run_cycle(
         fail_run(domain, &run_id, reason.into())?;
     }
     answer_failed_launches(domain, home)?;
-    let paused = domain.live().usage_pause.is_active() || domain.gate().disk_low();
+    let paused = domain.engine().usage_paused() || domain.gate().disk_low();
     if due_enabled && !paused {
         let now = alondra_core::now_millis();
         let state = domain.state()?;
@@ -762,7 +762,7 @@ enum WakeReason {
 async fn wait_for_next_run(
     deadline: Option<i64>,
     schedules: &mut tokio::sync::watch::Receiver<alondra_domain_rules::Revision>,
-    usage: &mut tokio::sync::watch::Receiver<Option<crate::usage_pause::Exhausted>>,
+    usage: &mut tokio::sync::watch::Receiver<Option<alondra_engine_ports::orchestrator::Exhausted>>,
     clock_changes: &mut tokio::sync::watch::Receiver<crate::schedule_clock::ClockChange>,
     turn: &mut tokio::sync::watch::Receiver<u64>,
 ) -> WakeReason {
@@ -791,12 +791,12 @@ pub async fn run(
     due_enabled: bool,
 ) -> Result<()> {
     let mut schedule_changes = domain.subscribe_schedules();
-    let mut usage_changes = domain.live().usage_pause.subscribe();
+    let mut usage_changes = domain.engine().usage_changes();
     let mut turn = domain.gate().subscribe();
     let mut system_clock = crate::schedule_clock::ClockChanges::new();
     loop {
         run_cycle(&domain, &home, due_enabled).await?;
-        let deadline = if domain.live().usage_pause.is_active() { None } else { nearest_run(&*domain.state()?, due_enabled) };
+        let deadline = if domain.engine().usage_paused() { None } else { nearest_run(&*domain.state()?, due_enabled) };
         match wait_for_next_run(
             deadline,
             &mut schedule_changes,
@@ -824,6 +824,7 @@ mod tests {
     use alondra_store_sqlite::AsSqlite as _;
     use alondra_engine_admission::AdmissionOf as _;
     use crate::sdk_owner::SdkOwners as _;
+    use crate::live::LiveOf as _;
     use super::*;
     use crate::model_fixture::SdkLaunches;
     use alondra_domain_rules::{InteractionId, InteractionPayload, Schedule, ScheduleFrequency};

@@ -133,12 +133,12 @@ impl AdmissionEngine for Engine {
     }
 
     /// Gives the node its input in the domain, as the engine does.
-    fn tell_node(&self, runtime: &dyn Runtime, task: &TaskId, text: &str, command: &str) -> bool {
+    fn tell_node(&self, runtime: &dyn Runtime, task: &TaskId, text: &str, command: &str) -> Result<(), String> {
         self.script().told_nodes.push(Told { task: task.clone(), text: text.to_owned(), command: command.to_owned() });
-        self.commit(runtime, "tell", Command::TellNode { task_id: task.clone(), text: text.to_owned(), from_user: false, answers: None }).is_ok()
+        self.commit(runtime, "tell", Command::TellNode { task_id: task.clone(), text: text.to_owned(), from_user: false, answers: None }).map(|_| ()).map_err(|error| error.to_string())
     }
 
-    fn tell_session(&self, _: &dyn Runtime, session: &str, text: &str) -> bool {
+    fn tell_session(&self, _: &dyn Runtime, session: &str, text: &str, _: bool) -> bool {
         self.script().told_sessions.push((session.to_owned(), text.to_owned()));
         true
     }

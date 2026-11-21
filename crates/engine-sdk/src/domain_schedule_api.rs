@@ -151,17 +151,17 @@ fn old_frequency(frequency: d::ScheduleFrequency) -> crate::schedules::Frequency
 
 impl ScheduleDraft {
     fn materialize(mut self, domain: &DomainRuntime, home: &Path, schedule_id: d::ScheduleId, revision: i64, verified_user: bool) -> Result<d::Schedule, String> {
-        let file = crate::options::options_at(home).map_err(|error| error.to_string())?;
+        let file = alondra_daemon_engine_model::options::options_at(home).map_err(|error| error.to_string())?;
         let resolved = file.resolve(self.project.as_deref(), &self.options)?;
-        crate::domain_orchestrator_tools::validate_request_selection(domain, &resolved).map_err(|error| error.message)?;
-        crate::domain_orchestrator_tools::validate_native_requirements(resolved.selection.as_ref(), &self.disallowed_tools).map_err(|error| error.message)?;
+        alondra_engine_kernel::launches::validate_request_selection(domain, &resolved).map_err(|error| error.message)?;
+        alondra_engine_kernel::launches::validate_native_requirements(resolved.selection.as_ref(), &self.disallowed_tools).map_err(|error| error.message)?;
         let explicit_account = matches!(self.options.get("account"), Some(Choice::Value(account)) if account != "auto");
         let selected = explicit_account.then(|| resolved.account_key()).flatten();
         if let Some(account) = &selected { self.options.insert("account".into(), Choice::Value(account.wire_id())); }
         let paid_account_grant = selected.filter(|key| verified_user && (
             file.accounts.find(key.provider, key.account.as_str()).is_some_and(|account| account.billing == alondra_core::accounts::AccountBilling::PayPerUse)
             || domain.read().state().accounts.iter().any(|account| account.provider == key.provider && account.id == key.account && account.billing == alondra_core::accounts::AccountBilling::PayPerUse)));
-        let root = file.projects_root(&crate::options::user_home());
+        let root = file.projects_root(&alondra_daemon_engine_model::options::user_home());
         if let Some(project) = self.project.as_deref() {
             if !options::projects(&root).iter().any(|(name, _)| name == project) {
                 return Err("project must be one of the available project folders".into());
@@ -357,10 +357,10 @@ fn untrusted_project(domain: &DomainRuntime, home: &Path, schedule: &d::Schedule
     if !schedule.enabled {
         return None;
     }
-    let root = crate::options::options_at(home).ok()?.projects_root(&crate::options::user_home());
+    let root = alondra_daemon_engine_model::options::options_at(home).ok()?.projects_root(&alondra_daemon_engine_model::options::user_home());
     let folder = schedule.project.as_deref().map_or(root.clone(), |project| root.join(project));
     let repository = domain.ports().accounts().ensure_trusted(None, &folder, Some(&root))?;
-    Some(error("untrusted_project", &crate::claude_trust::instructions(&repository)))
+    Some(error("untrusted_project", &alondra_daemon_engine_model::claude_trust::instructions(&repository)))
 }
 
 fn run_response(outcome: &d::CommandOutcome) -> Value {

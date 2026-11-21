@@ -112,18 +112,7 @@ pub fn heir(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Option<Ta
     Ok(Some(heir))
 }
 
-/// Worktrees of a task that are links to folders that cannot be reached now, as on a volume that is
-/// not mounted: the close leaves them as they are and tries again later, without a card.
-#[derive(Debug)]
-pub struct Unreachable(pub String);
-
-impl std::fmt::Display for Unreachable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}; Alondra leaves it as it is and tries again later", self.0)
-    }
-}
-
-impl std::error::Error for Unreachable {}
+pub use alondra_engine_ports::worktrees::{Unreachable, settle_text};
 
 /// What each worktree of the task that the node did not give up, and no other open task goes on
 /// in, still holds that no remote has: the work that keeps the task from closing, by path.
@@ -253,15 +242,6 @@ pub fn may_handle(domain: &DomainRuntime, path: &str) -> std::result::Result<(),
     }
 }
 
-/// What the node of a task that cannot close yet is told: each worktree with work left, and how
-/// to settle it.
-pub fn settle_text(task: &TaskId, left: &[(String, String)]) -> String {
-    let list: String = left.iter().map(|(path, what)| format!("\n- {path}: {what}")).collect();
-    format!("Alondra cannot close task {task} yet: these worktrees of the task, yours or those of the subagents you \
-launched, hold work no remote has:{list}\nFor each one, commit the work and push it to its branch, or give it up. \
-Then call cleanup_done with task_id {task}, listing in discard the paths you give up: Alondra deletes those as they \
-are and closes the task once no worktree of it holds work no remote has.")
-}
 
 #[cfg(test)]
 mod tests {

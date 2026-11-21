@@ -19,7 +19,7 @@ pub mod provider_transition {
 pub mod sdk_owner {
     use super::*;
 
-    pub const HOST: &str = crate::sdk_live::HOST;
+    pub const HOST: &str = alondra_engine_ports::hosts::HOST;
 
     pub fn due_unowned(taken: &mut BTreeMap<TaskId, (Millis, u64)>, working: Vec<(TaskId, u64)>, now: Millis) -> Vec<TaskId> {
         crate::sdk_owner::due_unowned(taken, working, now)
@@ -38,7 +38,7 @@ pub mod sdk_owner {
         use super::*;
 
         pub fn wake_command(state: &DomainState, task: &TaskId, agent: &AgentId) -> Option<(String, Command)> {
-            crate::untaken::wake_command(state, task, agent)
+            alondra_engine_kernel::untaken::wake_command(state, task, agent)
         }
     }
 }

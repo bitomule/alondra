@@ -12,17 +12,7 @@ use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
 use serde::Deserialize;
 use serde_json::Value;
 
-/// The host an SDK execution runs on, as the domain records it: never `claude-bg`.
-pub const HOST: &str = "alondra-sdk";
-
-/// Whether `agent` holds the current execution of a task that runs through the SDK.
-pub fn runs_through_sdk(state: &alondra_domain_rules::DomainState, agent: &alondra_domain_rules::AgentId) -> bool {
-    state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent)).any(|task| {
-        state
-            .lifecycle_of(&task.id).ok()
-            .is_some_and(|lifecycle| lifecycle.execution().is_some_and(|execution| execution.host().as_str() == HOST))
-    })
-}
+pub use alondra_engine_ports::hosts::{HOST, runs_through_sdk};
 
 const ANSWER_LIMIT: usize = 8_000;
 const SUMMARY_LIMIT: usize = 300;
