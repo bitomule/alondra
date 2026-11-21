@@ -30,7 +30,7 @@ pub(crate) fn wired() {
 /// The runtime as the daemon opens it, with the doubles of the Mac and a gate that is unpaced and
 /// launches on the disk the machine watch measured.
 pub(crate) fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
-    let runtime = alondra_engine_sdk::wiring::open_at(home, database, files)?;
+    let runtime = alondra_engine_sdk::engine_fixtures::open_engine_at(home, database, files)?;
     alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
     alondra_agent_runtime::wire(runtime.ports(), Default::default());
     alondra_engine_admission::for_tests(&runtime);
@@ -39,7 +39,11 @@ pub(crate) fn open_at(home: &std::path::Path, database: &std::path::Path, files:
 
 /// `open_at` at the home's active database; the engine's fixtures this thread opens open the same.
 pub(crate) fn open(home: &std::path::Path) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
-    wired();
-    open_at(home, &alondra_engine_ports::journal::active_path(home), &alondra_store_sqlite::Sqlite)
+    open_on(home, &alondra_store_sqlite::Sqlite)
 }
 
+/// `open_at` at the home's active database, on `files`, as the root opens the engine.
+pub(crate) fn open_on(home: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
+    wired();
+    open_at(home, &alondra_engine_ports::journal::active_path(home), files)
+}

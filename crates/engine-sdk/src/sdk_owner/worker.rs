@@ -104,13 +104,6 @@ impl Worker {
     pub fn background_left(&self, bytes: &[u8]) -> Vec<String> { match self { Self::Claude(_) => alondra_provider_claude::background_left(bytes), Self::Codex(_) => alondra_provider_codex::background_left(bytes) } }
     pub fn answered_control(&self, batch: &OrderedObservation) -> Option<CommandId> { match self { Self::Claude(_) => alondra_provider_claude::answered_control(batch), Self::Codex(_) => alondra_provider_codex::answered_control(batch) } }
     pub fn native_exited(&self, batch: &OrderedObservation) -> bool { match self { Self::Claude(_) => alondra_provider_claude::native_exited(batch), Self::Codex(_) => alondra_provider_codex::native_exited(batch) } }
-    pub fn context_event(&self, batch: &OrderedObservation) -> Option<alondra_provider_claude::ContextEvent> {
-        match self {
-            Self::Claude(_) => alondra_provider_claude::context_event(batch),
-            // Codex live scope binds current root thread, turn and native model before telemetry.
-            Self::Codex(_) => None,
-        }
-    }
 }
 impl ObservationNormalizer for Worker {
     fn normalize(&self, batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Normalization, AdapterError> {

@@ -9,7 +9,7 @@
 //! and one that stayed alive through a pause of hours. Only then is the time since the last request
 //! known. A live host is ended by the refresh, as a move ends it.
 use super::*;
-use crate::idle_compaction::LastRequest;
+use alondra_engine_ports::sdk::LastRequest;
 use alondra_core::Millis;
 
 /// The size from which a conversation whose prompt cache expired starts anew instead of resuming:
@@ -134,7 +134,7 @@ pub(super) fn refresh(domain: &DomainRuntime, task: &TaskId, provider: Provider,
     }
     let now = alondra_core::now_millis();
     let mut found = None;
-    let (last, source, absent) = match domain.contexts().last_request(task) {
+    let (last, source, absent) = match domain.engine().last_request(task) {
         Some(last) => (Some(last), Some(Source::Stored), ""),
         None => {
             let derived = located(domain, task, &stamp_conversation, conversation).and_then(|(session, transcript)| {

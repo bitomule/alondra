@@ -21,49 +21,7 @@ const FILE: &str = "context-readings.json";
 /// How long the last request of a task is kept once a request of another task came after it.
 const KEPT_MS: Millis = 7 * 24 * 60 * 60_000;
 
-/// The conversation's size after its last request, and when that request's cache expires.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Reading {
-    pub tokens: u64,
-    pub expires_at: Millis,
-}
-
-/// The last request of a task this daemon timed: how large the conversation was after it, when it
-/// started, how long its cache lasts, and whether a compaction may still be asked for it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LastRequest {
-    pub tokens: u64,
-    pub requested_at: Millis,
-    pub cache_ms: Millis,
-    pub compactable: bool,
-}
-
-impl LastRequest {
-    pub fn reading(&self) -> Reading {
-        Reading { tokens: self.tokens, expires_at: self.requested_at.saturating_add(self.cache_ms) }
-    }
-}
-
-/// How a host of a task came to run its conversation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StartKind {
-    /// It opened a new conversation.
-    New,
-    /// It resumed the conversation the host before it left.
-    Resumed,
-    /// It opened a new conversation that carries on from the task's records.
-    Handoff,
-}
-
-impl StartKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            StartKind::New => "new",
-            StartKind::Resumed => "resumed",
-            StartKind::Handoff => "handoff",
-        }
-    }
-}
+pub use alondra_engine_ports::sdk::{LastRequest, Reading, StartKind};
 
 /// The first answer a new host got: what its request wrote to and read from the prompt cache, and
 /// how long after the task's previous request it went out.

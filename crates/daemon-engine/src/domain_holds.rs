@@ -10,7 +10,7 @@
 use crate::domain_runtime::DomainRuntime;
 use crate::hook_text::{card_subject, elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
 use alondra_domain_rules::{
-    clip, without_recommended_suffix, Actor, AgentId, Answer, Author, CardKind, CardSpec, Command, CommandEnvelope,
+    clip, without_recommended_suffix, Actor, AgentId, Answer, CardKind, CardSpec, Command, CommandEnvelope,
     ContentKind, DecisionPrompt, DomainState, GroupQuestion, Hold, InputValue, InteractionId, InteractionPayload,
     McpServerOrigin, QuestionGroup, QuestionOption, PROTOCOL_VERSION, plan_checklist_problem, include_linked_files,
 };
@@ -479,18 +479,9 @@ pub(crate) fn release_orphans(domain: &DomainRuntime) -> Result<()> {
     Ok(())
 }
 
-fn asked_by(state: &DomainState, id: &InteractionId, session_id: &str) -> bool {
-    state.interactions.get(id)
-        .is_some_and(|interaction| matches!(&interaction.author, Author::Agent { agent_id } if agent_id.0 == session_id))
-}
 
-/// The session has a held card still open: it waits for the user, however silent it is. Read
-/// from the domain, so it holds across a daemon restart that forgot which call the session is in.
-pub fn waits_on_user(state: &DomainState, session_id: &str) -> bool {
-    state.holds.keys().any(|id| asked_by(state, id, session_id) && state.interactions.get(id).is_some_and(|interaction| {
-        !interaction.withdrawn && matches!(interaction.payload, InteractionPayload::Question { answer: None, .. })
-    }))
-}
+use alondra_engine_ports::admission::asked_by;
+pub use alondra_engine_ports::admission::waits_on_user;
 
 /// The tool call that asked is over, so its cards stop waiting.
 pub fn release_call(domain: &DomainRuntime, session_id: &str, call: &str) -> Result<()> {

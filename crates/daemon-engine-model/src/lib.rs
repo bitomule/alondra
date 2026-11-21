@@ -10,6 +10,7 @@ mod account_identity;
 mod launch;
 mod state;
 
+pub mod claude_trust;
 pub mod faults;
 pub mod issues;
 pub mod options;

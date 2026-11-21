@@ -6,8 +6,9 @@ load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
-# The SDK's crate is the top of the engine: it depends on daemon-engine and engine-admission, which
-# ask it only through the port SdkHosts, and only alondrad, which puts the daemon together, sees it.
+# The SDK's crate asks the rest of the engine only through the port SdkEngine, and the rest of the
+# engine asks it only through SdkHosts; alondrad puts them together. Its fixtures, compiled into the
+# library, still open the whole engine, so it keeps daemon-engine and engine-admission as deps.
 WORKSPACE_DEPS = [
     "//crates/engine-ports:engine_ports",
     "//crates/agent-application:agent_application",

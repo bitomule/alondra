@@ -6,12 +6,13 @@
 //! again by itself and then put in front of the user (`start_failures`). A task whose node Alondra
 //! closed for a reason of its own (a replacement that stopped short, a node closed while the user
 //! asked for changes) is relaunched the same way, in the folder that node worked in.
-use crate::gate::GateOf as _;
-use crate::live::LiveOf as _;
+use crate::engine::EngineOf as _;
+use alondra_engine_ports::gate::GateOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
-use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
-use crate::live::Relaunch;
+use alondra_daemon_engine_model::LaunchBody;
+use alondra_engine_ports::sdk::Relaunch;
+use alondra_engine_kernel::start_failures;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_domain_rules::{DomainError, DomainState, Task, TaskId, TaskState};
@@ -83,7 +84,7 @@ fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
         .filter(|task| !planned.contains_key(&task.id) && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id)))
         .collect();
     for task in planless {
-        let cancelled = crate::domain_github::execute_system(domain, alondra_domain_rules::Command::CancelTask { task_id: task.id.clone(), reason: None });
+        let cancelled = alondra_engine_github::domain_github::execute_system(domain, alondra_domain_rules::Command::CancelTask { task_id: task.id.clone(), reason: None });
         if let Err(error) = cancelled {
             log!("could not cancel {}, which has no launch plan: {error:?}", task.id);
             continue;
@@ -96,7 +97,7 @@ fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
     Ok(())
 }
 
-pub use crate::launch_plans::candidate;
+pub use alondra_engine_ports::launch::candidate;
 
 pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
     crate::start_retries::react(domain, home).await?;
@@ -109,7 +110,7 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
     let mut ready: Vec<&Task> = state.tasks.values().filter(|task| candidate(&state, task)).collect();
     ready.sort_by_key(|task| (task.priority, planned.get(&task.id).copied().unwrap_or(now), &task.id));
     for task in ready {
-        let relaunching = match domain.live().closed_task(&task.id.0).map(|node| node.relaunch) {
+        let relaunching = match domain.engine().closed_task(&task.id).map(|node| node.relaunch) {
             Some(Relaunch::AskUser) => continue,
             Some(Relaunch::ByItself) => true,
             None => false,
@@ -124,10 +125,10 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         if retries.get(&task.id).is_some_and(|(_, at)| *at > now) {
             continue;
         }
-        if domain.live().api_watch.down(now) {
+        if domain.engine().api_down(now) {
             continue;
         }
-        let usage_out = domain.live().usage_pause.current().is_some();
+        let usage_out = domain.engine().usage_pause().is_some();
         let retry = match row.as_ref().map(|row| (row.state, row.reason)) {
             None => false,
             Some((AutoLaunchState::Launched, _)) if relaunching => {
@@ -154,17 +155,14 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         if !domain.store.lock_or_exit("the domain store").claim_auto_launch(&task.id, now, retry)? {
             continue;
         }
-        let Ok(_launching) = crate::domain_orchestrator_tools::Launching::begin(domain, &task.id) else {
+        let Some(_launching) = domain.engine().begin_launch(&task.id) else {
             domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
             continue;
         };
         let plan = domain.launch_plan(&task.id)?;
         let launched = match &plan {
-            _ if relaunching => crate::domain_orchestrator_tools::relaunch_from(domain, home, &task.id, Origin::Auto).await,
-            Some(plan) => {
-                let choices = |request: &alondra_domain_rules::RequestId| request_choices(domain, request).ok().flatten();
-                launch_from(domain, home, LaunchBody::from_plan(task.id.clone(), plan), choices, Origin::Auto).await
-            }
+            _ if relaunching => domain.engine().relaunch(home, &task.id, true).await,
+            Some(plan) => domain.engine().launch_planned(home, LaunchBody::from_plan(task.id.clone(), plan).to_queue()).await,
             None => {
                 domain.store.lock_or_exit("the domain store").forget_auto_launch(&task.id)?;
                 continue;
@@ -183,7 +181,7 @@ pub fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched
     };
     match launched {
         Ok(_) => domain.store.lock_or_exit("the domain store").set_start_retry(task, None)?,
-        Err(_) if crate::start_failures::ended(domain, task)? => {}
+        Err(_) if start_failures::ended(domain, task)? => {}
         Err(error) => match error.code.as_str() {
             "usage_exhausted" => block(AutoLaunchReason::UsageExhausted)?,
             "account_unavailable" | "account_check_in_progress" => {
@@ -202,8 +200,8 @@ pub fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched
             }
             code => {
                 domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(task.clone()));
-                if let Some(problem) = crate::start_failures::problem_of(&*domain.ports().accounts(), code, &error.message, cwd) {
-                    crate::start_failures::failed(domain, task, problem, now)?;
+                if let Some(problem) = start_failures::problem_of(&*domain.ports().accounts(), code, &error.message, cwd) {
+                    start_failures::failed(domain, task, problem, now)?;
                 }
                 log!("could not start {task} by itself: {}", error.message);
             }

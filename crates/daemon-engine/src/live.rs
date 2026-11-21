@@ -17,26 +17,7 @@ pub enum LiveChangeKey {
     Task(String),
 }
 
-/// What a relaunch needs of the node that closed while it worked on a task.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ClosedNode {
-    pub name: String,
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub relaunch: Relaunch,
-}
-
-/// Who starts the task's next node.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Relaunch {
-    /// The user closed it: a card asks them to relaunch the task or cancel it.
-    #[default]
-    AskUser,
-    /// Alondra closed it for a reason of its own: the automatic launch starts the next node, with
-    /// its retries and, past them, the card that says the task does not start.
-    ByItself,
-}
+pub use alondra_engine_ports::sdk::{ClosedNode, Relaunch};
 
 fn save<T: serde::Serialize>(file: &std::path::Path, value: &T) {
     let next = file.with_extension("next");
