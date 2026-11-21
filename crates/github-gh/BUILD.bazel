@@ -34,7 +34,10 @@ low_opt_rust_test(
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/engine-doubles:engine_doubles"],
     data = [":diff_fixture"],
-    env = {"FIXTURE_DIFF_GH": "$(rootpath :diff_fixture)"},
+    env = {
+        "FIXTURE_DIFF_GH": "$(rootpath :diff_fixture)",
+        "TEST_EXECS": "$(rootpath :diff_fixture) /bin/cat /bin/sh tmpdir",
+    },
 )
 
 rust_binary(

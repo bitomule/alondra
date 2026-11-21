@@ -23,7 +23,8 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let root = PathBuf::from(format!("/tmp/ad-{name}-{}", nanos() % 1_000_000_000));
+        let temporary = std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+        let root = temporary.join(format!("ad-{name}-{}", nanos() % 1_000_000_000));
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();

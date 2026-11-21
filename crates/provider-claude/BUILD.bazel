@@ -73,6 +73,7 @@ low_opt_rust_test(
         "FIXTURE_NODE": "$(rootpath //agent-host:pinned_node)",
         "FIXTURE_HOST": "$(rootpath //agent-host:persistent.cjs)",
         "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
+        "TEST_EXECS": "$(rootpath //agent-host:pinned_node) /usr/bin/python3 tmpdir",
     },
 )
 

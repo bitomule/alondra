@@ -4,7 +4,7 @@ set -euo pipefail
 
 makefile=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 shared=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
-work=$(mktemp -d)
+work=$(mktemp -d "${TMPDIR:-/tmp}/increment-version.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 repo() {

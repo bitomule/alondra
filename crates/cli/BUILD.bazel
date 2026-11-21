@@ -31,6 +31,7 @@ adapter_in_crate(
 # The one-shot commands are checked against the views the daemon's renderer builds.
 low_opt_rust_test(
     name = "cli_test",
+    env = {"TEST_EXECS": "/bin/cat /bin/sh /usr/bin/defaults /usr/bin/git /usr/bin/plutil tmpdir"},
     size = "small",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = ["//launchd:alondra.plist.in"],

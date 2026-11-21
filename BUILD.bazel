@@ -40,7 +40,7 @@ exports_files(
     visibility = ["//crates/alondra:__pkg__", "//deploy/apple:__pkg__", "//tools:__pkg__"],
 )
 
-exports_files([".bazelrc"], visibility = ["//tools:__pkg__"])
+exports_files([".bazelrc", "docs/running-tests.md"], visibility = ["//tools:__pkg__"])
 
 exports_files(
     ["docs/architecture/push-fields.md", "web/react-router.config.ts"],
@@ -83,6 +83,7 @@ filegroup(
 
 sh_test(
     name = "plugin_mod_test",
+    env = {"TEST_EXECS": "/bin/cp /bin/rm path:claude"},
     srcs = ["//tools:plugin-mod-test.sh"],
     args = ["$(rootpath plugin/.claude-plugin/plugin.json)"],
     data = glob(["plugin/**"], exclude = MOD_TYPES + SKILL_EVALS),
@@ -94,6 +95,7 @@ sh_test(
 # Starts the real SourceKit-LSP on the root files it reads, with a fake build server.
 sh_test(
     name = "sourcekit_lsp_workspace_test",
+    env = {"TEST_EXECS": "/usr/bin/sourcekit-lsp /usr/bin/xcode-select /usr/bin/xcrun tmpdir"},
     srcs = ["//tools:tests/test_sourcekit_lsp_workspace.py"],
     data = ["Package.swift", "Package.resolved"] + glob(
         [".bsp/skbsp.json", ".sourcekit-lsp/config.json"],

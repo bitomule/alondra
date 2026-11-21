@@ -26,6 +26,7 @@ root_binary(
 
 low_opt_rust_test(
     name = "alondra-sandbox_test",
+    env = {"TEST_EXECS": "/usr/bin/git"},
     size = "small",
     crate = ":alondra-sandbox",
     edition = "2024",

@@ -31,6 +31,7 @@ genquery(
     expression = 'kind("rule", siblings(deps(//:tree)))',
     opts = ["--output=xml"],
     scope = ["//:tree"],
+    visibility = ["//tools:__pkg__"],
 )
 
 sh_test(

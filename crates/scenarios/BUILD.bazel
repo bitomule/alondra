@@ -62,7 +62,7 @@ low_opt_rust_test(
     crate_root = "src/lib.rs",
     data = [":host_relay"],
     edition = "2024",
-    env = {"HOME": ".", "TZ": "UTC"} | RELAY_ENV,
+    env = {"HOME": ".", "TEST_EXECS": "$(rootpath :host_relay) /bin/sleep /usr/bin/id", "TZ": "UTC"} | RELAY_ENV,
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + [
         "//crates/agent-protocol:agent_protocol",
@@ -105,7 +105,7 @@ sh_test(
     shard_count = 16,
     srcs = ["run_scenarios.sh"],
     data = [":host_relay", ":scenarios_runner"] + glob(["cases/**"]),
-    env = {"HOME": ".", "TZ": "UTC"} | RELAY_ENV,
+    env = {"HOME": ".", "TEST_EXECS": "own-sandbox", "TZ": "UTC"} | RELAY_ENV,
 )
 
 # `bazel run //crates/scenarios:accept -- <case>` writes the checkpoints of the case into the tree.
@@ -178,6 +178,7 @@ rust_binary(
 
 low_opt_rust_test(
     name = "from_report_bin_test",
+    env = {"TEST_EXECS": "/usr/bin/defaults /usr/bin/python3"},
     size = "small",
     srcs = ["src/bin/from_report.rs", "src/bin/from_report_tests.rs"],
     crate_root = "src/bin/from_report.rs",

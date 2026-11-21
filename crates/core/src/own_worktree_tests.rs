@@ -39,7 +39,8 @@ impl Fixture {
         std::os::unix::fs::symlink(at("outside/missing"), at("wt/dangling")).unwrap();
         std::os::unix::fs::symlink(at("wt/sub"), at("wt/link-in")).unwrap();
         std::fs::hard_link(at("outside/shared"), at("wt/hard")).unwrap();
-        assert!(std::process::Command::new("mkfifo").arg(at("wt/pipe")).status().unwrap().success());
+        let pipe = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(at("wt/pipe").as_os_str())).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o644) }, 0);
         let recorded = [at("wt"), at("wt/.claude/worktrees/nested"), at("main")].map(|p| p.display().to_string());
         let roots = roots(recorded.iter().map(String::as_str));
         Fixture { dir, roots }

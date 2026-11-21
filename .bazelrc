@@ -64,9 +64,7 @@ common --logging=0
 # Short, moderate, long and eternal, in seconds. `tools/test_limits.py` keeps a limit on every test.
 test --test_timeout=60,300,600,900
 test --keep_going
-# Every test gets its own short TMPDIR under /tmp, removed when it ends: macOS caps a unix socket
-# path at 104 bytes, and the default one under /var/folders is too long for the daemon's sockets.
-test --run_under=//tools:test_tmpdir
+import %workspace%/tools/test-wrapper.bazelrc
 
 # musts: stamp every build with the scope hashes and keep the last test invocation for `musts record`.
 build --workspace_status_command=tools/musts-stamp.sh

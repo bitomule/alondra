@@ -29,7 +29,10 @@ class PublicBuildInputs(unittest.TestCase):
 
     def test_every_test_runs_with_a_short_tmpdir(self):
         rc = runfile(".bazelrc").read_text()
-        self.assertRegex(rc, r"(?m)^test --run_under=//tools:test_tmpdir$")
+        self.assertRegex(rc, r"(?m)^import %workspace%/tools/test-wrapper\.bazelrc$")
+        self.assertNotRegex(rc, r"(?m)^\w+(:\w+)? .*--run_under")
+        wrapper = runfile("tools/test-wrapper.bazelrc").read_text()
+        self.assertRegex(wrapper, r"(?m)^test --run_under=//tools:test_tmpdir$")
 
     def test_the_makefile_has_no_maintainer_values_and_no_cargo_test(self):
         makefile = runfile("Makefile").read_text()
