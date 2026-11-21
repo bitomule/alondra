@@ -20,13 +20,17 @@ pub struct EvidenceRetention {
     pub texts_released: usize,
 }
 
+/// The inputs whose texts a retention pass let go of, by task.
+pub type ReleasedTexts = std::collections::BTreeMap<TaskId, BTreeSet<InputId>>;
+
 impl LifecycleTransaction<'_> {
     /// Releases up to `limit` normalized observations still holding their bytes, and removes up
     /// to `limit` released ones of executions no longer current. The checkpoint's observation and
     /// the ones not normalized yet keep their bytes. Removes up to `limit` commands of executions
-    /// no longer current, and lets go of up to `limit` input texts of ended tasks. Uncertain
-    /// dispatches retain their commands and input texts.
-    pub fn retain_evidence(&mut self, limit: usize) -> Result<EvidenceRetention> {
+    /// no longer current, and lets go of up to `limit` input texts of ended tasks, which it names
+    /// by task: the domain's journals keep none of them either. Uncertain dispatches retain their
+    /// commands and input texts.
+    pub fn retain_evidence(&mut self, limit: usize) -> Result<(EvidenceRetention, ReleasedTexts)> {
         staging!(self, {
             let limit = i64::try_from(limit).map_err(|_| Error::InvalidInput)?;
             let released = self.transaction.execute(
@@ -48,14 +52,22 @@ impl LifecycleTransaction<'_> {
                    AND NOT EXISTS(SELECT 1 FROM lifecycle_dispatches d WHERE d.id=p.intent_id AND d.status IN('claimed','uncertain')) LIMIT ?1)",
                 [limit],
             )?;
-            let texts_released = self.transaction.execute(
+            let mut texts = ReleasedTexts::new();
+            let mut texts_released = 0;
+            let mut statement = self.transaction.prepare(
                 "UPDATE lifecycle_inputs SET body=NULL WHERE rowid IN(
                    SELECT i.rowid FROM lifecycle_inputs i JOIN tasks t ON t.id=i.task_id
                    WHERE i.body IS NOT NULL AND t.state IN('done','cancelled')
-                   AND NOT EXISTS(SELECT 1 FROM lifecycle_dispatches d WHERE d.task_id=i.task_id AND d.input_id=i.input_id AND d.status='uncertain') LIMIT ?1)",
-                [limit],
+                   AND NOT EXISTS(SELECT 1 FROM lifecycle_dispatches d WHERE d.task_id=i.task_id AND d.input_id=i.input_id AND d.status='uncertain') LIMIT ?1)
+                 RETURNING task_id,input_id",
             )?;
-            Ok(EvidenceRetention { released, removed, commands_removed, texts_released })
+            let mut rows = statement.query([limit])?;
+            while let Some(row) = rows.next()? {
+                let (task, input) = (TaskId::from(row.get::<_, String>(0)?), InputId::new(row.get::<_, String>(1)?)?);
+                texts.entry(task).or_default().insert(input);
+                texts_released += 1;
+            }
+            Ok((EvidenceRetention { released, removed, commands_removed, texts_released }, texts))
         })
     }
 }

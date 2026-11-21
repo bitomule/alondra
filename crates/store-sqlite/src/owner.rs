@@ -869,9 +869,18 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(self.journal.resolve_control(stamp, id, owner_generation, receipt)?)
     }
 
-    /// One bounded pass of the raw evidence retention.
+    /// One bounded pass of the raw evidence retention. The input texts it lets go of leave the
+    /// draft's journals too: its state stays the one a reload reads, which the store keeps and the
+    /// next transaction starts from.
     pub fn retain_evidence(&mut self, limit: usize) -> std::result::Result<alondra_store::EvidenceRetention, StoreError> {
-        Ok(self.journal.retain_evidence(limit)?)
+        let (retained, texts) = self.journal.retain_evidence(limit)?;
+        if !texts.is_empty() {
+            let state = Arc::make_mut(&mut self.draft.state);
+            for (task, inputs) in &texts {
+                state.forget_input_texts(task, inputs);
+            }
+        }
+        Ok(retained)
     }
 
     /// Lifecycle fixtures for states no typed owner step produces yet.

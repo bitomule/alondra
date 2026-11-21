@@ -1,5 +1,5 @@
-name = "large conversations the usage limit held past their prompt cache go on in new sessions, which write little to the cache, though the request that hit the limit answered with no tokens; a result accepted hours later still closes, and its cleanup goes on in another new session that does not read the whole conversation again"
-max_virtual = "10h"
+name = "large conversations the usage limit held past their prompt cache go on in new sessions, which write little to the cache, though the request that hit the limit answered with no tokens; a result accepted hours later still closes, and its cleanup goes on in another new session that does not read the whole conversation again; once that task closed and its texts were let go, a task the limit holds afterwards goes on hours later in a new session too"
+max_virtual = "14h"
 
 [[step]]
 do = "request"
@@ -187,3 +187,73 @@ name = "closed-after-the-cleanup"
 check = "task_state"
 task = "t1"
 state = "done"
+
+[[step]]
+do = "request"
+text = "Write the API reference"
+task = "t3"
+title = "Write the API reference"
+
+[[step]]
+do = "node"
+task = "t3"
+model = "demo-model"
+
+[[step]]
+do = "conversation"
+task = "t3"
+tokens = 250000
+
+[[step]]
+do = "turn_end"
+task = "t3"
+
+[[step]]
+do = "provider_down"
+error = "rate_limit"
+status = 429
+tasks = ["t3"]
+
+[[step]]
+do = "turn_end"
+task = "t3"
+
+[[step]]
+do = "advance"
+by = "2h"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "provider_up"
+
+[[step]]
+do = "advance"
+by = "1h"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "held-after-a-closed-task-goes-on"
+
+[[step.expect]]
+check = "task_state"
+task = "t3"
+state = "running"
+
+[[step.expect]]
+check = "hosts"
+task = "t3"
+started = 5
+running = 1
+sessions = 3
+
+[[step.expect]]
+check = "cache_written"
+task = "t3"
+max = 20000
