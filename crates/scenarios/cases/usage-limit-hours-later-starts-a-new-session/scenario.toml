@@ -1,4 +1,4 @@
-name = "large conversations the usage limit held past their prompt cache go on in new sessions, which write little to the cache, though the request that hit the limit answered with no tokens; a result accepted hours later still closes, though its cleanup takes another new session"
+name = "large conversations the usage limit held past their prompt cache go on in new sessions, which write little to the cache, though the request that hit the limit answered with no tokens; a result accepted hours later still closes, and its cleanup goes on in another new session that does not read the whole conversation again"
 max_virtual = "10h"
 
 [[step]]
@@ -159,6 +159,11 @@ screens = ["home", "task:t1"]
 check = "task_state"
 task = "t1"
 state = "closing"
+
+[[step.expect]]
+check = "cache_written"
+task = "t1"
+max = 20000
 
 [[step.expect]]
 check = "view_shows"
