@@ -282,7 +282,10 @@ async fn execute(
     };
     probe(&launcher);
     let mac = CalmMac::default();
-    let seams = seams_of(&github, &pushes, &mac, launcher, backend, &leaks);
+    let user_home = user_home_of(&config.home);
+    make_checkout(&user_home, &scenario.world.repository).map_err(|e| invalid(&e))?;
+    github.set_repository(&scenario.world.repository);
+    let seams = seams_of(&github, &pushes, &mac, launcher, backend, &leaks, user_home);
     alondrad::scenario_phone::prepare(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let domain = crate::engine::open(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let daemon = assemble::start_over(&config, domain, seams).await.map_err(|e| invalid(&format!("{e:#}")))?;
@@ -336,7 +339,20 @@ async fn execute(
     Ok((context.outcome, result.err()))
 }
 
-fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, launcher: Launcher, backend: Backend, leaks: &Arc<Mutex<Vec<String>>>) -> Seams {
+/// The home of the scenario's user, beside the daemon's: its projects are what the daemon sweeps.
+fn user_home_of(daemon_home: &Path) -> std::path::PathBuf {
+    daemon_home.parent().unwrap_or(daemon_home).join("user")
+}
+
+/// A checkout of `repository` in the user's projects folder, whose origin is that repository.
+fn make_checkout(user_home: &Path, repository: &str) -> Result<(), String> {
+    let name = repository.rsplit('/').next().unwrap_or(repository);
+    let git = user_home.join("Projects").join(name).join(".git");
+    std::fs::create_dir_all(&git).map_err(|e| e.to_string())?;
+    std::fs::write(git.join("config"), format!("[remote \"origin\"]\n\turl = https://github.com/{repository}.git\n")).map_err(|e| e.to_string())
+}
+
+fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, launcher: Launcher, backend: Backend, leaks: &Arc<Mutex<Vec<String>>>, user_home: std::path::PathBuf) -> Seams {
     Seams {
         github: GithubSeams::of(github.clone()),
         push: Pushes::new(pushes.clone()),
@@ -349,6 +365,7 @@ fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, l
         backend,
         world: assemble::World::Isolated,
         own_cli: Some(crate::reports_cli::SCENARIO_CLI.into()),
+        user_home,
     }
 }
 
@@ -1058,7 +1075,7 @@ impl Context<'_> {
             Some((launcher, backend)) => (launcher, Backend::Given(Some(backend))),
             None => (Launcher::new(RefusingLauncher(self.leaks.clone())), Backend::Given(None)),
         };
-        let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend, &self.leaks);
+        let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend, &self.leaks, user_home_of(&self.config.home));
         let domain = crate::engine::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
         let daemon = assemble::start_over(&self.config, domain, seams).await.map_err(|e| Self::failed(index, format!("{e:#}")))?;
         self.daemon = Some(daemon);
@@ -1415,6 +1432,12 @@ impl Context<'_> {
                 let actual = self.github.gh_calls();
                 if &actual != calls {
                     return Err(failed(format!("{calls:?}"), format!("{actual:?}")));
+                }
+            }
+            Expect::SweepReads { reads } => {
+                let actual = self.github.sweep_reads();
+                if &actual != reads {
+                    return Err(failed(format!("{reads:?}"), format!("{actual:?}")));
                 }
             }
             Expect::PrMergedInto { pr, branch } => {

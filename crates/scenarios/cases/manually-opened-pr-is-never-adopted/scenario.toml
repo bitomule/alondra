@@ -1,0 +1,58 @@
+name = "a pull request opened by hand, which no task registered, is never adopted: the hourly sweep finds it and reads nothing of it"
+max_virtual = "3h"
+
+[[step]]
+do = "request"
+text = "Tidy the docs"
+task = "t1"
+title = "Tidy the docs"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "fix-typos"
+base = "main"
+
+[[step]]
+do = "advance"
+by = "6m"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "advance"
+by = "60m"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "advance"
+by = "60m"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "sweeps-ignore-the-foreign-pr"
+screens = ["home", "tasks"]
+
+[[step.expect]]
+check = "sweep_reads"
+reads = ["search open PRs", "search open PRs", "search open PRs"]
+
+[[step.expect]]
+check = "gh_calls"
+calls = []
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Adopt"
+present = false
