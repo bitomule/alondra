@@ -475,6 +475,33 @@ where
         })
 }
 
+/// [`tokio::task::spawn_blocking`] whose job counts as working from the moment it is submitted until
+/// it ends, so a test that moves virtual time waits for it (see [`working`]) instead of moving the
+/// time under a job that has not read the clock yet, or has read it and not committed what it found.
+/// Under the system clock it is the plain call.
+pub fn spawn_blocking<F, T>(work: F) -> tokio::task::JoinHandle<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let Clock::Virtual { work: counter, .. } = Clock::current() else { return tokio::task::spawn_blocking(work) };
+    counter.add();
+    let unit = Unit(counter);
+    tokio::task::spawn_blocking(move || {
+        let _unit = unit;
+        work()
+    })
+}
+
+/// One unit of [`Work`], given back when dropped, whether its job ran, panicked or never started.
+struct Unit(&'static Work);
+
+impl Drop for Unit {
+    fn drop(&mut self) {
+        self.0.remove();
+    }
+}
+
 /// [`std::thread::scope`] whose threads keep the clock and the runtime of the thread that opens it.
 pub fn scope<'env, F, T>(work: F) -> T
 where

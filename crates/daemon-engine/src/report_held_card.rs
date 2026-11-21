@@ -153,7 +153,7 @@ async fn watch(
     loop {
         ticks.tick().await;
         let (domain, reports, repo, cli) = (domain.clone(), reports.clone(), repo.clone(), cli.clone());
-        memory = tokio::task::spawn_blocking(move || {
+        memory = clock::spawn_blocking(move || {
             check(&domain, &reports, repo(), &*cli, &mut memory);
             memory
         }).await.expect("held report card worker failed");

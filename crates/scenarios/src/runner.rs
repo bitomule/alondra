@@ -799,7 +799,7 @@ impl Context<'_> {
     /// the next step reads what the daemon did with them. The wait is in the runtime's blocking
     /// pool, which keeps the clock where it is.
     async fn settle_peer(&self) -> Result<(), ScenarioError> {
-        let Some(peer) = &self.peer else { return Ok(()) };
+        let Some(peer) = &self.peer else { return Self::threads_rest().await };
         let (activity, seen, hosts) = (peer.activity.clone(), peer.seen.clone(), peer.hosts);
         let settled = tokio::task::spawn_blocking(move || {
             let reached = || {
