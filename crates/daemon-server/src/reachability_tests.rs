@@ -66,6 +66,60 @@ fn a_mapping_on_the_same_port_the_relay_sees_still_counts_as_open() {
 }
 
 #[test]
+fn a_mapping_won_on_another_network_does_not_make_a_router_without_protocols_reachable() {
+    let mut inputs = home();
+    inputs.offered = Some(Offered::default());
+    inputs.portmapped = true;
+    let found = diagnose(&inputs);
+    assert_eq!(found.verdict, Verdict::RelayOnly);
+    assert_eq!(found.reasons, vec![Reason::RouterOffersNoMapping, Reason::NoIpv6]);
+    assert_eq!(found.port_mapping.unwrap().mapped, None);
+}
+
+#[test]
+fn a_mapping_counts_while_the_router_has_not_been_probed_yet() {
+    let mut inputs = home();
+    inputs.offered = None;
+    inputs.portmapped = true;
+    assert_eq!(diagnose(&inputs).verdict, Verdict::Reachable);
+}
+
+#[test]
+fn a_mapping_counted_before_the_network_changed_is_forgotten_and_a_new_one_counts() {
+    let home_ips = [IpAddr::V4(MAC_LAN)];
+    let home_gateway = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+    let office_ips = [IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8))];
+    let office_gateway = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+    let mut epoch = PortmapEpoch::default();
+
+    assert_eq!(epoch.observe(&home_ips, home_gateway, 0), (false, false), "no mapping yet");
+    assert_eq!(epoch.observe(&home_ips, home_gateway, 1), (true, false), "a mapping won on this network");
+    assert_eq!(epoch.observe(&home_ips, home_gateway, 1), (true, false), "and it stays while the network does");
+    assert_eq!(epoch.observe(&office_ips, office_gateway, 1), (false, true), "the counter did not rise on the new network");
+    assert_eq!(epoch.observe(&office_ips, office_gateway, 1), (false, false));
+    assert_eq!(epoch.observe(&office_ips, office_gateway, 2), (true, false), "a mapping won on the new network");
+}
+
+#[test]
+fn a_new_gateway_alone_starts_a_new_network() {
+    let ips = [IpAddr::V4(MAC_LAN)];
+    let mut epoch = PortmapEpoch::default();
+    assert_eq!(epoch.observe(&ips, Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))), 3), (true, false), "a process starts on the network it is on");
+    assert_eq!(epoch.observe(&ips, Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 254))), 3), (false, true));
+}
+
+#[test]
+fn rotating_ipv6_privacy_addresses_and_address_order_are_not_a_network_change() {
+    let gateway = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+    let tailscale = IpAddr::V4(Ipv4Addr::new(100, 101, 7, 9));
+    let mut epoch = PortmapEpoch::default();
+    epoch.observe(&[IpAddr::V4(MAC_LAN), tailscale, "2001:db8::1".parse().unwrap()], gateway, 0);
+    let (counted, moved) = epoch.observe(&[tailscale, "2001:db8::2".parse().unwrap(), IpAddr::V4(MAC_LAN)], gateway, 1);
+    assert!(!moved);
+    assert!(counted, "the mapping won after the privacy address rotated still counts");
+}
+
+#[test]
 fn a_router_that_offers_mapping_but_gave_none_is_told_apart_from_one_that_offers_none() {
     let mut inputs = home();
     inputs.offered = Some(Offered { nat_pmp: true, ..Offered::default() });
