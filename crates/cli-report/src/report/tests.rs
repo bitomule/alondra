@@ -1282,3 +1282,67 @@ fn a_received_report_with_an_unreadable_manifest_is_refused() {
         assert!(received_summary("r-20261025-00000000", Path::new("/Users/ana/r"), &files).is_err(), "{manifest:?}");
     }
 }
+
+/// A phone number, a card number and the start of an IPv4 address, each made only of digits and
+/// dots, as the user wrote them and as a log line holds them.
+const NUMERIC_PRIVATE: &[&str] = &["600111222", "4111 1111 1111 1111", "192.168.1"];
+
+#[test]
+fn long_numbers_card_numbers_and_address_triples_never_reach_the_report() {
+    let home = Directory::new();
+    full_home(&home);
+    let log_path = home.join("alondrad.log");
+    let mut log = std::fs::read_to_string(&log_path).unwrap();
+    for (second, value) in NUMERIC_PRIVATE.iter().enumerate() {
+        log += &format!("2026-10-25T05:10:2{second}.000Z alondrad: exiting with {value} so launchd starts the new binary\n");
+    }
+    std::fs::write(&log_path, log).unwrap();
+    let description = format!("It stopped after I called {}, paid with {} and joined {} at home", NUMERIC_PRIVATE[0], NUMERIC_PRIVATE[1], NUMERIC_PRIVATE[2]);
+    let built = build(&FakeMac::new(&home), hours_before(72), Some(description), None).unwrap();
+    let get = |name: &str| built.files.iter().find(|(n, _)| n == name).unwrap().1.clone();
+    let mut leaks = Vec::new();
+    for section in [bundle::DESCRIPTION, "daemon.log"] {
+        let text = get(section);
+        leaks.extend(NUMERIC_PRIVATE.iter().filter(|value| text.contains(*value)).map(|value| format!("{value:?} in {section}")));
+    }
+    assert!(leaks.is_empty(), "leaked: {leaks:?}\n== description\n{}\n== log (last lines)\n{}", get(bundle::DESCRIPTION), get("daemon.log").lines().rev().take(3).collect::<Vec<_>>().join("\n"));
+    assert_has_none_of(&files_text(&built.files), &NUMERIC_PRIVATE.iter().map(|v| v.to_string()).collect::<Vec<_>>());
+    assert!(built.hits.is_empty(), "{:?}", built.hits);
+}
+
+#[test]
+fn a_card_number_gets_one_pseudonym_for_all_its_groups() {
+    let catalog = Catalog::built();
+    let mut redactor = Redactor::new(&catalog.vocabulary);
+    assert_eq!(redactor.value("4111 1111 1111 1111 3", Kind::Value), "value-1 3");
+    assert_eq!(redactor.value("4111-1111-1111-1111", Kind::Value), "value-2");
+    assert_eq!(redactor.value("4111 1111 3", Kind::Value), "4111 1111 3", "two groups are not a card");
+    assert_eq!(redactor.free_text("paid with 4111 1111 1111 1111, then 5500-0000-0000-0004."), "paid with value-1, then value-3.");
+}
+
+#[test]
+fn short_numbers_wide_versions_times_and_durations_stay_readable() {
+    let catalog = Catalog::built();
+    let mut redactor = Redactor::new(&catalog.vocabulary);
+    for readable in ["123456", "250000ms", "-999999", "120.0.6099", "26.4", "2026-10-25T05:43:41.854Z", "1m30s", "2h5m"] {
+        assert_eq!(redactor.value(readable, Kind::Value), readable);
+    }
+    for private in ["1234567", "1234567ms", "192.168.1", "v2.1.30", "1.2.3-beta.1"] {
+        assert!(redact::is_pseudonym(&redactor.value(private, Kind::Device)), "{private}");
+    }
+    let text = "It took 1m30s and 123456 tries at 2026-10-25T05:43:41.854Z on Chrome 120.0.6099, macOS 26.4";
+    assert_eq!(redactor.free_text(text), text);
+}
+
+#[test]
+fn versions_read_from_known_fields_keep_their_three_numbers() {
+    let home = Directory::new();
+    full_home(&home);
+    let mut mac = FakeMac::new(&home);
+    mac.commands.insert("sw_vers -productVersion".into(), "15.1.1\n".into());
+    let built = build(&mac, hours_before(72), None, None).unwrap();
+    let get = |name: &str| -> Value { serde_json::from_str(&built.files.iter().find(|(n, _)| n == name).unwrap().1).unwrap() };
+    assert_eq!(get("machine.json")["macos"], "15.1.1");
+    assert_eq!(get("versions.json")["claude"], "2.1.30");
+    assert!(built.hits.is_empty(), "{:?}", built.hits);
+}

@@ -25,9 +25,10 @@ public struct ReportRedactor {
     /// is all it has, or one pseudonym for the whole of it.
     public mutating func value(_ value: String, hint: ReportShapes.Kind) -> String {
         if ReportShapes.isISOTime(value) { return ReportShapes.utc(value) ?? pseudonym(.value, value) }
-        let parts = ReportShapes.split(value)
+        let parts = ReportShapes.joinCardGroups(ReportShapes.split(value))
         let tokens = parts.compactMap { if case .token(let token) = $0 { token } else { nil } }
-        guard tokens.allSatisfy({ ReportShapes.isSafe($0, vocabulary: vocabulary) || ReportShapes.kindOfShape($0) != nil }) else {
+        guard tokens.allSatisfy({ ReportShapes.isSafe($0, vocabulary: vocabulary) || ReportShapes.kindOfShape($0) != nil
+            || ReportShapes.isPrivateNumber($0) }) else {
             return pseudonym(ReportShapes.kindOfShape(value) ?? hint, value)
         }
         var out = ""

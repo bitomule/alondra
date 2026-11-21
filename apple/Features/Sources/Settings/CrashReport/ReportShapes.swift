@@ -66,6 +66,33 @@ public enum ReportShapes {
             && (parts.count == 3 || !suffix.isEmpty || core.utf8.count <= 6)
     }
 
+    /// More than six digits before any decimal point, with or without a unit: a phone, an account or
+    /// a card number as much as a count, so it is never safe.
+    static func isLongNumber(_ token: String) -> Bool {
+        isNumber(token) && token.drop { $0 == "-" }.prefix { $0 != "." }.filter(digit).count > 6
+    }
+
+    /// Three numbers of up to 255 (`192.168.1`, `v2.1.3`): the start of an IPv4 address as much as a
+    /// version.
+    static func isAddressTriple(_ token: String) -> Bool {
+        guard isVersion(token) else { return false }
+        let bare = token.hasPrefix("v") ? token.dropFirst() : Substring(token)
+        let core = bare.firstIndex { $0 == "-" || $0 == "+" }.map { bare[..<$0] } ?? bare
+        let parts = core.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 3 && parts.allSatisfy { $0.count <= 3 && Int($0).map { $0 <= 255 } == true }
+    }
+
+    /// Three or more groups of four digits joined by a space or a hyphen: a card number.
+    static func isCardNumber(_ token: String) -> Bool {
+        let groups = token.split(omittingEmptySubsequences: false) { $0 == " " || $0 == "-" }
+        return groups.count >= 3 && groups.allSatisfy { $0.count == 4 && $0.allSatisfy(digit) }
+    }
+
+    /// A number that may say who the user is: it always gets a pseudonym of its own.
+    static func isPrivateNumber(_ token: String) -> Bool {
+        isLongNumber(token) || isAddressTriple(token) || isCardNumber(token)
+    }
+
     /// Alondra's random ids say nothing about the user: `sdk-<16 hex>`, `run-<hex>`, `o-<hex>`.
     public static func isRandomID(_ token: String) -> Bool {
         func hex(_ rest: Substring, _ least: Int) -> Bool { rest.count >= least && rest.allSatisfy(lowerHex) }
@@ -105,8 +132,8 @@ public enum ReportShapes {
 
     /// A token that is safe on its own: a number, a time, a version, a random id or a word of the code.
     public static func isSafe(_ token: String, vocabulary: Set<String>) -> Bool {
-        isNumber(token) || isCompoundDuration(token) || isISOTime(token) || isVersion(token) || isRandomID(token)
-            || vocabulary.contains(token)
+        (isNumber(token) && !isLongNumber(token)) || isCompoundDuration(token) || isISOTime(token)
+            || (isVersion(token) && !isAddressTriple(token)) || isRandomID(token) || vocabulary.contains(token)
     }
 
     private static func gap(_ c: Character) -> Bool {
@@ -135,6 +162,38 @@ public enum ReportShapes {
             rest = rest[gapEnd...]
         }
         return parts
+    }
+
+    /// The parts with each run of three or more four-digit tokens a single space apart joined into one
+    /// token, so a card number gets one pseudonym and not one per group. A hyphen never splits a token,
+    /// so `4111-1111-1111-1111` already is one.
+    static func joinCardGroups(_ parts: [Part]) -> [Part] {
+        func group(_ at: Int) -> String? {
+            guard at < parts.count, case .token(let token) = parts[at], token.count == 4, token.allSatisfy(digit) else { return nil }
+            return token
+        }
+        func separator(_ at: Int) -> Bool {
+            guard at < parts.count, case .gap(let gap) = parts[at] else { return false }
+            return gap == " "
+        }
+        var joined: [Part] = []
+        var at = 0
+        while at < parts.count {
+            var end = at
+            var card = group(at) ?? ""
+            while group(end) != nil, separator(end + 1), let next = group(end + 2) {
+                card += " " + next
+                end += 2
+            }
+            if end - at >= 4 {
+                joined.append(.token(card))
+                at = end + 1
+            } else {
+                joined.append(parts[at])
+                at += 1
+            }
+        }
+        return joined
     }
 
     public static func tokens(_ value: String) -> [String] {

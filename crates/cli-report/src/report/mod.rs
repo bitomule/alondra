@@ -95,7 +95,7 @@ pub fn build_without(host: &dyn Host, window: Window, description: Option<String
         section.text.clear();
         section.status = Status::Empty(tr!("left out at your request", "quitada a petición tuya").into());
     }
-    let mut description = description;
+    let mut description = description.map(|text| redactor.free_text(&text));
     let masked = mask_draft(&mut collected.sections, &mut description, &final_private(host, &redactor.pseudonyms, catalog));
     let now = host.now();
     let mut draft = Draft {
