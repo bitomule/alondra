@@ -9,6 +9,11 @@ use alondra_domain_rules::{Actor, Command, CommandOutcome, DomainState};
 pub type Carried<'a> = Box<dyn FnOnce() -> Result<CommandOutcome, StoreError> + 'a>;
 
 pub trait CommitObserver: Send + Sync {
+    /// Its type's name, so a test can tell two lists of observers apart.
+    fn name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// A command this subsystem carries out itself instead of committing it, such as Resume on the
     /// card of a pause it holds.
     fn carries_out<'a>(&'a self, _domain: &'a DomainRuntime, _actor: &Actor, _command: &Command) -> Option<Carried<'a>> {

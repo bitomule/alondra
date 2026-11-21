@@ -10,6 +10,18 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
+/// The host an SDK execution runs on, as the domain records it: never `claude-bg`.
+pub const HOST: &str = "alondra-sdk";
+
+/// Whether `agent` holds the current execution of a task that runs through the SDK.
+pub fn runs_through_sdk(state: &DomainState, agent: &AgentId) -> bool {
+    state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent)).any(|task| {
+        state
+            .lifecycle_of(&task.id).ok()
+            .is_some_and(|lifecycle| lifecycle.execution().is_some_and(|execution| execution.host().as_str() == HOST))
+    })
+}
+
 /// What a new SDK node starts with.
 pub struct Launch {
     pub task: TaskId,

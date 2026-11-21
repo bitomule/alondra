@@ -44,7 +44,7 @@ impl Client {
                 "{name} is an interactive session, not a background job: Alondra stopped tracking it and left the terminal session itself open. Close it there with /exit when you are done."
             )})),
             CloseOutcome::Refused { reasons, message } => refused(message, reasons),
-            CloseOutcome::Failed { status, message } => failed(status, message),
+            CloseOutcome::Failed { status, message } => failed(StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), message),
         })
     }
 

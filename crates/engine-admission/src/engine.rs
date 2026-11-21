@@ -99,11 +99,11 @@ impl<'a> Engine<'a> {
     }
 
     pub fn tell_node(&self, task: &TaskId, text: &str, command: &str) -> bool {
-        self.port.tell_node(self.runtime, task, text, command)
+        self.port.tell_node(self.runtime, task, text, command).is_ok()
     }
 
     pub fn tell_session(&self, session: &str, text: &str) -> bool {
-        self.port.tell_session(self.runtime, session, text)
+        self.port.tell_session(self.runtime, session, text, true)
     }
 
     pub fn node_event(&self, agent: &AgentId, event: NodeEvent) -> Result<bool, String> {

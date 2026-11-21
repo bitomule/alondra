@@ -9,6 +9,7 @@ use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::test_support;
 
 pub mod assemble;
+pub mod wiring;
 pub use alondra_daemon_server::push_transport;
 pub use alondra_daemon_server::service::scenario_phone;
 #[cfg(test)]
@@ -59,7 +60,7 @@ pub fn main() -> Result<()> {
         [flag] if flag == "--preflight" => {
             let checked = Config::load()
                 .map_err(|e| anyhow!("config.toml unreadable: {e}"))
-                .and_then(|config| preflight::run(&config, &alondra_store_sqlite::Sqlite, wire_machine));
+                .and_then(|config| preflight::run(&config, &alondra_store_sqlite::Sqlite, wiring::open, wire_machine));
             match checked {
                 Ok(summary) => println!("preflight ok: {summary}"),
                 Err(e) => {
@@ -148,7 +149,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     }
     ensure_domain_protocol(&config.home)?;
     sdk_owner::backend::load(&config.home, config.sandbox, &options::user_home())?;
-    let domain = alondra_engine_sdk::wiring::open(&config.home, &alondra_store_sqlite::Sqlite)?;
+    let domain = wiring::open(&config.home, &alondra_store_sqlite::Sqlite)?;
     if let Some(device) = diagnostic {
         // Diagnostic delivery uses the same canonical domain store but does not
         // start the long-running workers or HTTP listener.
@@ -644,7 +645,7 @@ mod engine {
     /// The runtime as the daemon opens it, with the doubles of the Mac and a gate that is unpaced and
     /// launches on the disk the machine watch measured.
     pub fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
-        let runtime = alondra_engine_sdk::wiring::open_at(home, database, files)?;
+        let runtime = crate::wiring::open_at(home, database, files)?;
         alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
         alondra_agent_runtime::wire(runtime.ports(), Default::default());
         alondra_engine_admission::for_tests(&runtime);

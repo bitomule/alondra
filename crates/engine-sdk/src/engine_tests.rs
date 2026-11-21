@@ -26,7 +26,7 @@ pub fn wired() {
 /// The runtime as the daemon opens it, with the doubles of the Mac and a gate that is unpaced and
 /// launches on the disk the machine watch measured.
 pub fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<crate::domain_runtime::DomainRuntime> {
-    let runtime = crate::wiring::open_at(home, database, files)?;
+    let runtime = crate::engine_fixtures::open_engine_at(home, database, files)?;
     alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
     #[cfg(feature = "real-hosts")]
     alondra_agent_runtime::wire(runtime.ports(), Default::default());

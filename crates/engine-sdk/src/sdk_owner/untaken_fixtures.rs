@@ -3,10 +3,10 @@
 //! that ended with no turn to take up its notice. The clock is a parameter: every pass of the one
 //! clock gets the time it runs at.
 use crate::sdk_owner::SdkOwners as _;
-use crate::live::LiveOf as _;
+use alondra_daemon_engine::live::LiveOf as _;
 use super::*;
 use alondra_engine_admission::AdmissionOf as _;
-use crate::obligation_watch::{Watch, pass};
+use alondra_daemon_engine::obligation_watch::{Watch, pass};
 use alondra_domain_rules::obligation_policy::Millis;
 use alondra_domain::{Owed, Party};
 

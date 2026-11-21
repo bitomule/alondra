@@ -3,7 +3,7 @@
 //! after positive evidence that its native execution started. The old journal format stays readable.
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use crate::sdk_owner::SdkOwners as _;
-use crate::live::LiveOf as _;
+use crate::engine::EngineOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -35,7 +35,7 @@ fn enabled(_domain: &DomainRuntime) -> bool {
 }
 
 fn policy(domain: &DomainRuntime) -> Policy {
-    crate::accounts::config(domain.home()).map(|config| config.distribution.policy).unwrap_or_default()
+    alondra_engine_kernel::accounts_file::config(domain.home()).map(|config| config.distribution.policy).unwrap_or_default()
 }
 
 fn moves(domain: &DomainRuntime) -> Vec<AccountMove> {
@@ -96,7 +96,7 @@ fn plan(domain: &DomainRuntime, held: &ClaudeHeld, to: AccountId, now: Millis) -
     let node = state.tasks.get(&held.task).and_then(|task| task.agent_id.clone()).context("the task has no node")?;
     let lifecycle = state.lifecycle_of(&held.task).map_err(|error| anyhow::anyhow!(error.message))?;
     let stamp = lifecycle.execution().context("the task has no execution")?;
-    anyhow::ensure!(crate::accounts::share_sessions(domain, &held.account, &to),
+    anyhow::ensure!(alondra_engine_kernel::accounts_file::share_sessions(domain, &held.account, &to),
         "account {to} does not read the conversations of account {}, so the session would not resume there", held.account);
     let mut store = domain.store.lock_or_exit("the domain store");
     let metadata = store.conversation_metadata(&held.task, stamp.conversation().as_str())?.context("its Claude session is not known")?;
@@ -222,7 +222,7 @@ async fn admit(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), 
     match admitted {
         Ok(driver) => {
             domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
-            domain.live().forget_closed_task(&moving.task.0);
+            domain.engine().forget_closed_task(&moving.task);
             Ok(())
         }
         Err(crate::sdk_owner::Failed { why, .. }) if latest(domain, &moving.task).is_some_and(|now| now.step == AccountMoveStep::Admitted) => {
@@ -256,7 +256,7 @@ async fn finish(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(),
         .map_err(|crate::sdk_owner::Failed { why, .. }| format!("the SDK node did not start: {why}"))?;
         domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
     }
-    if let Err(failure) = crate::domain_agent_lifecycle::node_event(domain, &moving.plan.node, NodeEvent::SessionClosed) {
+    if let Err(failure) = domain.engine().node_event(&moving.plan.node, NodeEvent::SessionClosed) {
         log!("could not close {} after its task moved to account {}: {failure}", moving.plan.node, moving.plan.to);
     }
     domain.store.lock_or_exit("the domain store").record_move_done(&moving.task, moving.number)
