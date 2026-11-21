@@ -494,6 +494,32 @@ pub enum LifecycleRecord {
     DecisionAborted { epoch: u64, unheard_card: InteractionId },
 }
 
+impl LifecycleRecord {
+    /// Lets go of the text the record carries when it is the text of one of `inputs`: whether it
+    /// carried one.
+    pub(super) fn forget_text(&mut self, inputs: &BTreeSet<InputId>) -> bool {
+        let (input, text) = match self {
+            Self::TurnEnded { wake: Some(input), text, .. }
+            | Self::AwaitEnded { wake: Some(input), text, .. }
+            | Self::Unfinished { wake: Some(input), text, .. }
+            | Self::HostEnded { resume: Some(input), text, .. }
+            | Self::HandoffSettled { resent: Some(input), text, .. }
+            | Self::Answered { input, text, .. }
+            | Self::Told { input, text, .. }
+            | Self::HandedBack { input, text, .. }
+            | Self::Resumed { input, text, .. }
+            | Self::HandoffResent { resent: input, text, .. }
+            | Self::DoubtResent { resent: input, text, .. } => (input, text),
+            _ => return false,
+        };
+        let released = text.is_some() && InputId::new(input.as_str()).is_ok_and(|input| inputs.contains(&input));
+        if released {
+            *text = None;
+        }
+        released
+    }
+}
+
 /// The aggregates of the tasks one transaction decides on, taken from the lifecycles the state
 /// keeps when first needed and dropped with the transaction. Nothing clones or restores one from
 /// the DTO.
@@ -2052,6 +2078,12 @@ impl DomainState {
     pub(super) fn record_host_retaken(&mut self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         self.decide(lifecycles, task, LifecycleRecord::HostRetaken)
+    }
+
+    /// The store let go of the texts of `inputs` of `task`, which ended: its journal keeps none of
+    /// them either, as the journal a reload reads. Whether it kept any.
+    pub fn forget_input_texts(&mut self, task: &TaskId, inputs: &BTreeSet<InputId>) -> bool {
+        self.lifecycle_journal.get_mut(task).is_some_and(|journal| journal.forget_texts(inputs))
     }
 
     /// Whether the host of `task` may close while it rests: its lifecycle keeps nothing in the host,

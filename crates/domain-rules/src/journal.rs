@@ -2,11 +2,13 @@
 //! command copies none of them and only adds records to the ones it decides on.
 use super::{LifecycleRecord, TaskId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::BTreeMap;
+use alondra_domain::InputId;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// A task's lifecycle records, in order. It only grows: records are added at its end and never
-/// changed or removed. Cloning it shares the records.
+/// removed, nor changed but to let go of the texts of inputs the store let go of once the task
+/// ended (`forget_texts`). Cloning it shares the records.
 #[derive(Clone, Default)]
 pub struct Journal(Arc<rpds::VectorSync<LifecycleRecord>>);
 
@@ -45,6 +47,21 @@ impl Journal {
     }
     pub fn to_vec(&self) -> Vec<LifecycleRecord> {
         self.iter().cloned().collect()
+    }
+    /// The records keep no text for `inputs`, as a journal read back from a store that let go of
+    /// those texts reads. Whether any record changed.
+    pub fn forget_texts(&mut self, inputs: &BTreeSet<InputId>) -> bool {
+        let forgotten: Vec<(usize, LifecycleRecord)> = self.0.iter().enumerate()
+            .filter_map(|(index, record)| {
+                let mut record = record.clone();
+                record.forget_text(inputs).then_some((index, record))
+            })
+            .collect();
+        let records = if forgotten.is_empty() { return false } else { Arc::make_mut(&mut self.0) };
+        for (index, record) in forgotten {
+            records.set_mut(index, record);
+        }
+        true
     }
 }
 

@@ -2127,6 +2127,60 @@ fn a_command_about_another_task_leaves_a_task_as_its_journal_left_it() {
     assert_eq!(events(&store), kept);
 }
 
+/// The retention lets go of the texts of an ended task's inputs. The state the store keeps after
+/// it, which the next owner transaction starts from, is the one a reload reads: without them.
+#[test]
+fn the_texts_the_retention_lets_go_of_leave_the_state_the_store_keeps() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &Actor::System, "release", Command::ReleaseTask { task_id: "task-1".into(), reason: "The SDK host takes it".into() });
+    let admit = envelope(&mut store, "admit", Command::AdmitExecution {
+        provider: alondra_core::accounts::Provider::Claude, task_id: "task-1".into(), agent_id: "agent-1".into(),
+        conversation: "conversation-1".into(), instance: "resource-1".into(), host: "fixture-service".into(),
+        model: None, account: None, leaves_limit: None,
+    });
+    let scope = alondra_store::AuthorityScope::new(admit.data_epoch.clone()).unwrap();
+    let binding = alondra_provider_contract::ProviderBinding::new(
+        "binding-1".into(), "fixture-service".into(), "fixture-instance".into(), "fixture-config".into(), 1, 1,
+        BTreeSet::from([alondra_provider_contract::Capability::OfferInput]), "fixture-credential-reference".into(), 1,
+    ).unwrap();
+    store.own(scope, |owner| {
+        owner.stage_command(&Actor::System, &admit, Attached::None)?;
+        let journal = owner.journal();
+        let pending = journal.load(&"task-1".into())?.pending_inputs()[0].clone();
+        journal.give_input_text(&"task-1".into(), alondra_store::InputPayload::new(pending, "Write the release notes").unwrap())?;
+        journal.stage_launch(&"task-1".into(), &alondra_provider_contract::Placement::RemoteWorkspace("fixture/workspace".into()), &binding)?;
+        let execution = journal.load(&"task-1".into())?.execution().unwrap().clone();
+        Ok(journal.reserve_owner(&execution, 0)?)
+    }).unwrap();
+    execute(&mut store, &Actor::System, "tell", Command::TellNode {
+        task_id: "task-1".into(), text: "Add the changelog too".into(), from_user: false, answers: None,
+    });
+    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
+    execute(&mut store, &Actor::System, "end", Command::RecordNodeEnd {
+        task_id: "task-1".into(), end: NodeEnd::Closed, agent_id: Some("agent-1".into()),
+    });
+    let told_text = |state: &DomainState| -> Vec<bool> {
+        state.lifecycle_journal[&TaskId::from("task-1")].iter()
+            .filter_map(|record| match record { LifecycleRecord::Told { text, .. } => Some(text.is_some()), _ => None })
+            .collect()
+    };
+    assert_eq!(store.load().unwrap().tasks[&TaskId::from("task-1")].state, TaskState::Cancelled);
+    assert_eq!(told_text(&store.load().unwrap()), [true], "the node is told what it goes on with");
+
+    assert!(store.retain_evidence(16).unwrap().texts_released > 0);
+    let kept = store.load().unwrap();
+    assert_eq!(told_text(&kept), [false], "the journal lets go of the text the store let go of");
+    let mut reloaded = repository::load(&store.conn).unwrap();
+    reloaded.mcp = kept.mcp.clone();
+    assert!(reloaded == *kept, "the state the store keeps is the one a reload reads");
+    let words = envelope(&mut store, "last-words", Command::RecordLastWords { agent_id: "agent-1".into(), text: "Done".into() });
+    let scope = alondra_store::AuthorityScope::new(kept.data_epoch.clone()).unwrap();
+    store.own(scope, |owner| owner.stage_command(&Actor::System, &words, Attached::None).map(drop))
+        .expect("an owner transaction starts from that state");
+}
+
 /// The lifecycle journal survives a restart as it was written, append-only, and a store whose
 /// task columns were edited behind the journal refuses to load instead of repairing them.
 #[test]

@@ -112,7 +112,7 @@ fn portable_context_survives_raw_retention_and_pending_transfer_pins() {
     tx.pin_context("move-provider", &reference).unwrap();
     tx.commit().unwrap();
     let mut tx = fixture.transaction();
-    assert_eq!(tx.retain_evidence(100).unwrap().released, 1);
+    assert_eq!(tx.retain_evidence(100).unwrap().0.released, 1);
     assert_eq!(tx.retain_context(&"task".into(), reference.sequence + 1, 100).unwrap(), 0);
     assert_eq!(tx.context_page(&"task".into(), None, 10).unwrap().entries[0].item.content, "Keep this result");
     tx.release_context("move-provider", &"task".into()).unwrap();
@@ -4356,7 +4356,7 @@ fn retention_releases_old_evidence_in_bounded_passes_and_drops_it_once_the_execu
     let mut passes = vec![];
     loop {
         let mut tx = fixture.transaction();
-        let pass = tx.retain_evidence(16).unwrap();
+        let (pass, _) = tx.retain_evidence(16).unwrap();
         tx.commit().unwrap();
         passes.push(pass);
         if pass.released < 16 {
@@ -4374,7 +4374,7 @@ fn retention_releases_old_evidence_in_bounded_passes_and_drops_it_once_the_execu
     let mut removed = vec![];
     for _ in 0..4 {
         let mut tx = fixture.transaction();
-        removed.push(tx.retain_evidence(16).unwrap());
+        removed.push(tx.retain_evidence(16).unwrap().0);
         tx.commit().unwrap();
     }
     assert_eq!(removed.iter().map(|pass| pass.removed).collect::<Vec<_>>(), [16, 16, 7, 0]);
@@ -4387,6 +4387,9 @@ fn commands(fixture: &Fixture) -> i64 {
     fixture.connection.query_row("SELECT count(*) FROM provider_commands", [], |row| row.get(0)).unwrap()
 }
 fn retain(fixture: &mut Fixture) -> EvidenceRetention {
+    retain_naming(fixture).0
+}
+fn retain_naming(fixture: &mut Fixture) -> (EvidenceRetention, alondra_store::ReleasedTexts) {
     let mut tx = fixture.transaction();
     let pass = tx.retain_evidence(16).unwrap();
     tx.commit().unwrap();
@@ -4435,7 +4438,10 @@ fn an_input_lets_go_of_its_text_only_once_its_task_is_done_or_cancelled() {
         fixture.connection.execute("UPDATE tasks SET state=?1 WHERE id='task'", [state]).unwrap();
         assert!(fixture.connection.execute("UPDATE lifecycle_inputs SET body='other' WHERE input_id='told'", []).is_err(), "a text is never rewritten");
     }
-    assert_eq!(retain(&mut fixture).texts_released, 2);
+    let (retained, named) = retain_naming(&mut fixture);
+    assert_eq!(retained.texts_released, 2);
+    assert_eq!(named, alondra_store::ReleasedTexts::from([("task".into(), [id("initial"), id("told")].into())]),
+        "the pass names the texts it let go of, which the domain's journals let go of too");
     assert_eq!(texts(&fixture), (2, 0), "the inputs stay, without their text");
     assert_eq!(retain(&mut fixture).texts_released, 0);
     let tx = fixture.transaction();

@@ -37,7 +37,7 @@ mod provider_binding;
 mod read;
 pub use read::{JournalTask, read_journal};
 mod retention;
-pub use retention::EvidenceRetention;
+pub use retention::{EvidenceRetention, ReleasedTexts};
 mod task_context;
 mod context_handoff;
 pub use context_handoff::{HANDOFF_RESERVED_TOKENS, HANDOFF_TOKEN_CAP, HandoffBudget, HandoffError, PreparedHandoff, RefreshParts, estimated_tokens, handoff_capacity, prepare_context_handoff, prepare_refresh_handoff};
