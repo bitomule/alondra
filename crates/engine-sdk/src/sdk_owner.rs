@@ -492,6 +492,7 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
     let backend = &on_account_provider(&domain, backend, provider, &launch.account)?;
     let suffix = crate::auth::random_hex(8);
     let agent = AgentId(format!("sdk-{suffix}"));
+    let _preparing = alondra_engine_ports::agent_host::Preparing::hold(&backend.state_root.join(&agent.0));
     let state = domain.state().map_err(|error| Failed::new(format!("reading the domain: {error:#}")))?;
     if reopening.as_ref().is_some_and(|reopening| state.pending_reopening(&launch.task) != Some(reopening.input.as_str())) {
         return Err(Failed::new("The task's reopening changed before admission; refresh the task".into()));
@@ -1138,7 +1139,11 @@ fn end_hosts_of_ended_tasks(domain: &DomainRuntime, backend: &SdkBackend) {
             if !matches!(hosts.claim(&directory), Ok(alondra_engine_ports::agent_host::Retained::Held)) { continue }
             mark_stopped_by_alondra(&directory);
             match hosts.end_holders(&directory) {
-                Ok(_) => log!("the SDK host of {node}, a node no task goes on with, still ran with no owner: it was stopped"),
+                Ok(ended) => {
+                    log!("the SDK host of {node}, a node no task goes on with, still ran with no owner: it was stopped");
+                    drop(ended);
+                    crate::host_folders::host_ended(domain, &directory, &|agent| domain.owns_sdk_host(agent));
+                }
                 Err(error) => log!("the SDK host of {node}, a node no task goes on with, still runs with no owner and did not stop: {error}"),
             }
         }
@@ -2386,6 +2391,7 @@ impl Drop for Driver {
             self.domain.engine().forget_context(&self.task);
         }
         self.domain.engine().host_ended(&self.agent);
+        crate::host_folders::host_ended(&self.domain, self.worker.state_directory(), &|agent| self.domain.owns_sdk_host(agent));
     }
 }
 

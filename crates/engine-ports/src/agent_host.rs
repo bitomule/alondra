@@ -2,7 +2,7 @@
 //! processes their agents run in, and run a provider's command line to its end. The adapter that
 //! owns those processes implements it; nobody above it sees how.
 use alondra_process_group::Member;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -209,6 +209,26 @@ impl<O> AdoptedHost<O> {
     }
     pub fn stop(&mut self) -> io::Result<()> {
         self.host.stop()
+    }
+}
+
+static PREPARING: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTreeSet::new());
+
+/// A host folder a launch is making ready, from before the folder exists until its task or batch
+/// claims it: no host holds its lock yet, and nothing that deletes the folders hosts left takes it.
+pub struct Preparing(PathBuf);
+impl Preparing {
+    pub fn hold(state_dir: &Path) -> Self {
+        PREPARING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(state_dir.to_path_buf());
+        Self(state_dir.to_path_buf())
+    }
+    pub fn held(state_dir: &Path) -> bool {
+        PREPARING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(state_dir)
+    }
+}
+impl Drop for Preparing {
+    fn drop(&mut self) {
+        PREPARING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.0);
     }
 }
 

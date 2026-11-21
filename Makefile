@@ -20,7 +20,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: action-outcomes footprint worktree-volume-bench connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record tui-shots mac-snapshots-record mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-explore skill-evals
+.PHONY: action-outcomes worktree-volume-bench connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record tui-shots mac-snapshots-record mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-explore skill-evals
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -473,12 +473,6 @@ build-release: version-guard
 # Ends the Alondra hosts that cut tests left running. DRY_RUN=1 lists them and ends nothing.
 reap-test-hosts:
 	python3 tools/reap-test-hosts.py $(if $(DRY_RUN),--dry-run)
-
-# What Alondra and Bazel cost the Mac now (tools/footprint.py): fseventsd, hosts, SDK and files
-# folders, Bazel servers, and file-system events by place during EVENT_SECONDS (0 skips). Read-only.
-EVENT_SECONDS ?= 60
-footprint:
-	python3 tools/footprint.py --seconds $(EVENT_SECONDS)
 
 musts-scopes:
 	python3 tools/musts_scopes.py check $(CHECKS)

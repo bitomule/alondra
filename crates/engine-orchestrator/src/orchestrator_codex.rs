@@ -240,22 +240,26 @@ fn failure(error: &Value, stream: &mut Stream) {
 }
 
 fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &AtomicBool) -> Output {
-    let configuration = match configuration(&batch) { Ok(value) => value, Err(error) => return failed(format!("{error:#}")) };
-    let profile = match profile(&batch) { Ok(value) => value, Err(error) => return failed(format!("{error:#}")) };
+    let (configuration, _preparing) = match configuration(&batch) { Ok(value) => value, Err(error) => return failed(format!("{error:#}")) };
+    let profile = match profile(&batch) { Ok(value) => value, Err(error) => { crate::orchestrator_sdk::remove_folder(&configuration.state_directory); return failed(format!("{error:#}")) } };
     let run = batch.owner.run().to_owned();
     let mut host = match BatchHost::start(ProviderOwner(batch.owner), &configuration, &batch.session, &profile, &batch.prompt) {
-        Ok(value) => value, Err(error) => return failed(format!("The Codex host did not confirm the batch offer: {error:?}")),
+        Ok(value) => value,
+        Err(error) => {
+            crate::orchestrator_sdk::remove_folder(&configuration.state_directory);
+            return failed(format!("The Codex host did not confirm the batch offer: {error:?}"));
+        }
     };
     let _host = match crate::domain_orchestrator::HostGuard::attach(Arc::clone(&batch.domain), &run, host.stopper()) {
         Ok(guard) => guard,
-        Err(error) => { stop(host, &batch.directory); return failed(format!("Cannot own the orchestrator host: {error:#}")); }
+        Err(error) => { stop(host, &batch.directory, Some(&configuration.state_directory)); return failed(format!("Cannot own the orchestrator host: {error:#}")); }
     };
     let mut output = Output { stream: Stream::for_input(host.input()), diagnostic: String::new(), exit_ok: false };
     let mut native = NativeTurn::default();
     if let Err(error) = ProcessOwner::record(&batch.directory, host.process_id(), &run, &batch.domain.orchestrator().injected).and_then(|()| spawned()) {
         output.stream.storage_failure=true;
         output.stream.error = Some(bounded(format!("Cannot record the Codex host: {error:#}")));
-        stop(host, &batch.directory);
+        stop(host, &batch.directory, None);
         return output;
     }
     loop {
@@ -303,21 +307,24 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
         }
         if exited || matches!(report.kind.as_str(), "invalid_native_transition" | "native_policy_refused") { break; }
     }
-    stop(host, &batch.directory);
+    stop(host, &batch.directory, (!output.stream.storage_failure).then_some(configuration.state_directory.as_path()));
     output
 }
-fn stop(host: BatchHost<ProviderOwner>, directory: &Path) {
+/// Stops the batch's host, and deletes its folder, `spent`, once it ended: one whose batch could
+/// not record what it observed keeps its folder, whose outbox still holds it.
+fn stop(host: BatchHost<ProviderOwner>, directory: &Path, spent: Option<&Path>) {
     match host.stop() {
-        Ok(())=>{let _=std::fs::remove_file(directory.join("owner.json"));}
+        Ok(())=>{let _=std::fs::remove_file(directory.join("owner.json")); spent.into_iter().for_each(crate::orchestrator_sdk::remove_folder);}
         Err(error)=>log!("orchestrator: Codex did not stop cleanly; its process owner record is retained: {error:?}"),
     }
 }
-fn configuration(batch: &Batch) -> anyhow::Result<CodexConfiguration> {
+fn configuration(batch: &Batch) -> anyhow::Result<(CodexConfiguration, alondra_engine_ports::agent_host::Preparing)> {
     use std::os::unix::fs::DirBuilderExt;
     let backend = batch.backend.for_provider(alondra_core::accounts::Provider::Codex, &batch.home)?.for_start()?
         .for_account_provider(&batch.home, batch.selection.account.provider, &batch.selection.account.account, &batch.domain.engine().registered_accounts(&batch.home, batch.selection.account.provider))?;
     std::fs::create_dir_all(&backend.state_root)?;
     let state_directory = backend.state_root.join(format!("orchestrator-{}", crate::auth::random_hex(8)));
+    let preparing = alondra_engine_ports::agent_host::Preparing::hold(&state_directory);
     std::fs::DirBuilder::new().mode(0o700).create(&state_directory)?;
     let mut native_environment = backend.native_environment.clone();
     native_environment.extend(BTreeMap::from([
@@ -333,13 +340,13 @@ fn configuration(batch: &Batch) -> anyhow::Result<CodexConfiguration> {
     for name in ["ALONDRA_PORT", "ALONDRA_SANDBOX"] {
         if !native_environment.contains_key(name) && let Ok(value) = std::env::var(name) { native_environment.insert(name.into(), value); }
     }
-    Ok(CodexConfiguration {
+    Ok((CodexConfiguration {
         artifact: VerifiedArtifact::verify(&backend.node, &backend.host, &backend.node_sha256, &backend.host_sha256)?,
         state_directory, host_environment: backend.host_environment, native_executable: backend.native,
         native_directory: batch.directory.clone(), native_environment, profile_id: "alondra".into(),
         account_id: batch.selection.account.account.as_str().to_owned(), host_release: env!("CARGO_PKG_VERSION").into(),
         io_timeout: Duration::from_secs(backend.io_timeout_seconds), confinement: backend.confinement, hosts: alondra_engine_ports::agent_host::of(batch.domain.ports())?, worker: None,
-    })
+    }, preparing))
 }
 fn profile(batch: &Batch) -> anyhow::Result<OrchestratorProfile> {
     let instructions = std::fs::read_to_string(batch.orchestrator_plugin.join("skills/alondra-orchestrator/SKILL.md"))?;
@@ -619,19 +626,10 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
         assert_eq!(f.attempts(), ["handed"]);
         assert!(f.domain().state().unwrap().requests[&"normal-codex-request".into()].closed);
         let run = runtime.last_run_id.as_deref().unwrap();
-        let directory = std::fs::read_dir(&state_root).unwrap().map(|entry| entry.unwrap().path())
-            .find(|path| path.file_name().unwrap().to_string_lossy().starts_with("orchestrator-")).unwrap();
-        let mut reader = alondra_codex_protocol::FramedReader::new(std::fs::File::open(directory.join("outbox")).unwrap());
-        let mut terminal = None;
-        while let Some(frame) = reader.read_received().unwrap() {
-            match &frame.frame().body {
-                alondra_codex_protocol::Body::Event(event) if matches!(event.observation, alondra_codex_protocol::Observation::ProcessExited { .. }) => terminal = Some(event.cursor),
-                _ => {}
-            }
-        }
-        let terminal = terminal.expect("the normal native exit remains durable");
+        assert!(!std::fs::read_dir(&state_root).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("orchestrator-")),
+            "the batch's folder goes once its host ended with everything it observed recorded");
         let connection = rusqlite::Connection::open(crate::domain_store::active_path(&f.executor.home)).unwrap();
-        let report: String = connection.query_row("SELECT report FROM orchestrator_batch_reports WHERE run=?1 AND cursor=?2", rusqlite::params![run, i64::try_from(terminal).unwrap()], |row| row.get(0)).unwrap();
+        let report: String = connection.query_row("SELECT report FROM orchestrator_batch_reports WHERE run=?1 ORDER BY cursor DESC LIMIT 1", rusqlite::params![run], |row| row.get(0)).unwrap();
         let report: Value = serde_json::from_str(&report).unwrap();
         assert_eq!(report["kind"], "process_exited");
         assert_eq!(report["input_consumed"], true);
@@ -722,16 +720,22 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
             } else if failed_write.is_some() { f.tick().await; }
             let runtime=crate::domain_orchestrator::load(&f.executor.home).unwrap();let run=runtime.last_run_id.as_deref().unwrap();assert_eq!(runtime.failure,Some(if cold_restart {crate::domain_orchestrator::Failure::Interrupted} else {crate::domain_orchestrator::Failure::Denied}),"actual host diagnostic: {:?}",runtime.last_error);assert!(runtime.retry_at.is_none(),"payment denial requires a user decision, never another automatic provider attempt");
             let reports:Vec<(u64,Vec<u8>,String)>={let conn=rusqlite::Connection::open(crate::domain_store::active_path(&f.executor.home)).unwrap();let mut query=conn.prepare("SELECT cursor,digest,report FROM orchestrator_batch_reports WHERE run=?1 ORDER BY cursor").unwrap();query.query_map([run],|row|Ok((u64::try_from(row.get::<_,i64>(0)?).unwrap(),row.get(1)?,row.get(2)?))).unwrap().map(|row|row.unwrap()).collect()};
-            let directory=std::fs::read_dir(&state_root).unwrap().map(|entry|entry.unwrap().path()).find(|path|path.file_name().unwrap().to_string_lossy().starts_with("orchestrator-")).unwrap();
+            let directory=std::fs::read_dir(&state_root).unwrap().map(|entry|entry.unwrap().path()).find(|path|path.file_name().unwrap().to_string_lossy().starts_with("orchestrator-"));
+            if !refuse_report {
+                assert!(directory.is_none(), "the batch's folder goes once its host ended with everything it observed recorded");
+                let report=reports.iter().map(|row|serde_json::from_str::<Value>(&row.2).unwrap()).find(|body|body["kind"]=="native_policy_refused").unwrap();
+                assert_eq!(report["input_consumed"],false);assert_eq!(report["turn_completed"],false);
+            } else {
+            let directory=directory.expect("a batch that could not record what it observed keeps its folder");
             let mut reader=alondra_codex_protocol::FramedReader::new(std::fs::File::open(directory.join("outbox")).unwrap());let mut acknowledged=0;let mut refusal=None;
             while let Some(frame)=reader.read_received().unwrap(){match &frame.frame().body{
                 alondra_codex_protocol::Body::Acknowledge(ack)=>acknowledged=acknowledged.max(ack.cursor),
                 alondra_codex_protocol::Body::Event(event)=>if let alondra_codex_protocol::Observation::Sdk{payload,..}=&event.observation && payload["method"]=="alondra/inputRefused"{assert_eq!(payload["params"]["nativeSubmitted"],false);assert_eq!(payload["params"]["code"],"paid_authorization_required");use sha2::Digest;refusal=Some((event.cursor,sha2::Sha256::digest(frame.payload()).to_vec()));},
                 _=>{}
             }}
-            let (cursor,digest)=refusal.expect("the exact positive no-submission native frame remains inspectable");
-            if refuse_report{assert!(reports.is_empty());assert!(acknowledged<cursor,"failed durable report must leave native refusal unacknowledged");}
-            else{let report=reports.iter().find(|row|row.0==cursor).unwrap();assert_eq!(report.1,digest);let body:Value=serde_json::from_str(&report.2).unwrap();assert_eq!(body["kind"],"native_policy_refused");assert_eq!(body["input_consumed"],false);assert_eq!(body["turn_completed"],false);assert!(acknowledged>=cursor);}
+            let (cursor,_digest)=refusal.expect("the exact positive no-submission native frame remains inspectable");
+            assert!(reports.is_empty());assert!(acknowledged<cursor,"failed durable report must leave native refusal unacknowledged");
+            }
             f.tick().await;
             let calls:Vec<Value>=std::fs::read_to_string(&trace).unwrap().lines().map(|line|serde_json::from_str(line).unwrap()).collect();assert_eq!(calls.iter().filter(|request|request["method"]=="initialize").count(),1);assert!(!calls.iter().any(|request|matches!(request["method"].as_str(),Some("thread/start"|"thread/resume"|"turn/start"))));assert!(f.starts().is_empty(),"a Codex-only denial never starts the disconnected Claude backend");
         }
