@@ -74,7 +74,7 @@ low_opt_rust_test(
 low_opt_rust_test(
     name = "alondrad_test",
     size = "small",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["//crates/engine-sdk:fixtures"],
     crate_name = "alondrad",
     crate_root = "src/lib.rs",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
@@ -148,7 +148,7 @@ low_opt_rust_test(
 low_opt_rust_test(
     name = "codex_adoption_process_test",
     timeout = "moderate",
-    srcs = ["tests/codex_adoption.rs"],
+    srcs = ["tests/codex_adoption.rs", "//crates/engine-sdk:fixtures"],
     crate_root = "tests/codex_adoption.rs",
     data = [
         ":alondrad",
@@ -178,16 +178,21 @@ low_opt_rust_test(
     target_compatible_with = ["@platforms//os:macos"],
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + [
+        ":alondrad_lib",
         "//crates/core:alondra_core",
         "//crates/domain:domain",
         "//crates/agent-runtime:agent_runtime",
         "//crates/daemon-engine:daemon_engine",
+        "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
         "//crates/domain-rules:domain_rules",
+        "//crates/engine-kernel:engine_kernel",
+        "//crates/engine-ports:engine_ports",
         "//crates/engine-admission:engine_admission",
         "//crates/engine-doubles:engine_doubles",
         "//crates/engine-sdk:engine_sdk",
         "//crates/process-group:process_group",
+        "//crates/provider-contract:provider_contract",
         "//crates/store-sqlite:store_sqlite",
     ],
 )

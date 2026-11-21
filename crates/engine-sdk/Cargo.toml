@@ -10,8 +10,6 @@ real-hosts = []
 
 [dependencies]
 alondra-engine-ports.workspace = true
-alondra-daemon-engine.workspace = true
-alondra-engine-admission.workspace = true
 alondra-agent-application.workspace = true
 alondra-core.workspace = true
 alondra-domain-rules.workspace = true
@@ -45,6 +43,8 @@ url = "2.5"
 tempfile.workspace = true
 
 [dev-dependencies]
+alondra-daemon-engine.workspace = true
+alondra-engine-admission.workspace = true
 alondra-agent-runtime.workspace = true
 alondra-engine-doubles.workspace = true
 alondra-store-sqlite.workspace = true

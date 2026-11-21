@@ -1,29 +1,26 @@
 //! The orchestrator's tools as the tests here and in the crates above call them.
 //! The launch tools' tests (`domain_orchestrator_tools`), which start nodes through the SDK.
 use alondra_core::clock;
-use crate::domain_runtime::DomainRuntime;
-use crate::domain_store::model_metrics::{Decision, DecisionKind};
+use alondra_engine_sdk::domain_runtime::DomainRuntime;
+use alondra_engine_sdk::domain_store::model_metrics::{Decision, DecisionKind};
 use alondra_engine_ports::worktrees::Workplace;
 use alondra_domain_rules::{Actor, AgentId, DomainError, DomainState, RequestId, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
-use crate::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::gate::GateOf as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::sdk_handover::HandoversOf as _;
 use alondra_daemon_engine::domain_orchestrator_tools::*;
 use alondra_engine_admission::AdmissionOf as _;
 
-use crate::domain_store::HandoverProcess;
+use alondra_engine_sdk::domain_store::HandoverProcess;
 use alondra_daemon_engine::node_close::Answer;
 use alondra_daemon_engine::node_push::testing::Node;
 use alondra_daemon_engine::sdk_handover::BgSessions;
 use alondra_daemon_engine_model::LaunchOptions;
-#[cfg(all(test, not(feature = "real-hosts")))]
-use crate::model_fixture::SdkLaunches;
-#[cfg(any(not(test), feature = "real-hosts"))]
-use crate::sdk_owner::fixtures::SdkLaunches;
+use crate::engine_tests::SdkLaunches;
 use crate::test_support::Directory;
 use alondra_domain_rules::{AttachmentRef, Command, CommandEnvelope, ModelChooser, PROTOCOL_VERSION, TaskModel, TaskState};
 use alondra_core::options::OptionsFile;
@@ -47,7 +44,7 @@ pub fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
     let state = domain.state().unwrap();
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
-        command_id: format!("test-{}", crate::auth::random_hex(8)).into(), expected_revision: state.revision, command,
+        command_id: format!("test-{}", alondra_daemon_support::auth::random_hex(8)).into(), expected_revision: state.revision, command,
     };
     domain.execute(&actor, &envelope, None, || Ok(())).unwrap();
 }
@@ -70,7 +67,7 @@ pub fn bare_world() -> Fixture {
     let project = root.join("App");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
-    let domain = Arc::new(crate::engine_fixtures::open(&home).unwrap());
+    let domain = Arc::new(super::open(&home).unwrap());
     alondra_engine_admission::measure_machine(&domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
         memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
         disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() }, alondra_engine_ports::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
@@ -183,7 +180,7 @@ pub fn refused_plan(f: &Fixture) -> alondra_daemon_engine_model::LaunchPlan {
 }
 
 pub async fn refuse_its_start(f: &Fixture) -> alondra_domain_rules::Interaction {
-    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    alondra_engine_sdk::auto_launch::pass(&f.domain, &f.home).await.unwrap();
     assert!(f.sdk().starts().is_empty());
     assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty(), "no retry is promised for a start that cannot work");
     let state = f.domain.state().unwrap();

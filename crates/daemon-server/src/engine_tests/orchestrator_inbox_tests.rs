@@ -5,7 +5,7 @@
 mod cancelled_dependencies {
     use alondra_domain_rules::{Actor, Command, TaskId, TaskState};
     use alondra_engine_sdk::auto_launch::pass;
-    use alondra_engine_sdk::auto_launch::fixtures::{Fixture, command, create, launches, open_task, plan, problem, told, user, world};
+    use crate::engine_tests::engine_fixtures::launches::{Fixture, command, create, launches, open_task, plan, problem, told, user, world};
 
     /// The orchestrator ended a turn: what it still has to re-plan is handed to it again.
     fn rest(f: &Fixture) {
@@ -117,7 +117,7 @@ mod cancelled_dependencies {
 /// A launch plan the start refused stays the orchestrator's until it decides.
 mod refused_plans {
     use alondra_domain_rules::TaskId;
-    use alondra_engine_sdk::engine_fixtures::orchestrator_tools::{refuse_its_start, refused_plan, world};
+    use crate::engine_tests::engine_fixtures::orchestrator_tools::{refuse_its_start, refused_plan, world};
     use alondra_store_sqlite::AsSqlite as _;
 
     #[tokio::test]

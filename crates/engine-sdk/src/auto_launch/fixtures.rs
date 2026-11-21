@@ -1,21 +1,20 @@
 //! Automatic launches as the tests here and in the crates above set them up.
 use alondra_daemon_engine::gate::GateOf as _;
-use crate::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
-use super::*;
+use alondra_engine_sdk::auto_launch::*;
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine_model::LaunchPlan;
-#[cfg(all(test, not(feature = "real-hosts")))]
-use crate::model_fixture::SdkLaunches;
-#[cfg(any(not(test), feature = "real-hosts"))]
-use crate::sdk_owner::fixtures::SdkLaunches;
+use crate::engine_tests::SdkLaunches;
 use alondra_domain_rules::{
     Actor, StartProblem,
     Command, CommandEnvelope, DeliveryTarget, InteractionId, MergeMethod, NodeEnd, PROTOCOL_VERSION, PrState, TaskId,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::path::Path;
+use alondra_engine_sdk::domain_runtime::DomainRuntime;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 
 pub struct Fixture {
@@ -40,7 +39,7 @@ pub fn user() -> Actor {
 pub fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("c-{}", crate::auth::random_hex(8)).into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("c-{}", alondra_daemon_support::auth::random_hex(8)).into(),
         expected_revision: state.revision, command,
     }, None, || Ok(())).unwrap();
 }
@@ -55,7 +54,7 @@ pub fn world_using_sdk(enable: fn(&Arc<DomainRuntime>, &Path) -> SdkLaunches) ->
     let project = root.join("App");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
-    let domain = Arc::new(crate::engine_fixtures::open(&home).unwrap());
+    let domain = Arc::new(super::open(&home).unwrap());
     alondra_engine_admission::measure_machine(&domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
         memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
         disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() }, alondra_engine_ports::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });

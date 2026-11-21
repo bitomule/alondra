@@ -59,7 +59,7 @@ low_opt_rust_test(
         "//fixtures/views:cards",
         "//crates/alondrad:Info.plist",
     ],
-    srcs = glob(["src/**/*.rs"]) + ["//crates/daemon-engine:src/wiring/owner_fixtures.rs"],
+    srcs = glob(["src/**/*.rs"]) + ["//crates/daemon-engine:src/wiring/owner_fixtures.rs", "//crates/engine-sdk:fixtures"],
     crate_name = "alondra_daemon_server",
     crate_root = "src/lib.rs",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
@@ -92,6 +92,7 @@ low_opt_rust_test(
         "//crates/engine-orchestrator:engine_orchestrator",
         "//crates/engine-sdk:engine_sdk",
         "//crates/agent-application:agent_application",
+        "//crates/process-group:process_group",
         "//crates/provider-contract:provider_contract",
         "//crates/store:store",
     ],

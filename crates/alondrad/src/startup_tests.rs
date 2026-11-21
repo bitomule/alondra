@@ -118,10 +118,13 @@ fn the_daemons_wiring_alone_implements_every_port() {
     assert_eq!(registry.missing(), Vec::<&str>::new(), "a port the daemon's wiring leaves to nothing");
 }
 
+#[path = "../../engine-sdk/src/engine_assembly.rs"]
+mod engine_assembly;
+
 /// The tests of the crates below the root open the engine with a copy of the root's observers:
 /// every subsystem hears of each commit there as in the daemon, in the same order.
 #[test]
 fn the_engines_tests_hear_of_commits_as_the_daemon_does() {
     let names = |observers: Vec<Box<dyn domain_runtime::CommitObserver>>| observers.iter().map(|observer| observer.name()).collect::<Vec<_>>();
-    assert_eq!(names(alondra_engine_sdk::engine_fixtures::observers()), names(crate::wiring::observers()));
+    assert_eq!(names(engine_assembly::observers()), names(crate::wiring::observers()));
 }

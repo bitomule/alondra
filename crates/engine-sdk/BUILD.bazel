@@ -7,8 +7,7 @@ load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
 # The SDK's crate asks the rest of the engine only through the port SdkEngine, and the rest of the
-# engine asks it only through SdkHosts; alondrad puts them together. Its fixtures, compiled into the
-# library, still open the whole engine, so it keeps daemon-engine and engine-admission as deps.
+# engine asks it only through SdkHosts; alondrad puts them together.
 WORKSPACE_DEPS = [
     "//crates/engine-ports:engine_ports",
     "//crates/agent-application:agent_application",
@@ -24,18 +23,38 @@ WORKSPACE_DEPS = [
     "//crates/view-model:view_model",
 ]
 
+# The fixtures of the tests that open the whole engine. No library compiles them: each test crate
+# that uses them, here and above, compiles them as a module of its own (src/engine_fixtures.rs).
+FIXTURES = [
+    "src/auto_launch/fixtures.rs",
+    "src/engine_assembly.rs",
+    "src/engine_fixtures.rs",
+    "src/engine_fixtures/orchestrator_tools.rs",
+    "src/engine_fixtures/sdk_node_fixture.rs",
+    "src/sdk_owner/codex_fixtures.rs",
+    "src/sdk_owner/fixtures.rs",
+    "src/sdk_owner/untaken_fixtures.rs",
+]
+
+TEST_ONLY = FIXTURES + ["src/model_fixture.rs"]
+
+filegroup(
+    name = "fixtures",
+    testonly = True,
+    srcs = FIXTURES,
+    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"],
+)
+
 application_crate(
     name = "engine_sdk",
-    srcs = production_sources(test_only = ["src/model_fixture.rs"]) + ["//crates:test_support.rs"],
+    srcs = production_sources(test_only = TEST_ONLY),
     crate_name = "alondra_engine_sdk",
     version = VERSION,
     test_visibility = ["//crates/machine-model:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine:daemon_engine",
         "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
-        "//crates/engine-admission:engine_admission",
         "//crates/engine-github:engine_github",
         "//crates/engine-kernel:engine_kernel",
     ],
@@ -126,7 +145,7 @@ rust_inputs_test(
     required_sources = ["crates/engine-sdk/src/lib.rs", "crates/engine-sdk/src/wiring.rs"],
     source_dir = "crates/engine-sdk/src/",
     target_under_test = ":engine_sdk",
-    fixture_sources = ["crates/test_support.rs"],
+    test_only_sources = ["crates/engine-sdk/" + source for source in TEST_ONLY],
     test_sources = False,
 )
 
@@ -136,7 +155,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 # file among them; alondrad's lock policy test reads them too.
 filegroup(
     name = "report_sources",
-    srcs = production_sources(test_only = ["src/model_fixture.rs"]),
+    srcs = production_sources(test_only = TEST_ONLY),
     visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"],
 )
 

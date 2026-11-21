@@ -20,6 +20,15 @@ mod usage_pause_tests;
 #[path = "../../daemon-engine/src/wiring/owner_fixtures.rs"]
 pub(crate) mod owner_fixtures;
 
+/// The engine as `alondrad` puts it together, which this crate cannot see.
+#[path = "../../engine-sdk/src/engine_assembly.rs"]
+pub(crate) mod engine_assembly;
+
+/// The fixtures of the SDK's nodes, launches and orchestrator tools, on real hosts.
+#[path = "../../engine-sdk/src/engine_fixtures.rs"]
+pub(crate) mod engine_fixtures;
+pub(crate) use engine_fixtures::owner::SdkLaunches;
+
 /// Opens every runtime the engine's fixtures open on this thread as the daemon does, with the gate
 /// of a test.
 pub(crate) fn wired() {
@@ -30,7 +39,7 @@ pub(crate) fn wired() {
 /// The runtime as the daemon opens it, with the doubles of the Mac and a gate that is unpaced and
 /// launches on the disk the machine watch measured.
 pub(crate) fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
-    let runtime = alondra_engine_sdk::engine_fixtures::open_engine_at(home, database, files)?;
+    let runtime = engine_assembly::open_engine_at(home, database, files)?;
     alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
     alondra_agent_runtime::wire(runtime.ports(), Default::default());
     alondra_engine_admission::for_tests(&runtime);

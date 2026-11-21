@@ -25,7 +25,7 @@ application_crate(
     srcs = production_sources(test_only = ["src/wiring/owner_fixtures.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondra_daemon_engine",
     version = VERSION,
-    test_visibility = ["//crates/machine-model:__pkg__"],
+    test_visibility = ["//crates/engine-sdk:__pkg__", "//crates/machine-model:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-engine-machine:daemon_engine_machine",

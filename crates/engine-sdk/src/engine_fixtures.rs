@@ -1,11 +1,18 @@
-//! What the tests here and in the crates above build on: the nodes of the Agent SDK they drive, the
-//! orchestrator's tools they call, and the runtime they open, as the test said on its thread with
-//! `alondra_daemon_engine::wiring::open_with`.
-use crate::domain_runtime::{CommitObserver, DomainRuntime};
+//! What the tests that open the whole engine build on: the nodes of the Agent SDK they drive, the
+//! orchestrator's tools they call and the automatic launches they set up. No library carries them:
+//! each test crate that uses them compiles this file as a module of its own, and gives it
+//! `crate::engine_tests::wired`, which says how its threads open a runtime
+//! (`alondra_daemon_engine::wiring::open_with`), `crate::engine_tests::SdkLaunches`, the launches
+//! its hosts record, and `crate::test_support`.
+use alondra_engine_sdk::domain_runtime::DomainRuntime;
 use std::path::Path;
 
+#[path = "auto_launch/fixtures.rs"]
+pub mod launches;
 #[path = "engine_fixtures/orchestrator_tools.rs"]
 pub mod orchestrator_tools;
+#[path = "sdk_owner/fixtures.rs"]
+pub mod owner;
 #[path = "engine_fixtures/sdk_node_fixture.rs"]
 pub mod sdk_node_fixture;
 
@@ -14,28 +21,6 @@ pub fn open(home: &Path) -> anyhow::Result<DomainRuntime> {
 }
 
 pub fn open_at(home: &Path, database: &Path) -> anyhow::Result<DomainRuntime> {
-    #[cfg(test)]
     crate::engine_tests::wired();
     alondra_daemon_engine::wiring::open_at(home, database)
-}
-
-/// The engine as `alondrad` puts it together, which the tests of the crates below the root cannot
-/// see: the same decisions of held cards, observers and ports.
-pub fn open_engine_at(home: &Path, database: &Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<DomainRuntime> {
-    let runtime = DomainRuntime::open_observed(home, database, files, Some(alondra_daemon_engine::wiring::held_cards()), observers())?;
-    alondra_daemon_engine::wiring::wire(runtime.ports());
-    crate::wiring::wire(runtime.ports());
-    alondra_engine_admission::wire(runtime.ports());
-    Ok(runtime)
-}
-
-/// A copy of `alondrad`'s observers, in the same order; a test of `alondrad` fails when they differ.
-pub fn observers() -> Vec<Box<dyn CommitObserver>> {
-    vec![
-        Box::new(alondra_daemon_engine::gate::PauseResume),
-        Box::new(alondra_daemon_engine::sdk_live::EndedWaits),
-        Box::new(crate::task_closer::Unattended),
-        Box::new(alondra_daemon_engine::allow_always::ChosenAlways),
-        Box::new(crate::sdk_owner::Retakes),
-    ]
 }

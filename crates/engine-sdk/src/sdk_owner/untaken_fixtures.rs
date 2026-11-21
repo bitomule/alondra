@@ -2,7 +2,7 @@
 //! What Alondra does with an input its SDK session did not take, and with work of the node's own
 //! that ended with no turn to take up its notice. The clock is a parameter: every pass of the one
 //! clock gets the time it runs at.
-use crate::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use super::*;
 use alondra_engine_admission::AdmissionOf as _;
