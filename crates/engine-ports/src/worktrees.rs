@@ -125,7 +125,7 @@ pub trait Worktrees: Send + Sync {
     fn release_task_worktree<'a>(&'a self, dir: &'a Path, slug: &'a str, remove: bool) -> Git<'a, Result<TaskWorktree, String>>;
     /// A finished task's worktree deleted like `release_task_worktree` (only the one named `slug`) or,
     /// with no slug, like `release_recorded_worktree`; the branch `worktree-<name>` goes with it when
-    /// its pull request merged (`pr_merged`) or it has no commit of its own.
+    /// it is in the default branch or, once its pull request merged (`pr_merged`), every commit of it is on its remote.
     fn release_finished_worktree<'a>(&'a self, dir: &'a Path, slug: Option<&'a str>, give_up: bool, pr_merged: bool) -> Git<'a, Result<TaskWorktree, String>>;
     fn release_recorded_worktree<'a>(&'a self, dir: &'a Path, give_up: bool) -> Git<'a, Result<TaskWorktree, String>>;
     fn discard_worktree<'a>(&'a self, dir: &'a Path, keep_branch: bool) -> Git<'a, Result<TaskWorktree, String>>;
