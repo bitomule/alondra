@@ -256,6 +256,28 @@ pub fn status_json(home: &View, tasks: &View) -> Value {
     serde_json::json!({"schema":STATUS_SCHEMA,"header":home.status,"cards":cards,"task_blocks":blocks})
 }
 
+const READ_ATTEMPTS: usize = 3;
+
+/// A read of the daemon's views that waits out an alondrad that is alive but slow, as one whose
+/// memory macOS swapped out can be for longer than a single attempt. A read changes nothing, so
+/// asking again is safe; a daemon that is not running fails at once, as it did.
+pub fn read_patiently<T>(mut read: impl FnMut() -> Result<T>) -> Result<T> {
+    use alondra_client_port::client::{Delivery, delivery};
+    let mut attempt = 1;
+    loop {
+        match read() {
+            Err(error) if delivery(&error) == Delivery::Unanswered && attempt < READ_ATTEMPTS => attempt += 1,
+            Err(error) if delivery(&error) == Delivery::Unanswered => {
+                return Err(error.context(tr!(
+                    "alondrad is running but did not answer; the Mac may be short of memory. Try again in a moment",
+                    "alondrad está arrancado pero no ha contestado; puede que el Mac vaya justo de memoria. Prueba otra vez en un momento"
+                )));
+            }
+            done => return done,
+        }
+    }
+}
+
 pub fn status_text(home: &View, tasks: &View) -> String {
     use std::fmt::Write;
     let mut out = format!("{}\n", home.status.summary);
@@ -299,6 +321,36 @@ pub fn recover(action: Recovery, run_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_read_the_daemon_answers_late_is_asked_again_instead_of_failing() {
+        use alondra_client_port::client::Unanswered;
+        let mut asked = 0;
+        let read = read_patiently(|| {
+            asked += 1;
+            if asked < 3 { Err(anyhow::Error::new(Unanswered("timeout".into()))) } else { Ok("answer") }
+        });
+        assert_eq!(read.unwrap(), "answer");
+        assert_eq!(asked, 3);
+    }
+
+    #[test]
+    fn a_daemon_that_never_answers_is_not_reported_as_not_running() {
+        use alondra_client_port::client::Unanswered;
+        let error = read_patiently::<()>(|| Err(anyhow::Error::new(Unanswered("timeout".into())))).unwrap_err();
+        let said = format!("{error:#}");
+        assert!(said.contains("is running but did not answer") || said.contains("está arrancado pero no ha contestado"), "{said}");
+        assert!(!said.contains("is it running"));
+    }
+
+    #[test]
+    fn a_daemon_that_is_not_running_fails_on_the_first_attempt() {
+        use alondra_client_port::client::Unsent;
+        let mut asked = 0;
+        let error = read_patiently::<()>(|| { asked += 1; Err(anyhow::Error::new(Unsent("refused".into()))) }).unwrap_err();
+        assert_eq!(asked, 1);
+        assert!(!format!("{error:#}").contains("did not answer"));
+    }
+
     use alondra_domain_rules::*;
 
     fn world() -> DomainState {
