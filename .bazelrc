@@ -32,7 +32,10 @@ common:upload --config=buildbuddy
 common:upload --remote_upload_local_results
 
 # Signing, linking and bundling outputs are machine-specific or cheap to redo; never cache them.
-common --modify_execution_info=^(AppleLipo|BitcodeSymbolsCopy|BundleApp|BundleTreeApp|DsymDwarf|DsymLipo|GenerateAppleSymbolsFile|ObjcBinarySymbolStrip|CppArchive|CppLink|ObjcLink|ProcessAndSign|SignBinary|SwiftArchive|SwiftStdlibCopy)$=+no-remote,^(BundleResources|ImportedDynamicFrameworkProcessor)$=+no-remote-exec
+# --modify_execution_info keeps only its last value, so every configuration restates the whole list.
+# An rlib that incremental state leaves incoherent has the same action key in every checkout, so
+# incremental Rustc and Clippy actions skip the disk and remote cache; a release compiles from scratch.
+common --modify_execution_info=^(AppleLipo|BitcodeSymbolsCopy|BundleApp|BundleTreeApp|DsymDwarf|DsymLipo|GenerateAppleSymbolsFile|ObjcBinarySymbolStrip|CppArchive|CppLink|ObjcLink|ProcessAndSign|SignBinary|SwiftArchive|SwiftStdlibCopy)$=+no-remote,^(BundleResources|ImportedDynamicFrameworkProcessor)$=+no-remote-exec,^(Rustc|Clippy)$=+no-cache
 
 common:ci --color=yes
 common:ci --announce_rc
@@ -40,6 +43,7 @@ common:ci --remote_cache=
 common:ci --noremote_upload_local_results
 common:ci --bes_backend=
 build:ci --jobs=2
+common:ci --modify_execution_info=^(AppleLipo|BitcodeSymbolsCopy|BundleApp|BundleTreeApp|DsymDwarf|DsymLipo|GenerateAppleSymbolsFile|ObjcBinarySymbolStrip|CppArchive|CppLink|ObjcLink|ProcessAndSign|SignBinary|SwiftArchive|SwiftStdlibCopy)$=+no-remote,^(BundleResources|ImportedDynamicFrameworkProcessor)$=+no-remote-exec
 # A runner starts empty and is thrown away: it compiles from scratch, like a release.
 build:ci --@rules_rust//rust/settings:extra_rustc_flags=
 build:ci --@rules_rust//rust/settings:clippy_flags=-Aclippy::all,-Dclippy::disallowed_methods
@@ -54,6 +58,7 @@ common:warming --remote_download_minimal
 
 # What ships compiles from scratch, as before the edit loop went incremental; the release tests the
 # same binaries in this configuration, so it never compiles them twice.
+common:release --modify_execution_info=^(AppleLipo|BitcodeSymbolsCopy|BundleApp|BundleTreeApp|DsymDwarf|DsymLipo|GenerateAppleSymbolsFile|ObjcBinarySymbolStrip|CppArchive|CppLink|ObjcLink|ProcessAndSign|SignBinary|SwiftArchive|SwiftStdlibCopy)$=+no-remote,^(BundleResources|ImportedDynamicFrameworkProcessor)$=+no-remote-exec
 build:release --@rules_rust//rust/settings:extra_rustc_flags=
 build:release --@rules_rust//rust/settings:clippy_flags=-Aclippy::all,-Dclippy::disallowed_methods
 
