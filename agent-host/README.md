@@ -73,3 +73,96 @@ The host deliberately does not restart its own app-server. A single replacement 
 the daemon quiesce the old writer and reconcile durable evidence before resuming the thread;
 restarting inside the host would add another recovery path around uncertain input handoff.
 No host-protocol frame, action, capability or version changes here.
+
+## Antigravity host
+
+`alondra-antigravity-host` runs one Alondra node on Antigravity CLI. It is the persistent host
+with `AntigravitySession` (`antigravity-session.ts`) in place of Claude's or Codex's session, and
+announces the SDK version `antigravity-acp-1`. Its capabilities are `streaming_input`,
+`exact_decisions`, `owner_attach`, `commit_ack`, `interrupt`, `force_stop`, `set_model` and
+`set_permission_mode`. It runs nodes only, never the orchestrator.
+
+**Process.** The host's only child is `agy acp` (with `--gemini-dir <folder>` for a named account),
+started in the node's worktree inside the host's own process group, as Codex's app-server is, so
+the daemon's liveness check and reaper see it as the host's native child. It speaks the Agent Client
+Protocol: JSON-RPC 2.0, one message per line on stdin and stdout. agy's stderr is drained and never
+kept. The host sends `initialize` as the client `alondra` with no file system and no terminal, and
+refuses the session (`native_incompatible`) when agy names another agent, speaks a protocol other
+than 1 or cannot resume sessions. It reads agy's version from `initialize`'s `agentInfo.version`,
+never from a second process: a version it cannot read is `native_version_unreadable`, and one
+older than 1.5.12 is `native_version_unsupported`. An API key account then sends `authenticate`
+with `gemini-api-key` and a Cloud project account with `agent-platform`. A Google or Enterprise
+account sends none: agy uses the sign-in it keeps, and `authenticate` with an OAuth method would
+open a browser sign-in and wait for it.
+
+**Sign-in refusal.** A signed-out account shows as JSON-RPC `-32000` answering `session/new`,
+`session/resume` or `authenticate`, and a key agy refuses as `-32602` answering `authenticate`; a
+missing key file is the same refusal before agy starts. Nothing was offered to agy: every queued
+input is refused as never offered (`authentication_required`), the account is reported blocked,
+and the session ends.
+
+**Resume.** The host keeps `native-sessions/<Alondra session id>` beside its state folder (`0700`
+folder, `0600` file written atomically, refused when it is a link, another user's or has another
+mode), holding the ACP session id with the account, access and agy version it ran on. A later host
+sends `session/resume` only for the same account and access, and never `session/load`. For another
+account or access, or when agy refuses the resume with any error but `-32000` (agy answers an
+unknown session with a generic one), it opens a new session and puts the task's handoff ahead of
+its first prompt. A node's first launch, with no stored
+session, opens a new session and takes the handoff the daemon already gave it.
+
+**Session.** `session/new` and `session/resume` carry Alondra's MCP server, `alondra`, with the
+node's role environment (`ALONDRA_PROVIDER=antigravity`); a node without it fails
+`alondra_mcp_missing`. The node's instructions go in the new session's
+`_meta.antigravity.systemPrompt.append` when `initialize` advertises it, and otherwise ahead of the
+new session's first prompt; a resumed session already holds them. The host then sets the model and
+after it the thinking level with `session/set_config_option`, from the options the session
+reported (a level the model does not offer is not set), and the mode with `session/set_mode`:
+Alondra's `default` is agy's `auto` when the session offers it, else `default`; `plan` is `plan`;
+`dontAsk` is `default` with every permission request rejected by the host. Model and mode changes
+apply the same calls to the live session.
+
+**Turns.** One `session/prompt` is open at a time; an input offered during a turn waits until agy
+answers it, as agy's own steering of a running turn cannot name the input it took. The host
+journals `alondra/sessionReady`, `alondra/promptSent` once the prompt is written, every
+`session/update` as agy sent it, and `alondra/promptEnded` with agy's `stopReason`, or
+`alondra/promptFailed` with the JSON-RPC error's code and structured `data`, never its message.
+A `session/request_permission` becomes a card that lists its options; the answer selects the
+option the decision names, and Alondra never selects `allow_always` or `reject_always`. In `auto`
+mode, a request for one of Alondra's own MCP tools is allowed once without a card.
+
+agy reports an upstream failure such as a rejected key as an agent message in a turn that ends
+`end_turn`; only a JSON-RPC error answering the prompt is `promptFailed`.
+
+**Supervision.** An interrupt sends `session/cancel` and answers every pending permission request
+`cancelled`; agy ends the turn by answering the prompt `cancelled`. Force stop cancels, then closes.
+Closing sends `session/close` when agy advertises it, waits for it at most half a second, then sends
+SIGTERM to agy and SIGKILL a second later. When agy exits, its last output is drained as for Codex
+(an output that closes is the failure only when agy is still alive a second later), pending
+requests settle `cancelled`, queued inputs are refused as never offered, and an exit nobody asked
+for is journaled as a lost transport before the exit itself. The host ends with its session and
+then ends its own process group, which ends whatever agy started. No timer ends a session that hangs once it is open; only its opening is bounded.
+
+**Environment and TMPDIR.** agy's environment is the host's native environment without any Google
+credential it could inherit (`GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`,
+`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_CLOUD_QUOTA_PROJECT`,
+`GOOGLE_GENAI_USE_VERTEXAI`, `AGY_ADC_AUTH`, `GOOGLE_GEMINI_BASE_URL`, `GEMINI_HOME`), plus
+`AGY_CLI_DISABLE_AUTO_UPDATE=1` and the account's own:
+
+| Access | Set |
+|---|---|
+| a named account | `GEMINI_HOME` and `--gemini-dir`, its folder; for Google and Enterprise also `AGY_ACP_FORCE_FILE_STORAGE=1` and `SSH_CONNECTION=127.0.0.1 0 127.0.0.1 0`, so its sign-in stays in its folder |
+| API key | `GEMINI_API_KEY` |
+| Enterprise | `GOOGLE_CLOUD_QUOTA_PROJECT` and `GOOGLE_CLOUD_LOCATION` when set |
+| Cloud project | with a key, `GOOGLE_API_KEY`; otherwise `AGY_ADC_AUTH=true` and `GOOGLE_APPLICATION_CREDENTIALS` when a credentials file is set; and the project and location |
+
+A key is read from the account's key file, opened without following links and refused unless it is
+a small regular `0600` file of the user's; a missing key is `authentication_required`. The key goes
+only into agy's environment: never into the MCP server's, an observation, the host's journal or an
+error. `TMPDIR` is a `0700` folder of the host's own inside its state folder, where agy unpacks its
+runtime, removed when the session ends however it ends.
+
+**Not offered.** MCP status, reconnection and sign-in, compaction and background work have no ACP
+method: the host does not announce them and refuses their calls.
+
+`antigravity_session_test` runs the session against `fake-agy-acp.mjs`, a fake ACP agent run by the
+test's own Node, and needs no other program.

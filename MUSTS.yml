@@ -457,6 +457,28 @@ checks:
         - //crates/daemon-server:daemon_server_test_inputs_test
         - //crates/daemon-server:production_inputs_test
 
+  crate-antigravity-protocol:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/agent-protocol/**"
+      - "crates/antigravity-protocol/**"
+      - "crates/foundation/**"
+      - "tools/BUILD.bazel"
+      - "tools/bazel/*.bzl"
+      - "tools/bazel/BUILD.bazel"
+      - "tools/rust_sources.bzl"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
+    with:
+      targets:
+        - //crates/antigravity-protocol/...
+
   crate-codex-protocol:
     uses: bazel/test
     paths:
@@ -1589,6 +1611,47 @@ checks:
       targets:
         - //crates/provider-claude/...
 
+  crate-provider-antigravity:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "BUILD.bazel"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/antigravity-protocol/**"
+      - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/domain-store-schema/**"
+      - "crates/domain/**"
+      - "crates/engine-ports/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-antigravity/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-conformance/**"
+      - "crates/provider-contract/**"
+      - "crates/scenarios-transcript/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "crates/view-model/**"
+      - "tools/BUILD.bazel"
+      - "tools/bazel/*.bzl"
+      - "tools/bazel/BUILD.bazel"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/provider-antigravity/...
+
   crate-provider-codex:
     uses: bazel/test
     paths:
@@ -2631,6 +2694,7 @@ checks:
       - "Makefile"
       - "agent-host/*.ts"
       - "agent-host/BUILD.bazel"
+      - "agent-host/antigravity-session.test.mjs"
       - "agent-host/bundle.mjs"
       - "agent-host/channel.test.mjs"
       - "agent-host/codex-ack-progress-fixture.mjs"
@@ -2644,6 +2708,7 @@ checks:
       - "agent-host/decisions.test.mjs"
       - "agent-host/descendant-fake-claude.py"
       - "agent-host/fake-claude.mjs"
+      - "agent-host/fake-agy-acp.mjs"
       - "agent-host/fake-claude.py"
       - "agent-host/fake-codex.py"
       - "agent-host/fake-model-catalog.mjs"
@@ -2700,6 +2765,8 @@ checks:
         - //agent-host:consecutive_inputs_test
         - //agent-host:decisions_test
         - //agent-host:codex_session_test
+        - //agent-host:antigravity_session_test
+        - //agent-host:antigravity_release_host
         - //agent-host:model_probe_test
         - //agent-host:umask_test
         - //agent-host:probe_test

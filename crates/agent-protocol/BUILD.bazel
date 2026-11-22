@@ -37,7 +37,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 filegroup(
     name = "transport_sources",
     srcs = ["src/codec.rs", "src/archived_receipts.rs", "src/correlation.rs", "src/json.rs", "src/ownership.rs", "src/schema.rs"],
-    visibility = ["//crates/codex-protocol:__pkg__"],
+    visibility = ["//crates/antigravity-protocol:__pkg__", "//crates/codex-protocol:__pkg__"],
 )
 
 # The crate's production sources: the crash report's log catalog reads them, and fails on a test

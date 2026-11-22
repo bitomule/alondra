@@ -9,12 +9,14 @@ pub struct Scenario {
     pub expected: &'static [&'static str],
     claude: Option<&'static str>,
     codex: Option<&'static str>,
+    antigravity: Option<&'static str>,
 }
 impl Scenario {
     pub fn transcript(&self, provider: Provider) -> Option<&'static str> {
         match provider {
             Provider::Claude => self.claude,
             Provider::Codex => self.codex,
+            Provider::Antigravity => self.antigravity,
         }
     }
 }
@@ -33,6 +35,7 @@ macro_rules! transcripts {
         (
             Some(include_str!(concat!("../transcripts/claude/", $name, ".jsonl"))),
             Some(include_str!(concat!("../transcripts/codex/", $name, ".jsonl"))),
+            Some(include_str!(concat!("../transcripts/antigravity/", $name, ".jsonl"))),
         )
     };
 }
@@ -40,10 +43,10 @@ macro_rules! transcripts {
 pub(crate) const fn scenario(
     name: &'static str,
     needs: &'static [Capability],
-    (claude, codex): (Option<&'static str>, Option<&'static str>),
+    (claude, codex, antigravity): (Option<&'static str>, Option<&'static str>, Option<&'static str>),
     expected: &'static [&'static str],
 ) -> Scenario {
-    Scenario { name, needs, expected, claude, codex }
+    Scenario { name, needs, expected, claude, codex, antigravity }
 }
 
 pub const SCENARIOS: &[Scenario] = &[
@@ -202,6 +205,40 @@ pub const DIVERGENCES: &[KnownDivergence] = &[
             "InputHeld(input-1)",
             "TurnStarted(T1, input-1)",
             "TurnEnded(T1, ApiFailed(rate_limit, status=429, resets=none))",
+            "Reconciled(idle, live=[])",
+        ],
+    },
+    KnownDivergence {
+        scenario: "input-during-turn",
+        provider: Provider::Antigravity,
+        cause: "the Antigravity host keeps an input sent during a turn in its own queue and sends its session/prompt only once \
+                the prompt before it is answered (agent-host/antigravity-session.ts), so the input is held only then, after the \
+                turn ended",
+        actual: &[
+            "Available",
+            "InputHeld(input-1)",
+            "TurnStarted(T1, input-1)",
+            "ModelAnswered",
+            "TurnEnded(T1, Completed)",
+            "Reconciled(idle, live=[])",
+            "InputHeld(input-2)",
+            "TurnStarted(T2, input-2)",
+            "ModelAnswered",
+            "TurnEnded(T2, Completed)",
+            "Reconciled(idle, live=[])",
+        ],
+    },
+    KnownDivergence {
+        scenario: "usage-limit-reset",
+        provider: Provider::Antigravity,
+        cause: "agy reports a failed upstream call, a used-up quota included, as an agent message and answers the prompt end_turn \
+                (measured on agy 1.5.14), and ACP carries no usage window: the account's windows come from the usage reading",
+        actual: &[
+            "Available",
+            "InputHeld(input-1)",
+            "TurnStarted(T1, input-1)",
+            "ModelAnswered",
+            "TurnEnded(T1, Completed)",
             "Reconciled(idle, live=[])",
         ],
     },

@@ -17,6 +17,7 @@ low_opt_rust_test(
 WORKSPACE_MEMBERS = [
     "agent-application",
     "agent-protocol",
+    "antigravity-protocol",
     "codex-protocol",
     "agent-runtime",
     "alondra",
@@ -50,6 +51,7 @@ WORKSPACE_MEMBERS = [
     "e2e",
     "foundation",
     "process-group",
+    "provider-antigravity",
     "provider-claude",
     "provider-codex",
     "provider-conformance",
