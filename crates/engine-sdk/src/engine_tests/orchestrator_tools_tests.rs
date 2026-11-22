@@ -975,6 +975,32 @@ fn canonical_task_context_keeps_ordered_public_user_inputs_whole_and_names_missi
 }
 
 #[test]
+fn canonical_task_context_carries_what_the_user_wrote_on_a_card_not_an_empty_decision() {
+    super::wired();
+    use alondra_domain_rules::{Answer, Author, CardKind, CardSpec, InputValue, Interaction, InteractionPayload, QuestionOption, Recipient, Scope};
+    let f = world();
+    let mut state = f.domain.state().unwrap().as_ref().clone();
+    let task = state.tasks[&TaskId::from("t")].clone();
+    let agent = task.agent_id.clone().unwrap_or_else(|| "agent-a".into());
+    let answered = |id: &str, order: u64, option_id: &str, text: Option<&str>| Interaction { system_card: None,
+        attachments: vec![], id: id.into(), scope: Scope::Task { task_id: task.id.clone() }, author: Author::Agent { agent_id: agent.clone() },
+        recipient: Recipient::User, body: "Where does the ledger live?".into(), blocking: true, subject: None,
+        payload: InteractionPayload::Question {
+            options: vec![QuestionOption { id: "ref".into(), label: "A ref of its own".into(), description: None }],
+            answer: Some(Answer { attachments: vec![], option_id: option_id.into(), responder: "u".into(), at_revision: 7, decision: None,
+                inputs: text.map(|text| ("text".to_owned(), InputValue::Text(text.into()))).into_iter().collect() }),
+        },
+        revision: 7, order, withdrawn: false, card: CardSpec::derived(CardKind::Decide, "Choose where the ledger lives"),
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+    };
+    state.interactions.insert("written".into(), answered("written", 1, "", Some("Is there no other kind of file?")));
+    state.interactions.insert("both".into(), answered("both", 2, "ref", Some("and migrate the old ledger")));
+    let context = canonical_task_context(&state, &task);
+    assert!(context.text.contains("Public user decision written: Is there no other kind of file? (revision 7)"), "{}", context.text);
+    assert!(context.text.contains("Public user decision both: A ref of its own. and migrate the old ledger (revision 7)"), "{}", context.text);
+}
+
+#[test]
 fn canonical_task_context_carries_every_input_whole_in_the_order_they_came() {
     super::wired();
     use alondra_domain_rules::LifecycleRecord;

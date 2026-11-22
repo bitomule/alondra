@@ -91,9 +91,9 @@ pub fn canonical_task_context(state: &DomainState, task: &alondra_domain_rules::
     let mut public: Vec<_> = state.interactions.values().filter(|interaction| interaction.scope == (Scope::Task { task_id: task.id.clone() }) && interaction.recipient == Recipient::User).collect();
     public.sort_by_key(|interaction| interaction.order);
     for interaction in public {
-        if let InteractionPayload::Question { options, answer: Some(answer) } | InteractionPayload::ActionRequest { options, answer: Some(answer) } = &interaction.payload {
-            let choice = options.iter().find(|option| option.id == answer.option_id).map_or(answer.option_id.as_str(), |option| option.label.as_str());
-            add(format!("Public user decision {}: {} (revision {})", interaction.id, choice, answer.at_revision));
+        if let InteractionPayload::Question { answer: Some(answer), .. } | InteractionPayload::ActionRequest { answer: Some(answer), .. } = &interaction.payload {
+            let said = alondra_domain_rules::answer_said(interaction).unwrap_or_default();
+            add(format!("Public user decision {}: {said} (revision {})", interaction.id, answer.at_revision));
         }
     }
     for (id, revision) in &task.documents {

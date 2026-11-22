@@ -10630,3 +10630,20 @@ fn task_presentations_read_start_problems_from_the_committed_index() {
         }
     }
 }
+
+/// 21 November: an answer written on the phone waited 38 minutes for a slot while its task said
+/// «tu mensaje espera hueco», so it read as lost. Until it reaches the node, the task says it is
+/// the user's answer that Alondra hands over, never a card the user must still answer.
+#[test]
+fn an_answer_on_its_way_to_the_node_reads_as_the_users_answer() {
+    let state = crate::domain_fixtures::answered_while_its_turn_waits();
+    let index = alondra_domain_rules::ReadIndex::build(&state);
+    assert!(!index.waiting().iter().any(|item| item.id.contains("where")), "the answered card left the inbox");
+    let live = LiveSnapshot::default();
+    let line = |lang| {
+        let row = active_row(&state, &live, Client::Mac, lang, "t").1;
+        [row.badges.first().map(|badge| badge.text.clone()), row.subtitle].into_iter().flatten().collect::<Vec<_>>().join(" · ")
+    };
+    assert_eq!(line(Lang::Es), "En espera · Alondra le entrega tu respuesta");
+    assert_eq!(line(Lang::En), "Waiting · Alondra delivers your answer to it");
+}

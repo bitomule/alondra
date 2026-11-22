@@ -111,6 +111,9 @@ pub enum Step {
     /// delivers in words. With `refused`, the daemon must turn the delivery down with that code, and
     /// nothing is presented.
     Present { task: String, id: String, #[serde(default)] prs: Vec<u64>, #[serde(default)] text: Option<String>, body: String, #[serde(default)] refused: Option<String> },
+    /// The node of `task` asks the user `body` on the card `id`, to answer in writing, and waits
+    /// on it: the turn that ends next ends on that question.
+    Ask { task: String, id: String, title: String, body: String },
     /// The node of `task` tells the pull request is ready for others to stack on.
     StackReady { task: String, presentation: String, pr: u64 },
     /// The task starts on Codex: the daemon launches its node as it does in production, and the

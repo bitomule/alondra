@@ -1,0 +1,97 @@
+name = "a written answer to the node's question that waits for a slot reads as the user's answer, and reaches the node"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Keep the validated checks without conflicts"
+task = "t1"
+title = "Store the validated checks"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "ask"
+task = "t1"
+id = "where"
+title = "Say where the validated checks live"
+body = "Where should the validated checks live?"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "question-shown"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Say where the validated checks live"
+
+[[step]]
+do = "node_limit"
+count = 0
+
+[[step]]
+do = "reply"
+card = "where"
+text = "One file per check"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "answer-waits-for-a-slot"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Say where the validated checks live"
+present = false
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t1"
+text = "your answer waits for a slot"
+
+[[step]]
+do = "node_limit"
+count = 3
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "answer-reached-the-node"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t1"
+text = "waits for a slot"
+present = false

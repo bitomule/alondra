@@ -6,7 +6,7 @@ pub(crate) fn inbox_items(state: &DomainState) -> Vec<InboxItem> {
     ReadIndex::build(state).queued(state).map(std::borrow::Cow::into_owned).collect()
 }
 
-pub(crate) use prs::two_open_prs;
+pub(crate) use prs::{answered_while_its_turn_waits, two_open_prs};
 pub(crate) use mcp::waiting_for_linear;
 
 mod prs {
@@ -87,6 +87,21 @@ fn result(id: &str, targets: Vec<DeliveryTarget>, is_final: bool) -> Command {
 
 fn pr(id: &str, head: &str) -> DeliveryTarget {
     DeliveryTarget::PullRequest { pr_id: id.into(), head: head.into() }
+}
+
+/// The node asked the user in writing and ended its turn on the card; the user answered, and the
+/// delivery outbox has not told the node yet.
+pub(crate) fn answered_while_its_turn_waits() -> DomainState {
+    let mut s = at_work();
+    must(&mut s, node(), Command::AskQuestion {
+        attachments: vec![], interaction_id: "where".into(), scope: Scope::Task { task_id: TASK.into() }, recipient: Recipient::User,
+        body: "Where does the ledger live?".into(), blocking: true, options: vec![],
+        card: CardSpec::derived(CardKind::Provide, "Say where the ledger lives"),
+    });
+    turn_ends(&mut s);
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "where".into(), option_id: String::new(),
+        inputs: BTreeMap::from([("text".to_owned(), InputValue::Text("One file per check".into()))]) });
+    s
 }
 
 /// A task with two open PRs in two repositories, both in its final delivery.

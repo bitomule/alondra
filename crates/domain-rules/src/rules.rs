@@ -1049,17 +1049,19 @@ impl DomainState {
         };
         format!("Card {} is already answered: {answer}. It is final: act on it", i.id)
     }
-    /// `card` is a card the node of `task_id` asked on it, answered and held by no hook: what
-    /// the node is told carries its answer.
-    fn node_answer(&self, task_id: &TaskId, card: &InteractionId) -> Result<()> {
-        let node = self.tasks.get(task_id).and_then(|task| task.agent_id.as_ref());
-        let theirs = self.interactions.get(card).is_some_and(|i| {
+    /// `card` is a card a node of `task_id` asked on it, answered and held by no hook: what the
+    /// task's node is told carries its answer. The node that asked may have been replaced since
+    /// (D05): the answer reaches whoever holds the Task now.
+    pub fn answers_a_node_card(&self, task_id: &TaskId, card: &InteractionId) -> bool {
+        !self.holds.contains_key(card) && self.interactions.get(card).is_some_and(|i| {
             matches!(&i.scope, Scope::Task { task_id: scope } if scope == task_id)
-                && matches!(&i.author, Author::Agent { agent_id } if Some(agent_id) == node)
+                && matches!(&i.author, Author::Agent { .. })
                 && Self::answered_question(i)
-        });
-        if !theirs || self.holds.contains_key(card) {
-            return refuse("invalid_input", "answers", &format!("Card {card} is not an answered card of the node of task {task_id}"));
+        })
+    }
+    fn node_answer(&self, task_id: &TaskId, card: &InteractionId) -> Result<()> {
+        if !self.answers_a_node_card(task_id, card) {
+            return refuse("invalid_input", "answers", &format!("Card {card} is not an answered card of a node of task {task_id}"));
         }
         Ok(())
     }
@@ -4394,8 +4396,11 @@ impl DomainState {
                 let i = self.interactions.get_mut(interaction_id).unwrap();
                 match (i.author.clone(), i.scope.clone()) {
                     _ if self.holds.contains_key(interaction_id) || !complete => {}
-                    (Author::Agent { .. }, Scope::Task { task_id }) => {
-                        self.notify(&task_id, Some(interaction_id.clone()), "Question answered", effects)?;
+                    (Author::Agent { agent_id }, Scope::Task { task_id }) => {
+                        let node = self.task(&task_id)?.agent_id.clone().unwrap_or(agent_id);
+                        effects.push(DomainEffect::NotifyAgent {
+                            agent_id: node, task_id: Some(task_id), interaction_id: Some(interaction_id.clone()), message: "Question answered".into(),
+                        });
                     }
                     (Author::Orchestrator { .. }, _) => effects.push(DomainEffect::NotifyOrchestrator {
                         interaction_id: Some(interaction_id.clone()),

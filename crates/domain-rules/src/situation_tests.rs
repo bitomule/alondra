@@ -323,3 +323,42 @@ fn a_situation_counts_as_exactly_one_category() {
         assert_eq!(situation.tally(), tally, "{situation:?}");
     }
 }
+
+/// The user answers the card the node's turn ended on: the card leaves the inbox at once, and until
+/// the delivery outbox tells the node, the task waits for Alondra to hand it the answer, never for
+/// the user on a card they can no longer see.
+#[test]
+fn an_answered_card_the_turn_still_waits_on_is_alondras_to_deliver() {
+    use super::lifecycle_cache_tests::{run, Step};
+    let mut s = three_tasks();
+    for (n, step) in [Step::Ask(2), Step::TurnEnded, Step::Answer(2)].iter().enumerate() {
+        run(&mut s, step, n).unwrap_or_else(|error| panic!("{step:?} was refused: {error}"));
+    }
+    let index = ReadIndex::build(&s);
+    let read = index.task(&SDK.into()).unwrap();
+    assert_eq!(read.unlisted, None);
+    assert_eq!(read.situation, Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)));
+    assert!(index.unlisted_waits().next().is_none());
+}
+
+/// The answer reaches whoever holds the task now (D05): a card the node asked before the task was
+/// handed to a new node carries its answer to that node, never a refusal that drops it.
+#[test]
+fn an_answer_to_a_card_of_a_replaced_node_reaches_the_new_node() {
+    use super::lifecycle_cache_tests::{run, Step};
+    let mut s = three_tasks();
+    for (n, step) in [Step::Ask(2), Step::TurnEnded, Step::Answer(2)].iter().enumerate() {
+        run(&mut s, step, n).unwrap_or_else(|error| panic!("{step:?} was refused: {error}"));
+    }
+    exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: "next".into(), name: "next".into(), at: 0 }).unwrap();
+    exec(&mut s, Actor::System, Command::ReleaseTask { task_id: SDK.into(), reason: "The host ended".into() }).unwrap();
+    exec(&mut s, Actor::System, Command::AdmitExecution {
+        provider: alondra_core::accounts::Provider::Claude, task_id: SDK.into(), agent_id: "next".into(), conversation: format!("conversation-{SDK}"),
+        instance: "next-instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None,
+    }).unwrap();
+    assert_eq!(s.tasks[&TaskId::from(SDK)].agent_id, Some("next".into()));
+    exec(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Answer to your card question-0: Yes.".into(),
+        from_user: true, answers: Some("question-0".into()) }).unwrap();
+    assert!(s.lifecycle_journal[&TaskId::from(SDK)].iter().any(|record|
+        matches!(record, LifecycleRecord::Told { answers: Some(card), .. } if card.0 == "question-0")));
+}

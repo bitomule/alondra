@@ -128,6 +128,7 @@ struct Verdicts {
     clock_cards: Option<String>,
     answers: Option<String>,
     unlisted: Option<String>,
+    owed_answers: Option<String>,
     rearms: Option<String>,
     closing: Option<String>,
     unhanded: Option<String>,
@@ -165,6 +166,18 @@ fn unlisted_wait(state: &DomainState, index: &ReadIndex) -> Option<String> {
     })
 }
 
+/// A task whose turn waits on a card the user answered has that answer still owed to its node by
+/// the delivery outbox: nothing else ever tells the node, so without it the task waits for good.
+fn unowed_answer(machine: &Machine, state: &DomainState) -> Option<String> {
+    open_tasks(state).into_iter().find_map(|task| {
+        let lifecycle = state.lifecycle_of(&task).ok()?;
+        let Some(alondra_domain::Await::User(card)) = lifecycle.awaits() else { return None };
+        let answered = state.interactions.get(card).is_some_and(|i| !i.withdrawn && DomainState::answered_question(i));
+        let owed = machine.messages.iter().any(|message| message.card.as_ref() == Some(card));
+        (answered && !owed).then(|| format!("{task} waits on card {card}, answered, and nothing owes its node the answer"))
+    })
+}
+
 /// Judges every property that holds at each step: the first failure of each is kept.
 fn each_step(machine: &Machine, verdicts: &mut Verdicts, when: &str) {
     let state = machine.state();
@@ -177,6 +190,7 @@ fn each_step(machine: &Machine, verdicts: &mut Verdicts, when: &str) {
     keep(&mut verdicts.working, working_without_a_run(machine, &state, &index));
     keep(&mut verdicts.counts, counts_differ(&state, &index));
     keep(&mut verdicts.unlisted, unlisted_wait(&state, &index));
+    keep(&mut verdicts.owed_answers, unowed_answer(machine, &state));
 }
 
 /// Runs `history` once, through its rest, and judges it by every property.
@@ -405,6 +419,12 @@ proptest! {
     fn an_answer_always_reaches_its_turn(history in history()) {
         Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.answers)?;
+    }
+
+    #[test]
+    fn an_answered_card_a_task_waits_on_always_has_its_answer_owed_to_the_node(history in history()) {
+        Histories::Plain.judged_beforehand();
+        holds(&history, |verdicts| &verdicts.owed_answers)?;
     }
 
     #[test]
