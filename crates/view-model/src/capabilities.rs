@@ -65,7 +65,7 @@ impl ClientCapabilities {
                 || matches!(id.verb, crate::action_id::Verb::ModelProfile | crate::action_id::Verb::TaskSelection | crate::action_id::Verb::MoveTask) && !self.contains("model_selection")
                 || matches!(id.verb, crate::action_id::Verb::AccountEnable | crate::action_id::Verb::AccountDisable | crate::action_id::Verb::AccountRemove
                     | crate::action_id::Verb::AccountUp | crate::action_id::Verb::AccountDown | crate::action_id::Verb::AccountWeight | crate::action_id::Verb::AccountRename | crate::action_id::Verb::AccountModels)
-                    && id.extra.as_deref() == Some("codex") && !self.contains("provider_accounts")
+                    && id.extra.as_deref().is_some_and(|provider| provider != "claude") && !self.contains("provider_accounts")
                 || matches!(id.verb, crate::action_id::Verb::ProviderConnect | crate::action_id::Verb::AccountAdd)
                     && id.subject != "claude" && !self.contains("provider_accounts")
         });

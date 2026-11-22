@@ -183,6 +183,24 @@ final class ViewModelsTests: XCTestCase {
         }
     }
 
+    func testEveryProviderNamesItselfAndDecodesFromTheWire() throws {
+        XCTAssertEqual(try ["claude", "codex", "antigravity"].map { try JSONDecoder().decode(AccountProvider.self, from: Data("\"\($0)\"".utf8)).displayName }, ["Claude", "Codex", "Antigravity"])
+        XCTAssertThrowsError(try JSONDecoder().decode(AccountProvider.self, from: Data(#""future""#.utf8))) {
+            XCTAssertEqual(($0 as? ContractCodec.UnknownValue)?.kind, "future")
+        }
+    }
+
+    func testAnAntigravityAccountLinkKeepsItsProviderAndIsNeverReadAsClaudes() throws {
+        let json = #"{"kind":"local","local":{"kind":"account_sign_in","account":"work","command":"alondra accounts login work","provider":"antigravity","argv":["accounts","login","work"]}}"#
+        let link = try JSONDecoder().decode(Link.self, from: Data(json.utf8))
+        XCTAssertEqual(link, .local(local: .accountSignIn(account: "work", command: "alondra accounts login work", provider: .antigravity, argv: ["accounts", "login", "work"])))
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(link)) as? [String: Any])
+        XCTAssertEqual((encoded["local"] as? [String: Any])?["provider"] as? String, "antigravity")
+        XCTAssertEqual(try JSONDecoder().decode(Link.self, from: JSONEncoder().encode(link)), link)
+        let unknown = #"{"kind":"local","local":{"kind":"account_add","command":"x","provider":"future"}}"#
+        XCTAssertThrowsError(try JSONDecoder().decode(Link.self, from: Data(unknown.utf8)))
+    }
+
     func testRowActionsLinkedToAnOldDaemonsAccountSignInAreNotOffered() throws {
         let action = { (link: String) in
             #"{"label":"Sign in","style":"secondary","presentation":"button","options":[],"input":{"kind":"none"},"attachments":false,"enabled":true,"link":\#(link)}"#
