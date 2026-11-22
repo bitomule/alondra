@@ -23,10 +23,11 @@ public struct ReportRedactor {
 
     /// Itself when every token is safe, the safe tokens with each id, path or URL replaced when that
     /// is all it has, or one pseudonym for the whole of it.
-    public mutating func value(_ value: String, hint: ReportShapes.Kind) -> String {
+    public mutating func value(_ value: String, hint: ReportShapes.Kind, known: Set<String> = []) -> String {
         if ReportShapes.isISOTime(value) { return ReportShapes.utc(value) ?? pseudonym(.value, value) }
         let parts = ReportShapes.joinCardGroups(ReportShapes.split(value))
         let tokens = parts.compactMap { if case .token(let token) = $0 { token } else { nil } }
+        let vocabulary = vocabulary.union(known)
         guard tokens.allSatisfy({ ReportShapes.isSafe($0, vocabulary: vocabulary) || ReportShapes.kindOfShape($0) != nil
             || ReportShapes.isPrivateNumber($0) }) else {
             return pseudonym(ReportShapes.kindOfShape(value) ?? hint, value)
@@ -41,6 +42,12 @@ public struct ReportRedactor {
             }
         }
         return out
+    }
+
+    /// A field that holds a version (the app's own): its version-shaped tokens stay as they are, even
+    /// a triple that free text would take for the start of an address.
+    public mutating func versionField(_ value: String) -> String {
+        self.value(value, hint: .value, known: Set(ReportShapes.tokens(value).filter(ReportShapes.isVersion)))
     }
 
     private mutating func shaped(_ token: String) -> String {
