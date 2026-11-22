@@ -1049,6 +1049,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
         driver.sealed();
         let read = driver.domain.read();
         driver.awaiting = read.state().lifecycle_of(&task).ok()
+            .filter(|lifecycle| !lifecycle.held_by_pause())
             .and_then(|lifecycle| lifecycle.pending_inputs().first().map(|input| (*input).clone()));
         drop(read);
         if driver.awaiting.is_some() && driver.unopened()? {

@@ -390,6 +390,37 @@ async fn a_node_the_user_paused_closes_its_host_and_its_resume_goes_on_with_the_
     assert!(!lifecycle(&*slice.domain).host_released());
 }
 
+// 22 November: 65 hosts of releases before 0.3.65 stayed alive for days, each one of a node the user
+// had paused. Every daemon start adopted it again, since it rests on a host of the release before, and
+// the pause kept it from ever closing. A node paused on such a host must end up with no process, as
+// one paused on a host of this release does.
+#[cfg(feature = "real-hosts")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paused_node_adopted_on_a_host_of_the_release_before_gives_up_that_host() {
+    let slice = Slice::new();
+    enable(&slice);
+    let before = slice.release_before();
+    let mut driver = slice.launch_with_backend(&before, "Write the release notes", capabilities());
+    slice.settle(&mut driver);
+    let agent = driver.agent().clone();
+    let old_host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    slice.domain.admission().pause_by_user(&*slice.domain, &agent.0, alondra_core::now_millis()).unwrap();
+    drop(driver);
+    slice.domain.stop_sdk_owners();
+
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
+    assert_eq!(survivors(&old_host).len(), old_host.len(), "the daemon adopted the host of the release before");
+
+    look_after_the_wait(&restarted);
+    let mut changed = restarted.subscribe();
+    let gone = || survivors(&old_host).is_empty();
+    tokio::time::timeout(std::time::Duration::from_secs(60), changed.wait_for(|_| gone()))
+        .await.expect("the paused node kept the host of the release before").unwrap();
+    restarted.stop_sdk_owners();
+}
+
 // Codex: its thread resumes through `thread/resume`, as Claude's session through `--resume`.
 #[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
