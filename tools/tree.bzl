@@ -14,6 +14,7 @@ LOCAL_STATE = [
     ".musts/state.sqlite*",
     ".musts/.lock*",
     ".musts/evidence/**",
+    ".musts/ledger/**",
     ".musts/bep.json",
     ".bazelrc.local",
     ".bazelrc.local.*",

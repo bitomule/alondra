@@ -45,8 +45,8 @@ class RepoTreeExclusionsTest(unittest.TestCase):
         for name in [".musts/.lock", ".musts/.lock.owner", ".musts/state.sqlite-wal", ".musts/bep.json"]:
             self.assertTrue(excluded(self.root, name), name)
 
-    def test_checked_in_musts_files_are_not_excluded(self):
-        self.assertFalse(excluded(self.root, ".musts/ledger.lock.yaml"))
+    def test_the_validated_state_is_not_a_test_input(self):
+        self.assertTrue(excluded(self.root, ".musts/ledger/root%2Fapple-app-build"))
 
 
 if __name__ == "__main__":
