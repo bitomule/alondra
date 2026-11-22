@@ -301,6 +301,27 @@ fn a_thread_waiting_for_a_stream_holds_no_virtual_time() {
     });
 }
 
+/// A look at a stream that waits for nothing, because it asks for no time or finds the stream
+/// ready, keeps the thread working: a host closing at the instant that asked for it, whatever the
+/// look costs in real time, lands at that instant.
+#[test]
+fn a_look_at_a_stream_that_waits_for_nothing_keeps_the_thread_working() {
+    use std::io::Write as _;
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let thread = spawn_thread(move || {
+            let empty = crate::readable(&reader, Duration::ZERO).unwrap();
+            writer.write_all(b"x").unwrap();
+            let ready = crate::readable(&reader, HOUR).unwrap();
+            (empty, ready, crate::poll::WORKING_AFTER_POLL.with(|seen| seen.take()))
+        });
+        let (empty, ready, working) = thread.join().unwrap();
+        assert!(!empty && ready);
+        assert_eq!(working, vec![1, 1], "the thread kept working through each look");
+    });
+}
+
 #[test]
 fn no_pending_deadline_inside_the_window_means_the_advance_wakes_nobody() {
     let runtime = VirtualRuntime::new(EPOCH).unwrap();
