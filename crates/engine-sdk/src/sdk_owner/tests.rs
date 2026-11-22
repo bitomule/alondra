@@ -574,6 +574,43 @@ async fn an_sdk_node_is_told_once_about_its_unsaved_worktree_and_its_confirmatio
     assert!(!slice.domain.owns_sdk_host(&agent));
 }
 
+// On a loaded Mac, 2026-11-21: a task closed while its owner was handing the node an input. The
+// close asked the host to stop as the owner wrote the command, the host closed without reading it,
+// and the input's receipt stayed uncertain: nothing could prove whether Claude got it, so the
+// node's end was refused (`UnresolvedDispatch`) and the close failed. The close now lets that
+// handoff get its receipt first. The owner is held between recording the command and sending it
+// until the close waits for it, or until the host is gone, as the close used to leave it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_that_closes_while_its_node_is_handed_an_input_closes_at_once() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let node = Actor::Agent { agent_id: driver.agent().clone() };
+    let host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    let targets = vec![DeliveryTarget::Text { text: "The notes".into() }];
+    slice.run(&node, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
+    slice.run(&Actor::System, "tell", Command::TellNode { task_id: TASK.into(), text: "[From Alondra · 09:00] Thanks".into(), from_user: false, answers: None });
+    let (handing, handed) = std::sync::mpsc::channel();
+    driver.before_handoff = Some(Box::new(move |handoffs: &Handoffs| {
+        handing.send(()).unwrap();
+        while !handoffs.stop_waits() && host.iter().any(|process| alondra_process_group::alive(process).unwrap()) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }));
+    slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
+    handed.recv().unwrap();
+    slice.run(&node, "cleaned", Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
+    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
+    let state = slice.domain.state().unwrap();
+    let task = &state.tasks[&TaskId::from(TASK)];
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Done, Some(NodeEnd::Closed)), "the node's end is recorded at once");
+    let uncertain: i64 = slice.observer().query_row("SELECT count(*) FROM lifecycle_dispatches WHERE task_id=?1 AND status IN ('claimed','uncertain')", [TASK], |row| row.get(0)).unwrap();
+    assert_eq!(uncertain, 0, "the input was handed before its host stopped");
+}
+
 
 // The node pushes to its PR after it delivered: the GitHub observer takes the delivery back, and
 // the input that hand-back gives the task is what the node's Claude is told, once. Before, that

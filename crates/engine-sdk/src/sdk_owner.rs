@@ -289,6 +289,67 @@ pub struct Driver {
     pub refuse_offers: usize,
     pub(crate) fail_next_step: bool,
     pub(crate) panic_next_step: bool,
+    /// What this driver and whoever stops its owner agree on before a handoff to the host.
+    handoffs: Arc<Handoffs>,
+    /// Runs once a dispatch has recorded its command, just before the command goes to the host.
+    pub(crate) before_handoff: Option<Box<dyn FnOnce(&Handoffs) + Send>>,
+}
+
+/// What an owner's thread and whoever stops its host agree on. The thread hands an input or a
+/// control to the host only while nobody stops it, and a stop asks the host to end only once the
+/// handoff under way has its receipt. A host told to stop while the owner writes to it closes
+/// without reading the command; that command's receipt stays uncertain, nothing can prove whether
+/// Claude got it, and the task's execution cannot end.
+#[derive(Default)]
+pub struct Handoffs {
+    /// A holder that panics leaves it whole, so it is recovered: flags set or read.
+    state: Mutex<HandoffState>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct HandoffState {
+    stopping: bool,
+    handing: bool,
+    stop_waits: bool,
+}
+
+/// A handoff under way; it ends when dropped, a panic's unwinding included.
+struct Handing<'a>(&'a Handoffs);
+
+impl Drop for Handing<'_> {
+    fn drop(&mut self) {
+        self.0.state.lock_or_recover("the SDK handoffs").handing = false;
+        self.0.changed.notify_all();
+    }
+}
+
+impl Handoffs {
+    /// Begins a handoff, unless the owner is being stopped.
+    fn begin(&self) -> Option<Handing<'_>> {
+        let mut state = self.state.lock_or_recover("the SDK handoffs");
+        if state.stopping {
+            return None;
+        }
+        state.handing = true;
+        Some(Handing(self))
+    }
+
+    /// No handoff begins from now on, and the one under way ends first.
+    fn stop(&self) {
+        let mut state = self.state.lock_or_recover("the SDK handoffs");
+        state.stopping = true;
+        while state.handing {
+            state.stop_waits = true;
+            state = self.changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        state.stop_waits = false;
+    }
+
+    /// Whether a stop waits for the handoff under way to end.
+    pub(crate) fn stop_waits(&self) -> bool {
+        self.state.lock_or_recover("the SDK handoffs").stop_waits
+    }
 }
 
 /// Admits the execution, starts its host and hands it the launch: once this returns, the task
@@ -1702,7 +1763,7 @@ impl Driver {
 
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
         let pause = Mutex::new(PauseSubscription::new(&domain, &agent));
-        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, panic_next_step: false }
+        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None }
     }
 
     /// The runtime of the daemon that owns this host.
@@ -1756,6 +1817,11 @@ impl Driver {
     /// no SQL held, and records how the host answered. An interrupt whose turn or work already
     /// ended is revoked by its claim and never sent.
     fn control(&mut self, permit: ControlPermit) -> Result<(), Failed> {
+        let handoffs = Arc::clone(&self.handoffs);
+        let Some(_handing) = handoffs.begin() else {
+            self.controls.push_front(permit);
+            return Ok(());
+        };
         let directory=self.worker.state_directory();
         match self.domain.own(self.scope.clone(), |owner| owner.claim_control_for_identity(permit,directory)) {
             Ok((true, _)) => {}
@@ -1813,6 +1879,11 @@ impl Driver {
     /// Claims the dispatch, records the exact command under the owner, hands it to the host
     /// with no SQL held, and records how the handoff went.
     fn dispatch(&mut self, permit: DispatchPermit) -> Result<(), Failed> {
+        let handoffs = Arc::clone(&self.handoffs);
+        let Some(_handing) = handoffs.begin() else {
+            self.permits.push_front(permit);
+            return Ok(());
+        };
         let input = permit.input().clone();
         if !self.new_session && let Some(conversation) = &self.conversation
             && session_refresh::refresh(&self.domain, &self.task, self.worker.provider(), self.worker.state_directory(), conversation) {
@@ -1844,6 +1915,9 @@ impl Driver {
         }
         let command = self.sealed().commands.pop().ok_or_else(|| Failed::new("the command left no seal".into()))?;
         self.domain.engine().context_handed(&self.task, alondra_core::now_millis());
+        if let Some(hook) = self.before_handoff.take() {
+            hook(&handoffs);
+        }
         let handoff = self.submit(&command);
         if handoff == Handoff::Uncertain && self.worker.host_exited() {
             self.host_closed = true;
@@ -2360,9 +2434,11 @@ impl Driver {
             mark_stopped_by_alondra(self.worker.state_directory());
         }
         self.stop()?;
-        let (domain, task) = (Arc::clone(&self.domain), self.task.clone());
+        let (domain, task, handoffs) = (Arc::clone(&self.domain), self.task.clone(), Arc::clone(&self.handoffs));
         drop(self);
-        adopt(domain, backend, task, plugin)
+        let mut next = adopt(domain, backend, task, plugin)?;
+        next.handoffs = handoffs;
+        Ok(next)
     }
 
     /// Whether `SILENT_HOSTS` hosts in a row ended without their Claude showing it ran, in a
@@ -2516,6 +2592,8 @@ pub struct Owner {
     thread: Option<std::thread::JoinHandle<Result<(), Failed>>>,
     /// The daemon went as a crash takes it: the owner lets go of its host without stopping it.
     crashed: Arc<AtomicBool>,
+    /// Shared with the driver of each host the owner runs.
+    handoffs: Arc<Handoffs>,
 }
 
 impl Owner {
@@ -2536,6 +2614,7 @@ impl Owner {
         let ending = Arc::clone(&ended);
         let crashed = Arc::new(AtomicBool::new(false));
         let crashing = Arc::clone(&crashed);
+        let handoffs = Arc::clone(&driver.handoffs);
         let thread = alondra_core::clock::spawn_named_thread(Some(format!("sdk-owner-{}", driver.task)), move || {
             let told = || flag.load(Ordering::SeqCst);
             let mut lost_because = None;
@@ -2663,7 +2742,7 @@ impl Owner {
             stopped
         })
         .expect("spawning the SDK owner");
-        Self { stopped, ended, interrupt, release, domain, host, agent, state_directory, thread: Some(thread), crashed }
+        Self { stopped, ended, interrupt, release, domain, host, agent, state_directory, thread: Some(thread), crashed, handoffs }
     }
 
     /// Asks the owner to close its host once its task rests with nothing in it.
@@ -2700,9 +2779,10 @@ impl Owner {
         self.host.lock_or_recover("the SDK host stop").clone()
     }
 
-    /// Tells the owner to stop, asks its host to stop so a read blocked on it returns, and waits
-    /// until the owner has seen the host exit and its whole process group end. An error says the
-    /// group did not empty, or the owner could not see it end.
+    /// Tells the owner to stop, lets an input or control it is handing to the host get its receipt,
+    /// asks its host to stop so a read blocked on it returns, and waits until the owner has seen the
+    /// host exit and its whole process group end. An error says the group did not empty, or the
+    /// owner could not see it end.
     pub(crate) fn stop(&mut self) -> Result<(), Failed> {
         self.end()
     }
@@ -2728,6 +2808,7 @@ impl Owner {
         self.stopped.store(true, Ordering::SeqCst);
         mark_stopped_by_alondra(&self.state_directory);
         self.domain.seals.wake();
+        self.handoffs.stop();
         let interrupt = self.interrupt.load(Ordering::SeqCst);
         if let Some(host) = self.host.lock_or_recover("the SDK host stop").as_ref()
             && let Err(error) = if interrupt { host.request_after_interrupt() } else { host.request() }
