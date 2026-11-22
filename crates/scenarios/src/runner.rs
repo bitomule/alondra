@@ -237,7 +237,7 @@ async fn execute(
     let (thaw, frozen) = std::sync::mpsc::channel::<()>();
     let freeze = tokio::task::spawn_blocking(move || frozen.recv().ok());
     let budget = parse_duration(&scenario.max_virtual)?;
-    let home = tempfile::Builder::new().prefix("sc-").tempdir_in(short_root()).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
+    let home = tempfile::Builder::new().prefix("sc-").tempdir_in(short_root()?).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
     let invalid = |error: &dyn std::fmt::Display| ScenarioError::Invalid(error.to_string());
     let port = std::net::TcpListener::bind("127.0.0.1:0").and_then(|listener| listener.local_addr()).map_err(|e| invalid(&e))?.port();
     let mut config = alondra_core::config::Config::resolve(
@@ -408,12 +408,13 @@ fn runs_on_codex(scenario: &Scenario, task: &str) -> bool {
     scenario.steps.iter().any(|step| matches!(step, Step::CodexNode { task: named, .. } if named == task))
 }
 
-/// A folder short enough for a host's socket to live deep inside it.
-fn short_root() -> std::path::PathBuf {
-    let temporary = std::env::var_os("TMPDIR").map(std::path::PathBuf::from).and_then(|path| path.canonicalize().ok());
+/// The test's own folder short enough for a host's socket to live deep inside it, which the test
+/// wrapper makes: never a shared one.
+fn short_root() -> Result<std::path::PathBuf, ScenarioError> {
+    let temporary = std::env::var_os("ALONDRA_SHORT_TMPDIR").or_else(|| std::env::var_os("TMPDIR")).map(std::path::PathBuf::from).and_then(|path| path.canonicalize().ok());
     match temporary {
-        Some(root) if root.as_os_str().len() <= 32 => root,
-        _ => std::path::PathBuf::from("/tmp"),
+        Some(root) if root.as_os_str().len() <= 32 => Ok(root),
+        _ => Err(ScenarioError::Invalid("scenarios need a short temporary folder for host sockets: run them through Bazel, whose test wrapper makes one in ALONDRA_SHORT_TMPDIR".into())),
     }
 }
 

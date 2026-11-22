@@ -1274,6 +1274,17 @@ async fn a_node_whose_session_ends_after_its_pr_merged_is_closed_at_once_and_its
 }
 
 #[tokio::test]
+async fn closing_a_task_whose_pr_merged_deletes_its_local_branch_with_its_worktree() {
+    let rig = Rig::merged(None);
+    let (root, dir) = rig.with_worktree();
+    assert!(branch_exists(&root.join("repo"), "worktree-t"));
+    rig.session_ends();
+    rig.pass(T0).await;
+    assert!(!dir.exists());
+    assert!(!branch_exists(&root.join("repo"), "worktree-t"), "its pull request is merged: nothing is left to keep in the branch");
+}
+
+#[tokio::test]
 async fn a_node_whose_session_ends_during_its_work_after_the_merge_is_closed_and_its_task_is_done() {
     let rig = Rig::merged(Some("publish the release"));
     let (_root, dir) = rig.with_worktree();

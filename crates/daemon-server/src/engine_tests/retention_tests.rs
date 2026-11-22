@@ -43,3 +43,21 @@ fn shown(state: &DomainState) -> Vec<serde_json::Value> {
     }
     shown
 }
+
+#[test]
+fn the_hourly_retention_deletes_an_expired_result_and_keeps_a_recent_one() {
+    let fixture = Fixture::new();
+    let runtime = DomainRuntime::open_unwired_at(&fixture.0, &fixture.path()).unwrap();
+    let home = runtime.home().to_path_buf();
+    for task in ["t-expired", "t-recent"] {
+        std::fs::create_dir_all(home.join("files/results").join(task)).unwrap();
+        std::fs::write(home.join("files/results").join(task).join("result.md"), "report").unwrap();
+    }
+    let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(15 * 24 * 60 * 60);
+    std::fs::File::open(home.join("files/results/t-expired/result.md")).unwrap().set_modified(long_ago).unwrap();
+
+    crate::retention::remove_expired_files(&runtime).unwrap();
+
+    assert!(!home.join("files/results/t-expired").exists());
+    assert!(home.join("files/results/t-recent/result.md").exists());
+}

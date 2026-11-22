@@ -187,7 +187,7 @@ pub async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(Str
             log!("leaving the worktree {path} of {} to {heir}, which goes on working in it", task.id);
             WorktreeEnd::HandedOver
         } else {
-            match domain.ports().worktrees().release_recorded_worktree(Path::new(path), worktree.discard).await {
+            match domain.ports().worktrees().release_finished_worktree(Path::new(path), None, worktree.discard, domain.state()?.merged_pr(task).is_some()).await {
                 Ok(TaskWorktree::Removed { freed }) => {
                     log!("deleting the worktree {path} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_view_model::Lang::En));
                     WorktreeEnd::Removed

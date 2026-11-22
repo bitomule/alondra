@@ -123,6 +123,10 @@ pub trait Worktrees: Send + Sync {
     /// What a node would leave behind in its worktree.
     fn leftovers<'a>(&'a self, session_id: &'a str) -> Git<'a, Option<String>>;
     fn release_task_worktree<'a>(&'a self, dir: &'a Path, slug: &'a str, remove: bool) -> Git<'a, Result<TaskWorktree, String>>;
+    /// A finished task's worktree deleted like `release_task_worktree` (only the one named `slug`) or,
+    /// with no slug, like `release_recorded_worktree`; the branch `worktree-<name>` goes with it when
+    /// its pull request merged (`pr_merged`) or it has no commit of its own.
+    fn release_finished_worktree<'a>(&'a self, dir: &'a Path, slug: Option<&'a str>, give_up: bool, pr_merged: bool) -> Git<'a, Result<TaskWorktree, String>>;
     fn release_recorded_worktree<'a>(&'a self, dir: &'a Path, give_up: bool) -> Git<'a, Result<TaskWorktree, String>>;
     fn discard_worktree<'a>(&'a self, dir: &'a Path, keep_branch: bool) -> Git<'a, Result<TaskWorktree, String>>;
     /// Why the link `dir` is cannot be followed now, if it cannot.

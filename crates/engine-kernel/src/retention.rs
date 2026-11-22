@@ -14,7 +14,21 @@ pub async fn run(domain: Arc<DomainRuntime>) {
     loop {
         let pass = {
             let domain = domain.clone();
-            tokio::task::spawn_blocking(move || domain.retain(alondra_core::now_millis())).await
+            tokio::task::spawn_blocking(move || {
+                let expired = remove_expired_files(&domain);
+                (domain.retain(alondra_core::now_millis()), expired)
+            }).await
+        };
+        let pass = match pass {
+            Ok((retained, expired)) => {
+                match expired {
+                    Ok(removed) if removed.entries > 0 => log!("removed {} expired entries of the files folder, {} bytes", removed.entries, removed.bytes),
+                    Ok(_) => {}
+                    Err(error) => log!("could not sweep the files folder: {error}"),
+                }
+                Ok(retained)
+            }
+            Err(error) => Err(error),
         };
         match pass {
             Ok(Ok(retained)) => {
@@ -43,4 +57,12 @@ pub async fn run(domain: Arc<DomainRuntime>) {
         }
         clock::sleep(EVERY).await;
     }
+}
+
+/// Deletes what the files folder's retention rule lists as expired: the saved results and what cards
+/// showed, once their tasks and cards are done and their period is over.
+pub fn remove_expired_files(domain: &DomainRuntime) -> Result<crate::files_retention::Removed, String> {
+    let state = domain.state().map_err(|error| error.to_string())?;
+    let report = crate::files_retention::sweep(domain.home(), &state, clock::system_time());
+    Ok(crate::files_retention::remove_listed(domain.home(), &report))
 }

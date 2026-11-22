@@ -176,7 +176,7 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
     let dir = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir));
     if let Some(dir) = &dir { domain.engine().worktree_ready(dir).await?; }
     if let Some(dir) = dir.filter(|dir| domain.engine().may_handle_worktree(dir).is_ok() && domain.engine().worktree_heir(task, dir).is_ok_and(|heir| heir.is_none())) {
-        match domain.ports().worktrees().release_task_worktree(Path::new(&dir), &alondra_engine_ports::worktrees::slug(&task.id.0), true).await {
+        match domain.ports().worktrees().release_finished_worktree(Path::new(&dir), Some(&alondra_engine_ports::worktrees::slug(&task.id.0)), false, domain.state()?.merged_pr(task).is_some()).await {
             Ok(TaskWorktree::Unsaved(left)) => anyhow::bail!("the worktree of {} has work that is not saved: {left}", task.id),
             Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_view_model::Lang::En)),
             Ok(TaskWorktree::Unavailable(why)) => return Err(Unreachable(why).into()),
@@ -590,7 +590,7 @@ async fn finish_with_worktree(
     let Some(dir) = dir.filter(|dir| domain.engine().may_handle_worktree(dir).is_ok() && domain.engine().worktree_heir(task, dir).is_ok_and(|heir| heir.is_none())) else {
         return finish(domain, &row, Some(agent), end);
     };
-    match domain.ports().worktrees().release_task_worktree(Path::new(&dir), &alondra_engine_ports::worktrees::slug(&task.id.0), true).await {
+    match domain.ports().worktrees().release_finished_worktree(Path::new(&dir), Some(&alondra_engine_ports::worktrees::slug(&task.id.0)), false, domain.state()?.merged_pr(task).is_some()).await {
         Ok(TaskWorktree::Unsaved(left)) => {
             let reason = format!("its session is closed, but its worktree has work that is not saved: {left}");
             failure(domain, timing, now, task, agent, row, &reason, (CloseStop::Unsaved, &left), cleanup)

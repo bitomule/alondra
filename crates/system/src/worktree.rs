@@ -665,6 +665,40 @@ pub async fn discard_worktree(dir: &Path, keep_branch: bool) -> Result<TaskWorkt
     Ok(released)
 }
 
+/// Deletes a finished task's worktree like `release_task_worktree` (only the one named `slug`) or, with
+/// no slug, like `release_recorded_worktree`, and with it the branch `worktree-<name>` Claude Code made
+/// for it when that branch has nothing left to keep: its pull request merged, or no commit of its own.
+pub async fn release_finished_worktree(dir: &Path, slug: Option<&str>, give_up: bool, pr_merged: bool) -> Result<TaskWorktree, String> {
+    let made_for_it = dir.file_name().and_then(|name| name.to_str()).map(|name| format!("worktree-{name}"));
+    let branch = branch_in(dir).await.filter(|branch| Some(branch) == made_for_it.as_ref());
+    let repository = git(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await
+        .and_then(|common| PathBuf::from(common).parent().map(Path::to_path_buf));
+    let released = match slug {
+        Some(slug) => release_task_worktree(dir, slug, true).await?,
+        None => release_recorded_worktree(dir, give_up).await?,
+    };
+    if let (TaskWorktree::Removed { .. }, Some(branch), Some(repository)) = (&released, branch, repository) {
+        delete_finished_branch(&repository, &branch, pr_merged).await;
+    }
+    Ok(released)
+}
+
+async fn delete_finished_branch(repository: &Path, branch: &str, pr_merged: bool) {
+    if !pr_merged && !holds_nothing_of_its_own(repository, branch).await {
+        return;
+    }
+    if git(repository, &["branch", "-D", branch]).await.is_none() {
+        log!("could not delete the branch {branch} of {}", repository.display());
+    }
+}
+
+async fn holds_nothing_of_its_own(repository: &Path, branch: &str) -> bool {
+    match local_default_branch(repository).await {
+        Some(default) => git(repository, &["merge-base", "--is-ancestor", branch, &format!("refs/heads/{default}")]).await.is_some(),
+        None => false,
+    }
+}
+
 async fn delete_saved_branch(repository: &Path, branch: &str) {
     let on_a_remote = git(repository, &["rev-list", "--count", branch, "--not", "--remotes"]).await.is_some_and(|count| count == "0");
     let in_default = match local_default_branch(repository).await {
@@ -990,6 +1024,37 @@ mod tests {
         assert_eq!(uncommitted_files_of_alondras_worktree(&root.join("repo")).await, Ok(None), "a main checkout is not an Alondra worktree");
         assert!(matches!(discard_worktree(&dir, false).await, Ok(TaskWorktree::Removed { .. })));
         assert_eq!(uncommitted_files_of_alondras_worktree(&dir).await, Ok(None), "a deleted one holds nothing");
+    }
+
+    async fn branch_remains(repository: &Path, branch: &str) -> bool {
+        git(repository, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).await.is_some()
+    }
+
+    #[tokio::test]
+    async fn closing_a_task_deletes_its_branch_when_its_pr_merged_and_keeps_one_with_commits_of_its_own_otherwise() {
+        let root = crate::test_support::Directory::new();
+        let repo = root.join("repo");
+        let merged = testing::task_worktree(&root, "t-merged");
+        let other_root = crate::test_support::Directory::new();
+        let open = testing::task_worktree(&other_root, "t-open");
+        assert!(matches!(release_finished_worktree(&open, Some("t-open"), false, false).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(branch_remains(&other_root.join("repo"), "worktree-t-open").await, "its commits are in no merged pull request");
+        assert!(matches!(release_finished_worktree(&merged, None, false, true).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(!branch_remains(&repo, "worktree-t-merged").await);
+    }
+
+    #[tokio::test]
+    async fn closing_a_task_deletes_its_branch_when_it_has_no_commit_of_its_own() {
+        let root = crate::test_support::Directory::new();
+        let repo = root.join("repo");
+        let dir = testing::task_worktree(&root, "t-empty");
+        let other_root = crate::test_support::Directory::new();
+        let other = testing::task_worktree(&other_root, "t-own");
+        testing::git(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
+        assert!(matches!(release_finished_worktree(&dir, Some("t-empty"), false, false).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(!branch_remains(&repo, "worktree-t-empty").await);
+        assert!(matches!(release_finished_worktree(&other, None, false, false).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(branch_remains(&other_root.join("repo"), "worktree-t-own").await);
     }
 
     #[tokio::test]

@@ -181,6 +181,9 @@ impl Worktrees for GitWorktrees {
     fn release_task_worktree<'a>(&'a self, dir: &'a Path, slug: &'a str, remove: bool) -> Git<'a, Result<TaskWorktree, String>> {
         Box::pin(worktree::release_task_worktree(dir, slug, remove))
     }
+    fn release_finished_worktree<'a>(&'a self, dir: &'a Path, slug: Option<&'a str>, give_up: bool, pr_merged: bool) -> Git<'a, Result<TaskWorktree, String>> {
+        Box::pin(worktree::release_finished_worktree(dir, slug, give_up, pr_merged))
+    }
     fn release_recorded_worktree<'a>(&'a self, dir: &'a Path, give_up: bool) -> Git<'a, Result<TaskWorktree, String>> {
         Box::pin(worktree::release_recorded_worktree(dir, give_up))
     }

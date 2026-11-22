@@ -26,6 +26,10 @@ until [ -s "{pid}" ]; do sleep 0.01; done
 """
 
 
+def without_test_tmpdir():
+    return {name: value for name, value in os.environ.items() if name != "TEST_TMPDIR"}
+
+
 def running(pid):
     try:
         os.kill(pid, 0)
@@ -57,7 +61,8 @@ class BazelTestTmpdirTest(unittest.TestCase):
         self.addCleanup(remove, self.root)
 
     def environment(self, execs="own-sandbox", **more):
-        environment = dict(os.environ, BAZEL_TEST_TMPDIR_ROOT=str(self.root), TEST_EXECS=execs, TEST_TARGET="//crates/a:a_test")
+        environment = without_test_tmpdir()
+        environment.update(BAZEL_TEST_TMPDIR_ROOT=str(self.root), TEST_EXECS=execs, TEST_TARGET="//crates/a:a_test")
         environment.update(more)
         return environment
 
@@ -82,6 +87,19 @@ class BazelTestTmpdirTest(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_the_tests_tmpdir_is_the_one_bazel_gives_it_and_only_sockets_get_a_short_folder(self):
+        given = self.root / "given"
+        given.mkdir()
+        report = self.root / "report"
+        script = f'echo "$TMPDIR" > {report}; echo "$ALONDRA_SHORT_TMPDIR" >> {report}; touch "$TMPDIR/left-behind" "$ALONDRA_SHORT_TMPDIR/also"'
+        result = subprocess.run([str(wrapper), "/bin/sh", "-c", script], env=self.environment(TEST_TMPDIR=str(given)))
+        self.assertEqual(result.returncode, 0)
+        used, short = report.read_text().split()
+        self.assertEqual(Path(used), given.resolve(), "fixtures go in the folder Bazel manages")
+        self.assertTrue(short.startswith((str(self.root), str(self.root.resolve()))), short)
+        self.assertFalse(Path(short).exists(), "the short folder goes with the test")
+        self.assertTrue(given.is_dir() and not list(given.iterdir()), "what the test left in Bazel's folder goes too")
 
     @GUARDED
     def test_a_test_that_runs_an_undeclared_program_fails_and_says_how_to_see_it(self):
@@ -181,7 +199,7 @@ class BazelTestTmpdirTest(unittest.TestCase):
     def test_a_native_executable_keeps_its_arguments_and_exit_code(self):
         result = subprocess.run(
             [str(wrapper), "test", "one", "=", "two"],
-            env=dict(os.environ, BAZEL_TEST_TMPDIR_ROOT=str(self.root)),
+            env=dict(without_test_tmpdir(), BAZEL_TEST_TMPDIR_ROOT=str(self.root)),
             capture_output=True,
         )
         self.assertEqual(result.returncode, 1)
@@ -193,7 +211,7 @@ class BazelTestTmpdirTest(unittest.TestCase):
 
     @unittest.skipUnless(Path("/usr/bin/xcrun").exists(), "xcrun is macOS only")
     def test_a_tool_found_through_xcrun_from_a_new_home_caches_inside_the_test(self):
-        env = {key: value for key, value in os.environ.items() if key != "xcrun_db"}
+        env = {key: value for key, value in os.environ.items() if key not in ("xcrun_db", "TEST_TMPDIR")}
         env["BAZEL_TEST_TMPDIR_ROOT"] = str(self.root)
         script = 'mkdir "$TMPDIR/home" && HOME="$TMPDIR/home" /usr/bin/git --version >/dev/null && test -s "$TMPDIR/xcrun_db"'
         result = subprocess.run([str(wrapper), "/bin/sh", "-c", script], env=env)
@@ -207,7 +225,7 @@ class BazelTestTmpdirTest(unittest.TestCase):
     def test_a_test_cut_by_sigterm_leaves_nothing(self):
         started = self.root.parent / f"{self.root.name}.started"
         self.addCleanup(started.unlink, missing_ok=True)
-        env = dict(os.environ, BAZEL_TEST_TMPDIR_ROOT=str(self.root))
+        env = dict(without_test_tmpdir(), BAZEL_TEST_TMPDIR_ROOT=str(self.root))
         script = f'{READ_ONLY_TREE} && touch "{started}" && exec sleep 600'
         process = subprocess.Popen([str(wrapper), "/bin/sh", "-c", script], env=env)
         self.addCleanup(process.kill)
@@ -241,7 +259,7 @@ class BazelTestTmpdirTest(unittest.TestCase):
 
     def test_a_host_of_a_test_cut_by_sigterm_ends(self):
         pid, script = self.left_running("host.lock")
-        env = dict(os.environ, BAZEL_TEST_TMPDIR_ROOT=str(self.root))
+        env = dict(without_test_tmpdir(), BAZEL_TEST_TMPDIR_ROOT=str(self.root))
         process = subprocess.Popen([str(wrapper), "/bin/sh", "-c", script + "exec sleep 600"], env=env)
         self.addCleanup(process.kill)
         while not pid.exists() or not pid.read_text():

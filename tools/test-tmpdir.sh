@@ -1,11 +1,12 @@
 #!/bin/bash
 # Wraps every `bazel test` (`test --run_under` in tools/test-wrapper.bazelrc, which a user bazelrc
-# with its own --run_under imports last): the test gets its own short TMPDIR, removed when it exits, fails
-# or is cut, so tests that never clean their temp dirs cannot fill the disk, nor xcrun's lookup
-# cache. Short and under /tmp
-# because macOS caps a unix socket path at 104 bytes. Whatever still runs from that folder when the
-# test ends dies with its process group, and a passing test that left an Alondra host (a process
-# whose stdin is a host.lock, the host's ownership lock) fails.
+# with its own --run_under imports last). The test's TMPDIR is the TEST_TMPDIR Bazel gives it, emptied
+# when the test exits, fails or is cut, so tests that never clean their temp dirs cannot fill the disk.
+# macOS caps a unix socket path at 104 bytes and TEST_TMPDIR is longer than that leaves room for, so
+# the wrapper also makes a private short folder, ALONDRA_SHORT_TMPDIR, only for the fixtures that bind
+# a socket (and for xcrun's lookup cache), removed with the test too. Whatever still runs from either
+# folder when the test ends dies with its process group, and a passing test that left an Alondra host
+# (a process whose stdin is a host.lock, the host's ownership lock) fails.
 #
 # The test may execute only itself and the interpreters of its script: every other program it runs is
 # listed in its target's TEST_EXECS, which the guard below turns into a kernel sandbox that refuses
@@ -226,6 +227,11 @@ remove() {
     rm -rf "$1"
 }
 
+empty() {
+    chmod -R u+w "$1" 2>/dev/null
+    find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+}
+
 for stale in "$root"/bt.*; do
     owner=$(cat "$stale/.owner" 2>/dev/null) || continue
     case $owner in '' | *[!0-9]*) continue ;; esac
@@ -235,6 +241,12 @@ done
 dir=$(mktemp -d "$root/bt.XXXXXX") || exec python3 -c "$launcher" "$@"
 echo $$ >"$dir/.owner"
 export TMPDIR="$dir"
+export ALONDRA_SHORT_TMPDIR="$dir"
+scratch=
+if [ -n "$TEST_TMPDIR" ] && [ -d "$TEST_TMPDIR" ]; then
+    scratch=$(cd "$TEST_TMPDIR" && pwd -P)
+    export TMPDIR="$scratch"
+fi
 # xcrun, and the /usr/bin shims of git, python3 and the other developer tools, add an entry to
 # their lookup cache for every new HOME and rewrite the whole cache each time. Tests give every
 # fixture its own HOME: in the user's temp folder that cache grew past 50 MB, and a tool killed
@@ -244,9 +256,9 @@ export ALONDRA_TEST_GUARDED="$dir/.guarded"
 
 left_running() {
     PATH=$PATH:/usr/sbin lsof -a -u "$(id -u)" -d cwd,0 -Fpn 2>/dev/null |
-        awk -v inside="$(cd "$dir" && pwd -P)/" '
+        awk -v inside="$(cd "$dir" && pwd -P)/" -v scratch="${scratch:+$scratch/}" '
             /^p/ { pid = substr($0, 2) }
-            /^n/ && index(substr($0, 2), inside) == 1 { print pid, ($0 ~ /\/host\.lock$/ ? "host" : "process") }'
+            /^n/ && (index(substr($0, 2), inside) == 1 || (scratch != "" && index(substr($0, 2), scratch) == 1)) { print pid, ($0 ~ /\/host\.lock$/ ? "host" : "process") }'
 }
 
 end_left_running() {
@@ -277,6 +289,7 @@ finish() {
     end_left_running || [ "$status" != 0 ] || status=1
     [ ! -e "$dir/.guarded" ] || [ "$status" = 0 ] || echo "exec guard: this test may run only its own executable, the interpreter of its script and the programs its target lists in TEST_EXECS (docs/running-tests.md, \"Programs a test runs\"). Any other program fails with \"Operation not permitted\"; to see which, run the test again while \`log stream --style compact --predicate 'sender == \"Sandbox\" AND eventMessage CONTAINS \"process-exec\"'\` runs." >&2
     remove "$dir"
+    [ -z "$scratch" ] || empty "$scratch"
     exit "$status"
 }
 trap 'finish $?' EXIT
