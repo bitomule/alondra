@@ -4,6 +4,7 @@ pub mod artifact_digest;
 pub mod changes;
 pub mod clock;
 pub mod daemon_log;
+pub mod durability;
 pub mod exit;
 pub mod locks;
 pub mod runtime_mutex;

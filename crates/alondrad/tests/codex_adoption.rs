@@ -26,6 +26,7 @@ mod engine_tests {
     pub use crate::engine_fixtures::owner::SdkLaunches;
 
     pub fn wired() {
+        alondra_foundation::durability::relax();
         alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
         alondra_daemon_engine::wiring::open_with(crate::open_at);
     }

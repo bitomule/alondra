@@ -79,7 +79,7 @@ fn write_private(path: &Path, value: &Value) -> Result<()> {
     let next = path.with_extension("next");
     let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&next)?;
     file.write_all(&serde_json::to_vec(value)?)?;
-    file.sync_all()?;
+    alondra_foundation::durability::flush(&file)?;
     std::fs::rename(&next, path)?;
     Ok(())
 }

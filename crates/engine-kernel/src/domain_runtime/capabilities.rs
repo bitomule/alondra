@@ -113,7 +113,7 @@ pub(super) fn persist(home: &Path, authority: &Authority) -> Result<()> {
         alondra_daemon_engine_model::faults::write(home, "capability_write")?;
         file.write_all(&serde_json::to_vec(&registry)?)?;
         alondra_daemon_engine_model::faults::write(home, "capability_sync")?;
-        file.sync_all()?;
+        alondra_foundation::durability::flush(&file)?;
         alondra_daemon_engine_model::faults::write(home, "capability_rename")?;
         std::fs::rename(&next, home.join(FILE))
     })();
@@ -122,7 +122,7 @@ pub(super) fn persist(home: &Path, authority: &Authority) -> Result<()> {
     }
     written.with_context(|| format!("writing {}", home.join(FILE).display()))?;
     alondra_daemon_engine_model::faults::write(home, "capability_directory_sync")?;
-    File::open(home)?.sync_all()?;
+    alondra_foundation::durability::flush(&File::open(home)?)?;
     Ok(())
 }
 

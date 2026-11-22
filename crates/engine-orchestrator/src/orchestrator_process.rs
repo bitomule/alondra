@@ -87,11 +87,11 @@ impl ProcessOwner {
             injected.write("owner_write")?;
             file.write_all(&serde_json::to_vec(&owner)?)?;
             injected.write("owner_sync")?;
-            file.sync_all()?;
+            alondra_foundation::durability::flush(&file)?;
             injected.write("owner_rename")?;
             std::fs::rename(&temporary, directory.join("owner.json"))?;
             injected.write("owner_directory_sync")?;
-            std::fs::File::open(directory)?.sync_all()?;
+            alondra_foundation::durability::flush(&std::fs::File::open(directory)?)?;
             Ok(())
         })();
         if written.is_err() { let _ = std::fs::remove_file(&temporary); }

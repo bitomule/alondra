@@ -638,6 +638,7 @@ mod engine {
     /// Opens every runtime the engine's fixtures open on this thread as the daemon does, with the gate
     /// of a test.
     pub fn wired() {
+        alondra_foundation::durability::relax();
         alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
         alondra_daemon_engine::wiring::open_with(open_at);
     }
