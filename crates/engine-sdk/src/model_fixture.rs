@@ -148,12 +148,17 @@ pub struct ModelHosts {
     pub hosts: Arc<InProcessHosts>,
     model: std::sync::OnceLock<ClaudeModel>,
     state: crate::test_support::Directory,
+    /// Beside this path Claude writes the plans it asks about, as the fake native Claude does
+    /// beside its capture.
+    pub capture: PathBuf,
 }
 
 #[cfg(feature = "whole-engine")]
 impl Default for ModelHosts {
     fn default() -> Self {
-        Self { hosts: Arc::default(), model: std::sync::OnceLock::new(), state: crate::test_support::Directory::for_unix_socket() }
+        let state = crate::test_support::Directory::for_unix_socket();
+        let capture = state.join("capture");
+        Self { hosts: Arc::default(), model: std::sync::OnceLock::new(), state, capture }
     }
 }
 
@@ -169,6 +174,7 @@ impl crate::engine_fixtures::owner::Hosts for ModelHosts {
     fn backend(&mut self, home: &Path) -> crate::sdk_backend::SdkBackend {
         let model = ClaudeModel::new(home, Arc::default());
         model.set_turns(Turns::Answered);
+        model.set_capture(&self.capture);
         self.hosts.set_serve(model.clone());
         let probe = model.clone();
         self.hosts.set_probe(move |run| probe.probe(run));
@@ -189,11 +195,16 @@ impl crate::engine_fixtures::owner::Hosts for ModelHosts {
     }
 
     fn controls(&self) -> Vec<Value> {
-        panic!("the model keeps no control requests: this test runs on real hosts")
+        self.model().controls()
     }
 
     fn decisions(&self) -> Vec<Value> {
-        panic!("the model keeps no decisions: this test runs on real hosts")
+        self.model().decisions()
+    }
+
+    fn kill(&self, driver: &crate::sdk_owner::Driver) {
+        let group = driver.worker.host_group().expect("the driver has a host");
+        self.model().kill_process(u32::try_from(group).expect("a host's number is positive"));
     }
 }
 

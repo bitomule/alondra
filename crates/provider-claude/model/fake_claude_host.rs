@@ -12,7 +12,7 @@
 //! or a process a test started for each host.
 
 use alondra_agent_protocol::{
-    Action, Attach, Attached, Body, Challenge, Command, Decision, Fence, Frame, FramedReader, FramedWriter, Hello, PROTOCOL_VERSION, command_digest,
+    Action, Attach, Attached, Body, Challenge, Command, Decision, DecisionKind, Fence, Frame, FramedReader, FramedWriter, Hello, PROTOCOL_VERSION, command_digest,
     host_proof, verify_owner_proof,
 };
 use alondra_engine_doubles::agent_host::{Serve, Served, Stop};
@@ -36,6 +36,16 @@ const CAPABILITIES: &[&str] = &[
 
 /// The SDK's own list of what it reports, as the host's contract test keeps it.
 const SDK_ERRORS: &str = include_str!("../../agent-protocol/fixtures/sdk-errors.json");
+
+/// The models Claude offers to switch to, as the repository's fake native Claude lists them.
+const OFFERED_MODELS: &[&str] = &["fixture-model"];
+
+/// Claude's tool for Alondra's questions, served by the Alondra plugin.
+const ALONDRA_TOOL: &str = "mcp__plugin_alondra_alondra__ask";
+const ALONDRA_SERVER: &str = "plugin:alondra:alondra";
+const FIXTURE_PLAN: &str = "# Fixture plan\n\n- [ ] Change the fixture\n- [ ] Test the fixture";
+/// What the SDK answers Claude for a request no answer reached.
+const CANCELLED: &str = "Permission request cancelled";
 
 /// The exit of a process SIGKILL ended.
 const KILLED: i32 = 9;
@@ -161,6 +171,14 @@ struct Shared {
     prompts: Mutex<Vec<String>>,
     /// The prompts each native session took, across the hosts that ran it.
     sessions: Mutex<BTreeMap<String, usize>>,
+    /// What each native Claude got for each decision it asked for, as the fake native Claude
+    /// records it.
+    decisions: Mutex<Vec<Value>>,
+    /// Every control request the native Claudes got, as the SDK sent it.
+    controls: Mutex<Vec<Value>>,
+    /// Beside this path Claude writes the plan it asks about, as the fake native Claude does
+    /// beside its capture.
+    capture: Mutex<Option<PathBuf>>,
 }
 
 pub struct StartupProbeGate(ClaudeModel);
@@ -225,6 +243,24 @@ struct HostState {
     first_written: Option<u64>,
     /// What the daemon answered each permission Claude asked, by request: `allow` or `deny`.
     answers: BTreeMap<String, String>,
+    /// The decisions Claude waits on, by request.
+    asked: BTreeMap<String, Asked>,
+    /// How many decisions this host's Claude asked for: each names its request and tool use.
+    decisions: u64,
+}
+
+/// A decision Claude asked for and waits on: what the host announced, under the cursor that
+/// announced it, and the inputs of the turn it holds.
+struct Asked {
+    kind: DecisionKind,
+    tool: Option<String>,
+    tool_use_id: Option<String>,
+    payload: serde_json::Map<String, Value>,
+    epoch: u64,
+    taken: Vec<String>,
+    /// Claude ends the turn once it has the answer, as the fake native Claude does; a turn the test
+    /// plays goes on until the test ends it.
+    concludes: bool,
 }
 
 #[derive(Deserialize)]
@@ -352,7 +388,26 @@ impl ClaudeModel {
             starts: Mutex::default(),
             prompts: Mutex::default(),
             sessions: Mutex::default(),
+            decisions: Mutex::default(),
+            controls: Mutex::default(),
+            capture: Mutex::default(),
         }))
+    }
+
+    /// Claude writes each plan it asks about beside `capture`.
+    pub fn set_capture(&self, capture: &Path) {
+        *lock(&self.0.capture) = Some(capture.to_path_buf());
+    }
+
+    /// What each native Claude got for each decision it asked for, in order: the request, whether
+    /// Claude had withdrawn it, and the SDK's response.
+    pub fn decisions(&self) -> Vec<Value> {
+        lock(&self.0.decisions).clone()
+    }
+
+    /// Every control request the native Claudes got, in order.
+    pub fn controls(&self) -> Vec<Value> {
+        lock(&self.0.controls).clone()
     }
 
     /// How Claude takes the prompts of every host from now on.
@@ -503,6 +558,13 @@ impl ClaudeModel {
     /// The process of `task`'s host dies, with whatever it started.
     pub fn kill(&self, task: &str) {
         if let Some(host) = self.running(task) {
+            host.end(false);
+        }
+    }
+
+    /// The host whose process goes by `process_id` dies, with whatever it started.
+    pub fn kill_process(&self, process_id: u32) {
+        if let Some(host) = self.host(process_id) {
             host.end(false);
         }
     }
@@ -681,8 +743,12 @@ impl ClaudeModel {
             return Err(format!("the node of {task} has no turn running to ask from"));
         }
         let tool_use = format!("toolu_{}", self.uuid().replace('-', ""));
-        self.event(&host, &mut state, json!({"type": "decision_requested", "request_id": request, "tool_use_id": tool_use, "kind": "permission",
-            "payload": {"tool": "Bash", "input": {"command": command}, "request": {}, "cwd": cwd}}));
+        let payload = json!({"tool": "Bash", "input": {"command": command}, "request": {}, "cwd": cwd});
+        self.event(&host, &mut state, json!({"type": "decision_requested", "request_id": request, "tool_use_id": tool_use, "kind": "permission", "payload": payload}));
+        let Value::Object(payload) = payload else { return Ok(()) };
+        let asked = Asked { kind: DecisionKind::Permission, tool: Some("Bash".into()), tool_use_id: Some(tool_use), payload, epoch: state.cursor,
+            taken: state.turn.clone().unwrap_or_default(), concludes: false };
+        state.asked.insert(request.to_owned(), asked);
         Ok(())
     }
 
@@ -740,6 +806,9 @@ impl ClaudeModel {
                 "model": "fixture", "cwd": host.bootstrap.native.cwd, "tools": ["Bash"], "mcp_servers": [], "permissionMode": "default", "slash_commands": [],
                 "output_style": "default", "skills": [], "plugins": [], "apiKeySource": "none"}));
         }
+        if taken.len() == 1 && let Some(said) = decision_scenario(prompt) {
+            return self.decide(host, state, taken, said);
+        }
         if prompt == "consume-and-hold" {
             let consumed = self.uuid();
             self.emit(host, state, "message", json!({"type": "assistant", "session_id": session, "uuid": consumed, "parent_tool_use_id": null,
@@ -754,13 +823,150 @@ impl ClaudeModel {
             self.emit(host, state, "task", json!({"type": "system", "subtype": "task_notification", "task_id": "fixture-background", "status": "completed",
                 "output_file": "fixture-output", "summary": "Fixture work completed", "uuid": notification, "session_id": session}));
         }
+        self.conclude(host, state, &input, &taken);
+    }
+
+    /// The turn that took `taken` ends with a result for `input`, and every input it took completes.
+    fn conclude(&self, host: &Host, state: &mut HostState, input: &str, taken: &[String]) {
+        let session = host.session.to_lowercase();
         let result = self.uuid();
         self.emit(host, state, "result", json!({"type": "result", "subtype": "success", "is_error": false, "session_id": session, "uuid": result,
             "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
             "user_message_uuid": input, "result": "Fixture result", "terminal_reason": "completed", "user_message_uuids": taken}));
-        for input in &taken {
+        for input in taken {
             let completed = self.uuid();
             self.emit(host, state, "status", json!({"type": "command_lifecycle", "command_uuid": input, "state": "completed", "session_id": session, "uuid": completed}));
+        }
+    }
+
+    /// Claude calls a tool its rules do not allow, or an MCP server asks for input, as the fake
+    /// native Claude does for `decide:<scenario> <argument>`; the host asks the daemon and the
+    /// turn waits for the answer.
+    fn decide(&self, host: &Host, state: &mut HostState, taken: Vec<String>, said: &str) {
+        let (scenario, argument) = said.split_once(' ').unwrap_or((said, ""));
+        let (scenario, cwd) = match scenario.strip_prefix("bash@") {
+            Some(folder) => ("bash", folder.to_owned()),
+            None => (scenario, std::fs::canonicalize(&host.bootstrap.native.cwd).unwrap_or_else(|_| host.bootstrap.native.cwd.clone()).display().to_string()),
+        };
+        state.decisions += 1;
+        let (request_id, tool_use_id) = (format!("decision-{}", state.decisions), format!("toolu_fixture_{}", state.decisions));
+        let question = json!({"question": "Which fixture color?", "header": "Color", "multiSelect": false,
+            "options": [{"label": "Red", "description": "The red fixture"}, {"label": "Blue", "description": "The blue fixture"}]});
+        let sizes = json!({"question": "Which fixture sizes?", "header": "Sizes", "multiSelect": true,
+            "options": [{"label": "Small", "description": "The small fixture"}, {"label": "Large", "description": "The large fixture"}]});
+        let mut request = serde_json::Map::new();
+        let mut called = None;
+        let (kind, tool, input) = match scenario {
+            "bash" => (DecisionKind::Permission, "Bash", json!({"command": if argument.is_empty() { "echo fixture" } else { argument }})),
+            "question" => (DecisionKind::Question, "AskUserQuestion", json!({"questions": [question]})),
+            "questions" => (DecisionKind::Question, "AskUserQuestion", json!({"questions": [question, sizes]})),
+            "plan" | "unwritten-plan" => {
+                called = Some(json!({}));
+                if scenario == "unwritten-plan" {
+                    (DecisionKind::Plan, "ExitPlanMode", json!({}))
+                } else {
+                    let plan = if argument.is_empty() { FIXTURE_PLAN } else { argument };
+                    let file = format!("{}.plan.md", self.capture().display());
+                    if let Err(error) = std::fs::write(&file, plan) {
+                        self.troubled(format!("the plan of {}: {error}", host.task));
+                    }
+                    (DecisionKind::Plan, "ExitPlanMode", json!({"plan": plan, "planFilePath": file}))
+                }
+            }
+            "alondra" | "imitation" => {
+                let source = if scenario == "alondra" { "plugin" } else { "user" };
+                request.insert("mcpServer".into(), json!({"name": ALONDRA_SERVER, "source": source}));
+                (DecisionKind::Permission, ALONDRA_TOOL, json!({"need": "Fixture need"}))
+            }
+            "elicitation" => (DecisionKind::Elicitation, "", Value::Null),
+            other => return self.troubled(format!("the model asks no decision {other:?}")),
+        };
+        let input_id = taken.last().cloned().unwrap_or_default();
+        let session = host.session.to_lowercase();
+        let tool = (kind != DecisionKind::Elicitation).then(|| tool.to_owned());
+        if let Some(tool) = &tool {
+            let consumed = self.uuid();
+            let block = json!({"type": "tool_use", "id": tool_use_id, "name": tool, "input": called.unwrap_or_else(|| input.clone())});
+            self.emit(host, state, "message", json!({"type": "assistant", "session_id": session, "uuid": consumed, "parent_tool_use_id": null,
+                "message": {"id": format!("msg_{consumed}"), "type": "message", "role": "assistant", "model": "fixture", "content": [block],
+                    "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}},
+                "user_message_uuid": input_id, "user_message_uuids": taken}));
+            request.insert("toolUseID".into(), json!(tool_use_id));
+        }
+        request.insert("requestId".into(), json!(request_id));
+        let payload = match &tool {
+            Some(tool) => json!({"tool": tool, "input": input, "request": request, "cwd": cwd}),
+            None => json!({"serverName": "fixture-server", "message": "Which fixture name?", "mode": "form",
+                "requestedSchema": {"type": "object", "properties": {"name": {"type": "string", "title": "Name"}}, "required": ["name"]}}),
+        };
+        let mut observation = json!({"type": "decision_requested", "request_id": request_id, "kind": kind, "payload": payload});
+        let tool_use_id = tool.is_some().then_some(tool_use_id);
+        if let Some(id) = &tool_use_id {
+            observation["tool_use_id"] = json!(id);
+        }
+        self.event(host, state, observation);
+        let Value::Object(payload) = payload else { return };
+        let asked = Asked { kind, tool, tool_use_id, payload, epoch: state.cursor, taken: taken.clone(), concludes: true };
+        state.asked.insert(request_id, asked);
+        state.turn = Some(taken);
+    }
+
+    /// Where Claude writes what the fake native Claude writes beside its capture.
+    fn capture(&self) -> PathBuf {
+        lock(&self.0.capture).clone().unwrap_or_else(|| self.0.home.join("fake-claude-capture"))
+    }
+
+    /// The daemon's answer reaches the request Claude waits on under exactly this identity, as the
+    /// host applies it; the SDK hands Claude its response and Claude goes on with its turn.
+    fn respond(&self, host: &Host, state: &mut HostState, respond: Responded) -> Result<(), &'static str> {
+        let Responded { request_id, epoch, kind, tool_use_id, decision, asked } = respond;
+        let waiting = state.asked.get(&request_id).ok_or("Claude is not waiting for this request")?;
+        let tool_decision = matches!(decision, Decision::Allow { .. } | Decision::Deny { .. });
+        if waiting.epoch != epoch || waiting.kind != kind || waiting.tool_use_id != tool_use_id || waiting.payload != asked || (kind != DecisionKind::Elicitation) != tool_decision {
+            return Err("Claude is not waiting for this request");
+        }
+        let waiting = state.asked.remove(&request_id).ok_or("Claude is not waiting for this request")?;
+        state.answers.insert(request_id.clone(), match decision { Decision::Allow { .. } => "allow", Decision::Deny { .. } => "deny", _ => "other" }.to_owned());
+        let response = sdk_response(&waiting, Some(decision));
+        self.decided(&waiting, &request_id, false, response.clone());
+        self.event(host, state, json!({"type": "decision_settled", "request_id": request_id, "epoch": epoch, "outcome": "answered"}));
+        if !waiting.concludes {
+            return Ok(());
+        }
+        if let Some(tool_use_id) = &waiting.tool_use_id {
+            let allowed = response["behavior"] == "allow";
+            let content = if allowed { response["updatedInput"].to_string() } else { response["message"].as_str().unwrap_or("denied").to_owned() };
+            let uuid = self.uuid();
+            self.emit(host, state, "message", json!({"type": "user", "session_id": host.session.to_lowercase(), "uuid": uuid, "parent_tool_use_id": null,
+                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "is_error": !allowed, "content": content}]}}));
+        }
+        if state.turn.as_ref() == Some(&waiting.taken) && state.asked.is_empty() {
+            state.turn = None;
+            let input = waiting.taken.last().cloned().unwrap_or_default();
+            self.conclude(host, state, &input, &waiting.taken);
+        }
+        Ok(())
+    }
+
+    /// The native Claude got `response` for `request_id`, which it had withdrawn when `cancelled`.
+    fn decided(&self, asked: &Asked, request_id: &str, cancelled: bool, response: Value) {
+        let mut record = json!({"request_id": request_id, "subtype": if asked.tool.is_some() { "can_use_tool" } else { "elicitation" },
+            "cancelled": cancelled, "outcome": "success", "response": response});
+        if let (Some(tool), Some(tool_use_id)) = (&asked.tool, &asked.tool_use_id) {
+            record["tool_name"] = json!(tool);
+            record["tool_use_id"] = json!(tool_use_id);
+        }
+        lock(&self.0.decisions).push(record);
+    }
+
+    /// Claude withdraws every decision it waits on: the SDK answers each as cancelled and the host
+    /// settles it so.
+    fn withdraw(&self, host: &Host, state: &mut HostState, answered: bool) {
+        for (request_id, asked) in std::mem::take(&mut state.asked) {
+            if answered {
+                self.decided(&asked, &request_id, true, sdk_response(&asked, None));
+            }
+            self.event(host, state, json!({"type": "decision_settled", "request_id": request_id, "epoch": asked.epoch, "outcome": "cancelled"}));
         }
     }
 
@@ -900,27 +1106,58 @@ impl ClaudeModel {
             Ok(digest) => digest,
             Err(error) => return self.troubled(format!("a command the daemon sent has no digest: {error}")),
         };
-        let receipt = json!({"protocol_version": PROTOCOL_VERSION, "body": {"type": "receipt", "fence": host.bootstrap.fence, "execution": host.bootstrap.execution,
-            "command_id": id, "command_sha256": digest, "outcome": {"status": "accepted", "phase": "applied"}}});
-        let receipt: Frame = match serde_json::from_value(receipt) {
-            Ok(receipt) => receipt,
-            Err(error) => return self.troubled(format!("the host wrote a receipt that is not a frame: {error}")),
+        let receipt = |outcome: Value| -> Option<Frame> {
+            let receipt = json!({"protocol_version": PROTOCOL_VERSION, "body": {"type": "receipt", "fence": host.bootstrap.fence, "execution": host.bootstrap.execution,
+                "command_id": id, "command_sha256": digest, "outcome": outcome}});
+            serde_json::from_value(receipt).map_err(|error| self.troubled(format!("the host wrote a receipt that is not a frame: {error}"))).ok()
         };
-        state.receipts.insert(id, receipt.clone());
-        send(state, &receipt);
-        self.tick();
+        let applied = json!({"status": "accepted", "phase": "applied"});
+        let answered = |state: &mut HostState, outcome: Result<(), (&str, &str)>| {
+            let outcome = match outcome {
+                Ok(()) => applied.clone(),
+                Err((code, message)) => json!({"status": "rejected", "code": code, "message": message}),
+            };
+            if let Some(receipt) = receipt(outcome) {
+                state.receipts.insert(id.clone(), receipt.clone());
+                send(state, &receipt);
+                self.tick();
+            }
+        };
+        match command.action {
+            Action::Respond { request_id, epoch, kind, tool_use_id, decision, asked } => {
+                let outcome = self.respond(host, state, Responded { request_id: request_id.0, epoch, kind, tool_use_id, decision, asked });
+                return answered(state, outcome.map_err(|message| ("stale_request", message)));
+            }
+            Action::SetModel { model } => {
+                if !OFFERED_MODELS.contains(&model.as_str()) {
+                    return answered(state, Err(("unsupported_model", "Claude does not offer this model")));
+                }
+                lock(&self.0.controls).push(json!({"subtype": "set_model", "model": model}));
+                return answered(state, Ok(()));
+            }
+            Action::SetPermissionMode { mode } => {
+                let mode = match mode {
+                    alondra_agent_protocol::PermissionMode::Default => "default",
+                    alondra_agent_protocol::PermissionMode::Plan => "plan",
+                    alondra_agent_protocol::PermissionMode::DontAsk => "dontAsk",
+                };
+                lock(&self.0.controls).push(json!({"subtype": "set_permission_mode", "mode": mode}));
+                return answered(state, Ok(()));
+            }
+            Action::McpStatus => {
+                lock(&self.0.controls).push(json!({"subtype": "mcp_status"}));
+                self.emit(host, state, "control_result", json!({"control": "mcp_status", "command_id": id, "servers": [{"name": "fixture", "status": "connected"}]}));
+                return answered(state, Ok(()));
+            }
+            _ => answered(state, Ok(())),
+        }
         match command.action {
             Action::Start { input_id, prompt, .. } | Action::Offer { input_id, prompt } => self.offered(host, state, input_id.to_string(), prompt),
-            Action::Respond { request_id, epoch, decision, .. } => {
-                let answer = match decision {
-                    Decision::Allow { .. } => "allow",
-                    Decision::Deny { .. } => "deny",
-                    _ => "other",
-                };
-                state.answers.insert(request_id.0.clone(), answer.to_owned());
-                self.event(host, state, json!({"type": "decision_settled", "request_id": request_id.0, "epoch": epoch, "outcome": "answered"}));
-            }
             Action::Interrupt | Action::ForceStop | Action::Close => {
+                if matches!(command.action, Action::Interrupt) {
+                    lock(&self.0.controls).push(json!({"subtype": "interrupt"}));
+                }
+                self.withdraw(host, state, matches!(command.action, Action::Interrupt));
                 if state.turn.is_some() {
                     let taken = state.turn.take().unwrap_or_default();
                     let result = self.uuid();
@@ -977,6 +1214,48 @@ impl ClaudeModel {
         lock(&self.0.leaks).push(what.clone());
         Err(io::Error::other(format!("the model runs no {what}")))
     }
+}
+
+/// The daemon's answer to a decision, with the request it names as the domain kept it.
+struct Responded {
+    request_id: String,
+    epoch: u64,
+    kind: DecisionKind,
+    tool_use_id: Option<String>,
+    decision: Decision,
+    asked: serde_json::Map<String, Value>,
+}
+
+/// What a prompt asks the fake native Claude to decide: `decide:<scenario> <argument>`, also as
+/// the user's words relayed with `[From <who>] `.
+fn decision_scenario(prompt: &str) -> Option<&str> {
+    let said = if prompt.starts_with("[From ") { prompt.split_once("] ")?.1 } else { prompt };
+    said.strip_prefix("decide:")
+}
+
+/// The response the SDK hands Claude for `asked`: the decision as the host turns it into the SDK's
+/// result, or a cancellation when no answer reached it.
+fn sdk_response(asked: &Asked, decision: Option<Decision>) -> Value {
+    if asked.kind == DecisionKind::Elicitation {
+        return match decision {
+            Some(Decision::Accept { content: Some(content) }) => json!({"action": "accept", "content": content}),
+            Some(Decision::Accept { content: None }) => json!({"action": "accept"}),
+            Some(Decision::Decline {}) => json!({"action": "decline"}),
+            _ => json!({"action": "cancel"}),
+        };
+    }
+    let mut response = match decision {
+        Some(Decision::Allow { updated_input }) => json!({"behavior": "allow", "updatedInput": updated_input}),
+        Some(Decision::Deny { message }) => json!({"behavior": "deny", "message": message}),
+        _ => json!({"behavior": "deny", "message": CANCELLED}),
+    };
+    if asked.kind == DecisionKind::Plan && response["behavior"] == "allow" {
+        response["updatedPermissions"] = json!([{"type": "setMode", "mode": "auto", "destination": "session"}]);
+    }
+    if let Some(tool_use_id) = &asked.tool_use_id {
+        response["toolUseID"] = json!(tool_use_id);
+    }
+    response
 }
 
 fn send(state: &mut HostState, frame: &Frame) {

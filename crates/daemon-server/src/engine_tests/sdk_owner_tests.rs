@@ -639,7 +639,7 @@ async fn an_accepted_pr_that_turns_conflicting_after_its_host_died_reaches_a_hos
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     accepted_then_conflicting(&slice, &mut driver).await;
-    kill_host(&driver);
+    slice.kill_host(&driver);
     drop(driver);
     slice.domain.enable_sdk(slice.backend.clone());
     let mut changed = slice.domain.subscribe();

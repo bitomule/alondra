@@ -8,6 +8,8 @@ mod fixture_controller;
 mod turns;
 #[path = "host_cases/arguments_tests.rs"]
 mod arguments;
+#[path = "host_cases/decisions_tests.rs"]
+mod decisions;
 
 use fixture_controller::WorkerController;
 use super::*;
@@ -99,6 +101,10 @@ fn under_test(directory: &Path, home: &Path) -> UnderTest {
 struct Launched {
     observations: Vec<String>,
     arguments: Vec<String>,
+    /// Each decision the host asked the daemon for: its kind, tool use and payload.
+    decisions: Vec<Value>,
+    /// The folder the native Claude worked in.
+    cwd: PathBuf,
 }
 
 fn private_directory(path: &Path) {
@@ -185,16 +191,21 @@ fn launch(prompt: &str, worker: Option<WorkerProfile>) -> Launched {
     }
     assert!(reached, "the turn reached no result");
     drop(controller);
-    let observations = received.lock().unwrap().iter().filter_map(|batch: &OrderedObservation| {
+    let events: Vec<Observation> = received.lock().unwrap().iter().filter_map(|batch: &OrderedObservation| {
         let mut framed = u32::try_from(batch.evidence.len()).unwrap().to_be_bytes().to_vec();
         framed.extend_from_slice(&batch.evidence);
         let frame = FramedReader::new(Cursor::new(framed)).read_received().unwrap().unwrap();
         match &frame.frame().body {
-            Body::Event(event) => summary(&event.observation),
+            Body::Event(event) => Some(event.observation.clone()),
             _ => None,
         }
     }).collect();
-    Launched { observations, arguments: (under.arguments)() }
+    let decisions = events.iter().filter_map(|observation| match observation {
+        Observation::DecisionRequested { kind, tool_use_id, payload, .. } => Some(serde_json::json!({"kind": kind, "tool_use_id": tool_use_id, "payload": payload})),
+        _ => None,
+    }).collect();
+    let observations = events.iter().filter_map(summary).collect();
+    Launched { observations, arguments: (under.arguments)(), decisions, cwd: cwd.canonicalize().unwrap() }
 }
 
 /// The real adapter, recording each batch it hands the controller and stopping its host when the

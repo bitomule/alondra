@@ -732,8 +732,8 @@ Measured with `edit_bench`, one run each on the shared Mac under load (load aver
   Claude, read back from its capture files) in `engine_sdk_host_test`, `daemon_server_test` and
   `codex_adoption_process_test`; `model_fixture::ModelHosts` (the doubled hosts of `engine-doubles`
   playing the Claude host model) in `engine_sdk_engine_test`. What a test reads of the hosts (the
-  starts, the prompts, the control requests and the decisions) goes through the trait `Hosts`; the
-  model does not keep control requests or decisions yet, and says so when a test asks.
+  starts, the prompts, the control requests and the decisions) goes through the trait `Hosts`, and
+  so does killing a test's host (`Slice::kill_host`).
 - A test that passes on the model is `#[cfg(not(feature = "real-hosts"))]` and runs only in
   `engine_sdk_engine_test`; one that needs the real host, kills its process group or follows a
   scripted scenario of the fake native Claude is `#[cfg(feature = "real-hosts")]` and stays in
@@ -757,6 +757,49 @@ Counts and times, `bazel test` on the shared Mac:
 
 `//tools:test_catalog compare` over `//crates/engine-sdk/...`, `//crates/daemon-server/...` and
 `codex_adoption_process_test`: 1305 kept, 62 now also listed in `engine_sdk_engine_test`, none lost.
+
+## Decisions, controls and dead hosts on the model (phase 6, part 2, 2026-11-22)
+
+The Claude host model (`crates/provider-claude/model/fake_claude_host.rs`) now plays what kept 39
+more of the owner's tests on real hosts:
+
+- **Decisions.** A prompt `decide:<scenario> <argument>`, also relayed as `[From <who>] decide:…`,
+  makes Claude call a tool its rules do not allow (`bash`, `bash@<folder>`, `question`,
+  `questions`, `plan`, `unwritten-plan`, `alondra`, `imitation`) or an MCP server ask for input
+  (`elicitation`), as the fake native Claude does. The host asks the daemon with the payload the
+  real host sends (`{tool, input, request, cwd}`, or the server's form) and the turn waits. A
+  `respond` reaches only the request pending under exactly its identity (epoch, kind, tool use,
+  payload), else its receipt is `stale_request`; the SDK's response to Claude (the host's
+  `permissionResult`, `planResult` and `elicitationResult`, with the SDK's `toolUseID`) is kept as
+  the fake keeps it, and the turn ends. An interrupt withdraws what Claude waits on: each request
+  settles `cancelled` and Claude gets `Permission request cancelled`.
+- **Controls.** `interrupt`, `set_model` (refused with `unsupported_model` for a model Claude does
+  not offer), `set_permission_mode` and `mcp_status` (with its `control_result`) are kept as the
+  SDK sends them.
+- **Dead hosts.** `Hosts::kill` kills the host's process group on real hosts and ends the doubled
+  host on the model (`ClaudeModel::kill_process`), with no `/bin/kill`.
+
+The shared behaviour cases gain a family, `host_cases/decisions_tests.rs`, run by `sdk_worker_test`
+against the real Node host with the fake native Claude and by `claude_host_model_test` against the
+model: the payload of a permission, a question, a plan, Alondra's tool and a server's form must be
+the same on both. Removing `requestId` from the model's request fails the permission case on the
+model and not on the real host.
+
+39 tests moved (decisions 24, controls 6, killed hosts 9); 6 that compiled on the model still
+fail there and stay: they need a process group (`cancelling_an_sdk_task_mid_turn…`), the
+`…unread` scenario, a plan Claude asks in a turn of its own, or what an ended host's journal held.
+Four that kill a host also hold its prompts with `HOLDING_NATIVE`, a script only real hosts run.
+
+| Target | Before (main at 6e73fadf5) | After |
+|---|---:|---:|
+| `engine_sdk_engine_test` | 293 tests | 332 tests, 11.0 s |
+| `engine_sdk_host_test` | 248 tests, 123 s | 209 tests, 82.0 s |
+
+`//tools:test_catalog compare` over `//crates/engine-sdk/...`, `//crates/daemon-server/...`,
+`codex_adoption_process_test` and `//crates/provider-claude/...`: 1650 kept, 49 new (the 39 that
+moved, now listed in `engine_sdk_engine_test`, and the 5 decision cases in each of the two case
+targets), none lost.
+
 
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 
