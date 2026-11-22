@@ -1,4 +1,0 @@
-load("//tools:tree.bzl", "repo_tree")
-exports_files(["package.json", "package-lock.json"], visibility = ["//tools:__pkg__"])
-
-repo_tree()
