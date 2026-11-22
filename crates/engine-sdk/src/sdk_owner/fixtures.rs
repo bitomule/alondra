@@ -172,6 +172,8 @@ pub trait Hosts: Default {
     fn controls(&self) -> Vec<serde_json::Value>;
     /// What the native Claudes got for each decision they asked for, in order.
     fn decisions(&self) -> Vec<serde_json::Value>;
+    /// The driver's host dies with every process it started, and is gone once this returns.
+    fn kill(&self, driver: &Driver);
 }
 
 /// The pinned Node host with the official SDK and the fake native Claude, which records what it gets
@@ -223,6 +225,21 @@ impl Hosts for ProcessHosts {
     fn decisions(&self) -> Vec<serde_json::Value> {
         self.recorded("decisions")
     }
+
+    fn kill(&self, driver: &Driver) {
+        kill_host(driver);
+    }
+}
+
+/// Kills the driver's whole host group and waits until each of its processes exited.
+pub fn kill_host(driver: &Driver) {
+    let group = driver.worker.host_group().unwrap();
+    let mut exits = alondra_process_group::Exits::new().unwrap();
+    for member in alondra_process_group::members(group).unwrap() {
+        exits.watch(&member).unwrap();
+    }
+    assert!(std::process::Command::new("/bin/kill").args(["-KILL", "--", &format!("-{group}")]).status().unwrap().success());
+    exits.wait().unwrap();
 }
 
 pub struct Slice<H: Hosts = crate::engine_tests::SliceHosts> {
@@ -623,18 +640,19 @@ pub fn sha256(text: &str) -> String {
     sha2::Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Kills the driver's whole host group and waits until each of its processes exited.
-pub fn kill_host(driver: &Driver) {
-    let group = driver.worker.host_group().unwrap();
-    let mut exits = alondra_process_group::Exits::new().unwrap();
-    for member in alondra_process_group::members(group).unwrap() {
-        exits.watch(&member).unwrap();
-    }
-    assert!(std::process::Command::new("/bin/kill").args(["-KILL", "--", &format!("-{group}")]).status().unwrap().success());
-    exits.wait().unwrap();
-}
-
 impl<H: Hosts> Slice<H> {
+    /// The driver's host dies with every process it started.
+    pub fn kill_host(&self, driver: &Driver) {
+        self.hosts.kill(driver);
+    }
+
+    /// The Mac goes down: the driver's host dies, its native Claude included, and the daemon with
+    /// them.
+    pub fn kill_host_and_daemon(&self, driver: Driver) {
+        self.hosts.kill(&driver);
+        drop(driver);
+    }
+
     /// Each native Claude the hosts started: its session, the session it resumed and how many
     /// prompts that session's transcript already held.
     pub fn starts(&self) -> Vec<serde_json::Value> {

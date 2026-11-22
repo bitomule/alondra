@@ -781,7 +781,7 @@ async fn codex_node_after_a_restart(meanwhile: impl FnOnce(&Slice)) -> (Slice, A
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
     while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
-    kill_host_and_daemon(driver);
+    slice.kill_host_and_daemon(driver);
     meanwhile(&slice);
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
@@ -823,7 +823,7 @@ fn an_unopened_codex_replacement_remains_unopened_after_reconciling_a_control() 
     configured(&slice, "hold");
     let mut driver = launch(&slice);
     while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
-    kill_host_and_daemon(driver);
+    slice.kill_host_and_daemon(driver);
     let mut replacement = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(replacement.worker.native_liveness().unwrap(), Some(alondra_provider_codex::NativeLiveness::NotStarted));
     slice.run(&system(), "cold-mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
@@ -903,7 +903,7 @@ fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken
     std::fs::write(&path, serde_json::to_vec(&backend).unwrap()).unwrap();
     let mut driver = launch(&slice);
     while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
-    kill_host_and_daemon(driver);
+    slice.kill_host_and_daemon(driver);
     let mut replacement = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     let bootstrap: serde_json::Value = serde_json::from_slice(&std::fs::read(replacement.worker.state_directory().join("host.lock")).unwrap()).unwrap();
     let base = bootstrap["journal_base"].as_u64().unwrap();
@@ -1131,7 +1131,7 @@ async fn a_codex_session_that_never_starts_is_relaunched_past_the_old_limit_with
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
     while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
-    kill_host_and_daemon(driver);
+    slice.kill_host_and_daemon(driver);
     for saved in std::fs::read_dir(slice.backend.state_root.join("native-threads")).unwrap() {
         std::fs::remove_file(saved.unwrap().path()).unwrap();
     }
@@ -1185,7 +1185,7 @@ async fn codex_node_restarted_with_its_folder(meanwhile: impl FnOnce(&Path)) -> 
     let mut driver = launch(&slice);
     while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let folder = driver.worker.state_directory().to_path_buf();
-    kill_host_and_daemon(driver);
+    slice.kill_host_and_daemon(driver);
     meanwhile(&folder);
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
@@ -1248,7 +1248,7 @@ fn a_codex_takeover_that_fails_after_launching_its_host_leaves_no_host_running()
     let mut driver = launch(&slice);
     while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let folder = driver.worker.state_directory().to_path_buf();
-    kill_host_and_daemon(driver);
+    slice.kill_host_and_daemon(driver);
     std::fs::rename(&folder, archive(&folder, "first")).unwrap();
     private_folder(&folder);
     private_file(&folder.join("native-auth-account.json"), br#"{"authMethod":"chatgpt","email":"another@example.test","workspaceId":"another-workspace"}"#);
