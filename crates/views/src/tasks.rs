@@ -119,39 +119,54 @@ enum Bucket {
 }
 
 fn bucket(request: &Request, tasks: &[&Task]) -> Bucket {
-    if request.cleared || (!tasks.is_empty() && tasks.iter().all(|task| task.archived)) {
+    if tasks.iter().any(|task| !task.state.terminal()) {
+        Bucket::Active
+    } else if request.cleared || (!tasks.is_empty() && tasks.iter().all(|task| task.archived)) {
         Bucket::Cleared
-    } else if request.closed || (!tasks.is_empty() && tasks.iter().all(|task| task.state.terminal())) {
+    } else if request.closed || !tasks.is_empty() {
         Bucket::Finished
     } else {
         Bucket::Active
     }
 }
 
-/// Where one task is listed: with its whole request when the request is completed; otherwise a task still
-/// under way stays with the active request and the ones that ended fold away at the bottom. A cleared task
-/// is in no list.
-fn task_bucket(task: &Task, request: Bucket) -> Bucket {
-    match request {
-        _ if task.archived => Bucket::Cleared,
-        Bucket::Active if task.state.terminal() => Bucket::Finished,
-        whole => whole,
+/// Where one task is listed. A task that has not ended is always in the active list, whatever its request
+/// says or whether it still has one: the list is total over open work. Ended tasks go with their whole request
+/// when it is completed, otherwise they fold away at the bottom, and a cleared one is in no list.
+fn task_bucket(task: &Task, request: Option<Bucket>) -> Bucket {
+    if !task.state.terminal() {
+        Bucket::Active
+    } else if task.archived || request == Some(Bucket::Cleared) {
+        Bucket::Cleared
+    } else {
+        Bucket::Finished
     }
+}
+
+fn bucket_of(task: &Task, buckets: &BTreeMap<&RequestId, Bucket>) -> Bucket {
+    task_bucket(task, buckets.get(&task.request_id).copied())
 }
 
 /// A message to the orchestrator is listed only once it made tasks: until then, and if it never does, it is
 /// in no section. A request answered without tasks is in none either: its card in the inbox holds the answer.
+/// A task whose request is missing still gets one, so its bucket never depends on a lookup that can fail.
 fn request_buckets(domain: &DomainState) -> BTreeMap<&RequestId, Bucket> {
     let mut tasks: BTreeMap<&RequestId, Vec<&Task>> = BTreeMap::new();
     for task in domain.tasks.values() {
         tasks.entry(&task.request_id).or_default().push(task);
     }
-    domain.requests.values()
+    let mut buckets: BTreeMap<&RequestId, Bucket> = domain.requests.values()
         .filter_map(|request| {
             let own = tasks.get(&request.id).map_or(&[][..], Vec::as_slice);
             (!own.is_empty() || !(request.message || request.answered())).then(|| (&request.id, bucket(request, own)))
         })
-        .collect()
+        .collect();
+    for (id, own) in &tasks {
+        if !domain.requests.contains_key(*id) {
+            buckets.insert(id, if own.iter().any(|task| !task.state.terminal()) { Bucket::Active } else { Bucket::Finished });
+        }
+    }
+    buckets
 }
 
 const TITLE_LIMIT: usize = 60;
@@ -188,7 +203,7 @@ impl<'a> Forest<'a> {
     fn new(domain: &'a DomainState, section: Bucket, buckets: &BTreeMap<&'a RequestId, Bucket>) -> Self {
         let mut by_request: BTreeMap<&RequestId, Vec<&Task>> = BTreeMap::new();
         for task in domain.tasks.values()
-            .filter(|task| buckets.get(&task.request_id).is_some_and(|whole| task_bucket(task, *whole) == section))
+            .filter(|task| bucket_of(task, buckets) == section)
         {
             by_request.entry(&task.request_id).or_default().push(task);
         }
@@ -336,7 +351,7 @@ fn request_state(request: &Request, tasks: &[&Task], context: &RenderContext<'_>
         t!(context.lang, "Withdrawn", "Retirada")
     } else if request.closed && without_tasks && request.answer.is_some() {
         t!(context.lang, "Answered", "Respondida")
-    } else if request.closed || (!without_tasks && tasks.iter().all(|task| task.state.terminal())) {
+    } else if tasks.iter().all(|task| task.state.terminal()) && (request.closed || !without_tasks) {
         t!(context.lang, "Finished", "Terminada")
     } else if without_tasks && orchestrator_asks(context) {
         t!(context.lang, "Waiting for your decision", "Esperando tu decisión")
@@ -578,7 +593,7 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
 
 fn listed_active<'a>(domain: &'a DomainState, buckets: &BTreeMap<&RequestId, Bucket>) -> Vec<&'a Task> {
     domain.tasks.values()
-        .filter(|task| buckets.get(&task.request_id).is_some_and(|whole| task_bucket(task, *whole) == Bucket::Active))
+        .filter(|task| bucket_of(task, buckets) == Bucket::Active)
         .collect()
 }
 

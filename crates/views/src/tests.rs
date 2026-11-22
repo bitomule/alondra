@@ -10647,3 +10647,60 @@ fn an_answer_on_its_way_to_the_node_reads_as_the_users_answer() {
     assert_eq!(line(Lang::Es), "En espera · Alondra le entrega tu respuesta");
     assert_eq!(line(Lang::En), "Waiting · Alondra delivers your answer to it");
 }
+
+const EVERY_TASK_STATE: [TaskState; 9] = [
+    TaskState::NotStarted, TaskState::Running, TaskState::NeedsYou, TaskState::AwaitingBlocker, TaskState::ForYourReview,
+    TaskState::WaitingDependency, TaskState::Closing, TaskState::Done, TaskState::Cancelled,
+];
+
+/// Every id the active list shows, depth first.
+fn active_ids(state: &DomainState, client: Client) -> Vec<String> {
+    active_rows(state, &LiveSnapshot::default(), client, Lang::En).into_iter().map(|(_, row)| row.id).collect()
+}
+
+/// Every open task is in exactly one block of the active list, whatever its state and whatever its request says
+/// (closed, cleared, a message, ending, even missing); an ended one is never in it.
+#[test]
+fn every_open_task_is_in_exactly_one_block_whatever_its_request_says() {
+    let mut wrong = Vec::new();
+    for task_state in EVERY_TASK_STATE {
+        for (closed, cleared, message, archived, ending, orphan) in (0..64u8).map(|bits| (
+            bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0, bits & 16 != 0, bits & 32 != 0)) {
+            let mut state = fixture();
+            state.interactions.clear();
+            let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+            task.state = task_state;
+            task.agent_id = Some("a-1".into());
+            task.final_presentation = None;
+            task.archived = archived;
+            task.ending = ending.then_some(alondra_domain_rules::TaskEnding::Cancelling);
+            let request = state.requests.get_mut(&"r-1".into()).unwrap();
+            (request.closed, request.cleared, request.message) = (closed, cleared, message);
+            if orphan { state.requests.clear(); }
+            let expected = usize::from(!task_state.terminal());
+            for client in [Client::Ios, Client::Mac, Client::Tui] {
+                let count = active_ids(&state, client).iter().filter(|id| *id == "t-1").count();
+                if count != expected {
+                    wrong.push(format!("{client:?} {task_state:?} closed={closed} cleared={cleared} message={message} archived={archived} ending={ending} orphan={orphan}: listed {count} times"));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{} misplaced:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// The task that disappeared from the Tasks list: running, its turn waiting for the user, a PR registered, and
+/// its request already closed because its earlier tasks had ended.
+#[test]
+fn a_running_task_waiting_for_the_user_under_a_closed_request_is_listed_as_working() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    (task.state, task.agent_id, task.final_presentation) = (TaskState::Running, Some("a-1".into()), None);
+    let request = state.requests.get_mut(&"r-1".into()).unwrap();
+    (request.closed, request.message) = (true, true);
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let (block, _) = active_row(&state, &LiveSnapshot::default(), client, Lang::En, "t-1");
+        assert!(block.starts_with("block:"), "{client:?}: {block}");
+    }
+}
