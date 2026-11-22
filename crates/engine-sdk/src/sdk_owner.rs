@@ -47,6 +47,10 @@ const DRIVER: &str = "claude-agent-sdk";
 /// How long the owner waits for the host before it looks again for a control to send: a quiet
 /// turn never holds back an interrupt.
 const WAKE: Duration = Duration::from_millis(250);
+/// How long a host handed an input may take to open its native session before another takes its
+/// place. Opening starts the native process, which a loaded Mac makes slow; it has nothing to do
+/// with the I/O timeout, which bounds one frame on the host's socket.
+const OPENING_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long the owner waits before each new host it puts in place of a replacement that ended
 /// without taking its input: a technical end never asks the user, and past the last wait every
 /// new host waits the last again, so a host that keeps failing is never relaunched in a loop.
@@ -664,7 +668,7 @@ pub fn start_bound(domain: Arc<dyn Runtime>, backend: &SdkBackend, launch: Launc
     } {
         return Err(Failed::new("the daemon died after the admission's commit".into()));
     }
-    let mut driver = Driver::new(domain, worker, scope, launch.task, agent, Duration::from_secs(backend.io_timeout_seconds));
+    let mut driver = Driver::new(domain, worker, scope, launch.task, agent);
     driver.conversation = Some(session_refresh::Conversation { native_environment: backend.native_environment.clone(), directory: launch.directory.clone() });
     driver.new_session = start_kind(continuation.as_ref()) != StartKind::Resumed;
     let mut sealed = driver.sealed();
@@ -866,7 +870,7 @@ pub(crate) fn launch_admitted(domain: Arc<dyn Runtime>, backend: &SdkBackend, ta
     domain.take_seals(&task);
     worker.install_owner(grant, adapter_state).map_err(adapter("starting the SDK host"))?;
     unadmitted.admitted();
-    let mut driver = Driver::new(domain, worker, scope, task.clone(), agent, Duration::from_secs(backend.io_timeout_seconds));
+    let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
     driver.conversation = Some(session_refresh::Conversation { native_environment: backend.native_environment.clone(), directory: adoption.directory.clone() });
     driver.new_session = true;
     driver.log_host("started, as its admission's first host");
@@ -1025,7 +1029,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
         if worker.runs_another_release() {
             log!("the live SDK host of {task} runs the release before: it goes on, and once the node rests a host of this release takes its place");
         }
-        let mut driver = Driver::new(domain, worker, scope, task.clone(), agent, Duration::from_secs(backend.io_timeout_seconds));
+        let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
         driver.conversation = Some(session_refresh::Conversation { native_environment: on_account.native_environment.clone(), directory: adoption.directory.clone() });
         if let Some(checkpoint)=codex_checkpoint{driver.domain.engine().restore_codex_scope(&driver.task,&driver.agent,&checkpoint);}
         driver.log_host("was adopted");
@@ -1148,7 +1152,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
         return Err(end_launched(&*domain, &directory,failed));
     }
     unadmitted.admitted();
-    let mut driver = Driver::new(domain, worker, scope, task, agent, Duration::from_secs(backend.io_timeout_seconds));
+    let mut driver = Driver::new(domain, worker, scope, task, agent);
     driver.conversation = Some(session_refresh::Conversation { native_environment: on_account.native_environment.clone(), directory: adoption.directory.clone() });
     driver.new_session = !resume;
     driver.replacement = true;
@@ -1762,9 +1766,9 @@ impl Driver {
         }
     }
 
-    fn new(domain: Arc<dyn Runtime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
+    fn new(domain: Arc<dyn Runtime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
         let pause = Mutex::new(PauseSubscription::new(&*domain, &agent));
-        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None }
+        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None }
     }
 
     /// The runtime of the daemon that owns this host.
@@ -2292,6 +2296,11 @@ impl Driver {
         }
         self.sealed();
         if self.opening_overdue(now)? {
+            // What the host already wrote may be its Claude opening the session: an owner that
+            // looks again only past the deadline reads it before it gives the host up.
+            if self.worker.readable(Duration::ZERO).unwrap_or(false) {
+                return self.observe().map(drop);
+            }
             log!("the SDK host of {} did not open its Claude session within {} s of its input: another host takes its place", self.task, self.opening_timeout.as_secs());
             return Err(Failed::new("the host did not open its Claude session in time".into()));
         }

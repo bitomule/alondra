@@ -3837,16 +3837,43 @@ fn a_host_whose_claude_never_opens_the_session_is_replaced_once_its_deadline_pas
         resumed.step(&|| false).unwrap();
     }
     assert!(resumed.waits_for_host(), "the host took the mission");
-    let opening = Duration::from_secs(slice.backend.io_timeout_seconds);
+    let opening = resumed.opening_timeout;
     resumed.step_at(&|| false, Instant::now()).unwrap();
     assert!(!resumed.host_to_replace(), "nothing is replaced before the deadline");
-    assert!(resumed.step_at(&|| false, Instant::now() + opening).is_err(), "past the deadline the host is stuck");
+    let late = Instant::now() + opening;
+    while resumed.worker.readable(Duration::ZERO).unwrap() {
+        resumed.step_at(&|| false, late).unwrap();
+    }
+    assert!(resumed.step_at(&|| false, late).is_err(), "past the deadline, with nothing of its host left to read, the host is stuck");
     assert!(resumed.host_to_replace());
     let mut recovered = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
     std::fs::copy(&fake, &slice.backend.native).unwrap();
     slice.settle(&mut recovered);
     mission_then_message(&slice, &restarted);
     recovered.stop().unwrap();
+}
+
+// On a loaded Mac the owner may look again only once the opening deadline has passed, while its
+// host already wrote that its Claude opened the session. The owner reads that before it judges the
+// host: the session goes on in the same host.
+#[cfg(not(feature = "real-hosts"))]
+#[test]
+fn a_session_its_host_opened_before_the_owner_looked_again_is_not_given_up() {
+    let slice = Slice::new();
+    let mut driver = slice.launch();
+    while driver.pending_permits() > 0 {
+        driver.step(&|| false).unwrap();
+    }
+    let late = Instant::now() + driver.opening_timeout;
+    while lifecycle(&*slice.domain).resource() == Some(alondra_domain::ResourceEvidence::Reserved) {
+        while !driver.worker.readable(WAKE).unwrap() {}
+        driver.step_at(&|| false, late).unwrap();
+    }
+    slice.settle(&mut driver);
+    assert!(!driver.host_to_replace(), "the host that opened the session stays");
+    assert_eq!(slice.starts().len(), 1, "no other host started");
+    assert_eq!(slice.prompts(), ["Write the release notes"]);
+    driver.stop().unwrap();
 }
 
 // The task of the report: after the daemon restarted, the first input to the new host of a session

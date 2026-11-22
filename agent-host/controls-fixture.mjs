@@ -10,12 +10,16 @@ const config = loadBootstrap(fileURLToPath(import.meta.url));
 const declared = process.env.FIXTURE_HOST_CAPABILITIES;
 const hooks = declared === undefined ? {} : { capabilities: declared.split(',').filter(Boolean) };
 const refusal = config.native.env.FIXTURE_CONTROL_REFUSAL;
-// The Mac sleeps for as long as the test writes in this file: this process is frozen, so its
-// monotonic clock stays where it was while its wall clock moves on by that much.
+// The Mac sleeps for as long as the test writes in this file: this process is frozen, and its
+// wall clock and Node's monotonic one move on by that much, as they do on macOS. Its CPUs count
+// nothing meanwhile.
 const slept = config.native.env.FIXTURE_SLEPT_FILE;
 if (slept) {
+  const asleep = () => (existsSync(slept) ? Number(readFileSync(slept, 'utf8')) : 0);
   const wall = Date.now;
-  Date.now = () => wall() + (existsSync(slept) ? Number(readFileSync(slept, 'utf8')) : 0);
+  Date.now = () => wall() + asleep();
+  const monotonic = process.hrtime.bigint;
+  process.hrtime.bigint = () => monotonic() + BigInt(asleep()) * 1_000_000n;
 }
 const host = refusal ? new OwnedHost(config, (configuration) => {
   const session = new Session(configuration);

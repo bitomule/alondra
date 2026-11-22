@@ -147,7 +147,8 @@ try {
     const launch = await owner.command({ type: 'start', cwd: host.config.native.cwd, input_id: input(1), prompt: 'written before the sleep' }, { deadline_ms: Date.now() + 30000 });
     assert.deepEqual(launch.outcome, { status: 'accepted', phase: 'offered' }, host.stderr());
     await sdk(owner, 'result');
-    const late = owner.command({ type: 'mcp_status' }, { deadline_ms: Date.now() - 1 });
+    // The host counts awake time in its CPUs' ticks: a second late is well beyond their resolution.
+    const late = owner.command({ type: 'mcp_status' }, { deadline_ms: Date.now() - 1000 });
     await assert.rejects(late, /lane closed before expected frame/, 'a command late in the time the Mac was awake is still refused');
   }
   console.log('Host controls: each declared control reaches Claude with its receipt; refusals have no effect; a force stop ends a Claude that ignores its interrupt; a command written before the Mac slept is not late');
