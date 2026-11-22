@@ -7,7 +7,7 @@ port_crate(
     srcs = ["src/lib.rs"],
     crate_name = "alondra_provider_contract",
     version = "0.1.0",
-    test_visibility = ["//crates/provider-conformance:__pkg__"],
+    test_visibility = ["//crates/engine-doubles:__pkg__", "//crates/provider-conformance:__pkg__"],
     deps = ["//crates/foundation:foundation"],
 )
 

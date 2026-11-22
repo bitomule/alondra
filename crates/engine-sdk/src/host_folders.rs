@@ -223,7 +223,7 @@ pub fn task_closed(domain: &DomainRuntime, task: &TaskId, owned: Owned<'_>) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "whole-engine")))]
 mod tests {
     use super::*;
     use crate::test_support::Directory;

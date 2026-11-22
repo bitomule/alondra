@@ -103,11 +103,8 @@ def normalized(text):
     return " ".join(text.split())
 
 
-TEST_ONLY = (
-    "#[cfg(test)]",
-    '#[cfg(all(test, feature = "real-hosts"))]',
-    '#[cfg(all(test, not(feature = "real-hosts")))]',
-)
+# `#[cfg(test)]`, and `#[cfg(all(test, ...))]` for the items only some test targets compile.
+TEST_ONLY = re.compile(r"#\[cfg\((?:test|all\(test,[^\]]*\))\)\]")
 
 
 def without_cfg_test(text):
@@ -115,11 +112,10 @@ def without_cfg_test(text):
     out = list(text)
     i = 0
     while True:
-        found = [(at, len(marker)) for marker in TEST_ONLY if (at := text.find(marker, i)) >= 0]
+        found = TEST_ONLY.search(text, i)
         if not found:
             return "".join(out)
-        i, length = min(found)
-        j = i + length
+        i, j = found.start(), found.end()
         depth, in_string, escaped = 0, False, False
         while j < len(text):
             c = text[j]

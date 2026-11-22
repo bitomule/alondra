@@ -36,7 +36,10 @@ FIXTURES = [
     "src/sdk_owner/untaken_fixtures.rs",
 ]
 
-TEST_ONLY = FIXTURES + ["src/model_fixture.rs"]
+TEST_ONLY = FIXTURES + [
+    "src/domain_schedule_runner/fixture.rs",
+    "src/model_fixture.rs",
+]
 
 filegroup(
     name = "fixtures",
@@ -60,17 +63,22 @@ application_crate(
     ],
 )
 
+# What every test target links: the doubles of the engine's other pieces and the store they open.
 TEST_HOOKS_DEPS = [
     "//crates/codex-protocol:codex_protocol",
-    "//crates/daemon-engine:daemon_engine",
     "//crates/daemon-engine-machine:daemon_engine_machine",
     "//crates/daemon-engine-model:daemon_engine_model",
     "//crates/store-sqlite:store_sqlite",
     "//crates/daemon-support:daemon_support",
-    "//crates/engine-admission:engine_admission",
     "//crates/engine-doubles:engine_doubles",
     "//crates/engine-github:engine_github",
     "//crates/engine-kernel:engine_kernel",
+]
+
+# The rest of the engine, for the tests that open it whole (the feature whole-engine).
+WHOLE_ENGINE_DEPS = [
+    "//crates/daemon-engine:daemon_engine",
+    "//crates/engine-admission:engine_admission",
 ]
 
 SDK_TEST_DATA = [
@@ -104,21 +112,40 @@ SDK_TEST_COMPILE_DATA = [
     "//fixtures/domain-v2:acceptance.json",
 ]
 
-# The SDK's tests run on the doubled hosts of engine-doubles, which the Claude host model plays:
-# no host starts and no host executable is an input; the only program they run is the git the
-# close asks about a worktree after a failed `claude rm`. It never carries a binary of the root:
-# they link every crate, so an edit anywhere would rerun these tests.
+# The SDK's own tests: its pieces on a runtime whose other pieces are the doubles of
+# engine-doubles, with the doubled hosts the Claude host model plays; they run no program. It links
+# neither daemon-engine nor engine-admission (tools/bazel/crate_layers_test.py), so an edit of those
+# does not rerun it.
 low_opt_rust_test(
     name = "engine_sdk_test",
     size = "medium",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = SDK_TEST_COMPILE_DATA,
+    crate_name = "alondra_engine_sdk",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    env = {"HOME": "."},
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/provider-claude:claude_host_model"] + TEST_HOOKS_DEPS,
+)
+
+# The tests that open the whole engine on the doubled hosts: the engine's own tests that live here,
+# the automatic launches and the close of tasks end to end. No host starts and no host executable is
+# an input; the only program they run is the git the close asks about a worktree after a failed
+# `claude rm`. It never carries a binary of the root: they link every crate, so an edit anywhere
+# would rerun these tests.
+low_opt_rust_test(
+    name = "engine_sdk_engine_test",
+    size = "medium",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs", "//crates/daemon-engine:src/wiring/owner_fixtures.rs"],
     compile_data = SDK_TEST_COMPILE_DATA,
+    crate_features = ["whole-engine"],
     crate_name = "alondra_engine_sdk",
     crate_root = "src/lib.rs",
     edition = "2024",
     env = {"HOME": ".", "TEST_EXECS": "/usr/bin/git"},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/provider-claude:claude_host_model"] + TEST_HOOKS_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/provider-claude:claude_host_model"] + TEST_HOOKS_DEPS + WHOLE_ENGINE_DEPS,
 )
 
 # The tests that still need a real Agent SDK or Codex host, or a fake native Claude or Codex: the
@@ -129,14 +156,17 @@ low_opt_rust_test(
     size = "large",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = SDK_TEST_COMPILE_DATA,
-    crate_features = ["real-hosts"],
+    crate_features = [
+        "real-hosts",
+        "whole-engine",
+    ],
     crate_name = "alondra_engine_sdk",
     crate_root = "src/lib.rs",
     data = SDK_TEST_DATA,
     edition = "2024",
     env = SDK_TEST_ENV | {"TEST_EXECS": "$(rootpath //agent-host:alondra-codex-host) $(rootpath //agent-host:alondra-codex-plan-legacy-fixture-host) $(rootpath //agent-host:alondra-host) $(rootpath //agent-host:codex-legacy-fixture) /bin/kill /bin/sleep /usr/bin/git /usr/bin/id /usr/bin/mkfifo /usr/bin/pgrep /usr/bin/python3 /usr/sbin/lsof tmpdir"},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS + WHOLE_ENGINE_DEPS,
 )
 
 rust_inputs_test(

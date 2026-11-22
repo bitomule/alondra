@@ -2,17 +2,17 @@
 //! with this crate: each file is named after the module it tests.
 #[cfg(all(test, feature = "real-hosts"))]
 mod accounts_tests;
-#[cfg(all(test, not(feature = "real-hosts")))]
+#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
 mod orchestrator_tools_tests;
-#[cfg(all(test, not(feature = "real-hosts")))]
+#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
 mod owner_tests;
 #[cfg(all(test, feature = "real-hosts"))]
 mod pauses_tests;
-#[cfg(all(test, not(feature = "real-hosts")))]
+#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
 mod system_command_tests;
 
 /// The SQLite-backed fixtures of an SDK node's owner, which the engine's tests share.
-#[cfg(all(test, not(feature = "real-hosts")))]
+#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
 #[path = "../../daemon-engine/src/wiring/owner_fixtures.rs"]
 pub(crate) mod owner_fixtures;
 

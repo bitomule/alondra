@@ -381,7 +381,7 @@ fn mutation_response(method: &str, path: &str, body: Option<&Value>, outcome: &d
     json!({"status":if method == "POST" {201} else {200},"body":body})
 }
 
-#[cfg(all(test, not(feature = "real-hosts")))]
+#[cfg(all(test, not(feature = "whole-engine")))]
 mod tests {
     use super::*;
     use std::fs;
@@ -395,7 +395,7 @@ mod tests {
             fs::create_dir_all(&home).unwrap();
             fs::create_dir(&projects).unwrap();
             fs::write(options::path_in(&home), format!("projects_root = {:?}\n", projects.to_str().unwrap())).unwrap();
-            let domain = std::sync::Arc::new(crate::engine_fixtures::open(&home).unwrap());
+            let domain = std::sync::Arc::new(crate::model_fixture::open(&home).unwrap());
             Self { root, home, domain }
         }
         fn draft() -> Value {
@@ -503,7 +503,7 @@ mod tests {
         let before = fixture.domain.state().unwrap();
         assert_eq!(before.schedule.runs[&run_id].origin, d::ScheduleRunOrigin::Manual);
         assert_eq!(before.schedule.schedules.values().next().unwrap().next_run, None);
-        let restarted = crate::engine_fixtures::open(&fixture.home).unwrap();
+        let restarted = crate::model_fixture::open(&fixture.home).unwrap();
         assert_eq!(restarted.state().unwrap().schedule.runs[&run_id].state,
             d::ScheduleRunState::Interrupted);
         assert_eq!(encrypted_mutation(&restarted, &fixture.home, "phone",

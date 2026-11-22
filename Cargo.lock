@@ -531,6 +531,8 @@ dependencies = [
  "alondra-domain-rules",
  "alondra-engine-ports",
  "alondra-process-group",
+ "alondra-provider-contract",
+ "anyhow",
  "libc",
  "serde_json",
  "tempfile",
