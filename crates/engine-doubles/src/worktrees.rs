@@ -35,6 +35,11 @@ struct State {
     checked_out: BTreeMap<PathBuf, String>,
     /// The checkouts holding a commit their remote does not have yet.
     unpushed: BTreeSet<PathBuf>,
+    /// The repositories, by their main checkout, that have no remote.
+    remoteless: BTreeSet<PathBuf>,
+    /// The commit each checkout's branch is at, once a commit of its own moved it: a branch with
+    /// none is one its default branch holds.
+    tips: BTreeMap<PathBuf, String>,
     next_commit: u64,
 }
 
@@ -76,7 +81,8 @@ impl Worktrees {
         if changed > 0 {
             parts.push(format!("{changed} uncommitted file(s)"));
         }
-        if self.state().unpushed.contains(&key(top)) {
+        let remoteless = repository_of(top).is_some_and(|repo| self.state().remoteless.contains(&canonical(&repo)));
+        if self.state().unpushed.contains(&key(top)) && !remoteless {
             parts.push("1 commit(s) not pushed".to_owned());
         }
         (!parts.is_empty()).then(|| format!("{} in {}", parts.join(" and "), top.display()))
@@ -127,6 +133,7 @@ impl Worktrees {
             let mut state = self.state();
             state.committed.remove(&key);
             state.unpushed.remove(&key);
+            state.tips.remove(&key);
         }
         Ok(TaskWorktree::Removed { freed: 0 })
     }
@@ -185,7 +192,13 @@ pub fn commit(top: &Path) -> String {
     let id = format!("{:040x}", state.next_commit);
     state.committed.insert(key(top), files);
     state.commits.entry(canonical(top)).or_default().insert(id.clone());
+    state.tips.insert(key(top), id.clone());
     id
+}
+
+/// Takes every remote from the repository whose main checkout is `repo`.
+pub fn without_remote(repo: &Path) {
+    state().remoteless.insert(canonical(repo));
 }
 
 /// Commits every file of the checkout at `top` without pushing: its remote lacks the commit until
@@ -248,6 +261,7 @@ pub fn make_worktree(repo: &Path, dir: &Path) -> Result<(), String> {
     std::fs::write(dir.join(".git"), format!("gitdir: {}\n", admin.display())).map_err(|why| why.to_string())?;
     state().branches.insert((canonical(repo), name));
     commit(dir);
+    state().tips.remove(&key(dir));
     Ok(())
 }
 
@@ -263,6 +277,13 @@ pub mod testing {
         super::repository(&repo);
         let dir = repo.join(".claude/worktrees").join(slug);
         super::make_worktree(&repo, &dir).unwrap();
+        dir
+    }
+
+    /// The worktree Alondra makes for the task `slug` in a repository under `root` that has no remote.
+    pub fn remoteless_task_worktree(root: &Path, slug: &str) -> PathBuf {
+        let dir = task_worktree(root, slug);
+        super::without_remote(&root.join("repo"));
         dir
     }
 
@@ -442,9 +463,17 @@ impl Port for Worktrees {
 
     fn release_finished_worktree<'a>(&'a self, dir: &'a Path, slug: Option<&'a str>, give_up: bool, pr_merged: bool) -> Git<'a, Result<TaskWorktree, String>> {
         answer(async move {
-            let branch = linked_top(dir).and_then(|top| Some((repository_of(&top)?, top.file_name()?.to_string_lossy().into_owned())));
+            let top = linked_top(dir);
+            let facts = top.as_ref().map(|top| {
+                let state = self.state();
+                let in_default = !state.tips.contains_key(&key(top));
+                let remoteless = repository_of(top).is_some_and(|repo| state.remoteless.contains(&canonical(&repo)));
+                (in_default, !remoteless && !state.unpushed.contains(&key(top)))
+            });
+            let goes = facts.is_none_or(|(in_default, on_its_remote)| in_default || (pr_merged && on_its_remote));
+            let branch = top.and_then(|top| Some((repository_of(&top)?, top.file_name()?.to_string_lossy().into_owned())));
             let released = self.release(dir, |top| slug.is_none_or(|slug| top.file_name().is_some_and(|name| name == slug)), give_up && slug.is_none(), true)?;
-            if let (TaskWorktree::Removed { .. }, true, Some(branch)) = (&released, pr_merged, branch) {
+            if let (TaskWorktree::Removed { .. }, true, Some(branch)) = (&released, goes, branch) {
                 self.state().branches.remove(&branch);
             }
             Ok(released)
@@ -699,6 +728,9 @@ mod tests {
         crate::contract::final_checks(&double, &repository, &slow);
         crate::contract::saved_work(&double, &crate::contract::Saving {
             task_worktree: &testing::task_worktree, local_commit: &|top| { local_commit(top); }, push: &push, branch_exists: &branch_exists,
+        });
+        crate::contract::finished_branches(&double, &crate::contract::Finishing {
+            remoteless_worktree: &testing::remoteless_task_worktree, local_commit: &|top| { local_commit(top); }, branch_exists: &branch_exists,
         });
     }
 }

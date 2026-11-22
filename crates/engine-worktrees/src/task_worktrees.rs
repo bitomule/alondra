@@ -257,9 +257,11 @@ pub async fn sweep_shells(domain: &dyn Runtime) -> Result<usize> {
     Ok(gone)
 }
 
-/// Whether another task that has not ended works in `path`, or will start there.
+/// Whether a task still owns `path`: `task` itself once reopened, another one that holds it open,
+/// even while it closes, or one that has not ended and will start there.
 pub(crate) fn in_use(domain: &dyn Runtime, state: &DomainState, task: &TaskId, path: &str) -> bool {
-    state.worktree_held_by_other(path, task).is_some()
+    state.tasks.get(task).is_some_and(|own| !own.over())
+        || state.tasks.values().any(|other| &other.id != task && other.open_worktrees().any(|(open, _)| open == path))
         || state.tasks.values().filter(|other| &other.id != task && !other.over())
             .any(|other| domain.launch_plan(&other.id).is_some_and(|plan| Path::new(&plan.cwd) == Path::new(path)))
 }

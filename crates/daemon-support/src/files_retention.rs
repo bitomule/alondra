@@ -4,9 +4,10 @@
 //! - `tasks/<task>/` is a task's scratch: it goes when the task is closed.
 //! - `results/<task>/` is a delivery kept for the card: it stays while its task is open or its card
 //!   is in the inbox, and `RESULTS_KEPT_FOR` after.
-//! - `uploads/`, `images/`, `domain-v2/` and `documents/` hold what cards show: each stays while a
-//!   card that names it is in the inbox or its task is open, and `STORED_KEPT_FOR` after.
-//! - Anything else has no owner: it is listed, and goes once it is older than `STORED_KEPT_FOR`.
+//! - `uploads/`, `images/`, `domain-v2/` and `documents/` hold what cards and messages show: each
+//!   stays while a card that names it is in the inbox or its task is open, or a message of an open
+//!   task or request names it, and `STORED_KEPT_FOR` after.
+//! - Anything else is not Alondra's: it is listed and never deleted.
 use alondra_domain_rules::{DomainState, InteractionId, Scope};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,8 +83,7 @@ pub fn sweep(home: &Path, state: &DomainState, now: SystemTime) -> Report {
                 report.push(key, &child.path(), owner, verdict);
             }
         } else {
-            let verdict = unowned(&entry.path(), now);
-            report.push(name, &entry.path(), "nobody".into(), verdict);
+            report.push(name, &entry.path(), "nobody".into(), (false, "it is not in one of Alondra's folders: listed, never deleted".into()));
         }
     }
     report
@@ -153,6 +153,9 @@ fn result_in_inbox(task: &str, state: &DomainState) -> bool {
 }
 
 fn stored(key: &str, on_disk: &Path, index: &References, state: &DomainState, now: SystemTime) -> (String, (bool, String)) {
+    if index.open_work.contains(&format!("files/{key}")) {
+        return ("a message".into(), (false, "a message of an open task or request names it".into()));
+    }
     let Some(cards) = index.cards.get(&format!("files/{key}")) else {
         if index.documents.contains(&format!("files/{key}")) {
             return ("a document".into(), (false, "a document revision uses it".into()));
@@ -201,10 +204,11 @@ fn size(path: &Path) -> u64 {
     std::fs::read_dir(path).into_iter().flatten().flatten().map(|child| size(&child.path())).sum()
 }
 
-/// The `files/<folder>/<name>` paths that cards and documents mention.
+/// The `files/<folder>/<name>` paths that cards, documents and the messages of open work mention.
 struct References {
     cards: BTreeMap<String, Vec<InteractionId>>,
     documents: BTreeSet<String>,
+    open_work: BTreeSet<String>,
 }
 
 impl References {
@@ -217,7 +221,15 @@ impl References {
             }
         }
         let documents = serde_json::to_string(&state.document_revisions).map(|text| mentioned(&text)).unwrap_or_default();
-        Self { cards, documents }
+        let mut open_work = BTreeSet::new();
+        for (task, journal) in state.tasks.values().filter(|task| !task.state.terminal()).filter_map(|task| Some((task, state.lifecycle_journal.get(&task.id)?))) {
+            let Ok(text) = serde_json::to_string(&(journal, &task.pending_user_inputs)) else { continue };
+            open_work.extend(mentioned(&text));
+        }
+        for request in state.requests.values().filter(|request| !request.closed) {
+            open_work.extend(mentioned(&request.body));
+        }
+        Self { cards, documents, open_work }
     }
 }
 
@@ -247,21 +259,45 @@ mod tests {
     }
 
     #[test]
-    fn a_file_nobody_owns_is_listed_and_goes_only_after_thirty_days() {
+    fn a_file_outside_alondras_folders_is_listed_and_never_deleted() {
         let home = Directory::new();
         std::fs::create_dir_all(home.join("files/security-audit")).unwrap();
         let report = home.join("files/security-audit/report.md");
         std::fs::write(&report, "findings").unwrap();
         let now = SystemTime::now();
+        aged(&report, 31, now);
         let state = DomainState::new("epoch");
         let swept = sweep(&home, &state, now);
         assert_eq!(swept.entries.len(), 1);
-        assert_eq!((swept.entries[0].owner.as_str(), swept.entries[0].remove), ("nobody", false));
-        aged(&report, 31, now);
+        assert_eq!((swept.entries[0].owner.as_str(), swept.entries[0].remove), ("nobody", false), "{:?}", swept.entries[0]);
+        assert_eq!(remove_listed(&home, &swept), Removed::default());
+        assert!(report.exists());
+    }
+
+    #[test]
+    fn an_upload_a_message_of_an_open_task_names_stays_after_thirty_days() {
+        let home = Directory::new();
+        std::fs::create_dir_all(home.join("files/uploads/u-1")).unwrap();
+        let image = home.join("files/uploads/u-1/x.png");
+        std::fs::write(&image, "png").unwrap();
+        let now = SystemTime::now();
+        aged(&image, 31, now);
+        let mut state = DomainState::new("epoch");
+        let task = alondra_domain_rules::TaskId::from("t");
+        let open: alondra_domain_rules::Task = serde_json::from_value(serde_json::json!({
+            "id":"t","request_id":"r","agent_id":null,"title":"T","state":"running","revision":1,"started":true,"review_prs":false,
+            "final_presentation":null,"pr_id":null,"later_prs":[],"dependencies":[],"documents":{},"archived":false,
+        })).unwrap();
+        state.tasks.insert(task.clone(), open);
+        let told = alondra_domain_rules::LifecycleRecord::Told {
+            input: "input:t:2".into(), text: Some(format!("Look at this\n\nAttached: {}", image.display())), answers: None,
+        };
+        state.lifecycle_journal.insert(task.clone(), vec![told]);
         let swept = sweep(&home, &state, now);
-        assert!(swept.entries[0].remove, "{:?}", swept.entries[0]);
-        assert_eq!(swept.remove_bytes, "findings".len() as u64);
-        assert!(report.exists(), "the sweep only lists");
+        let entry = swept.entries.iter().find(|entry| entry.path == "uploads/u-1").unwrap();
+        assert!(!entry.remove, "{entry:?}");
+        state.tasks.get_mut(&task).unwrap().state = alondra_domain_rules::TaskState::Done;
+        assert!(sweep(&home, &state, now).entries.iter().any(|entry| entry.path == "uploads/u-1" && entry.remove), "it goes once its task ends");
     }
 
     #[test]

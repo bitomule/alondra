@@ -39,11 +39,12 @@ pub async fn own_worktree(domain: &dyn Runtime, task: &TaskId, workplace: &Workp
         return Ok(());
     }
     let shown = dir.to_string_lossy();
-    domain.set_task_worktree(task, &shown)
-        .map_err(|error| DomainError::new("storage_unavailable", format!("could not record that {task} works in {shown}: {error:#}")))?;
-    let state = domain.state();
-    if !state.tasks.get(task).is_some_and(|ended| ended.state.terminal()) {
-        return Ok(());
+    let recorded = domain.set_task_worktree(task, &shown);
+    let ended = domain.state().tasks.get(task).is_some_and(|ended| ended.state.terminal());
+    match (recorded, ended) {
+        (Ok(()), false) => return Ok(()),
+        (Err(error), false) => return Err(DomainError::new("storage_unavailable", format!("could not record that {task} works in {shown}: {error:#}"))),
+        (_, true) => {}
     }
     match domain.ports().worktrees().release_recorded_worktree(&dir, false).await {
         Ok(alondra_engine_ports::worktrees::TaskWorktree::Unsaved(left)) => log!("the worktree of {task}, which ended while it started, is kept: {left}"),

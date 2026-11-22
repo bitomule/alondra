@@ -1287,6 +1287,19 @@ async fn closing_a_task_whose_pr_merged_deletes_its_local_branch_with_its_worktr
 }
 
 #[tokio::test]
+async fn closing_a_task_whose_pr_merged_in_another_repository_keeps_the_branch_of_its_repository_without_a_remote() {
+    let rig = Rig::merged(None);
+    let root = crate::test_support::Directory::new();
+    let dir = alondra_engine_doubles::worktrees::testing::remoteless_task_worktree(&root, "t");
+    alondra_engine_doubles::worktrees::local_commit(&dir);
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    rig.session_ends();
+    rig.pass(T0).await;
+    assert!(!dir.exists(), "with no remote to push to, nothing in the worktree is unsaved");
+    assert!(branch_exists(&root.join("repo"), "worktree-t"), "its commits exist only in its branch; the merged pull request is another repository's");
+}
+
+#[tokio::test]
 async fn a_node_whose_session_ends_during_its_work_after_the_merge_is_closed_and_its_task_is_done() {
     let rig = Rig::merged(Some("publish the release"));
     let (_root, dir) = rig.with_worktree();
@@ -1485,6 +1498,38 @@ async fn cancelling_a_task_with_unsaved_files_asks_once_and_deletes_nothing_unti
 }
 
 #[tokio::test]
+async fn an_answered_delete_card_never_touches_the_worktree_of_the_task_reopened_after_it() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
+    rig.pass(T0).await;
+    rig.answer_discard("discard");
+    rig.pass(T0 + MINUTE).await;
+    assert!(!dir.exists(), "the answer deletes the worktree of the cancelled task");
+
+    command(&rig.domain, user(), "reopen", Command::ReopenTask { task_id: "t".into() });
+    alondra_engine_doubles::worktrees::make_worktree(&root.join("repo"), &dir).unwrap();
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    std::fs::write(dir.join("b.txt"), "y").unwrap();
+    for minutes in [2, 3, 60] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    assert!(dir.join("b.txt").exists(), "the reopened task's work is not covered by the earlier answer");
+
+    command(&rig.domain, user(), "cancel-again", Command::CancelTask { task_id: "t".into(), reason: None });
+    for minutes in [61, 62, 120] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    assert!(dir.join("b.txt").exists(), "cancelled again, its new work waits for a new answer");
+    let cards = rig.discard_cards();
+    assert_eq!(cards.len(), 2, "the new cancellation asks again");
+    assert_eq!(cards.iter().filter(|card| matches!(card.payload, InteractionPayload::Question { answer: None, .. })).count(), 1);
+}
+
+#[tokio::test]
 async fn keeping_the_unsaved_files_of_a_cancelled_task_touches_nothing_and_never_asks_again() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
@@ -1585,6 +1630,59 @@ async fn the_cancelled_worktrees_left_before_this_rule_are_settled_with_one_card
     rig.answer_discard("discard");
     rig.pass(T0).await;
     assert!(!a.exists() && !c.exists(), "Delete all removes the listed worktrees");
+}
+
+#[tokio::test]
+async fn the_startup_sweep_leaves_the_worktree_a_cancelled_task_handed_to_a_task_still_closing() {
+    let rig = Rig::undelivered(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t-a");
+    command(&rig.domain, user(), "request-t-a", Command::CreateRequest {
+        request_id: "r-t-a".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+    });
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "create-t-a", Command::CreateTask {
+        plan_items: None, continues: None, task_id: "t-a".into(), request_id: "r-t-a".into(), title: "Task t-a".into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+    });
+    rig.domain.set_task_worktree(&"t-a".into(), dir.to_str().unwrap()).unwrap();
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    command(&rig.domain, user(), "cancel-t-a", Command::CancelTask { task_id: "t-a".into(), reason: None });
+    for minutes in [0, 5, 10, 20] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    assert_eq!(worktree_end(&rig, "t-a", &dir), Some(Some(alondra_domain_rules::WorktreeEnd::HandedOver)));
+    assert_eq!(rig.domain.state().unwrap().tasks[&TaskId::from("t-a")].state, TaskState::Cancelled);
+
+    rig.deliver_and_accept();
+    alondra_engine_doubles::worktrees::local_commit(&dir);
+    rig.confirm();
+    for minutes in [21, 22, 30] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    assert!(rig.task().over(), "the task it was handed to is closing, its commit not pushed yet: {:?} {:?}", rig.task().state, rig.task().ending);
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
+    assert!(dir.exists(), "the worktree ends with the task it was handed to, not with the cancelled one");
+}
+
+#[tokio::test]
+async fn a_worktree_made_for_a_task_cancelled_while_it_started_goes_at_once() {
+    let rig = Rig::undelivered(thirty_minutes());
+    command(&rig.domain, user(), "request-t-s", Command::CreateRequest {
+        request_id: "r-t-s".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+    });
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "create-t-s", Command::CreateTask {
+        plan_items: None, continues: None, task_id: "t-s".into(), request_id: "r-t-s".into(), title: "Task t-s".into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+    });
+    let root = crate::test_support::Directory::new();
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t-s");
+    command(&rig.domain, user(), "cancel-t-s", Command::CancelTask { task_id: "t-s".into(), reason: None });
+    assert_eq!(rig.domain.state().unwrap().tasks[&TaskId::from("t-s")].state, TaskState::Cancelled);
+
+    let made = alondra_engine_ports::worktrees::Workplace::Made(dir.clone());
+    let error = alondra_engine_kernel::launches::own_worktree(&*rig.domain, &"t-s".into(), &made).await.unwrap_err();
+    assert_eq!(error.code, "task_not_active", "{}", error.message);
+    assert!(!dir.exists(), "a task that ended while its worktree was made already had its close");
 }
 
 #[tokio::test]
@@ -1917,6 +2015,11 @@ async fn a_folder_an_open_continuation_launches_in_is_never_swept_even_when_it_l
     assert!(dir.is_dir());
 
     command(&rig.domain, user(), "cancel-continuation", Command::CancelTask { task_id: "t-claude".into(), reason: None });
-    assert_eq!(crate::task_worktrees::sweep_shells(&*rig.domain).await.unwrap(), 1, "once nobody goes on in it, it is a leftover");
-    assert!(!dir.exists());
+    assert_eq!(crate::task_worktrees::sweep_shells(&*rig.domain).await.unwrap(), 0, "the continuation still holds it while it closes");
+    assert!(dir.is_dir());
+    for minutes in [5, 10, 20] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    crate::task_worktrees::sweep_shells(&*rig.domain).await.unwrap();
+    assert!(!dir.exists(), "once nobody goes on in it, it is a leftover");
 }
