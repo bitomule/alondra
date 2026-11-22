@@ -107,7 +107,7 @@ final class TriageFeatureTests: XCTestCase {
             object["status"] = status
         }
         let store = gated(FeedStub([home, try Fixtures.card(ids.question)]), clock: clock, gate: gate) {
-            try Responses.rejected("It already moved on")
+            try Responses.noLongerAvailable("It already moved on")
         }
         await store.send(.task)
         await store.skipReceivedActions()
@@ -124,7 +124,7 @@ final class TriageFeatureTests: XCTestCase {
         await gate.open()
         await store.receive(\.cards[id: ids.question].actions.settled)
         XCTAssertEqual(store.state.orderedIDs, [])
-        XCTAssertEqual(store.state.badge, 0, "a refused answer does not put the card back as unanswered")
+        XCTAssertEqual(store.state.badge, 0, "an answer to a card the Mac no longer has does not put it back as unanswered")
     }
 
     @MainActor
@@ -663,7 +663,7 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testAnAnswerTheServerRefusedKeepsTheCardOutAndSaysWhy() async throws {
+    func testAnAnswerTheServerRefusedBringsTheCardBackToTheFrontAndSaysWhy() async throws {
         let clock = TestClock<Duration>()
         let feed = try fullFeed()
         let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
@@ -680,10 +680,11 @@ final class TriageFeatureTests: XCTestCase {
         await store.receive(\.cards[id: ids.question].actions.delegate.failed, "It already moved on")
         await clock.advance(by: .seconds(5))
         await store.skipReceivedActions()
-        XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "the card is not put back as unanswered")
+        XCTAssertEqual(store.state.currentID, ids.question, "the refused card is back in front")
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, "It already moved on")
 
         await store.send(.screen(.loaded(try Fixtures.home(queue: queue, version: "vq-after"))))
-        XCTAssertEqual(store.state.orderedIDs, queue, "a newer queue that still lists it shows it again")
+        XCTAssertEqual(store.state.orderedIDs, queue, "a newer queue that still lists it keeps it")
     }
 
     // MARK: Optimistic answers
@@ -735,11 +736,11 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testAnAnswerTheDaemonDidNotApplyKeepsTheCardOutUntilTheDaemonListsItAgain() async throws {
+    func testAnAnswerToACardTheMacNoLongerHasKeepsItOutSaysSoAndTheDaemonListsItAgain() async throws {
         let clock = TestClock<Duration>()
         let gate = Gate()
         let store = gated(try fullFeed(), clock: clock, gate: gate) {
-            try Responses.rejected("It already moved on")
+            try Responses.noLongerAvailable("It already moved on")
         }
         await store.send(.task)
         await store.skipReceivedActions()
@@ -755,8 +756,8 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "the card does not come back as unanswered")
         XCTAssertEqual(store.state.currentID, ids.information, "nor jump to the front")
         await store.receive(\.cards[id: ids.question].actions.response)
-        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, "It already moved on")
-        await store.receive(\.cards[id: ids.question].actions.delegate.failed)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, OutcomeStyle.cardGone)
+        await store.receive(\.cards[id: ids.question].actions.delegate.failed, OutcomeStyle.cardGone)
 
         await store.send(.screen(.loaded(try Fixtures.home(queue: queue, version: "vq"))))
         XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "the queue it was answered on still keeps it out")
@@ -787,7 +788,7 @@ final class TriageFeatureTests: XCTestCase {
         await store.receive(\.cards[id: ids.question].actions.delegate.failed, "PR #12 must merge first: this one builds on it.")
         await clock.advance(by: TriageFeature.stampDuration)
         await store.skipReceivedActions()
-        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
+        XCTAssertEqual(store.state.currentID, ids.question, "refused, the card is back in front with the sentence")
     }
 
     @MainActor
@@ -916,13 +917,13 @@ final class TriageFeatureTests: XCTestCase {
         await store.receive(\.delegate.answerNotConfirmed)
         XCTAssertEqual(store.state.currentID, ids.delivery)
 
-        await store.send(.handOffSettled(request, applied: true))
+        await store.send(.handOffSettled(request, try Responses.applied()))
         await store.skipReceivedActions()
         XCTAssertFalse(store.state.orderedIDs.contains(ids.delivery), "confirmed late, it leaves")
     }
 
     @MainActor
-    func testAnAnswerThatCanNeverBeDeliveredKeepsTheCardOutAndSaysWhy() async throws {
+    func testAnAnswerThatCanNeverBeDeliveredBringsTheCardBackToTheFrontSayingWhy() async throws {
         let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
             $0.continuousClock = TestClock()
             $0.viewsClient.observe = try! fullFeed().observe
@@ -937,7 +938,9 @@ final class TriageFeatureTests: XCTestCase {
         await store.receive(\.cards[id: ids.question].actions.delegate.failed,
                             "Your Mac’s data was reset, so this answer no longer applies.")
         await store.skipReceivedActions()
-        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
+        XCTAssertEqual(store.state.currentID, ids.question)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error,
+                       "Your Mac’s data was reset, so this answer no longer applies.")
     }
 
     @MainActor
@@ -989,7 +992,7 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testAnAnswerFromItsOwnScreenTakesTheCardOutAtOnceAndKeepsItOutIfItFails() async throws {
+    func testAnAnswerFromItsOwnScreenTakesTheCardOutAtOnceAndKeepsItOutIfTheMacNoLongerHasIt() async throws {
         let store = store(try fullFeed())
         await store.send(.task)
         await store.skipReceivedActions()
@@ -1002,7 +1005,7 @@ final class TriageFeatureTests: XCTestCase {
         await store.send(.screen(.loaded(try Fixtures.home(queue: queue))))
         XCTAssertFalse(store.state.orderedIDs.contains(ids.delivery), "a stale queue keeps it out")
 
-        await store.send(.handOffSettled(request, applied: false))
+        await store.send(.handOffSettled(request, try Responses.noLongerAvailable()))
         XCTAssertFalse(store.state.orderedIDs.contains(ids.delivery), "never back as unanswered")
         XCTAssertEqual(store.state.currentID, ids.question)
 
@@ -1053,7 +1056,7 @@ final class TriageFeatureTests: XCTestCase {
 
         let reply = ActionRequest(commandId: "c-reply", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "msg:view@7")
         await store.send(.handedOff(reply, cardID: ids.question))
-        await store.send(.handOffSettled(reply, applied: true))
+        await store.send(.handOffSettled(reply, try Responses.applied()))
         XCTAssertEqual(store.state.orderedIDs, queue, "a reply answers nothing: the card still waits")
 
         let read = ActionRequest(commandId: "c-read", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "read:x@1")
@@ -1192,5 +1195,112 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.machinePresented)
         await store.send(.machinePresented(false))
         XCTAssertFalse(store.state.machinePresented)
+    }
+
+    // MARK: An answer that does not go
+
+    /// The phone hid a refused answer's card and the words written on it, with only a short toast.
+    @MainActor
+    func testAnAnswerTheMacRefusesBringsTheCardBackToTheFrontWithItsTextAndTheError() async throws {
+        let clock = TestClock<Duration>()
+        let gate = Gate()
+        let store = gated(try fullFeed(), clock: clock, gate: gate) {
+            try Responses.rejected("Pick one of the two options")
+        }
+        await store.send(.task)
+        await store.skipReceivedActions(strict: false)
+        await store.send(.cards(.element(id: ids.question, action: .replyChanged("Concise, but keep the greeting"))))
+
+        _ = try await answer(store, id: ids.question)
+        await Task.megaYield()
+        await clock.advance(by: TriageFeature.stampDuration)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.currentID, ids.information, "the answered card leaves at once")
+
+        await gate.open()
+        await store.receive(\.cards[id: ids.question].actions.response)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.currentID, ids.question, "refused, it is back in front")
+        XCTAssertEqual(store.state.cards[id: ids.question]?.reply, "Concise, but keep the greeting")
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, "Pick one of the two options")
+        XCTAssertNil(store.state.cards[id: ids.question]?.stamp)
+    }
+
+    @MainActor
+    func testAnAnswerThatCannotBeSavedOnThePhoneBringsTheCardBackAtOnceWithItsTextAndTheError() async throws {
+        let clock = TestClock<Duration>()
+        let feed = try fullFeed()
+        let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.viewsClient.observe = feed.observe
+            $0.viewsClient.prepare = { _ in throw FeedError.commandIdentityConflict }
+            $0.viewsClient.perform = feed.perform()
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.skipReceivedActions(strict: false)
+        await store.send(.cards(.element(id: ids.question, action: .replyChanged("Concise, but keep the greeting"))))
+
+        _ = try await answer(store, id: ids.question)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.currentID, ids.question, "back without waiting for the confirmation timeout")
+        XCTAssertEqual(store.state.cards[id: ids.question]?.reply, "Concise, but keep the greeting")
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, "Alondra couldn’t prepare this request.")
+        XCTAssertTrue(feed.requests.isEmpty, "nothing reached the Mac")
+    }
+
+    @MainActor
+    func testAnAnswerFromItsOwnScreenTheMacRefusesComesBackWithWhatWasWritten() async throws {
+        let store = store(try fullFeed())
+        await store.send(.task)
+        await store.skipReceivedActions(strict: false)
+        let request = ActionRequest(commandId: "c-1", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en",
+                                    actionId: "accept:x@1", input: ActionInput(text: "Merge after the release"))
+
+        await store.send(.handedOff(request, cardID: ids.pullRequest))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.pullRequest))
+        XCTAssertNil(store.state.cards[id: ids.pullRequest], "the card behind is not drawn")
+
+        await store.send(.handOffSettled(request, try Responses.rejected("Checks are still running")))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.currentID, ids.pullRequest)
+        XCTAssertEqual(store.state.cards[id: ids.pullRequest]?.reply, "Merge after the release")
+        XCTAssertEqual(store.state.cards[id: ids.pullRequest]?.actions.error, "Checks are still running")
+    }
+
+    @MainActor
+    func testAnAnswerFromItsOwnScreenThatCanNeverBeDeliveredComesBackWithWhatWasWritten() async throws {
+        let store = store(try fullFeed())
+        await store.send(.task)
+        await store.skipReceivedActions(strict: false)
+        let request = ActionRequest(commandId: "c-1", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en",
+                                    actionId: "accept:x@1", input: ActionInput(text: "Use the warmer copy"))
+
+        await store.send(.handedOff(request, cardID: ids.question))
+        await store.send(.handOffUndelivered(request, .answered("This device is no longer approved. Approve it again from the Mac.")))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.currentID, ids.question)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.reply, "Use the warmer copy")
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error,
+                       "This device is no longer approved. Approve it again from the Mac.")
+    }
+
+    @MainActor
+    func testWhatIsWrittenOnACardSurvivesWhileTheCardIsNotDrawn() async throws {
+        let store = store(try fullFeed())
+        await store.send(.task)
+        await store.skipReceivedActions(strict: false)
+        await store.send(.cards(.element(id: ids.question, action: .replyChanged("Half a thought"))))
+
+        await store.send(.next)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNil(store.state.cards[id: ids.question], "out of the window, its state is let go")
+
+        for _ in 1 ... 3 { await store.send(.next) }
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.currentID, ids.question)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.reply, "Half a thought")
+        XCTAssertTrue(store.state.drafts.isEmpty)
     }
 }

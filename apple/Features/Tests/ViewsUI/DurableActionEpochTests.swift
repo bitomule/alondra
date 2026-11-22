@@ -25,9 +25,11 @@ final class DurableActionEpochTests: XCTestCase {
         }
         let current = request(newID, epoch: "new-epoch")
         await store.send(.submit) {
-            $0.stamp = "Sent"
+            $0.pending = current
+            $0.inFlight = true
             $0.sends = 1
         }
+        await store.receive(\.prepared) { $0.stamp = "Sent"; $0.pending = nil; $0.inFlight = false; $0.unsure = nil }
         await store.receive(\.sending, current)
         await store.receive(\.sent, current)
         await store.finish()

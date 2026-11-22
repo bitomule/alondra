@@ -148,19 +148,19 @@ final class ActionPreparationTests: XCTestCase {
         XCTAssertEqual(dispatched, [canonical])
     }
 
-    func testAScreenThatLeavesOnSendingHandsItsAnswerOffUnprepared() async throws {
+    func testAScreenThatLeavesOnSendingHandsItsAnswerOffOnceItIsSavedOnThePhone() async throws {
         let draft = request(draftID)
+        let canonical = try canonical(draftID)
         let initial = try state(handsOff: true)
         let store = TestStore(initialState: initial) { ActionFeature() } withDependencies: {
             $0.uuid = .constant(UUID(uuidString: draftID)!)
-            $0.viewsClient.prepare = { _ in XCTFail("whoever outlives the screen prepares it"); throw CancellationError() }
+            $0.viewsClient.prepare = { _ in canonical }
             $0.viewsClient.perform = { _ in XCTFail("handoff cannot deliver the action itself"); throw CancellationError() }
         }
-        await store.send(.submit) { $0.stamp = "Sent"; $0.sends = 1 }
-        await store.receive(\.sending, draft)
-        await store.receive(\.sent, draft)
-        XCTAssertNil(store.state.pending)
-        XCTAssertFalse(store.state.inFlight)
+        await store.send(.submit) { $0.pending = draft; $0.inFlight = true; $0.sends = 1 }
+        await store.receive(\.prepared) { $0.stamp = "Sent"; $0.pending = nil; $0.inFlight = false }
+        await store.receive(\.sending, canonical)
+        await store.receive(\.sent, canonical)
         XCTAssertEqual(store.state.text, draft.input.text)
         await store.finish()
     }

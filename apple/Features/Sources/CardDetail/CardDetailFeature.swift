@@ -8,7 +8,8 @@ import Foundation
 /// A card opened in full, whatever it is: the sections the daemon sends (content, context,
 /// history) and the same actions the card has, pinned at the bottom with the reply field. The text
 /// of a document or a plan can be commented block by block; the comments, the reply and the attachments
-/// live only while the detail is open and are cleared when one of the actions is sent.
+/// live only while the detail is open and are cleared once the action that carries them is saved
+/// on this device; until then, or when it cannot be saved, they stay with the error.
 @Reducer
 public struct CardDetailFeature: Sendable {
     public init() {}

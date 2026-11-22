@@ -7,8 +7,10 @@ import Foundation
 /// The server decides what is waiting and in which order. Swiping a card either way only moves on:
 /// it goes to the back of the queue and nothing is answered, accepted, marked read or sent; answers
 /// travel only with a tap on a button. A card answered here or from its own screen leaves at once
-/// and stays out while its answer travels, however long the network takes. Only the daemon brings
-/// it back: in a newer queue that still lists it, or at once when it asks about the answer again.
+/// and stays out while its answer travels, however long the network takes. It comes back to the
+/// front, with what was written and why, when the answer could not be saved, the Mac refused it or
+/// it can never be delivered; otherwise only the daemon brings it back: in a newer queue that still
+/// lists it, or at once when it asks about the answer again.
 /// A card that arrives while another is in front never takes its place: it waits right behind it,
 /// in the server's order, and is announced until the person brings it forward or it comes by itself.
 @Reducer
@@ -38,6 +40,8 @@ public struct TriageFeature: Sendable {
         public var undelivered: Set<String> = []
         /// Answers set aside with a store this device could not read; shown until dismissed.
         public var setAside: SetAsideAnswers?
+        /// What was written on cards no longer drawn, and why it did not go, until the card is drawn again.
+        public var drafts: [String: Draft] = [:]
         public var setAsideCards: SetAsideCards? {
             setAside?.cardsLine(queue: screen.document?.sections.first { $0.id == "queue" }?.cardIds)
         }
@@ -111,6 +115,17 @@ public struct TriageFeature: Sendable {
         case left, right
     }
 
+    /// A card's reply field, kept while the card is not drawn, and the error its answer last got.
+    public struct Draft: Equatable, Sendable {
+        public var reply: String
+        public var error: String?
+
+        public init(reply: String, error: String? = nil) {
+            self.reply = reply
+            self.error = error
+        }
+    }
+
     public enum Action {
         case task
         case disappeared
@@ -128,8 +143,8 @@ public struct TriageFeature: Sendable {
         case loadTimedOut
         /// A screen opened from a card sent its answer and left; the app delivers it.
         case handedOff(ActionRequest, cardID: String)
-        case handOffSettled(ActionRequest, applied: Bool)
-        /// A screen's answer can never be delivered; the app says why, the card stays answered.
+        case handOffSettled(ActionRequest, ActionResponse)
+        /// A screen's answer can never be delivered: its card comes back with what was written and why.
         case handOffUndelivered(ActionRequest, SendFailure)
         case undeliveredChanged(Set<String>)
         case setAsideDismissed
@@ -146,6 +161,8 @@ public struct TriageFeature: Sendable {
             case noLongerPending(String?)
             /// An answer has not reached the Mac in time, so its card waits again: the sentence to show.
             case answerNotConfirmed(String)
+            /// An answer from a card's own screen did not go, and its card cannot come back: why.
+            case answerNotSent(String)
         }
     }
 
@@ -193,7 +210,7 @@ public struct TriageFeature: Sendable {
                 state.arrivals = []
                 state.seen = []
                 let optimistic = state.optimistic
-                state.cards.removeAll { !optimistic.isSending($0.id) }
+                discardCards(&state) { !optimistic.isSending($0) }
                 state.newerQueueWaiting = false
                 return .send(.screen(.task))
             case .screen(.task), .screen(.retry):
@@ -218,6 +235,7 @@ public struct TriageFeature: Sendable {
                 // view still arrives, settled, and must not announce what the person just did.
                 let gone = state.answered.subtracting(listed).filter { state.cards[id: $0] == nil }
                 state.answered.subtract(gone)
+                state.drafts = state.drafts.filter { listed.contains($0.key) }
                 let forgotten: Effect<Action> = .merge(gone.map { .cancel(id: CancelID.answered($0)) })
                 if state.stampShowing {
                     state.newerQueueWaiting = true
@@ -272,15 +290,23 @@ public struct TriageFeature: Sendable {
                 return .merge(stampTimer(), confirmationTimer(id))
             case .cards(.element(id: _, action: .actions(.sent(let request)))):
                 return request.resolvesItsCard ? .none : stampTimer()
-            case .cards(.element(id: _, action: .actions(.settled(let request, let applied)))),
-                 .handOffSettled(let request, let applied):
-                return settle(request, applied: applied, &state)
+            case .cards(.element(id: _, action: .actions(.settled(let request, applied: true)))):
+                return settle(request, applied: true, &state)
+            case .cards(.element(id: _, action: .actions(.answered(let request, let reply)))) where reply.outcome != .applied:
+                return giveBack(request, error: nil, gone: reply.outcome == .noLongerAvailable, &state)
+            case .cards(.element(id: _, action: .actions(.undelivered(let request, _)))):
+                return giveBack(request, error: nil, gone: false, &state)
             case .cards(.element(id: let id, action: .actions(.answered(_, let reply)))):
                 guard case .ask = OutcomeStyle(reply), state.optimistic.hides(id), !state.optimistic.isSending(id) else { return .none }
                 state.optimistic.release(id)
                 return bringBack(id, &state)
-            case .handOffUndelivered(let request, _):
-                return settle(request, applied: false, &state)
+            case .handOffSettled(let request, let reply):
+                guard reply.outcome != .applied else { return settle(request, applied: true, &state) }
+                let gone = reply.outcome == .noLongerAvailable && state.optimistic.target(of: request) != nil
+                return .merge(giveBack(request, error: OutcomeStyle(reply).message, gone: gone, &state),
+                              gone ? .send(.delegate(.answerNotSent(OutcomeStyle.cardGone))) : .none)
+            case .handOffUndelivered(let request, let failure):
+                return giveBack(request, error: failure.message, gone: false, &state)
             case .undeliveredChanged(let cards):
                 guard cards != state.undelivered else { return .none }
                 let optimistic = state.optimistic
@@ -375,8 +401,6 @@ public struct TriageFeature: Sendable {
 
     /// The answer is final once the daemon applied it: the card stays out, the queue is pulled again
     /// even when no push comes, and a card no view ever stops listing returns after the time to live.
-    /// An answer the daemon refused, or that can never be delivered, keeps its card out too; the
-    /// next queue the daemon draws decides whether it still waits.
     private func settle(_ request: ActionRequest, applied: Bool, _ state: inout State) -> Effect<Action> {
         let target = state.optimistic.target(of: request)
         let shown = state.screen.document?.version
@@ -390,6 +414,47 @@ public struct TriageFeature: Sendable {
         guard applied, let target else { return stopTimer }
         state.answered.insert(target)
         return .merge(stopTimer, .send(.screen(.retry)), answeredTimer(target), wasOverdue ? showQueue(&state) : .none)
+    }
+
+    /// An answer the Mac refused, or that could not be saved or delivered: its card comes back to
+    /// the front with what was written and why. One the Mac no longer has stays out, and the reply
+    /// says so; the next queue the daemon draws decides whether it still waits.
+    private func giveBack(_ request: ActionRequest, error: String?, gone: Bool, _ state: inout State) -> Effect<Action> {
+        guard let target = state.optimistic.target(of: request) else { return .none }
+        let shown = state.screen.document?.version
+        let wasOverdue = state.optimistic.isOverdue(target)
+        guard state.optimistic.settle(request, applied: false, shown: shown) != nil || wasOverdue else { return .none }
+        let stopTimer: Effect<Action> = .cancel(id: CancelID.confirmation(target))
+        if gone {
+            state.optimistic.hold(target, shown: shown, dataEpoch: request.dataEpoch)
+            return .merge(stopTimer, .send(.screen(.retry)))
+        }
+        restore(target, text: request.input.text, error: error, &state)
+        let listed = state.screen.document?.sections.first { $0.id == "queue" }?.cardIds ?? []
+        return .merge(stopTimer, .send(.screen(.retry)), listed.contains(target) ? showQueue(&state, front: target) : .none)
+    }
+
+    private func restore(_ id: String, text: String?, error: String?, _ state: inout State) {
+        let written = text.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+        guard state.cards[id: id] != nil else {
+            let draft = state.drafts[id]
+            state.drafts[id] = Draft(reply: written ?? draft?.reply ?? "", error: error ?? draft?.error)
+            return
+        }
+        if let written { state.cards[id: id]?.reply = written }
+        if let error { state.cards[id: id]?.actions.error = error }
+        state.cards[id: id]?.actions.stamp = nil
+        state.cards[id: id]?.actions.inFlight = false
+    }
+
+    /// Cards no longer drawn are let go; what was written on them waits in `drafts`.
+    private func discardCards(_ state: inout State, where discarded: (String) -> Bool) {
+        for card in state.cards where discarded(card.id) {
+            let written = !card.reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            guard written || card.actions.error != nil else { continue }
+            state.drafts[card.id] = Draft(reply: card.reply, error: card.actions.error)
+        }
+        state.cards.removeAll { discarded($0.id) }
     }
 
     private func watchUndelivered() -> Effect<Action> {
@@ -445,11 +510,16 @@ public struct TriageFeature: Sendable {
     private func keepWindowObserved(_ state: inout State) -> Effect<Action> {
         let wanted = state.visibleIDs
         let optimistic = state.optimistic
-        state.cards.removeAll { !wanted.contains($0.id) && !optimistic.isSending($0.id) }
+        discardCards(&state) { !wanted.contains($0) && !optimistic.isSending($0) }
         let epoch = state.screen.document?.dataEpoch ?? ""
         var started: [Effect<Action>] = []
         for id in wanted where state.cards[id: id] == nil {
-            state.cards.append(TriageCardFeature.State(id: id, dataEpoch: epoch))
+            var card = TriageCardFeature.State(id: id, dataEpoch: epoch)
+            if let draft = state.drafts.removeValue(forKey: id) {
+                card.reply = draft.reply
+                card.actions.error = draft.error
+            }
+            state.cards.append(card)
             started.append(.send(.cards(.element(id: id, action: .screen(.task)))))
         }
         return .merge(started)

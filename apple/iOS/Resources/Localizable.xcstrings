@@ -408,6 +408,7 @@
     "Your Mac couldn’t do it. Nothing changed; try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no pudo hacerlo. No cambió nada; inténtalo de nuevo."}}}},
     "This device is no longer approved. Approve it again from the Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este dispositivo ya no está aprobado. Vuelve a aprobarlo desde el Mac."}}}},
     "This changed while you were looking. It’s updated now; try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esto cambió mientras lo mirabas. Ya está actualizado; vuelve a intentarlo."}}}},
+    "Your answer wasn’t sent: this card is no longer on your Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu respuesta no se envió: esta tarjeta ya no está en tu Mac."}}}},
     "Couldn’t reach your Mac. Nothing was sent; try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo contactar con tu Mac. No se envió nada; inténtalo de nuevo."}}}},
     "Diff": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cambios"}}}},
     "This screen is no longer available": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta pantalla ya no está disponible"}}}},

@@ -171,7 +171,7 @@ public struct AppFeature: Sendable {
             if case .open(let key)? = route.delegate { Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request") }
             return .none
         case .handOffAnswered(let request, let reply):
-            return .send(.triage(.handOffSettled(request, applied: reply.outcome == .applied)))
+            return .send(.triage(.handOffSettled(request, reply)))
         case .handOffFailed(let request, let failure):
             return .send(.triage(.handOffUndelivered(request, failure)))
         case let .mcpSignInRequested(card, server):
@@ -189,9 +189,8 @@ public struct AppFeature: Sendable {
         }
     }
 
-    /// A screen that left as it sent its action, before preparing it: the queue shows the result
-    /// at once, and the action is prepared, delivered and settled here, where it outlives
-    /// the screen.
+    /// A screen that left once its action was saved on this device: the queue shows the result at
+    /// once, and the action is delivered and settled here, where it outlives the screen.
     private func deliver(_ request: ActionRequest, from key: ViewKey?) -> Effect<Action> {
         let cardID = key.flatMap { key in
             ["card:", "pull_request:"].first { key.rawValue.hasPrefix($0) }.map { String(key.rawValue.dropFirst($0.count)) }
@@ -237,7 +236,7 @@ public struct AppFeature: Sendable {
             return value.event
         case .triage(.delegate(.noLongerPending(let why))):
             return .actionCompleted(why ?? String(localized: "That’s no longer pending"))
-        case .triage(.delegate(.answerNotConfirmed(let message))):
+        case .triage(.delegate(.answerNotConfirmed(let message))), .triage(.delegate(.answerNotSent(let message))):
             return .failure(message)
         case .handOffAnswered(_, let reply):
             switch OutcomeStyle(reply) {
