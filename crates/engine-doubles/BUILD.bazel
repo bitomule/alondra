@@ -13,6 +13,7 @@ _DEPS = all_crate_deps(normal = True) + [
     "//crates/domain-rules:domain_rules",
     "//crates/engine-ports:engine_ports",
     "//crates/process-group:process_group",
+    "//crates/provider-contract:provider_contract",
 ]
 
 rust_library(

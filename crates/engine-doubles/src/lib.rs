@@ -14,6 +14,7 @@ pub mod machine;
 pub mod orchestrator;
 pub mod plugins;
 pub mod processes;
+pub mod sdk;
 pub mod sign_in_returns;
 pub mod worktrees;
 

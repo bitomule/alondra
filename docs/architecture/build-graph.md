@@ -232,12 +232,15 @@ only through the port `SdkEngine` (see "`engine-sdk` asks the engine through `Sd
   node whose input was not taken (`untaken`) and the record of a failed start (`start_failures`).
 - `sdk_handover` keeps in the engine what reaches a `claude --bg` node that is moving and how Alondra
   stops one; the moves themselves are `bg_handover`.
-- The SDK's tests run in two targets of the same sources, split by the feature `real-hosts`:
-  `//crates/engine-sdk:engine_sdk_test` launches nodes on the doubled hosts with the Claude host
-  model and carries no host executable; `//crates/engine-sdk:engine_sdk_host_test` compiles only
-  the tests that need the real Node or Codex host or a fake native Claude or Codex (see "The SDK's
-  tests on the double"). Neither carries a binary of the root (see "Tests leave the root"), and no
-  test runs on a name filter.
+- The SDK's tests run in three targets of the same sources, split by the features `whole-engine`
+  and `real-hosts` (see "`engine-sdk`'s tests without the engine"):
+  `//crates/engine-sdk:engine_sdk_test` runs the crate's own pieces on the doubles of the rest of
+  the engine and links neither `daemon-engine` nor `engine-admission`;
+  `//crates/engine-sdk:engine_sdk_engine_test` opens the whole engine on the doubled hosts with the
+  Claude host model and carries no host executable; `//crates/engine-sdk:engine_sdk_host_test`
+  compiles only the tests that need the real Node or Codex host or a fake native Claude or Codex
+  (see "The SDK's tests on the double"). None carries a binary of the root (see "Tests leave the
+  root"), and no test runs on a name filter.
 
 ## Output adapters
 
@@ -596,11 +599,9 @@ one runtime. `the_daemon_implements_every_port` requires it.
   by path, as they do `owner_fixtures.rs`. The library no longer depends on `daemon-engine` or
   `engine-admission`, their two entries left `LAYER_EXCEPTIONS`, and an edit of either crate no
   longer rebuilds `engine-sdk` or what links it.
-- **Not done yet:** `engine-sdk`'s own tests still link the whole engine, so they rerun on an edit
-  of `daemon-engine` or `engine-admission`. The ones that need it (`engine_tests/*`, `bg_handover`,
-  the `claude --bg` close, `auto_launch`'s real start and part of `sdk_owner`'s) go to
-  `daemon-server`; the rest run on doubles of `SdkEngine`, `AdmissionEngine` and
-  `OrchestratorEngine`.
+- `engine-sdk`'s own tests still linked the whole engine, so they reran on an edit of
+  `daemon-engine` or `engine-admission`; "`engine-sdk`'s tests without the engine" takes the ones
+  that do not need it out.
 
 Measured with `edit_bench`, one run each on the shared Mac under load (load average about 14).
 
@@ -614,6 +615,78 @@ Measured with `edit_bench`, one run each on the shared Mac under load (load aver
   come from the load; the same targets took 263 s (`engine_sdk_test`) when run again. A test failed
   in each run (`scenarios_test` before; `relaunch_test` and `scenarios_test` after); each passed when
   run again alone.
+
+## `engine-sdk`'s tests without the engine (2026-11-22)
+
+`engine-sdk`'s tests are three targets of the same sources, split by two features:
+
+| Target | Features | Links `daemon-engine` and `engine-admission` | Tests |
+|---|---|---|---:|
+| `engine_sdk_test` | none | no | 54 |
+| `engine_sdk_engine_test` | `whole-engine` | yes | 224 |
+| `engine_sdk_host_test` | `real-hosts`, `whole-engine` | yes | 311 (3 ignored) |
+
+- `engine_sdk_test` runs what needs no engine: the pure tests (`idle_release`, `ended_hosts`,
+  `host_folders`, `claude_history`, `conversation_file`, `node_environment`, `session_refresh`) and
+  the scheduler's tests that open a runtime (`domain_schedule_runner`, `domain_schedule_api`). Their runtime is
+  `model_fixture::open`: the crate's own wiring and commit observers, the doubles of
+  `engine-doubles` for the Mac, the agent hosts, the gate, admission and the orchestrator, and
+  `engine-doubles/src/sdk.rs` for `SdkEngine`.
+- That double of `SdkEngine` answers only what a launch and the hosts' owners ask (the account and
+  model, whether accounts are still being checked or wait for a session, whether a worktree is
+  ready, the last request the daemon timed) from a script the test writes, and takes what the hosts
+  report about a node without doing anything. Every other question panics with its name and says
+  the test belongs in `engine_sdk_engine_test`; it also writes that line straight to stderr, because
+  the owners ask from threads whose panic the test harness keeps until the test ends.
+- The three scheduler tests that read the engine's own usage pause, disk watch or admission gate
+  are `domain_schedule_runner/engine_tests.rs`, with the feature `whole-engine`; the scheduler's
+  fixture (`domain_schedule_runner/fixture.rs`) opens the runtime of either target.
+- `engine_sdk_engine_test` is the old `engine_sdk_test` minus those: the engine's own tests that
+  live here (`engine_tests/*`), `auto_launch` and `task_closer` end to end, on the doubled hosts.
+  `engine_fixtures`, `engine_assembly` and the test `use`s of `daemon-engine` in `lib.rs` compile
+  only with `whole-engine`. `engine_sdk_test` runs no program; the git the close of a task asks
+  about went with `task_closer` to `engine_sdk_engine_test`'s `TEST_EXECS`.
+- `tools/bazel/crate_layers_test.py` fails when `engine_sdk_test` reaches `daemon-engine` or
+  `engine-admission` again, through anything it reads at any depth (`TESTS_KEPT_APART`). Checked by
+  hand: putting `engine-admission` back in its `deps` fails the check, taking it out passes.
+- The tools that tell test-only code from production (`prose_decisions`, `module_graph`) take any
+  `#[cfg(all(test, ...))]` as test-only, not only the `real-hosts` ones.
+
+Counts, `engine-sdk`'s targets, before (main at 765f540af) and after: 274 + 308 = 582 tests
+before, 50 + 224 + 308 = 582 after. On main at 0b09cefb5, which adds `host_folders` and its 4
+tests, they are 54 + 224 + 311: those 4 need no engine and run only in `engine_sdk_test`, where
+under `#[cfg(test)]` they ran in `engine_sdk_host_test` too.
+
+Measured with `edit_bench`, one run each on the shared Mac under load (load average 20 to 45):
+
+| Edit | Test targets reopened | Actions run (rustc / clippy / tests) | Edit + build | Longest test target | Edit + test |
+|---|---:|---|---:|---|---:|
+| `daemon-engine/src/wiring.rs` (before) | 46 | 117 (14 / 8 / 94) | 24 s | `engine_sdk_host_test` 217 s | 247 s |
+| `daemon-engine/src/wiring.rs` (after) | 46 | 110 (14 / 8 / 87) | 26 s | `engine_sdk_host_test` 214 s | 237 s |
+| `engine-sdk/src/sdk_owner/session_refresh.rs` (before) | 45 | 99 (13 / 7 / 78) | 22 s | `engine_sdk_host_test` 184 s | 205 s |
+| `engine-sdk/src/sdk_owner/session_refresh.rs` (after) | 46 | 101 (14 / 8 / 78) | 23 s | `engine_sdk_host_test` 262 s | 286 s |
+
+| Target | Before | After |
+|---|---:|---|
+| `engine_sdk_test`, its tests' own time | 32.0 s, 274 tests | 0.6 to 1.1 s, 50 tests |
+| `engine_sdk_engine_test`, its tests' own time | (none) | 21.8 to 27.3 s, 224 tests |
+
+- An edit of `daemon-engine` or `engine-admission` no longer reruns `engine_sdk_test`, and an edit
+  of the scheduler or of the pure pieces has a target of about a second that waits for neither
+  crate to compile. The edit + test of either edit is not shorter: it still waits for
+  `engine_sdk_host_test`, whose time moves with the load more than with this change (184 to 262 s
+  for the same tests). An edit of `engine-sdk` now reopens one more target, the third.
+- The before and after runs each had a failure the change does not explain: the release test
+  `a_large_conversation_whose_cache_expired_goes_on_in_a_new_session_that_can_read_the_old_one` of
+  `engine_sdk_host_test` timed out its 60 real seconds on main and on this branch under load, and
+  passed when the load fell. `engine_sdk_engine_test` failed twice in about ten runs under load; the
+  run whose log was kept shows the scheduler's fixture removing its folder while its runtime was
+  still alive and writing there ("Directory not empty"), code it kept from main. Its runtime is now dropped before the folder, which
+  `test_support::Directory` removes.
+- **Not done:** the tests that use the engine only as a collaborator (`sdk_owner`'s, Codex's,
+  `release_tests`, about 250) are not ported to doubles: they need the real hosts, and a double of
+  all 43 methods of `SdkEngine` would only move the engine into the doubles. The engine's own tests
+  that live here (`engine_tests/*`) did not move to `daemon-engine`'s crate either.
 
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 

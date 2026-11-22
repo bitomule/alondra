@@ -2750,7 +2750,7 @@ impl Drop for Owner {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "whole-engine"))]
 pub use crate::engine_fixtures::owner as fixtures;
 #[cfg(all(test, feature = "real-hosts"))]
 #[path = "sdk_owner/tests.rs"]

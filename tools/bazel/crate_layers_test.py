@@ -4,8 +4,9 @@
 Fails when a production rust_library or rust_binary is declared without a role macro, when a package
 that ships Rust has no layer or a layer names a package with no crate, when a production dependency
 breaks the rule (in any branch of a select), when a test outside the root depends on a crate or
-binary of the root, when an exception list keeps an entry nothing uses or grows past its ceiling, and
-when a test-only library builds a production crate a second time.
+binary of the root, when an exception list keeps an entry nothing uses or grows past its ceiling, when
+a test-only library builds a production crate a second time, and when a test kept apart from a crate
+reaches it again.
 """
 import json
 import os
@@ -17,6 +18,15 @@ EXCEPTION_CEILING = 54
 
 # The number of packages in ROOT_TEST_CONSUMERS, which only goes down too.
 ROOT_TEST_CONSUMER_CEILING = 5
+
+# Tests split from the crates they do not need, so an edit of those does not rerun them, with those
+# crates (docs/architecture/build-graph.md).
+TESTS_KEPT_APART = {
+    "//crates/engine-sdk:engine_sdk_test": [
+        "//crates/daemon-engine:daemon_engine",
+        "//crates/engine-admission:engine_admission",
+    ],
+}
 
 # rules_rust compiles a crate's build.rs into a binary of its own.
 BUILD_SCRIPT_MACROS = {"cargo_build_script"}
@@ -110,6 +120,34 @@ def root_reached(table, rules):
         sys.setrecursionlimit(limit)
 
 
+def reached_from(rules, start):
+    """Every rule `start` reads, at any depth."""
+    seen, pending = set(), [start]
+    while pending:
+        label = pending.pop()
+        if label not in seen:
+            seen.add(label)
+            pending += rules.get(label, ("", []))[1]
+    return seen
+
+
+def tests_not_kept_apart(rules, kept_apart):
+    found = []
+    for test, crates in sorted(kept_apart.items()):
+        if test not in rules:
+            found.append(f"{test} is in TESTS_KEPT_APART but no such test exists: update the list.")
+            continue
+        reached = reached_from(rules, test)
+        for crate in crates:
+            if crate in reached:
+                found.append(
+                    f"{test} depends on {crate} again: it was split from it so an edit of {crate} does not rerun "
+                    "it. Give the test a double of what it asks, or move it to the target that links the whole "
+                    "engine (docs/architecture/build-graph.md)."
+                )
+    return found
+
+
 def tests_above_their_layer(table, rules):
     """A test outside the root that depends on a crate or a binary of the root, through `deps` or
     `data` at any depth: it would rerun on every edit of every crate the daemon links."""
@@ -193,7 +231,9 @@ def main():
     with open(os.environ["CRATE_LAYERS"]) as file:
         table = json.load(file)
     found = problems(table, read_targets(os.environ["RUST_TARGETS"]))
-    found += tests_above_their_layer(table, read_rules(os.environ["RULES"]))
+    rules = read_rules(os.environ["RULES"])
+    found += tests_above_their_layer(table, rules)
+    found += tests_not_kept_apart(rules, TESTS_KEPT_APART)
     for problem in found:
         print(problem)
     return 1 if found else 0

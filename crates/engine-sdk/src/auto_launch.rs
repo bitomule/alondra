@@ -216,7 +216,7 @@ fn tell(domain: &DomainRuntime, id: &str, body: String) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "whole-engine"))]
 pub use crate::engine_fixtures::launches as fixtures;
-#[cfg(all(test, not(feature = "real-hosts")))]
+#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
 mod tests;
