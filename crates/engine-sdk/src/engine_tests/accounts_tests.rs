@@ -1,4 +1,5 @@
 //! The accounts' tests (`accounts`) that start nodes through the SDK.
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use alondra_core::clock;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -84,7 +85,7 @@ fn the_actual_codex_metadata_check_keeps_external_auth_unavailable_and_api_keys_
         report.pay_per_use = method == "apikey";
         if method != "chatgpt" { report.workspace_id = None; }
         accounts.answer_every_codex(Ok(report));
-        check(&domain, &f.home);
+        check(&*domain, &f.home);
         let read = domain.read(); let account = &read.state().accounts[0];
         assert_eq!(account.provider, Provider::Codex); assert_eq!(account.state, expected_state);
         assert_eq!(account.email.as_deref(), Some("first@example.test"));
@@ -103,7 +104,7 @@ fn the_actual_codex_metadata_check_keeps_external_auth_unavailable_and_api_keys_
     replaced.catalog.native_default = None;
     replaced.catalog_error = Some("Codex model list has no data array".into());
     accounts.answer_every_codex(Ok(replaced));
-    check(&domain, &f.home);
+    check(&*domain, &f.home);
     {
         let read = domain.read(); let account = &read.state().accounts[0];
         assert_eq!(account.native_identity.as_deref(), Some("replacement-workspace"), "a failed catalog read never loses a proven native identity replacement");
@@ -135,14 +136,14 @@ async fn a_stale_startup_account_check_retries_and_releases_account_selection() 
     std::fs::write(f.home.join("codex-backend.json"), serde_json::to_vec(&backend).unwrap()).unwrap();
     let mut config = AccountsConfig::fresh(); config.connect(Provider::Codex);
     std::fs::write(options, config.to_toml()).unwrap();
-    begin_initial_check(&domain);
+    begin_initial_check(&*domain);
     let attempts = std::cell::Cell::new(0);
     crate::native_probe::retry_with(|| {
         attempts.set(attempts.get() + 1);
-        let outcome = check_current(&domain, &f.home);
+        let outcome = check_current(&*domain, &f.home);
         if attempts.get() == 1 {
             assert_eq!(outcome, crate::native_probe::Outcome::Stale);
-            assert!(require_initial_check(&domain).is_err());
+            assert!(require_initial_check(&*domain).is_err());
             assert!(domain.read().state().accounts.is_empty());
         }
         std::future::ready(outcome)
@@ -151,7 +152,7 @@ async fn a_stale_startup_account_check_retries_and_releases_account_selection() 
         std::future::ready(())
     }).await;
     assert_eq!(attempts.get(), 2);
-    assert!(require_initial_check(&domain).is_ok());
+    assert!(require_initial_check(&*domain).is_ok());
     let intent = TaskSelection::automatic(ModelProfile::Implementation);
-    assert_eq!(select_for_launch(&domain, &f.home, &intent, alondra_core::now_millis()).unwrap().account, AccountKey::native(Provider::Codex));
+    assert_eq!(select_for_launch(&*domain, &f.home, &intent, alondra_core::now_millis()).unwrap().account, AccountKey::native(Provider::Codex));
 }

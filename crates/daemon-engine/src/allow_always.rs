@@ -4,6 +4,9 @@
 //! the SDK Alondra adds it, and it takes out exactly the rule the user removes, leaving every
 //! other byte as it was.
 
+use crate::domain_transport::TransportWork as _;
+use alondra_engine_ports::Runtime;
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use std::io::Write;
@@ -112,7 +115,7 @@ fn write_wait() -> std::time::Duration {
 
 /// Each rule chosen for the repo `cwd` belongs to, remembered as pending; the repo's settings file,
 /// or `None` outside a repo that can keep them.
-fn remember(domain: &crate::domain_runtime::DomainRuntime, cwd: Option<&str>, offered: &[String], task_id: Option<&str>, interaction_id: &str) -> Option<PathBuf> {
+fn remember(domain: &dyn Runtime, cwd: Option<&str>, offered: &[String], task_id: Option<&str>, interaction_id: &str) -> Option<PathBuf> {
     let repo = cwd.and_then(|cwd| std::fs::canonicalize(cwd).ok()).and_then(|cwd| repo_of(&cwd))?;
     let settings = repo.settings();
     let now = alondra_core::now_millis();
@@ -120,7 +123,7 @@ fn remember(domain: &crate::domain_runtime::DomainRuntime, cwd: Option<&str>, of
         id: 0, repo: repo.root.to_string_lossy().into_owned(), settings: settings.to_string_lossy().into_owned(), rule: rule.clone(),
         added_at: now, task_id: task_id.map(str::to_owned), interaction_id: interaction_id.to_owned(), machine: machine(), state: RuleState::Pending,
     }).collect();
-    let store = domain.store.lock_or_exit("the domain store");
+    let store = domain.store().lock_or_exit("the domain store");
     for rule in &recorded {
         if let Err(error) = store.record_allowed_rule(rule) {
             log!("allow always: could not remember {}: {error:#}", rule.rule);
@@ -131,34 +134,34 @@ fn remember(domain: &crate::domain_runtime::DomainRuntime, cwd: Option<&str>, of
 
 /// The user chose «allow always»: each rule is remembered, and once Claude Code has had time to
 /// write them, each is active if the repo's settings file has it, or missing if not.
-pub(crate) async fn chosen(domain: &std::sync::Arc<crate::domain_runtime::DomainRuntime>, cwd: Option<&str>, rules: &[String], task_id: Option<&str>, interaction_id: &str) -> Result<()> {
+pub(crate) async fn chosen(domain: &std::sync::Arc<dyn Runtime>, cwd: Option<&str>, rules: &[String], task_id: Option<&str>, interaction_id: &str) -> Result<()> {
     let recording = domain.clone();
     let cwd = cwd.map(str::to_owned);
     let offered = rules.to_vec();
     let task_id = task_id.map(str::to_owned);
     let interaction_id = interaction_id.to_owned();
-    let settings = domain.hook_work.run(move || remember(&recording, cwd.as_deref(), &offered, task_id.as_deref(), &interaction_id)).await?;
+    let settings = domain.hook_work().run(move || remember(&*recording, cwd.as_deref(), &offered, task_id.as_deref(), &interaction_id)).await?;
     let Some(settings) = settings else { return Ok(()) };
     let started = clock::instant();
     while alondra_core::clock::since(started) < write_wait() {
         let settings = settings.clone();
         let offered = rules.to_vec();
-        let written = domain.hook_work.run(move || {
+        let written = domain.hook_work().run(move || {
             let present = allowed(&settings).unwrap_or_default();
             offered.iter().all(|rule| present.contains(&rules::settings_entry(rule)))
         }).await?;
         if written { break }
-        wait_for_write(domain).await;
+        wait_for_write(&**domain).await;
     }
     let recording = domain.clone();
-    domain.hook_work.run(move || reconcile(&recording)).await?;
+    domain.hook_work().run(move || reconcile(&*recording)).await?;
     Ok(())
 }
 
 /// The user chose «allow always» on a decision Claude asked for through the SDK, which never widens
 /// Claude's permissions itself: Alondra writes each rule into the repo's settings file, where
 /// Claude Code reads it for the next call, and remembers it as `chosen` does.
-pub(crate) fn chosen_through_sdk(domain: &crate::domain_runtime::DomainRuntime, cwd: Option<&str>, rules: &[String], task_id: Option<&str>, interaction_id: &str) -> Result<()> {
+pub(crate) fn chosen_through_sdk(domain: &dyn Runtime, cwd: Option<&str>, rules: &[String], task_id: Option<&str>, interaction_id: &str) -> Result<()> {
     let Some(settings) = remember(domain, cwd, rules, task_id, interaction_id) else { return Ok(()) };
     add(&settings, &rules.iter().map(|rule| rules::settings_entry(rule)).collect::<Vec<_>>())?;
     reconcile(domain);
@@ -170,7 +173,7 @@ pub(crate) struct ConfirmationWait {
     pub release: tokio::sync::oneshot::Receiver<()>,
 }
 
-async fn wait_for_write(_domain: &crate::domain_runtime::DomainRuntime) {
+async fn wait_for_write(_domain: &dyn Runtime) {
     {
         let confirmation = _domain.allow_always_wait().lock_or_recover("the «Allow always» write a test holds").take();
         if let Some(confirmation) = confirmation {
@@ -185,8 +188,8 @@ async fn wait_for_write(_domain: &crate::domain_runtime::DomainRuntime) {
 /// The rules Alondra added, each checked against its settings file: a pending rule the file has
 /// is active, one it still lacks after Claude Code's time to write it is missing, and an active
 /// rule the file no longer has was removed by hand.
-pub fn reconcile(domain: &crate::domain_runtime::DomainRuntime) -> Vec<AllowedRule> {
-    let store = domain.store.lock_or_exit("the domain store");
+pub fn reconcile(domain: &dyn Runtime) -> Vec<AllowedRule> {
+    let store = domain.store().lock_or_exit("the domain store");
     let mut rows = store.allowed_rules().unwrap_or_default();
     let now = alondra_core::now_millis();
     let mut files: std::collections::BTreeMap<String, Option<Vec<String>>> = Default::default();
@@ -212,14 +215,14 @@ pub fn reconcile(domain: &crate::domain_runtime::DomainRuntime) -> Vec<AllowedRu
 
 /// Removes one rule Alondra added from its settings file. A rule the file no longer has counts as
 /// removed.
-pub fn remove_rule(domain: &crate::domain_runtime::DomainRuntime, id: i64) -> Result<Option<AllowedRule>> {
+pub fn remove_rule(domain: &dyn Runtime, id: i64) -> Result<Option<AllowedRule>> {
     let row = {
-        let store = domain.store.lock_or_exit("the domain store");
+        let store = domain.store().lock_or_exit("the domain store");
         store.allowed_rules()?.into_iter().find(|row| row.id == id)
     };
     let Some(row) = row else { return Ok(None) };
     remove(Path::new(&row.settings), &rules::settings_entry(&row.rule))?;
-    domain.store.lock_or_exit("the domain store").set_allowed_rule_state(row.id, RuleState::Removed)?;
+    domain.store().lock_or_exit("the domain store").set_allowed_rule_state(row.id, RuleState::Removed)?;
     Ok(Some(row))
 }
 
@@ -529,7 +532,7 @@ mod tests {
 pub struct ChosenAlways;
 
 impl crate::domain_runtime::CommitObserver for ChosenAlways {
-    fn committed(&self, domain: &crate::domain_runtime::DomainRuntime, command: &alondra_domain_rules::Command, state: &alondra_domain_rules::DomainState) {
+    fn committed(&self, domain: &dyn alondra_engine_ports::Runtime, command: &alondra_domain_rules::Command, state: &alondra_domain_rules::DomainState) {
         use alondra_domain_rules::{Command as Domain, Hold, LifecycleRecord, Scope};
         let Domain::AnswerQuestion { interaction_id, option_id, .. } = command else { return };
         if option_id != Hold::ALWAYS {
@@ -560,8 +563,8 @@ pub trait AllowAlwaysWait {
     fn allow_always_wait(&self) -> &std::sync::Mutex<Option<ConfirmationWait>>;
 }
 
-impl AllowAlwaysWait for crate::domain_runtime::DomainRuntime {
+impl<R: alondra_engine_ports::Runtime + ?Sized> AllowAlwaysWait for R {
     fn allow_always_wait(&self) -> &std::sync::Mutex<Option<ConfirmationWait>> {
-        &self.extension::<Waits>().0
+        &alondra_engine_ports::extension::<Waits>(self.as_runtime()).0
     }
 }

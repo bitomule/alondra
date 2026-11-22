@@ -1,3 +1,4 @@
+use crate::domain_runtime::DomainRuntime;
 use super::*;
 use super::fixtures::{Slice, envelope};
 
@@ -57,7 +58,7 @@ fn rebinding_a_driver_replaces_its_pause_subscription() {
     check_pause(&driver, false, 0);
     let queries = measure::pause_queries();
     let tasks = measure::tasks_read();
-    driver.rebind(Arc::clone(&restarted));
+    driver.rebind(restarted.clone());
     assert_eq!(measure::pause_queries() - queries, 1, "rebind resolves the replacement subscription once");
     assert_eq!(measure::tasks_read() - tasks, 1);
     check_pause(&driver, true, 0);
@@ -76,7 +77,7 @@ fn rebinding_at_the_same_revision_observes_the_new_runtimes_publications() {
     assert_eq!(slice.domain.read().state().revision, restarted.read().state().revision);
     let queries = measure::pause_queries();
     let tasks = measure::tasks_read();
-    driver.rebind(Arc::clone(&restarted));
+    driver.rebind(restarted.clone());
     assert_eq!(measure::pause_queries() - queries, 1, "equal revisions still require a new subscription");
     assert_eq!(measure::tasks_read() - tasks, 1);
     check_pause(&driver, false, 0);

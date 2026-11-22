@@ -5,7 +5,7 @@ use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use crate::live::Relaunch;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_domain_rules::{DomainState, NodeFact, Start, StartFacts, TaskId};
 use anyhow::Result;
@@ -13,9 +13,9 @@ use std::collections::BTreeMap;
 pub use alondra_engine_kernel::start_failures::{ended, failed, plan_changed, problem_of, raise};
 
 /// What the daemon knows of how every open task gets going.
-pub fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTreeMap<TaskId, StartFacts>> {
+pub fn facts(domain: &dyn Runtime, state: &DomainState) -> Result<BTreeMap<TaskId, StartFacts>> {
     let held = domain.gate().pauses().held;
-    let store = domain.store.lock_or_exit("the domain store");
+    let store = domain.store().lock_or_exit("the domain store");
     let planned = store.planned_tasks()?;
     let autos = store.auto_launches()?;
     let retries = store.start_retries()?;

@@ -1,10 +1,11 @@
 //! A requested selection stays durable while its current execution drains, is fenced and hands off.
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use alondra_engine_ports::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::domain_store::{Attached,OwnerJournal,StoreError};
 use crate::domain_store::provider_transition::{Kind,Plan,Phase,Transition,prepared_facts};
 use alondra_engine_ports::agent_host::{EndedHost,Retained};
@@ -31,12 +32,12 @@ impl Transitions {
 }
 fn failure(error:impl std::fmt::Display)->DomainError{DomainError::new("selection_transition",error.to_string())}
 fn store_failure(error:StoreError)->DomainError{match error{StoreError::Domain(error)=>error,StoreError::Storage(error)=>failure(error)}}
-fn scope(domain:&DomainRuntime)->Result<AuthorityScope,DomainError>{AuthorityScope::new(domain.read().state().data_epoch.clone()).map_err(failure)}
-fn envelope(domain:&DomainRuntime,id:&str,command:Command)->CommandEnvelope{CommandEnvelope{protocol_version:PROTOCOL_VERSION,data_epoch:domain.read().state().data_epoch.clone(),command_id:id.into(),expected_revision:0,command}}
-fn current(domain:&DomainRuntime,task:&TaskId)->Result<Option<Transition>,DomainError>{domain.store.lock_or_exit("the domain store").provider_transition(task).map_err(failure)}
+fn scope(domain:&dyn Runtime)->Result<AuthorityScope,DomainError>{AuthorityScope::new(domain.read().state().data_epoch.clone()).map_err(failure)}
+fn envelope(domain:&dyn Runtime,id:&str,command:Command)->CommandEnvelope{CommandEnvelope{protocol_version:PROTOCOL_VERSION,data_epoch:domain.read().state().data_epoch.clone(),command_id:id.into(),expected_revision:0,command}}
+fn current(domain:&dyn Runtime,task:&TaskId)->Result<Option<Transition>,DomainError>{domain.store().lock_or_exit("the domain store").provider_transition(task).map_err(failure)}
 
-pub(crate) fn denied_tools(domain:&DomainRuntime,task:&TaskId)->Result<Vec<String>,DomainError>{
-    let state=domain.state().map_err(failure)?;
+pub(crate) fn denied_tools(domain:&dyn Runtime,task:&TaskId)->Result<Vec<String>,DomainError>{
+    let state=domain.state();
     let task_data=state.tasks.get(task).ok_or_else(||DomainError::new("not_found","Task missing"))?;
     let execution=state.lifecycle_of(task)?.execution().cloned().ok_or_else(||failure("The task has no managed execution"))?;
     let (backend,_)=domain.sdk().ok_or_else(||failure("The provider runtime is unavailable"))?;
@@ -44,8 +45,8 @@ pub(crate) fn denied_tools(domain:&DomainRuntime,task:&TaskId)->Result<Vec<Strin
     alondra_daemon_engine_model::LaunchOptions::load(&selected.state_root.join(execution.instance().as_str())).map(|options|options.disallowed_tools).map_err(failure)
 }
 
-pub fn request(domain:&DomainRuntime,actor:&Actor,task:&TaskId,target_account:AccountKey,target_model:ModelSelection,intent:TaskSelection,reason:&str,expected_selection:&str,authorize:impl FnOnce()->Result<(),DomainError>)->Result<Value,DomainError>{
-    let initial=domain.state().map_err(failure)?;
+pub fn request(domain:&dyn Runtime,actor:&Actor,task:&TaskId,target_account:AccountKey,target_model:ModelSelection,intent:TaskSelection,reason:&str,expected_selection:&str,authorize:impl FnOnce()->Result<(),DomainError>)->Result<Value,DomainError>{
+    let initial=domain.state();
     let held=initial.tasks.get(task).ok_or_else(||DomainError::new("not_found","Task missing"))?;
     let execution=initial.lifecycle_of(task)?.execution().cloned().ok_or_else(||failure("The task has no managed execution to change"))?;
     let (backend,_)=domain.sdk().ok_or_else(||failure("The provider runtime is unavailable"))?;
@@ -72,8 +73,8 @@ pub fn request(domain:&DomainRuntime,actor:&Actor,task:&TaskId,target_account:Ac
 /// Moves the task to `account`. A task that already ran keeps the move open while its execution
 /// ends, and a new node on `account` takes it over from its record; one that never ran just starts
 /// there. The command and the move's first step commit together, or neither does.
-pub fn request_move(domain:&DomainRuntime,actor:&Actor,task:&TaskId,account:AccountKey,expected_selection:&str,authorize:impl FnOnce()->Result<(),DomainError>)->Result<Value,DomainError>{
-    let initial=domain.state().map_err(failure)?;
+pub fn request_move(domain:&dyn Runtime,actor:&Actor,task:&TaskId,account:AccountKey,expected_selection:&str,authorize:impl FnOnce()->Result<(),DomainError>)->Result<Value,DomainError>{
+    let initial=domain.state();
     let (intent,pending)=initial.moved_selection(actor,task,&account)?;
     let id=format!("move-{}",crate::auth::random_hex(16));
     let command=envelope(domain,&id,Command::MoveTask{task_id:task.clone(),expected_selection:expected_selection.into(),account:account.clone()});
@@ -96,14 +97,14 @@ pub fn request_move(domain:&DomainRuntime,actor:&Actor,task:&TaskId,account:Acco
 }
 
 /// Whether a move holds the task: no node but the one it moves to may start for it.
-pub fn moving(domain:&DomainRuntime,task:&TaskId)->bool{
+pub fn moving(domain:&dyn Runtime,task:&TaskId)->bool{
     (domain.read().state().moving_to(task).is_some() && matches!(current(domain,task),Ok(Some(change)) if change.plan.kind==Kind::Move))
         || starts_elsewhere(domain,task)
 }
 /// Whether the task moved before a node started on its new account and none has started there
 /// yet: its last execution is still the one it moved from.
-fn starts_elsewhere(domain:&DomainRuntime,task:&TaskId)->bool{
-    let held={let store=domain.store.lock_or_exit("the domain store");store.deferred_move(task).and_then(|deferred|match deferred{Some(change)=>Ok(Some(change)),None=>store.refused_move(task)})};
+fn starts_elsewhere(domain:&dyn Runtime,task:&TaskId)->bool{
+    let held={let store=domain.store().lock_or_exit("the domain store");store.deferred_move(task).and_then(|deferred|match deferred{Some(change)=>Ok(Some(change)),None=>store.refused_move(task)})};
     let Ok(Some(change))=held else{return false};
     let read=domain.read();let state=read.state();
     let open=state.lifecycle_of(task).is_ok_and(|lifecycle|!matches!(lifecycle.phase(),alondra_domain::TaskPhase::Finishing|alondra_domain::TaskPhase::Completed|alondra_domain::TaskPhase::Cancelled));
@@ -111,24 +112,24 @@ fn starts_elsewhere(domain:&DomainRuntime,task:&TaskId)->bool{
     open && last.as_deref()==Some(change.plan.source.instance.as_str())
 }
 
-pub(crate) fn holds_source_inputs(domain:&DomainRuntime,task:&TaskId,instance:&str)->bool{
+pub(crate) fn holds_source_inputs(domain:&dyn Runtime,task:&TaskId,instance:&str)->bool{
     if domain.read().state().tasks.get(task).is_none_or(|task|task.pending_selection.is_none()){return false}
     match current(domain,task){Ok(Some(change))=>change.plan.source.instance==instance,Ok(None)=>false,Err(_)=>true}
 }
-pub(crate) fn holds_execution(domain:&DomainRuntime,task:&TaskId)->bool{
+pub(crate) fn holds_execution(domain:&dyn Runtime,task:&TaskId)->bool{
     let read=domain.read();let instance=read.state().lifecycle_of(task).ok().and_then(|lifecycle|lifecycle.execution().map(|stamp|stamp.instance().as_str().to_owned()));
     instance.is_some_and(|instance|holds_source_inputs(domain,task,&instance))
 }
-fn phase(domain:&DomainRuntime,change:&Transition,next:Phase,facts:Value)->Result<(),DomainError>{domain.own(scope(domain)?,|owner|owner.provider_transition_phase(&change.plan.id,change.phase,next,facts)).map_err(store_failure).map(drop)}
+fn phase(domain:&dyn Runtime,change:&Transition,next:Phase,facts:Value)->Result<(),DomainError>{domain.own(scope(domain)?,|owner|owner.provider_transition_phase(&change.plan.id,change.phase,next,facts)).map_err(store_failure).map(drop)}
 fn applied(plan:&Plan)->TaskSelection{let mut selected=plan.intent.clone();selected.effective=Some(plan.target_model.clone());selected}
-fn apply_selection(domain:&DomainRuntime,plan:&Plan,from:Phase,to:Phase,facts:Value)->Result<(),DomainError>{
+fn apply_selection(domain:&dyn Runtime,plan:&Plan,from:Phase,to:Phase,facts:Value)->Result<(),DomainError>{
     domain.own(scope(domain)?,|owner|{
         owner.validate_selection_source(plan)?;
         owner.stage_command(&Actor::System,&envelope(domain,&format!("{}-effective",plan.id),Command::RecordTaskSelection{task_id:plan.task.clone(),selection:applied(plan),pending:None}),Attached::None)?;
         owner.provider_transition_phase(&plan.id,from,to,facts)
     }).map_err(store_failure).map(drop)
 }
-fn abort_unapplied_model_change(domain: &DomainRuntime, change: &Transition) -> Result<bool, DomainError> {
+fn abort_unapplied_model_change(domain: &dyn Runtime, change: &Transition) -> Result<bool, DomainError> {
     let plan = &change.plan;
     domain.own(scope(domain)?, |owner| {
         owner.validate_selection_binding(plan)?;
@@ -165,17 +166,17 @@ fn classify(plan:&Plan)->SelectionTransition{
 }
 /// The context the target of the change `id` starts from, and the file of the conversation before
 /// it that a refresh lets it read.
-pub(crate) fn retained_handoff(domain:&DomainRuntime,task:&TaskId,id:&str)->Result<(PreparedHandoff,Option<std::path::PathBuf>),DomainError>{
+pub(crate) fn retained_handoff(domain:&dyn Runtime,task:&TaskId,id:&str)->Result<(PreparedHandoff,Option<std::path::PathBuf>),DomainError>{
     let change=match current(domain,task)?{
         Some(change)=>change,
-        None=>domain.store.lock_or_exit("the domain store").deferred_move(task).map_err(failure)?.ok_or_else(||failure("The transfer context is missing"))?,
+        None=>domain.store().lock_or_exit("the domain store").deferred_move(task).map_err(failure)?.ok_or_else(||failure("The transfer context is missing"))?,
     };
     if change.plan.id!=id || !matches!(change.phase,Phase::ContextReady|Phase::Done){return Err(failure("The transfer is not ready for its target"))}
     let file=change.plan.conversation_file.clone();
     Ok((serde_json::from_value(prepared_facts(change)).map_err(failure)?,file))
 }
-fn drained(domain:&DomainRuntime,plan:&Plan)->Result<bool,DomainError>{
-    let state=domain.state().map_err(failure)?;let lifecycle=state.lifecycle_of(&plan.task)?;
+fn drained(domain:&dyn Runtime,plan:&Plan)->Result<bool,DomainError>{
+    let state=domain.state();let lifecycle=state.lifecycle_of(&plan.task)?;
     let unoffered=domain.own(scope(domain)?,|owner|owner.source_inputs_unoffered(&plan.task)).map_err(store_failure)?.0;
     Ok(unoffered && lifecycle.execution().is_some_and(|stamp|stamp.instance().as_str()==plan.source.instance) && lifecycle.turn().is_none()
         && !matches!(lifecycle.activity(),ActivityView::Working|ActivityView::OwnWork)
@@ -243,7 +244,7 @@ fn handoff(owner:&mut dyn OwnerJournal,plan:&Plan)->Result<PreparedHandoff,Store
     if plan.kind==Kind::Refresh{return refresh_handoff(owner.state(),plan,&canonical,&entries,window)}
     alondra_store::prepare_context_handoff(&canonical,"Continue this Alondra task from its public records. The user changed its provider or model. Preserve completed work and answer through Alondra.",&entries,&coverage,None,HandoffBudget{destination_context_tokens:window,reserved_tokens:alondra_store::HANDOFF_RESERVED_TOKENS}).map_err(|error|failure(handoff_refusal(error)).into())
 }
-fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,DomainError>{
+fn prepare_context(domain:&dyn Runtime,plan:&Plan)->Result<PreparedHandoff,DomainError>{
     domain.own(scope(domain)?,|owner|{
         let prepared=handoff(owner,plan)?;
         if let Some(through)=&prepared.coverage.through{owner.pin_context(&plan.id,through)?;}
@@ -274,17 +275,17 @@ pub(crate) fn request_refresh(owner:&mut dyn OwnerJournal,task:&TaskId,host_dire
 }
 /// Ends the execution a task moves from and seals it: its host stops, what it did is committed
 /// with its end, and the ended host is the proof that nothing of it writes any more.
-fn end_source(domain:&Arc<DomainRuntime>,plan:&Plan)->Result<(),DomainError>{
-    domain.own(scope(domain)?,|owner|owner.validate_selection_binding(plan)).map_err(store_failure)?;
+fn end_source(domain:&Arc<dyn Runtime>,plan:&Plan)->Result<(),DomainError>{
+    domain.own(scope(&**domain)?,|owner|owner.validate_selection_binding(plan)).map_err(store_failure)?;
     let alive=!matches!(alondra_engine_ports::agent_host::of(domain.ports()).and_then(|hosts|hosts.claim(&plan.source.host_directory)),Ok(Retained::Ended(_)));
-    if alive || !host_ended(domain,&plan.task)? || crate::sdk_owner::claims_left(domain,&plan.task).map_err(failure)?{end_and_fence(domain,plan)?;}
-    ensure_fence(domain,plan)?;
+    if alive || !host_ended(&**domain,&plan.task)? || crate::sdk_owner::claims_left(&**domain,&plan.task).map_err(failure)?{end_and_fence(domain,plan)?;}
+    ensure_fence(&**domain,plan)?;
     let fences=domain.selection_changes().fences.lock_or_recover("the provider transition fences");
-    domain.own(scope(domain)?,|owner|owner.source_fenced(plan,fences.get(&plan.id).unwrap())).map_err(store_failure).map(drop)
+    domain.own(scope(&**domain)?,|owner|owner.source_fenced(plan,fences.get(&plan.id).unwrap())).map_err(store_failure).map(drop)
 }
 /// Whether the end of the task's current execution is already committed. A host that resumed the
 /// same execution after it may still run: only the host's lock says whether one does.
-fn host_ended(domain:&DomainRuntime,task:&TaskId)->Result<bool,DomainError>{
+fn host_ended(domain:&dyn Runtime,task:&TaskId)->Result<bool,DomainError>{
     let read=domain.read();
     let journal=read.state().lifecycle_journal.get(task).ok_or_else(||failure("The task has no lifecycle"))?;
     let admitted=journal.iter().rposition(|record|matches!(record,LifecycleRecord::Admitted{..})).unwrap_or(0);
@@ -293,14 +294,14 @@ fn host_ended(domain:&DomainRuntime,task:&TaskId)->Result<bool,DomainError>{
 /// The move ends now, before its target starts: the task leaves its execution and keeps the
 /// selection it moved with, and its next node starts on the new account from the prepared context
 /// when something resumes it. A paused task stays paused.
-fn defer(domain:&DomainRuntime,change:&Transition)->Result<(),DomainError>{
+fn defer(domain:&dyn Runtime,change:&Transition)->Result<(),DomainError>{
     let plan=&change.plan;
     domain.own(scope(domain)?,|owner|{
         owner.stage_command(&Actor::System,&envelope(domain,&format!("{}-deferred",plan.id),Command::DeferTaskMove{task_id:plan.task.clone(),account:plan.target_account.clone()}),Attached::None)?;
         owner.provider_transition_phase(&plan.id,Phase::ContextReady,Phase::Done,json!({"deferred_start":true,"context":change.facts}))
     }).map_err(store_failure).map(drop)
 }
-fn start_target(domain:&Arc<DomainRuntime>,plan:&Plan,prepared:PreparedHandoff)->Result<(),DomainError>{
+fn start_target(domain:&Arc<dyn Runtime>,plan:&Plan,prepared:PreparedHandoff)->Result<(),DomainError>{
     let task=&plan.task;
     let (backend,_)=domain.sdk().ok_or_else(||failure("Provider runtime missing"))?;
     let plugin=domain.ports().plugins().node(domain.home()).filter(|plugin|plugin.is_dir()).or_else(||Some(domain.home().join(crate::plugins::NODE)).filter(|plugin|plugin.is_dir())).ok_or_else(||failure("Alondra's task plugin is unavailable; run alondra doctor --fix"))?;
@@ -311,20 +312,20 @@ fn start_target(domain:&Arc<DomainRuntime>,plan:&Plan,prepared:PreparedHandoff)-
     Ok(())
 }
 /// Starts on its new account the task a move left waiting, once it has something to go on with.
-pub(crate) async fn start_moved(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<bool,DomainError>{
+pub(crate) async fn start_moved(domain:&Arc<dyn Runtime>,task:&TaskId)->Result<bool,DomainError>{
     let _advance=domain.selection_changes().advancing.lock().await;
-    if !starts_elsewhere(domain,task) || !ready_to_start(domain,task)? || !admitted(domain,task){return Ok(false)}
-    let change=domain.store.lock_or_exit("the domain store").deferred_move(task).map_err(failure)?.ok_or_else(||failure("The move is missing"))?;
+    if !starts_elsewhere(&**domain,task) || !ready_to_start(&**domain,task)? || !admitted(&**domain,task){return Ok(false)}
+    let change=domain.store().lock_or_exit("the domain store").deferred_move(task).map_err(failure)?.ok_or_else(||failure("The move is missing"))?;
     let prepared=serde_json::from_value(prepared_facts(change.clone())).map_err(failure)?;
-    let started=current_target_model(domain,&change.plan).and_then(|target_model|start_target(domain,&Plan{target_model,..change.plan.clone()},prepared));
+    let started=current_target_model(&**domain,&change.plan).and_then(|target_model|start_target(domain,&Plan{target_model,..change.plan.clone()},prepared));
     match started{
-        Err(error) if REFUSED_STARTS.contains(&error.code.as_str())=>{refuse_start(domain,&change,&error.message)?;Ok(false)}
+        Err(error) if REFUSED_STARTS.contains(&error.code.as_str())=>{refuse_start(&**domain,&change,&error.message)?;Ok(false)}
         started=>started.map(|()|true),
     }
 }
 /// The model a moved task starts with, read again from its account's catalog: the catalog may have
 /// been refreshed since the move resolved it, and a selection of an older catalog is refused.
-fn current_target_model(domain:&DomainRuntime,plan:&Plan)->Result<ModelSelection,DomainError>{
+fn current_target_model(domain:&dyn Runtime,plan:&Plan)->Result<ModelSelection,DomainError>{
     let read=domain.read();
     let catalog=read.state().model_catalogs.iter().find(|catalog|catalog.account==plan.target_account)
         .ok_or_else(||DomainError::new("model_catalog_unavailable","Refresh the models of the account the task moved to"))?;
@@ -337,7 +338,7 @@ fn current_target_model(domain:&DomainRuntime,plan:&Plan)->Result<ModelSelection
 const REFUSED_STARTS:[&str;4]=["handoff_budget","model_unavailable","account_unavailable","paid_authorization_required"];
 /// Ends the start of a moved task that is refused for good: the move waits at `StartRefused`, the
 /// task says why it did not move, and a card asks the user to try again or cancel the task.
-fn refuse_start(domain:&DomainRuntime,change:&Transition,reason:&str)->Result<(),DomainError>{
+fn refuse_start(domain:&dyn Runtime,change:&Transition,reason:&str)->Result<(),DomainError>{
     let plan=&change.plan;
     let reason:String=reason.chars().take(1900).collect();
     log!("{} cannot start on {}; it waits for the user: {reason}",plan.task,plan.target_account.wire_id());
@@ -351,7 +352,7 @@ fn refuse_start(domain:&DomainRuntime,change:&Transition,reason:&str)->Result<()
 }
 /// The user chose to try again the refused start of a moved task: its move goes back to waiting
 /// for its target to start, and the next pass tries it once more.
-fn retry_refused(domain:&DomainRuntime,change:&Transition)->Result<bool,DomainError>{
+fn retry_refused(domain:&dyn Runtime,change:&Transition)->Result<bool,DomainError>{
     let retry={
         let read=domain.read();let state=read.state();
         state.open_start_problem(&change.plan.task).is_none() && state.last_start_problem(&change.plan.task).is_some_and(|card|!card.withdrawn && matches!(&card.payload,
@@ -365,7 +366,7 @@ fn retry_refused(domain:&DomainRuntime,change:&Transition)->Result<bool,DomainEr
 }
 /// Whether the gate lets the moved task's next node start, as it lets a queued task: a free slot,
 /// the disk's floor and the Mac's memory hold it until there is room.
-fn admitted(domain:&DomainRuntime,task:&TaskId)->bool{
+fn admitted(domain:&dyn Runtime,task:&TaskId)->bool{
     let Some(priority)=domain.read().state().tasks.get(task).map(|task|task.priority) else{return false};
     let now=alondra_core::now_millis();
     domain.gate().ask(alondra_engine_ports::admission::Waiting{key:alondra_engine_ports::admission::Key::Task(task.clone()),priority,resuming:false,since:now},now).is_ok()
@@ -373,7 +374,7 @@ fn admitted(domain:&DomainRuntime,task:&TaskId)->bool{
 /// Whether the task has something to go on with and nobody else to wait for: the moment its next
 /// node starts, as the node it moved from would have resumed then. A delivery goes on once the
 /// user sent it back.
-fn ready_to_start(domain:&DomainRuntime,task:&TaskId)->Result<bool,DomainError>{
+fn ready_to_start(domain:&dyn Runtime,task:&TaskId)->Result<bool,DomainError>{
     ready_in(domain.read().state(),task)
 }
 /// `ready_to_start` over a state: the decision the daemon and the whole-machine model share.
@@ -397,16 +398,16 @@ pub(crate) fn move_start(state:&DomainState,task:&TaskId)->Result<MoveStart,Doma
 /// Stops the source's host and commits its end, keeping as the fence the folder the end was read
 /// from, still locked: a lock released and taken again can be held meanwhile by a child this
 /// daemon forked that has not exec'd yet, which would read as a host that still runs.
-fn end_and_fence(domain:&Arc<DomainRuntime>,plan:&Plan)->Result<(),DomainError>{
+fn end_and_fence(domain:&Arc<dyn Runtime>,plan:&Plan)->Result<(),DomainError>{
     let (backend,_)=domain.sdk().ok_or_else(||failure("The provider runtime is unavailable"))?;
     domain.stop_sdk_host(&plan.source.agent).map_err(failure)?;
     let claimed=crate::sdk_owner::end_and_claim_unowned_host(Arc::clone(domain),backend,plan.task.clone()).map_err(failure)?;
     if let Some(proof)=claimed.filter(|proof|proof.state_dir()==plan.source.host_directory){
         domain.selection_changes().fences.lock_or_recover("the provider transition fences").insert(plan.id.clone(),proof);
     }
-    ensure_fence(domain,plan)
+    ensure_fence(&**domain,plan)
 }
-fn ensure_fence(domain:&DomainRuntime,plan:&Plan)->Result<(),DomainError>{
+fn ensure_fence(domain:&dyn Runtime,plan:&Plan)->Result<(),DomainError>{
     if domain.selection_changes().fences.lock_or_recover("the provider transition fences").contains_key(&plan.id){return Ok(())}
     let retained=alondra_engine_ports::agent_host::of(domain.ports()).and_then(|hosts|hosts.claim(&plan.source.host_directory)).map_err(failure)?;
     let proof=match retained{Retained::Ended(proof)=>proof,Retained::Held=>return Err(failure("The source host still holds its native execution")),Retained::Absent=>return Err(failure("The source host fence is missing; its absence is not continuation proof"))};
@@ -414,41 +415,41 @@ fn ensure_fence(domain:&DomainRuntime,plan:&Plan)->Result<(),DomainError>{
     Ok(())
 }
 
-pub async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Phase,DomainError>{
+pub async fn advance(domain:&Arc<dyn Runtime>,task:&TaskId)->Result<Phase,DomainError>{
     let _advance=domain.selection_changes().advancing.lock().await;
     loop{
-        let change=current(domain,task)?.ok_or_else(||failure("No selection change is pending"))?;
+        let change=current(&**domain,task)?.ok_or_else(||failure("No selection change is pending"))?;
         if *domain.selection_changes().crash_at.lock().unwrap()==Some(change.phase){return Err(failure("the daemon died"))}
         let plan=&change.plan;
         if plan.kind==Kind::Model && plan.target_account!=plan.source.account{return Err(failure("The account and provider of this native session cannot change; create a new node"))}
         if plan.kind==Kind::Model && matches!(change.phase,Phase::SourceFenced|Phase::ContextReady|Phase::TargetAdmitted|Phase::Consumed){return Err(failure("Session transfer is disabled; the node keeps its original account and native history"))}
 
         if matches!(change.phase,Phase::Requested|Phase::Draining) && matches!(domain.read().state().lifecycle_of(task)?.phase(),alondra_domain::TaskPhase::Finishing|alondra_domain::TaskPhase::Completed|alondra_domain::TaskPhase::Cancelled){
-            phase(domain,&change,Phase::Aborted,json!({"task_ended":true}))?;
+            phase(&**domain,&change,Phase::Aborted,json!({"task_ended":true}))?;
             return Ok(Phase::Aborted)
         }
         match change.phase{
             Phase::Requested=>match classify(plan){
                 SelectionTransition::Reject(reason)=>return Err(failure(reason)),
-                SelectionTransition::Keep=>{apply_selection(domain,plan,Phase::Requested,Phase::Done,json!({"unchanged_execution":true}))?;return Ok(Phase::Done)},
-                SelectionTransition::ApplyNextTurn=>phase(domain,&change,Phase::Draining,json!({}))?,
-                SelectionTransition::CreateWithHandoff if matches!(plan.kind,Kind::Move|Kind::Refresh)=>phase(domain,&change,Phase::Draining,json!({}))?,
+                SelectionTransition::Keep=>{apply_selection(&**domain,plan,Phase::Requested,Phase::Done,json!({"unchanged_execution":true}))?;return Ok(Phase::Done)},
+                SelectionTransition::ApplyNextTurn=>phase(&**domain,&change,Phase::Draining,json!({}))?,
+                SelectionTransition::CreateWithHandoff if matches!(plan.kind,Kind::Move|Kind::Refresh)=>phase(&**domain,&change,Phase::Draining,json!({}))?,
                 _=>return Err(failure("This change requires a new native session; create a new node instead")),
             },
             Phase::Draining if matches!(plan.kind,Kind::Move|Kind::Refresh)=>{
-                if crate::sdk_owner::being_retaken(domain,task){return Ok(Phase::Draining)}
+                if crate::sdk_owner::being_retaken(&**domain,task){return Ok(Phase::Draining)}
                 end_source(domain,plan)?
             }
             Phase::Draining=>{
-                if matches!(classify(plan), SelectionTransition::ApplyNextTurn) && abort_unapplied_model_change(domain, &change)? { return Ok(Phase::Aborted) }
-                domain.own(scope(domain)?,|owner|owner.validate_selection_source(plan)).map_err(store_failure)?;
-                if !drained(domain,plan)? {
+                if matches!(classify(plan), SelectionTransition::ApplyNextTurn) && abort_unapplied_model_change(&**domain, &change)? { return Ok(Phase::Aborted) }
+                domain.own(scope(&**domain)?,|owner|owner.validate_selection_source(plan)).map_err(store_failure)?;
+                if !drained(&**domain,plan)? {
                     if !domain.owns_sdk_host(&plan.source.agent){
                         let (backend,_)=domain.sdk().ok_or_else(||failure("Provider runtime missing"))?;
                         let plugin=domain.home().join(crate::plugins::NODE);
                         match crate::sdk_owner::adopt_for_transition(Arc::clone(domain),backend,task.clone(),Some(&plugin)).map_err(failure)? {
                             Some(driver)=>{domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));return Ok(Phase::Draining)},
-                            None=>if !drained(domain,plan)?{return Err(failure("The source ended with unresolved work or delivery; its native input cannot be repeated"))},
+                            None=>if !drained(&**domain,plan)?{return Err(failure("The source ended with unresolved work or delivery; its native input cannot be repeated"))},
                         }
                     }else{return Ok(Phase::Draining)}
                 }
@@ -460,52 +461,52 @@ pub async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Phase,Doma
                 }
                 let available=domain.read().state().lifecycle_of(task)?.resource()==Some(alondra_domain::ResourceEvidence::Available);
                 if available && matches!(classify(plan),SelectionTransition::ApplyNextTurn){
-                    let handed=match domain.own(scope(domain)?,|owner|owner.configure_transition_model(plan)).map_err(store_failure) {
+                    let handed=match domain.own(scope(&**domain)?,|owner|owner.configure_transition_model(plan)).map_err(store_failure) {
                         Ok((handed, _)) => handed,
                         Err(error) if error.code == "native_model_control_rejected" => {
-                            if abort_unapplied_model_change(domain, &change)? { return Ok(Phase::Aborted) }
+                            if abort_unapplied_model_change(&**domain, &change)? { return Ok(Phase::Aborted) }
                             return Err(error)
                         }
                         Err(error) => return Err(error),
                     };
                     if !handed{return Ok(Phase::Draining)}
                     crate::sdk_owner::retain_selection_options(&plan.source.host_directory,applied(plan)).map_err(failure)?;
-                    apply_selection(domain,plan,Phase::Draining,Phase::TargetReady,json!({"same_host":true}))?;
-                    let now=current(domain,task)?.unwrap();phase(domain,&now,Phase::Done,json!({"same_host":true}))?;return Ok(Phase::Done)
+                    apply_selection(&**domain,plan,Phase::Draining,Phase::TargetReady,json!({"same_host":true}))?;
+                    let now=current(&**domain,task)?.unwrap();phase(&**domain,&now,Phase::Done,json!({"same_host":true}))?;return Ok(Phase::Done)
                 }
                 if !available || !matches!(classify(plan),SelectionTransition::ApplyNextTurn){return Err(failure("The existing native session cannot apply this model change; create a new node"))}
                 end_and_fence(domain,plan)?;
                 let fences=domain.selection_changes().fences.lock_or_recover("the provider transition fences");
-                domain.own(scope(domain)?,|owner|owner.source_fenced(plan,fences.get(&plan.id).unwrap())).map_err(store_failure)?;
+                domain.own(scope(&**domain)?,|owner|owner.source_fenced(plan,fences.get(&plan.id).unwrap())).map_err(store_failure)?;
             }
-            Phase::SourceFenced=>{ensure_fence(domain,plan)?;prepare_context(domain,plan)?;}
+            Phase::SourceFenced=>{ensure_fence(&**domain,plan)?;prepare_context(&**domain,plan)?;}
             Phase::ContextReady=>{
-                ensure_fence(domain,plan)?;
+                ensure_fence(&**domain,plan)?;
                 match if plan.kind==Kind::Move{move_start(domain.read().state(),task)?}else{MoveStart::Start}{
-                    MoveStart::Defer=>{defer(domain,&change)?;return Ok(Phase::Done)}
+                    MoveStart::Defer=>{defer(&**domain,&change)?;return Ok(Phase::Done)}
                     MoveStart::Start=>{
                         start_target(domain,plan,serde_json::from_value(change.facts.clone()).map_err(failure)?)?;
                         return Ok(Phase::TargetAdmitted)
                     }
                 }
             }
-            Phase::TargetReady if change.facts["same_host"].as_bool()==Some(true)=>{phase(domain,&change,Phase::Done,change.facts.clone())?;return Ok(Phase::Done)}
+            Phase::TargetReady if change.facts["same_host"].as_bool()==Some(true)=>{phase(&**domain,&change,Phase::Done,change.facts.clone())?;return Ok(Phase::Done)}
             Phase::TargetAdmitted|Phase::TargetReady=>{
-                ensure_fence(domain,plan)?;
-                if let Some(agent)=domain.read().state().tasks.get(task).and_then(|task|task.agent_id.clone()) && !domain.owns_sdk_host(&agent){crate::sdk_owner::retake(domain,task.clone());}
+                ensure_fence(&**domain,plan)?;
+                if let Some(agent)=domain.read().state().tasks.get(task).and_then(|task|task.agent_id.clone()) && !domain.owns_sdk_host(&agent){crate::sdk_owner::retake(&**domain,task.clone());}
                 return Ok(change.phase)
             }
-            Phase::Consumed=>{phase(domain,&change,Phase::Done,change.facts.clone())?;}
+            Phase::Consumed=>{phase(&**domain,&change,Phase::Done,change.facts.clone())?;}
             Phase::Done|Phase::Aborted|Phase::StartRefused=>{domain.selection_changes().fences.lock_or_recover("the provider transition fences").remove(&plan.id);return Ok(change.phase)}
             Phase::Uncertain=>{
-                abort(domain,task,change.facts["reason"].as_str().unwrap_or("The move was left without an outcome"))?;
+                abort(&**domain,task,change.facts["reason"].as_str().unwrap_or("The move was left without an outcome"))?;
                 return Ok(Phase::Aborted)
             }
         }
     }
 }
 
-pub async fn run(domain:Arc<DomainRuntime>){
+pub async fn run(domain:Arc<dyn Runtime>){
     let mut changed=domain.subscribe();
     loop{
         pass(&domain).await;
@@ -515,35 +516,35 @@ pub async fn run(domain:Arc<DomainRuntime>){
 
 /// One look at every selection change: each advances as far as it can, ends aborted when a step
 /// fails, and a task a move left waiting starts on its new account once it can.
-pub async fn pass(domain:&Arc<DomainRuntime>){
-    release_finished_fences(domain);
-    let pending=domain.store.lock_or_exit("the domain store").provider_transitions();
+pub async fn pass(domain:&Arc<dyn Runtime>){
+    release_finished_fences(&**domain);
+    let pending=domain.store().lock_or_exit("the domain store").provider_transitions();
     for change in pending.unwrap_or_default(){
         if let Err(error)=advance(domain,&change.plan.task).await{
             log!("selection change of {} could not finish: {}",change.plan.task,error.message);
-            if let Err(failed)=abort(domain,&change.plan.task,&error.message){log!("selection change of {} could not be aborted: {}",change.plan.task,failed.message);}
+            if let Err(failed)=abort(&**domain,&change.plan.task,&error.message){log!("selection change of {} could not be aborted: {}",change.plan.task,failed.message);}
         }
     }
-    let refused=domain.store.lock_or_exit("the domain store").refused_moves();
+    let refused=domain.store().lock_or_exit("the domain store").refused_moves();
     for change in refused.unwrap_or_default(){
-        if let Err(error)=retry_refused(domain,&change){log!("the refused start of {} could not be tried again: {}",change.plan.task,error.message);}
+        if let Err(error)=retry_refused(&**domain,&change){log!("the refused start of {} could not be tried again: {}",change.plan.task,error.message);}
     }
-    let moved=domain.store.lock_or_exit("the domain store").deferred_moves();
+    let moved=domain.store().lock_or_exit("the domain store").deferred_moves();
     for change in moved.unwrap_or_default(){
         if let Err(error)=start_moved(domain,&change.plan.task).await{log!("{} could not start on {}: {}",change.plan.task,change.plan.target_account.wire_id(),error.message);}
     }
 }
 
-pub(crate) fn release_finished_fences(domain:&DomainRuntime){
+pub(crate) fn release_finished_fences(domain:&dyn Runtime){
     let ids:Vec<String>=domain.selection_changes().fences.lock_or_recover("the provider transition fences").keys().cloned().collect();
     for id in ids{
-        let ended=domain.store.lock_or_exit("the domain store").provider_transition_finished(&id).unwrap_or(false);
+        let ended=domain.store().lock_or_exit("the domain store").provider_transition_finished(&id).unwrap_or(false);
         if ended{domain.selection_changes().fences.lock_or_recover("the provider transition fences").remove(&id);}
     }
 }
 /// Ends a selection change that cannot finish: the task keeps the selection it had before, nothing
 /// stays pending, and a move says on the task why it did not happen.
-pub(crate) fn abort(domain:&DomainRuntime,task:&TaskId,reason:&str)->Result<(),DomainError>{
+pub(crate) fn abort(domain:&dyn Runtime,task:&TaskId,reason:&str)->Result<(),DomainError>{
     let Some(change)=current(domain,task)? else{return Ok(())};
     let plan=&change.plan;
     let reason:String=reason.chars().take(1900).collect();
@@ -566,8 +567,8 @@ pub trait TransitionsOf {
     fn selection_changes(&self) -> &Transitions;
 }
 
-impl TransitionsOf for crate::domain_runtime::DomainRuntime {
+impl<R: alondra_engine_ports::Runtime + ?Sized> TransitionsOf for R {
     fn selection_changes(&self) -> &Transitions {
-        self.extension()
+        alondra_engine_ports::extension(self.as_runtime())
     }
 }

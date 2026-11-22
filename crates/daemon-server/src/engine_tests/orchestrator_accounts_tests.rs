@@ -95,7 +95,7 @@ async fn a_request_on_a_fresh_install_says_each_reason_it_waits_and_runs_once_cl
     let options = alondra_core::options::path_in(&f.executor.home);
     let connected = std::fs::read_to_string(&options).unwrap();
     std::fs::write(&options, AccountsConfig::fresh().to_toml()).unwrap();
-    accounts::begin_initial_check(domain);
+    accounts::begin_initial_check(&**domain);
     ask_orchestrator(&f, 1);
 
     f.tick().await;
@@ -103,7 +103,7 @@ async fn a_request_on_a_fresh_install_says_each_reason_it_waits_and_runs_once_cl
     let checking = domain.engine().account_wait().reason().expect("the request waits");
     assert!(checking.contains("Accounts are being checked"), "{checking}");
 
-    accounts::check(domain, &f.executor.home);
+    accounts::check(&**domain, &f.executor.home);
     f.tick().await;
     assert_eq!(f.starts().len(), 0, "no provider is connected");
     let unconnected = domain.engine().account_wait().reason().expect("the request still waits");
@@ -127,12 +127,12 @@ async fn claude_answering_while_no_account_has_a_session_checks_the_accounts_at_
     let f = fixture();
     let domain = &f.executor.domain;
     let checked = || async { tokio::time::timeout(std::time::Duration::ZERO, domain.live().account_check.notified()).await.is_ok() };
-    accounts::answered(domain);
+    accounts::answered(&**domain);
     assert!(!checked().await, "with sessions to spare an answer asks for nothing");
 
     accounts_seen(&f, "accounts-out", AccountState::SignedOut);
-    assert!(accounts::choose_for_launch(domain, &f.executor.home, alondra_core::now_millis()).is_none());
-    accounts::answered(domain);
+    assert!(accounts::choose_for_launch(&**domain, &f.executor.home, alondra_core::now_millis()).is_none());
+    accounts::answered(&**domain);
     assert!(checked().await, "an answer while waiting for a session checks the accounts now");
 }
 
@@ -160,7 +160,7 @@ async fn a_run_that_hits_the_limit_before_working_pauses_everything_and_is_retri
     assert!(usage.iter().any(|usage| usage.account.is_default() && usage.exhausted_until(alondra_core::now_millis()) == Some(until)),
         "the orchestrator's account ran out until the reset: {usage:?}");
 
-    usage_probe::record(domain, &alondra_core::accounts::AccountId::default_account(), alondra_core::usage::UsageReading {
+    usage_probe::record(&**domain, &alondra_core::accounts::AccountId::default_account(), alondra_core::usage::UsageReading {
         windows: vec![alondra_core::usage::WindowReading { kind: alondra_core::usage::WindowKind::Session, used: alondra_core::usage::Share::of(0.1), resets_at: None, exhausted: false }],
         plan: None, complete: true,
     }, alondra_core::now_millis());

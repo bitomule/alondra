@@ -175,7 +175,7 @@ fn indexed_node_rows_preserve_sdk_turn_and_pause_states() {
     let fixture = Fixture::new();
     fixture.agent("sdk-node", "SDK worker");
     fixture.task("current");
-    alondra_daemon_engine::domain_transport::fixtures::admitted_sdk_execution(&fixture.client.domain, "current", "sdk-node", 0);
+    alondra_daemon_engine::domain_transport::fixtures::admitted_sdk_execution(&(fixture.client.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), "current", "sdk-node", 0);
     let state = fixture.client.domain.read().state().as_ref().clone();
     for row in fixture.equivalent(state, "sdk-node", &BTreeMap::new(), &None).into_iter().flatten() {
         assert_eq!(row.state_key.as_deref(), Some("busy"));
@@ -276,7 +276,7 @@ fn reference_node_row(client: &crate::client_routes::Client, state: &DomainState
     let reported_wait = mine.first()
         .and_then(|task| {
             let lifecycle = state.lifecycle_of(&task.id).ok()?;
-            alondra_daemon_engine::sdk_live::wait_file(&client.domain, task.account_key().provider, lifecycle.execution()?.instance().as_str())
+            alondra_daemon_engine::sdk_live::wait_file(&*client.domain, task.account_key().provider, lifecycle.execution()?.instance().as_str())
         })
         .and_then(|path| alondra_daemon_engine::sdk_live::read_wait_file(&path))
         .map(|wait| alondra_view_model::LiveReportedWait { what: wait.what, progress: wait.progress, detail: wait.detail, since: timestamp(wait.since_ms) });

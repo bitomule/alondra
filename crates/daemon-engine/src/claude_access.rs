@@ -4,7 +4,7 @@
 //! wait held go on, or it holds again. The clock only says when to look. A sign-in is probed by
 //! the user's answer to its card, never here.
 use alondra_core::clock;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountBilling, Provider};
 use alondra_domain_rules::{
     ClaudeHeld, ClaudeHold, Command, CommandEnvelope, Millis, OUTAGE_PROBE, PROTOCOL_VERSION, QUIET_RETRY,
@@ -60,7 +60,7 @@ impl Schedule {
     }
 }
 
-pub async fn run(domain: Arc<DomainRuntime>) {
+pub async fn run(domain: Arc<dyn Runtime>) {
     let mut changes = domain.subscribe();
     let mut schedule = Schedule::default();
     loop {
@@ -68,10 +68,10 @@ pub async fn run(domain: Arc<DomainRuntime>) {
         let held = domain.read().state().claude_held();
         let (due, next) = schedule.due(&held, now);
         for (provider, hold, account) in due {
-            if provider == Provider::Claude { probe(&domain, hold, account); }
+            if provider == Provider::Claude { probe(&*domain, hold, account); }
             else {
                 let domain=domain.clone();
-                if tokio::task::spawn_blocking(move || probe_for(&domain,provider,hold,account)).await.is_err() { log!("the provider metadata probe stopped"); }
+                if tokio::task::spawn_blocking(move || probe_for(&*domain,provider,hold,account)).await.is_err() { log!("the provider metadata probe stopped"); }
             }
         }
         match next {
@@ -90,7 +90,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
 
 /// Claude usage is back: each account whose usage limit holds tasks is probed now, whatever its
 /// cards say of when it resets. A limit that still stands holds its probe again.
-pub(crate) fn probe_usage_holds(domain: &DomainRuntime) {
+pub(crate) fn probe_usage_holds(domain: &dyn Runtime) {
     let waits: std::collections::BTreeSet<Wait> = domain.read().state().claude_held().into_iter()
         .filter(|held| held.hold == ClaudeHold::Usage)
         .map(|held| held.waits_for())
@@ -100,7 +100,7 @@ pub(crate) fn probe_usage_holds(domain: &DomainRuntime) {
     }
 }
 
-pub fn probe(domain: &DomainRuntime, hold: ClaudeHold, account: Option<AccountId>) {
+pub fn probe(domain: &dyn Runtime, hold: ClaudeHold, account: Option<AccountId>) {
     probe_for(domain,Provider::Claude,hold,account)
 }
 
@@ -119,7 +119,7 @@ pub(crate) fn native_capacity_for_existing(state: &alondra_domain_rules::DomainS
     alondra_core::usage::clears_native_limit(&fresh, since)
 }
 
-pub(crate) fn probe_for(domain: &DomainRuntime, provider: Provider, hold: ClaudeHold, account: Option<AccountId>) {
+pub(crate) fn probe_for(domain: &dyn Runtime, provider: Provider, hold: ClaudeHold, account: Option<AccountId>) {
     if provider == Provider::Codex {
         let read = domain.read();
         let candidate = read.state().claude_held().into_iter()

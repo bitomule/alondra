@@ -95,7 +95,7 @@ impl SdkNode {
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
             task_id: SDK_TASK.into(), request_id: "r".into(), title: "Write the release notes".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())) });
-        let driver = alondra_engine_sdk::sdk_owner::start(Arc::clone(&domain), &backend, alondra_engine_sdk::sdk_owner::Launch {
+        let driver = alondra_engine_sdk::sdk_owner::start(domain.clone(), &backend, alondra_engine_sdk::sdk_owner::Launch {
             task: SDK_TASK.into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
             prompt: prompt.into(), plugin: home.join("plugin"), options: Default::default(),
             model: None, account: alondra_core::accounts::AccountId::default_account(),
@@ -128,7 +128,7 @@ impl SdkNode {
         run(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
             task_id: task.into(), request_id: "r".into(), title: format!("Task {task}"), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())) });
-        let driver = alondra_engine_sdk::sdk_owner::start(Arc::clone(&self.domain), &self.backend, alondra_engine_sdk::sdk_owner::Launch {
+        let driver = alondra_engine_sdk::sdk_owner::start(self.domain.clone(), &self.backend, alondra_engine_sdk::sdk_owner::Launch {
             task: task.into(), name: format!("Task {task}"), directory: worktree.to_str().unwrap().into(),
             prompt: prompt.into(), plugin: self.home.join("plugin"), options: Default::default(),
             model: None, account: alondra_core::accounts::AccountId::default_account(),
@@ -138,7 +138,7 @@ impl SdkNode {
     }
 
     pub fn tell(&self, task: &str, text: &str) {
-        alondra_daemon_engine::domain_messages::tell_sdk_node(&self.domain, &task.into(), alondra_daemon_engine::node_push::ALONDRA, text, &format!("tell-{task}"), false).unwrap();
+        alondra_daemon_engine::domain_messages::tell_sdk_node(&*self.domain, &task.into(), alondra_daemon_engine::node_push::ALONDRA, text, &format!("tell-{task}"), false).unwrap();
     }
 
     pub fn set_limit(&self, limit: u32) {
@@ -146,7 +146,7 @@ impl SdkNode {
     }
 
     pub fn gate(&self) -> alondra_engine_admission::admission::Snapshot {
-        self.domain.admission().snapshot(&self.domain, alondra_core::now_millis()).unwrap()
+        self.domain.admission().snapshot(&*self.domain, alondra_core::now_millis()).unwrap()
     }
 
     /// The tasks whose next turn waits for a slot, in the gate's order.
@@ -213,12 +213,12 @@ impl SdkNode {
 
     /// One look of the gate, which lets the node go on once it has a slot.
     pub async fn gate_look(&self) {
-        alondra_engine_admission::admission::pass_at(&self.domain, &self.home, alondra_core::now_millis()).await.unwrap();
+        alondra_engine_admission::admission::pass_at(&*self.domain, &self.home, alondra_core::now_millis()).await.unwrap();
     }
 
     /// The user pauses the node from its task; its turn is interrupted and ends.
     pub fn pause(&mut self) {
-        self.domain.admission().pause_by_user(&self.domain, &self.agent(), alondra_core::now_millis()).unwrap();
+        self.domain.admission().pause_by_user(&*self.domain, &self.agent(), alondra_core::now_millis()).unwrap();
         self.step_until(Self::turn_ended);
         let state = self.domain.state().unwrap();
         assert!(matches!(state.node_pause(&AgentId(self.agent())), Some(Pause { reason: PauseReason::ByUser, .. })), "{:?}", state.node_pause(&AgentId(self.agent())));

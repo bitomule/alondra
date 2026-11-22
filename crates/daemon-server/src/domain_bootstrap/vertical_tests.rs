@@ -576,7 +576,7 @@ struct WatcherRecordsPush(Arc<DomainRuntime>, PrId);
 impl crate::client_routes::PrView for WatcherRecordsPush {
     fn view<'a>(&'a self, _: &'a str) -> crate::client_routes::Viewed<'a> {
         if self.0.state().unwrap().pull_requests[&self.1].head != PUSHED {
-            crate::domain_github::execute_system(&self.0, Command::ObservePrState {
+            crate::domain_github::execute_system(&*self.0, Command::ObservePrState {
                 pr_id: self.1.clone(), head: PUSHED.into(), base: "main".into(),
                 state: alondra_domain_rules::PrState::Open, merged_head: None,
             }).unwrap();

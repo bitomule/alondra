@@ -4,14 +4,14 @@
 use crate::hosts::HostsOf as _;
 use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_rules::{body_title, Agent, AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, Recipient, Scope, TaskActivity};
 use alondra_domain::{Capacity, LiveState, Step, Worker};
 use alondra_core::Node;
 use serde_json::{Value, json};
 
-fn state(domain: &DomainRuntime) -> Result<std::sync::Arc<DomainState>, DomainError> {
-    domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))
+fn state(domain: &dyn Runtime) -> Result<std::sync::Arc<DomainState>, DomainError> {
+    Ok(domain.state())
 }
 
 fn wire<T: serde::Serialize>(value: &T) -> Value {
@@ -19,7 +19,7 @@ fn wire<T: serde::Serialize>(value: &T) -> Value {
 }
 
 /// A live session as the legacy overview listed it, named after its Agent.
-fn model_of(domain: &DomainRuntime, session_id: &str) -> Value {
+fn model_of(domain: &dyn Runtime, session_id: &str) -> Value {
     json!(domain.live().mods.session(session_id).and_then(|reported| reported.model))
 }
 
@@ -69,7 +69,7 @@ fn live_fields(row: &mut Value, state: &DomainState, agent: &AgentId) {
     });
 }
 
-fn node_row(node: &Node, state: &DomainState, domain: &DomainRuntime) -> Value {
+fn node_row(node: &Node, state: &DomainState, domain: &dyn Runtime) -> Value {
     let mut row = wire(node);
     let agent = AgentId(node.session_id.clone());
     if state.node_phase(&agent) == Some(&NodePhase::ThroughSdk) || state.through_sdk(&agent) {
@@ -87,7 +87,7 @@ fn node_row(node: &Node, state: &DomainState, domain: &DomainRuntime) -> Value {
 
 /// A node of the Agent SDK, which no hook session describes: the domain's phase of it, its task
 /// as the domain holds it, whether this daemon runs its host, and what its host's events said last.
-fn sdk_node_row(agent: &Agent, state: &DomainState, domain: &DomainRuntime) -> Value {
+fn sdk_node_row(agent: &Agent, state: &DomainState, domain: &dyn Runtime) -> Value {
     let reported = domain.live().mods.session(&agent.id.0).unwrap_or_default();
     let mut node = Node::new(&agent.id.0, agent.since);
     node.alive = false;
@@ -108,7 +108,7 @@ fn sdk_node_row(agent: &Agent, state: &DomainState, domain: &DomainRuntime) -> V
 }
 
 /// Every node the domain knows: a hook session's, or one of the Agent SDK, which has none.
-fn node_rows(domain: &DomainRuntime, state: &DomainState) -> Vec<Value> {
+fn node_rows(domain: &dyn Runtime, state: &DomainState) -> Vec<Value> {
     let live = domain.live().nodes();
     let mut rows: Vec<Value> = live.iter()
         .filter(|n| state.agents.contains_key(&AgentId(n.session_id.clone())))
@@ -187,11 +187,11 @@ fn open_questions(state: &DomainState) -> Vec<Value> {
 }
 
 /// `tasks_in_progress`: the live Agents and everything that waits on someone, in the legacy overview's shape.
-pub fn tasks_in_progress(domain: &DomainRuntime, machine: Value, usage: Value) -> Result<Value, DomainError> {
+pub fn tasks_in_progress(domain: &dyn Runtime, machine: Value, usage: Value) -> Result<Value, DomainError> {
     let state = state(domain)?;
     let nodes = node_rows(domain, &state);
     let reports: Vec<Value> = state.interactions.values().filter(|i| i.recipient == Recipient::User).filter_map(|i| report(i, &state)).collect();
-    let pending = domain.store.lock_or_exit("the domain store").pending_messages()
+    let pending = domain.store().lock_or_exit("the domain store").pending_messages()
         .map_err(|_| DomainError::new("storage_unavailable", "outbox unavailable"))?;
     let orchestrator_messages: Vec<Value> = pending.iter().filter(|m| m.recipient_kind == "orchestrator")
         .map(|m| json!({"id": m.id, "text": m.message, "handed_at": null})).collect();
@@ -200,7 +200,7 @@ pub fn tasks_in_progress(domain: &DomainRuntime, machine: Value, usage: Value) -
 }
 
 /// The Agent a name, short id or session id names.
-fn agent_named(domain: &DomainRuntime, state: &DomainState, key: &str) -> Result<AgentId, DomainError> {
+fn agent_named(domain: &dyn Runtime, state: &DomainState, key: &str) -> Result<AgentId, DomainError> {
     let live = domain.live().nodes();
     let short = |id: &AgentId| live.iter().find(|n| n.session_id == id.0).map(|n| n.short_id.clone());
     let found: Vec<&AgentId> = state.agents.values()
@@ -214,7 +214,7 @@ fn agent_named(domain: &DomainRuntime, state: &DomainState, key: &str) -> Result
 }
 
 /// `node`: one Agent's live state, its questions and results and its undelivered messages.
-pub fn node(domain: &DomainRuntime, key: &str) -> Result<Value, DomainError> {
+pub fn node(domain: &dyn Runtime, key: &str) -> Result<Value, DomainError> {
     let state = state(domain)?;
     let agent = agent_named(domain, &state, key)?;
     let live = domain.live().node(&agent.0);
@@ -228,13 +228,13 @@ pub fn node(domain: &DomainRuntime, key: &str) -> Result<Value, DomainError> {
         node["name"] = json!(state.agents[&agent].name);
     }
     let mine = || state.interactions.values().filter(|i| author_session(i) == Some(agent.0.as_str()));
-    let pending = domain.store.lock_or_exit("the domain store").pending_messages()
+    let pending = domain.store().lock_or_exit("the domain store").pending_messages()
         .map_err(|_| DomainError::new("storage_unavailable", "outbox unavailable"))?;
     let messages: Vec<Value> = pending.iter().filter(|m| m.agent_id.as_deref() == Some(agent.0.as_str()))
         .map(|m| json!({"id": m.id, "from": "alondra", "text": m.message, "handed_at": null})).collect();
     Ok(json!({"node": node, "questions": mine().filter_map(|i| question(i, &state)).collect::<Vec<_>>(),
         "reports": mine().filter_map(|i| report(i, &state)).collect::<Vec<_>>(), "messages": messages,
-        "messages_held_for_turn_end": domain.held.lock_or_recover("the held messages").get(&agent).map_or(0, Vec::len),
+        "messages_held_for_turn_end": domain.held().lock_or_recover("the held messages").get(&agent).map_or(0, Vec::len),
         "timeline": []}))
 }
 

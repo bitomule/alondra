@@ -302,13 +302,13 @@ async fn prepare_workers(
     domain: Arc<domain_runtime::DomainRuntime>,
     backend: Option<sdk_owner::backend::SdkBackend>,
 ) -> PreparedWorkers {
-    accounts::begin_initial_check(&domain);
+    accounts::begin_initial_check(&*domain);
     domain.live().sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
     if let Some(backend) = backend {
         domain.enable_sdk(backend.clone());
-        let adopting = domain.clone();
+        let adopting: std::sync::Arc<dyn alondra_engine_ports::Runtime> = domain.clone();
         tokio::task::spawn_blocking(move || {
-            accounts::check_if_crossed(&adopting);
+            accounts::check_if_crossed(&*adopting);
             sdk_owner::adopt_all(&adopting, &backend);
         }).await.ok();
     }

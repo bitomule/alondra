@@ -155,8 +155,8 @@ pub trait LocalActionsOf {
     fn local_actions(&self) -> &LocalActions;
 }
 
-impl LocalActionsOf for crate::domain_runtime::DomainRuntime {
+impl<R: alondra_engine_ports::Runtime + ?Sized> LocalActionsOf for R {
     fn local_actions(&self) -> &LocalActions {
-        self.extension()
+        alondra_engine_ports::extension(self.as_runtime())
     }
 }

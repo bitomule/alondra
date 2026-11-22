@@ -1,3 +1,4 @@
+use crate::domain_runtime::DomainRuntime;
 use crate::live::LiveOf as _;
 use super::*;
 use crate::test_support::Directory;
@@ -119,7 +120,7 @@ async fn a_usage_retry_rechecks_settings_before_launching_a_disabled_account() {
     let count = home.join("probe-count");
     backend.native_environment.insert("PROBE_COUNT".into(), count.display().to_string());
     domain.enable_sdk(backend);
-    assert_eq!(measure_account(&domain, &home, &id("default")).await, crate::native_probe::Outcome::Finished);
+    assert_eq!(measure_account(&*domain, &home, &id("default")).await, crate::native_probe::Outcome::Finished);
     assert!(!count.exists(), "the disabled account must not run a native probe");
     assert!(domain.read().state().account_usage.is_empty(), "a disabled account's successful fake probe must not be published");
 }
@@ -195,12 +196,12 @@ async fn a_stale_usage_probe_retries_with_a_fresh_fence_and_makes_the_account_se
                 default_reasoning_effort: None, context_window: None, input_modalities: vec!["text".into()], is_default: true, hidden: false }],
         } },
     ];
-    let (fence, _) = crate::accounts::probe_fence(&domain, &home).unwrap();
-    crate::accounts::publish_probe(&domain, &home, fence, commands.into()).unwrap();
+    let (fence, _) = crate::accounts::probe_fence(&*domain, &home).unwrap();
+    crate::accounts::publish_probe(&*domain, &home, fence, commands.into()).unwrap();
     let now = now_millis();
-    record_limit(&domain, &account, Some(now + 3_600_000), now);
+    record_limit(&*domain, &account, Some(now + 3_600_000), now);
     let intent = TaskSelection::automatic(ModelProfile::Implementation);
-    assert!(crate::accounts::select_for_launch(&domain, &home, &intent, now).is_err());
+    assert!(crate::accounts::select_for_launch(&*domain, &home, &intent, now).is_err());
     let before = domain.read().state().account_usage.clone();
     std::fs::write(home.join("invalidate-usage-once"), "").unwrap();
     let mut schedule = ProbeSchedule::default();
@@ -209,19 +210,19 @@ async fn a_stale_usage_probe_retries_with_a_fresh_fence_and_makes_the_account_se
         assert_eq!(schedule.due(std::slice::from_ref(&account), &domain.read().state().account_usage, now).0, [account.clone()],
             "the discarded attempt must be due again before the periodic interval");
         schedule.probed.insert(account.clone(), now);
-        let outcome = measure_account(&domain, &home, &account).await;
+        let outcome = measure_account(&*domain, &home, &account).await;
         if attempt == 1 {
             assert_eq!(outcome, crate::native_probe::Outcome::Stale);
             assert_eq!(domain.read().state().account_usage, before, "discarded usage cannot clear the quota fence");
-            assert!(crate::accounts::select_for_launch(&domain, &home, &intent, now).is_err());
+            assert!(crate::accounts::select_for_launch(&*domain, &home, &intent, now).is_err());
         } else {
             assert_eq!(outcome, crate::native_probe::Outcome::Finished);
         }
         schedule.finished(&account, outcome, now_millis());
     }
-    assert_eq!(crate::accounts::select_for_launch(&domain, &home, &intent, now_millis()).unwrap().account, key);
+    assert_eq!(crate::accounts::select_for_launch(&*domain, &home, &intent, now_millis()).unwrap().account, key);
     let recovered_at = now_millis();
-    follow(&domain, recovered_at);
+    follow(&*domain, recovered_at);
     assert_eq!(domain.live().usage_pause.current().map(|standing| standing.until), Some(recovered_at), "fresh capacity makes the pause due for resumption now");
 }
 

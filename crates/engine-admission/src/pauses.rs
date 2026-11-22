@@ -11,7 +11,7 @@
 //! when there is a slot and room. A pause an older daemon made for memory returns at once and
 //! comes back the same way.
 use crate::engine::EngineOf as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_rules::{ApiRetry, DomainState, TaskId, TaskState};
 use alondra_core::Millis;
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,7 @@ pub(crate) fn resume_text(paused: &Paused, now: Millis) -> String {
 }
 
 /// The command a node's turn is running, as its mod reports it.
-fn cut_of(domain: &DomainRuntime, session: &str) -> Option<String> {
+fn cut_of(domain: &dyn Runtime, session: &str) -> Option<String> {
     domain.engine().report(session)?.running
 }
 
@@ -47,13 +47,13 @@ pub(crate) fn session_of(state: &DomainState, task: &TaskId) -> Option<String> {
 
 /// Whether `session` is a node that runs through the Agent SDK: its processes are its owner's to
 /// stop, never a push's or the process table's.
-pub(crate) fn through_sdk(domain: &DomainRuntime, session: &str) -> bool {
+pub(crate) fn through_sdk(domain: &dyn Runtime, session: &str) -> bool {
     domain.read().index().node(&alondra_domain_rules::AgentId(session.to_owned())).is_some_and(|node| node.through_sdk)
 }
 
 /// Stops a node's turn and records it as paused. A node of the Agent SDK is only recorded here:
 /// `hold_sdk_turn` stops it once the node machine holds the pause.
-pub(crate) fn stop(domain: &DomainRuntime, pauses: &mut Pauses, session: &str, task: TaskId, reason: Reason, now: Millis) {
+pub(crate) fn stop(domain: &dyn Runtime, pauses: &mut Pauses, session: &str, task: TaskId, reason: Reason, now: Millis) {
     if through_sdk(domain, session) {
         log!("pausing {session} ({task}) for {reason:?}");
         pauses.paused.insert(session.to_owned(), Paused { task, reason, since: now, cut: None, turn_since: None, cleanup: Cleanup::Done, released: false });
@@ -72,7 +72,7 @@ pub(crate) fn stop(domain: &DomainRuntime, pauses: &mut Pauses, session: &str, t
 /// process under it. What it goes on with when the pause ends is told first, and its owner holds
 /// it until then: the interrupted turn ends with its next step known, and no card asks the user
 /// how it goes on.
-pub(crate) fn hold_sdk_turn(domain: &DomainRuntime, session: &str, paused: &Paused) {
+pub(crate) fn hold_sdk_turn(domain: &dyn Runtime, session: &str, paused: &Paused) {
     let text = resume_text(paused, paused.since);
     let command = format!("pause-{session}-{}", paused.since);
     if !domain.engine().tell_node(&paused.task, &text, &command) {
@@ -98,7 +98,7 @@ pub fn interrupt_sdk_node(runtime: &dyn alondra_engine_ports::Runtime, session: 
 
 /// The nodes of the Agent SDK a pause that stops them holds, whose host still runs what it ran when
 /// the pause came: one a new pause reached, or one a daemon that restarted adopted.
-pub(crate) fn to_halt(domain: &DomainRuntime, state: &DomainState, pauses: &Pauses) -> Vec<(String, Paused)> {
+pub(crate) fn to_halt(domain: &dyn Runtime, state: &DomainState, pauses: &Pauses) -> Vec<(String, Paused)> {
     pauses.paused.iter()
         .filter(|(session, paused)| paused.reason.holds() && through_sdk(domain, session) && !state.host_ended_since_pause(&paused.task)
             && domain.hosts().owns(&alondra_domain_rules::AgentId((*session).clone())))
@@ -108,7 +108,7 @@ pub(crate) fn to_halt(domain: &DomainRuntime, state: &DomainState, pauses: &Paus
 /// One look at the pauses: forgets the nodes that went on or ended, stops again a node paused by
 /// the user, or for memory by an older daemon, that started a turn by itself, and stops what
 /// interrupted nodes left running. It never pauses a working node.
-pub(crate) fn look(domain: &DomainRuntime, state: &DomainState, pauses: &mut Pauses, now: Millis) {
+pub(crate) fn look(domain: &dyn Runtime, state: &DomainState, pauses: &mut Pauses, now: Millis) {
     pauses.paused.retain(|session, paused| {
         let open = state.tasks.get(&paused.task).is_some_and(|task| !task.archived && !task.state.terminal() && !matches!(task.state, TaskState::Closing))
             && session_of(state, &paused.task).as_deref() == Some(session.as_str())
@@ -136,7 +136,7 @@ pub(crate) fn look(domain: &DomainRuntime, state: &DomainState, pauses: &mut Pau
 
 /// What the interruption left running in an interrupted node's shells: terminated after
 /// `TERMINATE_AFTER`, killed after `KILL_AFTER`.
-fn clean_up(domain: &DomainRuntime, pauses: &mut Pauses, now: Millis) {
+fn clean_up(domain: &dyn Runtime, pauses: &mut Pauses, now: Millis) {
     let due: Vec<(String, Cleanup)> = pauses.paused.iter()
         .filter(|(_, paused)| matches!(paused.reason, Reason::Memory | Reason::ByUser))
         .filter(|(session, _)| !through_sdk(domain, session))

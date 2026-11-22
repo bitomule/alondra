@@ -1,7 +1,9 @@
 //! The launch tools' tests (`domain_orchestrator_tools`), which start nodes through the SDK.
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use alondra_store_sqlite::AsSqlite as _;
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
+use crate::domain_runtime::RuntimeRecords as _;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
 use alondra_engine_ports::worktrees::Workplace;
 use alondra_domain_rules::{Actor, AgentId, DomainError, DomainState, RequestId, TaskId};
@@ -38,7 +40,7 @@ fn native_launch_resolves_existing_model_aliases_with_both_providers_connected()
     let requested = file.orchestrator_defaults(None, None);
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
     let body = launch_body(&f, json!({"model":"large"}));
-    let (resolved, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap().unwrap();
+    let (resolved, account, _) = native_launch(&*f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap().unwrap();
     assert_eq!(account.provider, alondra_core::accounts::Provider::Claude);
     assert_eq!(resolved.selection.unwrap().effective.unwrap().model.model, "opus");
 }
@@ -55,15 +57,15 @@ fn automatic_codex_routing_keeps_legacy_fixed_effort_binding() {
     requested.flags.effort = Some("xhigh".into());
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
     let offered = launch_body(&f, json!({"model":"sonnet"}));
-    assert_eq!(native_launch(&f.domain, &f.home, &task, &requested, &file, &offered, false, false).unwrap_err().code, "invalid_input");
+    assert_eq!(native_launch(&*f.domain, &f.home, &task, &requested, &file, &offered, false, false).unwrap_err().code, "invalid_input");
     let default = launch_body(&f, json!({}));
-    assert!(native_launch(&f.domain, &f.home, &task, &requested, &file, &default, false, false).unwrap().is_none(),
+    assert!(native_launch(&*f.domain, &f.home, &task, &requested, &file, &default, false, false).unwrap().is_none(),
         "the fixed legacy flags keep using their existing launch path");
     let mut moved = task;
     let mut selection = alondra_core::model_selection::TaskSelection::automatic(alondra_core::model_selection::ModelProfile::Implementation);
     selection.request_model(Some(alondra_core::model_selection::ModelKey::parse_wire("codex/gpt-6").unwrap()));
     moved.selection = Some(selection);
-    let (_, account, _) = native_launch(&f.domain, &f.home, &moved, &requested, &file, &default, false, false).unwrap().unwrap();
+    let (_, account, _) = native_launch(&*f.domain, &f.home, &moved, &requested, &file, &default, false, false).unwrap().unwrap();
     assert_eq!(account.provider, alondra_core::accounts::Provider::Codex, "a later task selection supersedes the legacy request flags");
 }
 
@@ -81,7 +83,7 @@ fn initial_launch_obeys_codex_plans_and_routes_automatic_sonnet_to_codex() {
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
     for body in [json!({"model":"codex/gpt-6","provider":"codex"}), json!({"model":"sonnet"}), json!({"model":"claude/sonnet"})] {
         let body = launch_body(&f, body);
-        let (_, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap().expect("automatic first launches resolve through native accounts");
+        let (_, account, _) = native_launch(&*f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap().expect("automatic first launches resolve through native accounts");
         assert_eq!(account, AccountKey::native(Provider::Codex));
     }
 }
@@ -106,7 +108,7 @@ fn an_initial_codex_provider_preference_falls_back_with_a_quota_reason() {
     let requested = file.orchestrator_defaults(None, None);
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
     let body = launch_body(&f, json!({"model":"codex/gpt-6","provider":"codex"}));
-    let (_, account, reason) = native_launch(&f.domain,&f.home,&task,&requested,&file,&body,false,false).unwrap().unwrap();
+    let (_, account, reason) = native_launch(&*f.domain,&f.home,&task,&requested,&file,&body,false,false).unwrap().unwrap();
     assert_eq!(account.provider,Provider::Claude);
     assert!(reason.contains("Codex") && reason.contains("5 h 100 %"),"{reason}");
     assert!(!reason.contains("account/rateLimits/read") && !reason.contains("300 min"), "{reason}");
@@ -131,7 +133,7 @@ fn automatic_sonnet_routing_preserves_user_models_and_accounts() {
         else { intent.account=Some(AccountKey::native(Provider::Claude)); }
         task.selection=Some(intent);
         let body=launch_body(&f,json!({"model":"claude/sonnet"}));
-        let (_,account,_)=native_launch(&f.domain,&f.home,&task,&requested,&file,&body,false,false).unwrap().unwrap();
+        let (_,account,_)=native_launch(&*f.domain,&f.home,&task,&requested,&file,&body,false,false).unwrap().unwrap();
         assert_eq!(account.provider,Provider::Claude);
     }
 }
@@ -154,7 +156,7 @@ fn automatic_opus_fable_and_risky_sonnet_stay_on_claude_while_claude_has_margin(
     for body in [json!({"model":"claude/opus"}), json!({"model":"claude/fable"}),
         json!({"model":"claude/sonnet","tags":{"kind":"fix","risks":["concurrency"]}})] {
         let body = launch_body(&f, body);
-        let (_, account, _) = native_launch(&f.domain,&f.home,&task,&requested,&file,&body,false,false).unwrap().unwrap();
+        let (_, account, _) = native_launch(&*f.domain,&f.home,&task,&requested,&file,&body,false,false).unwrap().unwrap();
         assert_eq!(account.provider, Provider::Claude);
     }
 }
@@ -193,7 +195,7 @@ fn automatic_opus_and_fable_move_to_codex_when_no_claude_account_has_margin() {
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
     for model in ["claude/opus", "claude/fable"] {
         let body = launch_body(&f, json!({"model": model}));
-        let (resolved, account, reason) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap().unwrap();
+        let (resolved, account, reason) = native_launch(&*f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap().unwrap();
         assert_eq!(account.provider, Provider::Codex, "{model}: {reason}");
         assert_eq!(resolved.selection.unwrap().effective.unwrap().model.provider, Provider::Codex, "{model}");
         assert!(reason.contains("No Claude account has margin"), "{reason}");
@@ -215,7 +217,7 @@ fn a_user_pinned_opus_stays_on_claude_when_claude_has_no_margin() {
         intent.request_model(Some(ModelKey::parse_wire(model).unwrap()));
         task.selection = Some(intent);
         let body = launch_body(&f, json!({"model": model}));
-        let outcome = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false);
+        let outcome = native_launch(&*f.domain, &f.home, &task, &requested, &file, &body, false, false);
         assert!(outcome.as_ref().is_err() || outcome.as_ref().unwrap().as_ref().is_some_and(|(_, account, _)| account.provider == Provider::Claude),
             "{model}: the user's model never moves to Codex: {:?}", outcome.map(|launch| launch.map(|(_, account, _)| account)));
     }
@@ -249,8 +251,8 @@ fn an_execution_ends_with_every_change_it_was_let_make_and_none_after() {
     let f = world();
     let capability = f.domain.bind_orchestrator("execution-1").unwrap();
     let bearer = capability.expose_for_child_environment();
-    orchestrator(&f.domain, Some(bearer), None).unwrap();
-    orchestrator(&f.domain, Some(bearer), Some("launch")).unwrap();
+    orchestrator(&*f.domain, Some(bearer), None).unwrap();
+    orchestrator(&*f.domain, Some(bearer), Some("launch")).unwrap();
     let state = f.domain.state().unwrap();
     f.domain.execute_bearer(bearer, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "request".into(),
@@ -263,7 +265,7 @@ fn an_execution_ends_with_every_change_it_was_let_make_and_none_after() {
         expected_revision: state.revision, command: Command::RetitleTask { task_id: "missing".into(), title: "X".into() },
     }).is_err());
     assert_eq!(f.domain.end_execution("execution-1"), ["launch", "create_request"], "reads and refused commands change nothing");
-    assert!(orchestrator(&f.domain, Some(bearer), Some("send")).is_err(), "an ended execution can change nothing more");
+    assert!(orchestrator(&*f.domain, Some(bearer), Some("send")).is_err(), "an ended execution can change nothing more");
     assert!(f.domain.end_execution("execution-1").is_empty());
 }
 
@@ -292,10 +294,10 @@ pub fn same(a: &Path, b: &Path) -> bool {
 fn only_a_current_orchestrator_bearer_calls_the_tools() {
     super::wired();
     let f = world();
-    assert_eq!(orchestrator(&f.domain, None, None).unwrap_err().code, "forbidden");
-    assert_eq!(orchestrator(&f.domain, Some(&"a".repeat(64)), None).unwrap_err().code, "forbidden");
+    assert_eq!(orchestrator(&*f.domain, None, None).unwrap_err().code, "forbidden");
+    assert_eq!(orchestrator(&*f.domain, Some(&"a".repeat(64)), None).unwrap_err().code, "forbidden");
     let agent = f.domain.bind_agent("agent-b").unwrap();
-    assert_eq!(orchestrator(&f.domain, Some(agent.expose_for_child_environment()), None).unwrap_err().code, "forbidden");
+    assert_eq!(orchestrator(&*f.domain, Some(agent.expose_for_child_environment()), None).unwrap_err().code, "forbidden");
     assert!(matches!(the_orchestrator(&f.domain), Actor::Orchestrator { .. }));
 }
 
@@ -305,7 +307,7 @@ async fn a_launch_carries_the_requests_choices_a_bound_capability_and_takes_the_
     let f = world();
     let choices = hard_choices();
     let asked = Mutex::new(None);
-    let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"effort": "light"})),
+    let answer = launch(&*f.domain, &f.home, launch_body(&f, json!({"effort": "light"})),
         |request| { *asked.lock().unwrap() = Some(request.clone()); Some(choices.clone()) }).await.unwrap();
     let agent = agent_of(&answer);
     assert_eq!(asked.into_inner().unwrap(), Some("r".into()), "the Task's Request supplies the choices");
@@ -334,7 +336,7 @@ async fn a_launch_carries_the_requests_choices_a_bound_capability_and_takes_the_
 async fn a_launch_with_a_title_names_its_node_by_it() {
     super::wired();
     let f = world();
-    let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "title": "Editor colours"})), |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "title": "Editor colours"})), |_| None).await.unwrap();
     assert_eq!(f.domain.state().unwrap().agents[&agent_of(&answer)].name, "Editor colours");
 }
 
@@ -344,23 +346,23 @@ async fn a_launch_records_on_the_task_the_model_it_runs() {
     super::wired();
     let model = |f: &Fixture| f.domain.state().unwrap().tasks[&TaskId::from("t")].model.clone();
     let chosen = world();
-    launch(&chosen.domain, &chosen.home, launch_body(&chosen, json!({"effort": "light"})), |_| Some(hard_choices())).await.unwrap();
+    launch(&*chosen.domain, &chosen.home, launch_body(&chosen, json!({"effort": "light"})), |_| Some(hard_choices())).await.unwrap();
     assert_eq!(model(&chosen), Some(TaskModel { model: "opus".into(), chosen_by: ModelChooser::User }), "the user's effort sets the model");
 
     let orchestrated = world();
-    launch(&orchestrated.domain, &orchestrated.home, launch_body(&orchestrated, json!({"model": "sonnet", "effort": "medium"})), |_| None).await.unwrap();
+    launch(&*orchestrated.domain, &orchestrated.home, launch_body(&orchestrated, json!({"model": "sonnet", "effort": "medium"})), |_| None).await.unwrap();
     assert_eq!(model(&orchestrated), Some(TaskModel { model: "sonnet".into(), chosen_by: ModelChooser::Orchestrator }));
 
     let closed = world();
     let old = sdk_node_on_the_task(&closed, &closed.project).await;
     close_sdk_node(&closed, &old);
-    relaunch(&closed.domain, &closed.home, &"t".into()).await.unwrap();
+    relaunch(&*closed.domain, &closed.home, &"t".into()).await.unwrap();
     assert_eq!(model(&closed), Some(TaskModel { model: "sonnet".into(), chosen_by: ModelChooser::Orchestrator }),
         "recovery retains the native model recorded by its original launch");
 
     let replaced = world();
     sdk_node_on_the_task(&replaced, &replaced.project).await;
-    launch(&replaced.domain, &replaced.home, replace_body(), |_| None).await.unwrap();
+    launch(&*replaced.domain, &replaced.home, replace_body(), |_| None).await.unwrap();
     assert_eq!(model(&replaced).map(|m| m.model), Some("opus".into()), "the replacement's model is the task's");
 }
 
@@ -373,7 +375,7 @@ async fn a_launch_in_a_repository_claude_does_not_trust_is_refused_before_claude
     let trust = |accepted: bool| accounts.set_trust(None, &[(&project, accepted)]);
 
     trust(false);
-    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
+    let refused = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(refused.code, "workspace_untrusted");
     assert!(refused.message.contains(project.to_str().unwrap()), "{}", refused.message);
     assert!(f.sdk().starts().is_empty());
@@ -384,7 +386,7 @@ async fn a_launch_in_a_repository_claude_does_not_trust_is_refused_before_claude
         "the Tasks list says why it did not start");
 
     trust(true);
-    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(f.launched(1).await.0.len(), 1);
     assert!(refusals().is_empty(), "a task that started has nothing left to explain");
 }
@@ -393,7 +395,7 @@ async fn a_launch_in_a_repository_claude_does_not_trust_is_refused_before_claude
 async fn without_choices_the_orchestrators_model_and_effort_apply_and_the_prompt_can_be_given() {
     super::wired();
     let f = world();
-    let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "effort": "medium", "prompt": "Only the dark theme"})), |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "effort": "medium", "prompt": "Only the dark theme"})), |_| None).await.unwrap();
     let prompt = f.prompt().await;
     assert_eq!((f.sdk().flag("--model").as_deref(), f.sdk().flag("--effort").as_deref()), (Some("sonnet"), Some("medium")), "{:?}", f.sdk().args());
     assert_eq!(f.sdk().options(&agent_of(&answer).0), LaunchOptions { model: Some("sonnet".into()), effort: Some("medium".into()), disallowed_tools: vec![] , ..Default::default() });
@@ -406,7 +408,7 @@ async fn with_auto_effort_the_launch_needs_a_known_model_and_a_users_effort_refu
     let f = world();
     let refusal = |body: Value, choices: Option<Choices>| {
         let f = &f;
-        async move { launch(&f.domain, &f.home, launch_body(f, body), |_| choices.clone()).await.unwrap_err() }
+        async move { launch(&*f.domain, &f.home, launch_body(f, body), |_| choices.clone()).await.unwrap_err() }
     };
     let missing = refusal(json!({}), None).await;
     assert_eq!(missing.code, "invalid_input");
@@ -425,7 +427,7 @@ async fn a_model_alias_from_options_toml_is_launched_as_what_it_stands_for() {
     super::wired();
     let f = world();
     std::fs::write(f.home.join("options.toml"), "[models]\nbig = \"claude-opus-5-5[1m]\"\n").unwrap();
-    let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "big"})), |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "big"})), |_| None).await.unwrap();
     f.launched(1).await;
     assert_eq!(f.sdk().flag("--model").as_deref(), Some("claude-opus-5-5[1m]"), "{:?}", f.sdk().args());
     assert_eq!(f.sdk().flag("--effort"), None, "no effort unless the orchestrator names one: {:?}", f.sdk().args());
@@ -438,10 +440,10 @@ async fn a_launch_is_refused_for_a_closed_or_taken_task() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
     command(&f.domain, actor.clone(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
-    let taken = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
+    let taken = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(taken.code, "conflict");
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
-    let closed = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
+    let closed = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(closed.code, "conflict");
     assert!(f.sdk().starts().is_empty());
     assert_eq!(f.domain.state().unwrap().agents.len(), 1, "no node was registered");
@@ -451,7 +453,7 @@ async fn a_launch_is_refused_for_a_closed_or_taken_task() {
 async fn without_an_sdk_backend_a_launch_is_refused_and_no_node_takes_the_task() {
     super::wired();
     let f = bare_world();
-    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
+    let refused = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!((refused.code.as_str(), refused.message.as_str()), ("unavailable", crate::sdk_backend::NO_HOST));
     let state = f.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, None);
@@ -467,25 +469,25 @@ async fn a_message_with_a_task_reaches_only_that_tasks_node() {
     super::wired();
     let f = bare_world();
     let actor = the_orchestrator(&f.domain);
-    let node = Node::connect(&f.domain, "agent-b");
+    let node = Node::connect(f.domain.clone(), "agent-b");
     give(&f, "t", "agent-b");
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     let body = |task: &str, text: &str| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": text, "task": task})).unwrap() };
-    let answer = send(&f.domain, &f.home, &actor, body("t", "Take the editor colours")).await.unwrap();
+    let answer = send(&*f.domain, &f.home, &actor, body("t", "Take the editor colours")).await.unwrap();
     assert_eq!(answer["delivery_state"], "handed");
     assert_eq!(node.texts()[0], "[Task t “Editor colours”] Take the editor colours");
     assert_eq!(node.lines.lock().unwrap()[0]["as_user"], false, "the orchestrator's words reach the model as its own");
 
-    let unassigned = send(&f.domain, &f.home, &actor, body("t2", "Take these too")).await.unwrap_err();
+    let unassigned = send(&*f.domain, &f.home, &actor, body("t2", "Take these too")).await.unwrap_err();
     assert_eq!(unassigned.code, "not_assigned");
     assert!(unassigned.message.contains("Launch a new node for t2 with launch"), "{}", unassigned.message);
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t2")].agent_id, None, "a message never assigns");
 
     command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "agent-c".into(), name: "Instance C".into(), at: 0 });
     let foreign: SendBody = serde_json::from_value(json!({"node": "agent-c", "text": "Mine now", "task": "t"})).unwrap();
-    assert_eq!(send(&f.domain, &f.home, &actor, foreign).await.unwrap_err().code, "not_assigned");
+    assert_eq!(send(&*f.domain, &f.home, &actor, foreign).await.unwrap_err().code, "not_assigned");
     assert_eq!(node.texts().len(), 1, "the refused messages sent nothing");
 }
 
@@ -494,11 +496,11 @@ async fn a_message_about_a_closed_task_is_refused_as_closed() {
     super::wired();
     let f = bare_world();
     let actor = the_orchestrator(&f.domain);
-    let node = Node::connect(&f.domain, "agent-b");
+    let node = Node::connect(f.domain.clone(), "agent-b");
     give(&f, "t", "agent-b");
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     let body: SendBody = serde_json::from_value(json!({"node": "Instance B", "text": "Carry on after all", "task": "t"})).unwrap();
-    let refused = send(&f.domain, &f.home, &actor, body).await.unwrap_err();
+    let refused = send(&*f.domain, &f.home, &actor, body).await.unwrap_err();
     assert_eq!(refused.code, "task_closed");
     assert!(refused.message.contains("create_task") && refused.message.contains("dependencies [t]"), "{}", refused.message);
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].cancelled(), "a message never reopens");
@@ -510,19 +512,19 @@ async fn a_node_on_a_task_takes_no_other_but_still_gets_plain_messages() {
     super::wired();
     let f = bare_world();
     let actor = the_orchestrator(&f.domain);
-    let node = Node::connect(&f.domain, "agent-b");
+    let node = Node::connect(f.domain.clone(), "agent-b");
     give(&f, "t", "agent-b");
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     let body = |task: Option<&str>| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": "Go", "task": task})).unwrap() };
-    assert_eq!(send(&f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap_err().code, "not_assigned");
-    send(&f.domain, &f.home, &actor, body(None)).await.unwrap();
-    send(&f.domain, &f.home, &actor, body(Some("t"))).await.unwrap();
+    assert_eq!(send(&*f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap_err().code, "not_assigned");
+    send(&*f.domain, &f.home, &actor, body(None)).await.unwrap();
+    send(&*f.domain, &f.home, &actor, body(Some("t"))).await.unwrap();
     assert_eq!(node.texts().len(), 2, "the refused task sent nothing");
 
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
-    assert_eq!(send(&f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap_err().code, "not_assigned",
+    assert_eq!(send(&*f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap_err().code, "not_assigned",
         "not even when its own task ended");
 }
 
@@ -531,14 +533,14 @@ async fn a_node_on_a_task_takes_no_other_but_still_gets_plain_messages() {
 async fn an_interrupt_is_a_line_for_the_connected_agent_and_is_refused_for_one_that_is_not() {
     super::wired();
     let f = bare_world();
-    let node = Node::connect(&f.domain, "agent-b");
+    let node = Node::connect(f.domain.clone(), "agent-b");
     let named = || -> NodeBody { serde_json::from_value(json!({"node": "agent-b"})).unwrap() };
-    assert_eq!(interrupt(&f.domain, named()).unwrap(), json!({"interrupted": "agent-b"}));
+    assert_eq!(interrupt(&*f.domain, named()).unwrap(), json!({"interrupted": "agent-b"}));
     tokio::task::yield_now().await;
     assert_eq!(node.interrupts(), 1);
     command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into(), at: 0 });
     let gone: NodeBody = serde_json::from_value(json!({"node": "agent-a"})).unwrap();
-    assert_eq!(interrupt(&f.domain, gone).unwrap_err().code, "session_unreachable");
+    assert_eq!(interrupt(&*f.domain, gone).unwrap_err().code, "session_unreachable");
     assert_eq!(node.interrupts(), 1);
 }
 
@@ -550,8 +552,8 @@ fn the_choices_are_the_ones_recorded_with_the_request() {
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "asked".into(),
         expected_revision: state.revision, command: Command::CreateRequest { request_id: "r2".into(), body: "Fix the crash".into(), auto_merge: false, maintenance: false, message: false } };
     f.domain.execute_with(&user(), &envelope, None, Some(&hard_choices()), || Ok(())).unwrap();
-    assert_eq!(request_choices(&f.domain, &"r2".into()).unwrap(), Some(hard_choices()));
-    assert_eq!(request_choices(&f.domain, &"r".into()).unwrap(), None);
+    assert_eq!(request_choices(&*f.domain, &"r2".into()).unwrap(), Some(hard_choices()));
+    assert_eq!(request_choices(&*f.domain, &"r".into()).unwrap(), None);
 }
 
 /// Claude measures the default account's week at each of `week_percents`, all with the same reset,
@@ -573,8 +575,8 @@ async fn going_over_todays_slice_launches_without_a_warning_and_asks_the_user_on
     super::wired();
     let f = world();
     measured(&f.domain, &[12.0, 53.0]);
-    assert!(crate::usage_probe::usage(&f.domain, alondra_core::now_millis()).unwrap().over_pace, "41% spent against a ~18% slice");
-    let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    assert!(crate::usage_probe::usage(&*f.domain, alondra_core::now_millis()).unwrap().over_pace, "41% spent against a ~18% slice");
+    let answer = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(f.task_node(), Some(agent_of(&answer)), "over pace no longer blocks");
     assert!(answer.get("warning").is_none(), "the orchestrator is not asked to relay it: {answer}");
     assert_eq!(f.launched(1).await.0.len(), 1);
@@ -586,12 +588,12 @@ async fn going_over_todays_slice_launches_without_a_warning_and_asks_the_user_on
     assert_eq!(card.author, alondra_domain_rules::Author::System);
     assert!(!card.blocking);
     assert_eq!(card.body, "41/18/53");
-    crate::usage_pause::raise_over_pace_card(&f.domain, alondra_core::now_millis());
+    crate::usage_pause::raise_over_pace_card(&*f.domain, alondra_core::now_millis());
     assert_eq!(cards().len(), 1, "one card per local day");
 
     let within = world();
     measured(&within.domain, &[12.0, 15.0]);
-    let answer = launch(&within.domain, &within.home, launch_body(&within, json!({"over_pace_ok": true, "model": "sonnet"})), |_| None).await.unwrap();
+    let answer = launch(&*within.domain, &within.home, launch_body(&within, json!({"over_pace_ok": true, "model": "sonnet"})), |_| None).await.unwrap();
     assert!(answer.get("warning").is_none(), "over_pace_ok is still accepted: {answer}");
     assert!(within.domain.state().unwrap().interactions.keys().all(|id| !id.0.starts_with("over-pace-")), "within its slice: no card");
 }
@@ -603,14 +605,14 @@ async fn a_launch_is_refused_while_usage_is_exhausted_and_goes_ahead_once_it_is_
     let f = world();
     let now = alondra_core::now_millis();
     f.domain.live().usage_pause.exhaust(Some(now + 3_600_000), now);
-    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
+    let refused = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(refused.code, "usage_exhausted");
     assert!(refused.message.contains("No Claude account on this Mac has usage left"), "{}", refused.message);
     assert!(f.sdk().starts().is_empty());
     assert!(f.task_node().is_none(), "the task is left as it was");
 
     f.domain.live().usage_pause.resume(alondra_core::now_millis());
-    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(f.launched(1).await.0.len(), 1);
 }
 
@@ -625,7 +627,7 @@ async fn a_launch_that_finds_no_account_while_usage_is_exhausted_waits_for_usage
     command(&f.domain, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: TaskSelection::automatic(ModelProfile::Implementation), pending: None });
     let now = alondra_core::now_millis();
     f.domain.live().usage_pause.exhaust(Some(now + 3_600_000), now);
-    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "claude/sonnet"})), |_| None).await.unwrap_err();
+    let refused = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "claude/sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(refused.code, "usage_exhausted", "{refused:?}");
     assert!(f.sdk().starts().is_empty());
 }
@@ -647,7 +649,7 @@ async fn worktrees_root_subdirectory_launch_records_the_root_for_reopen_and_canc
     let options = alondra_core::options::path_in(&f.home);
     let original = std::fs::read_to_string(&options).unwrap_or_default();
     std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
-    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "cwd": source})), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "cwd": source})), |_| None).await.unwrap();
     let owned = volume.join("App/t");
     let native = owned.join("src");
     assert_eq!(f.launched(1).await.0, [native.clone()]);
@@ -665,10 +667,10 @@ async fn worktrees_root_subdirectory_launch_records_the_root_for_reopen_and_canc
     let cleanup_paths = f.domain.store.lock().unwrap().task_worktrees().unwrap();
     assert!(cleanup_paths.contains(&(TaskId::from("t"), owned.to_string_lossy().into_owned())));
     assert!(cleanup_paths.contains(&(TaskId::from("nested"), nested_native)), "an absent volume cannot transfer another task's ownership");
-    assert!(crate::task_worktrees::ready(&f.domain, native.to_str().unwrap()).await.unwrap_err().downcast_ref::<crate::task_worktrees::Unreachable>().is_some());
+    assert!(crate::task_worktrees::ready(&*f.domain, native.to_str().unwrap()).await.unwrap_err().downcast_ref::<crate::task_worktrees::Unreachable>().is_some());
     assert!(!volume.exists());
     std::fs::rename(f.root.join("unmounted"), &volume).unwrap();
-    crate::task_worktrees::ready(&f.domain, native.to_str().unwrap()).await.unwrap();
+    crate::task_worktrees::ready(&*f.domain, native.to_str().unwrap()).await.unwrap();
     let (reopened, recovered) = worktrees.reopen(&source, "t", &native, None, None).await.unwrap();
     assert!(recovered);
     assert_eq!(reopened.dir(), native);
@@ -676,7 +678,7 @@ async fn worktrees_root_subdirectory_launch_records_the_root_for_reopen_and_canc
     f.domain.stop_sdk_owners();
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
-    crate::cancelled_worktrees::release_cancelled(&f.domain, &task).await.unwrap();
+    crate::cancelled_worktrees::release_cancelled(&*f.domain, &task).await.unwrap();
     assert!(!owned.exists(), "cancellation removes the whole worktree, including its subdirectory");
     assert!(!f.project.join(".git/worktrees/t").exists(), "the repository forgets it");
 }
@@ -708,7 +710,7 @@ async fn failed_git_query_with_storage(configured: bool) {
     f.project = project;
     alondra_engine_doubles::worktrees::repository(&f.project);
     // Trimming this top-level path makes the subsequent Git worktree query fail.
-    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
+    let refused = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(refused.code, "main_checkout", "a Git error must retain the existing launch failure, not wait for a volume");
     assert!(f.domain.store.lock().unwrap().launch_queue().unwrap().is_empty());
     assert!(f.sdk().starts().is_empty());
@@ -736,21 +738,21 @@ async fn worktrees_root_retains_volume_identity_on_the_daemon_disk_after_options
     f.domain.set_task_worktree(&TaskId::from("t"), path.to_str().unwrap()).unwrap();
     let admin = std::fs::read_to_string(path.join(".git")).unwrap();
     std::fs::rename(&volume, f.root.join("unmounted")).unwrap();
-    let error = crate::task_worktrees::ready(&f.domain, path.to_str().unwrap()).await.unwrap_err();
+    let error = crate::task_worktrees::ready(&*f.domain, path.to_str().unwrap()).await.unwrap_err();
     assert!(error.downcast_ref::<crate::task_worktrees::Unreachable>().is_some());
     assert!(!volume.exists(), "checking never replaces the missing volume");
     assert!(Path::new(admin.trim().strip_prefix("gitdir: ").unwrap()).exists());
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
-    assert!(crate::task_worktrees::release_all(&f.domain, &task).await.unwrap_err().downcast_ref::<crate::task_worktrees::Unreachable>().is_some());
+    assert!(crate::task_worktrees::release_all(&*f.domain, &task).await.unwrap_err().downcast_ref::<crate::task_worktrees::Unreachable>().is_some());
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].open_worktrees().next().is_some());
     std::fs::rename(f.root.join("unmounted"), &volume).unwrap();
     std::fs::write(&record, original).unwrap();
     f.domain.set_task_worktree(&TaskId::from("t"), path.to_str().unwrap()).unwrap();
-    crate::task_worktrees::ready(&f.domain, path.to_str().unwrap()).await.unwrap();
+    crate::task_worktrees::ready(&*f.domain, path.to_str().unwrap()).await.unwrap();
     assert!(matches!(worktrees.discard_worktree(path, true).await.unwrap(), alondra_engine_ports::worktrees::TaskWorktree::Removed { .. }));
     std::fs::remove_file(&record).unwrap();
     std::fs::remove_dir(path.parent().unwrap()).unwrap();
-    crate::task_worktrees::ready(&f.domain, path.to_str().unwrap()).await.unwrap();
+    crate::task_worktrees::ready(&*f.domain, path.to_str().unwrap()).await.unwrap();
     let (reopened, recovered) = worktrees.reopen(path, "t", path, None, None).await.unwrap();
     assert!(recovered);
     assert_eq!(reopened.dir(), path);
@@ -763,7 +765,7 @@ async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_cl
     let f = world();
     let old = sdk_node_on_the_task(&f, &f.project).await;
     let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
-    let refused = relaunch(&f.domain, &f.home, &"t".into()).await.unwrap_err();
+    let refused = relaunch(&*f.domain, &f.home, &"t".into()).await.unwrap_err();
     assert_eq!(refused.code, "conflict", "a task whose node was not closed is not relaunched");
     assert_eq!(f.sdk().starts().len(), 1);
 
@@ -772,7 +774,7 @@ async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_cl
     assert_eq!((state.tasks[&"t".into()].state, state.tasks[&"t".into()].agent_id.clone()), (TaskState::NotStarted, None));
     assert_eq!(f.domain.live().closed_task_ids(), ["t"]);
 
-    let answer = relaunch(&f.domain, &f.home, &"t".into()).await.unwrap();
+    let answer = relaunch(&*f.domain, &f.home, &"t".into()).await.unwrap();
     let agent = agent_of(&answer);
     let (folders, prompts) = f.launched(2).await;
     assert_resumed(&f, &original);
@@ -782,7 +784,7 @@ async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_cl
     assert_eq!(state.agents[&agent].name, "Instance B", "it keeps the closed node's name");
     assert_eq!(state.tasks[&"t".into()].agent_id, Some(agent));
     assert!(f.domain.live().closed_task_ids().is_empty(), "the task no longer waits for a relaunch");
-    let again = relaunch(&f.domain, &f.home, &"t".into()).await.unwrap_err();
+    let again = relaunch(&*f.domain, &f.home, &"t".into()).await.unwrap_err();
     assert_eq!(again.code, "conflict");
 }
 
@@ -790,7 +792,7 @@ async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_cl
 async fn a_launch_with_an_approach_writes_how_to_work_into_the_mission() {
     super::wired();
     let f = world();
-    launch(&f.domain, &f.home, launch_body(&f, json!({"effort": "light", "approach": "subagents"})), |_| Some(hard_choices())).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"effort": "light", "approach": "subagents"})), |_| Some(hard_choices())).await.unwrap();
     let prompt = f.prompt().await;
     assert!(prompt.contains("## How to work") && prompt.contains("TaskCreate") && prompt.contains("the Agent tool"), "{prompt}");
 }
@@ -801,10 +803,10 @@ async fn a_message_with_an_approach_ends_with_how_to_work() {
     super::wired();
     let f = bare_world();
     let actor = the_orchestrator(&f.domain);
-    let node = Node::connect(&f.domain, "agent-b");
+    let node = Node::connect(f.domain.clone(), "agent-b");
     give(&f, "t", "agent-b");
     let body: SendBody = serde_json::from_value(json!({"node": "Instance B", "text": "Take it", "task": "t", "approach": "workflow"})).unwrap();
-    send(&f.domain, &f.home, &actor, body).await.unwrap();
+    send(&*f.domain, &f.home, &actor, body).await.unwrap();
     let text = &node.texts()[0];
     assert!(text.contains("Take it") && text.contains("## How to work") && text.contains("the Workflow tool"), "{text}");
 }
@@ -825,14 +827,14 @@ async fn with_auto_effort_a_launch_without_a_reason_is_refused_before_claude_run
     super::wired();
     let f = world();
     for reason in [json!(null), json!("   ")] {
-        let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "reason": reason})), |_| None).await.unwrap_err();
+        let refused = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "reason": reason})), |_| None).await.unwrap_err();
         assert_eq!(refused.code, "invalid_input");
         assert!(refused.message.contains("pass reason"), "{}", refused.message);
     }
     assert!(f.sdk().starts().is_empty(), "nothing launched");
     assert!(decisions(&f.domain).is_empty());
 
-    let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"reason": null})), |_| Some(hard_choices())).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, launch_body(&f, json!({"reason": null})), |_| Some(hard_choices())).await.unwrap();
     assert_eq!(decisions(&f.domain), [row("launch", Some("opus"), Some("xhigh"), Some("solo"), None)],
         "the user's effort needs no reason");
     assert_eq!(f.domain.store.lock().unwrap().sqlite().model_decision_meta().unwrap(), [(agent_of(&answer).0, "user".to_owned(), "Editor colours".to_owned())]);
@@ -842,7 +844,7 @@ async fn with_auto_effort_a_launch_without_a_reason_is_refused_before_claude_run
 async fn every_launch_records_the_model_effort_approach_and_reason_the_orchestrator_chose() {
     super::wired();
     let f = world();
-    let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "effort": "medium", "approach": "subagents"})), |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "effort": "medium", "approach": "subagents"})), |_| None).await.unwrap();
     assert_eq!(decisions(&f.domain), [row("launch", Some("sonnet"), Some("medium"), Some("subagents"), Some("Colour tokens in one file: sonnet"))]);
     assert_eq!(f.domain.store.lock().unwrap().sqlite().model_decision_meta().unwrap(), [(agent_of(&answer).0, "orchestrator".to_owned(), "Editor colours".to_owned())]);
 }
@@ -852,7 +854,7 @@ async fn a_message_with_an_approach_is_recorded_and_a_plain_one_is_not() {
     super::wired();
     let f = bare_world();
     let actor = the_orchestrator(&f.domain);
-    let _node = Node::connect(&f.domain, "agent-b");
+    let _node = Node::connect(f.domain.clone(), "agent-b");
     give(&f, "t", "agent-b");
     f.domain.report(serde_json::from_value(json!({"session_id": "agent-b", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
     let body = |extra: Value| -> SendBody {
@@ -860,11 +862,11 @@ async fn a_message_with_an_approach_is_recorded_and_a_plain_one_is_not() {
         body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         serde_json::from_value(body).unwrap()
     };
-    send(&f.domain, &f.home, &actor, body(json!({}))).await.unwrap();
-    send(&f.domain, &f.home, &actor, body(json!({"task": null, "approach": "solo"}))).await.unwrap();
+    send(&*f.domain, &f.home, &actor, body(json!({}))).await.unwrap();
+    send(&*f.domain, &f.home, &actor, body(json!({"task": null, "approach": "solo"}))).await.unwrap();
     assert!(decisions(&f.domain).is_empty(), "a message without a task, or without an approach, is no decision");
-    send(&f.domain, &f.home, &actor, body(json!({"approach": "workflow", "reason": "Same files as its last task"}))).await.unwrap();
-    send(&f.domain, &f.home, &actor, body(json!({"approach": "solo"}))).await.unwrap();
+    send(&*f.domain, &f.home, &actor, body(json!({"approach": "workflow", "reason": "Same files as its last task"}))).await.unwrap();
+    send(&*f.domain, &f.home, &actor, body(json!({"approach": "solo"}))).await.unwrap();
     assert_eq!(decisions(&f.domain), [
         row("send", Some("sonnet"), None, Some("workflow"), Some("Same files as its last task")),
         row("send", Some("sonnet"), None, Some("solo"), None),
@@ -878,7 +880,7 @@ async fn a_relaunch_is_recorded_as_one_and_needs_no_reason() {
     let old = sdk_node_on_the_task(&f, &f.project).await;
     close_sdk_node(&f, &old);
     let before = decisions(&f.domain).len();
-    relaunch(&f.domain, &f.home, &"t".into()).await.unwrap();
+    relaunch(&*f.domain, &f.home, &"t".into()).await.unwrap();
     assert_eq!(&decisions(&f.domain)[before..], [row("relaunch", Some("sonnet"), None, Some("solo"), None)]);
 }
 
@@ -903,7 +905,7 @@ async fn a_launch_of_a_follow_up_task_carries_the_earlier_result_and_pull_reques
         agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
 
-    launch(&f.domain, &f.home, launch_body(&f, json!({"task": "t2", "model": "sonnet"})), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"task": "t2", "model": "sonnet"})), |_| None).await.unwrap();
     let prompt = f.prompt().await;
     assert!(prompt.contains("\n\n## Earlier work this task builds on\n\n### “Editor colours” (done)\nThe colours live in one file now.\nPull request: https://github.com/me/app/pull/12 (merged)"), "{prompt}");
 }
@@ -1061,7 +1063,7 @@ async fn a_launch_of_a_task_with_a_plan_needs_no_name_or_cwd() {
     };
     f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     let body: LaunchBody = serde_json::from_value(json!({"task": "t"})).unwrap();
-    let answer = launch(&f.domain, &f.home, body, |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, body, |_| None).await.unwrap();
     let (folders, prompts) = f.launched(1).await;
     assert!(same(&folders[0], &f.project), "{folders:?}");
     assert_eq!(f.domain.state().unwrap().agents[&agent_of(&answer)].name, "app/editor");
@@ -1077,12 +1079,12 @@ async fn a_decision_keeps_the_provider_and_the_tags_of_the_plan_or_of_the_launch
     let plan = alondra_daemon_engine_model::LaunchPlan { model: Some("sonnet".into()), reason: Some("Docs only".into()), tags: Some(tags),
         ..alondra_daemon_engine_model::LaunchPlan::new("app/docs", f.project.to_str().unwrap()) };
     f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
-    launch(&f.domain, &f.home, serde_json::from_value(json!({"task": "t"})).unwrap(), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, serde_json::from_value(json!({"task": "t"})).unwrap(), |_| None).await.unwrap();
     let routing = f.domain.store.lock().unwrap().sqlite().model_decision_routing().unwrap();
     assert_eq!(routing, [(Some("claude".into()), Some("docs".into()), Some(r#"["ui"]"#.into()), Some(r#"["user_visible"]"#.into()))]);
 
     let repeated: LaunchBody = serde_json::from_value(json!({"task": "t", "tags": {"kind": "fix", "risks": ["security", "security"]}})).unwrap();
-    let refused = launch(&f.domain, &f.home, repeated, |_| None).await.unwrap_err();
+    let refused = launch(&*f.domain, &f.home, repeated, |_| None).await.unwrap_err();
     assert_eq!((refused.code.as_str(), refused.message.as_str()), ("invalid_input", "tags.risks repeats a risk"));
     assert!(serde_json::from_value::<LaunchBody>(json!({"task": "t", "tags": {"kind": "chore"}})).is_err(), "a kind outside the list is refused");
 }
@@ -1093,7 +1095,7 @@ async fn a_launch_of_a_task_left_without_a_plan_needs_a_name_and_a_folder() {
     let f = world();
     f.domain.store.lock().unwrap().sqlite_mut().forget_launch_plan(&"t".into()).unwrap();
     let body: LaunchBody = serde_json::from_value(json!({"task": "t", "model": "sonnet", "reason": "x"})).unwrap();
-    let refused = launch(&f.domain, &f.home, body, |_| None).await.unwrap_err();
+    let refused = launch(&*f.domain, &f.home, body, |_| None).await.unwrap_err();
     assert_eq!(refused.code, "invalid_input");
     assert!(refused.message.contains("name and cwd are required"), "{}", refused.message);
     assert!(f.sdk().starts().is_empty());
@@ -1108,10 +1110,10 @@ async fn a_task_in_progress_whose_node_died_is_relaunched_and_assigned_to_the_ne
     f.domain.stop_sdk_host(&old).unwrap();
     let (backend, runtime) = f.domain.sdk().unwrap();
     crate::sdk_owner::end_unowned_host(runtime, backend, "t".into()).unwrap();
-    crate::node_exit::take_out(&f.domain, &old.0, "the native process ended", Some(f.project.to_str().unwrap().into()), crate::live::Relaunch::AskUser).unwrap();
+    crate::node_exit::take_out(&*f.domain, &old.0, "the native process ended", Some(f.project.to_str().unwrap().into()), crate::live::Relaunch::AskUser).unwrap();
     assert!(f.task_node().is_none(), "the confirmed exit releases the old assignment before recovery");
     answer_ended_cards(&f);
-    let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(f.task_node(), Some(agent_of(&answer)));
     assert!(f.domain.owns_sdk_host(&agent_of(&answer)), "the recovered node runs");
     f.launched(2).await;
@@ -1122,7 +1124,7 @@ async fn a_task_in_progress_whose_node_died_is_relaunched_and_assigned_to_the_ne
 async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over() {
     super::wired();
     let f = world();
-    let answer = crate::sdk_owner::launch(&f.domain, crate::sdk_owner::Launch {
+    let answer = crate::sdk_owner::launch(&*f.domain, crate::sdk_owner::Launch {
         task: "t".into(), name: "Instance B".into(), directory: f.project.to_str().unwrap().into(),
         prompt: "consume-and-hold".into(), plugin: f.domain.ports().plugins().node(&f.home).unwrap(),
         options: LaunchOptions::default(), model: None,
@@ -1150,14 +1152,14 @@ async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over(
     assert!(f.task_node().is_none(), "confirmed source exit releases the reviewed node while retaining its delivery and feedback");
     answer_ended_cards(&f);
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::NotStarted);
-    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     let prompt = f.launched(2).await.1[1].clone();
     assert_resumed(&f, &original);
     assert!(prompt.contains("## Changes the user asked for on the result you take over\n\n- Use the new palette"), "{prompt}");
 }
 
 async fn sdk_node_on_the_task(f: &Fixture, directory: &Path) -> AgentId {
-    let answer = launch(&f.domain, &f.home, launch_body(f, json!({"model": "sonnet", "name": "Instance B", "cwd": directory.to_str().unwrap()})), |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, launch_body(f, json!({"model": "sonnet", "name": "Instance B", "cwd": directory.to_str().unwrap()})), |_| None).await.unwrap();
     f.sdk().until_answered("t").await;
     agent_of(&answer)
 }
@@ -1166,7 +1168,7 @@ fn close_sdk_node(f: &Fixture, agent: &AgentId) {
     f.domain.stop_sdk_host(agent).unwrap();
     let (backend, runtime) = f.domain.sdk().unwrap();
     crate::sdk_owner::end_unowned_host(runtime, backend, "t".into()).unwrap();
-    crate::node_exit::user_closed(&f.domain, &agent.0).unwrap();
+    crate::node_exit::user_closed(&*f.domain, &agent.0).unwrap();
     answer_ended_cards(f);
 }
 
@@ -1217,11 +1219,11 @@ async fn replacing_a_tasks_node_stops_it_keeps_its_folder_and_gives_the_task_to_
     let f = world();
     let old = sdk_node_on_the_task(&f, &f.project).await;
     let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
-    let taken = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "opus"})), |_| None).await.unwrap_err();
+    let taken = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "opus"})), |_| None).await.unwrap_err();
     assert!(taken.message.contains("already has a connected agent"), "without replace a live node keeps its task: {}", taken.message);
 
     let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus", "effort": "high", "prompt": "Finish the tokens"})).unwrap();
-    let answer = launch(&f.domain, &f.home, body, |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, body, |_| None).await.unwrap();
     let agent = agent_of(&answer);
     assert!(!f.domain.owns_sdk_host(&old), "the old SDK host was stopped");
     assert!(f.sessions.stopped.lock().unwrap().is_empty(), "native SDK recovery does not stop a legacy process");
@@ -1243,7 +1245,7 @@ async fn a_replacement_that_cannot_launch_leaves_the_old_node_working() {
     let f = world();
     connected_node_on_the_task(&f);
     let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus", "cwd": "/no/such/folder"})).unwrap();
-    let refused = launch(&f.domain, &f.home, body, |_| None).await.unwrap_err();
+    let refused = launch(&*f.domain, &f.home, body, |_| None).await.unwrap_err();
     assert_eq!(refused.code, "invalid_input");
     assert!(f.sessions.stopped.lock().unwrap().is_empty() && f.sdk().starts().is_empty());
     let state = f.domain.state().unwrap();
@@ -1254,7 +1256,7 @@ async fn a_replacement_that_cannot_launch_leaves_the_old_node_working() {
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     let body = serde_json::from_value(json!({"task": "free", "replace": true, "model": "opus", "reason": "Needs opus", "name": "x", "cwd": f.project.to_str().unwrap()})).unwrap();
-    let nothing = launch(&f.domain, &f.home, body, |_| None).await.unwrap_err();
+    let nothing = launch(&*f.domain, &f.home, body, |_| None).await.unwrap_err();
     assert!(nothing.message.contains("no node to replace"), "{}", nothing.message);
 }
 
@@ -1274,7 +1276,7 @@ async fn a_replacement_works_in_a_worktree_of_a_trusted_repository() {
     sdk_node_on_the_task(&f, &linked).await;
     let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
     let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus", "cwd": linked.to_str().unwrap()})).unwrap();
-    launch(&f.domain, &f.home, body, |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, body, |_| None).await.unwrap();
     let (folders, _) = f.launched(2).await;
     assert_resumed(&f, &original);
     assert!(same(&folders[1], &linked), "{folders:?}");
@@ -1286,7 +1288,7 @@ async fn a_replacement_whose_stop_fails_launches_nothing_and_the_old_node_keeps_
     let f = world();
     connected_node_on_the_task(&f);
     *f.sessions.stop_fails.lock().unwrap() = Some("claude agents still shows agent-b running after claude stop".into());
-    let refused = stop_replaced(&f.domain, &"agent-b".into()).await.unwrap_err();
+    let refused = stop_replaced(&*f.domain, &"agent-b".into()).await.unwrap_err();
     assert!(refused.contains("still shows agent-b running"), "the stop returns its actual reason: {refused}");
     assert!(f.sdk().starts().is_empty(), "the stop component never starts a fresh session");
     let state = f.domain.state().unwrap();
@@ -1315,14 +1317,14 @@ async fn a_replacement_inherits_only_a_worktree_alondra_owned() {
     let f = world();
     sdk_node_on_the_task(&f, &f.project).await;
     let body = || serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
-    let answer = launch(&f.domain, &f.home, body(), |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, body(), |_| None).await.unwrap();
     assert_eq!(f.domain.inherited_worktree(&agent_of(&answer).0).unwrap(), None, "the user's project folder is never Alondra's to delete");
 
     let g = world();
     let old = sdk_node_on_the_task(&g, &g.project).await;
     let dir = g.project.to_str().unwrap();
     g.domain.set_inherited_worktree(&old.0, dir, "agent-a").unwrap();
-    let answer = launch(&g.domain, &g.home, body(), |_| None).await.unwrap();
+    let answer = launch(&*g.domain, &g.home, body(), |_| None).await.unwrap();
     assert_eq!(g.domain.inherited_worktree(&agent_of(&answer).0).unwrap().as_deref(), Some(dir), "a worktree passed down a chain of replacements stays Alondra's");
 }
 
@@ -1335,8 +1337,8 @@ async fn a_node_that_ends_after_its_replacement_stopped_short_frees_its_task_to_
     let f = world();
     connected_node_on_the_task(&f);
     *f.sessions.stop_fails.lock().unwrap() = Some("claude agents still shows agent-b running after claude stop".into());
-    stop_replaced(&f.domain, &"agent-b".into()).await.unwrap_err();
-    crate::node_exit::user_closed(&f.domain, "agent-b").unwrap();
+    stop_replaced(&*f.domain, &"agent-b".into()).await.unwrap_err();
+    crate::node_exit::user_closed(&*f.domain, "agent-b").unwrap();
     assert_eq!(f.task_node(), None, "the task is free");
     assert_eq!(release_reasons(&f), [crate::node_exit::REPLACE_ABORTED]);
     assert_eq!(f.domain.live().closed_task("t").map(|node| node.relaunch), Some(crate::live::Relaunch::ByItself));
@@ -1359,7 +1361,7 @@ async fn a_node_on_a_turn_is_stopped_once_the_turn_ends() {
     connected_node_on_the_task(&f);
     on_a_turn(&f);
     let old = AgentId::from("agent-b");
-    let mut stopping = Box::pin(stop_replaced(&f.domain, &old));
+    let mut stopping = Box::pin(stop_replaced(&*f.domain, &old));
     std::future::poll_fn(|context| {
         assert!(std::future::Future::poll(stopping.as_mut(), context).is_pending(), "a busy legacy turn must hold its stop");
         std::task::Poll::Ready(())
@@ -1376,9 +1378,9 @@ async fn a_node_whose_turn_does_not_end_is_interrupted_before_it_is_stopped() {
     super::wired();
     let f = world();
     connected_node_on_the_task(&f);
-    let node = Node::connect(&f.domain, "agent-b");
+    let node = Node::connect(f.domain.clone(), "agent-b");
     on_a_turn(&f);
-    stop_replaced(&f.domain, &"agent-b".into()).await.unwrap();
+    stop_replaced(&*f.domain, &"agent-b".into()).await.unwrap();
     assert_eq!(node.interrupts(), 1, "past the deadline the turn is interrupted first");
     assert_eq!(f.sessions.stopped.lock().unwrap().len(), 1);
     assert!(f.sdk().starts().is_empty());
@@ -1394,7 +1396,7 @@ async fn the_replacing_node_is_told_to_continue_in_the_worktree_without_making_a
     alondra_engine_doubles::worktrees::checkout(&f.project, "worktree-t-cards-3");
     sdk_node_on_the_task(&f, &f.project).await;
     let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
-    launch(&f.domain, &f.home, body, |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, body, |_| None).await.unwrap();
     let prompt = f.launched(2).await.1[1].clone();
     let expected = format!("You continue in {}, branch worktree-t-cards-3", f.project.display());
     assert!(prompt.contains(&expected) && prompt.contains("Do not create another worktree and do not use EnterWorktree"), "{prompt}");
@@ -1418,7 +1420,7 @@ async fn a_relaunch_of_a_task_whose_earlier_worktree_exists_starts_there_not_in_
     alondra_engine_doubles::worktrees::make_worktree(&f.project, &earlier).unwrap();
     std::fs::write(earlier.join("half-done.rs"), "work").unwrap();
     f.domain.set_task_worktree(&TaskId::from("t"), earlier.to_str().unwrap()).unwrap();
-    let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     let (folders, prompts) = f.launched(1).await;
     assert!(same(&folders[0], &earlier), "the new node starts in the task's worktree, not {folders:?}");
     assert!(earlier.join("half-done.rs").exists(), "with the earlier node's work in it");
@@ -1431,7 +1433,7 @@ async fn a_task_launched_through_the_sdk_in_a_worktree_alondra_made_has_it_as_th
     super::wired();
     let f = world();
     main_checkout(&f);
-    let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     let made = f.project.join(".claude/worktrees/t");
     let recorded = f.domain.task_worktree(&TaskId::from("t")).unwrap().expect("the task's worktree is recorded");
     assert!(same(Path::new(&recorded), &made), "{recorded}");
@@ -1446,7 +1448,7 @@ async fn a_first_launch_in_a_main_checkout_gets_a_worktree_of_its_own_and_the_ne
     super::wired();
     let f = world();
     main_checkout(&f);
-    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     let made = f.project.join(".claude/worktrees/t");
     let (folders, prompts) = f.launched(1).await;
     assert!(same(&folders[0], &made), "{folders:?}");
@@ -1456,7 +1458,7 @@ async fn a_first_launch_in_a_main_checkout_gets_a_worktree_of_its_own_and_the_ne
     let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
     let original_account = f.domain.state().unwrap().tasks[&TaskId::from("t")].account_key();
     assert!(same(Path::new(&recorded), &made));
-    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "replace": true})), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "replace": true})), |_| None).await.unwrap();
     let (folders, _) = f.launched(2).await;
     assert!(same(&folders[1], &made), "the next launch works in the same worktree: {folders:?}");
     let starts = f.sdk().starts();
@@ -1470,7 +1472,7 @@ async fn no_node_is_launched_in_a_main_checkout_alondra_cannot_isolate() {
     super::wired();
     let f = world();
     std::fs::create_dir_all(f.project.join(".git")).unwrap();
-    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
+    let refused = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(refused.code, "main_checkout", "{}", refused.message);
     assert!(f.sdk().starts().is_empty(), "claude never ran");
 }
@@ -1517,10 +1519,10 @@ async fn a_replacement_answers_before_the_old_node_stops_and_finishes_without_a_
     on_a_turn(&f);
     let (release, released) = tokio::sync::oneshot::channel();
     let domain = Arc::clone(&f.domain);
-    let answer = launch_replacement_work(Arc::clone(&f.domain), "t".into(), move |checked| async move {
+    let answer = launch_replacement_work(f.domain.clone(), "t".into(), move |checked| async move {
         checked();
         released.await.map_err(|_| DomainError::new("replace_failed", "the explicit stop barrier was dropped"))?;
-        stop_replaced(&domain, &"agent-b".into()).await.map_err(|reason| DomainError::new("replace_failed", reason))?;
+        stop_replaced(&*domain, &"agent-b".into()).await.map_err(|reason| DomainError::new("replace_failed", reason))?;
         Ok(json!({"stopped": "agent-b"}))
     }).await.unwrap();
     assert_eq!(answer["replacing"], true, "{answer}");
@@ -1543,9 +1545,9 @@ async fn a_replacement_that_fails_after_answering_tells_the_orchestrator_why() {
     connected_node_on_the_task(&f);
     *f.sessions.stop_fails.lock().unwrap() = Some("claude agents still shows agent-b running after claude stop".into());
     let domain = Arc::clone(&f.domain);
-    let answer = launch_replacement_work(Arc::clone(&f.domain), "t".into(), move |checked| async move {
+    let answer = launch_replacement_work(f.domain.clone(), "t".into(), move |checked| async move {
         checked();
-        stop_replaced(&domain, &"agent-b".into()).await.map_err(|reason| DomainError::new("replace_failed", reason))?;
+        stop_replaced(&*domain, &"agent-b".into()).await.map_err(|reason| DomainError::new("replace_failed", reason))?;
         Ok(json!({"stopped": "agent-b"}))
     }).await.unwrap();
     assert_eq!(answer["replacing"], true);
@@ -1590,7 +1592,7 @@ async fn a_replacement_whose_new_node_does_not_start_is_relaunched_by_itself() {
     assert_eq!(f.sdk().starts().len(), 1, "only the original verified native session was started");
 
     f.sdk().refuse_starts(false);
-    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    crate::auto_launch::pass(&*f.domain, &f.home).await.unwrap();
     assert!(f.task_node().is_some_and(|agent| agent != old), "Alondra started a new node by itself");
     f.launched(2).await;
     assert_resumed(&f, &original);
@@ -1620,9 +1622,9 @@ async fn a_replacement_that_panics_releases_the_task_and_tells_the_orchestrator(
     connected_node_on_the_task(&f);
     f.sessions.stop_panics.store(true, Ordering::SeqCst);
     let domain = Arc::clone(&f.domain);
-    let reason = match launch_replacement_work(Arc::clone(&f.domain), "t".into(), move |checked| async move {
+    let reason = match launch_replacement_work(f.domain.clone(), "t".into(), move |checked| async move {
         checked();
-        stop_replaced(&domain, &"agent-b".into()).await.map_err(|reason| DomainError::new("replace_failed", reason))?;
+        stop_replaced(&*domain, &"agent-b".into()).await.map_err(|reason| DomainError::new("replace_failed", reason))?;
         Ok(json!({"stopped": "agent-b"}))
     }).await {
         Err(refused) => refused.message,
@@ -1650,8 +1652,8 @@ async fn a_legacy_worktree_is_found_without_replacing_an_unverified_native_sessi
     std::fs::write(claude_home.join("jobs/0ldn0de0/state.json"),
         json!({"cwd": f.project.to_str().unwrap(), "worktreePath": made.to_str().unwrap()}).to_string()).unwrap();
     connected_node(&f, old);
-    assert_eq!(owned_worktree(&f.domain, old).as_deref(), made.to_str());
-    let refused = launch(&f.domain, &f.home, replace_body(), |_| None).await.unwrap_err();
+    assert_eq!(owned_worktree(&*f.domain, old).as_deref(), made.to_str());
+    let refused = launch(&*f.domain, &f.home, replace_body(), |_| None).await.unwrap_err();
     assert_eq!(refused.code, "native_session_required");
     assert_eq!(f.task_node(), Some(old.into()));
     assert!(f.sessions.stopped.lock().unwrap().is_empty());
@@ -1666,7 +1668,7 @@ async fn an_ended_session_leaves_no_inherited_worktree_or_aborted_replace_behind
     connected_node_on_the_task(&f);
     f.domain.set_inherited_worktree("agent-b", f.project.to_str().unwrap(), "agent-a").unwrap();
     f.domain.live().note_aborted_replace("agent-b", "stop failed");
-    crate::node_exit::take_out(&f.domain, "agent-b", "node closed by the user", None, crate::live::Relaunch::AskUser).unwrap();
+    crate::node_exit::take_out(&*f.domain, "agent-b", "node closed by the user", None, crate::live::Relaunch::AskUser).unwrap();
     assert_eq!(f.domain.inherited_worktree("agent-b").unwrap(), None);
     assert_eq!(f.domain.live().take_aborted_replace("agent-b"), None);
 }
@@ -1690,7 +1692,7 @@ async fn a_launch_of_the_task_that_implements_an_approved_plan_carries_the_whole
         agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
 
-    launch(&f.domain, &f.home, launch_body(&f, json!({"task": "build", "model": "sonnet"})), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"task": "build", "model": "sonnet"})), |_| None).await.unwrap();
     let prompt = f.prompt().await;
     assert!(prompt.contains("## The plan the user approved") && prompt.contains("do not plan again"), "{prompt}");
     assert!(prompt.contains("- [ ] Store feature prints in Core Data\n- [ ] Follow changes in the background"), "the whole plan: {prompt}");
@@ -1759,14 +1761,14 @@ async fn a_task_held_for_a_plan_review_is_not_launched_until_the_orchestrator_se
     let actor = the_orchestrator(&f.domain);
     decided_on(&f);
     decide(&f);
-    let held = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
+    let held = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(held.code, "plan_review_pending");
     assert!(held.message.contains("Editor fonts"), "{}", held.message);
     assert!(f.sdk().starts().is_empty(), "Claude never runs for a held task");
     command(&f.domain, actor.clone(), Command::SettlePlanReview { review_id: "font-choice".into(), task_id: "t".into(),
         outcome: alondra_domain_rules::PlanReviewOutcome::Unchanged { reason: "Colours do not depend on the typeface".into() } });
     command(&f.domain, actor.clone(), Command::SetDependencies { task_id: "t".into(), dependencies: Default::default(), stack: None, reason: None });
-    let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    let answer = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(f.task_node(), Some(agent_of(&answer)));
 }
 
@@ -1796,8 +1798,8 @@ async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_na
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("index")].state, TaskState::WaitingDependency);
     partial_plan(&f, "index", json!({"model": "claude/sonnet"})).unwrap();
     assert_eq!(f.domain.state().unwrap().checklists[&TaskId::from("index")], checklist);
-    assert_eq!(get_launch_plan(&f.domain, &"index".into()).unwrap()["launch"]["mission"], original.mission.unwrap());
-    launch(&f.domain, &f.home, launch_body(&f, json!({"task": "index"})), |_| None).await.unwrap();
+    assert_eq!(get_launch_plan(&*f.domain, &"index".into()).unwrap()["launch"]["mission"], original.mission.unwrap());
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"task": "index"})), |_| None).await.unwrap();
     let prompt = f.prompt().await;
     assert!(prompt.contains("## The plan the user approved") && prompt.contains("do not plan again"), "{prompt}");
     assert!(prompt.contains("Your part of it is points 2, 3; the other points are other tasks"), "{prompt}");
@@ -1811,7 +1813,7 @@ async fn an_unverified_legacy_native_session_is_kept_until_it_can_be_recovered()
     let f = world();
     connected_node_on_the_task(&f);
     let original = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
-    let refused = launch(&f.domain, &f.home, replace_body(), |_| None).await.unwrap_err();
+    let refused = launch(&*f.domain, &f.home, replace_body(), |_| None).await.unwrap_err();
     assert_eq!(refused.code, "native_session_required");
     assert!(f.sessions.stopped.lock().unwrap().is_empty());
     assert!(f.sdk().starts().is_empty());
@@ -1829,7 +1831,7 @@ async fn a_bare_model_launches_on_the_provider_whose_sheets_know_it_when_two_are
     let f = world();
     std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = [\"claude\", \"codex\"]\n").unwrap();
     command(&f.domain, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: TaskSelection::automatic(ModelProfile::Implementation), pending: None });
-    let launched = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "opus"})), |_| None).await;
+    let launched = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "opus"})), |_| None).await;
     assert!(launched.as_ref().err().is_none_or(|refusal| !refusal.message.contains("Specify the provider")), "{launched:?}");
 }
 
@@ -1839,7 +1841,7 @@ async fn an_sdk_launch_that_fails_leaves_the_task_without_a_node() {
     super::wired();
     let f = bare_world();
     f.domain.enable_sdk(broken_backend(&f));
-    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"effort": "light", "title": "Editor colours"})), |_| Some(hard_choices())).await.unwrap_err();
+    let refused = launch(&*f.domain, &f.home, launch_body(&f, json!({"effort": "light", "title": "Editor colours"})), |_| Some(hard_choices())).await.unwrap_err();
     assert_eq!(refused.code, "launch_failed", "{refused:?}");
     assert!(refused.message.contains("did not start through the Agent SDK"), "{}", refused.message);
     let state = f.domain.state().unwrap();
@@ -1867,7 +1869,7 @@ fn week_used(f: &Fixture, account: &str, used: f64) {
         windows: vec![WindowReading { kind: WindowKind::Weekly, used: Share::of(used), resets_at: Some(alondra_core::now_millis() + 3 * 86_400_000), exhausted: false }],
         plan: None, complete: true,
     };
-    crate::usage_probe::record(&f.domain, &alondra_core::accounts::AccountId::parse(account).unwrap(), reading, alondra_core::now_millis());
+    crate::usage_probe::record(&*f.domain, &alondra_core::accounts::AccountId::parse(account).unwrap(), reading, alondra_core::now_millis());
 }
 
 fn config_dir_sha256(f: &Fixture) -> Option<String> {
@@ -1887,7 +1889,7 @@ async fn a_launch_starts_on_the_account_with_the_most_margin() {
     let folder = with_work_account(&f);
     week_used(&f, "default", 0.8);
     week_used(&f, "work", 0.1);
-    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     f.launched(1).await;
     assert_eq!(config_dir_sha256(&f), Some(sha256(folder.to_str().unwrap())), "Claude runs with the work account's folder");
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
@@ -1916,7 +1918,7 @@ async fn with_codex_connected_a_launch_still_starts_on_the_claude_account_with_t
     }
     week_used(&f, "default", 0.21);
     week_used(&f, "work", 0.0);
-    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     f.launched(1).await;
     assert_eq!(config_dir_sha256(&f), Some(sha256(folder.to_str().unwrap())), "Claude runs with the work account's folder");
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
@@ -1935,20 +1937,20 @@ async fn while_no_account_can_work_a_launch_waits_for_capacity_and_goes_ahead_on
     let f = world();
     let folder = with_work_account(&f);
     let now = alondra_core::now_millis();
-    crate::usage_probe::record_limit(&f.domain, &alondra_core::accounts::AccountId::default_account(), Some(now + 3_600_000), now);
-    crate::usage_probe::record_limit(&f.domain, &alondra_core::accounts::AccountId::parse("work").unwrap(), Some(now + 7_200_000), now);
-    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
+    crate::usage_probe::record_limit(&*f.domain, &alondra_core::accounts::AccountId::default_account(), Some(now + 3_600_000), now);
+    crate::usage_probe::record_limit(&*f.domain, &alondra_core::accounts::AccountId::parse("work").unwrap(), Some(now + 7_200_000), now);
+    let refused = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(refused.code, "usage_exhausted", "{}", refused.message);
     assert!(f.sdk().starts().is_empty() && f.task_node().is_none(), "nothing started");
     let state = f.domain.state().unwrap();
-    let facts = crate::start_failures::facts(&f.domain, &state).unwrap();
+    let facts = crate::start_failures::facts(&*f.domain, &state).unwrap();
     let task = &state.tasks[&TaskId::from("t")];
     assert_eq!(state.holder(task, &facts[&task.id]), Ok(Holder::Gate(GateCause::Room)), "the task waits for capacity");
 
     week_used(&f, "work", 0.3);
-    crate::usage_probe::follow(&f.domain, alondra_core::now_millis());
+    crate::usage_probe::follow(&*f.domain, alondra_core::now_millis());
     f.domain.live().usage_pause.resume(alondra_core::now_millis());
-    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     f.launched(1).await;
     assert_eq!(config_dir_sha256(&f), Some(sha256(folder.to_str().unwrap())), "on the account that came back");
 }
@@ -1965,8 +1967,8 @@ async fn a_request_that_chose_an_account_paid_per_use_runs_there_and_only_then()
     let api = f.home.join("accounts/api");
     std::fs::create_dir_all(&api).unwrap();
     let now = alondra_core::now_millis();
-    crate::usage_probe::record_limit(&f.domain, &alondra_core::accounts::AccountId::default_account(), Some(now + 3_600_000), now);
-    crate::usage_probe::record_limit(&f.domain, &alondra_core::accounts::AccountId::parse("work").unwrap(), Some(now + 7_200_000), now);
+    crate::usage_probe::record_limit(&*f.domain, &alondra_core::accounts::AccountId::default_account(), Some(now + 3_600_000), now);
+    crate::usage_probe::record_limit(&*f.domain, &alondra_core::accounts::AccountId::parse("work").unwrap(), Some(now + 7_200_000), now);
     let file = OptionsFile::parse(&std::fs::read_to_string(alondra_core::options::path_in(&f.home)).unwrap()).unwrap();
     let choices = |account: &str| Choices {
         project: None,
@@ -1975,11 +1977,11 @@ async fn a_request_that_chose_an_account_paid_per_use_runs_there_and_only_then()
         issue: None, issue_text: None, attachments: vec![],
     };
 
-    let automatic = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| Some(choices("auto"))).await.unwrap_err();
+    let automatic = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| Some(choices("auto"))).await.unwrap_err();
     assert_eq!(automatic.code, "usage_exhausted", "Alondra never picks the account paid per use: {}", automatic.message);
     assert!(f.sdk().starts().is_empty());
 
-    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| Some(choices("api"))).await.unwrap();
+    launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| Some(choices("api"))).await.unwrap();
     f.launched(1).await;
     assert_eq!(config_dir_sha256(&f), Some(sha256(api.to_str().unwrap())), "Claude runs with the API account's folder");
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
@@ -1998,7 +2000,7 @@ async fn a_started_legacy_background_node_cannot_be_stopped_to_select_another_ac
     let choices=Choices{project:None,options:OptionsFile::parse("[[accounts.claude]]\nid=\"default\"\nname=\"Native default\"\n[[accounts.claude]]\nid=\"work\"\nname=\"Work\"\n[defaults]\naccount=\"claude/work\"\n").unwrap().resolve(None,&std::collections::BTreeMap::new()).unwrap(),issue:None,issue_text:None,attachments:vec![]};
     let original=f.task_node();let before=f.sdk().starts();
     assert!(f.domain.live().mods.session("agent-b").is_some(), "the fixture has an actual connected mod session");
-    let error=launch(&f.domain,&f.home,launch_body(&f,json!({"replace":true,"model":"sonnet"})),|_|Some(choices)).await.unwrap_err();
+    let error=launch(&*f.domain,&f.home,launch_body(&f,json!({"replace":true,"model":"sonnet"})),|_|Some(choices)).await.unwrap_err();
     assert_eq!(error.code,"active_account_immutable");assert_eq!(f.task_node(),original);
     assert!(f.sessions.stopped.lock().unwrap().is_empty(),"wrong-account replacement is refused before stopping the legacy native session");
     assert_eq!(f.sdk().starts(),before);assert!(f.domain.live().mods.session("agent-b").is_some());
@@ -2021,7 +2023,7 @@ async fn changing_the_recovery_directory_refuses_before_workspace_effects_or_sto
         }
         let accounts = alondra_engine_doubles::accounts::of(f.domain.ports());
         accounts.set_trust(None, &[(&directory, true)]);
-        let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"replace": true, "model": "sonnet", "cwd": directory.to_str().unwrap()})), |_| None).await.unwrap_err();
+        let refused = launch(&*f.domain, &f.home, launch_body(&f, json!({"replace": true, "model": "sonnet", "cwd": directory.to_str().unwrap()})), |_| None).await.unwrap_err();
         assert_eq!(refused.code, "native_session_required");
         assert_eq!(f.task_node(), Some(old.clone()));
         assert!(f.domain.owns_sdk_host(&old));
@@ -2047,14 +2049,14 @@ fn an_unstarted_selection_replaces_a_disabled_provider() {
     let requested = file.orchestrator_defaults(None, None);
     let mut task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
     let mut intent = TaskSelection::automatic(ModelProfile::Implementation);
-    let chosen = crate::accounts::select_for_node(&f.domain, &f.home, &intent, None, Some(Provider::Codex), 100).unwrap();
+    let chosen = crate::accounts::select_for_node(&*f.domain, &f.home, &intent, None, Some(Provider::Codex), 100).unwrap();
     task.provider = Provider::Codex;
     intent.effective = Some(chosen.selection);
     task.selection = Some(intent);
     std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = [\"claude\"]\n").unwrap();
     let file = crate::options::options_at(&f.home).unwrap();
     let body = launch_body(&f, json!({"model": "codex/gpt-6", "provider": "codex"}));
-    let (_, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false)
+    let (_, account, _) = native_launch(&*f.domain, &f.home, &task, &requested, &file, &body, false, false)
         .expect("a task that never started must reselect an active provider").unwrap();
     assert_eq!(account, AccountKey::native(Provider::Claude));
 }
@@ -2082,16 +2084,16 @@ fn an_unstarted_selection_replaces_a_disabled_legacy_provider() {
     let file = crate::options::options_at(&f.home).unwrap();
     let mut task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
     let body = launch_body(&f, json!({"model": "sonnet"}));
-    let (resolved, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap()
+    let (resolved, account, _) = native_launch(&*f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap()
         .expect("an unstarted legacy request must resolve against active providers");
     assert_eq!(account, AccountKey::native(Provider::Codex));
-    assert!(native_launch(&f.domain, &f.home, &task, &requested, &file, &body, true, false).unwrap().is_none(), "a started legacy session stays on its original launch path");
+    assert!(native_launch(&*f.domain, &f.home, &task, &requested, &file, &body, true, false).unwrap().is_none(), "a started legacy session stays on its original launch path");
     task.provider = Provider::Codex;
     task.account = Some(account.account.clone());
     task.selection = resolved.selection;
     task.started = true;
     let recovery = launch_body(&f, json!({}));
-    let (recovered, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &recovery, true, false).unwrap().unwrap();
+    let (recovered, account, _) = native_launch(&*f.domain, &f.home, &task, &requested, &file, &recovery, true, false).unwrap().unwrap();
     assert_eq!(account, AccountKey::native(Provider::Codex));
     assert_eq!(recovered.selection.unwrap().effective.as_ref().unwrap().model.model, "gpt-6");
 }
@@ -2117,7 +2119,7 @@ fn an_unstarted_selection_does_not_transfer_payment_authorization_to_another_acc
     intent.paid_account_grant = intent.account.clone();
     task.selection = Some(intent);
     let body = launch_body(&f, json!({"model": "claude/opus"}));
-    let error = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap_err();
+    let error = native_launch(&*f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap_err();
     assert_eq!(error.code, "account_unavailable", "a grant for the disabled account cannot authorize Codex");
 }
 
@@ -2150,7 +2152,7 @@ async fn an_unstarted_selection_keeps_the_fallback_account_when_the_original_req
         command(&f.domain, Actor::System, Command::RecordAccountConfiguration { order: vec![AccountKey::native(Provider::Claude), work.clone()], version: alondra_core::accounts::config_version(&file.accounts) });
         let plan = alondra_daemon_engine_model::LaunchPlan { model: Some("opus".into()), ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
         f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
-        launch(&f.domain, &f.home, launch_body(&f, json!({})), |_| Some(choices.clone())).await.unwrap();
+        launch(&*f.domain, &f.home, launch_body(&f, json!({})), |_| Some(choices.clone())).await.unwrap();
         f.launched(1).await;
         f.sdk().until_answered("t").await;
         let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
@@ -2159,7 +2161,7 @@ async fn an_unstarted_selection_keeps_the_fallback_account_when_the_original_req
         catalog.models.push(opus);
         catalog.revision = "more-models".into();
         command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
-        launch(&f.domain, &f.home, launch_body(&f, json!({"replace": true})), |_| Some(choices.clone())).await.unwrap();
+        launch(&*f.domain, &f.home, launch_body(&f, json!({"replace": true})), |_| Some(choices.clone())).await.unwrap();
         f.launched(2).await;
         assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].account_key(), work);
         assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.as_ref().unwrap().effective.as_ref().unwrap().model.model, "sonnet", "a stale launch plan cannot replace the retained model during recovery");
@@ -2176,7 +2178,7 @@ async fn a_plan_naming_opus_without_provider_starts_on_claude_when_claude_and_co
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
     f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     let body: LaunchBody = serde_json::from_value(json!({"task": "t"})).unwrap();
-    launch(&f.domain, &f.home, body, |_| None).await.unwrap();
+    launch(&*f.domain, &f.home, body, |_| None).await.unwrap();
     f.launched(1).await;
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].provider, alondra_core::accounts::Provider::Claude);
 }
@@ -2190,12 +2192,12 @@ async fn a_model_in_two_catalogs_is_refused_when_the_plan_is_written_and_a_uniqu
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
     let request = RequestId::from("r");
     for model in ["opus", "gpt-6", "claude/twin", "codex/twin"] {
-        crate::launch_plans::validate(&f.domain, &f.home, &request, &plan(model)).unwrap_or_else(|error| panic!("{model}: {}", error.message));
+        crate::launch_plans::validate(&*f.domain, &f.home, &request, &plan(model)).unwrap_or_else(|error| panic!("{model}: {}", error.message));
     }
-    let refused = crate::launch_plans::validate(&f.domain, &f.home, &request, &plan("twin")).unwrap_err();
+    let refused = crate::launch_plans::validate(&*f.domain, &f.home, &request, &plan("twin")).unwrap_err();
     assert_eq!((refused.code.as_str(), refused.message.as_str()), ("invalid_input", "“twin” is offered by claude and codex: name it claude/twin or codex/twin"));
     let body: LaunchPlanBody = serde_json::from_value(json!({"task_id": "t", "launch": plan("twin")})).unwrap();
-    assert_eq!(set_launch_plan(&f.domain, &f.home, body).unwrap_err().message, refused.message);
+    assert_eq!(set_launch_plan(&*f.domain, &f.home, body).unwrap_err().message, refused.message);
 }
 
 /// What kept “Triage legible en AX3” from ever starting on 2026-11-10: its plan held a native effort
@@ -2207,13 +2209,13 @@ async fn a_plan_with_a_native_effort_and_no_model_is_refused_when_it_is_written(
     connect_claude_and_codex(&f);
     let plan = alondra_daemon_engine_model::LaunchPlan { effort: Some("medium".into()), reason: Some("Layout fix".into()),
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
-    let refused = crate::launch_plans::validate(&f.domain, &f.home, &"r".into(), &plan).unwrap_err();
+    let refused = crate::launch_plans::validate(&*f.domain, &f.home, &"r".into(), &plan).unwrap_err();
     assert_eq!((refused.code.as_str(), refused.message.as_str()), ("invalid_input", crate::launch_plans::EFFORT_WITHOUT_MODEL));
     let body: LaunchPlanBody = serde_json::from_value(json!({"task_id": "t", "launch": plan})).unwrap();
-    assert_eq!(set_launch_plan(&f.domain, &f.home, body).unwrap_err().message, refused.message);
+    assert_eq!(set_launch_plan(&*f.domain, &f.home, body).unwrap_err().message, refused.message);
     assert_eq!(partial_plan(&f, "t", json!({"effort": "medium"})).unwrap_err().message, refused.message);
     let named = alondra_daemon_engine_model::LaunchPlan { model: Some("claude/sonnet".into()), ..plan };
-    crate::launch_plans::validate(&f.domain, &f.home, &"r".into(), &named).unwrap();
+    crate::launch_plans::validate(&*f.domain, &f.home, &"r".into(), &named).unwrap();
 }
 
 #[tokio::test]
@@ -2225,7 +2227,7 @@ async fn a_start_refused_for_its_plan_goes_to_the_orchestrator_and_fixing_the_pl
     refuse_its_start(&f).await;
     partial_plan(&f, "t", json!({"model": "claude/sonnet"})).unwrap();
     assert!(f.domain.state().unwrap().open_plan_refusal(&"t".into()).is_none(), "the fixed plan settles the card");
-    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    crate::auto_launch::pass(&*f.domain, &f.home).await.unwrap();
     f.launched(1).await;
 }
 
@@ -2239,13 +2241,13 @@ async fn the_orchestrator_cancels_a_refused_plan_with_its_reason() {
     command(&f.domain, the_orchestrator(&f.domain), Command::AnswerQuestion { attachments: vec![], interaction_id: card.id,
         option_id: alondra_domain_rules::START_CANCEL.into(),
         inputs: [(alondra_domain_rules::ANSWER_TEXT.to_owned(), alondra_domain_rules::InputValue::Text("The editor no longer needs it".into()))].into() });
-    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    crate::auto_launch::pass(&*f.domain, &f.home).await.unwrap();
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].cancelled());
     assert_eq!(f.domain.store.lock().unwrap().cancel_reasons().unwrap()[&TaskId::from("t")], "The editor no longer needs it");
 }
 
 pub fn partial_plan(f: &Fixture, task: &str, changes: Value) -> Result<Value, DomainError> {
-    update_launch_plan(&f.domain, &f.home, serde_json::from_value(json!({"task_id": task, "changes": changes})).unwrap())
+    update_launch_plan(&*f.domain, &f.home, serde_json::from_value(json!({"task_id": task, "changes": changes})).unwrap())
 }
 
 
@@ -2254,7 +2256,7 @@ pub fn cancelled_launch_plan_with_history(f: &Fixture) -> alondra_daemon_engine_
     let before = stored_selection(f);
     give(f, "t", "agent-b");
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
-    record(&f.domain, Decision {
+    record(&*f.domain, Decision {
         task_id: "t".into(), request_id: "r".into(), agent_id: Some("agent-b".into()), at: alondra_core::now_millis(),
         kind: DecisionKind::Launch, model: Some("sonnet".into()), effort: Some("medium".into()), approach: None,
         chosen_by: ModelChooser::Orchestrator, reason: Some("Original launch".into()), title: "Editor colours".into(),
@@ -2280,7 +2282,7 @@ fn preparing_terminal_choices_preserves_scope_and_requires_an_open_request_and_a
         assert_eq!(partial_plan(&f, "t", changes).unwrap_err().code, "invalid_input");
     }
     let replacement = serde_json::from_value(json!({"task_id": "t", "launch": before})).unwrap();
-    assert_eq!(set_launch_plan(&f.domain, &f.home, replacement).unwrap_err().code, "invalid_input");
+    assert_eq!(set_launch_plan(&*f.domain, &f.home, replacement).unwrap_err().code, "invalid_input");
     assert_eq!(f.domain.launch_plan(&"t".into()).unwrap().unwrap(), before);
     let mut state = (*f.domain.state().unwrap()).clone();
     for end in [alondra_domain_rules::NodeEnd::KeptByUser, alondra_domain_rules::NodeEnd::UsersOwn] {
@@ -2344,11 +2346,11 @@ fn partial_launch_plan_reads_the_complete_stored_mission_without_writing() {
     before.mission = Some("Saved context.\n".repeat(2_000));
     f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &before, 1).unwrap();
     let mark = f.domain.store.lock().unwrap().write_mark().unwrap();
-    assert_eq!(get_launch_plan(&f.domain, &"t".into()).unwrap(), json!({"task": "t", "launch": before}));
+    assert_eq!(get_launch_plan(&*f.domain, &"t".into()).unwrap(), json!({"task": "t", "launch": before}));
     assert_eq!(f.domain.store.lock().unwrap().write_mark().unwrap(), mark);
-    assert_eq!(get_launch_plan(&f.domain, &"missing".into()).unwrap_err().code, "not_found");
+    assert_eq!(get_launch_plan(&*f.domain, &"missing".into()).unwrap_err().code, "not_found");
     f.domain.store.lock().unwrap().sqlite_mut().forget_launch_plan(&"t".into()).unwrap();
-    assert_eq!(get_launch_plan(&f.domain, &"t".into()).unwrap_err().code, "not_found");
+    assert_eq!(get_launch_plan(&*f.domain, &"t".into()).unwrap_err().code, "not_found");
 }
 
 #[test]
@@ -2362,7 +2364,7 @@ fn partial_launch_plan_validates_the_merged_selection_and_changes_nothing_on_ref
         assert_eq!(f.domain.launch_plan(&"t".into()).unwrap().unwrap(), before);
     }
     partial_plan(&f, "t", json!({"model": "codex/gpt-6", "reasoning_effort": "high", "approach": "solo", "reason": "Measured results", "tags": {"kind": "feature"}})).unwrap();
-    let read = get_launch_plan(&f.domain, &"t".into()).unwrap();
+    let read = get_launch_plan(&*f.domain, &"t".into()).unwrap();
     assert_eq!(read["launch"]["effort"], "high");
     assert_eq!(read["launch"]["approach"], "solo");
     assert_eq!(read["launch"]["reason"], "Measured results");
@@ -2376,15 +2378,15 @@ fn partial_launch_plan_and_replacement_refuse_a_started_task_and_an_active_launc
     super::wired();
     let f = world();
     let before = stored_selection(&f);
-    let guard = Launching::begin(&f.domain, &"t".into()).unwrap();
+    let guard = Launching::begin(&*f.domain, &"t".into()).unwrap();
     assert_eq!(partial_plan(&f, "t", json!({"model": "sonnet"})).unwrap_err().code, "conflict");
     drop(guard);
     give(&f, "t", "agent-b");
     assert_eq!(partial_plan(&f, "t", json!({"model": "sonnet"})).unwrap_err().code, "conflict");
     let body = serde_json::from_value(json!({"task_id": "t", "launch": before})).unwrap();
-    assert_eq!(set_launch_plan(&f.domain, &f.home, body).unwrap_err().code, "conflict");
+    assert_eq!(set_launch_plan(&*f.domain, &f.home, body).unwrap_err().code, "conflict");
     assert_eq!(f.domain.launch_plan(&"t".into()).unwrap().unwrap(), before);
-    let _released = Launching::begin(&f.domain, &"t".into()).unwrap();
+    let _released = Launching::begin(&*f.domain, &"t".into()).unwrap();
 }
 
 #[test]
@@ -2405,11 +2407,11 @@ fn partial_launch_plan_refuses_the_users_fixed_work_effort_even_for_a_native_mod
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: "scheduled".into(), request_id: "scheduled".into(), title: "Scheduled".into(), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(alondra_daemon_engine_model::LaunchPlan::new("scheduled", f.project.to_str().unwrap())) });
-    let before = get_launch_plan(&f.domain, &"scheduled".into()).unwrap();
+    let before = get_launch_plan(&*f.domain, &"scheduled".into()).unwrap();
     let error = partial_plan(&f, "scheduled", json!({"model": "codex/gpt-6"})).unwrap_err();
     assert_eq!(error.code, "invalid_input");
     assert!(error.message.contains("user chose effort high"), "{}", error.message);
-    assert_eq!(get_launch_plan(&f.domain, &"scheduled".into()).unwrap(), before);
+    assert_eq!(get_launch_plan(&*f.domain, &"scheduled".into()).unwrap(), before);
 }
 
 #[test]
@@ -2432,7 +2434,7 @@ async fn partial_launch_plan_is_reread_after_an_admitted_launch_captured_the_old
     let stale = LaunchBody::from_plan("t".into(), &before);
     f.domain.store.lock().unwrap().enqueue_launch(&"t".into(), &stale.to_queue(), "orchestrator", 2).unwrap();
     partial_plan(&f, "t", json!({"model": "claude/opus"})).unwrap();
-    launch_from(&f.domain, &f.home, stale, |_| None, Origin::Admitted).await.unwrap();
+    launch_from(&*f.domain, &f.home, stale, |_| None, Origin::Admitted).await.unwrap();
     f.launched(1).await;
     assert_eq!(f.sdk().flag("--model").as_deref(), Some("opus"));
     assert!(f.prompt().await.contains("Added context: preserve colours."));
@@ -2474,24 +2476,24 @@ async fn a_disk_preflight_refusal_invalidates_admission_before_a_remounted_volum
         watch.measure_volumes(&BTreeMap::new(), 4);
         let now = alondra_core::now_millis();
         let waiting = Waiting { key: Key::Task("t".into()), priority: TaskPriority::Normal, resuming: false, since: now };
-        assert_eq!(gate.ask(&f.domain, waiting.clone(), now), Ok(()), "the learned volume is confirmed absent");
+        assert_eq!(gate.ask(&*f.domain, waiting.clone(), now), Ok(()), "the learned volume is confirmed absent");
 
         watch.set_disk_low(true);
-        let refused = launch_from(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None, origin).await.unwrap_err();
+        let refused = launch_from(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None, origin).await.unwrap_err();
         assert_eq!(refused.code, "disk_low");
         assert!(f.task_node().is_none());
         watch.set_disk_low(false);
         watch.give_volumes(vec![(mount.clone(), space(4 * GB))]);
         watch.measure_volumes(&BTreeMap::new(), 5);
-        assert!(matches!(gate.ask(&f.domain, waiting.clone(), now), Err(Hold::Disk { .. })),
+        assert!(matches!(gate.ask(&*f.domain, waiting.clone(), now), Err(Hold::Disk { .. })),
             "an unused admission from before preflight cannot bypass the first insufficient volume budget");
 
         watch.give_volumes(vec![(mount, space(10 * GB))]);
         watch.measure_volumes(&BTreeMap::new(), 6);
-        assert_eq!(gate.ask(&f.domain, waiting.clone(), now), Ok(()));
+        assert_eq!(gate.ask(&*f.domain, waiting.clone(), now), Ok(()));
         let reserved = watch.disk_room(&BTreeMap::new(), None, now).expect("the new grant reserves its build on the remounted volume");
         assert_eq!(reserved.needed, 11 * GB);
-        assert_eq!(gate.ask(&f.domain, waiting, now), Ok(()));
+        assert_eq!(gate.ask(&*f.domain, waiting, now), Ok(()));
         assert_eq!(watch.disk_room(&BTreeMap::new(), None, now), Some(reserved), "re-reading the same grant charges it once");
     }
 }
@@ -2509,12 +2511,12 @@ async fn worktrees_root_admission_checks_storage_space_before_creating_a_worktre
     std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
     let space = |free| alondra_engine_ports::disk::Space { total: 500_000_000_000, free, purgeable: 0 };
     f.domain.machine_watch().give_launch_space(path.clone(), space(1_000_000_000));
-    let queued = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    let queued = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(queued["queued"], true);
     assert!(!path.join("App").exists(), "admission happens before creating the repository or task folder");
     assert!(f.sdk().starts().is_empty(), "the healthy system disk cannot substitute for full worktree storage");
     f.domain.machine_watch().give_launch_space(path.clone(), space(400_000_000_000));
-    crate::admission::pass(&f.domain, &f.home).await.unwrap();
+    crate::admission::pass(&*f.domain, &f.home).await.unwrap();
     assert_eq!(f.launched(1).await.0, [path.join("App/t")]);
 }
 
@@ -2529,17 +2531,17 @@ async fn worktrees_root_keeps_an_admitted_launch_queued_until_the_volume_returns
     let original = std::fs::read_to_string(&options).unwrap_or_default();
     let save = |root| std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(root)).unwrap()).unwrap();
     save(&missing);
-    let queued = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    let queued = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(queued["queued"], true);
     for _ in 0..2 {
-        crate::admission::pass(&f.domain, &f.home).await.unwrap();
+        crate::admission::pass(&*f.domain, &f.home).await.unwrap();
         assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap().len(), 1);
         assert!(f.sdk().starts().is_empty());
     }
     assert!(!path.exists());
     std::fs::create_dir(&path).unwrap();
     save(&f.domain.ports().worktrees().capture_root(&path).unwrap());
-    crate::admission::pass(&f.domain, &f.home).await.unwrap();
+    crate::admission::pass(&*f.domain, &f.home).await.unwrap();
     assert_eq!(f.launched(1).await.0, [path.join("App/t")]);
 }
 
@@ -2548,7 +2550,7 @@ async fn a_launch_while_the_disk_is_nearly_full_waits_in_the_queue_and_starts_on
     super::wired();
     let f = world();
     f.domain.machine_watch().set_disk_low(true);
-    let queued = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    let queued = launch(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(queued["queued"], true, "{queued}");
     assert!(queued["message"].as_str().unwrap().contains("the disk has no room for one more build (1.0 GB free of 5.0 GB needed)"), "{queued}");
     assert!(f.sdk().starts().is_empty());
@@ -2556,7 +2558,7 @@ async fn a_launch_while_the_disk_is_nearly_full_waits_in_the_queue_and_starts_on
     assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap().len(), 1);
 
     f.domain.machine_watch().set_disk_low(false);
-    crate::admission::pass(&f.domain, &f.home).await.unwrap();
+    crate::admission::pass(&*f.domain, &f.home).await.unwrap();
     assert_eq!(f.launched(1).await.0.len(), 1);
 }
 
@@ -2585,19 +2587,19 @@ async fn an_unstarted_selection_replaces_a_disabled_account_but_a_started_one_ca
     task.selection = Some(intent.clone());
     command(&f.domain, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: intent, pending: None });
     let body = launch_body(&f, json!({"model": "claude/sonnet"}));
-    let (resolved, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false)
+    let (resolved, account, _) = native_launch(&*f.domain, &f.home, &task, &requested, &file, &body, false, false)
         .expect("a task that never started must reselect an active account").unwrap();
     assert_eq!(account, work);
     assert_eq!(resolved.selection.unwrap().requested, task.selection.as_ref().unwrap().requested, "a compatible model stays binding");
     task.started = true;
-    assert!(native_launch(&f.domain, &f.home, &task, &requested, &file, &body, true, false).is_err(), "an existing session never migrates");
+    assert!(native_launch(&*f.domain, &f.home, &task, &requested, &file, &body, true, false).is_err(), "an existing session never migrates");
     f.domain.machine_watch().set_disk_low(true);
-    let queued = launch(&f.domain, &f.home, body, |_| None).await.unwrap();
+    let queued = launch(&*f.domain, &f.home, body, |_| None).await.unwrap();
     assert_eq!(queued["queued"], true);
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.as_ref().unwrap().account, Some(work.clone()), "the move survives a refusal before admission");
     assert!(f.sdk().starts().is_empty());
     f.domain.machine_watch().set_disk_low(false);
-    crate::admission::pass(&f.domain, &f.home).await.unwrap();
+    crate::admission::pass(&*f.domain, &f.home).await.unwrap();
     f.launched(1).await;
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].account_key(), work, "the admitted execution keeps the reselected account");
 }
@@ -2625,12 +2627,12 @@ async fn an_unstarted_selection_waits_without_a_card_then_starts_on_an_active_pr
     std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = []\n").unwrap();
     let cards = f.domain.state().unwrap().interactions.len();
     for _ in 0..=alondra_domain_rules::START_RETRIES.len() {
-        crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+        crate::auto_launch::pass(&*f.domain, &f.home).await.unwrap();
         let store = f.domain.store.lock().unwrap();
         assert!(store.start_retries().unwrap().is_empty(), "account availability is not a failed start");
         assert!(store.auto_launch(&"t".into()).unwrap().is_none(), "the next pass can try again");
         drop(store);
-        assert_eq!(f.domain.admission().snapshot(&f.domain, alondra_core::now_millis()).unwrap().working, 0, "an unavailable account reserves no working slot");
+        assert_eq!(f.domain.admission().snapshot(&*f.domain, alondra_core::now_millis()).unwrap().working, 0, "an unavailable account reserves no working slot");
     }
     assert_eq!(f.domain.state().unwrap().interactions.len(), cards);
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.as_ref(), Some(&intent), "waiting preserves the selection until a destination is known");
@@ -2639,12 +2641,12 @@ async fn an_unstarted_selection_waits_without_a_card_then_starts_on_an_active_pr
     let mut catalog = f.domain.state().unwrap().model_catalogs.iter().find(|catalog| catalog.account.provider == Provider::Claude).unwrap().clone();
     let default = catalog.native_default.take();
     command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog: catalog.clone() });
-    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    crate::auto_launch::pass(&*f.domain, &f.home).await.unwrap();
     assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty(), "a destination without a compatible model waits too");
     assert!(f.sdk().starts().is_empty());
     catalog.native_default = default;
     command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
-    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    crate::auto_launch::pass(&*f.domain, &f.home).await.unwrap();
     f.launched(1).await;
     let state = f.domain.state().unwrap();
     let task = &state.tasks[&TaskId::from("t")];
@@ -2669,7 +2671,7 @@ async fn reopening_a_legacy_task_admits_its_retained_project_policy_after_the_pr
         project: Some("App".into()), mission: Some("Preserve the approved editor colours and contrast.".into()),
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", original.to_str().unwrap())
     };
-    crate::launch_plans::validate(&f.domain, &f.home, &"r".into(), &saved).unwrap();
+    crate::launch_plans::validate(&*f.domain, &f.home, &"r".into(), &saved).unwrap();
     f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &saved, 1).unwrap();
     f.domain.set_task_worktree(&"t".into(), original.to_str().unwrap()).unwrap();
     give(&f, "t", "agent-b");
@@ -2684,7 +2686,7 @@ async fn reopening_a_legacy_task_admits_its_retained_project_policy_after_the_pr
     });
     assert!(!original.exists());
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.is_none(), "the previous release used legacy effort options");
-    assert!(request_choices(&f.domain, &"r".into()).unwrap().is_none());
+    assert!(request_choices(&*f.domain, &"r".into()).unwrap().is_none());
 
     std::fs::write(&options, format!("projects_root = {:?}\n[projects.App]\ndefaults = {{ effort = \"hard\" }}\n", f.root.join("new-projects").to_str().unwrap())).unwrap();
     let file = crate::options::options_at(&f.home).unwrap();
@@ -2693,7 +2695,7 @@ async fn reopening_a_legacy_task_admits_its_retained_project_policy_after_the_pr
     partial_plan(&f, "t", json!({"reason": "Continue the approved work with its original project policy"})).unwrap();
     command(&f.domain, the_orchestrator(&f.domain), Command::ReopenTask { task_id: "t".into() });
     assert!(f.domain.state().unwrap().pending_reopening(&"t".into()).is_some());
-    crate::admission::pass_at(&f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
+    crate::admission::pass_at(&*f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
     assert!(f.task_node().is_some(), "admission must use App's hard policy instead of rejecting a missing model under global auto");
     let (folders, prompts) = f.launched(1).await;
     assert_eq!(f.sdk().starts().len(), 1);
@@ -2720,8 +2722,8 @@ async fn terminal_launch_choices_can_be_prepared_without_enqueuing_or_starting_t
     let prepared = f.domain.launch_plan(&"t".into()).unwrap().unwrap();
     assert_eq!(prepared, alondra_daemon_engine_model::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("high".into()),
         reason: Some("Use Codex for the approved implementation".into()), ..before });
-    crate::admission::pass_at(&f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
-    crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
+    crate::admission::pass_at(&*f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
+    crate::auto_launch::pass(&*f.domain, &f.home).await.unwrap();
     assert!(f.sdk().starts().is_empty(), "admission between preparation and reopening cannot start a terminal task");
     {
         let store = f.domain.store.lock().unwrap();
@@ -2739,7 +2741,7 @@ async fn terminal_launch_choices_can_be_prepared_without_enqueuing_or_starting_t
         assert_eq!(partial_plan(&f, "t", changes).unwrap_err().code, "invalid_input");
     }
     let replacement = serde_json::from_value(json!({"task_id": "t", "launch": pending})).unwrap();
-    assert_eq!(set_launch_plan(&f.domain, &f.home, replacement).unwrap_err().code, "invalid_input");
+    assert_eq!(set_launch_plan(&*f.domain, &f.home, replacement).unwrap_err().code, "invalid_input");
     assert_eq!(f.domain.launch_plan(&"t".into()).unwrap().unwrap(), pending,
         "a pending reopening preserves its mission, directory, name and approved scope too");
 }
@@ -2753,7 +2755,7 @@ async fn preparing_terminal_choices_preserves_a_deleted_launch_directory_without
     partial_plan(&f, "t", json!({"model": "codex/gpt-6", "reasoning_effort": "high"})).unwrap();
     let after = f.domain.launch_plan(&"t".into()).unwrap().unwrap();
     assert_eq!(after, alondra_daemon_engine_model::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("high".into()), ..before });
-    crate::admission::pass_at(&f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
+    crate::admission::pass_at(&*f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
     assert!(!f.project.exists(), "only the reopened admission reconstructs its workspace");
     assert!(f.sdk().starts().is_empty());
     let store = f.domain.store.lock().unwrap();

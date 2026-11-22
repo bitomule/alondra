@@ -53,7 +53,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
             Err(error) => log!("could not run the store's retention: {error}"),
         }
         if let Some(github) = domain.ports().port::<alondra_engine_ports::github::GitHub>() {
-            crate::metrics_capture::pr_sizes(&domain, &*github.reads, alondra_core::now_millis()).await;
+            crate::metrics_capture::pr_sizes(&*domain, &*github.reads, alondra_core::now_millis()).await;
         }
         clock::sleep(EVERY).await;
     }

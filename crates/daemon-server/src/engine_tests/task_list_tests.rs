@@ -74,7 +74,7 @@ impl Turn {
 
     /// `alondra report-wait` writes the file; the live sampler is what notices it.
     fn report_wait(&self, wait: &Value) {
-        let lifecycle = Slice::lifecycle(&self.slice.domain);
+        let lifecycle = Slice::lifecycle(&*self.slice.domain);
         let path = self.slice.backend.state_root.join(lifecycle.execution().unwrap().instance().as_str()).join("wait.json");
         std::fs::write(path, serde_json::to_vec(wait).unwrap()).unwrap();
         let read = self.slice.domain.read();

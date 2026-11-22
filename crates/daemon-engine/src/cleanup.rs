@@ -9,7 +9,7 @@
 use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::domain_github::execute_system;
 use crate::node_close::{CloseOutcome, Sessions, close_node, listed};
 use alondra_engine_ports::worktrees::TaskWorktree;
@@ -57,7 +57,7 @@ fn kept(candidate: &Candidate, reason: &str, detail: Option<&str>) -> Value {
     json!({"session": candidate.agent.0, "short_id": candidate.short, "name": candidate.name, "reason": reason, "detail": detail})
 }
 
-fn why(state: &DomainState, domain: &DomainRuntime, claude_home: &Path, agent: &AgentId, now: i64) -> Option<(Why, Option<String>)> {
+fn why(state: &DomainState, domain: &dyn Runtime, claude_home: &Path, agent: &AgentId, now: i64) -> Option<(Why, Option<String>)> {
     if crate::sdk_handover::moved(domain, agent) {
         return None;
     }
@@ -82,7 +82,7 @@ fn why(state: &DomainState, domain: &DomainRuntime, claude_home: &Path, agent: &
 
 /// Whether another node with an open task works in `dir`: the node that replaced this one keeps
 /// its worktree, which `claude rm` of this one would delete.
-fn worked_in(state: &DomainState, domain: &DomainRuntime, agent: &AgentId, dir: &Path) -> bool {
+fn worked_in(state: &DomainState, domain: &dyn Runtime, agent: &AgentId, dir: &Path) -> bool {
     state.tasks.values().filter(|task| !task.over()).filter_map(|task| task.agent_id.as_ref()).filter(|other| *other != agent)
         .filter_map(|other| domain.live().mods.session(&other.0)?.cwd)
         .any(|cwd| Path::new(&cwd).starts_with(dir))
@@ -92,7 +92,7 @@ fn worked_in(state: &DomainState, domain: &DomainRuntime, agent: &AgentId, dir: 
 pub const STOP_WAIT: Duration = Duration::from_secs(20);
 
 /// Cuts the session's turn and waits up to `wait` for it to stop; true once it no longer works.
-async fn stop_turn(domain: &DomainRuntime, agent: &AgentId, wait: Duration) -> bool {
+async fn stop_turn(domain: &dyn Runtime, agent: &AgentId, wait: Duration) -> bool {
     let _ = domain.live().pushes.interrupt(&agent.0);
     let until = clock::instant() + wait;
     loop {
@@ -108,7 +108,7 @@ async fn stop_turn(domain: &DomainRuntime, agent: &AgentId, wait: Duration) -> b
 
 /// Sessions Alondra launched that were stopped or deleted in Claude agents while their task was
 /// open: their tasks go back to not started, waiting for a relaunch.
-fn free_stopped(domain: &DomainRuntime, state: &DomainState, claude_home: &Path, dry_run: bool) -> Vec<Value> {
+fn free_stopped(domain: &dyn Runtime, state: &DomainState, claude_home: &Path, dry_run: bool) -> Vec<Value> {
     let mut rows = vec![];
     for known in state.agents.values() {
         let session = known.id.0.as_str();
@@ -136,11 +136,11 @@ fn free_stopped(domain: &DomainRuntime, state: &DomainState, claude_home: &Path,
 
 /// What would be closed (`dry_run`) or what was closed, kept and failed.
 pub async fn run(
-    domain: &DomainRuntime, sessions: &dyn Sessions, claude_home: &Path, dry_run: bool, now: i64, stop_wait: Duration,
+    domain: &dyn Runtime, sessions: &dyn Sessions, claude_home: &Path, dry_run: bool, now: i64, stop_wait: Duration,
 ) -> Result<Value, (StatusCode, String)> {
     let listing = sessions.agents().await
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
-    let state = domain.state().map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "the domain could not be read".to_owned()))?;
+    let state = domain.state();
     let freed = free_stopped(domain, &state, claude_home, dry_run);
     let mut candidates = vec![];
     for known in state.agents.values() {
@@ -214,9 +214,9 @@ pub async fn run(
 /// whose node the user kept or is the user's own, nor one a node of an open task works in; one with
 /// work not saved is kept and said why.
 async fn closed_task_worktrees(
-    domain: &DomainRuntime, state: &DomainState, listing: &str, ended: &[&str], dry_run: bool,
+    domain: &dyn Runtime, state: &DomainState, listing: &str, ended: &[&str], dry_run: bool,
 ) -> (Vec<Value>, Vec<Value>) {
-    let recorded = match domain.store.lock_or_exit("the domain store").task_worktrees() {
+    let recorded = match domain.store().lock_or_exit("the domain store").task_worktrees() {
         Ok(recorded) => recorded,
         Err(error) => {
             log!("could not read the worktrees of tasks: {error:#}");
@@ -253,7 +253,7 @@ async fn closed_task_worktrees(
     (released, kept)
 }
 
-fn open_task_works_in(state: &DomainState, domain: &DomainRuntime, dir: &Path) -> bool {
+fn open_task_works_in(state: &DomainState, domain: &dyn Runtime, dir: &Path) -> bool {
     state.tasks.values().filter(|task| !task.over()).filter_map(|task| task.agent_id.as_ref())
         .filter_map(|agent| domain.live().mods.session(&agent.0)?.cwd)
         .any(|cwd| Path::new(&cwd).starts_with(dir))

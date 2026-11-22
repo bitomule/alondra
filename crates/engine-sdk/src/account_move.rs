@@ -1,12 +1,14 @@
 //! Reconciles historical account-move journals without selecting another account for a started
 //! node. Pre-admission moves are undone; an already committed destination is recovered only
 //! after positive evidence that its native execution started. The old journal format stays readable.
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::engine::EngineOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::domain_store::{AccountMove, AccountMovePlan, AccountMoveStep};
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, Policy, Provider};
@@ -30,16 +32,16 @@ pub(crate) struct Moves {
     pub(crate) crash_after: std::sync::Mutex<Option<AccountMoveStep>>,
 }
 
-fn enabled(_domain: &DomainRuntime) -> bool {
+fn enabled(_domain: &dyn Runtime) -> bool {
     false
 }
 
-fn policy(domain: &DomainRuntime) -> Policy {
+fn policy(domain: &dyn Runtime) -> Policy {
     alondra_engine_kernel::accounts_file::config(domain.home()).map(|config| config.distribution.policy).unwrap_or_default()
 }
 
-fn moves(domain: &DomainRuntime) -> Vec<AccountMove> {
-    match domain.store.lock_or_exit("the domain store").account_moves() {
+fn moves(domain: &dyn Runtime) -> Vec<AccountMove> {
+    match domain.store().lock_or_exit("the domain store").account_moves() {
         Ok(moves) => moves,
         Err(error) => {
             log!("could not read the journal of account moves: {error:#}");
@@ -48,13 +50,13 @@ fn moves(domain: &DomainRuntime) -> Vec<AccountMove> {
     }
 }
 
-fn latest(domain: &DomainRuntime, task: &TaskId) -> Option<AccountMove> {
+fn latest(domain: &dyn Runtime, task: &TaskId) -> Option<AccountMove> {
     moves(domain).into_iter().rev().find(|moving| moving.task == *task)
 }
 
 /// Whether a move holds the task's execution: planned and not yet admitted, so its old host is
 /// stopped or about to be, and nothing but the move takes the execution over.
-pub(crate) fn holds_execution(domain: &DomainRuntime, task: &TaskId) -> bool {
+pub(crate) fn holds_execution(domain: &dyn Runtime, task: &TaskId) -> bool {
     latest(domain, task).is_some_and(|moving| moving.step < AccountMoveStep::Admitted)
 }
 
@@ -90,15 +92,15 @@ fn resets(state: &DomainState, held: &ClaudeHeld, now: Millis) -> Millis {
 
 /// Records the plan of moving the held task to `to`: the session its execution runs, which the
 /// execution on `to` resumes in the same folder.
-fn plan(domain: &DomainRuntime, held: &ClaudeHeld, to: AccountId, now: Millis) -> anyhow::Result<i64> {
+fn plan(domain: &dyn Runtime, held: &ClaudeHeld, to: AccountId, now: Millis) -> anyhow::Result<i64> {
     use anyhow::Context as _;
-    let state = domain.state()?;
+    let state = domain.state();
     let node = state.tasks.get(&held.task).and_then(|task| task.agent_id.clone()).context("the task has no node")?;
     let lifecycle = state.lifecycle_of(&held.task).map_err(|error| anyhow::anyhow!(error.message))?;
     let stamp = lifecycle.execution().context("the task has no execution")?;
     anyhow::ensure!(alondra_engine_kernel::accounts_file::share_sessions(domain, &held.account, &to),
         "account {to} does not read the conversations of account {}, so the session would not resume there", held.account);
-    let mut store = domain.store.lock_or_exit("the domain store");
+    let mut store = domain.store().lock_or_exit("the domain store");
     let metadata = store.conversation_metadata(&held.task, stamp.conversation().as_str())?.context("its Claude session is not known")?;
     let session = alondra_provider_claude::conversation_session(&metadata).context("its Claude session is not known")?;
     let cwd = store.task_worktree(&held.task)?.context("the folder its session works in is not known")?;
@@ -112,17 +114,17 @@ fn plan(domain: &DomainRuntime, held: &ClaudeHeld, to: AccountId, now: Millis) -
 }
 
 /// Why the planned move can no longer happen, if it cannot.
-fn refused(_domain: &DomainRuntime, _moving: &AccountMove) -> Option<String> {
+fn refused(_domain: &dyn Runtime, _moving: &AccountMove) -> Option<String> {
     Some("Accounts and providers are chosen when creating a node. This execution stays on its original account".into())
 }
 
 /// A persisted lock or a preallocated Claude UUID does not prove that the destination native
 /// process ever ran. Available is committed only after native init or positive native consumption.
-pub(crate) fn require_started_destination(domain:&DomainRuntime,task:&TaskId)->Result<(),String>{
-    let moving=domain.store.lock_or_exit("the domain store").account_moves().map_err(|error|format!("reading historical account moves: {error:#}"))?
+pub(crate) fn require_started_destination(domain:&dyn Runtime,task:&TaskId)->Result<(),String>{
+    let moving=domain.store().lock_or_exit("the domain store").account_moves().map_err(|error|format!("reading historical account moves: {error:#}"))?
         .into_iter().rev().find(|moving|moving.task==*task);
     let Some(moving)=moving.filter(|moving|matches!(moving.step,AccountMoveStep::Admitted|AccountMoveStep::Done)) else{return Ok(())};
-    let state=domain.state().map_err(|error|format!("reading the admitted destination: {error:#}"))?;
+    let state=domain.state();
     let current=state.tasks.get(task).ok_or("The historical account move has no task")?;
     if moving.agent.as_ref()!=current.agent_id.as_ref(){
         return if moving.step==AccountMoveStep::Done{Ok(())}else{Err("The historical destination no longer matches the committed node; no account will be restarted".into())};
@@ -141,18 +143,18 @@ pub(crate) fn require_started_destination(domain:&DomainRuntime,task:&TaskId)->R
 
 /// Takes the task's move as far as it goes: from the step recorded to its end, done or undone.
 /// An error leaves the move at its step, for the next tick.
-pub(crate) async fn advance(domain: &Arc<DomainRuntime>, task: &TaskId) -> Result<AccountMoveStep, String> {
+pub(crate) async fn advance(domain: &Arc<dyn Runtime>, task: &TaskId) -> Result<AccountMoveStep, String> {
     let _one = domain.moves().moving.lock().await;
     loop {
-        let moving = latest(domain, task).ok_or_else(|| format!("{task} has no account move"))?;
+        let moving = latest(&**domain, task).ok_or_else(|| format!("{task} has no account move"))?;
         let step = moving.step;
         if *domain.moves().crash_after.lock().unwrap() == Some(step) && step != AccountMoveStep::Admitted {
             return Err(format!("the daemon died after {step:?}"));
         }
         match step {
             AccountMoveStep::Planned | AccountMoveStep::HostStopped => {
-                if let Some(why) = refused(domain, &moving) {
-                    undo(domain, &moving, &why)?;
+                if let Some(why) = refused(&**domain, &moving) {
+                    undo(&**domain, &moving, &why)?;
                 } else if step == AccountMoveStep::Planned {
                     stop(domain, &moving).await?;
                 } else {
@@ -167,8 +169,8 @@ pub(crate) async fn advance(domain: &Arc<DomainRuntime>, task: &TaskId) -> Resul
 
 /// The move does not happen: the task stays on its account's limit, and its execution is taken
 /// over again as after a restart, so a host runs it when the limit lets it go on.
-fn undo(domain: &DomainRuntime, moving: &AccountMove, why: &str) -> Result<(), String> {
-    domain.store.lock_or_exit("the domain store").record_move_undone(&moving.task, moving.number, why)
+fn undo(domain: &dyn Runtime, moving: &AccountMove, why: &str) -> Result<(), String> {
+    domain.store().lock_or_exit("the domain store").record_move_undone(&moving.task, moving.number, why)
         .map_err(|error| format!("recording that the move was undone: {error:#}"))?;
     log!("{} stays on account {}: {why}", moving.task, moving.plan.from);
     crate::sdk_owner::retake(domain, moving.task.clone());
@@ -177,7 +179,7 @@ fn undo(domain: &DomainRuntime, moving: &AccountMove, why: &str) -> Result<(), S
 
 /// Stops the host of the execution that hit the limit, and any process that still holds its
 /// folder, and records that none runs its session any more.
-async fn stop(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), String> {
+async fn stop(domain: &Arc<dyn Runtime>, moving: &AccountMove) -> Result<(), String> {
     let (backend, _) = domain.sdk().ok_or("this daemon has no SDK backend")?;
     let folder = backend.state_root.join(&moving.plan.instance);
     let (runtime, node) = (Arc::clone(domain), moving.plan.node.clone());
@@ -190,18 +192,18 @@ async fn stop(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), S
     })
     .await
     .map_err(|error| format!("stopping the host stopped: {error}"))??;
-    domain.store.lock_or_exit("the domain store").record_move_host_stopped(&moving.task, moving.number)
+    domain.store().lock_or_exit("the domain store").record_move_host_stopped(&moving.task, moving.number)
         .map_err(|error| format!("recording that the host stopped: {error:#}"))
 }
 
 /// Admits the execution on the other account that resumes the session, past the limit card, and
 /// records the admission in the same transaction; its owner starts at once. A refusal before the
 /// commit undoes the move.
-async fn admit(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), String> {
+async fn admit(domain: &Arc<dyn Runtime>, moving: &AccountMove) -> Result<(), String> {
     let (backend, runtime) = domain.sdk().ok_or("this daemon has no SDK backend")?;
     let backend = backend.clone();
     let plugin = domain.ports().plugins().node(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
-    let state = domain.state().map_err(|error| format!("{error:#}"))?;
+    let state = domain.state();
     let task = state.tasks.get(&moving.task).ok_or("the task is gone")?;
     let options = alondra_daemon_engine_model::LaunchOptions::load(&backend.state_root.join(&moving.plan.instance)).map_err(|crate::sdk_owner::Failed { why, .. }| why)?;
     let launch = crate::sdk_owner::Launch {
@@ -225,11 +227,11 @@ async fn admit(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), 
             domain.engine().forget_closed_task(&moving.task);
             Ok(())
         }
-        Err(crate::sdk_owner::Failed { why, .. }) if latest(domain, &moving.task).is_some_and(|now| now.step == AccountMoveStep::Admitted) => {
+        Err(crate::sdk_owner::Failed { why, .. }) if latest(&**domain, &moving.task).is_some_and(|now| now.step == AccountMoveStep::Admitted) => {
             Err(format!("the execution on account {} was admitted but did not start: {why}", moving.plan.to))
         }
         Err(crate::sdk_owner::Failed { why, .. }) => {
-            undo(domain, moving, &format!("the execution on account {} was not admitted: {why}", moving.plan.to))?;
+            undo(&**domain, moving, &format!("the execution on account {} was not admitted: {why}", moving.plan.to))?;
             Err(why)
         }
     }
@@ -237,9 +239,9 @@ async fn admit(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), 
 
 /// Makes sure the execution on the other account runs, closes the node that hit the limit and
 /// records the end of the move.
-async fn finish(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), String> {
-    if let Err(why)=require_started_destination(domain,&moving.task){
-        crate::sdk_owner::lost(domain,&moving.task,&why);
+async fn finish(domain: &Arc<dyn Runtime>, moving: &AccountMove) -> Result<(), String> {
+    if let Err(why)=require_started_destination(&**domain,&moving.task){
+        crate::sdk_owner::lost(&**domain,&moving.task,&why);
         return Err(why);
     }
     let agent = moving.agent.clone().ok_or("the admission names no node")?;
@@ -259,7 +261,7 @@ async fn finish(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(),
     if let Err(failure) = domain.engine().node_event(&moving.plan.node, NodeEvent::SessionClosed) {
         log!("could not close {} after its task moved to account {}: {failure}", moving.plan.node, moving.plan.to);
     }
-    domain.store.lock_or_exit("the domain store").record_move_done(&moving.task, moving.number)
+    domain.store().lock_or_exit("the domain store").record_move_done(&moving.task, moving.number)
         .map_err(|error| format!("recording the end of the move: {error:#}"))?;
     log!("{} goes on with account {}: {agent} resumes its Claude session after account {} reached its usage limit", moving.task, moving.plan.to, moving.plan.from);
     Ok(())
@@ -267,11 +269,11 @@ async fn finish(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(),
 
 /// Plans the move of each task its account's usage limit holds between turns, once per limit it
 /// hits and not again before the limit it last left resets, to an account that can take work.
-fn plan_held(domain: &DomainRuntime) {
+fn plan_held(domain: &dyn Runtime) {
     if !enabled(domain) {
         return;
     }
-    let Ok(state) = domain.state() else { return };
+    let state = domain.state();
     let (journal, policy, now) = (moves(domain), policy(domain), alondra_core::now_millis());
     for held in state.claude_held().into_iter().filter(|held| held.hold == ClaudeHold::Usage) {
         if held.provider != Provider::Claude || state.tasks.get(&held.task).is_none_or(|task|task.selection.is_some()){continue;}
@@ -287,9 +289,9 @@ fn plan_held(domain: &DomainRuntime) {
     }
 }
 
-async fn tick(domain: &Arc<DomainRuntime>) {
-    plan_held(domain);
-    let open: Vec<TaskId> = moves(domain).into_iter().filter(|moving| !moving.step.ended()).map(|moving| moving.task).collect();
+async fn tick(domain: &Arc<dyn Runtime>) {
+    plan_held(&**domain);
+    let open: Vec<TaskId> = moves(&**domain).into_iter().filter(|moving| !moving.step.ended()).map(|moving| moving.task).collect();
     for task in open {
         if let Err(why) = advance(domain, &task).await {
             log!("the move of {task} to another account waits: {why}");
@@ -299,7 +301,7 @@ async fn tick(domain: &Arc<DomainRuntime>) {
 
 /// Goes on with every move a previous daemon left, then, while the daemon runs, moves each task
 /// its account's limit holds when the setting is on. Runs only with an SDK backend.
-pub async fn run(domain: Arc<DomainRuntime>) {
+pub async fn run(domain: Arc<dyn Runtime>) {
     if domain.sdk().is_none() {
         return;
     }
@@ -323,8 +325,8 @@ pub trait MovesOf {
     fn moves(&self) -> &Moves;
 }
 
-impl MovesOf for crate::domain_runtime::DomainRuntime {
+impl<R: alondra_engine_ports::Runtime + ?Sized> MovesOf for R {
     fn moves(&self) -> &Moves {
-        self.extension()
+        alondra_engine_ports::extension(self.as_runtime())
     }
 }

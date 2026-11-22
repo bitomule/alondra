@@ -1291,7 +1291,7 @@ mod tests {
 
         let first = plan(&domain, "call-1", "- [ ] Ship the parser");
         assert_eq!(push(domain.clone(), first).await, handed);
-        crate::domain_holds::release_call(&domain, "agent-a", "call-1").unwrap();
+        crate::domain_holds::release_call(&*domain, "agent-a", "call-1").unwrap();
         let again = plan(&domain, "call-2", "- [ ] Ship the parser");
         drop(domain);
 
@@ -1301,7 +1301,7 @@ mod tests {
         assert!(domain.read().index().waiting_card(&again).is_some(),
             "the card still waits in the inbox");
 
-        crate::domain_holds::release_call(&domain, "agent-a", "call-2").unwrap();
+        crate::domain_holds::release_call(&*domain, "agent-a", "call-2").unwrap();
         let changed = plan(&domain, "call-3", "- [ ] Ship the parser and its tests");
         assert_eq!(push(domain.clone(), changed.clone()).await, handed, "a plan that changed is a new notice");
 

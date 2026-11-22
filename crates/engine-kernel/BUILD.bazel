@@ -38,7 +38,7 @@ application_crate(
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
     ],
-    test_visibility = ["//crates/daemon-server:__pkg__"],
+    test_visibility = ["//crates/daemon-server:__pkg__", "//crates/engine-admission:__pkg__"],
 )
 
 low_opt_rust_test(

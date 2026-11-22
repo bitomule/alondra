@@ -1,4 +1,6 @@
+use crate::domain_runtime::DomainRuntime;
 use alondra_store_sqlite::AsSqlite as _;
+use crate::domain_runtime::RuntimeRecords as _;
 use crate::live::LiveOf as _;
 use super::*;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
@@ -145,7 +147,7 @@ async fn a_user_message_racing_after_removal_begins_is_explicitly_refused() {
     let domain = rig.domain.clone();
     *rig.sessions.during_rm.lock().unwrap() = Some(Box::new(move || {
         *captured.lock().unwrap() = Some(crate::domain_messages::tell_sdk_node(
-            &domain, &"t".into(), "User", "Prepare the follow-up report", "racing-message", true,
+            &*domain, &"t".into(), "User", "Prepare the follow-up report", "racing-message", true,
         ));
     }));
     rig.pass(T0 + MINUTE).await;
@@ -165,7 +167,7 @@ async fn another_session_watcher_does_not_leave_a_false_removal_claim() {
     assert_eq!(rig.sessions.removals(), 0);
     let row = rig.domain.store.lock().unwrap().task_closing(&"t".into()).unwrap().unwrap();
     assert!(row.rm_started_at.is_none());
-    crate::domain_messages::tell_sdk_node(&rig.domain, &"t".into(), "User", "Prepare the report", "message-after-watch", true).unwrap();
+    crate::domain_messages::tell_sdk_node(&*rig.domain, &"t".into(), "User", "Prepare the report", "message-after-watch", true).unwrap();
     assert!(!rig.domain.state().unwrap().tasks[&TaskId::from("t")].pending_user_inputs.is_empty());
 }
 
@@ -203,7 +205,7 @@ impl Rig {
         }));
         domain.live().observe(&hook("SessionStart"));
         domain.live().observe(&hook("Stop"));
-        let node = Node::connect(&domain, SESSION);
+        let node = Node::connect(domain.clone(), SESSION);
         let sessions = FakeSessions::listing(&[SHORT]);
         Self { _home: Home(home), domain, sessions, node, timing: Timing::new(wait) }
     }
@@ -223,7 +225,7 @@ impl Rig {
     }
 
     async fn pass(&self, now: i64) {
-        pass(&self.domain, self.sessions.as_ref(), &self.timing, now).await.unwrap();
+        pass(&*self.domain, self.sessions.as_ref(), &self.timing, now).await.unwrap();
         for _ in 0..3 {
             tokio::task::yield_now().await;
         }
@@ -279,7 +281,7 @@ async fn recording_a_closed_node_failure_keeps_its_receipt_and_stops_after_three
         BEGIN SELECT RAISE(ABORT, 'node end storage unavailable'); END;"#).unwrap();
     for attempt in 0..3 {
         let now = T0 + attempt * 5 * MINUTE;
-        let result = pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, now).await;
+        let result = pass(&*rig.domain, rig.sessions.as_ref(), &rig.timing, now).await;
         assert!(result.is_err(), "the failed receipt is propagated");
         assert_eq!(rig.domain.state().unwrap().tasks[&TaskId::from("z")].state, TaskState::Done, "a failed close does not block other tasks");
         let row = rig.closing().expect("the failed receipt stays tracked");
@@ -318,14 +320,14 @@ async fn an_answered_leave_survives_a_failed_receipt_and_a_restart_without_askin
         BEGIN SELECT RAISE(ABORT, 'node end storage unavailable'); END;"#).unwrap();
     answer(&rig, "leave");
     let card = rig.closing().unwrap().problem_id;
-    assert!(pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, T0 + 11 * MINUTE).await.is_err(), "the failed receipt is propagated");
+    assert!(pass(&*rig.domain, rig.sessions.as_ref(), &rig.timing, T0 + 11 * MINUTE).await.is_err(), "the failed receipt is propagated");
     let row = rig.closing().unwrap();
     assert_eq!(row.problem_id, card, "the answered card stays the task's answer");
     rig.pass(T0 + 11 * MINUTE + 1).await;
     assert_eq!(rig.closing().unwrap(), row, "the receipt waits for the usual retry");
     rig.domain = Arc::new(crate::engine_fixtures::open(&rig._home.0).unwrap());
     for at in [T0 + 17 * MINUTE, T0 + 600 * MINUTE] {
-        assert!(pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, at).await.is_err());
+        assert!(pass(&*rig.domain, rig.sessions.as_ref(), &rig.timing, at).await.is_err());
         assert_eq!(rig.closing().unwrap().problem_id, card);
         assert_eq!(rig.cards().len(), 1, "nobody is asked again");
     }
@@ -518,10 +520,10 @@ async fn the_wait_is_not_restarted_by_a_daemon_restart() {
     let rig = Rig::new(thirty_minutes());
     rig.pass(T0).await;
     let restarted = FakeSessions::listing(&[SHORT]);
-    pass(&rig.domain, restarted.as_ref(), &Timing::new(thirty_minutes()), T0 + 20 * MINUTE).await.unwrap();
+    pass(&*rig.domain, restarted.as_ref(), &Timing::new(thirty_minutes()), T0 + 20 * MINUTE).await.unwrap();
     assert_eq!(restarted.removals(), 0);
     assert_eq!(rig.closing().unwrap().since, T0);
-    pass(&rig.domain, restarted.as_ref(), &Timing::new(thirty_minutes()), T0 + 30 * MINUTE).await.unwrap();
+    pass(&*rig.domain, restarted.as_ref(), &Timing::new(thirty_minutes()), T0 + 30 * MINUTE).await.unwrap();
     assert_eq!(restarted.removals(), 1);
     rig.assert_done(NodeEnd::Closed);
 }
@@ -595,7 +597,7 @@ async fn a_users_session_with_unproved_release_work_stays_available_after_merge(
         pr_id: "release".into(), head: "abcdef0".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("abcdef0".into()),
     });
     rig.pass(T0).await;
-    let problem = raise_card(&rig.domain, &rig.task(), CloseStop::Unsaved, "An older close attempt", true).unwrap();
+    let problem = raise_card(&*rig.domain, &rig.task(), CloseStop::Unsaved, "An older close attempt", true).unwrap();
     let mut row = rig.closing().unwrap();
     row.problem_id = Some(problem);
     row.failures = MAX_FAILURES;
@@ -751,7 +753,7 @@ async fn when_closing_the_session_fails_inside_alondra_the_started_remove_is_for
     let runtime = rig._home.0.join("runtime");
     std::fs::create_dir_all(&runtime).unwrap();
     std::fs::write(runtime.join("sessions"), "not a folder").unwrap();
-    let failed = pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, T0).await;
+    let failed = pass(&*rig.domain, rig.sessions.as_ref(), &rig.timing, T0).await;
     assert!(failed.is_err(), "the session's settings could not be looked at");
     assert_eq!(rig.sessions.removals(), 1, "claude rm did run");
     let row = rig.closing().unwrap();
@@ -825,7 +827,7 @@ impl Rig {
     }
 
     fn node_event(&self, event: alondra_domain_rules::NodeEvent) {
-        crate::domain_agent_lifecycle::node_event(&self.domain, &SESSION.into(), event).unwrap();
+        crate::domain_agent_lifecycle::node_event(&*self.domain, &SESSION.into(), event).unwrap();
     }
 }
 
@@ -915,7 +917,7 @@ async fn worktrees_root_interrupted_registration_keeps_both_close_paths_waiting_
     std::fs::rename(&volume, fixture.join("unmounted")).unwrap();
     let mut unattended = rig.task();
     unattended.agent_id = None;
-    assert!(finish_unattended(&rig.domain, &unattended).await.unwrap_err().downcast_ref::<Unreachable>().is_some());
+    assert!(finish_unattended(&*rig.domain, &unattended).await.unwrap_err().downcast_ref::<Unreachable>().is_some());
     rig.confirm();
     for minutes in [0, 5, 10, 15, 20] { rig.pass(T0 + minutes * MINUTE).await; }
     assert_eq!(rig.task().state, TaskState::Closing);
@@ -1206,7 +1208,7 @@ async fn a_background_subagent_of_a_task_without_a_worktree_of_its_own_is_placed
     alondra_engine_doubles::worktrees::make_worktree(&repo, &repo.join(".claude/worktrees/agent-a0000000000000012")).unwrap();
     let launched = json!({"hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_input": {"isolation": "worktree", "prompt": "Fix it"},
         "tool_response": {"status": "async_launched", "agentId": "a0000000000000012"}});
-    crate::task_worktrees::record_from_hook(&rig.domain, &SESSION.into(), &launched).unwrap();
+    crate::task_worktrees::record_from_hook(&*rig.domain, &SESSION.into(), &launched).unwrap();
     let task = rig.task();
     assert!(task.worktrees.iter().any(|(path, worktree)| path.ends_with("/repo/.claude/worktrees/agent-a0000000000000012")
         && worktree.origin == alondra_domain_rules::WorktreeOrigin::Subagent), "{:?}", task.worktrees);
@@ -1249,8 +1251,8 @@ impl Rig {
         self.sessions.listed.lock().unwrap().clear();
         self.domain.live().observe(&hook("SessionEnd"));
         let agent = alondra_domain_rules::AgentId(SESSION.into());
-        crate::domain_agent_lifecycle::node_event(&self.domain, &agent, alondra_domain_rules::NodeEvent::SessionClosed).unwrap();
-        crate::domain_transport::session_ended(&self.domain, &agent).unwrap();
+        crate::domain_agent_lifecycle::node_event(&*self.domain, &agent, alondra_domain_rules::NodeEvent::SessionClosed).unwrap();
+        crate::domain_transport::session_ended(&*self.domain, &agent).unwrap();
     }
 
     fn with_worktree(&self) -> (crate::test_support::Directory, std::path::PathBuf) {
@@ -1495,7 +1497,7 @@ async fn keeping_the_unsaved_files_of_a_cancelled_task_touches_nothing_and_never
     for minutes in [1, 60, 600] {
         rig.pass(T0 + minutes * MINUTE).await;
     }
-    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
     assert!(dir.join("a.txt").exists());
     assert!(branch_exists(&root.join("repo"), "worktree-t"));
     assert_eq!(rig.discard_cards().len(), 1, "the answered card is why nobody asks again");
@@ -1566,7 +1568,7 @@ async fn the_cancelled_worktrees_left_before_this_rule_are_settled_with_one_card
         assert_eq!(rig.domain.state().unwrap().tasks[&TaskId::from(task)].state, TaskState::Cancelled);
     }
 
-    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
     assert!(!b.exists(), "a worktree with nothing unsaved goes without asking");
     assert!(!branch_exists(&b_root.join("repo"), "worktree-t-b"));
     assert!(a.join("one.txt").exists() && c.join("three.txt").exists(), "the others wait for the user");
@@ -1577,7 +1579,7 @@ async fn the_cancelled_worktrees_left_before_this_rule_are_settled_with_one_card
     let (options, _) = card.options();
     assert_eq!(options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Delete the ticked", "Delete all", "Keep all"]);
 
-    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
     assert_eq!(rig.discard_cards().len(), 1, "a second start does not repeat the card");
 
     rig.answer_discard("discard");
@@ -1589,10 +1591,10 @@ async fn the_cancelled_worktrees_left_before_this_rule_are_settled_with_one_card
 async fn keeping_all_the_existing_cancelled_worktrees_deletes_none_and_no_later_start_asks_again() {
     let rig = Rig::undelivered(thirty_minutes());
     let (_a_root, a) = rig.cancelled_with_worktree("t-a", &["one.txt"]);
-    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
     rig.answer_discard("keep");
     rig.pass(T0).await;
-    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
     assert!(a.join("one.txt").exists());
     assert_eq!(rig.discard_cards().len(), 1);
 }
@@ -1603,7 +1605,7 @@ async fn deciding_the_existing_worktrees_one_by_one_deletes_only_the_ticked_and_
     let (_a_root, a) = rig.cancelled_with_worktree("t-a", &["one.txt"]);
     let (b_root, b) = rig.cancelled_with_worktree("t-b", &["two.txt"]);
     let (_c_root, c) = rig.cancelled_with_worktree("t-c", &["three.txt"]);
-    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
     let cards = rig.discard_cards();
     assert_eq!(cards.len(), 1);
     let spec = &cards[0].card;
@@ -1616,7 +1618,7 @@ async fn deciding_the_existing_worktrees_one_by_one_deletes_only_the_ticked_and_
     assert!(!a.exists() && !b.exists(), "the ticked worktrees are deleted");
     assert!(!branch_exists(&b_root.join("repo"), "worktree-t-b"));
     assert!(c.join("three.txt").exists(), "the one left unticked is intact");
-    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
     rig.pass(T0 + MINUTE).await;
     assert!(c.join("three.txt").exists(), "and nobody asks about it again");
     assert_eq!(rig.discard_cards().len(), 1);
@@ -1738,7 +1740,7 @@ async fn cancelling_a_task_whose_stored_worktrees_are_home_and_the_projects_root
     for minutes in [0, 5, 10] {
         rig.pass(T0 + minutes * MINUTE).await;
     }
-    crate::cancelled_worktrees::sweep(&rig.domain).await.unwrap();
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
     assert_eq!(rig.task().state, TaskState::Cancelled);
     assert!(rig.discard_cards().is_empty(), "nobody is asked to delete the home or the projects root");
     for dir in [&folders.home, &folders.projects] {
@@ -1829,7 +1831,7 @@ async fn a_closing_task_whose_folder_is_gone_is_given_no_host() {
     let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     rig.confirm();
-    let held = || crate::sdk_owner::closing_without_folder(&rig.domain, &rig.domain.state().unwrap(), &"t".into());
+    let held = || crate::sdk_owner::closing_without_folder(&*rig.domain, &rig.domain.state().unwrap(), &"t".into());
     assert!(!held(), "its folder is there");
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(held(), "its folder is gone: no host can start in it");
@@ -1879,10 +1881,10 @@ async fn what_ended_tasks_left_of_a_worktree_recorded_as_the_users_own_is_delete
     rig.assert_done(NodeEnd::Closed);
     assert!(std::fs::symlink_metadata(&link).is_ok() && moved.is_dir(), "an earlier daemon left it, ended as the user's own");
 
-    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 1);
+    assert_eq!(crate::task_worktrees::sweep_shells(&*rig.domain).await.unwrap(), 1);
     assert!(std::fs::symlink_metadata(&link).is_err() && !moved.exists());
     assert_eq!(rig.task().worktrees[&path].end, Some(alondra_domain_rules::WorktreeEnd::Removed));
-    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 0, "nothing is left to delete");
+    assert_eq!(crate::task_worktrees::sweep_shells(&*rig.domain).await.unwrap(), 0, "nothing is left to delete");
 }
 
 #[tokio::test]
@@ -1895,11 +1897,11 @@ async fn a_link_to_a_folder_that_no_longer_exists_is_deleted_once_its_task_ended
     rig.domain.execute_system_command(Command::ReleaseTaskWorktree { task_id: "t".into(), path: path.clone(), end: alondra_domain_rules::WorktreeEnd::KeptByUser }).unwrap();
     rig.confirm();
     rig.pass(T0).await;
-    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 0, "a worktree with its files is not a shell");
+    assert_eq!(crate::task_worktrees::sweep_shells(&*rig.domain).await.unwrap(), 0, "a worktree with its files is not a shell");
     assert!(moved.join(".git").is_file());
 
     std::fs::remove_dir_all(&moved).unwrap();
-    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 1, "the link to nothing goes");
+    assert_eq!(crate::task_worktrees::sweep_shells(&*rig.domain).await.unwrap(), 1, "the link to nothing goes");
     assert!(std::fs::symlink_metadata(&link).is_err());
 }
 
@@ -1911,10 +1913,10 @@ async fn a_folder_an_open_continuation_launches_in_is_never_swept_even_when_it_l
     std::fs::create_dir(&dir).unwrap();
     rig.domain.execute_system_command(Command::ReleaseTaskWorktree { task_id: "t".into(), path, end: alondra_domain_rules::WorktreeEnd::UsersOwn }).unwrap();
     rig.pass(T0).await;
-    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 0, "the task that goes on in it owns it");
+    assert_eq!(crate::task_worktrees::sweep_shells(&*rig.domain).await.unwrap(), 0, "the task that goes on in it owns it");
     assert!(dir.is_dir());
 
     command(&rig.domain, user(), "cancel-continuation", Command::CancelTask { task_id: "t-claude".into(), reason: None });
-    assert_eq!(crate::task_worktrees::sweep_shells(&rig.domain).await.unwrap(), 1, "once nobody goes on in it, it is a leftover");
+    assert_eq!(crate::task_worktrees::sweep_shells(&*rig.domain).await.unwrap(), 1, "once nobody goes on in it, it is a leftover");
     assert!(!dir.exists());
 }

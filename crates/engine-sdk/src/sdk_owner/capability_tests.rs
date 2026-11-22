@@ -1,6 +1,7 @@
 //! A node's capability lives as long as its host: every way a host ends under this daemon retires
 //! it, and only a daemon that dies whole leaves it for the host the next daemon adopts. Before this,
 //! a host never took its capability with it, and the registry filled up on 17 November.
+use crate::domain_runtime::DomainRuntime;
 use crate::sdk_owner::SdkOwners as _;
 use super::*;
 
@@ -32,7 +33,7 @@ fn a_daemon_that_dies_leaves_the_capability_for_the_adopted_host_which_takes_it_
     assert!(holds_capability(&slice.domain, &agent), "the host runs on, and its Claude keeps reaching Alondra");
     let restarted = slice.restart();
     assert!(holds_capability(&restarted, &agent), "the next daemon keeps the capability of the host it adopts");
-    let adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     restarted.add_sdk_owner(Owner::spawn(adopted));
     restarted.stop_sdk_owners();
     assert!(!holds_capability(&restarted, &agent));
@@ -48,9 +49,9 @@ fn a_task_whose_execution_was_lost_keeps_no_capability_for_its_node() {
     slice.domain.crash_sdk_owners();
     let restarted = slice.restart();
     assert!(holds_capability(&restarted, &agent));
-    lost(&restarted, &TASK.into(), "its host could not be taken over");
+    lost(&*restarted, &TASK.into(), "its host could not be taken over");
     assert!(!holds_capability(&restarted, &agent), "a node no host runs keeps no capability");
-    let adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     restarted.add_sdk_owner(Owner::spawn(adopted));
     restarted.stop_sdk_owners();
 }

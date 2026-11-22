@@ -4,7 +4,6 @@ use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
 use alondra_domain_rules::{AgentId, DomainError, DomainState};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
-use alondra_engine_kernel::domain_runtime::DomainRuntime;
 use alondra_engine_kernel::domain_store::OutboxMessage;
 use alondra_engine_ports::orchestrator::{AccountWait, Exhausted, OrchestratorEngine};
 use std::collections::BTreeSet;
@@ -82,20 +81,20 @@ pub trait OrchestratorOf {
     fn engine(&self) -> Engine<'_>;
 }
 
-impl OrchestratorOf for DomainRuntime {
+impl<R: alondra_engine_ports::Runtime + ?Sized> OrchestratorOf for R {
     fn orchestrator(&self) -> &Orchestrator {
-        self.extension()
+        alondra_engine_ports::extension(self.as_runtime())
     }
 
     fn engine(&self) -> Engine<'_> {
         let port = self.ports().port::<dyn OrchestratorEngine>().expect("the engine gives the runtime what the orchestrator asks of it");
-        Engine { domain: self, port }
+        Engine { domain: self.as_runtime(), port }
     }
 }
 
 /// The rest of the engine, as the orchestrator of one runtime sees it.
 pub struct Engine<'a> {
-    domain: &'a DomainRuntime,
+    domain: &'a dyn alondra_engine_ports::Runtime,
     port: Arc<dyn OrchestratorEngine>,
 }
 

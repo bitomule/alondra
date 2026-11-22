@@ -229,7 +229,7 @@ pub async fn assemble(config: &Config, state: Arc<domain_bootstrap::DomainDaemon
         }
     };
     alondra_agent_runtime::wire(domain.ports(), seams.launcher.clone());
-    accounts::begin_initial_check(&domain);
+    accounts::begin_initial_check(&*domain);
     let recovery = prepare_workers(config, domain.clone(), backend);
     assemble_with(config, state, domain, recovery, service, &seams).await
 }
@@ -294,7 +294,7 @@ pub(crate) async fn assemble_with(
     let serving = tasks.spawn(server);
     let server = async move { serving.await.unwrap_or_else(|error| Err(std::io::Error::other(error))) };
     let PreparedWorkers(domain) = recovery.await;
-    accounts::end_abandoned_sign_ins(&domain);
+    accounts::end_abandoned_sign_ins(&*domain);
     tasks.spawn(usage_pause::run(
         domain.clone(),
         push_alerts::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },

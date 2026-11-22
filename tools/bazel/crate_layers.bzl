@@ -132,7 +132,6 @@ LAYER_EXCEPTIONS = {
         "crates/daemon-engine-machine",
         "crates/daemon-engine-model",
         "crates/daemon-support",
-        "crates/engine-kernel",
     ],
     "crates/engine-github": [
         "crates/daemon-engine-model",

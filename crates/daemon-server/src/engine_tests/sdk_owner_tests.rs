@@ -22,7 +22,7 @@ fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_th
         slice.domain.enable_sdk(slice.backend.clone());
         let mut driver = if background { slice.launch_with("background-shell") } else { slice.launch_working() };
         if background { until_own_work(&slice, &mut driver); }
-        let lifecycle = Slice::lifecycle(&slice.domain);
+        let lifecycle = Slice::lifecycle(&*slice.domain);
         let path = slice.backend.state_root.join(lifecycle.execution().unwrap().instance().as_str()).join("wait.json");
         std::fs::write(&path, br#"{"what":"the server","progress":"2 of 3","detail":"Acknowledgement","since_ms":1794324000000}"#).unwrap();
         let before = slice.domain.read();
@@ -66,14 +66,14 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_th
     });
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Keep it short"})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
+        .block_on(crate::domain_messages::deliver(&*slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
         .unwrap();
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     let inbox = |domain: &DomainRuntime| domain.read().index().waiting().iter().map(|item| item.id.clone()).collect::<Vec<_>>();
     assert_eq!(inbox(&slice.domain), ["interaction:q-name"], "only the node's question waits for the user");
     assert!(open_card(&slice.domain, TURN_ENDED_PREFIX).is_none() && open_card(&slice.domain, STALLED_PREFIX).is_none(), "no card says it stopped");
-    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::User("q-name".into())), "the turn waits on its question");
+    assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), Some(&alondra_domain::Await::User("q-name".into())), "the turn waits on its question");
 
     answer(&slice.domain, &"q-name".into(), "short");
     assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the answer goes to the node");
@@ -81,7 +81,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_th
     slice.settle(&mut driver);
     let prompts = slice.prompts();
     assert!(prompts.last().is_some_and(|last| last.contains("Short.")), "{prompts:?}");
-    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), None, "the answer ended the wait");
+    assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), None, "the answer ended the wait");
     driver.stop().unwrap();
 }
 
@@ -136,14 +136,14 @@ async fn an_sdk_node_asked_to_clean_up_is_closed_only_once_it_says_it_did() {
     crate::domain_delivery::deliver_from_runtime(&slice.domain, &slice._home, &push, None, &client, pending, std::time::Duration::ZERO).await.unwrap();
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
-    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Resting, "the turn with the request ended");
+    assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Resting, "the turn with the request ended");
     slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
     let timing = crate::task_closer::Timing::new(None);
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
     assert!(slice.domain.owns_sdk_host(&agent), "the host stays until the node says it cleaned up");
     assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].state, TaskState::Closing);
     slice.run(&Actor::Agent { agent_id: agent.clone() }, "cleaned", Command::ConfirmCleanup { task_id: TASK.into(), discard: Vec::new() });
-    crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
     let state = slice.domain.state().unwrap();
     let task = &state.tasks[&TaskId::from(TASK)];
     assert_eq!((task.state, task.wrap_up.node), (TaskState::Done, Some(NodeEnd::Closed)));
@@ -166,12 +166,12 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
     });
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Wrap up"})).unwrap();
     let told = tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
+        .block_on(crate::domain_messages::deliver(&*slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true))
         .unwrap();
     assert_eq!(told["reaches"], "turn", "Claude reads it inside the turn that runs: {told}");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
-    assert_eq!((lifecycle(&slice.domain).phase(), lifecycle(&slice.domain).activity()), (alondra_domain::TaskPhase::Delivered, ActivityView::Resting));
+    assert_eq!((lifecycle(&*slice.domain).phase(), lifecycle(&*slice.domain).activity()), (alondra_domain::TaskPhase::Delivered, ActivityView::Resting));
     slice.run(&user(), "reply", Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(), targets,
         body: "background-shell".into(), instruction: alondra_domain_rules::Instruction::Reply });
     assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the reply is told to the node");
@@ -179,9 +179,9 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
     until_own_work(&slice, &mut driver);
     let (session, _) = strand_host(&slice, driver);
     let restarted = slice.restart();
-    let (_, driver) = take_all(&restarted, &slice.backend).pop().expect("the daemon's start takes the execution");
+    let (_, driver) = take_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend).pop().expect("the daemon's start takes the execution");
     let driver = driver.unwrap_or_else(|Failed { why, .. }| panic!("the execution was left as it was: {why}"));
-    assert_eq!(lifecycle(&restarted).phase(), alondra_domain::TaskPhase::Delivered, "the delivery stays the one the user reviews");
+    assert_eq!(lifecycle(&*restarted).phase(), alondra_domain::TaskPhase::Delivered, "the delivery stays the one the user reviews");
     assert_told_the_work_ended(&slice, &restarted, driver, &session);
 }
 
@@ -204,7 +204,7 @@ fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
         targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
     });
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Wrap up"})).unwrap();
-    tokio::runtime::Runtime::new().unwrap().block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true)).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(crate::domain_messages::deliver(&*slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true)).unwrap();
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     let reply = "Shorter please stall-while-held";
@@ -212,10 +212,10 @@ fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
         body: reply.into(), instruction: alondra_domain_rules::Instruction::Reply });
     assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1);
     until_prompted(&slice, &mut driver, reply, 1);
-    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Starting, "Claude holds the reply and starts no turn");
+    assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Starting, "Claude holds the reply and starts no turn");
     let shown = |lang| {
         let read = slice.domain.read();
-        let live = LiveSnapshot { pacing: slice.domain.admission().live(&slice.domain, alondra_core::now_millis()), ..LiveSnapshot::default() };
+        let live = LiveSnapshot { pacing: slice.domain.admission().live(&*slice.domain, alondra_core::now_millis()), ..LiveSnapshot::default() };
         let view = build(&format!("task:{TASK}"), RenderContext {
             domain: read.state(), index: read.index(), live: &live, client: Client::Tui, lang,
             transport: Transport::Loopback, cursor: "test", rendered_at: "",
@@ -229,11 +229,11 @@ fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
     drive_by_hand(&slice, &driver);
     let mut watch = enforcing_every_deadline();
     for at in [0, 301_000, 24 * 3_600_000] {
-        pass(&slice.domain, &mut watch, at);
+        pass(&*slice.domain, &mut watch, at);
     }
     driver.step(&|| false).unwrap();
     assert!(!driver.host_to_replace(), "Claude holds the reply: no deadline gives the host up");
-    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Starting);
+    assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Starting);
     driver.stop().unwrap();
 }
 
@@ -281,14 +281,14 @@ fn a_turn_claude_keeps_running_after_its_interrupt_is_force_stopped_and_resumed(
     assert_eq!(press_interrupt(&slice, driver.agent())["outcome"], "applied");
     driver.step(&|| false).unwrap();
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude got the interrupt");
-    assert_eq!(Slice::lifecycle(&slice.domain).turn_stop(), Some(alondra_domain::TurnStop::InterruptAccepted), "its receipt is the fact that Claude accepted it");
-    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Working, "and the turn goes on");
+    assert_eq!(Slice::lifecycle(&*slice.domain).turn_stop(), Some(alondra_domain::TurnStop::InterruptAccepted), "its receipt is the fact that Claude accepted it");
+    assert_eq!(Slice::lifecycle(&*slice.domain).activity(), ActivityView::Working, "and the turn goes on");
     let offered = node_offers(&slice.domain, driver.agent());
     assert!(offered.iter().any(|offer| offer.starts_with("force_stop:")), "the stop button is now Force stop: {offered:?}");
     assert!(!offered.iter().any(|offer| offer.starts_with("interrupt:")), "in place of Interrupt: {offered:?}");
 
     assert_eq!(press(&slice, Verb::ForceStop, driver.agent())["outcome"], "applied");
-    let turn = Slice::lifecycle(&slice.domain).turn().unwrap().as_str().to_owned();
+    let turn = Slice::lifecycle(&*slice.domain).turn().unwrap().as_str().to_owned();
     assert_eq!(slice.control_rows().last().unwrap(), &("force_stop".to_owned(), Some(turn), "prepared".to_owned()));
     let offered = node_offers(&slice.domain, driver.agent());
     assert!(!offered.iter().any(|offer| offer.starts_with("force_stop:") || offer.starts_with("interrupt:")), "it is forced once, and nothing else offers to stop it: {offered:?}");
@@ -300,9 +300,9 @@ fn a_turn_claude_keeps_running_after_its_interrupt_is_force_stopped_and_resumed(
     while driver.observe().is_ok() {}
     assert!(driver.host_to_replace(), "Claude's exit ends its host for the owner");
     let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the forced turn ended");
+    assert_eq!(Slice::lifecycle(&*slice.domain).activity(), ActivityView::Resting, "the forced turn ended");
     assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "the stopped task creates no card");
-    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
+    assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     slice.run(&Actor::System, "continue", Command::TellNode { task_id: TASK.into(), text: "Continue the release notes".into(), from_user: true, answers: None });
     resumed.step(&|| false).unwrap();
     slice.settle(&mut resumed);
@@ -324,9 +324,9 @@ fn an_accepted_interrupt_alondra_cannot_record_leaves_the_owner_going() {
     driver.step(&|| false).unwrap();
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude got the interrupt");
     slice.settle(&mut driver);
-    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
-    assert!(Slice::read_cards(&slice.domain).is_empty(), "without a card");
-    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
+    assert_eq!(Slice::lifecycle(&*slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
+    assert!(Slice::read_cards(&*slice.domain).is_empty(), "without a card");
+    assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     driver.stop().unwrap();
 }
 
@@ -343,7 +343,7 @@ fn cancelling_from_the_turn_end_card_after_a_failure_ends_the_task() {
 
 /// The user cancels the task from its open turn-end card, through the action path the clients use.
 fn cancel_from_turn_end_card(slice: &Slice) -> serde_json::Value {
-    let (card, _) = Slice::read_cards(&slice.domain).into_iter().find(|(card, answered)| !answered && card.starts_with(TURN_ENDED_PREFIX)).expect("an open turn-end card");
+    let (card, _) = Slice::read_cards(&*slice.domain).into_iter().find(|(card, answered)| !answered && card.starts_with(TURN_ENDED_PREFIX)).expect("an open turn-end card");
     let state = slice.domain.state().unwrap();
     let action = alondra_view_model::action_id::ActionId::new(alondra_view_model::action_id::Verb::Ans, &card, state.revision, None).unwrap();
     let request = crate::views::actions::ActionRequest {
@@ -379,10 +379,10 @@ fn interrupting_a_command_claude_code_tracks_as_work_pauses_without_a_card() {
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude got the interrupt");
     slice.read_turn_result(&mut driver);
     assert_eq!(slice.observations_with("\"status\":\"stopped\""), 1, "Claude Code stopped the command");
-    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
-    let cards = Slice::read_cards(&slice.domain);
+    assert_eq!(Slice::lifecycle(&*slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
+    let cards = Slice::read_cards(&*slice.domain);
     assert!(cards.is_empty(), "the turn ended without a card: {cards:?}");
-    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
+    assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     assert!(!node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "nothing runs: no Interrupt");
     driver.stop().unwrap();
 }
@@ -402,7 +402,7 @@ fn interrupting_a_working_sdk_node_from_its_task_reaches_claude_and_pauses_witho
     }
     let reply = press_interrupt(&slice, driver.agent());
     assert_eq!(reply["outcome"], "applied", "{reply}");
-    let turn = Slice::lifecycle(&slice.domain).turn().unwrap().as_str().to_owned();
+    let turn = Slice::lifecycle(&*slice.domain).turn().unwrap().as_str().to_owned();
     assert_eq!(slice.control_rows(), [("interrupt".to_owned(), Some(turn), "prepared".to_owned())], "the interrupt committed with the decision");
     assert!(slice.controls().is_empty(), "nothing reached Claude before the owner sends it");
     assert_eq!(driver.pending_controls(), 1, "its permit reached the owner");
@@ -410,10 +410,10 @@ fn interrupting_a_working_sdk_node_from_its_task_reaches_claude_and_pauses_witho
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude got the interrupt");
     assert_eq!(slice.control_rows()[0].2, "handed");
     slice.settle(&mut driver);
-    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
-    let cards = Slice::read_cards(&slice.domain);
+    assert_eq!(Slice::lifecycle(&*slice.domain).activity(), ActivityView::Resting, "the interrupted turn ended");
+    let cards = Slice::read_cards(&*slice.domain);
     assert!(cards.is_empty(), "the turn ended without a card: {cards:?}");
-    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
+    assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     assert!(!node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "nothing runs: no Interrupt");
     let again = slice.try_run(&user(), "interrupt-again", Command::InterruptTurn { agent_id: driver.agent().clone() }).unwrap_err();
     let StoreError::Domain(refusal) = again else { panic!("{again:?}") };
@@ -546,7 +546,7 @@ fn an_answer_reaches_the_sdk_node_from_the_user_with_its_card() {
     assert!(told.0.contains("q-name") && told.0.contains("Call it Atlas"), "{}", told.0);
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
-    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), None, "the answer ended the wait");
+    assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), None, "the answer ended the wait");
     driver.stop().unwrap();
 }
 
@@ -565,9 +565,9 @@ fn a_refused_interrupted_turn_end_keeps_the_host_without_waking_another_turn() {
     assert_eq!(driver.worker.host_group(), group);
     assert_eq!(slice.starts(), starts);
     assert_eq!(slice.prompts(), prompts, "a user interruption never becomes another inference turn");
-    assert!(Slice::lifecycle(&slice.domain).turn().is_none());
-    assert!(Slice::read_cards(&slice.domain).is_empty());
-    assert_eq!(Slice::lifecycle(&slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
+    assert!(Slice::lifecycle(&*slice.domain).turn().is_none());
+    assert!(Slice::read_cards(&*slice.domain).is_empty());
+    assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), Some(&alondra_domain::Await::Instruction));
     assert!(!driver.host_to_replace());
     assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none());
     driver.stop().unwrap();
@@ -626,7 +626,7 @@ async fn an_accepted_pr_that_turns_conflicting_goes_back_to_its_node_with_a_conf
     assert!(!conflict_prompts(&slice).is_empty(), "the conflict turn reaches the node with no slot free: {:?}", slice.prompts());
     slice.settle(&mut driver);
     assert_eq!(conflict_prompts(&slice).len(), 1, "the node is told once to resolve the conflicts: {:?}", slice.prompts());
-    let snapshot = slice.domain.admission().snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
+    let snapshot = slice.domain.admission().snapshot(&*slice.domain, alondra_core::now_millis()).unwrap();
     assert!(snapshot.queue.is_empty(), "nothing of the task waits in the gate: {:?}", snapshot.queue.iter().map(|waiting| format!("{:?}", waiting.key)).collect::<Vec<_>>());
     driver.stop().unwrap();
 }
@@ -681,7 +681,7 @@ fn a_task_launched_through_the_sdk_ends_its_turn_with_one_card_readers_see_befor
     let mut driver = slice.launch();
     slice.settle(&mut driver);
     assert_eq!(slice.prompts(), ["Write the release notes"], "the host's Claude got the launch prompt");
-    let cards = Slice::read_cards(&slice.domain);
+    let cards = Slice::read_cards(&*slice.domain);
     assert_eq!(cards.len(), 1, "one card: {cards:?}");
     assert!(cards[0].0.starts_with(STALLED_PREFIX) && !cards[0].1, "the woken node stopped again: its case waits for the orchestrator, never the user: {cards:?}");
     assert_eq!(slice.stored_cards(), 1);
@@ -709,8 +709,8 @@ fn a_command_claude_code_tracks_as_work_ends_inside_its_turn_and_the_turn_ends_w
     slice.read_turn_result(&mut driver);
     assert_eq!(slice.observations_with("\"subtype\":\"task_notification\""), 1, "the command's work ended");
     slice.settle(&mut driver);
-    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "nothing waits for the command any more");
-    let cards = Slice::read_cards(&slice.domain);
+    assert_eq!(Slice::lifecycle(&*slice.domain).activity(), ActivityView::Resting, "nothing waits for the command any more");
+    let cards = Slice::read_cards(&*slice.domain);
     assert_eq!(cards.len(), 1, "the turn ended with one card: {cards:?}");
     assert!(!node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "nothing runs: no Interrupt");
     driver.stop().unwrap();

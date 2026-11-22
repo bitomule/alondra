@@ -392,7 +392,7 @@ impl Client {
             return Reply::error(DomainError::new("invalid_input", "invalid request"));
         }
         let user = alondra_domain_rules::Actor::User { user_id: user_id.to_owned() };
-        match crate::domain_messages::resolve_conflicts(&self.domain, &self.home, &user, &crate::domain_messages::user_name(), &pr.into()).await {
+        match crate::domain_messages::resolve_conflicts(&*self.domain, &self.home, &user, &crate::domain_messages::user_name(), &pr.into()).await {
             Ok(answer) => Reply::ok(answer),
             Err(error) => Reply::error(error),
         }

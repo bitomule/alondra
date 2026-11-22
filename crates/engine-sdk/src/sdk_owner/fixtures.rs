@@ -196,7 +196,7 @@ pub fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvel
 }
 
 pub fn measure_healthy_machine(domain: &DomainRuntime) {
-    alondra_engine_admission::measure_machine(&domain, &alondra_core::Machine { memory_total: 16 << 30, memory_available: 12 << 30,
+    alondra_engine_admission::measure_machine(&*domain, &alondra_core::Machine { memory_total: 16 << 30, memory_available: 12 << 30,
         memory_free_percent: Some(75), cpus: 11, disk_total: 500_000_000_000, disk_available: 100_000_000_000, ..Default::default() }, alondra_engine_ports::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
 }
 
@@ -267,7 +267,7 @@ impl Slice {
     }
 
     pub fn launch_with_backend(&self, backend: &SdkBackend, prompt: &str, capabilities: BTreeSet<Capability>) -> Driver {
-        start_bound(Arc::clone(&self.domain), backend, Launch {
+        start_bound(self.domain.clone(), backend, Launch {
             task: TASK.into(),
             name: "Release notes".into(),
             directory: self.worktree.to_str().unwrap().into(),
@@ -283,13 +283,13 @@ impl Slice {
     /// Launches a turn that the fake Claude holds open, and reads the host until it runs.
     pub fn launch_working(&self) -> Driver {
         let mut driver = self.launch_told("consume-and-hold", capabilities());
-        while Self::lifecycle(&self.domain).activity() != ActivityView::Working {
+        while Self::lifecycle(&*self.domain).activity() != ActivityView::Working {
             driver.observe_written().unwrap();
         }
         driver
     }
 
-    pub fn lifecycle(domain: &DomainRuntime) -> alondra_domain::TaskLifecycle {
+    pub fn lifecycle(domain: &dyn alondra_engine_ports::Runtime) -> alondra_domain::TaskLifecycle {
         let read = domain.read();
         replay(&TASK.into(), &read.state().lifecycle_journal[&TaskId::from(TASK)]).unwrap()
     }
@@ -354,7 +354,7 @@ impl Slice {
 
     /// Every card an ended turn of the task rested on, in the read the clients get, with whether
     /// it is settled.
-    pub fn read_cards(domain: &DomainRuntime) -> Vec<(String, bool)> {
+    pub fn read_cards(domain: &dyn alondra_engine_ports::Runtime) -> Vec<(String, bool)> {
         let read = domain.read();
         read.state()
             .interactions
@@ -456,7 +456,7 @@ pub fn running(pid: libc::pid_t) -> bool {
 
 /// Reads the host until the task's lifecycle waits only on the background work Claude left running.
 pub fn until_own_work(slice: &Slice, driver: &mut Driver) {
-    while lifecycle(&slice.domain).activity() != ActivityView::OwnWork {
+    while lifecycle(&*slice.domain).activity() != ActivityView::OwnWork {
         driver.observe_written().unwrap();
     }
     assert!(background_commands(slice).into_iter().all(running), "the background command runs");
@@ -475,7 +475,7 @@ pub fn assert_told_the_work_ended(slice: &Slice, domain: &Arc<DomainRuntime>, mu
     let told = slice.prompts().last().unwrap().clone();
     assert!(told.starts_with("Your session was cut off when its host stopped"), "{told}");
     assert!(told.contains("This background work ended with that host and will not report back:\n- bfixture1 (bazel test //app:snapshots)\n"), "{told}");
-    assert_eq!(lifecycle(domain).activity(), ActivityView::Resting, "its turn ended: nothing waits for a notification");
+    assert_eq!(lifecycle(&**domain).activity(), ActivityView::Resting, "its turn ended: nothing waits for a notification");
     driver.stop().unwrap();
 }
 
@@ -496,7 +496,7 @@ impl Slice {
     }
 
     pub fn launch_on(&self, task: &str, account: &str) -> Result<Driver, Failed> {
-        start(Arc::clone(&self.domain), &self.backend, Launch {
+        start(self.domain.clone(), &self.backend, Launch {
             task: task.into(), name: format!("Work on {task}"), directory: self.worktree.to_str().unwrap().into(),
             prompt: format!("Work on {task}"), plugin: self.plugin.clone(), options: LaunchOptions::default(), model: None,
             account: AccountId::parse(account).unwrap(),
@@ -551,18 +551,18 @@ impl Slice {
     }
 
     pub fn take_over(&self, domain: &Arc<DomainRuntime>) -> Driver {
-        adopt(Arc::clone(domain), &self.backend, TASK.into(), Some(&self.plugin)).unwrap()
+        adopt(domain.clone(), &self.backend, TASK.into(), Some(&self.plugin)).unwrap()
     }
 
     /// Reads the host until its turn is running.
     pub fn until_working(&self, driver: &mut Driver) {
-        while lifecycle(&self.domain).activity() != ActivityView::Working {
+        while lifecycle(&*self.domain).activity() != ActivityView::Working {
             driver.observe_written().unwrap();
         }
     }
 }
 
-pub fn lifecycle(domain: &DomainRuntime) -> alondra_domain::TaskLifecycle {
+pub fn lifecycle(domain: &dyn alondra_engine_ports::Runtime) -> alondra_domain::TaskLifecycle {
     let read = domain.read();
     replay(&TASK.into(), &read.state().lifecycle_journal[&TaskId::from(TASK)]).unwrap()
 }
@@ -634,7 +634,7 @@ impl Slice {
     pub fn until(&self, driver: &mut Driver, done: impl Fn(&Slice) -> bool) {
         while !done(self) {
             assert!(driver.pending_controls() > 0 || driver.pending_permits() > 0 || driver.waits_for_host(),
-                "nothing is left to run and it is not done: {:?}", Slice::lifecycle(&self.domain).activity());
+                "nothing is left to run and it is not done: {:?}", Slice::lifecycle(&*self.domain).activity());
             driver.step(&|| false).unwrap();
         }
     }
@@ -663,7 +663,7 @@ impl Slice {
         while driver.pending_controls() > 0 || driver.pending_permits() > 0 || driver.waits_for_host() {
             driver.step(&|| false).unwrap();
         }
-        assert_eq!(Slice::lifecycle(driver.domain()).activity(), ActivityView::Resting);
+        assert_eq!(Slice::lifecycle(&**driver.domain()).activity(), ActivityView::Resting);
     }
 
     pub fn decision_requests(&self) -> Vec<(i64, String)> {
@@ -689,7 +689,7 @@ pub fn assert_cancelled_from_its_card(slice: &Slice, reply: &serde_json::Value) 
 impl Slice {
     /// Launches task `task` of the request told `prompt`, and reads its host until `done`.
     pub fn launch_until(&self, task: &str, prompt: &str, done: impl Fn(&DomainState, &AgentId) -> bool) -> Driver {
-        let mut driver = start_bound(Arc::clone(&self.domain), &self.backend, Launch {
+        let mut driver = start_bound(self.domain.clone(), &self.backend, Launch {
             task: task.into(), name: format!("Work on {task}"), directory: self.worktree.to_str().unwrap().into(), prompt: prompt.into(),
             plugin: self.plugin.clone(), options: LaunchOptions::default(), model: None, account: AccountId::default_account(),
         }, capabilities(), None, None).unwrap();
@@ -739,7 +739,7 @@ impl Slice {
     pub fn upgraded_during_a_background_command(&self) -> (Arc<DomainRuntime>, Driver, String, Vec<alondra_process_group::Member>) {
         let before = self.release_before();
         let mut driver = self.launch_with_backend(&before, "background-command", capabilities());
-        while lifecycle(&self.domain).activity() != ActivityView::OwnWork {
+        while lifecycle(&*self.domain).activity() != ActivityView::OwnWork {
             driver.observe_written().unwrap();
         }
         let command = self.background_command();
@@ -749,7 +749,7 @@ impl Slice {
         drop(driver);
         let upgraded = self.restart();
         upgraded.enable_sdk(self.backend.clone());
-        let (_, adopted) = take_all(&upgraded, &self.backend).pop().expect("the start takes the execution");
+        let (_, adopted) = take_all(&(upgraded.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &self.backend).pop().expect("the start takes the execution");
         let adopted = adopted.unwrap_or_else(|Failed { why, .. }| panic!("the execution was not taken over: {why}"));
         assert!(alondra_process_group::alive(&command).unwrap(), "the background command survived the upgrade");
         assert!(adopted.worker.runs_another_release(), "the node goes on on the host of the release before");

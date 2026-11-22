@@ -1,3 +1,5 @@
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
+use crate::domain_runtime::DomainRuntime;
 use alondra_store_sqlite::AsSqlite as _;
 use crate::live::LiveOf as _;
 use super::*;
@@ -165,7 +167,7 @@ impl Rig {
     }
 
     async fn run_waiting(&self, dry_run: bool, stop_wait: Duration) -> Value {
-        run(&self.domain, self.sessions.as_ref(), &self.claude_home, dry_run, now(), stop_wait).await.unwrap()
+        run(&*self.domain, self.sessions.as_ref(), &self.claude_home, dry_run, now(), stop_wait).await.unwrap()
     }
 
     fn busy(&self, session: &str) {
@@ -292,7 +294,7 @@ async fn when_claude_agents_cannot_run_nothing_is_closed() {
         }
     }
     let rig = Rig::new();
-    let refused = run(&rig.domain, &Broken, &rig.claude_home, false, now(), Duration::ZERO).await.unwrap_err();
+    let refused = run(&*rig.domain, &Broken, &rig.claude_home, false, now(), Duration::ZERO).await.unwrap_err();
     assert_eq!((refused.0, refused.1.as_str()), (StatusCode::BAD_GATEWAY, "claude is not installed"));
 }
 
@@ -386,7 +388,7 @@ async fn a_node_still_working_after_its_task_ended_has_its_turn_cut_and_is_close
     let mut rig = Rig::new();
     let stuck = rig.session(Task::Done, true);
     rig.busy(&stuck);
-    let node = crate::node_push::testing::Node::connect(&rig.domain, &stuck);
+    let node = crate::node_push::testing::Node::connect(rig.domain.clone(), &stuck);
     let dry = rig.run(true).await;
     assert_eq!((names(&dry["close"]), dry["close"][0]["stuck"].clone()), (vec!["Node 1".to_owned()], Value::Bool(true)));
     assert_eq!(node.interrupts(), 0, "a dry run cuts nothing");
@@ -419,7 +421,7 @@ async fn a_node_that_declared_work_after_the_merge_is_neither_cut_nor_closed() {
     command(&rig.domain, user(), Command::AcceptDelivery { presentation_id: "final-1".into(), targets });
     command(&rig.domain, agent(), Command::DeclarePostMergeWork { task_id: "t1".into(), reason: Some("release.sh publishes 0.2.58".into()), waits_for: vec![] });
     rig.busy(&releasing);
-    let node = crate::node_push::testing::Node::connect(&rig.domain, &releasing);
+    let node = crate::node_push::testing::Node::connect(rig.domain.clone(), &releasing);
     let report = rig.run(false).await;
     assert_eq!(node.interrupts(), 0);
     assert!(rig.sessions.removals().is_empty());

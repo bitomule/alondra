@@ -33,7 +33,7 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
 
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "worker".into(), name: "editor".into(), at: 0 });
     command(&domain, Actor::Orchestrator { generation: 0 }, Command::AssignTask { task_id: "t".into(), agent_id: "worker".into(), model: None });
-    record(&domain, Decision { task_id: "t".into(), request_id: "r".into(), agent_id: Some("worker".into()), at: alondra_core::now_millis(),
+    record(&*domain, Decision { task_id: "t".into(), request_id: "r".into(), agent_id: Some("worker".into()), at: alondra_core::now_millis(),
         kind: DecisionKind::Launch, model: Some("sonnet".into()), effort: Some("medium".into()), approach: None,
         chosen_by: ModelChooser::Orchestrator, reason: Some("Colour tokens in one file: sonnet".into()), title: "Editor colours".into(),
         provider: None, tags: None });

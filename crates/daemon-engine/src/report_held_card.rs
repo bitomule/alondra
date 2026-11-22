@@ -15,13 +15,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 
 const TICK: Duration = Duration::from_secs(5);
 const ONE_RUN: Duration = Duration::from_secs(15 * 60);
 
 /// Watches the reports of `home` and runs `cli`, through the hosts' edge, when the user answers.
-pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf, cli: Option<PathBuf>, fast: bool) {
+pub async fn run(domain: Arc<dyn Runtime>, home: PathBuf, cli: Option<PathBuf>, fast: bool) {
     let (Some(cli), Some(hosts)) = (cli, domain.ports().port::<dyn AgentHost>()) else { return };
     let cli_home = home.clone();
     let run_cli = move |args: &[&str]| {
@@ -48,8 +48,8 @@ struct Ours {
     answer: Option<String>,
 }
 
-fn ours(domain: &DomainRuntime) -> Vec<Ours> {
-    let Ok(state) = domain.state() else { return vec![] };
+fn ours(domain: &dyn Runtime) -> Vec<Ours> {
+    let state = domain.state();
     state.interactions.values()
         .filter(|card| matches!(card.system_card, Some(SystemCard::ReportHeld { .. })) && !card.withdrawn)
         .filter_map(|card| match &card.payload {
@@ -70,7 +70,7 @@ fn wanted(held: &HeldReport) -> Option<ReportHeldCard> {
     }
 }
 
-fn raise(domain: &DomainRuntime, card: &ReportHeldCard) {
+fn raise(domain: &dyn Runtime, card: &ReportHeldCard) {
     let id = format!("{REPORT_HELD_PREFIX}{}-{}", card.report, alondra_core::now_millis());
     let (need, why) = card.text(Lang::En);
     let system = SystemCard::ReportHeld { report: card.report.clone() };
@@ -89,7 +89,7 @@ struct Memory {
 
 /// One check: act on new answers, try again a held report whose repository the settings changed,
 /// then leave exactly one open card per held report, saying what `sending.json` says now.
-fn check(domain: &DomainRuntime, reports: &Path, repo: Option<String>, cli: &dyn Fn(&[&str]), memory: &mut Memory) {
+fn check(domain: &dyn Runtime, reports: &Path, repo: Option<String>, cli: &dyn Fn(&[&str]), memory: &mut Memory) {
     let held = reports::held(reports);
     for card in &ours(domain) {
         let (Some(answer), Some(asked)) = (&card.answer, &card.card) else { continue };
@@ -136,7 +136,7 @@ fn check(domain: &DomainRuntime, reports: &Path, repo: Option<String>, cli: &dyn
 }
 
 async fn watch(
-    domain: Arc<DomainRuntime>,
+    domain: Arc<dyn Runtime>,
     reports: PathBuf,
     repo: impl Fn() -> Option<String> + Send + Sync + 'static,
     cli: impl Fn(&[&str]) + Send + Sync + 'static,
@@ -145,7 +145,7 @@ async fn watch(
     let (repo, cli) = (Arc::new(repo), Arc::new(cli));
     let starting = domain.clone();
     let mut memory = tokio::task::spawn_blocking(move || Memory {
-        handled: ours(&starting).into_iter().filter(|card| card.answer.is_some()).map(|card| card.id).collect(),
+        handled: ours(&*starting).into_iter().filter(|card| card.answer.is_some()).map(|card| card.id).collect(),
         nudged: BTreeSet::new(),
     }).await.expect("held report card worker failed");
     let mut ticks = clock::interval(tick);
@@ -154,7 +154,7 @@ async fn watch(
         ticks.tick().await;
         let (domain, reports, repo, cli) = (domain.clone(), reports.clone(), repo.clone(), cli.clone());
         memory = clock::spawn_blocking(move || {
-            check(&domain, &reports, repo(), &*cli, &mut memory);
+            check(&*domain, &reports, repo(), &*cli, &mut memory);
             memory
         }).await.expect("held report card worker failed");
     }

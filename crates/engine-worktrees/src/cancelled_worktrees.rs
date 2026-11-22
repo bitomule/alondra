@@ -14,7 +14,8 @@ use alondra_view_model::Lang;
 use anyhow::{Result, anyhow};
 
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use alondra_engine_ports::worktrees::TaskWorktree;
 
 enum Settled {
@@ -28,7 +29,7 @@ fn keeps_branch(state: &DomainState, task: &Task) -> bool {
 }
 
 /// Deletes the worktree at `path` unless it holds unsaved files, which it only counts.
-async fn settle_path(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Settled> {
+async fn settle_path(domain: &dyn Runtime, task: &Task, path: &str) -> Result<Settled> {
     crate::task_worktrees::ready(domain, path).await?;
     if let Some(why) = domain.ports().worktrees().unreachable_link(Path::new(path)) {
         return Err(crate::task_worktrees::Unreachable(why).into());
@@ -37,7 +38,7 @@ async fn settle_path(domain: &DomainRuntime, task: &Task, path: &str) -> Result<
     if unsaved > 0 {
         return Ok(Settled::Unsaved(unsaved));
     }
-    let keeps_branch = keeps_branch(&*domain.state()?, task);
+    let keeps_branch = keeps_branch(&*domain.state(), task);
     match domain.ports().worktrees().discard_worktree(Path::new(path), keeps_branch).await.map_err(|why| anyhow!(why))? {
         TaskWorktree::Removed { freed } => {
             log!("deleting the worktree {path} of the cancelled task {} freed {}", task.id, alondra_core::machine_incident::bytes_text(freed, Lang::En));
@@ -50,8 +51,8 @@ async fn settle_path(domain: &DomainRuntime, task: &Task, path: &str) -> Result<
     }
 }
 
-fn raise_card(domain: &DomainRuntime, id: &str, scope: Scope, tasks: Vec<CancelledWorktree>) -> Result<()> {
-    if domain.state()?.interactions.contains_key(&InteractionId(id.to_owned())) {
+fn raise_card(domain: &dyn Runtime, id: &str, scope: Scope, tasks: Vec<CancelledWorktree>) -> Result<()> {
+    if domain.state().interactions.contains_key(&InteractionId(id.to_owned())) {
         return Ok(());
     }
     let card = DiscardWorktrees { tasks };
@@ -64,7 +65,7 @@ fn raise_card(domain: &DomainRuntime, id: &str, scope: Scope, tasks: Vec<Cancell
 
 /// Settles every worktree of a task that is being cancelled: the ones without unsaved files are
 /// deleted, the ones with them are left as they are and one card asks the user about them.
-pub async fn release_cancelled(domain: &DomainRuntime, task: &Task) -> Result<()> {
+pub async fn release_cancelled(domain: &dyn Runtime, task: &Task) -> Result<()> {
     let task = &crate::task_worktrees::recover_noted(domain, task)?;
     let mut paths: Vec<(String, bool)> = task.open_worktrees().map(|(path, _)| (path.clone(), true)).collect();
     paths.extend(domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir)).map(|dir| (dir, false)));
@@ -91,7 +92,7 @@ pub async fn release_cancelled(domain: &DomainRuntime, task: &Task) -> Result<()
             ends.push((path, end));
         }
     }
-    let asked = asked_paths(&*domain.state()?);
+    let asked = asked_paths(&*domain.state());
     held.paths.retain(|path| !asked.contains(path));
     if !held.paths.is_empty() {
         let id = format!("{DISCARD_WORKTREES_PREFIX}{}", task.id);
@@ -117,8 +118,8 @@ fn asked_paths(state: &DomainState) -> HashSet<String> {
 /// Deletes the worktrees the user chose to delete on each answered card: all of them, or only
 /// the ones ticked. Keep needs nothing: the answered card is what stops anyone from asking again.
 /// A worktree already gone is nothing to do.
-pub async fn apply_answers(domain: &DomainRuntime) -> Result<()> {
-    let state = domain.state()?;
+pub async fn apply_answers(domain: &dyn Runtime) -> Result<()> {
+    let state = domain.state();
     for (card, listed) in covering_cards(&state) {
         let InteractionPayload::Question { answer: Some(answer), .. } = &card.payload else { continue };
         for entry in listed.deleted_by(&answer.option_id, answer.form_values()) {
@@ -140,10 +141,10 @@ pub async fn apply_answers(domain: &DomainRuntime) -> Result<()> {
 
 /// The worktrees cancelled tasks left behind before this rule: the clean ones go, and one card
 /// lists the tasks whose worktrees hold unsaved files that no earlier card asked about.
-pub async fn sweep(domain: &DomainRuntime) -> Result<()> {
-    let state = domain.state()?;
+pub async fn sweep(domain: &dyn Runtime) -> Result<()> {
+    let state = domain.state();
     let asked = asked_paths(&state);
-    let stored: std::collections::BTreeMap<TaskId, String> = domain.store.lock_or_exit("the domain store").task_worktrees()?.into_iter().collect();
+    let stored: std::collections::BTreeMap<TaskId, String> = domain.store().lock_or_exit("the domain store").task_worktrees()?.into_iter().collect();
     let mut unsaved = vec![];
     for task in state.tasks.values().filter(|task| task.state == TaskState::Cancelled) {
         if matches!(task.wrap_up.node, Some(NodeEnd::KeptByUser | NodeEnd::UsersOwn)) {

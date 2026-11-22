@@ -5,7 +5,7 @@
 //! in `daemon-engine`.
 use alondra_engine_ports::gate::GateOf as _;
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use crate::Runtime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_domain_rules::{
     AfterFailure, Command, CommandEnvelope, StartProblem, TaskId,
@@ -15,21 +15,21 @@ use anyhow::Result;
 use std::path::Path;
 
 /// A start of the task failed: Alondra tries again later, or asks the user.
-pub fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProblem, now: i64) -> Result<()> {
+pub fn failed(domain: &dyn Runtime, task: &TaskId, problem: StartProblem, now: i64) -> Result<()> {
     if ended(domain, task)? {
         return Ok(());
     }
-    let attempts = domain.store.lock_or_exit("the domain store").start_retries()?.get(task).map_or(0, |(attempts, _)| *attempts);
+    let attempts = domain.store().lock_or_exit("the domain store").start_retries()?.get(task).map_or(0, |(attempts, _)| *attempts);
     match after_failure(attempts, problem, now) {
         AfterFailure::Retry { attempt, at } => {
-            let mut store = domain.store.lock_or_exit("the domain store");
+            let mut store = domain.store().lock_or_exit("the domain store");
             store.set_start_retry(task, Some((attempt, at)))?;
             store.forget_auto_launch(task)?;
             log!("the start of {task} failed; Alondra tries again by itself (attempt {attempt})");
         }
         AfterFailure::Ask(problem) => {
             {
-                let mut store = domain.store.lock_or_exit("the domain store");
+                let mut store = domain.store().lock_or_exit("the domain store");
                 store.set_start_retry(task, None)?;
                 let (reason, detail) = match &problem {
                     StartProblem::Untrusted { folder, .. } => (AutoLaunchReason::WorkspaceUntrusted, Some(folder.as_str())),
@@ -46,12 +46,12 @@ pub fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProblem, now:
 
 /// The plan a start was refused for changed: the orchestrator's card about it no longer holds, and
 /// the task goes back to the gate to start with the new plan.
-pub fn plan_changed(domain: &DomainRuntime, task: &TaskId) -> Result<()> {
-    let state = domain.state()?;
+pub fn plan_changed(domain: &dyn Runtime, task: &TaskId) -> Result<()> {
+    let state = domain.state();
     let Some(card) = state.open_plan_refusal(task) else { return Ok(()) };
     domain.withdraw_problem(&card.id).map_err(|error| anyhow::anyhow!("{error:?}"))?;
     {
-        let mut store = domain.store.lock_or_exit("the domain store");
+        let mut store = domain.store().lock_or_exit("the domain store");
         store.forget_auto_launch(task)?;
         store.set_start_retry(task, None)?;
         store.set_launch_refusal(task, None, alondra_core::now_millis())?;
@@ -63,13 +63,13 @@ pub fn plan_changed(domain: &DomainRuntime, task: &TaskId) -> Result<()> {
 /// Whether the task ended (cancelled, done or archived) while it was starting: then its start did
 /// not fail, it no longer waits. It leaves without a retry or a card, and its slot at the gate goes
 /// to the next one at once.
-pub fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
-    let state = domain.state()?;
+pub fn ended(domain: &dyn Runtime, task: &TaskId) -> Result<bool> {
+    let state = domain.state();
     if state.tasks.get(task).is_some_and(|task| !task.over() && !task.archived) {
         return Ok(false);
     }
     {
-        let mut store = domain.store.lock_or_exit("the domain store");
+        let mut store = domain.store().lock_or_exit("the domain store");
         store.set_start_retry(task, None)?;
         store.forget_auto_launch(task)?;
         store.dequeue_launch(task)?;
@@ -97,8 +97,8 @@ pub fn problem_of(accounts: &dyn alondra_engine_ports::accounts::Accounts, code:
     }
 }
 
-pub fn raise(domain: &DomainRuntime, task: &TaskId, problem: StartProblem) -> Result<()> {
-    let state = domain.state()?;
+pub fn raise(domain: &dyn Runtime, task: &TaskId, problem: StartProblem) -> Result<()> {
+    let state = domain.state();
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
         command_id: format!("start-problem-{}-{}", task.0, crate::auth::random_hex(8)).into(), expected_revision: state.revision,

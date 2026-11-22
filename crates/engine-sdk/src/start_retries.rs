@@ -3,16 +3,16 @@
 //! (`DomainState::react`). The failures themselves are recorded by `start_failures`.
 use crate::engine::EngineOf as _;
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_rules::{DomainState, InteractionPayload, NodePhase, Reaction, START_RETRY, StartProblem, TaskId};
 use alondra_engine_kernel::start_failures::{failed, problem_of, raise};
 use anyhow::Result;
 use std::path::Path;
 
 /// Carries out what must happen now so no open task is left in nobody's hands.
-pub async fn react(domain: &DomainRuntime, home: &Path) -> Result<()> {
+pub async fn react(domain: &dyn Runtime, home: &Path) -> Result<()> {
     settle_api_failure_cards(domain)?;
-    let state = domain.state()?;
+    let state = domain.state();
     record_plan_cancels(domain, &state)?;
     let facts = domain.engine().start_facts(&state)?;
     for reaction in state.react(&facts) {
@@ -29,9 +29,9 @@ pub async fn react(domain: &DomainRuntime, home: &Path) -> Result<()> {
 /// Carries out the user's answer on the card of a node Alondra stopped sending back after its Claude
 /// API errors: "try again now" sends it back at once; any other end of the card (the task
 /// cancelled, the card gone) only forgets the streak.
-fn settle_api_failure_cards(domain: &DomainRuntime) -> Result<()> {
-    let streaks = domain.store.lock_or_exit("the domain store").api_failures()?;
-    let state = domain.state()?;
+fn settle_api_failure_cards(domain: &dyn Runtime) -> Result<()> {
+    let streaks = domain.store().lock_or_exit("the domain store").api_failures()?;
+    let state = domain.state();
     for (agent, streak) in streaks {
         let Some(card) = streak.card.as_ref().and_then(|card| state.interactions.get(card)) else { continue };
         if state.open(card) {
@@ -47,13 +47,13 @@ fn settle_api_failure_cards(domain: &DomainRuntime) -> Result<()> {
             log!("the user asked to try {} again after its Claude API errors", agent.0);
             domain.engine().tell_session(&agent.0, &text, true);
         }
-        domain.store.lock_or_exit("the domain store").set_api_failures(&agent, None)?;
+        domain.store().lock_or_exit("the domain store").set_api_failures(&agent, None)?;
     }
     Ok(())
 }
 
 /// The orchestrator cancelled a task whose plan was refused: the reason it wrote is the task's.
-fn record_plan_cancels(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
+fn record_plan_cancels(domain: &dyn Runtime, state: &DomainState) -> Result<()> {
     let cancels: Vec<(TaskId, String)> = state.interactions.values()
         .filter(|i| alondra_domain_rules::is_plan_refusal(i))
         .filter_map(|i| match (&i.scope, &i.payload) {
@@ -69,7 +69,7 @@ fn record_plan_cancels(domain: &DomainRuntime, state: &DomainState) -> Result<()
     if cancels.is_empty() {
         return Ok(());
     }
-    let store = domain.store.lock_or_exit("the domain store");
+    let store = domain.store().lock_or_exit("the domain store");
     let recorded = store.cancel_reasons()?;
     for (task, reason) in cancels.into_iter().filter(|(task, _)| !recorded.contains_key(task)) {
         store.set_cancel_reason(&task, &reason)?;
@@ -82,8 +82,8 @@ fn record_plan_cancels(domain: &DomainRuntime, state: &DomainState) -> Result<()
 /// Alondra closed its node. A relaunch refused
 /// for a reason of its own is a failed start like any other. Trying again a folder Claude Code
 /// did not trust is the user trusting it, so Alondra records that first, or says why it could not.
-async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool) -> Result<()> {
-    let untrusted = domain.state()?.last_start_problem(task).and_then(|problem| serde_json::from_str::<StartProblem>(&problem.body).ok());
+async fn retry(domain: &dyn Runtime, home: &Path, task: &TaskId, closed: bool) -> Result<()> {
+    let untrusted = domain.state().last_start_problem(task).and_then(|problem| serde_json::from_str::<StartProblem>(&problem.body).ok());
     if let Some(StartProblem::Untrusted { folder, .. }) = untrusted
         && let Err(error) = domain.ports().accounts().grant_trust(Path::new(&folder), &alondra_engine_kernel::accounts_file::profiles(home))
     {
@@ -91,7 +91,7 @@ async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool)
         return failed(domain, task, StartProblem::Untrusted { folder, error: Some(error) }, alondra_core::now_millis());
     }
     {
-        let mut store = domain.store.lock_or_exit("the domain store");
+        let mut store = domain.store().lock_or_exit("the domain store");
         store.forget_auto_launch(task)?;
         store.set_start_retry(task, None)?;
         store.set_launch_refusal(task, None, alondra_core::now_millis())?;

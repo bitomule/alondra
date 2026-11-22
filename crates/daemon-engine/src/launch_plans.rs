@@ -1,6 +1,7 @@
 //! How Alondra starts a task by itself: the launch plan every task is created with,
 //! stored beside it, and the checks it must pass when it is given.
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
+use alondra_engine_ports::Runtime;
 use alondra_domain_rules::{Command, DomainError, RequestId, SuggestionDecision};
 use std::path::Path;
 
@@ -12,16 +13,16 @@ pub const EFFORT_WITHOUT_MODEL: &str = "launch.effort needs launch.model: name t
 pub use alondra_domain_rules::LaunchPlan;
 
 /// Whether a plan can start a task of this request: a launch with these fields would be accepted.
-pub fn validate(domain: &DomainRuntime, home: &Path, request_id: &RequestId, plan: &LaunchPlan) -> Result<(), DomainError> {
+pub fn validate(domain: &dyn Runtime, home: &Path, request_id: &RequestId, plan: &LaunchPlan) -> Result<(), DomainError> {
     validate_with_directory(domain, home, request_id, plan, true)
 }
 
 /// A closed task preserves its launch directory, which the first reopened admission may rebuild.
-pub fn validate_reopening(domain: &DomainRuntime, home: &Path, request_id: &RequestId, plan: &LaunchPlan) -> Result<(), DomainError> {
+pub fn validate_reopening(domain: &dyn Runtime, home: &Path, request_id: &RequestId, plan: &LaunchPlan) -> Result<(), DomainError> {
     validate_with_directory(domain, home, request_id, plan, false)
 }
 
-fn validate_with_directory(domain: &DomainRuntime, home: &Path, request_id: &RequestId, plan: &LaunchPlan, require_directory: bool) -> Result<(), DomainError> {
+fn validate_with_directory(domain: &dyn Runtime, home: &Path, request_id: &RequestId, plan: &LaunchPlan, require_directory: bool) -> Result<(), DomainError> {
     let invalid = |message: String| DomainError::new("invalid_input", message);
     if let Some(field) = plan.missing() {
         return Err(invalid(format!("{field} is required")));
@@ -91,7 +92,7 @@ fn validate_with_directory(domain: &DomainRuntime, home: &Path, request_id: &Req
 
 /// Sets the project a new task belongs to: the one the user asked for with its request, else the
 /// folder under the projects root it works in. Whatever its creator sent is replaced.
-pub fn stamp_project(domain: &DomainRuntime, home: &Path, command: &mut Command) {
+pub fn stamp_project(domain: &dyn Runtime, home: &Path, command: &mut Command) {
     let (request_id, plan) = match command {
         Command::CreateTask { request_id, launch: Some(plan), .. }
         | Command::SettleSuggestion { decision: SuggestionDecision::NewTask { request_id, launch: plan, .. }, .. } => (request_id, plan),

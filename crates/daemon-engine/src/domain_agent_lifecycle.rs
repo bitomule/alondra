@@ -6,6 +6,8 @@
 //! input, environment variables and a PID supplied by a client are not evidence
 //! that an Agent exists.
 
+use alondra_engine_ports::Runtime;
+#[cfg(test)]
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_domain_rules::{
@@ -29,13 +31,13 @@ pub struct LifecycleEvent {
 }
 
 pub fn prepare_event(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     event_id: &str,
 ) -> Result<LifecycleEvent, StoreError> {
     if event_id.is_empty() {
         return Err(DomainError::new("invalid_input", "lifecycle event ID is required").into());
     }
-    let state = domain.state().map_err(StoreError::Storage)?;
+    let state = domain.state();
     Ok(LifecycleEvent {
         event_id: event_id.to_owned(),
         data_epoch: state.data_epoch.clone(),
@@ -60,7 +62,7 @@ pub(crate) fn new_identity() -> Result<ManagedIdentity, StoreError> {
 ///
 /// The caller must reuse the whole event after an uncertain response.
 pub(crate) fn register_instance(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     identity: &ManagedIdentity,
     name: &str,
     event: &LifecycleEvent,
@@ -80,7 +82,7 @@ pub(crate) fn register_instance(
 /// Hand the domain something that happened to a node. Each distinct happening needs a
 /// distinct event; reuse the whole event only when retrying an uncertain commit.
 pub fn move_instance(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     agent_id: &AgentId,
     happened: NodeEvent,
     event: &LifecycleEvent,
@@ -90,8 +92,8 @@ pub fn move_instance(
 
 /// Records `happened` when it would move the node, and says whether it did. An event the domain
 /// refuses (a closed node) or that changes nothing is dropped without a write.
-pub fn node_event(domain: &DomainRuntime, agent_id: &AgentId, happened: NodeEvent) -> Result<bool, StoreError> {
-    let state = domain.state().map_err(StoreError::Storage)?;
+pub fn node_event(domain: &dyn Runtime, agent_id: &AgentId, happened: NodeEvent) -> Result<bool, StoreError> {
+    let state = domain.state();
     if !matches!(state.node_next(agent_id, &happened), Ok(Some(_))) {
         return Ok(false);
     }
@@ -101,8 +103,8 @@ pub fn node_event(domain: &DomainRuntime, agent_id: &AgentId, happened: NodeEven
 
 /// Keeps what a node said as a turn of it ended: what the user reads if that turn ends with
 /// nothing for them.
-pub(crate) fn record_last_words(domain: &DomainRuntime, agent_id: &AgentId, text: &str) -> Result<bool, StoreError> {
-    let state = domain.state().map_err(StoreError::Storage)?;
+pub(crate) fn record_last_words(domain: &dyn Runtime, agent_id: &AgentId, text: &str) -> Result<bool, StoreError> {
+    let state = domain.state();
     if text.trim().is_empty() || state.last_words.get(agent_id).is_some_and(|kept| kept == text.trim()) {
         return Ok(false);
     }
@@ -112,7 +114,7 @@ pub(crate) fn record_last_words(domain: &DomainRuntime, agent_id: &AgentId, text
 
 /// The domain judges a move on the state it commits against, so the move is never refused
 /// as stale because another command committed since `state` was read.
-fn submit_on_current(domain: &DomainRuntime, kind: &str, event_id: &str, state: &DomainState, command: Command) -> Result<bool, StoreError> {
+fn submit_on_current(domain: &dyn Runtime, kind: &str, event_id: &str, state: &DomainState, command: Command) -> Result<bool, StoreError> {
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
@@ -130,7 +132,7 @@ fn command_id(kind: &str, event_id: &str) -> CommandId {
 }
 
 fn submit(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     kind: &str,
     event: &LifecycleEvent,
     command: Command,

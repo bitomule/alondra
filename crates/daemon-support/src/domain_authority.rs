@@ -1,31 +1,10 @@
 //! Private capabilities for domain writers. Public session/run identifiers are not credentials.
 //! Tokens stay in the child environment; only hashes are retained by this registry.
 use ring::rand::{SecureRandom, SystemRandom};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Principal {
-    Agent {
-        session_id: String,
-        task_binding: Option<String>,
-        provider_agent_id: Option<String>,
-    },
-    Orchestrator {
-        generation: u64,
-        execution_id: String,
-    },
-}
-
-/// Deliberately has no Debug/Serialize implementation: never put bearer credentials in logs.
-pub struct Capability(String);
-impl Capability {
-    pub fn expose_for_child_environment(&self) -> &str {
-        &self.0
-    }
-}
+pub use alondra_foundation::principal::{Capability, Principal};
 
 /// How many capabilities the registry holds at most. Live nodes hold one each, so normal use stays
 /// far below it; reaching it means credentials of ended hosts were not retired.
@@ -99,7 +78,7 @@ impl Authority {
         let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
         let digest = Sha256::digest(token.as_bytes()).into();
         self.entries.insert(digest, principal);
-        Ok(Capability(token))
+        Ok(Capability::issued(token))
     }
 
     /// The caller additionally checks live assignment/generation under its command lock.
@@ -124,7 +103,7 @@ impl Authority {
 
     /// Drops a capability this registry issued and never handed out.
     pub fn forget(&mut self, capability: &Capability) {
-        let digest: [u8; 32] = Sha256::digest(capability.0.as_bytes()).into();
+        let digest: [u8; 32] = Sha256::digest(capability.expose_for_child_environment().as_bytes()).into();
         self.entries.remove(&digest);
     }
 

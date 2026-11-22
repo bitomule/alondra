@@ -12,15 +12,9 @@ pub trait GateOf {
     fn gate(&self) -> Gate<'_>;
 }
 
-impl<R: Runtime> GateOf for R {
+impl<R: Runtime + ?Sized> GateOf for R {
     fn gate(&self) -> Gate<'_> {
-        gate_of(self)
-    }
-}
-
-impl GateOf for dyn Runtime {
-    fn gate(&self) -> Gate<'_> {
-        gate_of(self)
+        gate_of(self.as_runtime())
     }
 }
 

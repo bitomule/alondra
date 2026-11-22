@@ -1,3 +1,5 @@
+use crate::domain_runtime::DomainRuntime;
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use alondra_store_sqlite::AsSqlite as _;
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use crate::sdk_owner::SdkOwners as _;
@@ -26,7 +28,7 @@ fn reopening_codex_with_a_retained_mapping_but_a_missing_rollout_starts_a_clean_
     });
     slice.run(&user(), "reopen-codex-rollout", Command::ReopenTask { task_id: TASK.into() });
     let input = slice.domain.state().unwrap().pending_reopening(&TASK.into()).unwrap().to_owned();
-    let positive = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Codex,
+    let positive = prepare_reopening(&*slice.domain, &slice.backend, &TASK.into(), Provider::Codex,
         &AccountId::default_account(), &slice.worktree, input.clone(), true).unwrap();
     assert!(positive.recovery.is_some(), "the managed identity, mapping, directory and native rollout originally prove recovery");
     let metadata = slice._home.join(".codex/sessions/fake-thread-00000000-0000-4000-8000-000000000001.json");
@@ -36,12 +38,12 @@ fn reopening_codex_with_a_retained_mapping_but_a_missing_rollout_starts_a_clean_
     std::fs::write(slice._home.join("codex-native.account.json"), serde_json::to_vec(&serde_json::json!({
         "missingRollout": true, "freshThreadId": "00000000-0000-4000-8000-000000000002",
     })).unwrap()).unwrap();
-    let reopening = prepare_reopening(&slice.domain, &slice.backend, &TASK.into(), Provider::Codex,
+    let reopening = prepare_reopening(&*slice.domain, &slice.backend, &TASK.into(), Provider::Codex,
         &AccountId::default_account(), &slice.worktree, input, true).unwrap();
     assert!(reopening.recovery.is_none(), "a mapping alone cannot prove the missing native thread");
     let mission = "Publish the release notes with the original mission after the native rollout disappeared.";
     let options = LaunchOptions { provider: Provider::Codex, model: Some("fixture-model".into()), effort: Some("high".into()), selection: Some(selection()), ..LaunchOptions::default() };
-    let mut replacement = start_bound(Arc::clone(&slice.domain), &slice.backend, Launch {
+    let mut replacement = start_bound(slice.domain.clone(), &slice.backend, Launch {
         task: TASK.into(), name: "Reopened Codex release notes".into(), directory: slice.worktree.display().to_string(),
         prompt: mission.into(), plugin: slice.plugin.clone(), options, model: None, account: AccountId::default_account(),
     }, provider_capabilities(Provider::Codex), None, Some(reopening)).unwrap();
@@ -91,7 +93,7 @@ fn a_codex_node_uses_the_real_owner_store_and_commits_final_public_context_befor
         assert_eq!(turns[index]["params"]["clientUserMessageId"], metadata["message_id"]);
         assert_eq!(journal.iter().filter(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TurnStarted { input: seen, .. } if seen == input)).count(), 1);
     }
-    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty(), "the native turn acceptance consumed both registered inputs");
+    assert!(Slice::lifecycle(&*slice.domain).pending_inputs().is_empty(), "the native turn acceptance consumed both registered inputs");
     let public: Vec<(String, String)> = observer.prepare("SELECT native_id,content FROM task_context_items WHERE task_id=?1 AND source='assistant'").unwrap()
         .query_map([TASK], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect();
     assert_eq!(public.len(), turns.len());
@@ -106,14 +108,14 @@ fn a_codex_app_server_survives_owner_and_log_reader_loss_and_adopts_without_reof
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let group = driver.worker.host_group().unwrap();
     let processes = alondra_process_group::members(group).unwrap();
     assert!(processes.len() >= 2, "the real persistent host and fake native app-server must both be running");
     drop(driver);
     assert!(processes.iter().all(|process| alondra_process_group::alive(process).unwrap()), "losing the owner and its stdout/stderr reader must not terminate native work");
     let restarted = slice.restart();
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(adopted.worker.stopper().and_then(|stopper| stopper.process_group()), Some(group));
     assert_eq!(owner_generation(&slice.database), 2);
     assert!(processes.iter().all(|process| alondra_process_group::alive(process).unwrap()));
@@ -135,7 +137,7 @@ fn an_actual_codex_cli_runs_through_the_real_owner_store_without_real_credential
     assert_eq!(state.tasks[&TaskId::from(TASK)].provider, Provider::Codex);
     assert!(!state.tasks[&TaskId::from(TASK)].over());
     assert_eq!(state.tasks[&TaskId::from(TASK)].selection.as_ref(), Some(&selected));
-    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty());
+    assert!(Slice::lifecycle(&*slice.domain).pending_inputs().is_empty());
     let public: Vec<String> = slice.observer().prepare("SELECT content FROM task_context_items WHERE task_id=?1 AND source='assistant' ORDER BY id").unwrap()
         .query_map([TASK], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
     assert_eq!(public, ["Native Codex owner/store proof completed.", "Native Codex owner/store proof completed."]);
@@ -154,13 +156,13 @@ fn an_accepted_native_request_stays_pending_until_its_exact_native_user_item_is_
     let mut driver = launch(&slice);
     while slice.observations_with("alondra/inputAccepted") == 0 { driver.observe_written().unwrap(); }
     let state = slice.domain.state().unwrap();
-    assert_eq!(Slice::lifecycle(&slice.domain).pending_inputs().len(), 1);
+    assert_eq!(Slice::lifecycle(&*slice.domain).pending_inputs().len(), 1);
     assert!(!state.lifecycle_journal[&TaskId::from(TASK)].iter().any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TurnStarted { .. } | alondra_domain_rules::LifecycleRecord::InputConsumed { .. })));
     assert_eq!(transcript(&trace).iter().filter(|message| message["method"] == "turn/start").count(), 1);
     slice.run(&system(), "release-native-user-item", Command::ReadMcpStatus { task_id: TASK.into() });
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
-    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty());
+    assert!(Slice::lifecycle(&*slice.domain).pending_inputs().is_empty());
     assert_eq!(transcript(&trace).iter().filter(|message| message["method"] == "turn/start").count(), 1 + usize::from(alondra_domain::EMPTY_TURN_WAKES), "the delayed consumption did not reoffer the original; only its canonical wakes follow");
     driver.stop().unwrap();
 }
@@ -193,7 +195,7 @@ fn transition_target(slice:&Slice,model:&str,effort:&str)->(alondra_core::model_
     (intent,target,state.task_selection_stamp(&task).unwrap())
 }
 fn native_transition_request(slice:&Slice,intent:alondra_core::model_selection::TaskSelection,target:alondra_core::model_selection::ModelSelection,stamp:&str)->serde_json::Value{
-    crate::provider_transition::request(&slice.domain,&user(),&TASK.into(),AccountKey::new(Provider::Codex,AccountId::default_account()),target,intent,"User selected this native model",stamp,||Ok(())).unwrap()
+    crate::provider_transition::request(&*slice.domain,&user(),&TASK.into(),AccountKey::new(Provider::Codex,AccountId::default_account()),target,intent,"User selected this native model",stamp,||Ok(())).unwrap()
 }
 #[test]
 fn codex_transition_rechecks_authority_and_stale_selection_without_persisting_a_partial_intent(){
@@ -201,8 +203,8 @@ fn codex_transition_rechecks_authority_and_stale_selection_without_persisting_a_
     let mut driver=launch(&slice);slice.settle(&mut driver);
     let(intent,target,stamp)=transition_target(&slice,"fixture-second","high");
     let before=slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].selection.clone();
-    let error=crate::provider_transition::request(&slice.domain,&user(),&TASK.into(),AccountKey::new(Provider::Codex,AccountId::default_account()),target.clone(),intent.clone(),"User selected native model",&stamp,||Err(DomainError::new("forbidden","Device authorization was revoked"))).unwrap_err();assert_eq!(error.code,"forbidden");
-    let error=crate::provider_transition::request(&slice.domain,&user(),&TASK.into(),AccountKey::new(Provider::Codex,AccountId::default_account()),target,intent,"User selected native model","stale",||Ok(())).unwrap_err();assert_eq!(error.code,"stale_selection");
+    let error=crate::provider_transition::request(&*slice.domain,&user(),&TASK.into(),AccountKey::new(Provider::Codex,AccountId::default_account()),target.clone(),intent.clone(),"User selected native model",&stamp,||Err(DomainError::new("forbidden","Device authorization was revoked"))).unwrap_err();assert_eq!(error.code,"forbidden");
+    let error=crate::provider_transition::request(&*slice.domain,&user(),&TASK.into(),AccountKey::new(Provider::Codex,AccountId::default_account()),target,intent,"User selected native model","stale",||Ok(())).unwrap_err();assert_eq!(error.code,"stale_selection");
     let state=slice.domain.state().unwrap();assert_eq!(state.tasks[&TaskId::from(TASK)].selection,before);assert!(state.tasks[&TaskId::from(TASK)].pending_selection.is_none());
     assert_eq!(slice.observer().query_row("SELECT count(*) FROM provider_transition_steps",[],|row|row.get::<_,i64>(0)).unwrap(),0);
     driver.stop().unwrap();
@@ -219,15 +221,15 @@ async fn a_positive_native_model_control_rejection_is_aborted_and_can_be_retried
     let(intent,target,stamp)=transition_target(&slice,"fixture-second","high");native_transition_request(&slice,intent,target.clone(),&stamp);
     std::fs::write(&fixture,br#"{"models":{"data":[{"id":"fixture-model","model":"fixture-model","displayName":"Fixture","isDefault":true,"hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"high","description":"High"}],"defaultReasoningEffort":"high","inputModalities":["text"]}],"nextCursor":null}}"#).unwrap();
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));slice.domain.add_sdk_owner(Owner::spawn(driver));
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),Phase::Draining);
+    assert_eq!(crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&TASK.into()).await.unwrap(),Phase::Draining);
     while !slice.control_rows().iter().any(|(kind,_,status)|kind=="set_model" && status=="rejected"){changed.changed().await.unwrap();}
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),Phase::Aborted);
+    assert_eq!(crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&TASK.into()).await.unwrap(),Phase::Aborted);
     let state=slice.domain.state().unwrap();let task=&state.tasks[&TaskId::from(TASK)];assert_eq!(task.selection.as_ref().unwrap().requested,Some(target.model.clone()));assert_eq!(task.selection.as_ref().unwrap().effective,selection().effective);assert!(task.pending_selection.is_none());assert_eq!(task.account_key(),AccountKey::native(Provider::Codex));
-    assert!(state.interactions.values().any(|notice|notice.body=="native_model_control_rejected" && !notice.blocking));assert!(!crate::provider_transition::holds_execution(&slice.domain,&TASK.into()));
+    assert!(state.interactions.values().any(|notice|notice.body=="native_model_control_rejected" && !notice.blocking));assert!(!crate::provider_transition::holds_execution(&*slice.domain,&TASK.into()));
     std::fs::write(&fixture,b"{}").unwrap();let(intent,target,stamp)=transition_target(&slice,"fixture-second","high");native_transition_request(&slice,intent,target.clone(),&stamp);
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),Phase::Draining);
+    assert_eq!(crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&TASK.into()).await.unwrap(),Phase::Draining);
     while !slice.control_rows().iter().any(|(kind,_,status)|kind=="set_model" && status=="handed"){changed.changed().await.unwrap();}
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),Phase::Done);
+    assert_eq!(crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&TASK.into()).await.unwrap(),Phase::Done);
     let task=slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();assert_eq!(task.agent_id,Some(instance));assert_eq!(task.selection.as_ref().unwrap().effective,Some(target));assert!(task.pending_selection.is_none());
     assert_eq!(transcript(&trace).iter().filter(|message|message["method"]=="initialize").count(),1);slice.domain.stop_sdk_owners();
 }
@@ -238,16 +240,16 @@ async fn codex_transition_model_is_pending_until_the_exact_native_configuration_
     let backend_path=slice._home.join("codex-backend.json");let mut backend:SdkBackend=serde_json::from_slice(&std::fs::read(&backend_path).unwrap()).unwrap();backend.native_environment.insert("ALONDRA_FAKE_MODELS".into(),"fixture-model,fixture-second".into());std::fs::write(backend_path,serde_json::to_vec(&backend).unwrap()).unwrap();
     slice.domain.enable_sdk(slice.backend.clone());let mut driver=launch(&slice);slice.settle(&mut driver);let instance=driver.agent.clone();
     let(intent,target,stamp)=transition_target(&slice,"fixture-second","high");native_transition_request(&slice,intent,target.clone(),&stamp);
-    slice.run(&system(),"queued-during-model-change",Command::TellNode{task_id:TASK.into(),text:"Use the configured model for this next input".into(), from_user: false, answers: None});let queued=Slice::lifecycle(&slice.domain).pending_inputs()[0].as_str().to_owned();
+    slice.run(&system(),"queued-during-model-change",Command::TellNode{task_id:TASK.into(),text:"Use the configured model for this next input".into(), from_user: false, answers: None});let queued=Slice::lifecycle(&*slice.domain).pending_inputs()[0].as_str().to_owned();
     let (published,mut after_feed)=tokio::sync::watch::channel(false);let weak=Arc::downgrade(&slice.domain);let expected_input=queued.clone();
-    slice.on_acknowledge(move||{if let Some(domain)=weak.upgrade() && !Slice::lifecycle(&domain).is_pending(&alondra_foundation::InputId::new(&expected_input).unwrap()){published.send_replace(true);}});
+    slice.on_acknowledge(move||{if let Some(domain)=weak.upgrade() && !Slice::lifecycle(&*domain).is_pending(&alondra_foundation::InputId::new(&expected_input).unwrap()){published.send_replace(true);}});
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|value|*value+=1));slice.domain.add_sdk_owner(Owner::spawn(driver));
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),crate::domain_store::provider_transition::Phase::Draining);
+    assert_eq!(crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&TASK.into()).await.unwrap(),crate::domain_store::provider_transition::Phase::Draining);
     assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].selection.as_ref().unwrap().effective,selection().effective);
     while !slice.control_rows().iter().any(|(kind,_,status)|kind=="set_model" && status=="handed"){changed.changed().await.unwrap();}
-    assert!(Slice::lifecycle(&slice.domain).is_pending(&alondra_foundation::InputId::new(&queued).unwrap()));
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),crate::domain_store::provider_transition::Phase::Done);
-    while Slice::lifecycle(&slice.domain).is_pending(&alondra_foundation::InputId::new(&queued).unwrap()){changed.changed().await.unwrap();}
+    assert!(Slice::lifecycle(&*slice.domain).is_pending(&alondra_foundation::InputId::new(&queued).unwrap()));
+    assert_eq!(crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&TASK.into()).await.unwrap(),crate::domain_store::provider_transition::Phase::Done);
+    while Slice::lifecycle(&*slice.domain).is_pending(&alondra_foundation::InputId::new(&queued).unwrap()){changed.changed().await.unwrap();}
     while !*after_feed.borrow(){after_feed.changed().await.unwrap();}
     assert_eq!(slice.domain.live().mods.session(&instance.0).unwrap().model.as_deref(),Some("fixture-second"),"the owner feed publishes the native accepted model before acknowledging its consumed input");
     let task=slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();assert_eq!(task.agent_id,Some(instance.clone()));assert!(task.pending_selection.is_none());assert_eq!(task.selection.as_ref().unwrap().effective,Some(target.clone()));
@@ -260,10 +262,10 @@ fn codex_active_account_provider_and_unverified_effort_changes_have_no_native_or
     let slice=Slice::new();let trace=configured(&slice,"complete");slice.domain.enable_sdk(slice.backend.clone());let mut driver=launch(&slice);slice.settle(&mut driver);
     let before=slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].selection.clone();
     let(intent,target,stamp)=transition_target(&slice,"fixture-model","low");
-    let error=crate::provider_transition::request(&slice.domain,&user(),&TASK.into(),AccountKey::new(Provider::Codex,AccountId::default_account()),target,intent,"Change effort",&stamp,||Ok(())).unwrap_err();assert_eq!(error.code,"unsupported_live_effort");
+    let error=crate::provider_transition::request(&*slice.domain,&user(),&TASK.into(),AccountKey::new(Provider::Codex,AccountId::default_account()),target,intent,"Change effort",&stamp,||Ok(())).unwrap_err();assert_eq!(error.code,"unsupported_live_effort");
     let(intent,target,stamp)=transition_target(&slice,"fixture-second","high");
     for account in [AccountKey::new(Provider::Codex,AccountId::parse("other").unwrap()),AccountKey::new(Provider::Claude,AccountId::default_account())]{
-        let error=crate::provider_transition::request(&slice.domain,&user(),&TASK.into(),account,target.clone(),intent.clone(),"Change account",&stamp,||Ok(())).unwrap_err();assert_eq!(error.code,"immutable_account");
+        let error=crate::provider_transition::request(&*slice.domain,&user(),&TASK.into(),account,target.clone(),intent.clone(),"Change account",&stamp,||Ok(())).unwrap_err();assert_eq!(error.code,"immutable_account");
     }
     let state=slice.domain.state().unwrap();assert_eq!(state.tasks[&TaskId::from(TASK)].selection,before);assert!(state.tasks[&TaskId::from(TASK)].pending_selection.is_none());
     assert_eq!(slice.observer().query_row("SELECT count(*) FROM provider_transition_steps",[],|row|row.get::<_,i64>(0)).unwrap(),0);assert_eq!(transcript(&trace).iter().filter(|message|message["method"]=="initialize").count(),1);driver.stop().unwrap();
@@ -288,7 +290,7 @@ fn codex_admission_rechecks_billing_and_credential_generation_after_selection(){
     std::thread::scope(|scope|{
         let runner=scope.spawn(||{
             let effective=selected.effective.clone().unwrap();
-            start(Arc::clone(&slice.domain),&slice.backend,Launch{task:TASK.into(),name:"Billing race".into(),directory:slice.worktree.display().to_string(),prompt:"This task must not start against an unauthorized paid account".into(),plugin:slice.plugin.clone(),options:LaunchOptions{provider:Provider::Codex,model:Some(effective.model.model),effort:effective.reasoning_effort,selection:Some(selected),disallowed_tools:vec![]},model:None,account:AccountId::default_account()})
+            start(slice.domain.clone(),&slice.backend,Launch{task:TASK.into(),name:"Billing race".into(),directory:slice.worktree.display().to_string(),prompt:"This task must not start against an unauthorized paid account".into(),plugin:slice.plugin.clone(),options:LaunchOptions{provider:Provider::Codex,model:Some(effective.model.model),effort:effective.reasoning_effort,selection:Some(selected),disallowed_tools:vec![]},model:None,account:AccountId::default_account()})
         });
         let mut writer=std::fs::OpenOptions::new().write(true).open(&skill).unwrap();
         let state=slice.domain.state().unwrap();let mut accounts=state.accounts.clone();let account=accounts.iter_mut().find(|account|account.provider==Provider::Codex && account.id.is_default()).unwrap();account.billing=alondra_core::accounts::AccountBilling::PayPerUse;account.sign_ins+=1;
@@ -296,7 +298,7 @@ fn codex_admission_rechecks_billing_and_credential_generation_after_selection(){
         writer.write_all(&mission).unwrap();drop(writer);
         match runner.join().unwrap(){Err(error)=>assert!(error.to_string().contains("paid per use") || error.to_string().contains("credentials changed"),"{error}"),Ok(mut driver)=>{driver.stop().unwrap();panic!("a stale subscription decision started against a changed paid account")}}
     });
-    assert!(!trace.exists(),"no native process or inference was admitted");assert!(Slice::lifecycle(&slice.domain).execution().is_none());
+    assert!(!trace.exists(),"no native process or inference was admitted");assert!(Slice::lifecycle(&*slice.domain).execution().is_none());
 }
 
 #[tokio::test]
@@ -306,7 +308,7 @@ async fn codex_transition_cancellation_before_source_drain_aborts_without_a_new_
     let mut driver=launch(&slice);slice.settle(&mut driver);
     let(intent,target,stamp)=transition_target(&slice,"fixture-second","high");native_transition_request(&slice,intent,target,&stamp);
     slice.run(&user(),"cancel-during-selection",Command::CancelTask{task_id:TASK.into(), reason: None});
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),Phase::Aborted);
+    assert_eq!(crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&TASK.into()).await.unwrap(),Phase::Aborted);
     assert_eq!(transcript(&trace).iter().filter(|message|message["method"]=="initialize").count(),1);
     assert!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].pending_selection.is_none());driver.stop().unwrap();
 }
@@ -319,7 +321,7 @@ fn replacing_a_pending_native_plan_keeps_the_owner_and_its_approved_decision_acr
     let mut driver = launch(&slice);
     slice.until(&mut driver, |slice| slice.observations_with("turn/completed") == 1);
     let first = Slice::open_decision_cards(&slice.domain).remove(0);
-    let execution = Slice::lifecycle(&slice.domain).execution().cloned().unwrap();
+    let execution = Slice::lifecycle(&*slice.domain).execution().cloned().unwrap();
     tell(&slice, &driver, "Revise the plan before I approve it");
     slice.until(&mut driver, |slice| slice.observations_with("turn/completed") == 2);
     let open = Slice::open_decision_cards(&slice.domain);
@@ -328,15 +330,15 @@ fn replacing_a_pending_native_plan_keeps_the_owner_and_its_approved_decision_acr
     assert_ne!(revised, &first);
     let state = slice.domain.state().unwrap();
     assert!(state.interactions[&InteractionId::from(first.as_str())].withdrawn);
-    assert_eq!(Slice::lifecycle(&slice.domain).execution(), Some(&execution));
+    assert_eq!(Slice::lifecycle(&*slice.domain).execution(), Some(&execution));
     assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none());
     slice.answer(revised, Hold::APPROVE, None).unwrap();
     drop(driver);
     let restarted = slice.restart();
-    let mut adopted = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     slice.rest(&mut adopted);
     let state = restarted.state().unwrap();
-    let lifecycle = Slice::lifecycle(&restarted);
+    let lifecycle = Slice::lifecycle(&*restarted);
     assert_eq!(lifecycle.execution(), Some(&execution));
     assert!(Slice::open_decision_cards(&restarted).is_empty());
     assert!(matches!(state.interactions[&InteractionId::from(revised.as_str())].payload, InteractionPayload::Question { answer: Some(_), .. }));
@@ -398,7 +400,7 @@ fn a_legacy_codex_host_finishes_native_work_and_an_approved_plan_before_renewing
     let mut adopted = slice.take_over(&restarted);
     let revise: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Revise the plan before I approve it"})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&restarted, &slice._home, &user(), "Alice", adopted.agent(), revise, true))
+        .block_on(crate::domain_messages::deliver(&*restarted, &slice._home, &user(), "Alice", adopted.agent(), revise, true))
         .unwrap();
     while slice.observations_with("turn/completed") < 2 {
         adopted.step(&|| false).unwrap();
@@ -429,7 +431,7 @@ fn a_legacy_codex_host_finishes_native_work_and_an_approved_plan_before_renewing
     assert!(matches!(state.interactions[&newest].payload, InteractionPayload::Question { answer: None, .. }));
     answer(&restarted, &newest, Hold::APPROVE);
     while slice.observations_with("alondra/planContinuationAccepted") == 0 { adopted.step(&|| false).unwrap(); }
-    while Slice::lifecycle(&restarted).activity() != ActivityView::Working { adopted.step(&|| false).unwrap(); }
+    while Slice::lifecycle(&*restarted).activity() != ActivityView::Working { adopted.step(&|| false).unwrap(); }
     let before_reads = status_reads();
     let state = restarted.state().unwrap();
     restarted.execute_as_system(envelope(&state, "legacy-status-during-implementation", Command::ReadMcpStatus { task_id: TASK.into() })).unwrap();
@@ -442,7 +444,7 @@ fn a_legacy_codex_host_finishes_native_work_and_an_approved_plan_before_renewing
     std::fs::write(&sidecar, serde_json::to_vec(&completed).unwrap()).unwrap();
     std::fs::write(&implementation_release, b"done\n").unwrap();
     while !adopted.moves_to_this_release { adopted.step(&|| false).unwrap(); }
-    assert!(Slice::lifecycle(&restarted).turn().is_none());
+    assert!(Slice::lifecycle(&*restarted).turn().is_none());
     assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
     let controls = std::mem::take(&mut adopted.controls);
     let mut renewed = adopted.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
@@ -456,7 +458,7 @@ fn a_legacy_codex_host_finishes_native_work_and_an_approved_plan_before_renewing
     assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
     let next: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Report what the implementation changed"})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&restarted, &slice._home, &user(), "Alice", renewed.agent(), next, true))
+        .block_on(crate::domain_messages::deliver(&*restarted, &slice._home, &user(), "Alice", renewed.agent(), next, true))
         .unwrap();
     slice.rest(&mut renewed);
     assert_eq!(Slice::decision_cards(&restarted).len(), 2, "the renewed host presents no plan again");
@@ -484,7 +486,7 @@ fn a_codex_plan_approved_after_its_turn_ended_commits_the_new_turn_under_the_sam
     }).unwrap();
     assert!(state.interactions[&InteractionId::from(card.as_str())].card.content.as_ref().is_some_and(|content| serde_json::to_value(&content.kind).unwrap() == serde_json::json!("plan")));
     let owner = driver.agent().clone();
-    let original_execution = Slice::lifecycle(&slice.domain).execution().cloned().unwrap();
+    let original_execution = Slice::lifecycle(&*slice.domain).execution().cloned().unwrap();
     let before = transcript(&trace);
     let first_turns: Vec<_> = before.iter().filter(|message| message["method"] == "turn/start").collect();
     assert_eq!(first_turns.len(), 1, "the original plan cannot start its implementation before approval");
@@ -519,7 +521,7 @@ fn a_codex_plan_approved_after_its_turn_ended_commits_the_new_turn_under_the_sam
     let continued = cursor_of("continuation_consumed", "continuation", continuation.as_str());
     assert_eq!((started, settled, continued), (ended + 1, ended + 2, ended + 3),
         "immutable committed boundaries prove exactly three native moves: new turn, canonical settlement, canonical continuation");
-    let lifecycle = Slice::lifecycle(&slice.domain);
+    let lifecycle = Slice::lifecycle(&*slice.domain);
     assert_eq!(lifecycle.activity(), ActivityView::Resting, "no decision continuation may keep the owner waiting after the implementation turn ended");
     assert_eq!(lifecycle.execution(), Some(&original_execution));
     let native = transcript(&trace);
@@ -528,7 +530,7 @@ fn a_codex_plan_approved_after_its_turn_ended_commits_the_new_turn_under_the_sam
     assert!(turns.iter().all(|message| message["params"]["threadId"] == original_thread));
     assert_eq!(turns.iter().filter(|message| message["params"]["input"][0]["text"].as_str().is_some_and(|text| text.starts_with("Implement the plan the user just approved."))).count(), 1);
     assert_eq!(driver.agent(), &owner);
-    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty());
+    assert!(Slice::lifecycle(&*slice.domain).pending_inputs().is_empty());
     assert!(!state.tasks[&TaskId::from(TASK)].over());
     driver.stop().unwrap();
 }
@@ -539,12 +541,12 @@ fn requesting_plan_mode_keeps_one_durable_next_turn_input_across_native_replays(
     let mut driver=launch(&slice);slice.settle(&mut driver);
     let capability=slice.domain.bind_agent(&driver.agent.0).unwrap();
     let bearer=capability.expose_for_child_environment();
-    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty());
+    assert!(Slice::lifecycle(&*slice.domain).pending_inputs().is_empty());
     let first_result=slice.domain.request_plan_mode(bearer,&TASK.into(),"ab12").unwrap();
-    let first:Vec<_>=Slice::lifecycle(&slice.domain).pending_inputs().iter().map(|input|input.as_str().to_owned()).collect();assert_eq!(first.len(),1);
+    let first:Vec<_>=Slice::lifecycle(&*slice.domain).pending_inputs().iter().map(|input|input.as_str().to_owned()).collect();assert_eq!(first.len(),1);
     assert_eq!(slice.domain.request_plan_mode(bearer,&TASK.into(),"ab12").unwrap(),first_result,"a replay keeps its exact committed result");
     slice.domain.request_plan_mode(bearer,&TASK.into(),"ab13").unwrap();
-    let again:Vec<_>=Slice::lifecycle(&slice.domain).pending_inputs().iter().map(|input|input.as_str().to_owned()).collect();assert_eq!(again,first,"retry and already-active plan mode do not duplicate its continuation");
+    let again:Vec<_>=Slice::lifecycle(&*slice.domain).pending_inputs().iter().map(|input|input.as_str().to_owned()).collect();assert_eq!(again,first,"retry and already-active plan mode do not duplicate its continuation");
     let body:String=slice.observer().query_row("SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2",rusqlite::params![TASK,first[0]],|row|row.get(0)).unwrap();assert!(body.contains("Alondra has enabled plan mode"));
     assert!(slice.domain.request_plan_mode(bearer,&"another-task".into(),"ab14").is_err());driver.stop().unwrap();
 }
@@ -552,15 +554,15 @@ fn requesting_plan_mode_keeps_one_durable_next_turn_input_across_native_replays(
 #[test]
 fn codex_managed_child_keeps_work_after_parent_turn_and_queues_one_durable_continuation(){
     let slice=Slice::new();let trace=configured(&slice,"child");let mut driver=launch(&slice);
-    while Slice::lifecycle(&slice.domain).turn().is_some() || Slice::lifecycle(&slice.domain).activity()!=alondra_domain::ActivityView::OwnWork{advance(&mut driver)}
-    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty());assert!(Slice::lifecycle(&slice.domain).cards().is_empty(),"a child plan cannot open the task's global plan approval");assert_eq!(transcript(&trace).iter().filter(|message|message["method"]=="turn/start").count(),1);
+    while Slice::lifecycle(&*slice.domain).turn().is_some() || Slice::lifecycle(&*slice.domain).activity()!=alondra_domain::ActivityView::OwnWork{advance(&mut driver)}
+    assert!(Slice::lifecycle(&*slice.domain).pending_inputs().is_empty());assert!(Slice::lifecycle(&*slice.domain).cards().is_empty(),"a child plan cannot open the task's global plan approval");assert_eq!(transcript(&trace).iter().filter(|message|message["method"]=="turn/start").count(),1);
     slice.run(&system(),"complete-managed-child",Command::ReadMcpStatus{task_id:TASK.into()});
     while driver.pending_controls()>0 || driver.pending_permits()>0 || driver.waits_for_host(){driver.step(&||false).unwrap();}
     let state=slice.domain.state().unwrap();let journal=&state.lifecycle_journal[&TaskId::from(TASK)];
     let wakes:Vec<_>=journal.iter().filter_map(|record|match record{LifecycleRecord::Told{input,text:Some(text),..} if text.starts_with("Managed native work finished.")=>Some(input),_=>None}).collect();assert_eq!(wakes.len(),1);
     assert_eq!(journal.iter().filter(|record|matches!(record,LifecycleRecord::TurnStarted{input,..} if input==wakes[0])).count(),1);
     assert!(journal.iter().any(|record|matches!(record,LifecycleRecord::WorkStarted{work,..} if work.contains("spawn-child"))));assert!(journal.iter().any(|record|matches!(record,LifecycleRecord::WorkContinued{..})));
-    assert_ne!(Slice::lifecycle(&slice.domain).activity(),alondra_domain::ActivityView::OwnWork);driver.stop().unwrap();
+    assert_ne!(Slice::lifecycle(&*slice.domain).activity(),alondra_domain::ActivityView::OwnWork);driver.stop().unwrap();
 }
 
 // Codex ends a turn with a Code Mode script still waiting on a tool and advances the script only in
@@ -573,7 +575,7 @@ fn a_turn_that_ends_while_its_script_waits_on_a_tool_leaves_the_node_resting(){
     let state=slice.domain.state().unwrap();let journal=&state.lifecycle_journal[&TaskId::from(TASK)];
     let paused=journal.iter().find_map(|record|match record{LifecycleRecord::WorkStarted{work,..} if work.contains("exec-paused")=>Some(work.clone()),_=>None}).expect("the script's tool started as work");
     assert!(journal.iter().any(|record|matches!(record,LifecycleRecord::WorkEnded{work,..} if *work==paused)),"the tool still open at the end of its turn ended with it");
-    assert_ne!(Slice::lifecycle(&slice.domain).activity(),alondra_domain::ActivityView::OwnWork);
+    assert_ne!(Slice::lifecycle(&*slice.domain).activity(),alondra_domain::ActivityView::OwnWork);
     driver.stop().unwrap();
 }
 
@@ -590,17 +592,17 @@ fn repeated_same_email_reauthentication_keeps_the_same_native_session_but_identi
     // Catalog belongs to this native account, independently of its authentication counter.
     let state=slice.domain.state().unwrap();let catalog=state.model_catalogs.iter().find(|catalog|catalog.account.provider==Provider::Codex).unwrap().clone();
     slice.run(&system(),"native-first-catalog",Command::RecordModelCatalog{catalog});
-    let mut driver=launch(&slice);slice.settle(&mut driver);let original=driver.worker.host_group();let original_execution=Slice::lifecycle(&slice.domain).execution().unwrap().clone();
+    let mut driver=launch(&slice);slice.settle(&mut driver);let original=driver.worker.host_group();let original_execution=Slice::lifecycle(&*slice.domain).execution().unwrap().clone();
     for round in [1,2]{
         publish("first@example.test",false,&format!("native-logout-{round}"));publish("FIRST@example.test",true,&format!("native-reauth-{round}"));
-        instruct(&slice.domain,&format!("Continue the same cached session after reauthentication {round}"));slice.settle(&mut driver);
-        assert_eq!(driver.worker.host_group(),original);assert_eq!(Slice::lifecycle(&slice.domain).execution(),Some(&original_execution));
+        instruct(&*slice.domain,&format!("Continue the same cached session after reauthentication {round}"));slice.settle(&mut driver);
+        assert_eq!(driver.worker.host_group(),original);assert_eq!(Slice::lifecycle(&*slice.domain).execution(),Some(&original_execution));
     }
     let before=transcript(&trace).iter().filter(|request|request["method"]=="turn/start").count();
-    publish("replacement@example.test",true,"native-replaced-identity");instruct(&slice.domain,"This input must remain queued for explicit user recovery");
+    publish("replacement@example.test",true,"native-replaced-identity");instruct(&*slice.domain,"This input must remain queued for explicit user recovery");
     let error=driver.step_once(&||false,tokio::time::Instant::now()).unwrap_err();assert!(error.to_string().contains("different known identity"),"{error}");
     assert_eq!(transcript(&trace).iter().filter(|request|request["method"]=="turn/start").count(),before);
-    assert!(!Slice::lifecycle(&slice.domain).pending_inputs().is_empty());assert_eq!(driver.worker.host_group(),original);
+    assert!(!Slice::lifecycle(&*slice.domain).pending_inputs().is_empty());assert_eq!(driver.worker.host_group(),original);
     driver.stop().unwrap();
 }
 
@@ -625,7 +627,7 @@ fn disabled_codex_waiting_for_native_capacity() -> (Slice, Driver, PathBuf, alon
     let state = slice.domain.state().unwrap(); let task = TaskId::from(TASK);
     let held = state.claude_held().into_iter().find(|held| held.task == task && held.provider == Provider::Codex && held.hold == alondra_domain_rules::ClaudeHold::Usage).expect("the actual native quota result held the existing node");
     let execution = state.lifecycle_of(&task).unwrap().execution().unwrap().clone();
-    crate::accounts::change_for_provider(&slice.domain, &slice._home, &user(), Provider::Codex,
+    crate::accounts::change_for_provider(&*slice.domain, &slice._home, &user(), Provider::Codex,
         &alondra_core::accounts::AccountChange::Disable { account: AccountId::default_account() }).unwrap();
     slice.run(&system(), "current-codex-past-native-limit", Command::RecordAccountUsage {
         provider: Provider::Codex, account: AccountId::default_account(), at: 1, day: "2026-10-26".into(),
@@ -646,7 +648,7 @@ fn assert_no_native_inference_from_account_probe(slice: &Slice, sidecar: &Path) 
 fn a_disabled_existing_codex_node_recovers_from_real_native_capacity_without_becoming_new_work_eligible() {
     use alondra_core::accounts::AccountState;
     let (slice, mut driver, sidecar, execution, card) = disabled_codex_waiting_for_native_capacity();
-    assert!(crate::accounts::probe_current_codex(&slice.domain, &TASK.into(), Some(alondra_domain_rules::ClaudeHold::Usage)).unwrap());
+    assert!(crate::accounts::probe_current_codex(&*slice.domain, &TASK.into(), Some(alondra_domain_rules::ClaudeHold::Usage)).unwrap());
     let state = slice.domain.state().unwrap(); let key = AccountKey::native(Provider::Codex);
     let account = state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account).unwrap();
     assert_eq!(account.state, AccountState::Disabled);
@@ -660,7 +662,7 @@ fn a_disabled_existing_codex_node_recovers_from_real_native_capacity_without_bec
     std::fs::write(&sidecar, serde_json::to_vec(&serde_json::json!({"trace":true,"turnMode":"complete"})).unwrap()).unwrap();
     slice.settle(&mut driver);
     assert_eq!(driver.worker.host_group(), host, "recovery continues in the original host");
-    assert_eq!(Slice::lifecycle(&slice.domain).execution(), Some(&execution));
+    assert_eq!(Slice::lifecycle(&*slice.domain).execution(), Some(&execution));
     let calls = transcript(&PathBuf::from(format!("{}.calls", sidecar.display())));
     assert!(calls.iter().any(|request| request["method"] == "turn/start"), "the real owner delivered the existing task's continuation");
     assert!(calls.iter().all(|request| !matches!(request["method"].as_str(), Some("thread/start" | "thread/resume"))), "an existing disabled node never creates or transfers its native conversation");
@@ -676,7 +678,7 @@ fn an_existing_codex_probe_records_a_real_workspace_replacement_without_publishi
     replaced.workspace_id = Some("replacement-workspace".into());
     replaced.rate_limits = Some(serde_json::json!({"accountId":"replacement-workspace","ordinaryUsageAllowed":true,"rateLimits":null}));
     alondra_engine_doubles::accounts::of(slice.domain.ports()).answer_every_codex(Ok(replaced));
-    assert!(crate::accounts::probe_current_codex(&slice.domain, &TASK.into(), Some(alondra_domain_rules::ClaudeHold::Usage)).unwrap_err().contains("original managed account and workspace"));
+    assert!(crate::accounts::probe_current_codex(&*slice.domain, &TASK.into(), Some(alondra_domain_rules::ClaudeHold::Usage)).unwrap_err().contains("original managed account and workspace"));
     let state = slice.domain.state().unwrap(); let key = AccountKey::native(Provider::Codex);
     let account = state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account).unwrap();
     assert_eq!(account.state, AccountState::Disabled); assert_eq!(account.native_identity.as_deref(), Some("replacement-workspace"));
@@ -697,7 +699,7 @@ fn an_existing_codex_probe_never_turns_new_api_key_billing_into_paid_authorizati
     let mut api_key = alondra_engine_doubles::accounts::codex_fixture();
     (api_key.account_type, api_key.pay_per_use, api_key.workspace_id, api_key.email, api_key.plan) = (Some("apiKey".into()), true, None, None, None);
     alondra_engine_doubles::accounts::of(slice.domain.ports()).answer_every_codex(Ok(api_key));
-    assert!(crate::accounts::probe_current_codex(&slice.domain, &TASK.into(), Some(alondra_domain_rules::ClaudeHold::Usage)).is_err());
+    assert!(crate::accounts::probe_current_codex(&*slice.domain, &TASK.into(), Some(alondra_domain_rules::ClaudeHold::Usage)).is_err());
     let state = slice.domain.state().unwrap(); let key = AccountKey::native(Provider::Codex);
     let account = state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account).unwrap();
     assert_eq!(account.state, AccountState::Disabled); assert_eq!(account.billing, AccountBilling::PayPerUse);
@@ -721,7 +723,7 @@ fn a_codex_turn_that_ends_well_clears_an_earlier_limit_marker(){
     let limited=|slice:&Slice|slice.domain.state().unwrap().account_usage.iter().any(|usage|usage.provider==Provider::Codex&&usage.account.is_default()
         &&usage.windows.iter().any(|window|window.reading.kind.is_native_limit_marker()&&window.reading.exhausted));
     assert!(limited(&slice));
-    instruct(&slice.domain,"Go on");slice.settle(&mut driver);
+    instruct(&*slice.domain,"Go on");slice.settle(&mut driver);
     assert!(!limited(&slice),"{:?}",slice.domain.state().unwrap().account_usage);
     driver.stop().unwrap();
 }
@@ -731,18 +733,18 @@ fn same_cached_managed_session_still_reports_quota_and_authentication_after_same
     use alondra_core::accounts::AccountState;
     for outcome in ["quota","auth"]{
         let slice=Slice::new();let trace=configured(&slice,"complete");let mut driver=launch(&slice);slice.settle(&mut driver);
-        let original=driver.worker.host_group();let execution=Slice::lifecycle(&slice.domain).execution().unwrap().clone();let generation=driver.worker.binding().credential_generation();
+        let original=driver.worker.host_group();let execution=Slice::lifecycle(&*slice.domain).execution().unwrap().clone();let generation=driver.worker.binding().credential_generation();
         for (signed_in,id) in [(false,"managed-logout"),(true,"managed-reauth")]{
             let state=slice.domain.state().unwrap();let mut accounts=state.accounts.clone();let account=accounts.iter_mut().find(|account|account.provider==Provider::Codex && account.id.is_default()).unwrap();account.state=if signed_in{AccountState::SignedIn}else{AccountState::SignedOut};
             slice.run(&system(),id,Command::RecordAccounts{accounts,reserve:state.account_reserve});
         }
         assert!(crate::accounts::generation_provider(&slice.domain.state().unwrap(),&AccountKey::new(Provider::Codex,AccountId::default_account()))>generation);
         std::fs::write(slice._home.join("codex-native.account.json"),serde_json::to_vec(&serde_json::json!({"turnMode":outcome})).unwrap()).unwrap();
-        instruct(&slice.domain,"Continue through the same native session after same-account reauthentication");slice.settle(&mut driver);
+        instruct(&*slice.domain,"Continue through the same native session after same-account reauthentication");slice.settle(&mut driver);
         let state=slice.domain.state().unwrap();let account=state.accounts.iter().find(|account|account.provider==Provider::Codex && account.id.is_default()).unwrap();
         if outcome=="auth"{assert_eq!(account.state,AccountState::SignedOut,"a proven same-identity host can report a new native authentication failure");}
         else{assert!(state.account_usage.iter().any(|usage|usage.provider==Provider::Codex && usage.account.is_default() && usage.windows.iter().any(|window|window.reading.kind.is_native_limit_marker() && window.reading.exhausted)),"same-identity login-counter changes do not discard confirmed native quota");}
-        assert_eq!(driver.worker.host_group(),original);assert_eq!(Slice::lifecycle(&slice.domain).execution(),Some(&execution));assert_eq!(transcript(&trace).iter().filter(|request|request["method"]=="initialize").count(),1);assert_eq!(transcript(&trace).iter().filter(|request|request["method"]=="thread/start").count(),1);driver.stop().unwrap();
+        assert_eq!(driver.worker.host_group(),original);assert_eq!(Slice::lifecycle(&*slice.domain).execution(),Some(&execution));assert_eq!(transcript(&trace).iter().filter(|request|request["method"]=="initialize").count(),1);assert_eq!(transcript(&trace).iter().filter(|request|request["method"]=="thread/start").count(),1);driver.stop().unwrap();
     }
 }
 
@@ -750,20 +752,20 @@ fn same_cached_managed_session_still_reports_quota_and_authentication_after_same
 fn initial_native_policy_rejection_keeps_original_mission_for_explicit_same_account_retry(){
     let slice=Slice::new();let trace=configured(&slice,"complete");let account=slice._home.join("codex-native.account.json");
     std::fs::write(&account,serde_json::to_vec(&serde_json::json!({"accountRead":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true},"authStatus":{"authMethod":"apikey","authToken":null,"requiresOpenaiAuth":true}})).unwrap()).unwrap();
-    let mut driver=launch(&slice);let original=Slice::lifecycle(&slice.domain).pending_inputs()[0].as_str().to_owned();let execution=Slice::lifecycle(&slice.domain).execution().unwrap().clone();
+    let mut driver=launch(&slice);let original=Slice::lifecycle(&*slice.domain).pending_inputs()[0].as_str().to_owned();let execution=Slice::lifecycle(&*slice.domain).execution().unwrap().clone();
     let failure=driver.observe().unwrap_err();assert!(failure.to_string().contains("original paid authorization"),"{failure}");
-    assert_eq!(Slice::lifecycle(&slice.domain).resource(),Some(alondra_domain::ResourceEvidence::Reserved));assert_eq!(Slice::lifecycle(&slice.domain).pending_inputs()[0].as_str(),original);assert!(Slice::lifecycle(&slice.domain).turn().is_none());
+    assert_eq!(Slice::lifecycle(&*slice.domain).resource(),Some(alondra_domain::ResourceEvidence::Reserved));assert_eq!(Slice::lifecycle(&*slice.domain).pending_inputs()[0].as_str(),original);assert!(Slice::lifecycle(&*slice.domain).turn().is_none());
     let db=slice.observer();let status:String=db.query_row("SELECT status FROM lifecycle_dispatches WHERE task_id=?1 AND input_id=?2 ORDER BY id DESC LIMIT 1",rusqlite::params![TASK,original],|row|row.get(0)).unwrap();assert_eq!(status,"rejected","the positive rejected-before-offer receipt prevents a doubtful handoff");
     let checkpoint:Vec<u8>=db.query_row("SELECT bytes FROM provider_normalization_checkpoints WHERE task_id=?1",[TASK],|row|row.get(0)).unwrap();assert!(alondra_provider_codex::blocked_policy(&checkpoint).is_some());drop(db);driver.stop().unwrap();drop(driver);
-    let automatic=adopt(Arc::clone(&slice.domain),&slice.backend,TASK.into(),Some(&slice.plugin)).err().expect("automatic restart cannot bypass persisted native policy");assert!(automatic.to_string().contains("original paid authorization"));assert_eq!(transcript(&trace).iter().filter(|request|request["method"]=="initialize").count(),1);assert!(!transcript(&trace).iter().any(|request|request["method"]=="turn/start"));
+    let automatic=adopt(slice.domain.clone(),&slice.backend,TASK.into(),Some(&slice.plugin)).err().expect("automatic restart cannot bypass persisted native policy");assert!(automatic.to_string().contains("original paid authorization"));assert_eq!(transcript(&trace).iter().filter(|request|request["method"]=="initialize").count(),1);assert!(!transcript(&trace).iter().any(|request|request["method"]=="turn/start"));
     std::fs::write(&account,b"{}").unwrap();
-    let mut resumed=take_host(Arc::clone(&slice.domain),&slice.backend,TASK.into(),Some(&slice.plugin),true,true,true).unwrap().unwrap();
-    let retry_input=Slice::lifecycle(&slice.domain).pending_inputs()[0].as_str().to_owned();
+    let mut resumed=take_host(slice.domain.clone(),&slice.backend,TASK.into(),Some(&slice.plugin),true,true,true).unwrap().unwrap();
+    let retry_input=Slice::lifecycle(&*slice.domain).pending_inputs()[0].as_str().to_owned();
     assert!(slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().any(|record|matches!(record,LifecycleRecord::HandoffResent{input,resent,..} if input==&original && resent==&retry_input)),"only positive rejected-before-offer evidence authorizes the original mission's successor");
     assert!(resumed.pending_permits()>0,"the authorized retry has a prepared permit before any native ready event");
     slice.settle(&mut resumed);
     let calls=transcript(&trace);let offered:Vec<_>=calls.iter().filter(|request|request["method"]=="turn/start").collect();assert!(!offered.is_empty());assert!(offered[0]["params"]["input"][0]["text"].as_str().unwrap().contains("Write the release notes through Codex"),"the first real native input remains the original mission");
-    assert_eq!(offered.iter().filter(|request|request["params"]["input"][0]["text"].as_str().unwrap().contains("Write the release notes through Codex")).count(),1);assert_eq!(calls.iter().filter(|request|request["method"]=="initialize").count(),2);assert_eq!(calls.iter().filter(|request|request["method"]=="thread/start").count(),1);assert_eq!(Slice::lifecycle(&slice.domain).execution(),Some(&execution));assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty());
+    assert_eq!(offered.iter().filter(|request|request["params"]["input"][0]["text"].as_str().unwrap().contains("Write the release notes through Codex")).count(),1);assert_eq!(calls.iter().filter(|request|request["method"]=="initialize").count(),2);assert_eq!(calls.iter().filter(|request|request["method"]=="thread/start").count(),1);assert_eq!(Slice::lifecycle(&*slice.domain).execution(),Some(&execution));assert!(Slice::lifecycle(&*slice.domain).pending_inputs().is_empty());
     let db=slice.observer();let checkpoint:Vec<u8>=db.query_row("SELECT bytes FROM provider_normalization_checkpoints WHERE task_id=?1",[TASK],|row|row.get(0)).unwrap();assert!(alondra_provider_codex::blocked_policy(&checkpoint).is_none());drop(db);resumed.stop().unwrap();
 }
 
@@ -778,7 +780,7 @@ async fn codex_node_after_a_restart(meanwhile: impl FnOnce(&Slice)) -> (Slice, A
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     kill_host_and_daemon(driver);
     meanwhile(&slice);
     let restarted = slice.restart();
@@ -820,14 +822,14 @@ fn an_unopened_codex_replacement_remains_unopened_after_reconciling_a_control() 
     let slice = Slice::new();
     configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     kill_host_and_daemon(driver);
-    let mut replacement = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut replacement = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(replacement.worker.native_liveness().unwrap(), Some(alondra_provider_codex::NativeLiveness::NotStarted));
     slice.run(&system(), "cold-mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
     assert!(replacement.claim_and_record_control_without_sending());
     drop(replacement);
-    let mut adopted = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(slice.control_rows()[0].2, "rejected", "the unopened host explicitly refused a control needing a session");
     assert_eq!(adopted.worker.native_liveness().unwrap(), Some(alondra_provider_codex::NativeLiveness::NotStarted), "a reconciled control cannot prove native startup");
     adopted.stop().unwrap();
@@ -844,14 +846,14 @@ fn adopting_a_legacy_codex_host_with_a_dead_native_replaces_it_before_reconcilin
     backend.host = host; backend.host_sha256 = backend.node_sha256.clone();
     std::fs::write(&path, serde_json::to_vec(&backend).unwrap()).unwrap();
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     slice.run(&system(), "legacy-mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
     assert!(driver.claim_and_record_control_without_sending());
     let old_host = driver.worker.stopper().unwrap();
     kill_native(&native_process(&mut driver));
     assert!(old_host.process().unwrap().is_some(), "the legacy host stays alive after native exit");
     drop(driver);
-    let mut adopted = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     while turns_started(&slice.domain) < 2 { adopted.step(&|| true).unwrap(); }
     assert!(old_host.process().unwrap().is_none(), "the old host ended before the replacement served");
     assert_eq!(resumed_threads(&trace).len(), 1);
@@ -876,7 +878,7 @@ fn a_codex_transport_failure_ends_the_host_and_the_same_thread_goes_on_in_a_new_
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     kill_native(&native_process(&mut driver));
     let error = loop {
         if let Err(error) = driver.observe() { break error; }
@@ -900,9 +902,9 @@ fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken
     backend.host = host; backend.host_sha256 = backend.node_sha256.clone();
     std::fs::write(&path, serde_json::to_vec(&backend).unwrap()).unwrap();
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     kill_host_and_daemon(driver);
-    let mut replacement = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut replacement = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     let bootstrap: serde_json::Value = serde_json::from_slice(&std::fs::read(replacement.worker.state_directory().join("host.lock")).unwrap()).unwrap();
     let base = bootstrap["journal_base"].as_u64().unwrap();
     let observer = slice.observer();
@@ -912,7 +914,7 @@ fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken
     replacement.step(&|| true).unwrap();
     assert!(!replacement.replacement, "the continuation was offered to the new native session");
     assert_eq!(checkpoint(), base, "no observation of this host has committed");
-    assert_eq!(Slice::lifecycle(&slice.domain).resource(), Some(alondra_domain::ResourceEvidence::Available));
+    assert_eq!(Slice::lifecycle(&*slice.domain).resource(), Some(alondra_domain::ResourceEvidence::Available));
     slice.run(&system(), "unobserved-legacy-mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
     assert!(replacement.claim_and_record_control_without_sending());
     let old_host = replacement.worker.stopper().unwrap();
@@ -922,7 +924,7 @@ fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken
     kill_native(&native_process(&mut replacement));
     assert!(old_host.process().unwrap().is_some(), "the legacy host stays available for attachment");
     drop(replacement);
-    let mut adopted = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    let mut adopted = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert!(old_host.process().unwrap().is_none(), "native admission is detected before reconciling the dead control");
     assert_eq!(slice.control_rows()[0].2, "rejected", "the control never reached the old native process");
     assert_eq!(resumed_threads(&trace).len(), 1, "the replacement used the original native thread; the next host remains lazy");
@@ -943,7 +945,7 @@ async fn a_codex_app_server_killed_mid_turn_resumes_the_same_thread_without_a_se
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let original = transcript(&trace).into_iter().find(|request| request["method"] == "turn/start").unwrap()["params"]["clientUserMessageId"].as_str().unwrap().to_owned();
     let group = driver.worker.host_group().unwrap();
     let old_host = driver.worker.stopper().unwrap();
@@ -971,7 +973,7 @@ async fn idle_codex_without_app_server_receives_its_later_message(adopted: bool)
     slice.settle(&mut driver);
     if adopted {
         drop(driver);
-        driver = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+        driver = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     }
     let native = native_process(&mut driver);
     let old_host = driver.worker.stopper().unwrap();
@@ -988,7 +990,7 @@ async fn idle_codex_without_app_server_receives_its_later_message(adopted: bool)
     let mut owner = Owner::spawn(driver);
     changed.wait_for(|_| turns_started(&slice.domain) >= 3 || owner.ended()).await.unwrap();
     // The resumed input's acceptance commits after the native transcript is written.
-    changed.wait_for(|_| Slice::lifecycle(&slice.domain).pending_inputs().is_empty() || owner.ended()).await.unwrap();
+    changed.wait_for(|_| Slice::lifecycle(&*slice.domain).pending_inputs().is_empty() || owner.ended()).await.unwrap();
     assert!(!owner.ended());
     let messages: Vec<_> = transcript(&trace).into_iter().filter(|request| request["method"] == "turn/start" && request["params"]["input"][0]["text"].as_str().is_some_and(|text| text.contains("Deliver this after replacing"))).collect();
     assert_eq!(messages.len(), 1, "the later message is delivered exactly once");
@@ -1047,10 +1049,10 @@ async fn killed_codex_host_is_replaced(signal: libc::c_int, adopted: bool) {
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     if adopted {
         drop(driver);
-        driver = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+        driver = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     }
     let native = native_process(&mut driver);
     let host = driver.worker.stopper().unwrap().process().unwrap().unwrap();
@@ -1128,7 +1130,7 @@ async fn a_codex_session_that_never_starts_is_relaunched_past_the_old_limit_with
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     kill_host_and_daemon(driver);
     for saved in std::fs::read_dir(slice.backend.state_root.join("native-threads")).unwrap() {
         std::fs::remove_file(saved.unwrap().path()).unwrap();
@@ -1181,7 +1183,7 @@ async fn codex_node_restarted_with_its_folder(meanwhile: impl FnOnce(&Path)) -> 
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let folder = driver.worker.state_directory().to_path_buf();
     kill_host_and_daemon(driver);
     meanwhile(&folder);
@@ -1244,7 +1246,7 @@ fn a_codex_takeover_that_fails_after_launching_its_host_leaves_no_host_running()
     let slice = Slice::new();
     configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let folder = driver.worker.state_directory().to_path_buf();
     kill_host_and_daemon(driver);
     std::fs::rename(&folder, archive(&folder, "first")).unwrap();
@@ -1252,7 +1254,7 @@ fn a_codex_takeover_that_fails_after_launching_its_host_leaves_no_host_running()
     private_file(&folder.join("native-auth-account.json"), br#"{"authMethod":"chatgpt","email":"another@example.test","workspaceId":"another-workspace"}"#);
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
-    let taken = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin));
+    let taken = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin));
     let (refused, ran) = (taken.is_err(), host_runs(&folder));
     drop(taken);
     if ran { alondra_agent_runtime::owned_host::end_holders(&folder).unwrap(); }
@@ -1267,19 +1269,19 @@ fn a_host_left_running_for_a_task_that_ended_is_ended_when_the_daemon_starts() {
     let slice = Slice::new();
     configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let folder = driver.worker.state_directory().to_path_buf();
-    let generation = Slice::lifecycle(&slice.domain).execution().unwrap().generation();
+    let generation = Slice::lifecycle(&*slice.domain).execution().unwrap().generation();
     let agent = driver.agent().clone();
     drop(driver);
     slice.run(&user(), "cancel-ownerless-codex", Command::CancelTask { task_id: TASK.into(), reason: None });
     slice.run(&system(), "ended-ownerless-codex", Command::RecordHostEnded { task_id: TASK.into(), generation, resumes: false, ended_work: vec![], by_alondra: true });
     slice.run(&system(), "gone-ownerless-codex", Command::RecordNodeEnd { task_id: TASK.into(), end: NodeEnd::Gone, agent_id: Some(agent) });
-    assert_eq!(Slice::lifecycle(&slice.domain).phase(), alondra_domain::TaskPhase::Cancelled);
+    assert_eq!(Slice::lifecycle(&*slice.domain).phase(), alondra_domain::TaskPhase::Cancelled);
     assert!(host_runs(&folder), "the fixture leaves the host of the cancelled task running with no owner");
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
-    adopt_all(&restarted, &slice.backend);
+    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
     let ran = host_runs(&folder);
     if ran { alondra_agent_runtime::owned_host::end_holders(&folder).unwrap(); }
     assert!(!ran, "the daemon that starts ends it");
@@ -1427,21 +1429,21 @@ pub fn working_on_codex(slice:&Slice)->AgentId{
     git(&slice.worktree,&["init","-q","-b","release-notes"]);
     slice.domain.enable_sdk(slice.backend.clone());
     let mut driver=launch(slice);
-    while Slice::lifecycle(&slice.domain).activity()!=ActivityView::Working{driver.observe_written().unwrap();}
+    while Slice::lifecycle(&*slice.domain).activity()!=ActivityView::Working{driver.observe_written().unwrap();}
     std::fs::write(slice.worktree.join("draft.md"),"unfinished notes").unwrap();
     let source=driver.agent.clone();slice.domain.add_sdk_owner(Owner::spawn(driver));
     source
 }
 pub fn request_move(slice:&Slice)->serde_json::Value{
     let stamp=slice.domain.state().unwrap().task_selection_stamp(&TASK.into()).unwrap();
-    crate::provider_transition::request_move(&slice.domain,&user(),&TASK.into(),AccountKey::native(Provider::Claude),&stamp,||Ok(())).unwrap()
+    crate::provider_transition::request_move(&*slice.domain,&user(),&TASK.into(),AccountKey::native(Provider::Claude),&stamp,||Ok(())).unwrap()
 }
 pub async fn until_moved(slice:&Slice,changed:&mut tokio::sync::watch::Receiver<u64>){
     let moved=async{while !move_steps(slice).iter().any(|step|step=="done"){changed.changed().await.unwrap();}};
     if tokio::time::timeout(std::time::Duration::from_secs(60),moved).await.is_err(){panic!("the move never ended: {:?}, {}",move_steps(slice),where_the_task_is(slice))}
 }
 fn where_the_task_is(slice:&Slice)->String{
-    let lifecycle=Slice::lifecycle(&slice.domain);
+    let lifecycle=Slice::lifecycle(&*slice.domain);
     format!("{:?} {:?} with inputs {:?}",lifecycle.phase(),lifecycle.live(),lifecycle.pending_inputs())
 }
 /// Advances the move after every owner commit, as the daemon's transition loop does, until it is
@@ -1450,7 +1452,7 @@ async fn advance_until_moved(slice:&Slice,domain:&Arc<DomainRuntime>,task:&TaskI
     use crate::domain_store::provider_transition::Phase;
     let done=||move_steps(slice).iter().any(|step|step=="done");
     while !done(){
-        let advanced=crate::provider_transition::advance(domain,task).await;
+        let advanced=crate::provider_transition::advance(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),task).await;
         if done(){return}
         match advanced{
             Ok(Phase::Aborted)=>panic!("the move was aborted after {:?}",move_steps(slice)),
@@ -1469,11 +1471,11 @@ async fn a_codex_task_moves_to_claude_as_itself_in_its_worktree_with_one_writer_
     let before=identity(&slice);
     request_move(&slice);
     let state=slice.domain.state().unwrap();
-    assert!(crate::provider_transition::moving(&slice.domain,&task));
-    assert!(crate::provider_transition::holds_execution(&slice.domain,&task),"nothing more reaches the node it leaves");
-    assert!(!to_take(&slice.domain,&state,&task),"no takeover starts a second writer while the source drains");
+    assert!(crate::provider_transition::moving(&*slice.domain,&task));
+    assert!(crate::provider_transition::holds_execution(&*slice.domain,&task),"nothing more reaches the node it leaves");
+    assert!(!to_take(&*slice.domain,&state,&task),"no takeover starts a second writer while the source drains");
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&task).await.unwrap(),Phase::TargetAdmitted);
+    assert_eq!(crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&task).await.unwrap(),Phase::TargetAdmitted);
     until_moved(&slice,&mut changed).await;
     assert_eq!(move_steps(&slice),["requested","draining","source_fenced","context_ready","target_admitted","target_ready","consumed","done"]);
     let state=slice.domain.state().unwrap();let moved=&state.tasks[&task];
@@ -1504,7 +1506,7 @@ async fn a_move_survives_a_daemon_restart_after_every_step_without_a_second_node
         working_on_codex(&slice);
         request_move(&slice);
         *slice.domain.selection_changes().crash_at.lock().unwrap()=Some(died);
-        let advanced=crate::provider_transition::advance(&slice.domain,&task).await;
+        let advanced=crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&task).await;
         assert_eq!(move_steps(&slice).last().map(String::as_str),Some(died.key()),"the daemon died right after {died:?}: {advanced:?}");
         slice.domain.stop_sdk_owners();slice.domain.selection_changes().die();
         let domain=slice.restart();domain.enable_sdk(slice.backend.clone());
@@ -1524,7 +1526,7 @@ async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
     let slice=Slice::new();let task:TaskId=TASK.into();
     working_on_codex(&slice);
     slice.domain.stop_sdk_owners();
-    let resumed=adopt(Arc::clone(&slice.domain),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
+    let resumed=adopt(slice.domain.clone(),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
     assert!(slice.domain.state().unwrap().lifecycle_journal[&task].iter().any(|record|matches!(record,LifecycleRecord::HostEnded{..})),"the first host's end is recorded and a host that resumes the same execution runs");
     // The move is requested before the resumed host's owner runs: an owner that ran first could hand
     // the continuation to the host, whose held turn then leaves the task with nothing to start from.
@@ -1535,7 +1537,7 @@ async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
     let ready=published.wait_for(|_|crate::provider_transition::ready_in(slice.domain.read().state(),&task).unwrap());
     if tokio::time::timeout(std::time::Duration::from_secs(60),ready).await.is_err(){panic!("the resumed task never became ready to start: {}",where_the_task_is(&slice))}
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
-    assert_eq!(crate::provider_transition::advance(&slice.domain,&task).await.unwrap(),Phase::TargetAdmitted);
+    assert_eq!(crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&task).await.unwrap(),Phase::TargetAdmitted);
     until_moved(&slice,&mut changed).await;
     let state=slice.domain.state().unwrap();
     assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
@@ -1554,12 +1556,12 @@ async fn a_move_requested_while_the_resumed_host_takes_its_message_admits_the_ne
         let slice=Slice::new();let task:TaskId=TASK.into();
         working_on_codex(&slice);
         slice.domain.stop_sdk_owners();
-        let mut resumed=adopt(Arc::clone(&slice.domain),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
+        let mut resumed=adopt(slice.domain.clone(),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
         let claimed=match handoff{"claimed"=>resumed.claim_and_record_without_sending(),"offered"=>resumed.claim_record_and_offer_without_receipt(),_=>resumed.claim_record_and_offer_with_an_uncertain_receipt()};
         assert!(claimed,"the resumed host's owner claimed the continuation");
         request_move(&slice);
         let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
-        let advanced=crate::provider_transition::advance(&slice.domain,&task).await;
+        let advanced=crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&task).await;
         assert!(advanced.is_ok(),"{handoff}: the move went on after {:?}: {advanced:?}, {}",move_steps(&slice),where_the_task_is(&slice));
         until_moved(&slice,&mut changed).await;
         assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
@@ -1578,7 +1580,7 @@ async fn a_move_from_a_dead_host_that_left_a_claimed_message_settles_it_and_admi
     let slice=Slice::new();let task:TaskId=TASK.into();
     working_on_codex(&slice);
     slice.domain.stop_sdk_owners();
-    let mut resumed=adopt(Arc::clone(&slice.domain),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
+    let mut resumed=adopt(slice.domain.clone(),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
     slice.run(&Actor::System,"told",Command::TellNode{task_id:TASK.into(),text:"Add the changelog".into(),from_user:false,answers:None});
     resumed.sealed();
     let permit=resumed.permits.pop_back().expect("the message waits for the host");
@@ -1590,7 +1592,7 @@ async fn a_move_from_a_dead_host_that_left_a_claimed_message_settles_it_and_admi
     let status=|slice:&Slice|->String{slice.observer().query_row("SELECT status FROM lifecycle_dispatches WHERE id=?1",[left],|row|row.get(0)).unwrap()};
     request_move(&slice);
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
-    let advanced=crate::provider_transition::advance(&slice.domain,&task).await.unwrap();
+    let advanced=crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&task).await.unwrap();
     assert_eq!(status(&slice),"rejected","the move settled what the dead host claimed: it never got it");
     assert_eq!(advanced,Phase::TargetAdmitted);
     until_moved(&slice,&mut changed).await;
@@ -1674,7 +1676,7 @@ pub async fn settled_move(slice:&Slice)->String{
     let mut changed=slice.domain.subscribe();
     tokio::time::timeout(std::time::Duration::from_secs(60),async{
         loop{
-            crate::provider_transition::pass(&slice.domain).await;
+            crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
             let last=move_steps(slice).last().cloned().unwrap_or_default();
             if matches!(last.as_str(),"done"|"aborted"){return last}
             changed.changed().await.unwrap();
@@ -1687,7 +1689,7 @@ async fn started_on_the_new_account(slice:&Slice){
     let mut changed=slice.domain.subscribe();
     tokio::time::timeout(std::time::Duration::from_secs(60),async{
         while admissions(slice)<2{
-            crate::provider_transition::pass(&slice.domain).await;
+            crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
             if admissions(slice)<2{changed.changed().await.unwrap();}
         }
     }).await.expect("no node started on the account the task moved to");
@@ -1700,13 +1702,13 @@ fn handed_context(slice:&Slice)->String{
     serde_json::from_str::<serde_json::Value>(&facts).unwrap()["context"].as_str().expect("the handed context").to_owned()
 }
 pub fn paused_by_the_user(slice:&Slice)->bool{
-    Slice::lifecycle(&slice.domain).cards().iter().any(|(_,reason)|*reason==alondra_domain::WaitReason::Pause)
+    Slice::lifecycle(&*slice.domain).cards().iter().any(|(_,reason)|*reason==alondra_domain::WaitReason::Pause)
 }
 pub fn admissions(slice:&Slice)->usize{
     slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count()
 }
 fn source_host(slice:&Slice)->PathBuf{
-    let instance=Slice::lifecycle(&slice.domain).execution().unwrap().instance().as_str().to_owned();
+    let instance=Slice::lifecycle(&*slice.domain).execution().unwrap().instance().as_str().to_owned();
     slice.backend.for_provider(Provider::Codex,slice.domain.home()).unwrap().state_root.join(instance)
 }
 
@@ -1730,7 +1732,7 @@ async fn a_task_held_by_the_codex_limit_starts_on_the_account_it_moved_to(){
     assert_eq!(held(&slice),0,"the task no longer waits for Codex's reset");
     let mut changed=slice.domain.subscribe();
     while admissions(&slice)<2{
-        crate::provider_transition::pass(&slice.domain).await;
+        crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
         if admissions(&slice)<2{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("no node started on the account it moved to").unwrap();}
     }
     assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
@@ -1749,11 +1751,11 @@ async fn a_resting_task_moves_at_once(){
     });
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done");
-    for _ in 0..3{crate::provider_transition::pass(&slice.domain).await;}
+    for _ in 0..3{crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;}
     let state=slice.domain.state().unwrap();
     assert!(state.tasks[&task].pending_selection.is_none());
     assert_eq!(admissions(&slice),1,"no node starts until something resumes it");
-    assert_eq!(Slice::lifecycle(&slice.domain).phase(),alondra_domain::TaskPhase::Delivered);
+    assert_eq!(Slice::lifecycle(&*slice.domain).phase(),alondra_domain::TaskPhase::Delivered);
     slice.domain.stop_sdk_owners();
 }
 
@@ -1885,7 +1887,7 @@ async fn a_task_whose_adopted_host_has_no_process_moves_or_is_refused(){
     let slice=Slice::new();let task:TaskId=TASK.into();
     working_on_codex(&slice);
     slice.domain.stop_sdk_owners();
-    let adopted=adopt(Arc::clone(&slice.domain),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
+    let adopted=adopt(slice.domain.clone(),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
     let group=adopted.worker.host_group().unwrap();
     for process in alondra_process_group::members(group).unwrap(){signal_codex_process(process.pid,libc::SIGKILL);}
     drop(adopted);
@@ -1918,8 +1920,8 @@ async fn a_move_that_cannot_prove_its_source_ended_is_refused_with_its_reason(){
     let refused=held.move_refused.as_ref().expect("the task says why it did not move");
     assert_eq!(refused.account,AccountKey::native(Provider::Claude));
     assert!(!refused.reason.is_empty());
-    assert!(!crate::provider_transition::moving(&slice.domain,&task));
-    assert!(!crate::provider_transition::holds_execution(&slice.domain,&task),"the task takes inputs again");
+    assert!(!crate::provider_transition::moving(&*slice.domain,&task));
+    assert!(!crate::provider_transition::holds_execution(&*slice.domain,&task),"the task takes inputs again");
     slice.domain.stop_sdk_owners();
 }
 
@@ -1932,7 +1934,7 @@ async fn a_stored_uncertain_move_is_aborted_on_the_first_pass(){
     let id=slice.domain.store.lock().unwrap().provider_transition(&task).unwrap().unwrap().plan.id;
     let scope=alondra_store::AuthorityScope::new(slice.domain.read().state().data_epoch.clone()).unwrap();
     slice.domain.own(scope,|owner|owner.provider_transition_phase(&id,Phase::Requested,Phase::Uncertain,serde_json::json!({"reason":"An older daemon could not tell how the move went"}))).unwrap();
-    crate::provider_transition::pass(&slice.domain).await;
+    crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert_eq!(move_steps(&slice).last().map(String::as_str),Some("aborted"));
     let state=slice.domain.state().unwrap();
     assert!(state.tasks[&task].pending_selection.is_none());
@@ -1955,7 +1957,7 @@ async fn a_task_created_with_a_codex_launch_plan_starts_on_codex() {
     slice.domain.admission().ignore_mac();
     slice.domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(4)) });
     let mut changed = slice.domain.subscribe();
-    crate::auto_launch::pass(&slice.domain, &slice._home).await.unwrap();
+    crate::auto_launch::pass(&*slice.domain, &slice._home).await.unwrap();
     loop {
         let state = slice.domain.state().unwrap();
         if state.lifecycle_journal[&TaskId::from(TASK)].iter().any(|record| matches!(record, LifecycleRecord::TurnStarted { .. })) {
@@ -2009,7 +2011,7 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(plan),
     });
     let checklist = slice.domain.state().unwrap().checklists[&task].clone();
-    let mut original = start(Arc::clone(&slice.domain), &slice.backend, Launch {
+    let mut original = start(slice.domain.clone(), &slice.backend, Launch {
         task: task.clone(), name: "Release notes".into(), directory: slice.worktree.display().to_string(),
         prompt: mission.into(), plugin: slice.plugin.clone(), options: LaunchOptions::default(), model: None,
         account: AccountId::default_account(),
@@ -2022,7 +2024,7 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
         provider: Some(Provider::Claude), tags: None,
     }).unwrap();
     assert!(slice.domain.store.lock().unwrap().task_was_launched(&task).unwrap());
-    let refusal = require_recoverable_session(&slice.domain, &slice.backend, &task, Provider::Claude,
+    let refusal = require_recoverable_session(&*slice.domain, &slice.backend, &task, Provider::Claude,
         &AccountId::default_account(), slice.worktree.to_str().unwrap()).unwrap_err();
     assert!(refusal.to_string().contains("The original native session cannot be proven"), "{refusal}");
     slice.run(&user(), "cancel-implementation", Command::CancelTask { task_id: task.clone(), reason: None });
@@ -2033,7 +2035,7 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
     });
     let terminal = slice.domain.state().unwrap();
     assert_eq!(terminal.tasks[&task].state, alondra_domain_rules::TaskState::Cancelled);
-    crate::domain_orchestrator_tools::update_launch_plan(&slice.domain, &slice._home, serde_json::from_value(serde_json::json!({
+    crate::domain_orchestrator_tools::update_launch_plan(&*slice.domain, &slice._home, serde_json::from_value(serde_json::json!({
         "task_id": task, "changes": {"model": "codex/fixture-model", "reasoning_effort": "high"},
     })).unwrap()).unwrap();
     assert_eq!(slice.domain.launch_plan(&task).unwrap().unwrap().mission.as_deref(), Some(mission));
@@ -2043,8 +2045,8 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
     slice.domain.enable_sdk(slice.backend.clone());
     slice.domain.admission().ignore_mac();
     let before_starts = slice.starts();
-    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
-    crate::auto_launch::pass(&slice.domain, &slice._home).await.unwrap();
+    crate::admission::pass_at(&*slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    crate::auto_launch::pass(&*slice.domain, &slice._home).await.unwrap();
     assert_eq!(slice.starts(), before_starts, "admission between updating and reopening starts no node");
     assert!(!trace.exists(), "Codex has not started while the task is terminal");
     {
@@ -2055,7 +2057,7 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
     slice.run(&Actor::Orchestrator { generation: 0 }, "reopen-implementation", Command::ReopenTask { task_id: task.clone() });
     assert_eq!(slice.domain.store.lock().unwrap().launch_queue().unwrap()[0].body["body"]["model"], "codex/fixture-model");
     let mut changed = slice.domain.subscribe();
-    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    crate::admission::pass_at(&*slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
     let new_node = slice.domain.state().unwrap().tasks[&task].agent_id.clone()
         .expect("the first queue pass starts the reopened task instead of recording a retry");
     assert_ne!(new_node, old_node);
@@ -2087,8 +2089,8 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
     assert!(prompt.contains(approved.trim()) && prompt.contains("do not plan again"), "{prompt}");
     assert_eq!(prompt.matches("Preserve the approved release scope").count(), 1, "the approved plan is carried once: {prompt}");
 
-    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
-    crate::auto_launch::pass(&slice.domain, &slice._home).await.unwrap();
+    crate::admission::pass_at(&*slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    crate::auto_launch::pass(&*slice.domain, &slice._home).await.unwrap();
     assert_eq!(slice.domain.state().unwrap().tasks[&task].agent_id.as_ref(), Some(&new_node));
     let after = transcript(&trace);
     for method in ["thread/start", "thread/resume", "turn/start"] {
@@ -2104,7 +2106,7 @@ async fn a_paused_codex_session_loses_its_app_server_and_delivers_resume_and_mes
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
-    while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     let native = native_process(&mut driver);
     slice.domain.enable_sdk(slice.backend.clone());
     slice.domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
@@ -2118,13 +2120,13 @@ async fn a_paused_codex_session_loses_its_app_server_and_delivers_resume_and_mes
     kill_native(&native);
     assert!(driver.step(&|| true).is_err());
     let mut replacement = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    crate::domain_messages::tell_sdk_node(&slice.domain, &TASK.into(), crate::node_push::ALONDRA, "Keep this message through the paused host replacement", "tell-paused-codex", false).unwrap();
+    crate::domain_messages::tell_sdk_node(&*slice.domain, &TASK.into(), crate::node_push::ALONDRA, "Keep this message through the paused host replacement", "tell-paused-codex", false).unwrap();
     replacement.step(&|| true).unwrap();
     assert!(replacement.paused(), "replacing a dead host does not release a user pause");
     assert_eq!(transcript(&trace).iter().filter(|request| request["method"] == "turn/start").count(), 1);
     assert!(slice.domain.gate().resume_now(&agent, alondra_core::now_millis()));
-    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
-    while !Slice::lifecycle(&slice.domain).pending_inputs().is_empty() || turns_started(&slice.domain) < 3 {
+    crate::admission::pass_at(&*slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
+    while !Slice::lifecycle(&*slice.domain).pending_inputs().is_empty() || turns_started(&slice.domain) < 3 {
         replacement.step(&|| true).unwrap();
     }
     let prompts: Vec<_> = transcript(&trace).into_iter().filter(|request| request["method"] == "turn/start").map(|request| request["params"]["input"][0]["text"].as_str().unwrap().to_owned()).collect();
@@ -2147,17 +2149,17 @@ async fn a_paused_task_moves_at_once_and_starts_on_the_new_account_when_resumed(
     assert!(state.tasks[&task].pending_selection.is_none());
     assert!(paused_by_the_user(&slice),"a paused task stays paused");
     assert_eq!(admissions(&slice),1,"nothing starts while it is paused");
-    assert!(crate::provider_transition::moving(&slice.domain,&task),"no node but the one on the new account may start it");
-    let pause=Slice::lifecycle(&slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
+    assert!(crate::provider_transition::moving(&*slice.domain,&task),"no node but the one on the new account may start it");
+    let pause=Slice::lifecycle(&*slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
     slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_domain_rules::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
     let mut changed=slice.domain.subscribe();
     while admissions(&slice)<2{
-        crate::provider_transition::pass(&slice.domain).await;
+        crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
         if admissions(&slice)<2{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("the resumed task never started").unwrap();}
     }
     let state=slice.domain.state().unwrap();
     assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
-    assert!(!crate::provider_transition::moving(&slice.domain,&task));
+    assert!(!crate::provider_transition::moving(&*slice.domain,&task));
     slice.domain.stop_sdk_owners();
 }
 
@@ -2173,14 +2175,14 @@ async fn a_moved_task_starts_with_a_long_message_when_the_destination_window_is_
     slice.domain.gate().pause_by_user(&source.0,alondra_core::now_millis()).unwrap();
     slice.domain.subscribe().wait_for(|_|paused_by_the_user(&slice)).await.unwrap();
     let brief="Read the whole volume layout before changing it. ".repeat(1_200);
-    crate::domain_messages::tell_sdk_node(&slice.domain,&task,crate::node_push::ALONDRA,&brief,"tell-long-brief",false).unwrap();
+    crate::domain_messages::tell_sdk_node(&*slice.domain,&task,crate::node_push::ALONDRA,&brief,"tell-long-brief",false).unwrap();
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done");
-    let pause=Slice::lifecycle(&slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
+    let pause=Slice::lifecycle(&*slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
     slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_domain_rules::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
     let mut changed=slice.domain.subscribe();
     while admissions(&slice)<2{
-        crate::provider_transition::pass(&slice.domain).await;
+        crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
         if admissions(&slice)<2{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("the moved task never started").unwrap();}
     }
     assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
@@ -2203,18 +2205,18 @@ async fn a_moved_task_refused_on_its_new_account_waits_for_the_user_instead_of_s
     let context:i64=slice.observer().query_row("SELECT json_extract(facts,'$.context.estimated_context_tokens') FROM provider_transition_steps WHERE task_id=?1 AND phase='done'",[TASK],|row|row.get(0)).unwrap();
     let context=u64::try_from(context).unwrap();
     claude_window(&slice,Some(context+alondra_store::HANDOFF_RESERVED_TOKENS),2);
-    let pause=Slice::lifecycle(&slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
+    let pause=Slice::lifecycle(&*slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
     slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_domain_rules::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
     let refusals=||move_steps(&slice).iter().filter(|step|*step=="start_refused").count();
     let refused=|count:usize|{let slice=&slice;async move{
         let mut changed=slice.domain.subscribe();
         while move_steps(slice).iter().filter(|step|*step=="start_refused").count()<count{
-            crate::provider_transition::pass(&slice.domain).await;
+            crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
             if move_steps(slice).iter().filter(|step|*step=="start_refused").count()<count{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("the moved start was never refused").unwrap();}
         }
     }};
     refused(1).await;
-    for _ in 0..5{crate::provider_transition::pass(&slice.domain).await;}
+    for _ in 0..5{crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;}
     assert_eq!(refusals(),1,"no pass tries the refused start again by itself: {:?}",move_steps(&slice));
     assert_eq!(admissions(&slice),1,"nothing started on the new account");
     let state=slice.domain.state().unwrap();
@@ -2222,17 +2224,17 @@ async fn a_moved_task_refused_on_its_new_account_waits_for_the_user_instead_of_s
     assert_eq!(refusal.account,AccountKey::native(Provider::Claude));
     let card=state.open_start_problem(&task).expect("a card asks the user").id.clone();
     assert!(matches!(alondra_domain_rules::start_problem::from_body(&state.interactions[&card].body),Some(StartProblem::MoveStartRefused{account,..}) if account==AccountKey::native(Provider::Claude)));
-    assert!(crate::provider_transition::moving(&slice.domain,&task),"no other node starts it meanwhile");
+    assert!(crate::provider_transition::moving(&*slice.domain,&task),"no other node starts it meanwhile");
     slice.run(&user(),"retry-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:card.clone(),option_id:alondra_domain_rules::START_RETRY.into(),inputs:Default::default()});
     refused(2).await;
-    for _ in 0..5{crate::provider_transition::pass(&slice.domain).await;}
+    for _ in 0..5{crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;}
     assert_eq!(refusals(),2,"trying again tries once: {:?}",move_steps(&slice));
     let state=slice.domain.state().unwrap();
     let again=state.open_start_problem(&task).expect("the refused retry asks again").id.clone();
     assert_ne!(again,card);
     slice.run(&user(),"cancel-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:again,option_id:alondra_domain_rules::START_CANCEL.into(),inputs:Default::default()});
     assert!(slice.domain.state().unwrap().tasks[&task].over(),"cancelling closes the task");
-    for _ in 0..3{crate::provider_transition::pass(&slice.domain).await;}
+    for _ in 0..3{crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;}
     assert_eq!(admissions(&slice),1);
     slice.domain.stop_sdk_owners();
 }
@@ -2249,16 +2251,16 @@ async fn a_delivery_moved_while_reviewed_waits_for_the_user_and_starts_on_the_ne
     });
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done");
-    for _ in 0..3{crate::provider_transition::pass(&slice.domain).await;}
-    let owed=Slice::lifecycle(&slice.domain).obligation().map(|obligation|(obligation.party,obligation.owed));
+    for _ in 0..3{crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;}
+    let owed=Slice::lifecycle(&*slice.domain).obligation().map(|obligation|(obligation.party,obligation.owed));
     assert_eq!(owed,Some((alondra_domain::Party::User,alondra_domain::Owed::User)),"the delivery waits for the user's review");
     assert_eq!(admissions(&slice),1);
     slice.domain.admission().ignore_mac();
     slice.domain.admission().tune(crate::admission::Tuning{spacing:0,limit:Some(crate::admission::Limit::Fixed(0))});
     slice.run(&user(),"send-back",Command::SubmitFeedback{merge_failure:None,attachments:vec![],presentation_id:"notes".into(),
         targets:targets.clone(),body:"Add the date".into(),instruction:alondra_domain_rules::Instruction::Changes});
-    assert_eq!(Slice::lifecycle(&slice.domain).obligation().map(|o|(o.party,o.owed)), Some((alondra_domain::Party::Alondra,alondra_domain::Owed::Start)));
-    for _ in 0..3{crate::provider_transition::pass(&slice.domain).await;}
+    assert_eq!(Slice::lifecycle(&*slice.domain).obligation().map(|o|(o.party,o.owed)), Some((alondra_domain::Party::Alondra,alondra_domain::Owed::Start)));
+    for _ in 0..3{crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;}
     assert_eq!(admissions(&slice),1,"the gate holds the start while it has no slot");
     let restarted=slice.restart(); restarted.enable_sdk(slice.backend.clone());
     restarted.admission().ignore_mac();
@@ -2266,10 +2268,10 @@ async fn a_delivery_moved_while_reviewed_waits_for_the_user_and_starts_on_the_ne
     let mut changed=restarted.subscribe();
     let admissions=||restarted.read().state().lifecycle_journal[&task].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count();
     while admissions()<2{
-        crate::provider_transition::pass(&restarted).await;
+        crate::provider_transition::pass(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
         if admissions()<2{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("the delivery sent back never started").unwrap();}
     }
     assert_eq!(restarted.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
-    assert!(!crate::provider_transition::moving(&restarted,&task));
+    assert!(!crate::provider_transition::moving(&*restarted,&task));
     restarted.stop_sdk_owners();
 }

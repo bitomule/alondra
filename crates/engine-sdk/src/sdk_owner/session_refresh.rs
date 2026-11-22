@@ -57,8 +57,8 @@ fn basis(last: Option<LastRequest>, source: Option<Source>, absent: &str, now: M
 }
 
 /// The session `conversation` records and Claude Code's transcript of it.
-fn located(domain: &DomainRuntime, task: &TaskId, stamp_conversation: &str, conversation: &Conversation) -> Result<(String, PathBuf), &'static str> {
-    let metadata = domain.store.lock_or_exit("the domain store").conversation_metadata(task, stamp_conversation);
+fn located(domain: &dyn Runtime, task: &TaskId, stamp_conversation: &str, conversation: &Conversation) -> Result<(String, PathBuf), &'static str> {
+    let metadata = domain.store().lock_or_exit("the domain store").conversation_metadata(task, stamp_conversation);
     let session = metadata.ok().flatten().as_deref().and_then(alondra_provider_claude::conversation_session).ok_or("its session is not recorded")?;
     let transcript = claude_history::transcript(&conversation.native_environment, &session, std::path::Path::new(&conversation.directory))
         .ok_or("Claude Code's transcript of the session was not found")?;
@@ -119,7 +119,7 @@ const FIVE_MINUTES_MS: Millis = 5 * 60_000;
 /// the log says which, and why the session starts anew or goes on. A refresh that cannot be
 /// prepared leaves the session to go on, and says why. A session in the middle of a turn goes on,
 /// and while a change of the task's session is under way nothing more is requested.
-pub(super) fn refresh(domain: &DomainRuntime, task: &TaskId, provider: Provider, host_directory: &std::path::Path, conversation: &Conversation) -> bool {
+pub(super) fn refresh(domain: &dyn Runtime, task: &TaskId, provider: Provider, host_directory: &std::path::Path, conversation: &Conversation) -> bool {
     let (pending, stamp_conversation, instance) = {
         let read = domain.read();
         let Ok(lifecycle) = read.state().lifecycle_of(task) else { return false };
@@ -158,7 +158,7 @@ pub(super) fn refresh(domain: &DomainRuntime, task: &TaskId, provider: Provider,
         false
     };
     let (open, latest) = {
-        let store = domain.store.lock_or_exit("the domain store");
+        let store = domain.store().lock_or_exit("the domain store");
         (store.provider_transition(task), store.latest_provider_transition(task))
     };
     if !matches!(open, Ok(None)) {

@@ -8,5 +8,5 @@ pub mod obligation_watch {
 }
 
 pub mod problems {
-    pub use alondra_engine_kernel::domain_runtime::problems::tell_command;
+    pub use alondra_engine_ports::runtime::tell_command;
 }

@@ -1,5 +1,6 @@
 //! Public routes are exercised with signed requests. Views use the same client
 //! in-process, so their reads and actions exercise that client directly.
+use alondra_daemon_engine::domain_runtime::RuntimeRecords as _;
 use alondra_store_sqlite::AsSqlite as _;
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_engine_sdk::sdk_owner::SdkOwners as _;
@@ -475,7 +476,7 @@ async fn closing_a_node_that_runs_through_the_sdk_is_refused_because_it_ends_wit
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())),
     });
-    let launched = crate::sdk_owner::launch(&fixture.domain, crate::sdk_owner::Launch {
+    let launched = crate::sdk_owner::launch(&*fixture.domain, crate::sdk_owner::Launch {
         task: "task-sdk".into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
         prompt: "Write the release notes".into(), plugin: "/synthetic/plugin".into(), options: Default::default(),
         model: None, account: alondra_core::accounts::AccountId::default_account(),
@@ -1056,7 +1057,7 @@ fn memory(fixture: &Fixture, pressure: alondra_core::MemoryPressure, at: &[i64])
             disk_total: 500_000_000_000, disk_available: 100_000_000_000,
             memory_free_percent: Some(50), memory_pressure: Some(pressure), cpus: 11, load: [1.0; 3],
             ..alondra_core::Machine::default() };
-        crate::machine_watch::pace(&fixture.domain, &machine);
+        crate::machine_watch::pace(&*fixture.domain, &machine);
     }
 }
 
@@ -1083,7 +1084,7 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
     });
     let watch = &fixture.domain.machine_watch();
-    let ask = || fixture.domain.admission().ask(&fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_domain_rules::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
+    let ask = || fixture.domain.admission().ask(&*fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_domain_rules::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
     watch.measure_disk(alondra_engine_ports::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
     assert_eq!(ask(), Err(Hold::Disk { free: 6 * GB, needed: 21 * GB, volume: None }),
         "projects never measured: 8 GB for the build of the node at work and 8 GB for this one, on top of the 5 GB line");
@@ -1215,8 +1216,8 @@ async fn a_node_whose_session_ended_with_its_task_open_leaves_the_tasks_in_progr
     let connection = mods.connect_node(serde_json::from_value(json!({"session_id": "stopped", "version": "2.1.287"})).unwrap(), alondra_core::now_millis());
     mods.report(serde_json::from_value(json!({"session_id": "stopped", "event": "session.end"})).unwrap(), alondra_core::now_millis());
     mods.live().mods.disconnect("stopped", connection);
-    crate::domain_agent_lifecycle::move_instance(domain, &"stopped".into(), alondra_domain_rules::NodeEvent::SessionClosed,
-        &crate::domain_agent_lifecycle::prepare_event(domain, "end-stopped").unwrap()).unwrap();
+    crate::domain_agent_lifecycle::move_instance(&**domain, &"stopped".into(), alondra_domain_rules::NodeEvent::SessionClosed,
+        &crate::domain_agent_lifecycle::prepare_event(&**domain, "end-stopped").unwrap()).unwrap();
 
     assert!(!in_progress(&fixture, "task-stopped").await, "no session, not in progress");
     assert_ne!(task_shown(&fixture, "task-stopped", "es").await[0].0, "Trabajando", "its session ended: its task does not say it works");
