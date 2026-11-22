@@ -6,7 +6,7 @@ use alondra_domain::ActivityView;
 use alondra_domain_rules::Scope;
 use alondra_store_sqlite::domain_database_migration::DATABASE;
 use engine_fixtures::owner::codex::{configured, launch, transcript};
-use engine_fixtures::owner::{DECISION_CARDS, HostRoot, Slice, TASK, advance, owner_generation, runfile};
+use engine_fixtures::owner::{DECISION_CARDS, HostRoot, ProcessHosts, Slice, TASK, advance, owner_generation, runfile};
 use alondra_engine_sdk::sdk_owner::{Driver, backend};
 use rusqlite::Connection;
 use std::io::{BufRead, BufReader};
@@ -24,6 +24,7 @@ use alondra_daemon_engine::test_support;
 /// What the fixtures ask of the test crate that compiles them.
 mod engine_tests {
     pub use crate::engine_fixtures::owner::SdkLaunches;
+    pub use crate::engine_fixtures::owner::ProcessHosts as SliceHosts;
 
     pub fn wired() {
         alondra_foundation::durability::relax();
@@ -136,7 +137,7 @@ fn durable_native_work(slice: &Slice) -> DurableNativeWork {
 }
 
 fn daemon_fixture(mode: &str) -> (Slice, Driver, PathBuf, PathBuf) {
-    let mut slice = Slice::with_database_name(HostRoot::new(), DATABASE);
+    let mut slice = Slice::with_database_name(ProcessHosts::default(), DATABASE);
     let sentinels = slice._home.join("sentinels"); std::fs::create_dir(&sentinels).unwrap();
     let calls = slice._home.join("forbidden-native-calls");
     for name in ["claude", "security", "launchctl"] {
@@ -236,7 +237,7 @@ fn adopted(slice: &Slice, journal: &Path, generation: i64, cycle: usize) {
 
 struct RetainedNativeFixture { slice: Slice, driver: Option<Driver> }
 impl Drop for RetainedNativeFixture {
-    fn drop(&mut self) { drop(self.driver.take()); self.slice._state.kill_hosts(); }
+    fn drop(&mut self) { drop(self.driver.take()); self.slice.hosts.root.kill_hosts(); }
 }
 
 fn prove_actual_daemon_adoption(mode: &str) {

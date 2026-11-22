@@ -109,7 +109,10 @@ materialized locally.
   `engine-doubles/src/sdk.rs` for what the SDK asks the engine. That double fails a question it
   does not answer with the name of the question. A test that needs the real Node or Codex host, or a fake native
   Claude's scripted behaviour the model does not play, goes under the feature `real-hosts`, which
-  only `//crates/engine-sdk:engine_sdk_host_test` compiles. What the model plays is kept honest by
+  only `//crates/engine-sdk:engine_sdk_host_test` compiles; one that passes on the model is
+  `#[cfg(not(feature = "real-hosts"))]`, so it runs once, in `engine_sdk_engine_test`. The owner's
+  slice gets its hosts from the crate that compiles it (`crate::engine_tests::SliceHosts`). What the
+  model plays is kept honest by
   the behaviour cases of `provider-claude/src/host_cases/`, which `sdk_worker_test` runs on the real
   host and `claude_host_model_test` on the model.
 

@@ -156,21 +156,89 @@ impl SdkLaunches {
     }
 }
 
-pub struct Slice {
+/// What plays the slice's hosts and the native Claude behind each: real processes (`ProcessHosts`),
+/// or a model in the test's own process. The crate that compiles these fixtures names its own in
+/// `crate::engine_tests::SliceHosts`.
+pub trait Hosts: Default {
+    /// The backend launches start, its native Claude kept under `home`.
+    fn backend(&mut self, home: &Path) -> SdkBackend;
+    /// Gives `domain`, which the slice just opened, these hosts and the ones it left running.
+    fn serve(&self, domain: &DomainRuntime);
+    /// Each native Claude the hosts started, as the fake native Claude records it.
+    fn starts(&self) -> Vec<serde_json::Value>;
+    /// Every prompt the native Claudes got, in order, the wakes included.
+    fn prompts(&self) -> Vec<String>;
+    /// Every control request the native Claudes received, as they got it.
+    fn controls(&self) -> Vec<serde_json::Value>;
+    /// What the native Claudes got for each decision they asked for, in order.
+    fn decisions(&self) -> Vec<serde_json::Value>;
+}
+
+/// The pinned Node host with the official SDK and the fake native Claude, which records what it gets
+/// in files beside `capture`.
+pub struct ProcessHosts {
+    pub root: HostRoot,
+    pub capture: PathBuf,
+}
+
+impl Default for ProcessHosts {
+    fn default() -> Self {
+        Self::from(HostRoot::new())
+    }
+}
+
+impl From<HostRoot> for ProcessHosts {
+    fn from(root: HostRoot) -> Self {
+        Self { root, capture: PathBuf::new() }
+    }
+}
+
+impl ProcessHosts {
+    fn recorded(&self, suffix: &str) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(format!("{}.{suffix}", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+}
+
+impl Hosts for ProcessHosts {
+    fn backend(&mut self, home: &Path) -> SdkBackend {
+        let (backend, capture) = fixture_backend(home, &self.root);
+        self.capture = capture;
+        backend
+    }
+
+    fn serve(&self, _: &DomainRuntime) {}
+
+    fn starts(&self) -> Vec<serde_json::Value> {
+        self.recorded("starts")
+    }
+
+    fn prompts(&self) -> Vec<String> {
+        self.recorded("prompts").into_iter().map(|prompt| serde_json::from_value(prompt).unwrap()).collect()
+    }
+
+    fn controls(&self) -> Vec<serde_json::Value> {
+        self.recorded("controls")
+    }
+
+    fn decisions(&self) -> Vec<serde_json::Value> {
+        self.recorded("decisions")
+    }
+}
+
+pub struct Slice<H: Hosts = crate::engine_tests::SliceHosts> {
     pub domain: Arc<DomainRuntime>,
     pub database: PathBuf,
-    pub capture: PathBuf,
     pub worktree: PathBuf,
     pub plugin: PathBuf,
     pub backend: SdkBackend,
     /// Every raw host event the daemon committed for the task, by cursor, as it was committed.
     pub kept: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
     /// Before `_home`: the hosts write in the HOME they get, so they end before it is removed.
-    pub _state: HostRoot,
+    pub hosts: H,
     pub _home: Directory,
 }
 
-impl Drop for Slice {
+impl<H: Hosts> Drop for Slice<H> {
     fn drop(&mut self) {
         self.domain.stop_sdk_owners();
     }
@@ -202,25 +270,79 @@ pub fn measure_healthy_machine(domain: &DomainRuntime) {
 
 impl Slice {
     pub fn new() -> Self {
-        Self::with_hosts(HostRoot::new())
+        Self::with_hosts(Default::default())
     }
 
-    pub fn with_hosts(state: HostRoot) -> Self { Self::with_database_name(state,"domain.sqlite") }
+    pub fn lifecycle(domain: &dyn alondra_engine_ports::Runtime) -> alondra_domain::TaskLifecycle {
+        let read = domain.read();
+        replay(&TASK.into(), &read.state().lifecycle_journal[&TaskId::from(TASK)]).unwrap()
+    }
 
-    pub fn with_database_name(state: HostRoot,name:&str)->Self { Self::with_request_body(state,name,"Write the release notes") }
+    /// Every card an ended turn of the task rested on, in the read the clients get, with whether
+    /// it is settled.
+    pub fn read_cards(domain: &dyn alondra_engine_ports::Runtime) -> Vec<(String, bool)> {
+        let read = domain.read();
+        read.state()
+            .interactions
+            .values()
+            .filter(|card| rests_on(TASK, &card.id))
+            .map(|card| (card.id.0.clone(), card.withdrawn || matches!(&card.payload, InteractionPayload::Question { answer: Some(_), .. })))
+            .collect()
+    }
 
-    pub fn with_request_body(state: HostRoot,name:&str,request:&str)->Self {
+    /// What the turn-end card of the task asks the user.
+    pub fn turn_end_need(domain: &DomainRuntime) -> String {
+        let read = domain.read();
+        let state = read.state();
+        let card = state.interactions.values().find(|card| card.id.0.starts_with(&format!("{TURN_ENDED_PREFIX}{TASK}-"))).expect("a turn-end card");
+        card.card.effective_title().replace(&state.tasks[&TaskId::from(TASK)].title, "<title>")
+    }
+
+    pub fn decision_cards(domain: &DomainRuntime) -> Vec<DecisionCard> {
+        let read = domain.read();
+        read.state()
+            .interactions
+            .values()
+            .filter(|card| card.id.0.starts_with(DECISION_CARDS))
+            .map(|card| DecisionCard {
+                id: card.id.0.clone(),
+                answered: matches!(&card.payload, InteractionPayload::Question { answer: Some(_), .. }),
+                withdrawn: card.withdrawn,
+            })
+            .collect()
+    }
+
+    pub fn open_decision_cards(domain: &DomainRuntime) -> Vec<String> {
+        Self::decision_cards(domain).into_iter().filter(|card| !card.answered && !card.withdrawn).map(|card| card.id).collect()
+    }
+
+    /// The cards of the task that are not how a turn ended, open or not.
+    pub fn other_cards(domain: &DomainRuntime) -> Vec<String> {
+        domain.read().state().interactions.keys()
+            .filter(|card| card.0.contains(TASK) && !rests_on(TASK, card))
+            .map(|card| card.0.clone())
+            .collect()
+    }
+}
+
+impl<H: Hosts> Slice<H> {
+    pub fn with_hosts(hosts: H) -> Self { Self::with_database_name(hosts,"domain.sqlite") }
+
+    pub fn with_database_name(hosts: H,name:&str)->Self { Self::with_request_body(hosts,name,"Write the release notes") }
+
+    pub fn with_request_body(mut hosts: H,name:&str,request:&str)->Self {
         let home = Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         let plugin = home.join("plugin");
         std::fs::DirBuilder::new().mode(0o700).create(&plugin).unwrap();
-        let (backend, capture) = fixture_backend(&home, &state);
+        let backend = hosts.backend(&home);
         let database = home.join(name);
         let domain = Arc::new(super::open_at(&home, &database).unwrap());
+        hosts.serve(&domain);
         measure_healthy_machine(&domain);
-        let slice = Self { domain, database, capture, worktree, plugin, backend, kept: Arc::default(), _home: home, _state: state };
+        let slice = Self { domain, database, worktree, plugin, backend, kept: Arc::default(), _home: home, hosts };
         slice.on_acknowledge(|| {});
         slice.run(&Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "sdk-slice-request".into(),
@@ -283,21 +405,16 @@ impl Slice {
     /// Launches a turn that the fake Claude holds open, and reads the host until it runs.
     pub fn launch_working(&self) -> Driver {
         let mut driver = self.launch_told("consume-and-hold", capabilities());
-        while Self::lifecycle(&*self.domain).activity() != ActivityView::Working {
+        while Slice::lifecycle(&*self.domain).activity() != ActivityView::Working {
             driver.observe_written().unwrap();
         }
         driver
     }
 
-    pub fn lifecycle(domain: &dyn alondra_engine_ports::Runtime) -> alondra_domain::TaskLifecycle {
-        let read = domain.read();
-        replay(&TASK.into(), &read.state().lifecycle_journal[&TaskId::from(TASK)]).unwrap()
-    }
 
     /// Every control request the fake Claude received, as it got it.
     pub fn controls(&self) -> Vec<serde_json::Value> {
-        let path = PathBuf::from(format!("{}.controls", self.capture.display()));
-        std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+        self.hosts.controls()
     }
 
     /// The task's controls in the store: kind, argument and status, in order.
@@ -344,33 +461,14 @@ impl Slice {
 
     /// The prompts Claude got, besides the wake Alondra sends after a turn that ended empty.
     pub fn prompts(&self) -> Vec<String> {
-        let path = PathBuf::from(format!("{}.prompts", self.capture.display()));
-        not_wakes(std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
+        not_wakes(self.hosts.prompts().into_iter())
     }
 
     pub fn observer(&self) -> Connection {
         Connection::open(&self.database).unwrap()
     }
 
-    /// Every card an ended turn of the task rested on, in the read the clients get, with whether
-    /// it is settled.
-    pub fn read_cards(domain: &dyn alondra_engine_ports::Runtime) -> Vec<(String, bool)> {
-        let read = domain.read();
-        read.state()
-            .interactions
-            .values()
-            .filter(|card| rests_on(TASK, &card.id))
-            .map(|card| (card.id.0.clone(), card.withdrawn || matches!(&card.payload, InteractionPayload::Question { answer: Some(_), .. })))
-            .collect()
-    }
 
-    /// What the turn-end card of the task asks the user.
-    pub fn turn_end_need(domain: &DomainRuntime) -> String {
-        let read = domain.read();
-        let state = read.state();
-        let card = state.interactions.values().find(|card| card.id.0.starts_with(&format!("{TURN_ENDED_PREFIX}{TASK}-"))).expect("a turn-end card");
-        card.card.effective_title().replace(&state.tasks[&TaskId::from(TASK)].title, "<title>")
-    }
 
     pub fn stored_cards(&self) -> i64 {
         stored_turn_ends(&self.database)
@@ -390,7 +488,7 @@ pub fn committed_revision(database: &Path) -> u64 {
 }
 
 /// At every acknowledgement, what readers see is the revision SQL committed.
-pub fn watch_acknowledgements(slice: &Slice) -> Arc<Mutex<Vec<(u64, u64)>>> {
+pub fn watch_acknowledgements<H: Hosts>(slice: &Slice<H>) -> Arc<Mutex<Vec<(u64, u64)>>> {
     let seen = Arc::new(Mutex::new(vec![]));
     let (recorded, database, domain) = (Arc::clone(&seen), slice.database.clone(), Arc::downgrade(&slice.domain));
     slice.on_acknowledge(move || {
@@ -434,7 +532,7 @@ pub fn owner_generation(database: &Path) -> i64 {
 /// The owner of the task's host goes without stopping it, as the owner of 0.3.0 did when a step
 /// failed, and the host's owner socket goes too: the host lives on, holds its lock, and no owner
 /// can ever reach it again.
-pub fn strand_host(slice: &Slice, driver: Driver) -> (String, Vec<alondra_process_group::Member>) {
+pub fn strand_host(slice: &Slice<ProcessHosts>, driver: Driver) -> (String, Vec<alondra_process_group::Member>) {
     let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
     let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
     let folder = slice.backend.state_root.join(&driver.agent().0);
@@ -445,8 +543,8 @@ pub fn strand_host(slice: &Slice, driver: Driver) -> (String, Vec<alondra_proces
 }
 
 /// The background commands the fake Claude started, by process id.
-pub fn background_commands(slice: &Slice) -> Vec<libc::pid_t> {
-    std::fs::read_to_string(format!("{}.background", slice.capture.display())).unwrap_or_default().lines().map(|line| line.parse().unwrap()).collect()
+pub fn background_commands(slice: &Slice<ProcessHosts>) -> Vec<libc::pid_t> {
+    std::fs::read_to_string(format!("{}.background", slice.hosts.capture.display())).unwrap_or_default().lines().map(|line| line.parse().unwrap()).collect()
 }
 
 pub fn running(pid: libc::pid_t) -> bool {
@@ -455,7 +553,7 @@ pub fn running(pid: libc::pid_t) -> bool {
 }
 
 /// Reads the host until the task's lifecycle waits only on the background work Claude left running.
-pub fn until_own_work(slice: &Slice, driver: &mut Driver) {
+pub fn until_own_work(slice: &Slice<ProcessHosts>, driver: &mut Driver) {
     while lifecycle(&*slice.domain).activity() != ActivityView::OwnWork {
         driver.observe_written().unwrap();
     }
@@ -464,7 +562,7 @@ pub fn until_own_work(slice: &Slice, driver: &mut Driver) {
 
 /// The host that replaced the stranded one ended the background command with it, the resumed
 /// session is told that command ended and will not report back, and it goes on: its turn ends.
-pub fn assert_told_the_work_ended(slice: &Slice, domain: &Arc<DomainRuntime>, mut driver: Driver, session: &str) {
+pub fn assert_told_the_work_ended(slice: &Slice<ProcessHosts>, domain: &Arc<DomainRuntime>, mut driver: Driver, session: &str) {
     assert!(background_commands(slice).into_iter().all(|pid| !running(pid)), "the background command ended with its host");
     assert!(open_card(domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
     assert_eq!(driver.pending_permits(), 1, "the resumed session is told to go on");
@@ -479,7 +577,7 @@ pub fn assert_told_the_work_ended(slice: &Slice, domain: &Arc<DomainRuntime>, mu
     driver.stop().unwrap();
 }
 
-impl Slice {
+impl<H: Hosts> Slice<H> {
     /// A second task of the request, ready to launch in the slice's worktree.
     pub fn task(&self, task: &str) {
         self.run(&Actor::Orchestrator { generation: 0 }, &format!("task-{task}"), Command::CreateTask {
@@ -536,16 +634,16 @@ pub fn kill_host(driver: &Driver) {
     exits.wait().unwrap();
 }
 
-impl Slice {
+impl<H: Hosts> Slice<H> {
     /// Each native Claude the hosts started: its session, the session it resumed and how many
     /// prompts that session's transcript already held.
     pub fn starts(&self) -> Vec<serde_json::Value> {
-        let path = PathBuf::from(format!("{}.starts", self.capture.display()));
-        std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+        self.hosts.starts()
     }
 
     pub fn restart(&self) -> Arc<DomainRuntime> {
         let domain = Arc::new(super::open_at(&self._home, &self.database).unwrap());
+        self.hosts.serve(&domain);
         measure_healthy_machine(&domain);
         domain
     }
@@ -598,30 +696,13 @@ pub struct DecisionCard {
     pub withdrawn: bool,
 }
 
-impl Slice {
+impl<H: Hosts> Slice<H> {
     /// What the fake Claude got for each decision it asked for, in order.
     pub fn decisions(&self) -> Vec<serde_json::Value> {
-        let path = PathBuf::from(format!("{}.decisions", self.capture.display()));
-        std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+        self.hosts.decisions()
     }
 
-    pub fn decision_cards(domain: &DomainRuntime) -> Vec<DecisionCard> {
-        let read = domain.read();
-        read.state()
-            .interactions
-            .values()
-            .filter(|card| card.id.0.starts_with(DECISION_CARDS))
-            .map(|card| DecisionCard {
-                id: card.id.0.clone(),
-                answered: matches!(&card.payload, InteractionPayload::Question { answer: Some(_), .. }),
-                withdrawn: card.withdrawn,
-            })
-            .collect()
-    }
 
-    pub fn open_decision_cards(domain: &DomainRuntime) -> Vec<String> {
-        Self::decision_cards(domain).into_iter().filter(|card| !card.answered && !card.withdrawn).map(|card| card.id).collect()
-    }
 
     pub fn options(&self, card: &str) -> Vec<String> {
         let state = self.domain.state().unwrap();
@@ -631,7 +712,7 @@ impl Slice {
 
     /// Runs the owner one step at a time until `done`; it never waits for a host that has nothing
     /// the task waits for.
-    pub fn until(&self, driver: &mut Driver, done: impl Fn(&Slice) -> bool) {
+    pub fn until(&self, driver: &mut Driver, done: impl Fn(&Self) -> bool) {
         while !done(self) {
             assert!(driver.pending_controls() > 0 || driver.pending_permits() > 0 || driver.waits_for_host(),
                 "nothing is left to run and it is not done: {:?}", Slice::lifecycle(&*self.domain).activity());
@@ -675,7 +756,7 @@ impl Slice {
 
 
 /// The task is cancelled from its turn-end card, which stays answered with that choice.
-pub fn assert_cancelled_from_its_card(slice: &Slice, reply: &serde_json::Value) {
+pub fn assert_cancelled_from_its_card<H: Hosts>(slice: &Slice<H>, reply: &serde_json::Value) {
     assert_eq!(reply["outcome"], "applied", "{reply}");
     let state = slice.domain.state().unwrap();
     assert!(state.tasks[&TaskId::from(TASK)].cancelled(), "the task is cancelled");
@@ -686,7 +767,7 @@ pub fn assert_cancelled_from_its_card(slice: &Slice, reply: &serde_json::Value) 
     assert!(cards.contains(&(true, false)), "the card keeps the user's choice: {cards:?}");
 }
 
-impl Slice {
+impl<H: Hosts> Slice<H> {
     /// Launches task `task` of the request told `prompt`, and reads its host until `done`.
     pub fn launch_until(&self, task: &str, prompt: &str, done: impl Fn(&DomainState, &AgentId) -> bool) -> Driver {
         let mut driver = start_bound(self.domain.clone(), &self.backend, Launch {
@@ -702,7 +783,7 @@ impl Slice {
     }
 }
 
-impl Slice {
+impl<H: Hosts> Slice<H> {
     /// The backend a daemon of the release before ran: the same host with other bytes, as the host
     /// of every release is, kept apart from this release's.
     pub fn release_before(&self) -> SdkBackend {
@@ -716,21 +797,24 @@ impl Slice {
         SdkBackend { node: host.clone(), node_sha256: sha256.clone(), host, host_sha256: sha256, ..self.backend.clone() }
     }
 
+}
+
+impl Slice<ProcessHosts> {
     /// The command Claude left running in the background (`background-command`).
     pub fn background_command(&self) -> alondra_process_group::Member {
-        let pid: i32 = std::fs::read_to_string(format!("{}.background", self.capture.display())).unwrap().parse().unwrap();
+        let pid: i32 = std::fs::read_to_string(format!("{}.background", self.hosts.capture.display())).unwrap().parse().unwrap();
         alondra_process_group::members(alondra_process_group::group(pid).unwrap().unwrap()).unwrap()
             .into_iter().find(|member| member.pid == pid).expect("the background command runs")
     }
 
     /// Claude starts a turn on the prompts it held with `stall-while-held`, from now on.
     pub fn let_claude_start(&self) {
-        std::fs::write(format!("{}.start", self.capture.display()), "").unwrap();
+        std::fs::write(format!("{}.start", self.hosts.capture.display()), "").unwrap();
     }
 
     /// Ends the command Claude left running in the background.
     pub fn release_background_command(&self) {
-        std::fs::write(format!("{}.release", self.capture.display()), "done\n").unwrap();
+        std::fs::write(format!("{}.release", self.hosts.capture.display()), "done\n").unwrap();
     }
 
     /// A daemon of this release that took over a node running a command in the background on a
@@ -768,16 +852,9 @@ impl Slice {
         assert!(prompts[1].ends_with("Add the tests first") && !prompts[1].contains("cut off"), "nothing about a cut: {prompts:?}");
         let left: Vec<String> = old_host.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
         assert!(left.is_empty(), "the host of the release before is gone: {left:?}");
-        assert_eq!(Self::other_cards(upgraded), Vec::<String>::new(), "moving the node asked the user nothing");
+        assert_eq!(Slice::other_cards(upgraded), Vec::<String>::new(), "moving the node asked the user nothing");
     }
 
-    /// The cards of the task that are not how a turn ended, open or not.
-    pub fn other_cards(domain: &DomainRuntime) -> Vec<String> {
-        domain.read().state().interactions.keys()
-            .filter(|card| card.0.contains(TASK) && !rests_on(TASK, card))
-            .map(|card| card.0.clone())
-            .collect()
-    }
 }
 
 #[path = "codex_fixtures.rs"]

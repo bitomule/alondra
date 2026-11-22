@@ -245,7 +245,7 @@ only through the port `SdkEngine` (see "`engine-sdk` asks the engine through `Sd
   `//crates/engine-sdk:engine_sdk_engine_test` opens the whole engine on the doubled hosts with the
   Claude host model and carries no host executable; `//crates/engine-sdk:engine_sdk_host_test`
   compiles only the tests that need the real Node or Codex host or a fake native Claude or Codex
-  (see "The SDK's tests on the double"). None carries a binary of the root (see "Tests leave the
+  (see "The SDK's tests on the double" and "The owner's tests on the model"). None carries a binary of the root (see "Tests leave the
   root"), and no test runs on a name filter.
 
 ## Output adapters
@@ -720,6 +720,43 @@ Measured with `edit_bench`, one run each on the shared Mac under load (load aver
   `release_tests`, about 250) are not ported to doubles: they need the real hosts, and a double of
   all 43 methods of `SdkEngine` would only move the engine into the doubles. The engine's own tests
   that live here (`engine_tests/*`) did not move to `daemon-engine`'s crate either.
+
+## The owner's tests on the model (phase 6, part 1, 2026-11-22)
+
+`sdk_owner`'s tests (`tests.rs`, `release_tests.rs`, `untaken_tests.rs`, `capability_tests.rs`,
+`pause_tests.rs`) compiled only in `engine_sdk_host_test`. They now compile in
+`engine_sdk_engine_test` too, and each test says where it runs:
+
+- The owner's slice (`engine_fixtures::owner::Slice`) takes its hosts from the crate that compiles
+  it, `crate::engine_tests::SliceHosts`: `ProcessHosts` (the pinned Node host and the fake native
+  Claude, read back from its capture files) in `engine_sdk_host_test`, `daemon_server_test` and
+  `codex_adoption_process_test`; `model_fixture::ModelHosts` (the doubled hosts of `engine-doubles`
+  playing the Claude host model) in `engine_sdk_engine_test`. What a test reads of the hosts (the
+  starts, the prompts, the control requests and the decisions) goes through the trait `Hosts`; the
+  model does not keep control requests or decisions yet, and says so when a test asks.
+- A test that passes on the model is `#[cfg(not(feature = "real-hosts"))]` and runs only in
+  `engine_sdk_engine_test`; one that needs the real host, kills its process group or follows a
+  scripted scenario of the fake native Claude is `#[cfg(feature = "real-hosts")]` and stays in
+  `engine_sdk_host_test`. Each was sorted by running it alone on the model with a 60 s limit:
+  62 pass (`tests.rs` 40, `release_tests` 8, `untaken` 5, `capability_tests` 3, `pause_tests` 6),
+  the rest fail or hang. A helper takes the mark of the tests that use it, none when both do.
+  `codex_tests` stays whole in `engine_sdk_host_test` (the Codex host, phase 8).
+- What keeps the rest on real hosts, counted over the failures of the tests that compiled on the
+  model: a scenario the model does not play (the turn rests where the fake would ask, plan or hold:
+  20), `kill_host`'s `/bin/kill` on the host's group (20), the control requests (6) and decisions (4)
+  the model does not keep, a hang past 60 s (5), and one or two each of a process group, a test
+  process holding a host and files only the fake writes. Another 74 tests and helpers do not
+  compile on the model because they read the fake's capture files or the host root directly.
+
+Counts and times, `bazel test` on the shared Mac:
+
+| Target | Before (main at a4ff450e2) | After |
+|---|---:|---:|
+| `engine_sdk_engine_test` | 231 tests | 293 tests, 11.1 s |
+| `engine_sdk_host_test` | 310 tests (144.5 s alone, 164 s in an edit, measured before) | 248 tests, 125.3 s |
+
+`//tools:test_catalog compare` over `//crates/engine-sdk/...`, `//crates/daemon-server/...` and
+`codex_adoption_process_test`: 1305 kept, 62 now also listed in `engine_sdk_engine_test`, none lost.
 
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 
