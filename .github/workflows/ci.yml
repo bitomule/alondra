@@ -6,16 +6,7 @@
         "main"
       ]
     },
-    "workflow_dispatch": {
-      "inputs": {
-        "check": {
-          "description": "MUSTS check to diagnose (blank runs every check)",
-          "type": "string",
-          "default": "",
-          "required": false
-        }
-      }
-    }
+    "workflow_dispatch": {}
   },
   "permissions": {
     "contents": "read"
@@ -25,90 +16,29 @@
     "cancel-in-progress": true
   },
   "jobs": {
-    "select": {
-      "if": "${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' }}",
-      "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 5,
-      "outputs": {
-        "matrix": "${{ steps.plan.outputs.matrix }}",
-        "has_checks": "${{ steps.plan.outputs.has_checks }}"
-      },
-      "steps": [
-        {
-          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-          "with": {
-            "fetch-depth": 0,
-            "persist-credentials": false
-          }
-        },
-        {
-          "id": "plan",
-          "name": "Select MUSTS target sets",
-          "run": "python3 tools/ci.py plan"
-        }
-      ]
-    },
-    "validate": {
-      "needs": "select",
-      "if": "${{ needs.select.outputs.has_checks == 'true' }}",
-      "name": "${{ matrix.check }}",
-      "runs-on": "${{ matrix.runner }}",
-      "timeout-minutes": "${{ matrix.timeout }}",
-      "strategy": {
-        "fail-fast": false,
-        "max-parallel": 4,
-        "matrix": "${{ fromJSON(needs.select.outputs.matrix) }}"
-      },
-      "env": {
-        "ALONDRA_SIGNING_DIR": "${{ github.workspace }}/.scratch/unsigned-signing",
-        "ALONDRA_PRIVATE_LITERALS": "none",
-        "DISABLE_AUTOUPDATER": "1",
-        "DEVELOPER_DIR": "${{ matrix.runner == 'xcode-27' && '/Applications/Xcode_27.1.app/Contents/Developer' || '' }}"
-      },
-      "steps": [
-        {
-          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-          "with": {
-            "fetch-depth": 0,
-            "persist-credentials": false
-          }
-        },
-        {
-          "name": "Show toolchain inventory",
-          "if": "${{ runner.os == 'macOS' }}",
-          "run": "xcodebuild -version"
-        },
-        {
-          "name": "Install the pinned offline plugin test CLI",
-          "if": "${{ matrix.check == 'plugin-mod' }}",
-          "run": "npm ci --prefix .github/ci-tools --no-audit --no-fund\necho \"$GITHUB_WORKSPACE/.github/ci-tools/node_modules/.bin\" >> \"$GITHUB_PATH\""
-        },
-        {
-          "name": "Build and test affected targets",
-          "env": {
-            "CI_TARGETS": "${{ toJSON(matrix.targets) }}"
-          },
-          "run": "python3 tools/ci.py run --targets \"$CI_TARGETS\""
-        }
-      ]
-    },
     "CI": {
-      "needs": [
-        "select",
-        "validate"
-      ],
-      "if": "${{ always() }}",
       "name": "CI",
       "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 5,
+      "timeout-minutes": 10,
       "env": {
-        "SELECT_RESULT": "${{ needs.select.result }}",
-        "VALIDATE_RESULT": "${{ needs.validate.result }}"
+        "MUSTS_VERSION": "0.10.1",
+        "MUSTS_SHA256": "f0407f69edb8095885e70ab2ffeeed90ea83ed013ffe41ece178c67acf232bdc",
+        "GH_TOKEN": "${{ github.token }}"
       },
       "steps": [
         {
-          "name": "Require every selected check to pass",
-          "run": "[ \"$SELECT_RESULT\" = success ] && { [ \"$VALIDATE_RESULT\" = success ] || [ \"$VALIDATE_RESULT\" = skipped ]; }"
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Install the published musts binary",
+          "run": "archive=musts-x86_64-unknown-linux-gnu.tar.xz\ngh release download \"musts-v${MUSTS_VERSION}\" --repo bitomule/musts --pattern \"$archive\" --dir \"$RUNNER_TEMP/musts\"\necho \"$MUSTS_SHA256  $RUNNER_TEMP/musts/$archive\" | sha256sum --check -\ntar -xJf \"$RUNNER_TEMP/musts/$archive\" -C \"$RUNNER_TEMP/musts\" --strip-components=1\necho \"$RUNNER_TEMP/musts\" >> \"$GITHUB_PATH\""
+        },
+        {
+          "name": "Require every check to be validated for this tree",
+          "run": "musts validate"
         }
       ]
     }
