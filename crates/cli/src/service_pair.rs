@@ -937,7 +937,7 @@ mod tests {
         answer: impl Fn(&str) -> (&'static str, &'static str) + Send + 'static,
         seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     ) -> (String, std::thread::JoinHandle<()>) {
-        use std::io::{BufRead, BufReader};
+        use std::io::{BufRead, BufReader, Read};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
@@ -947,13 +947,20 @@ mod tests {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
                 let request = line.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+                let mut content_length = 0usize;
                 loop {
                     let mut header = String::new();
                     reader.read_line(&mut header).unwrap();
                     if header == "\r\n" || header.is_empty() {
                         break;
                     }
+                    if let Some((name, value)) = header.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap();
+                        }
+                    }
                 }
+                std::io::copy(&mut reader.by_ref().take(content_length as u64), &mut std::io::sink()).unwrap();
                 let (status, body) = answer(&request);
                 seen.lock().unwrap().push(request);
                 (&stream)
@@ -1108,6 +1115,23 @@ mod tests {
         relay.join().unwrap();
         daemon_server.join().unwrap();
         fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn fake_server_reads_the_request_body_before_answering_so_the_client_never_sees_a_reset() {
+        use std::io::{Read, Write};
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (origin, server) = fake_server(1, |_| ("200 OK", "ok"), seen.clone());
+        let mut stream = std::net::TcpStream::connect(origin.trim_start_matches("http://")).unwrap();
+        let body = vec![b'x'; 256 * 1024];
+        stream
+            .write_all(format!("POST /service/approve-device HTTP/1.1\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes())
+            .unwrap();
+        stream.write_all(&body).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        server.join().unwrap();
     }
 
     #[test]
