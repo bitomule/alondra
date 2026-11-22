@@ -85,7 +85,7 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
         if let Some(summary) = script.summary.as_ref().filter(|_| {
             handled.exists() && !summarized.exists() && prompt.contains(&format!("Every Task of Request {}", script.request_id))
         }) {
-            calls.push(("close_request", json!({"request_id": script.request_id, "answer": summary})));
+            calls.push(("close_request", json!({"request_id": script.request_id, "answer": summary, "outcome": "tasks_ended"})));
             std::fs::write(&summarized, "")?;
         }
         if !prompt.contains(&script.request_id) || handled.exists() {
@@ -93,7 +93,7 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
             continue;
         }
         if let Some(answer) = &script.answer {
-            let mut close = json!({"request_id": script.request_id, "answer": answer});
+            let mut close = json!({"request_id": script.request_id, "answer": answer, "outcome": "answered"});
             if let Some(headline) = &script.headline {
                 close["headline"] = json!(headline);
             }

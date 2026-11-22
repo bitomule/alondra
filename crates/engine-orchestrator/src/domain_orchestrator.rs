@@ -697,6 +697,7 @@ impl Executor {
         self.save(&runtime)?;
         self.domain.orchestrator_progress();
         crate::orchestrator_inbox::hand_replans(&self.domain);
+        self.go_on_after_the_task_limit(run)?;
         if !self.pending()?.is_empty() {
             return Ok(());
         }
@@ -705,6 +706,21 @@ impl Executor {
         let left = crate::orchestrator_inbox::unresolved(&state, requests, suggestions);
         if !left.is_empty() {
             log!("orchestrator: batch {} left without an outcome: {}", run.id, left.join(", "));
+        }
+        Ok(())
+    }
+
+    /// A turn that created the most new Tasks a turn creates may have left some for later: the
+    /// next turn starts at once to create them, and nothing waits for a clock.
+    fn go_on_after_the_task_limit(&self, run: &Run) -> Result<()> {
+        use alondra_domain_rules::orchestrator_batch::TURN_TASK_LIMIT;
+        let created = self.domain.store.lock_or_exit("the domain store").tasks_created_in(&run.id)?;
+        if created < TURN_TASK_LIMIT {
+            return Ok(());
+        }
+        let text = format!("Your last turn created {created} new Tasks, the most one turn creates. If a request still needs Tasks of its own, create them now; if none does, there is nothing to do.");
+        if let Err(error) = self.domain.tell_orchestrator(&format!("turn-task-limit-{}", run.id), None, text) {
+            log!("orchestrator: batch {} reached the task limit and could not be told to go on: {error:?}", run.id);
         }
         Ok(())
     }
@@ -1222,7 +1238,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// in `root` and its hosts in `hosts`, which it keeps until it is dropped.
         pub fn over<R: AsRef<Path> + Send + 'static, H: AsRef<Path> + Send + 'static>(root: R, domain: Arc<DomainRuntime>, home: PathBuf, hosts: H) -> Self {
             let (root, owner) = (root.as_ref().to_owned(), root);
-            crate::wire(domain.ports());
             let claude_home = registered_plugins(&root);
             let fake = root.join("orchestrator-fake-claude.py");
             std::fs::copy(runfile("FIXTURE_ORCHESTRATOR_NATIVE"), &fake).unwrap();
@@ -1493,8 +1508,10 @@ mod tests {
             && !prompt.contains("interaction_id=") && prompt.contains("new conversation"), "{prompt}");
         assert!(prompt.contains(" (tasks: t not_started): Work\n") && prompt.contains("task t of request r: \"Task\" state=not_started agent=a\n"), "{prompt}");
         assert!(unhandled(domain).is_empty());
-        assert!(reminders(domain).is_empty(), "the questions it left unanswered wait for their deadline, not for the batch's end");
-        assert!(attempts(domain).iter().all(|(_, state, _)| state == "handed"));
+        let mut reminded = reminders(domain);
+        reminded.sort();
+        assert_eq!(reminded, ["question-unanswered-q1-1", "question-unanswered-q2-1"], "the turn that ended with them unanswered is reminded of them at once");
+        assert!(attempts(domain).iter().filter(|(_, state, _)| state != "pending").all(|(_, state, _)| state == "handed"));
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.session_id.is_some() && runtime.last_error.is_none());
         let session = runtime.session_id.clone().unwrap();
@@ -1504,7 +1521,7 @@ mod tests {
             "the batch starts after every task it was shown: {:?}", state.orchestrator_batch_base);
         {
             let store = domain.store.lock().unwrap();
-            for item in store.delivery_evidence_page(0).unwrap().into_iter().filter(|i| i.recipient_kind == "orchestrator") {
+            for item in store.delivery_evidence_page(0).unwrap().into_iter().filter(|i| i.recipient_kind == "orchestrator" && i.state == "handed") {
                 assert_eq!(store.orchestrator_delivery(item.attempt_id).unwrap().as_deref(), Some(session.as_str()), "each message records the session it was handed to");
             }
         }
@@ -1517,7 +1534,10 @@ mod tests {
             });
         }
         f.tick().await;
-        assert_eq!(f.starts().len(), 1, "nothing pending, no launch");
+        assert_eq!(f.starts().len(), 2, "the reminder is a turn of its own");
+        assert!(reminders(domain).is_empty() && outbox(domain).is_empty(), "both were answered: nothing more");
+        f.tick().await;
+        assert_eq!(f.starts().len(), 2, "nothing pending, no launch");
         ask_orchestrator(&f, 3);
         f.tick().await;
         let prompt = last_prompt(&f);
@@ -2302,8 +2322,12 @@ mod tests {
         f.tick().await;
         assert_eq!(f.starts().len(), 1, "resumed: the pending batch runs");
         assert!(unhandled(domain).is_empty());
+        assert_eq!(reminders(domain), ["question-unanswered-q1-1"], "the batch left the question unanswered: one reminder");
         f.tick().await;
-        assert_eq!(f.starts().len(), 1, "and only once");
+        assert_eq!(f.starts().len(), 2, "the reminder is the only batch after it");
+        f.tick().await;
+        assert_eq!(f.starts().len(), 2, "and then nothing more");
+        assert!(domain.state().unwrap().interactions[&"q1".into()].withdrawn, "unanswered after its reminder: back to its node");
     }
 
 

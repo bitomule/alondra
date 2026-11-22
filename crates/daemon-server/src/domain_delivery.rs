@@ -1095,7 +1095,7 @@ mod tests {
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_command(&domain, orchestrator, "close", Command::CloseRequest {
+        apply_command(&domain, orchestrator, "close", Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::Answered),
             request_id: "a7efd99d".into(),
             answer: Some("Sí: se cifran en el cliente antes de subirlas a R2".into()),
             withdrawn: false,

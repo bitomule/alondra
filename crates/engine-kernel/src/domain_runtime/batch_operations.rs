@@ -210,6 +210,48 @@ mod tests {
         assert!(changed.is_err());
     }
 
+    /// A turn of the orchestrator creates at most ten new Tasks: the eleventh is refused before it
+    /// changes anything, so the turn ends with no problem to settle, and a create the turn already
+    /// committed is still answered with its receipt.
+    #[test]
+    fn a_turn_creates_at_most_ten_tasks_and_the_eleventh_is_refused_before_any_effect() {
+        use alondra_domain_rules::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
+        use alondra_domain_rules::orchestrator_batch::{TURN_TASK_LIMIT, TURN_TASK_LIMIT_CODE};
+        let home = Directory::new();
+        std::fs::create_dir_all(&*home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open_unwired_at(&home,&home.join("domain.db")).unwrap());
+        let envelope = |id: &str, command: Command| {
+            let state = domain.state().unwrap();
+            CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(), expected_revision: state.revision, command }
+        };
+        domain.execute(&Actor::User { user_id: "u".into() }, &envelope("request", Command::CreateRequest {
+            request_id: "r".into(), body: "Split the migration in phases".into(), auto_merge: false, maintenance: false, message: false,
+        }), None, || Ok(())).unwrap();
+        let token = domain.bind_orchestrator("run").unwrap().expose_for_child_environment().to_owned();
+        domain.execute_bearer(&token, &envelope("title", Command::TitleRequest { request_id: "r".into(), title: "Migration".into() })).unwrap();
+        let create = |n: usize| envelope(&format!("create-{n}"), Command::CreateTask {
+            task_id: format!("t-{n}").as_str().into(), request_id: "r".into(), title: format!("Phase {n}"), agent_id: None, review_prs: false,
+            dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
+        });
+        let mut last = None;
+        for n in 1..=TURN_TASK_LIMIT {
+            let committed = create(n);
+            domain.execute_bearer(&token, &committed).unwrap();
+            last = Some(committed);
+        }
+        let refused = match domain.execute_bearer(&token, &create(TURN_TASK_LIMIT + 1)) {
+            Err(alondra_engine_ports::journal::StoreError::Domain(error)) => error,
+            other => panic!("the eleventh task was not refused: {other:?}"),
+        };
+        assert_eq!(refused.code, TURN_TASK_LIMIT_CODE);
+        assert!(alondra_engine_ports::journal::batch::refused_before_any_effect(Some(&refused.code)), "a refusal leaves nothing to reconcile");
+        assert_eq!(domain.state().unwrap().tasks.len(), TURN_TASK_LIMIT, "nothing was created");
+        domain.execute_bearer(&token, &last.unwrap()).expect("the tenth create is answered again with its receipt");
+        assert_eq!(domain.store.lock().unwrap().tasks_created_in("run").unwrap(), TURN_TASK_LIMIT);
+        let next = domain.bind_orchestrator("next").unwrap().expose_for_child_environment().to_owned();
+        domain.execute_bearer(&next, &create(TURN_TASK_LIMIT + 1)).expect("the next turn creates the rest");
+    }
+
     #[tokio::test]
     async fn a_refusal_is_settled_and_a_lost_outcome_is_named_in_the_log() {
         let home = Directory::new();

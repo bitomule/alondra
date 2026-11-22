@@ -90,7 +90,8 @@ fn tasks_over(outcome: &CommandOutcome, request: &str) -> bool {
     outcome.effects.iter().any(|e| matches!(e, DomainEffect::RequestTasksOver { request_id, .. } if request_id.0 == request))
 }
 fn close(s: &mut DomainState, request: &str) -> Result<CommandOutcome, DomainError> {
-    exec(s, orchestrator(), Command::CloseRequest { request_id: request.into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None })
+    let outcome = if s.tasks.values().any(|task| task.request_id.0 == request) { CloseOutcome::TasksEnded } else { CloseOutcome::Answered };
+    exec(s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(outcome), request_id: request.into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None })
 }
 fn done_card(s: &DomainState, request: &str) -> DoneCard {
     DoneCard::from_body(&s.interactions[&DoneCard::id(request).into()].body).unwrap()

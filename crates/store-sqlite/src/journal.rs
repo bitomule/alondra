@@ -88,6 +88,7 @@ impl Journal for DomainStore {
     fn auto_launches(&self) -> Result<Vec<AutoLaunch>> { DomainStore::auto_launches(self) }
     fn batch_completed(&self, run: &str) -> Result<bool> { DomainStore::batch_completed(self, run) }
     fn batch_effects(&self, run: &str) -> Result<Vec<BatchEffectRef>> { DomainStore::batch_effects(self, run) }
+    fn tasks_created_in(&mut self, run: &str) -> Result<usize> { DomainStore::tasks_created_in(self, run) }
     fn batch_outcomes(&self, run: &str, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value> { DomainStore::batch_outcomes(self, run, epoch, after, limit) }
     fn batch_run_manifest(&self, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value> { DomainStore::batch_run_manifest(self, epoch, after, limit) }
     fn batch_selection(&self, run: &str) -> Result<Option<records::BatchSelection>> { DomainStore::batch_selection(self, run) }

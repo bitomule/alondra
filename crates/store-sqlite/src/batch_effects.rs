@@ -65,8 +65,42 @@ impl DomainStore {
         let ended: bool = self.conn.query_row("SELECT ended FROM orchestrator_batch_runs WHERE run=?1", [run], |row| row.get(0))
             .map_err(|why| StoreError::Storage(why.into()))?;
         if ended { return Err(DomainError::new("forbidden", "This orchestrator batch is settled; start a fresh batch before mutating domain state").into()); }
+        self.within_task_limit(run, envelope)?;
         let batch = BatchCommand { run, attempt: 1, call: &envelope.command_id.0 };
         self.execute_envelope(actor, envelope, None, true, Attached::Batch(&batch))
+    }
+
+    /// How many new Tasks the commands of `run` created: those its effects committed, whose revision
+    /// created them, so a suggestion settled into a new Task counts and a discarded one does not.
+    pub fn tasks_created_in(&mut self, run: &str) -> Result<usize> {
+        let mut statement = self.conn.prepare("SELECT revision FROM orchestrator_batch_effects WHERE run=?1 AND changed=1 AND kind IN ('create_task','settle_suggestion')")?;
+        let revisions = statement.query_map([run], |row| row.get::<_, i64>(0))?.collect::<rusqlite::Result<std::collections::BTreeSet<i64>>>()?;
+        drop(statement);
+        if revisions.is_empty() {
+            return Ok(0);
+        }
+        let state = self.load()?;
+        Ok(state.tasks.values().filter(|task| i64::try_from(task.created_revision).is_ok_and(|revision| revisions.contains(&revision))).count())
+    }
+
+    /// A turn of the orchestrator creates at most `TURN_TASK_LIMIT` new Tasks. A command that would
+    /// create one more is refused before it changes anything; one this turn already committed is
+    /// replayed as it was.
+    fn within_task_limit(&mut self, run: &str, envelope: &CommandEnvelope) -> std::result::Result<(), StoreError> {
+        use alondra_domain_rules::orchestrator_batch::{TURN_TASK_LIMIT, TURN_TASK_LIMIT_CODE};
+        let creates = matches!(&envelope.command, Command::CreateTask { .. }
+            | Command::SettleSuggestion { decision: alondra_domain_rules::SuggestionDecision::NewTask { .. }, .. });
+        if !creates {
+            return Ok(());
+        }
+        let replayed: bool = self.conn.query_row("SELECT EXISTS(SELECT 1 FROM orchestrator_batch_effects WHERE run=?1 AND command_id=?2)", params![run, envelope.command_id.0], |row| row.get(0))
+            .map_err(|why| StoreError::Storage(why.into()))?;
+        if replayed || self.tasks_created_in(run).map_err(StoreError::Storage)? < TURN_TASK_LIMIT {
+            return Ok(());
+        }
+        Err(DomainError::new(TURN_TASK_LIMIT_CODE, format!(
+            "This turn already created {TURN_TASK_LIMIT} new Tasks, the most one turn creates; nothing was created. End this turn: Alondra starts your next one at once, and you create the rest there."
+        )).into())
     }
 
     pub fn batch_effects(&self, run: &str) -> Result<Vec<BatchEffectRef>> {

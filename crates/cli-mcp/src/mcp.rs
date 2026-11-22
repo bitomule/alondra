@@ -528,9 +528,9 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
         ),
         (
             "close_request",
-            "Close a Request: one that needs no Task with its answer, one whose Tasks are all over with what came of it, or mark it withdrawn. For a Request the user made, Alondra writes the user's card from it: headline (at most 90 characters, in the user's language) is the card's title and already says the answer; Alondra supplies the short reading request. answer is the complete content below it, never an opening heading repeating headline. Correct: headline=The build is green, answer=All required checks passed. Incorrect: headline=The build is green, answer=# The build is green followed by the answer; once its Tasks are over, the card says Done and answer is its summary. A maintenance message, and a Request a node or you raised, get no card. folded_into names the open Task that already covers this Request: it then gets no Task of its own; send what is new to that Task's node (or set_launch_plan when it has not started) and close with folded_into, its headline and answer telling the user which Task carries it.",
-            json!({"request_id":{"type":"string"},"answer":{"type":"string","minLength":1,"description":"The complete answer content; never repeat headline as an opening heading"},"headline":{"type":"string","minLength":1,"maxLength":90,"pattern":r"^[^\r\n]+$","description":"The answer card subject, shown once above answer; do not repeat it as an opening heading in answer"},"withdrawn":{"type":"boolean"},"title":{"type":"string","minLength":1,"description":"Optional Request metadata; without headline the card uses a bounded single-line rendering of this title"},"folded_into":{"type":"string","minLength":1,"description":"The id (t-…) of the open Task that already covers this Request; the domain refuses a Task that is over or a Request with Tasks of its own"}}),
-            vec!["request_id"],
+            "Close a Request: one that needs no Task with its answer, one whose Tasks are all over with what came of it, or mark it withdrawn. For a Request the user made, Alondra writes the user's card from it: headline (at most 90 characters, in the user's language) is the card's title and already says the answer; Alondra supplies the short reading request. answer is the complete content below it, never an opening heading repeating headline. Correct: headline=The build is green, answer=All required checks passed. Incorrect: headline=The build is green, answer=# The build is green followed by the answer; once its Tasks are over, the card says Done and answer is its summary. A maintenance message, and a Request a node or you raised, get no card. folded_into names the open Task that already covers this Request: it then gets no Task of its own; send what is new to that Task's node (or set_launch_plan when it has not started) and close with folded_into, its headline and answer telling the user which Task carries it. A Request that needs no Task because Tasks that exist already did or do its work, over or archived ones included, is closed with covered_by naming each of them; the domain refuses an id no Task has. outcome says what came of it, and the domain refuses one the Request contradicts: answered (it needed no Task), covered (with covered_by), folded (with folded_into), withdrawn (with withdrawn), tasks_ended (every Task of its own ended). A Request the user made, settled with no Task of its own, always carries answer, also when withdrawn: the user reads it on its card.",
+            json!({"request_id":{"type":"string"},"answer":{"type":"string","minLength":1,"description":"The complete answer content; never repeat headline as an opening heading"},"headline":{"type":"string","minLength":1,"maxLength":90,"pattern":r"^[^\r\n]+$","description":"The answer card subject, shown once above answer; do not repeat it as an opening heading in answer"},"withdrawn":{"type":"boolean"},"title":{"type":"string","minLength":1,"description":"Optional Request metadata; without headline the card uses a bounded single-line rendering of this title"},"folded_into":{"type":"string","minLength":1,"description":"The id (t-…) of the open Task that already covers this Request; the domain refuses a Task that is over or a Request with Tasks of its own"},"covered_by":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"description":"The ids (t-…) of the existing Tasks, of any state, whose work already answers this Request; the domain refuses an id no Task has"},"outcome":{"type":"string","enum":["answered","covered","folded","withdrawn","tasks_ended"],"description":"What came of the Request: answered (no Task needed), covered (covered_by names the Tasks), folded (folded_into names the Task), withdrawn, tasks_ended (every Task of its own ended)"}}),
+            vec!["request_id", "outcome"],
         ),
         (
             "title_request",
@@ -2191,11 +2191,25 @@ mod tests {
         let catalog = tools(Role::Orchestrator, "Ana");
         let close = catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "close_request").unwrap();
         assert_eq!(close["inputSchema"]["properties"]["folded_into"]["type"], "string");
-        let args = json!({"request_id": "r-waiting", "answer": "Task «Release an idle node» carries it.", "headline": "Added to an open task", "folded_into": "t-idle"});
+        let args = json!({"request_id": "r-waiting", "answer": "Task «Release an idle node» carries it.", "headline": "Added to an open task", "folded_into": "t-idle", "outcome": "folded"});
         let envelope = domain_envelope("close_request", &args, "epoch", "one").unwrap();
         let command: alondra_domain_rules::Command = serde_json::from_value(envelope["command"].clone()).unwrap();
         assert!(matches!(command, alondra_domain_rules::Command::CloseRequest { folded_into: Some(ref task), .. } if task.0 == "t-idle"), "{command:?}");
         assert!(skill_text(Role::Orchestrator).contains("close it with `close_request` and `folded_into`"));
+    }
+
+    #[test]
+    fn a_request_existing_tasks_cover_closes_naming_them() {
+        let catalog = tools(Role::Orchestrator, "Ana");
+        let close = catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "close_request").unwrap();
+        assert_eq!(close["inputSchema"]["properties"]["covered_by"]["type"], "array");
+        assert_eq!(close["inputSchema"]["required"], json!(["request_id", "outcome"]), "every close says what came of the request");
+        let args = json!({"request_id": "r-again", "answer": "Task «Release an idle node» already did it.", "headline": "Already done", "covered_by": ["t-idle"], "outcome": "covered"});
+        let envelope = domain_envelope("close_request", &args, "epoch", "one").unwrap();
+        let command: alondra_domain_rules::Command = serde_json::from_value(envelope["command"].clone()).unwrap();
+        assert!(matches!(command, alondra_domain_rules::Command::CloseRequest { ref covered_by, outcome: Some(alondra_domain_rules::CloseOutcome::Covered), .. }
+            if covered_by == &[alondra_domain_rules::TaskId::from("t-idle")]), "{command:?}");
+        assert!(skill_text(Role::Orchestrator).contains("`covered_by`"));
     }
 
     #[test]

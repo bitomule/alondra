@@ -110,6 +110,8 @@ pub trait Journal: Send {
     fn auto_launches(&self) -> Result<Vec<AutoLaunch>>;
     fn batch_completed(&self, run: &str) -> Result<bool>;
     fn batch_effects(&self, run: &str) -> Result<Vec<BatchEffectRef>>;
+    /// How many new Tasks the commands of `run` created.
+    fn tasks_created_in(&mut self, run: &str) -> Result<usize>;
     fn batch_outcomes(&self, run: &str, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value>;
     fn batch_run_manifest(&self, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value>;
     fn batch_selection(&self, run: &str) -> Result<Option<records::BatchSelection>>;

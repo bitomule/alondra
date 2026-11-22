@@ -429,6 +429,29 @@ proptest! {
     }
 }
 
+/// Alondra settles a case the orchestrator left unsettled with no words of its own. With the PR
+/// open and a message of the user's unanswered, that close used to be refused for the message, so
+/// the case could never be settled: it now says why and delivers the PR like the orchestrator's.
+#[test]
+fn alondras_close_of_a_stop_with_a_user_message_unanswered_delivers_the_open_pr_with_why() {
+    let mut s = stalled_with_open_pr();
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: "t".into(), text: "Prepare an additional report".into(), from_user: true, answers: None,
+    });
+    for n in 0..=alondra_domain::EMPTY_TURN_WAKES {
+        let turn = format!("message-turn-{n}");
+        start(&mut s, &turn);
+        end_empty(&mut s, &turn);
+    }
+    assert!(!task(&s).pending_user_inputs.is_empty(), "the user's message is still unanswered");
+    settle_case(&mut s, Actor::System, StallOutcome::Unsettled);
+    let delivered = OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap();
+    assert_eq!(delivered.result.as_deref(), Some(crate::UNSETTLED_UNANSWERED));
+    assert!(task(&s).pending_user_inputs.is_empty());
+    assert_eq!(task(&s).state, TaskState::ForYourReview, "the user gets the PR, not a task stuck on its case");
+    assert_aggregate_rules(&s);
+}
+
 #[test]
 fn a_stall_explanation_for_a_user_message_is_delivered_with_the_open_pr() {
     for already_delivered in [false, true] {

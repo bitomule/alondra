@@ -124,7 +124,6 @@ mod refused_plans {
     async fn a_refused_plan_the_orchestrator_leaves_is_handed_back_at_every_rest_and_never_cancelled_for_it() {
         super::super::wired();
         let f = world();
-        alondra_engine_orchestrator::wire(f.domain.ports());
         let plan = refused_plan(&f);
         f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
         refuse_its_start(&f).await;
@@ -152,46 +151,45 @@ mod refused_plans {
     }
 }
 
-/// A stopped node's case is reminded to the orchestrator and then settled by Alondra.
+/// A stopped node's case is reminded to the orchestrator when a turn of it ends, and settled by
+/// Alondra when the next one ends.
 mod stopped_nodes {
     use alondra_domain_rules::*;
     use crate::engine_tests::owner_fixtures::*;
     use std::sync::Arc;
 
-    /// A stopped node's case the orchestrator leaves unsettled comes back to it once, and after that
-    /// Alondra hands the node its turn back itself; the count of stops and the case outlive a restart,
-    /// and no card ever asks the user.
+    /// A stopped node's case the orchestrator leaves unsettled when a turn of it ends comes back to
+    /// it once, and when the next turn ends too Alondra hands the node its turn back itself; the
+    /// count of stops, the case and the reminder outlive a restart, the clock decides nothing, and no
+    /// card ever asks the user.
     #[test]
     fn a_stop_left_unsettled_is_reminded_once_then_handed_back_and_both_outlive_a_restart() {
         super::super::wired();
         use alondra_domain_rules::{STALL_ATTEMPTS, UNSETTLED_INSTRUCT};
         use alondra_domain_rules::orchestrator_cards::STALL_NOTICE_PREFIX;
-        const MINUTE: i64 = 60_000;
+        const HOUR: i64 = 3_600_000;
         let (fixture, mut store, execution) = running();
         let normalizer = woken(&mut store, &execution);
         let runtime = runtime(&fixture, store);
-        alondra_engine_orchestrator::wire(runtime.ports());
         let state = Arc::clone(runtime.read().state());
         runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, WOKEN_CURSOR), &normalizer, no_home(), false)).unwrap();
         let case = stall_case_of("turn-2");
+        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 24 * HOUR);
+        assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)), "the clock reminds of nothing");
         alondra_engine_orchestrator::orchestrator_inbox::settle(&runtime);
-        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 0);
-        assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)), "nothing before its deadline");
-        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 10 * MINUTE);
         let state = runtime.state().unwrap();
         assert!(state.interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}").as_str())), "the orchestrator is reminded");
         assert!(state.open(&state.interactions[&case]) && !state.tasks[&task()].over(), "it gets one more go first");
         assert_eq!(state.tasks[&task()].stalls, 1);
         assert!(STALL_ATTEMPTS > state.tasks[&task()].stalls);
         let runtime = runtime_reopened(&fixture, runtime);
-        alondra_engine_orchestrator::wire(runtime.ports());
         let state = runtime.state().unwrap();
         assert_eq!(state.tasks[&task()].stalls, 1, "the count outlives the restart");
         assert!(state.open(&state.interactions[&case]), "and so does the case");
-        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 30 * MINUTE);
-        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 40 * MINUTE);
+        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 48 * HOUR);
+        assert!(runtime.state().unwrap().open(&runtime.state().unwrap().interactions[&case]), "the clock settles nothing");
+        alondra_engine_orchestrator::orchestrator_inbox::settle(&runtime);
         let runtime = runtime_reopened(&fixture, runtime);
-        alondra_engine_orchestrator::wire(runtime.ports());
         let state = runtime.state().unwrap();
         assert!(!state.open(&state.interactions[&case]), "Alondra settled it, and that outlives the restart");
         assert!(matches!(state.lifecycle_journal[&task()].iter().rev().find(|record| matches!(record, LifecycleRecord::Answered { .. })),
@@ -211,20 +209,19 @@ mod stopped_nodes {
         let (fixture, mut store, execution) = running();
         let normalizer = woken(&mut store, &execution);
         let runtime = runtime(&fixture, store);
-        alondra_engine_orchestrator::wire(runtime.ports());
         let state = Arc::clone(runtime.read().state());
         runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, WOKEN_CURSOR), &normalizer, no_home(), false)).unwrap();
-        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 0);
         let state = Arc::clone(runtime.read().state());
         let settle = Command::SettleStall { case_id: stall_case_of("turn-2"), task_id: task(), outcome: alondra_domain_rules::StallOutcome::Instruct { text: "Present it".into() } };
         let fresh = CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "orchestrator-instructs", settle) };
         runtime.execute(&Actor::Orchestrator { generation: state.orchestrator_generation }, &fresh, None, || Ok(())).unwrap();
-        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 11 * 60_000);
+        alondra_engine_orchestrator::orchestrator_inbox::settle(&runtime);
         assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)));
     }
 }
 
-/// Plans a decision of the user holds are reminded, then released unchanged with a note.
+/// Plans a decision of the user holds are reminded when a turn of the orchestrator ends, then
+/// released unchanged with a note when the next one ends.
 mod held_plans {
     use alondra_domain_rules::{PlanReviewOutcome, Recipient, TaskId};
     use alondra_domain_rules::orchestrator_cards::PLAN_REVIEW_NOTICE_PREFIX;
@@ -236,26 +233,23 @@ mod held_plans {
         domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(PLAN_REVIEW_NOTICE_PREFIX)).count()
     }
 
-    const MINUTE: i64 = 60_000;
+    const HOUR: i64 = 3_600_000;
 
     #[test]
     fn an_unreviewed_plan_is_released_unchanged_and_its_node_is_told() {
         super::super::wired();
         let (_home, domain) = redraft();
-        alondra_engine_orchestrator::wire(domain.ports());
         let queued = alondra_daemon_engine_model::LaunchBody::from_plan("d".into(), &plan("d", "Phase D: 360 px everywhere")).to_queue();
         domain.store.lock().unwrap().enqueue_launch(&"d".into(), &queued, "auto", 1).unwrap();
         settle(&domain, "c-same", "c", PlanReviewOutcome::Unchanged { reason: "Phase C does not depend on the print size".into() }).unwrap();
+        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&domain, 24 * HOUR);
+        assert_eq!(reminders(&domain), 0, "the clock reminds of nothing");
         alondra_engine_orchestrator::orchestrator_inbox::settle(&domain);
-        assert_eq!(reminders(&domain), 0, "a handled batch reminds of nothing");
-        for minutes in [0, 10] {
-            alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
-        }
-        assert_eq!(reminders(&domain), 1, "reminded at its deadline");
+        assert_eq!(reminders(&domain), 1, "reminded when the turn ended with them unreviewed");
         let reminder = domain.state().unwrap().interactions.values().find(|i| i.id.0.starts_with(PLAN_REVIEW_NOTICE_PREFIX)).unwrap().body.clone();
         assert!(reminder.contains("Phase D: 360 px everywhere") && !reminder.contains("Phase C: group"), "only what is still held: {reminder}");
         assert!(held(&domain.state().unwrap(), &"d".into()).is_some(), "one more go for the orchestrator first");
-        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&domain, 21 * MINUTE);
+        alondra_engine_orchestrator::orchestrator_inbox::settle(&domain);
         let state = domain.state().unwrap();
         assert!(held(&state, &"d".into()).is_none() && held(&state, &"e".into()).is_none(), "released");
         assert!(matches!(state.plan_reviews[&"decision-1".into()].dependents[&TaskId::from("d")].as_ref().unwrap().outcome, PlanReviewOutcome::Unchanged { .. }));
@@ -270,7 +264,7 @@ mod held_plans {
     }
 }
 
-/// The daemon's one clock does not age what the orchestrator owes while the usage limit holds it.
+/// No clock reminds the orchestrator, during the usage limit or after it: only a turn that ends.
 mod usage_hold {
     use alondra_daemon_engine::live::LiveOf as _;
     use alondra_domain_rules::*;
@@ -341,23 +335,24 @@ mod usage_hold {
     }
 
     #[test]
-    fn no_fallback_runs_while_the_usage_limit_holds_the_orchestrator() {
+    fn no_clock_reminds_the_orchestrator_during_the_usage_limit_or_after_it() {
         super::super::wired();
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = alondra_daemon_engine::wiring::open(&home).unwrap();
-        alondra_engine_orchestrator::wire(domain.ports());
         let case = stalled(&domain);
         domain.live().usage_pause.exhaust(Some(2 * 60 * MINUTE), 0);
         for minutes in (0..=60).step_by(5) {
             alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
         }
         assert!(!reminded(&domain, &case), "an hour held by the usage limit counts for nothing");
-        assert!(domain.state().unwrap().open(&domain.state().unwrap().interactions[&case]));
         domain.live().usage_pause.resume(60 * MINUTE);
-        for minutes in [61, 71] {
+        for minutes in [61, 71, 24 * 60] {
             alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
         }
-        assert!(reminded(&domain, &case), "the clock runs again once the limit is over");
+        assert!(!reminded(&domain, &case), "nor a day after it");
+        assert!(domain.state().unwrap().open(&domain.state().unwrap().interactions[&case]));
+        alondra_engine_orchestrator::orchestrator_inbox::settle(&domain);
+        assert!(reminded(&domain, &case), "a turn of the orchestrator that ends does");
     }
 }

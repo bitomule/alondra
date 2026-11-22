@@ -18,6 +18,9 @@ pub const UNSETTLED_DELIVERY: &str = "Your delivery stays with the user for revi
 pub const UNSETTLED_AFTER_MERGE: &str = "Nobody settled how your work after the merge goes on: do nothing more until the user writes to you.";
 /// What a stopped node is told when nobody settled its case in time and it has attempts left.
 pub const UNSETTLED_INSTRUCT: &str = "Nobody settled why you stopped. Go on with your task; if you cannot, ask the user or deliver what you have.";
+/// What Alondra's close of a task says when its node stopped with a message of the user's still
+/// unanswered.
+pub const UNSETTLED_UNANSWERED: &str = "The node stopped again and nobody settled why, so Alondra closed the task before your last message was answered. Its pull request waits for you to merge or close it; send the message again in a new request if it still matters.";
 /// The longest instruction or result a settlement carries.
 pub const STALL_TEXT_MAX: usize = 4000;
 
@@ -176,7 +179,12 @@ impl DomainState {
     pub(in crate) fn settle_stall(&mut self, actor: &Actor, case_id: &InteractionId, task: &TaskId, outcome: &StallOutcome,
         effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.settle_stall_guard(actor, case_id, task, outcome)?;
-        let text = outcome.written().map(|(_, text)| text.trim().to_owned());
+        // Alondra closing a task whose node never answered a message of the user's says so: the
+        // close then delivers its open PR to the user instead of being refused for that message.
+        let text = match outcome {
+            StallOutcome::Unsettled if !self.task(task)?.pending_user_inputs.is_empty() && self.open_pr_of(task).is_some() => Some(UNSETTLED_UNANSWERED.to_owned()),
+            outcome => outcome.written().map(|(_, text)| text.trim().to_owned()),
+        };
         if !matches!(outcome, StallOutcome::Instruct { .. }) && self.open_pr_of(task).is_some()
             && (self.lifecycle(lifecycles, task)?.phase() != alondra_domain::TaskPhase::Delivered
                 || (text.is_some() && !self.tasks[task].pending_user_inputs.is_empty())) {

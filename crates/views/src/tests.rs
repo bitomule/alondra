@@ -6111,7 +6111,7 @@ fn answered_and_closed_request() -> DomainState {
     run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
         request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false, message: false,
     });
-    let closed = run(&mut state, orchestrator, Command::CloseRequest {
+    let closed = run(&mut state, orchestrator, Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::Answered),
         request_id: "a7efd99d".into(),
         answer: Some("Sí: se cifran en el cliente antes de subirlas a R2".into()),
         withdrawn: false,
@@ -9705,7 +9705,7 @@ fn outcome_state() -> DomainState {
     run(&mut state, user.clone(), Command::CreateRequest {
         request_id: "r-encrypt".into(), body: "¿Podemos cifrar las imágenes antes de subirlas a R2?".into(), auto_merge: false, maintenance: false, message: false,
     });
-    run(&mut state, orchestrator.clone(), Command::CloseRequest {
+    run(&mut state, orchestrator.clone(), Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::Answered),
         request_id: "r-encrypt".into(),
         answer: Some("Para el cifrado una imagen son bytes como cualquier otro: el iPhone la cifra con la clave del usuario antes de subirla, y R2 solo guarda bytes cifrados.\n\nYa se hace así desde la versión 0.3.0, así que no hace falta ninguna tarea.".into()),
         withdrawn: false,
@@ -9745,7 +9745,7 @@ fn outcome_state() -> DomainState {
         state.tasks.get_mut(&task.into()).unwrap().pr_id = Some(id);
     }
     run(&mut state, user, Command::CancelTask { task_id: "t-docs".into(), reason: None });
-    run(&mut state, orchestrator, Command::CloseRequest {
+    run(&mut state, orchestrator, Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::TasksEnded),
         request_id: "r-accounts".into(),
         answer: Some("Ya puedes guardar dos cuentas de Claude y cambiar entre ellas en Ajustes. La documentación se dejó para más adelante.".into()),
         withdrawn: false, title: None, headline: None, folded_into: None });

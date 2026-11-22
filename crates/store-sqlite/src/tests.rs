@@ -779,10 +779,10 @@ fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_res
     let orchestrator = Actor::Orchestrator { generation: 0 };
     execute(&mut store, &orchestrator, "retitle", Command::RetitleTask { task_id: "task-1".into(), title: "Editor colours".into() });
     execute(&mut store, &user(), "request-2", Command::CreateRequest { request_id: "request-2".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false });
-    execute(&mut store, &orchestrator, "close-2", Command::CloseRequest { request_id: "request-2".into(),
+    execute(&mut store, &orchestrator, "close-2", Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::Answered), request_id: "request-2".into(),
         answer: Some("Main is green".into()), withdrawn: false, title: Some("CI status".into()), headline: None, folded_into: None });
     execute(&mut store, &user(), "request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false });
-    execute(&mut store, &user(), "close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None });
+    execute(&mut store, &user(), "close-3", Command::CloseRequest { covered_by: vec![], outcome: None, request_id: "request-3".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None });
     let before = store.load().unwrap();
     drop(store);
     let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
@@ -1170,7 +1170,7 @@ fn closed_request_reopen_rejection_survives_sql_restart() {
         &mut store,
         &user(),
         "close-request",
-        Command::CloseRequest { request_id: "request-1".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None },
+        Command::CloseRequest { covered_by: vec![], outcome: None, request_id: "request-1".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None },
     );
     let before = store.load().unwrap();
     let receipts = count(&store, "semantic_receipts");
@@ -1472,7 +1472,7 @@ fn a_request_and_what_the_user_chose_for_its_launch_commit_together_or_not_at_al
     assert!(matches!(create(&mut store, "empty", "request-1", "  "), Err(StoreError::Domain(_))), "a refused request records no launch");
     assert!(store.request_launch(&"request-1".into()).unwrap().is_none());
     assert!(store.load().unwrap().requests.is_empty());
-    let not_a_request = envelope(&mut store, "other", Command::CloseRequest { request_id: "request-1".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None });
+    let not_a_request = envelope(&mut store, "other", Command::CloseRequest { covered_by: vec![], outcome: None, request_id: "request-1".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None });
     assert!(matches!(store.execute_launching(&user(), &not_a_request, None, &launch), Err(StoreError::Domain(_))), "only a new Request has a launch");
 
     let first = create(&mut store, "first", "request-1", "Ship it").unwrap();
@@ -1640,7 +1640,7 @@ fn a_cleared_request_stays_cleared_after_a_restart() {
         execute(&mut store, &user(), id, Command::CreateRequest {
             request_id: id.into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false });
     }
-    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "answer", Command::CloseRequest {
+    execute(&mut store, &user(), "answer", Command::CloseRequest { covered_by: vec![], outcome: None,
         request_id: "request-q".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None });
     let seen = store.load().unwrap().revision;
     execute(&mut store, &user(), "clear", Command::ClearCompleted { seen });
@@ -2613,7 +2613,7 @@ fn a_folded_request_the_batch_base_and_each_tasks_creation_survive_a_restart() {
     execute(&mut store, &Actor::Orchestrator { generation: 0 }, "covered", Command::CreateRequest {
         request_id: "request-2".into(), body: "The same work, said again".into(), auto_merge: false, maintenance: false, message: false,
     });
-    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "fold", Command::CloseRequest {
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "fold", Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::Folded),
         request_id: "request-2".into(), answer: Some("Task task-1 carries it".into()), withdrawn: false, title: None, headline: None,
         folded_into: Some("task-1".into()),
     });
