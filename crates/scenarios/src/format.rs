@@ -135,12 +135,20 @@ pub enum Step {
     /// The turn of the node of `task` ends: on the error the API answers while it fails for the
     /// node's account, with Claude's answer otherwise. A node with an input waiting takes it next.
     TurnEnd { task: String },
+    /// Claude Code loses the response it was reading in the turn of the node of `task`, as when the
+    /// Mac sleeps mid-response: it reports the API error and goes on with the same turn.
+    LostResponse { task: String },
     /// The turn of the node of `task` ends on this error of the SDK's (`sdk-errors.json`), whatever
     /// the API does for others.
     ApiError { task: String, error: String, #[serde(default)] status: Option<u16> },
     /// Claude's API fails every turn with this error, for every account, until `provider_up`; only
     /// the turns of `tasks` when it names any. A turn that starts meanwhile ends on it at once.
-    ProviderDown { #[serde(default = "Step::server_error")] error: String, #[serde(default)] status: Option<u16>, #[serde(default)] tasks: Vec<String> },
+    /// `detail` is Claude Code's finer code of the error (`connection_failed`: this Mac cannot
+    /// reach the API) and `said` what Claude Code writes of it.
+    ProviderDown {
+        #[serde(default = "Step::server_error")] error: String, #[serde(default)] status: Option<u16>, #[serde(default)] tasks: Vec<String>,
+        #[serde(default)] detail: Option<String>, #[serde(default)] said: Option<String>,
+    },
     ProviderUp,
     /// The sign-in of `account` expired: Claude says it is signed out, and every turn on it ends on
     /// `authentication_failed`. Other accounts go on.
@@ -363,7 +371,7 @@ do = "update"
 "#,
         )
         .unwrap();
-        assert!(matches!(&scenario.steps[0], Step::ProviderDown { error, status: Some(529), tasks } if error == "server_error" && tasks.is_empty()));
+        assert!(matches!(&scenario.steps[0], Step::ProviderDown { error, status: Some(529), tasks, .. } if error == "server_error" && tasks.is_empty()));
         assert!(matches!(&scenario.steps[2], Step::LoginExpired { account } if account == "default"));
         assert!(matches!(&scenario.steps[4], Step::Restart { lose } if lose == &["t1"]));
         assert!(matches!(scenario.steps[5], Step::Update));

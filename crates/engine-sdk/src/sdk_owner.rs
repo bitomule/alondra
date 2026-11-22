@@ -2547,7 +2547,8 @@ pub(crate) fn commit_observation<N: alondra_agent_application::ObservationNormal
 }
 
 /// The log line of what the host's Claude did, for the steps of its life: the session it runs,
-/// once per session, and the end of each of its turns. Everything else it says is not logged.
+/// once per session, every API error it reports, with its own words, and the end of each of its
+/// turns. Everything else it says is not logged.
 fn claude_said(message: &serde_json::Value, session: &mut Option<String>) -> Option<String> {
     match (message["type"].as_str(), message["subtype"].as_str()) {
         (Some("system"), Some("init")) => {
@@ -2559,11 +2560,32 @@ fn claude_said(message: &serde_json::Value, session: &mut Option<String>) -> Opt
             Some(format!("the SDK host's Claude runs session {id} with {}", message["model"].as_str().unwrap_or("its default model")))
         }
         (Some("result"), subtype) => Some(match message["is_error"].as_bool() {
-            Some(true) => format!("a turn of the SDK host's Claude failed ({}, {})", subtype.unwrap_or("no subtype"), message["terminal_reason"].as_str().unwrap_or("no reason given")),
+            Some(true) => format!("a turn of the SDK host's Claude failed ({}, {}{}){}", subtype.unwrap_or("no subtype"), message["terminal_reason"].as_str().unwrap_or("no reason given"),
+                status_of(message), said_text(message["result"].as_str())),
             _ => format!("a turn of the SDK host's Claude ended ({})", message["terminal_reason"].as_str().or(subtype).unwrap_or("completed")),
         }),
+        (Some("assistant"), _) => {
+            let error = message["error"].as_str()?;
+            let detail = message["api_error"].as_str().map_or_else(String::new, |detail| format!(", {detail}"));
+            let text = message.pointer("/message/content").and_then(serde_json::Value::as_array)
+                .and_then(|blocks| blocks.iter().find_map(|block| block["text"].as_str()));
+            Some(format!("the SDK host's Claude got an API error ({error}{detail}{}){}", status_of(message), said_text(text)))
+        }
         _ => None,
     }
+}
+
+/// The HTTP status of an API error Claude reported, when it gave one.
+fn status_of(message: &serde_json::Value) -> String {
+    message["api_error_status"].as_u64().map_or_else(String::new, |status| format!(", HTTP {status}"))
+}
+
+/// What Claude Code wrote of an error, on one line and at most 300 characters.
+fn said_text(text: Option<&str>) -> String {
+    let Some(text) = text.map(str::trim).filter(|text| !text.is_empty()) else { return String::new() };
+    let line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clipped: String = line.chars().take(300).collect();
+    format!(": {clipped}{}", if clipped.len() < line.len() { "…" } else { "" })
 }
 
 /// Another input goes to the host first: the store issues this one's permit again once it may.

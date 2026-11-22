@@ -2,237 +2,16 @@
   "client": "ios",
   "cursor": "<cursor>",
   "data_epoch": "<data_epoch>",
-  "first_cards": [
-    {
-      "client": "ios",
-      "cursor": "<cursor>",
-      "data_epoch": "<data_epoch>",
-      "key": "card:claude-outage-t1-20",
-      "protocol": 1,
-      "sections": [
-        {
-          "collapsed": false,
-          "id": "card",
-          "items": [
-            {
-              "actions": [
-                {
-                  "attachments": false,
-                  "enabled": true,
-                  "id": "ans:claude-outage-t1-20@<revision>",
-                  "input": {
-                    "kind": "none"
-                  },
-                  "label": "★ Try now",
-                  "option_id": "try_now",
-                  "presentation": "button",
-                  "resolves_card": true,
-                  "role": "advance",
-                  "stamp": "Answered",
-                  "style": "primary"
-                }
-              ],
-              "context": [
-                {
-                  "icon": "task",
-                  "link": {
-                    "key": "task:t1",
-                    "kind": "view"
-                  },
-                  "state": {
-                    "text": "Needs you",
-                    "tone": "warning"
-                  },
-                  "text": "Add the CSV export"
-                }
-              ],
-              "detail": "included",
-              "eyebrow": {
-                "text": "Problem",
-                "tone": "critical"
-              },
-              "icon": "warning",
-              "id": "claude-outage-t1-20",
-              "kind": "problem",
-              "link": {
-                "key": "card:claude-outage-t1-20",
-                "kind": "view"
-              },
-              "meta": "Alondra",
-              "need": "Resolve the problem",
-              "state": {
-                "text": "Blocks Add the CSV export",
-                "tone": "warning"
-              },
-              "subtitle": "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on.",
-              "timestamps": [
-                {
-                  "at": "2026-11-15T09:00:10.000+00:00",
-                  "format": "relative",
-                  "role": "created"
-                }
-              ],
-              "title": "Claude's API is not answering: a task waits",
-              "title_is_separate": true,
-              "type": "card",
-              "why": "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on."
-            }
-          ]
-        },
-        {
-          "collapsed": false,
-          "id": "content",
-          "items": [
-            {
-              "commentable": false,
-              "text": "Try now\n\nOne waiting task tries again now; when Claude answers it, the rest go on too",
-              "truncated": false,
-              "type": "markdown"
-            }
-          ]
-        },
-        {
-          "collapsed": false,
-          "id": "context",
-          "items": [
-            {
-              "items": [
-                {
-                  "label": "Task",
-                  "link": {
-                    "key": "task:t1",
-                    "kind": "view"
-                  },
-                  "value": "Add the CSV export"
-                }
-              ],
-              "type": "facts"
-            }
-          ],
-          "title": "Context"
-        }
-      ],
-      "status": {
-        "badge": 1,
-        "counts": [
-          {
-            "id": "inbox",
-            "label": "Inbox",
-            "value": 1
-          },
-          {
-            "id": "tasks",
-            "label": "Tasks",
-            "value": 2
-          },
-          {
-            "id": "working",
-            "label": "working",
-            "value": 1
-          },
-          {
-            "id": "needs_you",
-            "label": "waiting for you",
-            "value": 1
-          },
-          {
-            "id": "queued",
-            "label": "queued",
-            "value": 0
-          },
-          {
-            "id": "paused",
-            "label": "paused",
-            "value": 0
-          },
-          {
-            "id": "other_waiting",
-            "label": "waiting",
-            "value": 0
-          }
-        ],
-        "gauges": [
-          {
-            "detail": "You can go on: Claude has room",
-            "id": "usage",
-            "label": "Claude",
-            "level": "calm",
-            "parts": [
-              {
-                "detail": "Not measured yet",
-                "group": "Claude",
-                "label": "Default",
-                "level": "calm",
-                "lines": [
-                  "Not measured yet"
-                ],
-                "text": "with room",
-                "value": 1.0
-              }
-            ],
-            "text": "with room",
-            "value": 0.0
-          },
-          {
-            "id": "memory",
-            "label": "RAM",
-            "level": "calm",
-            "text": "25%",
-            "value": 0.25
-          },
-          {
-            "id": "cpu",
-            "label": "CPU",
-            "level": "calm",
-            "text": "5%",
-            "value": 0.05
-          },
-          {
-            "id": "disk",
-            "label": "Disk",
-            "level": "calm",
-            "text": "550 GB free",
-            "value": 0.5
-          }
-        ],
-        "orchestrator": {
-          "text": "idle",
-          "tone": "neutral"
-        },
-        "summary": "1 question · 1 task working",
-        "summary_parts": [
-          {
-            "count": 1,
-            "id": "questions",
-            "one": "{count} question",
-            "other": "{count} questions"
-          },
-          {
-            "count": 1,
-            "id": "working",
-            "one": "{count} task working",
-            "other": "{count} tasks working"
-          }
-        ],
-        "version": "<version>"
-      },
-      "title": "Claude's API is not answering: a task waits",
-      "version": "<version>",
-      "view": "card"
-    }
-  ],
+  "empty": {
+    "text": "Nothing is waiting for you",
+    "tone": "neutral"
+  },
   "key": "home",
   "protocol": 1,
   "sections": [
     {
-      "card_ids": [
-        "claude-outage-t1-20"
-      ],
-      "card_waits": [
-        "question"
-      ],
       "collapsed": false,
-      "count": 1,
+      "count": 0,
       "id": "queue",
       "items": [],
       "title": "Waiting for You"
@@ -251,12 +30,12 @@
     }
   },
   "status": {
-    "badge": 1,
+    "badge": 0,
     "counts": [
       {
         "id": "inbox",
         "label": "Inbox",
-        "value": 1
+        "value": 0
       },
       {
         "id": "tasks",
@@ -271,12 +50,12 @@
       {
         "id": "needs_you",
         "label": "waiting for you",
-        "value": 1
+        "value": 0
       },
       {
         "id": "queued",
         "label": "queued",
-        "value": 0
+        "value": 1
       },
       {
         "id": "paused",
@@ -337,14 +116,8 @@
       "text": "idle",
       "tone": "neutral"
     },
-    "summary": "1 question · 1 task working",
+    "summary": "1 task working",
     "summary_parts": [
-      {
-        "count": 1,
-        "id": "questions",
-        "one": "{count} question",
-        "other": "{count} questions"
-      },
       {
         "count": 1,
         "id": "working",

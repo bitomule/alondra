@@ -103,7 +103,7 @@ impl SystemCard {
             Self::CapabilityCapacity => K::CapabilityCapacity,
             Self::McpWait => K::McpWait,
             Self::ClaudeSignedOut => K::ClaudeSignedOut,
-            Self::ClaudeOutage => K::ClaudeOutage,
+            Self::ClaudeOutage { .. } => K::ClaudeOutage,
             Self::ClaudeUsage { .. } => K::ClaudeUsage,
             Self::HostLost => K::HostLost,
             Self::TurnEnded => K::TurnEnded,

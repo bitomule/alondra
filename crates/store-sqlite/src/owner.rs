@@ -327,7 +327,7 @@ impl<'connection> OwnerTransaction<'connection> {
                         TurnOutcome::Completed => (None, None),
                         TurnOutcome::ApiFailed(failure) if !account_fresh && alondra_domain_rules::classify_sdk(&failure.error,failure.status)!=Some(alondra_domain_rules::SdkFailureKind::Usage) => (None,Some("stale_native_account_observation".into())),
                         TurnOutcome::ApiFailed(failure) => {
-                            (Some(SdkApiFailure { error: failure.error.clone(), status: failure.status, resets_at: failure.resets_at }), None)
+                            (Some(SdkApiFailure { error: failure.error.clone(), status: failure.status, resets_at: failure.resets_at, detail: failure.detail.clone(), said: failure.said.clone() }), None)
                         }
                         TurnOutcome::Failed { code } => (None, Some(code.clone())),
                     };

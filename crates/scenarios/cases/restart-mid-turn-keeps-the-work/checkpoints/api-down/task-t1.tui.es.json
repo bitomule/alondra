@@ -14,8 +14,8 @@
             {
               "kind": "state",
               "label": "Estado",
-              "tone": "warning",
-              "value": "Te necesita · La API de Claude no responde: una tarea espera"
+              "tone": "neutral",
+              "value": "En espera · API de Claude · reintenta sola"
             }
           ],
           "type": "facts"
@@ -63,77 +63,6 @@
           "type": "row"
         }
       ]
-    },
-    {
-      "collapsed": false,
-      "id": "now",
-      "items": [
-        {
-          "depth": 0,
-          "icon": "history",
-          "id": "now",
-          "link": {
-            "key": "card:claude-outage-t1-15",
-            "kind": "view"
-          },
-          "struck": false,
-          "title": "pregunta: Add the CSV export",
-          "type": "row"
-        }
-      ]
-    },
-    {
-      "collapsed": false,
-      "id": "waiting",
-      "items": [
-        {
-          "context": [
-            {
-              "icon": "task",
-              "link": {
-                "key": "task:t1",
-                "kind": "view"
-              },
-              "state": {
-                "text": "Te necesita",
-                "tone": "warning"
-              },
-              "text": "Add the CSV export"
-            }
-          ],
-          "detail": "reference",
-          "eyebrow": {
-            "text": "Problema",
-            "tone": "critical"
-          },
-          "icon": "warning",
-          "id": "claude-outage-t1-15",
-          "kind": "problem",
-          "link": {
-            "key": "card:claude-outage-t1-15",
-            "kind": "view"
-          },
-          "meta": "Alondra",
-          "need": "Resuelve el problema",
-          "state": {
-            "text": "Bloquea a Add the CSV export",
-            "tone": "warning"
-          },
-          "subtitle": "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.",
-          "timestamps": [
-            {
-              "at": "2026-11-15T09:01:11.000+00:00",
-              "format": "relative",
-              "role": "created"
-            }
-          ],
-          "title": "La API de Claude no responde: una tarea espera",
-          "title_is_separate": true,
-          "type": "card",
-          "why": "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas."
-        }
-      ],
-      "title": "Te espera"
     },
     {
       "collapsed": true,
@@ -291,12 +220,12 @@
     }
   },
   "status": {
-    "badge": 1,
+    "badge": 0,
     "counts": [
       {
         "id": "inbox",
         "label": "Bandeja",
-        "value": 1
+        "value": 0
       },
       {
         "id": "tasks",
@@ -311,12 +240,12 @@
       {
         "id": "needs_you",
         "label": "esperando por ti",
-        "value": 1
+        "value": 0
       },
       {
         "id": "queued",
         "label": "en cola",
-        "value": 0
+        "value": 1
       },
       {
         "id": "paused",
@@ -377,14 +306,8 @@
       "text": "inactivo",
       "tone": "neutral"
     },
-    "summary": "1 pregunta · 0 tareas trabajando",
+    "summary": "0 tareas trabajando",
     "summary_parts": [
-      {
-        "count": 1,
-        "id": "questions",
-        "one": "{count} pregunta",
-        "other": "{count} preguntas"
-      },
       {
         "count": 0,
         "id": "working",

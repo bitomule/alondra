@@ -1136,11 +1136,18 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
         };
         return Some((clip(&need, CardSpec::NEED_MAX), why));
     }
+    let (detail, said) = match &interaction.system_card {
+        Some(alondra_domain_rules::SystemCard::ClaudeOutage { detail, said, .. }) => (detail.as_deref(), said.as_deref().map(|said| clip(said, OUTAGE_SAID_MAX))),
+        _ => (None, None),
+    };
+    let unreachable = alondra_domain_rules::unreachable_api(detail);
     let need = match (hold, waiting, &named) {
         (ClaudeHold::SignedOut, _, None) => t!(lang, "Sign in to Claude outside Alondra", "Inicia sesión en Claude fuera de Alondra").to_owned(),
         (ClaudeHold::SignedOut, _, Some(name)) => tf!(lang, "Sign in to the Claude account {name} on the Mac", "Inicia sesión en la cuenta de Claude {name} en el Mac"),
-        (ClaudeHold::Outage, 1, _) => t!(lang, "Claude's API is not answering: a task waits", "La API de Claude no responde: una tarea espera").to_owned(),
-        (ClaudeHold::Outage, _, _) => tf!(lang, "Claude's API is not answering: {waiting} tasks wait", "La API de Claude no responde: esperan {waiting} tareas"),
+        (ClaudeHold::Outage, 1, _) if unreachable => t!(lang, "This Mac cannot reach Claude's API: a task waits", "Este Mac no llega a la API de Claude: una tarea espera").to_owned(),
+        (ClaudeHold::Outage, _, _) if unreachable => tf!(lang, "This Mac cannot reach Claude's API: {waiting} tasks wait", "Este Mac no llega a la API de Claude: esperan {waiting} tareas"),
+        (ClaudeHold::Outage, 1, _) => t!(lang, "Claude's API is failing: a task waits", "La API de Claude falla: una tarea espera").to_owned(),
+        (ClaudeHold::Outage, _, _) => tf!(lang, "Claude's API is failing: {waiting} tasks wait", "La API de Claude falla: esperan {waiting} tareas"),
         (ClaudeHold::Usage, 1, None) => t!(lang, "Claude's usage limit is reached: a task waits", "Se agotó el límite de uso de Claude: una tarea espera").to_owned(),
         (ClaudeHold::Usage, _, None) => tf!(lang, "Claude's usage limit is reached: {waiting} tasks wait", "Se agotó el límite de uso de Claude: esperan {waiting} tareas"),
         (ClaudeHold::Usage, 1, Some(name)) => tf!(lang, "The Claude account {name} reached its limit: a task waits", "La cuenta de Claude {name} agotó su límite: una tarea espera"),
@@ -1152,9 +1159,17 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
         (ClaudeHold::SignedOut, _, None) => format!("{} {how}", tf!(lang, "Claude Code's sign-in expired and {waiting} tasks wait.", "La sesión de Claude Code caducó y esperan {waiting} tareas.")),
         (ClaudeHold::SignedOut, 1, Some(name)) => format!("{} {how}", tf!(lang, "The sign-in of {name} expired and a task waits. No new work starts on it meanwhile.", "La sesión de {name} caducó y una tarea espera. Mientras, no empieza trabajo nuevo en ella.")),
         (ClaudeHold::SignedOut, _, Some(name)) => format!("{} {how}", tf!(lang, "The sign-in of {name} expired and {waiting} tasks wait. No new work starts on it meanwhile.", "La sesión de {name} caducó y esperan {waiting} tareas. Mientras, no empieza trabajo nuevo en ella.")),
-        (ClaudeHold::Outage, _, _) => t!(lang,
-            "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on.",
-            "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.").to_owned(),
+        (ClaudeHold::Outage, _, _) => {
+            let quoted = said.map(|said| tf!(lang, "Claude Code says: “{said}”. ", "Claude Code dice: «{said}». ")).unwrap_or_default();
+            let cause = if unreachable {
+                t!(lang, "Check this Mac's internet connection and DNS.", "Revisa la conexión a internet y el DNS de este Mac.")
+            } else {
+                t!(lang, "It failed again when Alondra retried it.", "Volvió a fallar cuando Alondra lo reintentó.")
+            };
+            let retry = t!(lang, "Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on.",
+                "Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.");
+            format!("{quoted}{cause} {retry}")
+        }
         (ClaudeHold::Usage, _, None) => t!(lang,
             "The tasks that run through Claude Code wait until the limit resets. Alondra tries one then; when Claude answers, every waiting task goes on.",
             "Las tareas que van por Claude Code esperan a que se reinicie el límite. Entonces Alondra prueba una; cuando Claude responda, siguen todas.").to_owned(),
@@ -1164,6 +1179,9 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
     };
     Some((clip(&need, CardSpec::NEED_MAX), why))
 }
+
+/// Most characters of Claude Code's words an outage card quotes.
+const OUTAGE_SAID_MAX: usize = 200;
 
 /// What a refused Claude API request needs, in the viewer's language.
 fn api_refusal_text(error: &str, lang: Lang) -> &'static str {

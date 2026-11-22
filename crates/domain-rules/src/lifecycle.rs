@@ -1543,7 +1543,7 @@ impl DomainState {
     /// The wait `failure` asks for, when it asks for one.
     pub(super) fn hold_after_failure(&mut self, task: &TaskId, failure: &SdkApiFailure, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         match self.sdk_failure_kind(task, failure).and_then(ClaudeHold::for_failure) {
-            Some(hold) => self.hold_on_claude(task, hold, failure.resets_at, effects, lifecycles),
+            Some(hold) => self.hold_on_claude(task, hold, failure, effects, lifecycles),
             None => Ok(()),
         }
     }

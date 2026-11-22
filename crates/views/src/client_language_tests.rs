@@ -23,7 +23,7 @@ fn system_fixture(kind: SystemCardKind) -> DomainState {
         K::CapabilityCapacity => (SystemCard::CapabilityCapacity, alondra_domain_rules::capability_capacity_card::CapabilityCapacityCard { live: 4096, limit: 4096 }.to_body()),
         K::McpWait => (SystemCard::McpWait, serde_json::to_string(&alondra_domain_rules::McpServerKey { name: "example".into(), url: None }).unwrap()),
         K::ClaudeSignedOut => (SystemCard::ClaudeSignedOut, String::new()),
-        K::ClaudeOutage => (SystemCard::ClaudeOutage, String::new()),
+        K::ClaudeOutage => (SystemCard::ClaudeOutage { quiet: false, detail: None, said: None }, String::new()),
         K::ClaudeUsage => (SystemCard::ClaudeUsage { resets_at: None }, String::new()),
         K::HostLost => (SystemCard::HostLost, String::new()),
         K::TurnEnded => (SystemCard::TurnEnded, String::new()),
@@ -145,7 +145,7 @@ fn stored_title(kind: SystemCardKind) -> &'static str {
         CapabilityCapacity => "New tasks can't start: Alondra has no room for another node",
         McpWait => "Sign in to example: a task waits for it",
         ClaudeSignedOut => "Sign in to Claude outside Alondra",
-        ClaudeOutage => "Claude's API is not answering: a task waits",
+        ClaudeOutage => "Claude's API is failing: a task waits",
         ClaudeUsage => "Claude's usage limit is reached: a task waits",
         HostLost => "“Publicar la versión” stopped: Alondra could not resume its session",
         TurnEnded => "“Publicar la versión” stopped without delivering or asking: tell it how to go on",
@@ -168,6 +168,36 @@ fn stored_title(kind: SystemCardKind) -> &'static str {
         Inbox => "“Publicar la versión” was not turned into tasks",
         Stalled | RefusedCards | Unknown => unreachable!("internal cards have no client fixture"),
     }
+}
+
+// The outage card says what failed, this Mac's way to the API or the API itself, from Claude
+// Code's code of the error, and quotes Claude Code's own words.
+#[test]
+fn an_outage_card_names_its_cause_and_quotes_claude_code() {
+    let card = |detail: Option<&str>, said: Option<&str>, lang: Lang| {
+        let mut state = system_fixture(SystemCardKind::ClaudeOutage);
+        state.interactions.get_mut(&"i-1".into()).unwrap().system_card =
+            Some(SystemCard::ClaudeOutage { quiet: false, detail: detail.map(Into::into), said: said.map(Into::into) });
+        let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, "card:i-1", "");
+        let card = card_of(&view);
+        (card.title.clone(), card.why.clone().unwrap_or_default())
+    };
+    let offline = "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)";
+    let (title, why) = card(Some("connection_failed"), Some(offline), Lang::Es);
+    assert_eq!(title, "Este Mac no llega a la API de Claude: una tarea espera");
+    assert_eq!(why, format!("Claude Code dice: «{offline}». Revisa la conexión a internet y el DNS de este Mac. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas."));
+    let (title, why) = card(Some("connection_failed"), Some(offline), Lang::En);
+    assert_eq!(title, "This Mac cannot reach Claude's API: a task waits");
+    assert!(why.starts_with(&format!("Claude Code says: “{offline}”. Check this Mac's internet connection and DNS.")), "{why}");
+    let overloaded = "API Error: 529 Overloaded";
+    let (title, why) = card(Some("overloaded"), Some(overloaded), Lang::Es);
+    assert_eq!(title, "La API de Claude falla: una tarea espera");
+    assert_eq!(why, format!("Claude Code dice: «{overloaded}». Volvió a fallar cuando Alondra lo reintentó. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas."));
+    let (title, why) = card(None, None, Lang::Es);
+    assert_eq!((title.as_str(), why.as_str()), ("La API de Claude falla: una tarea espera",
+        "Volvió a fallar cuando Alondra lo reintentó. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas."), "a card stored before Claude Code's words were kept");
+    let (_, why) = card(None, Some(&"x".repeat(400)), Lang::En);
+    assert!(why.len() < 400, "Claude Code's words are clipped: {why}");
 }
 
 #[test]

@@ -660,13 +660,17 @@ impl Context<'_> {
                 self.edge(index)?.end_turn(task, None).map_err(|why| Self::failed(index, why))?;
                 self.settle().await?;
             }
+            Step::LostResponse { task } => {
+                self.edge(index)?.lose_response(task).map_err(|why| Self::failed(index, why))?;
+                self.settle().await?;
+            }
             Step::ApiError { task, error, status } => {
                 let error = api_error(index, error, *status)?;
                 self.edge(index)?.end_turn(task, Some(error)).map_err(|why| Self::failed(index, why))?;
                 self.settle().await?;
             }
-            Step::ProviderDown { error, status, tasks } => {
-                let error = api_error(index, error, *status)?;
+            Step::ProviderDown { error, status, tasks, detail, said } => {
+                let error = ApiError { detail: detail.clone(), said: said.clone(), ..api_error(index, error, *status)? };
                 self.edge(index)?.set_outage(Some((error, tasks.clone())));
             }
             Step::ProviderUp => self.edge(index)?.set_outage(None),
@@ -1616,7 +1620,7 @@ fn api_error(index: usize, error: &str, status: Option<u16>) -> Result<ApiError,
     if !crate::claude_host::assistant_errors().iter().any(|known| known == error) {
         return Err(Context::failed(index, format!("`{error}` is no error the SDK reports (sdk-errors.json)")));
     }
-    Ok(ApiError { error: error.to_owned(), status })
+    Ok(ApiError { error: error.to_owned(), status, ..ApiError::default() })
 }
 
 fn typed_input(typed: Option<&str>) -> Value {

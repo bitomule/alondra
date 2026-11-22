@@ -31,10 +31,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-outage-t1-34",
+          "id": "claude-outage-t1-43",
           "kind": "problem",
           "link": {
-            "key": "card:claude-outage-t1-34",
+            "key": "card:claude-outage-t1-43",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -43,18 +43,18 @@
             "text": "Bloquea a Add the CSV export",
             "tone": "warning"
           },
-          "subtitle": "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.",
+          "subtitle": "Claude Code dice: «API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}». Volvió a fallar cuando Alondra lo reintentó. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:01:14.000+00:00",
+              "at": "2026-11-15T09:04:48.000+00:00",
               "format": "relative",
               "role": "created"
             }
           ],
-          "title": "La API de Claude no responde: esperan 2 tareas",
+          "title": "La API de Claude falla: esperan 2 tareas",
           "title_is_separate": true,
           "type": "card",
-          "why": "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas."
+          "why": "Claude Code dice: «API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}». Volvió a fallar cuando Alondra lo reintentó. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas."
         }
       ],
       "title": "Te espera"
@@ -68,7 +68,7 @@
             {
               "attachments": false,
               "enabled": true,
-              "id": "ans:claude-outage-t1-34@<revision>",
+              "id": "ans:claude-outage-t1-43@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -102,10 +102,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-outage-t1-34",
+          "id": "claude-outage-t1-43",
           "kind": "problem",
           "link": {
-            "key": "card:claude-outage-t1-34",
+            "key": "card:claude-outage-t1-43",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -114,18 +114,18 @@
             "text": "Bloquea a Add the CSV export",
             "tone": "warning"
           },
-          "subtitle": "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.",
+          "subtitle": "Claude Code dice: «API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}». Volvió a fallar cuando Alondra lo reintentó. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:01:14.000+00:00",
+              "at": "2026-11-15T09:04:48.000+00:00",
               "format": "relative",
               "role": "created"
             }
           ],
-          "title": "La API de Claude no responde: esperan 2 tareas",
+          "title": "La API de Claude falla: esperan 2 tareas",
           "title_is_separate": true,
           "type": "card",
-          "why": "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas."
+          "why": "Claude Code dice: «API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}». Volvió a fallar cuando Alondra lo reintentó. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas."
         }
       ]
     }

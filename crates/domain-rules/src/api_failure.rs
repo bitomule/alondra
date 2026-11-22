@@ -96,13 +96,19 @@ pub fn after_api_failure(error: &str, detail: Option<&str>, attempt: u8, health:
 /// The Claude API error an SDK turn ended with, once Claude Code's own retries were spent: its
 /// category in `SDKAssistantMessage.error`, the HTTP status of the result and, for a rejected
 /// usage limit, when it resets in Unix seconds.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SdkApiFailure {
     pub error: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<u64>,
+    /// Claude Code's finer code for the error, such as `connection_failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// What Claude Code wrote of the error, which the card quotes: never decided on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub said: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +139,12 @@ pub fn classify_sdk(error: &str, status: Option<u16>) -> Option<SdkFailureKind> 
         | "invalid_request" | "model_not_found" => SdkFailureKind::NeedsUser,
         _ => SdkFailureKind::Outage,
     })
+}
+
+/// Whether Claude Code's finer code of an API error says this Mac could not reach the API (no
+/// network, no DNS), not that the API failed.
+pub fn unreachable_api(detail: Option<&str>) -> bool {
+    detail == Some("connection_failed")
 }
 
 /// A 403 labelled `authentication_failed`: a refused account or an API down for everyone.

@@ -21,7 +21,17 @@ pub enum SystemCard {
     CapabilityCapacity,
     McpWait,
     ClaudeSignedOut,
-    ClaudeOutage,
+    /// Claude's API, or this Mac's way to it, failed a task past Claude Code's own retries:
+    /// Claude Code's finer code for the error and its words. A `quiet` one comes before Alondra
+    /// retried: Waiting for You leaves it out while Alondra retries by itself.
+    ClaudeOutage {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        quiet: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        said: Option<String>,
+    },
     /// Claude's usage limit holds a task; it resets at `resets_at`, in Unix seconds, when Claude said.
     ClaudeUsage { resets_at: Option<u64> },
     HostLost,
@@ -171,7 +181,7 @@ impl SystemCard {
             (crate::local_network_card::LOCAL_NETWORK_PREFIX, |_| Some(Self::LocalNetwork)),
             (super::MCP_WAIT_PREFIX, |_| Some(Self::McpWait)),
             (super::SIGNED_OUT_PREFIX, |_| Some(Self::ClaudeSignedOut)),
-            (super::OUTAGE_PREFIX, |_| Some(Self::ClaudeOutage)),
+            (super::OUTAGE_PREFIX, |_| Some(Self::ClaudeOutage { quiet: false, detail: None, said: None })),
             (super::USAGE_PREFIX, |_| Some(Self::ClaudeUsage { resets_at: None })),
             (super::HOST_LOST_PREFIX, |_| Some(Self::HostLost)),
             (super::TURN_ENDED_PREFIX, |_| Some(Self::TurnEnded)),

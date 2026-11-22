@@ -342,7 +342,7 @@ pub enum TurnOutcome {
     Failed { code: String },
 }
 /// The Claude API error a root turn ended with, as Claude Code reports it after its own retries.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ApiFailure {
     /// Claude Code's error category, such as `authentication_failed` or `rate_limit`.
     pub error: String,
@@ -350,6 +350,10 @@ pub struct ApiFailure {
     pub status: Option<u16>,
     /// When a rejected usage limit resets, in Unix seconds.
     pub resets_at: Option<u64>,
+    /// Claude Code's finer code for the error, such as `connection_failed` or `usage_limit_reached`.
+    pub detail: Option<String>,
+    /// What Claude Code wrote of the error, for the user to read: never decided on.
+    pub said: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrderedObservation {

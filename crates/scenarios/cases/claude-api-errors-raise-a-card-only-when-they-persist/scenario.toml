@@ -1,0 +1,107 @@
+name = "a response Claude Code loses mid-turn and goes on from raises no card; a Mac without network says so only once Alondra's retry fails too, in Claude Code's words, and the task goes on when it comes back"
+max_virtual = "2h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "lost_response"
+task = "t1"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "after-the-turn"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "not answering"
+present = false
+
+[[step]]
+do = "provider_down"
+error = "server_error"
+detail = "connection_failed"
+said = "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "advance"
+by = "30s"
+
+[[step]]
+do = "checkpoint"
+name = "first-failure-waits-for-the-retry"
+screens = ["home"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "cannot reach Claude's API"
+present = false
+
+[[step]]
+do = "advance"
+by = "3m"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "the-retry-failed-too"
+screens = ["home"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "This Mac cannot reach Claude's API: a task waits"
+present = true
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "check your internet or DNS (ENOTFOUND)"
+present = true
+
+[[step]]
+do = "provider_up"
+
+[[step]]
+do = "advance"
+by = "3m"
+
+[[step]]
+do = "rest"
+max = "1h"
+
+[[step]]
+do = "checkpoint"
+name = "after-the-network-comes-back"
+screens = ["home"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "cannot reach Claude's API"
+present = false

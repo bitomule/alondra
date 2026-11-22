@@ -127,6 +127,12 @@ struct LogicalTurn {
     answered: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// Claude Code's finer code for `error`, such as `connection_failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error_detail: Option<String>,
+    /// What Claude Code wrote of `error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error_said: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resets_at: Option<u64>,
     /// The run of the work whose notification opened this turn, when no input of Alondra's did.
@@ -469,6 +475,8 @@ fn fold(
                             consumed: BTreeSet::from([command]),
                             answered: false,
                             error: None,
+                            error_detail: None,
+                            error_said: None,
                             resets_at: None,
                             woken_by: None,
                             notified: false,
@@ -508,10 +516,11 @@ fn fold(
             // The native Claude opens each prompt with init: a turn still open ended without a
             // result to read.
             if let Some(turn) = state.turn.take() {
+                let failure = turn.api_failure(None, turn.resets_at.or(state.limit_resets_at));
                 facts.push(Observation::TurnEnded {
                     turn: TurnId::new(turn.id).map_err(|_| AdapterError::InvalidObservation)?,
-                    outcome: match turn.error {
-                        Some(error) => TurnOutcome::ApiFailed(ApiFailure { error, status: None, resets_at: turn.resets_at.or(state.limit_resets_at) }),
+                    outcome: match failure {
+                        Some(failure) => TurnOutcome::ApiFailed(failure),
                         None => TurnOutcome::Failed { code: TURN_SUPERSEDED.into() },
                     },
                 });
@@ -528,6 +537,8 @@ fn fold(
                     consumed: BTreeSet::new(),
                     answered: false,
                     error: None,
+                    error_detail: None,
+                    error_said: None,
                     resets_at: None,
                     woken_by: None,
                     notified: false,
@@ -550,10 +561,11 @@ fn fold(
             Some("idle") => {
                 state.running = None;
                 if let Some(turn) = state.turn.take() {
+                    let failure = turn.api_failure(None, turn.resets_at.or(state.limit_resets_at));
                     facts.push(Observation::TurnEnded {
                         turn: TurnId::new(turn.id).map_err(|_| AdapterError::InvalidObservation)?,
-                        outcome: match turn.error {
-                            Some(error) => TurnOutcome::ApiFailed(ApiFailure { error, status: None, resets_at: turn.resets_at.or(state.limit_resets_at) }),
+                        outcome: match failure {
+                            Some(failure) => TurnOutcome::ApiFailed(failure),
                             None => TurnOutcome::Failed { code: ENDED_WITHOUT_RESULT.into() },
                         },
                     });
@@ -743,6 +755,8 @@ fn fold(
             consumed: BTreeSet::new(),
             answered: false,
             error: None,
+            error_detail: None,
+            error_said: None,
             resets_at: None,
             woken_by: woken.run,
             notified: true,
@@ -793,6 +807,8 @@ fn fold(
                 consumed: BTreeSet::from([consumed[0].clone()]),
                 answered: false,
                 error: None,
+                error_detail: None,
+                error_said: None,
                 resets_at: None,
                 woken_by: None,
                 notified: false,
@@ -815,12 +831,25 @@ fn fold(
             match payload.get("error") {
                 // The synthetic message Claude Code ends a turn with once a Claude API error
                 // outlasted its own retries.
-                Some(error) => turn.error = Some(error_code(error)),
-                None if !turn.answered && turn.error.is_none() => {
-                    turn.answered = true;
-                    facts.push(Observation::ModelAnswered);
+                Some(error) => {
+                    turn.error = Some(error_code(error));
+                    turn.error_detail = payload.get("api_error").filter(|code| code.is_string()).map(error_code);
+                    turn.error_said = error_said(payload);
                 }
-                None => {}
+                // Claude Code also writes one for a response it lost and then goes on with the
+                // same turn (the Mac slept mid-response): the model answering after it ends that
+                // error.
+                None => {
+                    if turn.error.take().is_some() {
+                        turn.error_detail = None;
+                        turn.error_said = None;
+                        turn.resets_at = None;
+                    }
+                    if !turn.answered {
+                        turn.answered = true;
+                        facts.push(Observation::ModelAnswered);
+                    }
+                }
             }
         }
     }
@@ -840,15 +869,9 @@ fn fold(
                 }
             }
         }
-        let outcome = match &turn.error {
-            Some(error) => TurnOutcome::ApiFailed(ApiFailure {
-                error: error.clone(),
-                status: payload
-                    .get("api_error_status")
-                    .and_then(Value::as_u64)
-                    .and_then(|status| u16::try_from(status).ok()),
-                resets_at: turn.resets_at.or(state.limit_resets_at),
-            }),
+        let status = payload.get("api_error_status").and_then(Value::as_u64).and_then(|status| u16::try_from(status).ok());
+        let outcome = match turn.api_failure(status, turn.resets_at.or(state.limit_resets_at)) {
+            Some(failure) => TurnOutcome::ApiFailed(failure),
             None => match failures.iter().find(|failure| ends_turn(failure)) {
                 Some(failure) => TurnOutcome::Failed { code: failure.code.clone() },
                 None => TurnOutcome::Completed,
@@ -862,6 +885,12 @@ fn fold(
         state.limit_resets_at = None;
     }
     Ok(facts)
+}
+impl LogicalTurn {
+    /// The API error the turn ended with, when Claude Code reported one it did not go on from.
+    fn api_failure(&self, status: Option<u16>, resets_at: Option<u64>) -> Option<ApiFailure> {
+        Some(ApiFailure { error: self.error.clone()?, status, resets_at, detail: self.error_detail.clone(), said: self.error_said.clone() })
+    }
 }
 fn live_work(state: &Checkpoint) -> Result<BTreeSet<WorkId>, AdapterError> {
     state.work.values().map(|work| WorkId::new(work.id.clone()).map_err(|_| AdapterError::InvalidObservation)).collect()
@@ -1036,6 +1065,14 @@ fn worktree_facts(payload: &Value, state: &mut Checkpoint) -> Vec<Observation> {
         }
     }
     facts
+}
+/// Most characters of what Claude Code wrote of an API error that Alondra keeps.
+const MAX_ERROR_SAID: usize = 300;
+/// What the synthetic message of an API error says, on one line: Claude Code's own words.
+fn error_said(payload: &Value) -> Option<String> {
+    let text = payload.pointer("/message/content")?.as_array()?.iter().find_map(|block| block.get("text")?.as_str())?;
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!line.is_empty()).then(|| line.chars().take(MAX_ERROR_SAID).collect())
 }
 /// The API error Claude Code names; one this release cannot keep is `unknown`.
 fn error_code(value: &Value) -> String {
@@ -1282,7 +1319,7 @@ mod tests {
         fold(&failed, &session(), &mut state, input).unwrap();
         assert_eq!(fold(&init, &session(), &mut state, input).unwrap()[0], Observation::TurnEnded {
             turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(),
-            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "server_error".into(), status: None, resets_at: None }),
+            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "server_error".into(), status: None, resets_at: None, ..Default::default() }),
         });
     }
     // Before init only the consumption of an input of ours proves Claude is up; every other
@@ -1542,6 +1579,8 @@ mod tests {
             consumed: BTreeSet::new(),
             answered: false,
             error: None,
+            error_detail: None,
+            error_said: None,
             resets_at: None,
             woken_by: None,
             notified: false,
@@ -2049,6 +2088,28 @@ mod tests {
         assert!(facts.contains(&Observation::ModelAnswered), "{facts:?}");
         assert_eq!(failure(&facts), None);
     }
+    // Claude Code 2.1.322 writes a synthetic API error message when the Mac sleeps mid-response,
+    // then goes on with the same turn and ends it without error: the turn did not fail.
+    #[test]
+    fn an_api_error_the_model_answers_after_in_the_same_turn_ends_it_without_failure() {
+        let mut state = state();
+        let facts = turn_end(&mut state, vec![
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}),
+            json!({"type":"assistant","uuid":SECOND,"parent_tool_use_id":null,"error":"server_error","api_error":"computer_slept","is_api_error_message":true}),
+            json!({"type":"assistant","uuid":THIRD,"parent_tool_use_id":null}),
+            json!({"type":"result","uuid":THIRD,"subtype":"success","is_error":false,"terminal_reason":"completed","user_message_uuid":FIRST}),
+        ]);
+        assert_eq!(failure(&facts), None, "{facts:?}");
+
+        let mut state = self::state();
+        let facts = turn_end(&mut state, vec![
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"server_error","api_error":"computer_slept"}),
+            json!({"type":"assistant","uuid":SECOND,"parent_tool_use_id":null}),
+            json!({"type":"result","uuid":SECOND,"subtype":"success","is_error":false,"user_message_uuid":FIRST}),
+        ]);
+        assert!(facts.contains(&Observation::ModelAnswered), "the answer after the error proves Claude answers: {facts:?}");
+        assert_eq!(failure(&facts), None);
+    }
     // The synthetic message Claude Code ends a turn with when the API refused its sign-in.
     #[test]
     fn a_turn_ended_by_an_authentication_error_carries_it_and_proves_no_answer() {
@@ -2058,7 +2119,7 @@ mod tests {
             json!({"type":"result","uuid":SECOND,"subtype":"success","is_error":true,"api_error_status":401,"terminal_reason":"api_error","user_message_uuid":FIRST}),
         ]);
         assert!(!facts.contains(&Observation::ModelAnswered), "{facts:?}");
-        assert_eq!(failure(&facts), Some(ApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None }));
+        assert_eq!(failure(&facts), Some(ApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None, ..Default::default() }));
     }
     #[test]
     fn a_forbidden_request_keeps_its_status_and_a_rejected_limit_its_reset() {
@@ -2072,7 +2133,7 @@ mod tests {
             json!({"type":"rate_limit_event","uuid":SECOND,"rate_limit_info":{"status":"rejected","resetsAt":4_102_444_800_u64,"rateLimitType":"five_hour"}}),
             json!({"type":"result","uuid":SECOND,"is_error":true,"api_error_status":429,"terminal_reason":"blocking_limit","user_message_uuid":FIRST}),
         ]);
-        assert_eq!(failure(&limited), Some(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }));
+        assert_eq!(failure(&limited), Some(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800), ..Default::default() }));
     }
     // Claude Code 2.1.300 always reports SessionStart hooks, before init: a plugin with hooks,
     // the user's or Alondra's, must not stop the task.
@@ -2093,7 +2154,7 @@ mod tests {
             json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"Not Logged In"}),
             json!({"type":"result","uuid":SECOND,"is_error":true,"api_error_status":"401","user_message_uuid":FIRST}),
         ]);
-        assert_eq!(failure(&facts), Some(ApiFailure { error: "unknown".into(), status: None, resets_at: None }));
+        assert_eq!(failure(&facts), Some(ApiFailure { error: "unknown".into(), status: None, resets_at: None, ..Default::default() }));
     }
     // A subagent's message that names inputs is evidence: only root messages consume ours.
     #[test]
@@ -2154,7 +2215,7 @@ mod tests {
         let facts = fold(&failing(result(), &[(Subtype, "success_is_error")]), &session(), &mut state, input).unwrap();
         assert_eq!(facts, vec![Observation::TurnEnded {
             turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(),
-            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "billing_error".into(), status: None, resets_at: None }),
+            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "billing_error".into(), status: None, resets_at: None, ..Default::default() }),
         }], "the API's failure comes first");
     }
     // A prompt Claude completes without starting fails its turn: Claude never reads it, and the
@@ -2251,7 +2312,7 @@ mod tests {
         assert!(facts.iter().all(|fact| !matches!(fact, Observation::TurnEnded { .. })), "{facts:?}");
         assert_eq!(ended, vec![Observation::TurnEnded {
             turn: woken,
-            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(1_792_972_800) }),
+            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(1_792_972_800), ..Default::default() }),
         }]);
     }
     // 25 Oct, t-alpha-report-1-local, from its host's outbox: a background Bash names no run, nor

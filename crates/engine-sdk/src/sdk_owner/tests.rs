@@ -369,6 +369,22 @@ fn the_log_names_each_claude_session_once_and_every_turn_end() {
     assert_eq!(claude_said(&ended, &mut session).as_deref(), Some("a turn of the SDK host's Claude ended (completed)"));
     let failed = serde_json::json!({"type": "result", "subtype": "success", "is_error": true, "terminal_reason": "api_error"});
     assert_eq!(claude_said(&failed, &mut session).as_deref(), Some("a turn of the SDK host's Claude failed (success, api_error)"));
+    let limited = serde_json::json!({"type": "result", "subtype": "success", "is_error": true, "terminal_reason": "api_error", "api_error_status": 429,
+        "result": "You've hit your 5-hour limit · resets 3:10pm (Europe/Madrid)"});
+    assert_eq!(claude_said(&limited, &mut session).as_deref(),
+        Some("a turn of the SDK host's Claude failed (success, api_error, HTTP 429): You've hit your 5-hour limit · resets 3:10pm (Europe/Madrid)"));
+    let error = |extra: serde_json::Value| {
+        let mut message = serde_json::json!({"type": "assistant", "message": {"model": "<synthetic>", "content": [{"type": "text", "text": "API Error: Your computer went to sleep\nmid-response."}]}});
+        message.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        message
+    };
+    assert_eq!(claude_said(&error(serde_json::json!({"error": "server_error", "api_error": "computer_slept"})), &mut session).as_deref(),
+        Some("the SDK host's Claude got an API error (server_error, computer_slept): API Error: Your computer went to sleep mid-response."),
+        "an API error inside a turn is logged in Claude Code's words, also when the turn goes on");
+    assert_eq!(claude_said(&error(serde_json::json!({"error": "rate_limit", "api_error": "usage_limit_reached", "api_error_status": 429})), &mut session).as_deref(),
+        Some("the SDK host's Claude got an API error (rate_limit, usage_limit_reached, HTTP 429): API Error: Your computer went to sleep mid-response."));
+    let long = serde_json::json!({"type": "result", "is_error": true, "terminal_reason": "api_error", "result": "x".repeat(400)});
+    assert!(claude_said(&long, &mut session).unwrap().ends_with(&format!("{}…", "x".repeat(300))), "a long text is clipped");
     assert_eq!(claude_said(&serde_json::json!({"type": "assistant"}), &mut session), None, "what Claude says inside a turn is not logged");
     assert_eq!(claude_said(&init("f4bc77bd"), &mut session).as_deref(), Some("the SDK host's Claude runs session f4bc77bd with claude-opus-5-5"));
 }

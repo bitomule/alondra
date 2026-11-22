@@ -45,7 +45,7 @@ fn the_written_401_turn_ends_as_an_authentication_failure_with_its_status() {
     assert!(!facts.contains(&Observation::ModelAnswered), "{facts:?}");
     match facts.last() {
         Some(Observation::TurnEnded { outcome: TurnOutcome::ApiFailed(failure), .. }) => {
-            assert_eq!(failure, &ApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None });
+            assert_eq!(failure, &ApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None, ..Default::default() });
         }
         other => panic!("the turn did not end as a failure of the API: {other:?}"),
     }

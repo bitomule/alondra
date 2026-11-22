@@ -3407,7 +3407,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordAccountUsage { provider: alondra_core::accounts::Provider::Claude, account: alondra_core::accounts::AccountId::default_account(),
             reading: alondra_core::usage::UsageReading::default(), at: 1, day: "2026-10-21".into() }, true),
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }, false),
-        (Command::RecordClaudeHold { task_id: ids.task.into(), generation: 1, failure: SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None } }, false),
+        (Command::RecordClaudeHold { task_id: ids.task.into(), generation: 1, failure: SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None, ..Default::default() } }, false),
         (Command::RecordHostReleased { task_id: ids.task.into(), generation: 1 }, false),
         (Command::RecordHostRetaken { task_id: ids.task.into(), generation: 1 }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false, by_alondra: false }, false),

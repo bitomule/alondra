@@ -8,7 +8,7 @@ use alondra_domain::{Capacity, Owner, TaskPhase, WaitReason};
 use proptest::prelude::*;
 
 fn limit() -> SdkApiFailure {
-    SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }
+    SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None, ..Default::default() }
 }
 
 fn pr_targets() -> Vec<DeliveryTarget> {
