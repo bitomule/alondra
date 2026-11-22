@@ -39,7 +39,13 @@ its canonical checkout path. Existing folders belonging to another checkout are 
 
 Git's common directory identifies the project and the main checkout, regardless of the task's
 folder. Claude Code subagent worktrees belong to that Git repository; Alondra records paths
-reported by Claude Code and derives background subagent paths from the common directory.
+reported by Claude Code and derives background subagent paths from the common directory, or from
+the task's launch folder when the task has no worktree of its own. Before closing or cancelling a
+task, Alondra also reads the notes Claude Code keeps of each isolated subagent of the task's
+sessions (`projects/<folder>/<session>/subagents/agent-<id>.meta.json` in the Claude profile) and
+records each noted worktree that still exists, is a worktree Git lists and no task holds, so a
+worktree whose making the daemon missed is settled under the same rules as the others. Worktrees
+of Claude Code sessions that are not Alondra tasks are never recorded or touched.
 
 ## Availability and admission
 

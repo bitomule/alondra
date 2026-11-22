@@ -105,6 +105,7 @@ impl Journal for DomainStore {
     fn complete_tool_operation(&mut self, run: &str, call: &str, answer: &std::result::Result<Value,DomainError>) -> Result<()> { DomainStore::complete_tool_operation(self, run, call, answer) }
     fn conversation_directory(&self, task: &TaskId, conversation: &str) -> Result<Option<String>> { DomainStore::conversation_directory(self, task, conversation) }
     fn conversation_metadata(&self, task: &TaskId, conversation: &str) -> Result<Option<Vec<u8>>> { DomainStore::conversation_metadata(self, task, conversation) }
+    fn conversations_metadata(&self, task: &TaskId) -> Result<Vec<Vec<u8>>> { DomainStore::conversations_metadata(self, task) }
     fn deferred_move(&self, task:&TaskId) ->Result<Option<Transition>> { DomainStore::deferred_move(self, task) }
     fn deferred_moves(&self) ->Result<Vec<Transition>> { DomainStore::deferred_moves(self) }
     fn delivery_evidence(&self) -> Result<Vec<DeliveryEvidence>> { DomainStore::delivery_evidence(self) }

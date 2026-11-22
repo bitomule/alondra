@@ -100,6 +100,52 @@ pub struct Repository {
     pub root: WorktreesRoot,
 }
 
+/// A worktree Claude Code noted it made for an isolated subagent, which may be gone since.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotedWorktree {
+    pub path: PathBuf,
+    pub branch: Option<String>,
+}
+
+pub use alondra_provider_contract::subagent_id;
+
+const NOTE_BYTES: u64 = 64 * 1024;
+
+/// What Claude Code noted of the isolated subagents session `session_id` ran, nested ones included:
+/// `projects/<folder>/<session>/subagents/agent-<id>.meta.json` in `claude_home`, each with the
+/// `worktreePath` and `worktreeBranch` it made. Links and anything but a plain note are not read.
+pub fn noted_subagent_worktrees(claude_home: &Path, session_id: &str) -> Vec<NotedWorktree> {
+    let plain = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
+    let session_like = !session_id.is_empty() && session_id.len() <= 64 && session_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    let Some(projects) = session_like.then(|| claude_home.join("projects").canonicalize().ok()).flatten() else { return vec![] };
+    let mut noted = vec![];
+    for bucket in std::fs::read_dir(projects).into_iter().flatten().filter_map(Result::ok) {
+        let folder = bucket.path().join(session_id).join("subagents");
+        if !plain(&bucket.path()) || !plain(&bucket.path().join(session_id)) || !plain(&folder) {
+            continue;
+        }
+        for entry in std::fs::read_dir(folder).into_iter().flatten().filter_map(Result::ok) {
+            let path = entry.path();
+            let named = path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("agent-") && name.ends_with(".meta.json"));
+            if !named || !std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() <= NOTE_BYTES) {
+                continue;
+            }
+            let Some(note) = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok()) else { continue };
+            if note["spawnedWithWorktree"].as_bool() != Some(true) {
+                continue;
+            }
+            let Some(worktree) = note["worktreePath"].as_str().map(PathBuf::from) else { continue };
+            if !worktree.is_absolute() || !worktree.components().all(|part| matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_))) {
+                continue;
+            }
+            noted.push(NotedWorktree { path: worktree, branch: note["worktreeBranch"].as_str().map(str::to_owned) });
+        }
+    }
+    noted.sort_by(|a, b| a.path.cmp(&b.path));
+    noted.dedup();
+    noted
+}
+
 /// The folder name of a task's worktree, from its id or title.
 pub fn slug(name: &str) -> String {
     let slug: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
@@ -115,6 +161,8 @@ pub trait Worktrees: Send + Sync {
     fn origin(&self, session_id: &str) -> Option<WorktreeOrigin>;
     /// Where Claude Code puts the worktree of subagent `agent` of the node working in `own`.
     fn subagent_worktree(&self, own: &Path, agent: &str) -> Option<PathBuf>;
+    /// The worktrees Claude Code noted it made for the isolated subagents of session `session_id`.
+    fn noted_subagent_worktrees(&self, session_id: &str) -> Vec<NotedWorktree>;
     /// Why `path` cannot be a task's worktree, if it cannot.
     fn registrable(&self, path: &Path, protected: &Protected) -> Result<(), String>;
     fn branch_in<'a>(&'a self, dir: &'a Path) -> Git<'a, Option<String>>;
@@ -213,4 +261,43 @@ pub fn settle_text(task: &TaskId, left: &[(String, String)]) -> String {
 launched, hold work no remote has:{list}\nFor each one, commit the work and push it to its branch, or give it up. \
 Then call cleanup_done with task_id {task}, listing in discard the paths you give up: Alondra deletes those as they \
 are and closes the task once no worktree of it holds work no remote has.")
+}
+
+#[cfg(test)]
+mod noted_tests {
+    use super::*;
+
+    fn note(home: &Path, session: &str, name: &str, body: serde_json::Value) {
+        let folder = home.join("projects").join("-Users-ana-repo").join(session).join("subagents");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(name), body.to_string()).unwrap();
+    }
+
+    #[test]
+    fn the_worktrees_claude_code_noted_for_a_sessions_subagents_are_read_and_nothing_else() {
+        let home = tempfile::tempdir().unwrap();
+        let session = "4e335a6e-67f5-4ec2-9ea4-95c262b7dd56";
+        note(home.path(), session, "agent-a1.meta.json", serde_json::json!({"worktreePath": "/r/.claude/worktrees/agent-a1", "worktreeBranch": "worktree-agent-a1", "spawnedWithWorktree": true}));
+        note(home.path(), session, "agent-a2.meta.json", serde_json::json!({"agentType": "Explore", "spawnedWithWorktree": false}));
+        note(home.path(), session, "agent-a3.meta.json", serde_json::json!({"worktreePath": "r/agent-a3", "spawnedWithWorktree": true}));
+        note(home.path(), session, "agent-a4.meta.json", serde_json::json!({"worktreePath": "/r/../etc", "spawnedWithWorktree": true}));
+        note(home.path(), session, "agent-a5.jsonl", serde_json::json!({"worktreePath": "/r/.claude/worktrees/agent-a5", "spawnedWithWorktree": true}));
+        note(home.path(), "other-session", "agent-a6.meta.json", serde_json::json!({"worktreePath": "/r/.claude/worktrees/agent-a6", "spawnedWithWorktree": true}));
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("x.json"), serde_json::json!({"worktreePath": "/r/.claude/worktrees/agent-a7", "spawnedWithWorktree": true}).to_string()).unwrap();
+        let folder = home.path().join("projects/-Users-ana-repo").join(session).join("subagents");
+        std::os::unix::fs::symlink(outside.path().join("x.json"), folder.join("agent-a7.meta.json")).unwrap();
+        assert_eq!(noted_subagent_worktrees(home.path(), session),
+            vec![NotedWorktree { path: "/r/.claude/worktrees/agent-a1".into(), branch: Some("worktree-agent-a1".into()) }]);
+        assert!(noted_subagent_worktrees(home.path(), "../-Users-ana-repo").is_empty(), "a session is one name, never a path");
+    }
+
+    #[test]
+    fn a_projects_folder_that_links_to_the_shared_one_is_read_through_its_link() {
+        let shared = tempfile::tempdir().unwrap();
+        note(shared.path(), "s1", "agent-b1.meta.json", serde_json::json!({"worktreePath": "/r/.claude/worktrees/agent-b1", "spawnedWithWorktree": true}));
+        let account = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(shared.path().join("projects"), account.path().join("projects")).unwrap();
+        assert_eq!(noted_subagent_worktrees(account.path(), "s1").len(), 1);
+    }
 }

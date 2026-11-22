@@ -413,6 +413,12 @@ pub struct OpenedPullRequest {
     pub number: u64,
 }
 
+/// Whether `agent` can be the id of a subagent Claude Code names an isolated worktree
+/// `agent-<agent>` after: one path segment of letters, digits, `-` and `_`.
+pub fn subagent_id(agent: &str) -> bool {
+    (1..=64).contains(&agent.len()) && agent.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 /// Whether a shell command line runs `gh pr create`, also inside `sh -c '...'`. It only says that
 /// the output deserves a look: the pull request itself is what GitHub says of the address printed.
 pub fn runs_gh_pr_create(command: &str) -> bool {

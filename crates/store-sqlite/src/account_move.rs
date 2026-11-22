@@ -70,6 +70,13 @@ impl DomainStore {
         ).optional()?)
     }
 
+    /// What the provider keeps of every conversation the task had, oldest first.
+    pub fn conversations_metadata(&self, task: &TaskId) -> Result<Vec<Vec<u8>>> {
+        let mut statement = self.conn.prepare("SELECT metadata FROM provider_conversation_metadata WHERE task_id=?1 ORDER BY rowid")?;
+        let rows = statement.query_map(params![task.0], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// The launch placement of this admitted conversation, independent of later worktrees.
     pub fn conversation_directory(&self, task: &TaskId, conversation: &str) -> Result<Option<String>> {
         Ok(self.conn.query_row(

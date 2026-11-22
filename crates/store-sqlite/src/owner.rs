@@ -421,12 +421,15 @@ impl<'connection> OwnerTransaction<'connection> {
                     flush(&mut commands, &mut technical);
                     let conn = self.conn;
                     let own = self.journal.inspect(|| {
-                        conn.query_row("SELECT dir FROM task_worktrees WHERE task_id=?1", rusqlite::params![task_id.0], |row| row.get::<_, String>(0))
-                            .optional()
-                            .map_err(|error| StoreError::Storage(error.into()))
+                        conn.query_row(
+                            "SELECT COALESCE((SELECT dir FROM task_worktrees WHERE task_id=?1),(SELECT json_extract(plan,'$.cwd') FROM task_launch_plans WHERE task_id=?1))",
+                            rusqlite::params![task_id.0], |row| row.get::<_, Option<String>>(0),
+                        ).map_err(|error| StoreError::Storage(error.into()))
                     })?;
-                    let path = own.as_deref().and_then(|own| self.protected.subagent_worktree(std::path::Path::new(own), agent));
-                    let path = path.ok_or_else(|| ObservationRefusal::Unrecordable(format!("task {task_id} has no worktree of its own to place subagent {agent}'s")))?;
+                    let Some(path) = own.as_deref().and_then(|own| self.protected.subagent_worktree(std::path::Path::new(own), agent)) else {
+                        log!("{task_id} has no folder in a repository to place subagent {agent}'s worktree: its close finds it in Claude Code's notes");
+                        continue;
+                    };
                     if let Err(why) = self.protected.registrable(&path) {
                         log!("{task_id} does not take {} as subagent {agent}'s worktree: {why}", path.display());
                         continue;

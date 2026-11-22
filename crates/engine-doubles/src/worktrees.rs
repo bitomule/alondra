@@ -399,6 +399,10 @@ impl Port for Worktrees {
         cwd.join(".git").is_file().then_some(WorktreeOrigin::LaunchedIn(cwd))
     }
 
+    fn noted_subagent_worktrees(&self, session_id: &str) -> Vec<alondra_engine_ports::worktrees::NotedWorktree> {
+        alondra_engine_ports::worktrees::noted_subagent_worktrees(&(self.claude_home)(), session_id)
+    }
+
     fn subagent_worktree(&self, own: &Path, agent: &str) -> Option<PathBuf> {
         let top = linked_top(own).or_else(|| main_top(own))?;
         Some(repository_of(&top)?.join(".claude").join("worktrees").join(format!("agent-{agent}")))

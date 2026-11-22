@@ -169,6 +169,9 @@ impl Worktrees for GitWorktrees {
     fn subagent_worktree(&self, own: &Path, agent: &str) -> Option<PathBuf> {
         worktree::subagent_worktree(own, agent)
     }
+    fn noted_subagent_worktrees(&self, session_id: &str) -> Vec<alondra_engine_ports::worktrees::NotedWorktree> {
+        alondra_engine_ports::worktrees::noted_subagent_worktrees(&(self.claude_home)(), session_id)
+    }
     fn registrable(&self, path: &Path, protected: &Protected) -> Result<(), String> {
         worktree::registrable(path, protected)
     }

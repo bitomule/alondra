@@ -69,6 +69,7 @@ checks:
       - "crates/host/src/**"
       - "crates/agent-runtime/src/**"
       - "crates/engine-ports/src/agent_host.rs"
+      - "crates/engine-ports/src/worktrees.rs"
       - "crates/foundation/src/artifact_digest.rs"
       - "crates/agent-protocol/src/archived_receipts.rs"
       - "crates/provider-claude/src/**"

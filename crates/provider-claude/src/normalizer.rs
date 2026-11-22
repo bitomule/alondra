@@ -1046,9 +1046,7 @@ fn worktree_facts(payload: &Value, state: &mut Checkpoint) -> Vec<Observation> {
             });
         }
     } else if isolated && result.get("status").and_then(Value::as_str) == Some("async_launched") {
-        let agent = result.get("agentId").and_then(Value::as_str).filter(|agent| {
-            (1..=64).contains(&agent.len()) && agent.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-        });
+        let agent = result.get("agentId").and_then(Value::as_str).filter(|agent| alondra_provider_contract::subagent_id(agent));
         if let Some(agent) = agent {
             facts.push(Observation::SubagentWorktree { agent: agent.to_owned() });
         }

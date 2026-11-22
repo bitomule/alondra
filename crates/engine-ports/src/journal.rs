@@ -127,6 +127,7 @@ pub trait Journal: Send {
     fn complete_tool_operation(&mut self, run: &str, call: &str, answer: &std::result::Result<Value,DomainError>) -> Result<()>;
     fn conversation_directory(&self, task: &TaskId, conversation: &str) -> Result<Option<String>>;
     fn conversation_metadata(&self, task: &TaskId, conversation: &str) -> Result<Option<Vec<u8>>>;
+    fn conversations_metadata(&self, task: &TaskId) -> Result<Vec<Vec<u8>>>;
     fn deferred_move(&self, task:&TaskId) ->Result<Option<Transition>>;
     fn deferred_moves(&self) ->Result<Vec<Transition>>;
     fn delivery_evidence(&self) -> Result<Vec<DeliveryEvidence>>;
