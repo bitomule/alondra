@@ -1103,6 +1103,115 @@ async fn a_dirty_subagent_worktree_holds_the_close_and_tells_the_node() {
     assert!(task.worktrees.values().all(|worktree| worktree.end == Some(alondra_domain_rules::WorktreeEnd::Removed)), "{:?}", task.worktrees);
 }
 
+/// The providers' notes the test's engine reads, in place of every provider's.
+fn noted_worktrees(rig: &Rig) -> alondra_engine_doubles::session_worktrees::Noted {
+    let noted = alondra_engine_doubles::session_worktrees::Noted::default();
+    rig.domain.ports().provide::<dyn alondra_engine_ports::worktrees::SessionWorktrees>(std::sync::Arc::new(noted.clone()));
+    noted
+}
+
+/// A task whose node launched a subagent in a worktree Alondra never saw made: only its provider's
+/// note of it says it is the task's.
+fn unseen_subagent_worktree(rig: &Rig, root: &std::path::Path) -> (std::path::PathBuf, alondra_engine_doubles::session_worktrees::Noted) {
+    let own = alondra_engine_doubles::worktrees::testing::task_worktree(root, "t");
+    rig.domain.set_task_worktree(&"t".into(), own.to_str().unwrap()).unwrap();
+    let dir = root.join("repo/.claude/worktrees/agent-a0000000000000009");
+    alondra_engine_doubles::worktrees::make_worktree(&root.join("repo"), &dir).unwrap();
+    let noted = noted_worktrees(rig);
+    noted.note(SESSION, &dir, Some("worktree-agent-a0000000000000009"));
+    (dir, noted)
+}
+
+// The user's rule, 22 November: a task that ends leaves nothing it made, its subagents' worktrees
+// included, also one whose making the daemon missed.
+#[tokio::test]
+async fn a_clean_subagent_worktree_alondra_never_saw_made_goes_with_its_task() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let (dir, _notes) = unseen_subagent_worktree(&rig, &root);
+    rig.confirm();
+    rig.pass(T0).await;
+    assert!(!dir.exists(), "the clean worktree its provider noted for the task's subagent is deleted");
+    let task = rig.task();
+    assert_eq!(task.state, TaskState::Done);
+    assert_eq!(task.worktrees.get(dir.to_str().unwrap()).and_then(|worktree| worktree.end.clone()), Some(alondra_domain_rules::WorktreeEnd::Removed));
+}
+
+#[tokio::test]
+async fn an_unseen_subagent_worktree_with_work_not_saved_holds_the_close_and_tells_the_node() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let (dir, _notes) = unseen_subagent_worktree(&rig, &root);
+    std::fs::write(dir.join("draft.txt"), "x").unwrap();
+    rig.confirm();
+    rig.pass(T0).await;
+    assert_eq!(rig.task().state, TaskState::Closing, "work left in a subagent's worktree keeps the task closing");
+    let told = rig.told().join("\n");
+    assert!(told.contains(dir.to_str().unwrap()), "the node is told which worktree holds work: {told}");
+    assert!(dir.join("draft.txt").exists(), "nothing with work is deleted");
+}
+
+#[tokio::test]
+async fn cancelling_a_task_settles_the_subagent_worktrees_alondra_never_saw_made() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let (dirty, noted) = unseen_subagent_worktree(&rig, &root);
+    std::fs::write(dirty.join("draft.txt"), "x").unwrap();
+    let clean = root.join("repo/.claude/worktrees/agent-a0000000000000010");
+    alondra_engine_doubles::worktrees::make_worktree(&root.join("repo"), &clean).unwrap();
+    noted.note(SESSION, &clean, None);
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
+    rig.pass(T0).await;
+    rig.pass(T0 + MINUTE).await;
+    assert!(!clean.exists(), "the clean one goes without asking");
+    assert!(dirty.join("draft.txt").exists(), "the one with work waits for the user");
+    let cards = rig.discard_cards();
+    assert_eq!(cards.len(), 1);
+    let card = DiscardWorktrees::from_body(&cards[0].body).unwrap();
+    assert!(card.tasks[0].paths.contains(&dirty.to_str().unwrap().to_owned()), "{:?}", card.tasks);
+}
+
+#[tokio::test]
+async fn a_noted_worktree_another_open_task_holds_or_git_does_not_know_is_never_taken() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let (held, noted) = unseen_subagent_worktree(&rig, &root);
+    command(&rig.domain, user(), "request-u", Command::CreateRequest { request_id: "r-u".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "create-u", Command::CreateTask {
+        plan_items: None, continues: None, task_id: "u".into(), request_id: "r-u".into(), title: "Other".into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+    });
+    command(&rig.domain, Actor::System, "record-u", Command::RecordTaskWorktree {
+        task_id: "u".into(), path: held.to_str().unwrap().into(), origin: alondra_domain_rules::WorktreeOrigin::Subagent, branch: None,
+    });
+    let plain = root.join("repo/.claude/worktrees/agent-a0000000000000011");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("notes.txt"), "x").unwrap();
+    noted.note(SESSION, &plain, None);
+    rig.confirm();
+    rig.pass(T0).await;
+    let task = rig.task();
+    assert!(!task.worktrees.contains_key(held.to_str().unwrap()) && !task.worktrees.contains_key(plain.to_str().unwrap()), "{:?}", task.worktrees);
+    assert!(held.exists() && plain.join("notes.txt").exists());
+}
+
+#[tokio::test]
+async fn a_background_subagent_of_a_task_without_a_worktree_of_its_own_is_placed_by_its_launch_folder() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
+    let repo = root.join("repo");
+    rig.domain.store.lock().unwrap().change_launch_plan(&"t".into(), &alondra_domain_rules::LaunchPlan::new("node", repo.to_str().unwrap()), None, T0).unwrap();
+    rig.domain.reload();
+    alondra_engine_doubles::worktrees::make_worktree(&repo, &repo.join(".claude/worktrees/agent-a0000000000000012")).unwrap();
+    let launched = json!({"hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_input": {"isolation": "worktree", "prompt": "Fix it"},
+        "tool_response": {"status": "async_launched", "agentId": "a0000000000000012"}});
+    crate::task_worktrees::record_from_hook(&rig.domain, &SESSION.into(), &launched).unwrap();
+    let task = rig.task();
+    assert!(task.worktrees.iter().any(|(path, worktree)| path.ends_with("/repo/.claude/worktrees/agent-a0000000000000012")
+        && worktree.origin == alondra_domain_rules::WorktreeOrigin::Subagent), "{:?}", task.worktrees);
+}
+
 fn pr() -> Vec<DeliveryTarget> {
     vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }]
 }

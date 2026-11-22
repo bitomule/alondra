@@ -65,6 +65,7 @@ fn raise_card(domain: &DomainRuntime, id: &str, scope: Scope, tasks: Vec<Cancell
 /// Settles every worktree of a task that is being cancelled: the ones without unsaved files are
 /// deleted, the ones with them are left as they are and one card asks the user about them.
 pub async fn release_cancelled(domain: &DomainRuntime, task: &Task) -> Result<()> {
+    let task = &crate::task_worktrees::recover_noted(domain, task)?;
     let mut paths: Vec<(String, bool)> = task.open_worktrees().map(|(path, _)| (path.clone(), true)).collect();
     paths.extend(domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir)).map(|dir| (dir, false)));
     let mut held = CancelledWorktree { task_id: task.id.0.clone(), title: task.title.clone(), files: 0, paths: vec![] };

@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use alondra_domain_rules::{AgentId, Command, DomainState, Task, TaskId, WorktreeEnd, WorktreeOrigin};
-use alondra_engine_ports::worktrees::TaskWorktree;
+use alondra_engine_ports::worktrees::{Conversations, TaskWorktree};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
@@ -47,17 +47,12 @@ pub fn made_by_tool(payload: &Value) -> Option<Made> {
         "EnterWorktree" => at(false),
         "Agent" | "Task" if payload.pointer("/tool_input/isolation").and_then(Value::as_str) == Some("worktree") => {
             at(true).or_else(|| {
-                let agent = text("agentId").filter(|agent| subagent_id(agent))?;
+                let agent = text("agentId").filter(|agent| alondra_engine_ports::worktrees::subagent_id(agent))?;
                 (text("status") == Some("async_launched")).then(|| Made::Subagent { agent: agent.to_owned() })
             })
         }
         _ => None,
     }
-}
-
-/// The ids Claude Code gives subagents, which name their worktrees `agent-<id>`.
-fn subagent_id(agent: &str) -> bool {
-    matches!(agent.len(), 8 | 17) && agent.starts_with('a') && agent[1..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Records the worktree a `claude --bg` node's tool made as its task's.
@@ -74,14 +69,45 @@ fn record(domain: &DomainRuntime, task: &TaskId, made: Made) -> Result<()> {
     let (path, branch, origin) = match made {
         Made::At { path, branch, subagent } => (path, branch, if subagent { WorktreeOrigin::Subagent } else { WorktreeOrigin::Entered }),
         Made::Subagent { agent } => {
-            let own = domain.task_worktree(task)?.with_context(|| format!("{task} has no worktree of its own to place subagent {agent}'s"))?;
+            let launched = domain.launch_plan(task)?.map(|plan| plan.cwd);
+            let Some(own) = domain.task_worktree(task)?.or(launched) else {
+                log!("{task} has neither a worktree of its own nor a launch folder to place subagent {agent}'s: its close finds it in its provider's notes");
+                return Ok(());
+            };
             let path = domain.ports().worktrees().subagent_worktree(Path::new(&own), &agent)
-                .with_context(|| format!("{own} is not a worktree Alondra made"))?;
+                .with_context(|| format!("{own} is in no repository"))?;
             (path.display().to_string(), None, WorktreeOrigin::Subagent)
         }
     };
     let command = Command::RecordTaskWorktree { task_id: task.clone(), path, origin, branch };
     domain.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+/// Records as the task's each worktree a provider noted the sessions of the task's conversations
+/// made that is still there and no task has: one whose making Alondra did not see, as when the
+/// daemon was down. Closing then settles it as any other. The task as the domain has it after.
+pub fn recover_noted(domain: &DomainRuntime, task: &Task) -> Result<Task> {
+    let state = domain.state()?;
+    let worktrees = domain.ports().worktrees();
+    let records = domain.store.lock_or_exit("the domain store").conversations_metadata(&task.id).unwrap_or_else(|why| {
+        log!("could not read the conversations of {}: {why}", task.id);
+        vec![]
+    });
+    let conversations = Conversations { agent: task.agent_id.as_ref().map(|agent| agent.0.as_str()), records: &records };
+    for noted in domain.ports().session_worktrees().made_by(&conversations) {
+        let path = noted.path.display().to_string();
+        if state.tasks.values().any(|other| other.worktrees.contains_key(&path)) || !worktrees.exists(&noted.path) {
+            continue;
+        }
+        if let Err(why) = domain.registrable_worktree(&noted.path) {
+            log!("{} does not take {path}, noted for one of its sessions: {why}", task.id);
+            continue;
+        }
+        let command = Command::RecordTaskWorktree { task_id: task.id.clone(), path: path.clone(), origin: WorktreeOrigin::Subagent, branch: noted.branch };
+        domain.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))?;
+        log!("{path}, which its provider noted for a session of {}, is recorded as its worktree", task.id);
+    }
+    Ok(domain.state()?.tasks.get(&task.id).cloned().unwrap_or_else(|| task.clone()))
 }
 
 /// The open task that goes on working in the worktree at `path` once `task` lets it go: one that
@@ -117,6 +143,11 @@ pub use alondra_engine_ports::worktrees::{Unreachable, settle_text};
 /// What each worktree of the task that the node did not give up, and no other open task goes on
 /// in, still holds that no remote has: the work that keeps the task from closing, by path.
 pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, String)> {
+    let recovered = recover_noted(domain, task).unwrap_or_else(|why| {
+        log!("could not recover the subagent worktrees of {}: {why}", task.id);
+        task.clone()
+    });
+    let task = &recovered;
     let mut left = vec![];
     for (path, _) in task.open_worktrees().filter(|(path, worktree)| !worktree.discard && domain.ports().worktrees().exists(Path::new(path))) {
         if domain.registrable_worktree(Path::new(path)).is_err() {
@@ -142,6 +173,7 @@ pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, Stri
 /// Deletes every worktree of the task that can go, the ones the node gave up as they are, and
 /// records how each ended. What could not go is returned, by path.
 pub async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(String, String)>> {
+    let task = &recover_noted(domain, task)?;
     let (mut left, mut unreachable) = (vec![], vec![]);
     for (path, worktree) in task.open_worktrees() {
         if let Err(why) = ready(domain, path).await {
@@ -268,5 +300,13 @@ mod tests {
             Some(Made::At { path: "/repo/.claude/worktrees/spike".into(), branch: Some("worktree-spike".into()), subagent: false }));
         assert_eq!(made_by_tool(&post("ExitWorktree", json!({"action": "remove"}), json!({"action": "remove", "worktreePath": "/repo/.claude/worktrees/spike"}))), None);
         assert_eq!(made_by_tool(&post("Agent", json!({"isolation": "worktree"}), json!({"status": "async_launched", "agentId": "../../etc"}))), None);
+    }
+
+    #[test]
+    fn a_background_subagent_is_placed_whatever_the_length_of_the_id_claude_code_gives_it() {
+        for agent in ["a1b2c3d4e5f6", "agent_7-B"] {
+            assert_eq!(made_by_tool(&post("Agent", json!({"isolation": "worktree"}), json!({"status": "async_launched", "agentId": agent}))),
+                Some(Made::Subagent { agent: agent.into() }), "{agent}");
+        }
     }
 }

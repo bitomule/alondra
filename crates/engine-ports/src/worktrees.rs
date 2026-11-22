@@ -100,6 +100,8 @@ pub struct Repository {
     pub root: WorktreesRoot,
 }
 
+pub use alondra_provider_contract::{Conversations, SessionWorktree, SessionWorktrees, subagent_id};
+
 /// The folder name of a task's worktree, from its id or title.
 pub fn slug(name: &str) -> String {
     let slug: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
@@ -214,3 +216,4 @@ launched, hold work no remote has:{list}\nFor each one, commit the work and push
 Then call cleanup_done with task_id {task}, listing in discard the paths you give up: Alondra deletes those as they \
 are and closes the task once no worktree of it holds work no remote has.")
 }
+
