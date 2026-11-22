@@ -47,7 +47,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
     };
     let profile = profile(&batch);
     let run = batch.owner.run().to_owned();
-    let mut host = match BatchHost::start(ProviderOwner(batch.owner), &configuration, &batch.session, &profile, &batch.prompt) {
+    let mut host = match BatchHost::start(ProviderOwner(batch.owner), &configuration, &batch.session, batch.resume, &profile, &batch.prompt) {
         Ok(host) => host,
         Err(error) => {
             remove_folder(&configuration.state_directory);
@@ -124,11 +124,40 @@ fn stop(host: BatchHost<ProviderOwner>, directory: &Path, spent: Option<&Path>) 
     }
 }
 
+/// Writes conversation `session` of the orchestrator, which ran on `account`, condensed into its
+/// working directory `directory`, from Claude Code's transcript of it. `None` when the transcript
+/// cannot be found or read: the new conversation then goes on from the domain alone.
+pub(crate) fn keep_conversation(domain: &crate::domain_runtime::DomainRuntime, backend: &crate::sdk_backend::SdkBackend, home: &Path,
+    account: &alondra_core::accounts::AccountId, directory: &Path, session: &str) -> Option<std::path::PathBuf> {
+    let backend = backend.for_provider(alondra_core::accounts::Provider::Claude, home)
+        .and_then(|backend| backend.for_account(home, account, &domain.engine().registered_accounts(home, alondra_core::accounts::Provider::Claude)))
+        .map_err(|error| log!("orchestrator: cannot find the Claude profile of conversation {session}: {error:#}"))
+        .ok()?;
+    let Some(transcript) = alondra_engine_ports::claude_history::transcript(&backend.native_environment, session, directory) else {
+        log!("orchestrator: Claude Code keeps no transcript of conversation {session}");
+        return None;
+    };
+    crate::orchestrator_conversation::write_conversation(directory, session, &transcript)
+        .map_err(|error| log!("orchestrator: cannot write conversation {session} down: {error}"))
+        .ok()
+}
+
+
 /// The batch's host ended, and nothing reads its folder again: the batch alone knew its name.
 pub(crate) fn remove_folder(state_directory: &Path) {
     if let Err(error) = std::fs::remove_dir_all(state_directory) {
         log!("orchestrator: could not delete the folder of the batch's host {}: {error}", state_directory.display());
     }
+}
+
+/// Whether Claude Code still keeps a transcript of conversation `session` on `account`; `None`
+/// when that cannot be told.
+pub(crate) fn conversation_kept(domain: &crate::domain_runtime::DomainRuntime, backend: &crate::sdk_backend::SdkBackend, home: &Path,
+    account: &alondra_core::accounts::AccountId, directory: &Path, session: &str) -> Option<bool> {
+    let backend = backend.for_provider(alondra_core::accounts::Provider::Claude, home)
+        .and_then(|backend| backend.for_account(home, account, &domain.engine().registered_accounts(home, alondra_core::accounts::Provider::Claude)))
+        .ok()?;
+    Some(alondra_engine_ports::claude_history::available(&backend.native_environment, session, directory))
 }
 
 fn configuration(batch: &Batch) -> Result<(ClaudeConfiguration, Preparing), String> {
@@ -154,6 +183,10 @@ fn configuration(batch: &Batch) -> Result<(ClaudeConfiguration, Preparing), Stri
         ("ALONDRA_SESSION_ID".to_owned(), alondra_core::orchestrator::NODE_ID.to_owned()),
         ("ALONDRA_DOMAIN_CAPABILITY".to_owned(), batch.capability.clone()),
         ("ALONDRA_DOMAIN_PROTOCOL".to_owned(), "2".to_owned()),
+        // The conversation is resumed batch after batch, often minutes apart: its prompt cache lasts
+        // an hour, as a node's does, also once an account pays beyond its plan.
+        ("CLAUDE_CODE_PROMPT_CACHE_TTL".to_owned(), "1h".to_owned()),
+        ("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL".to_owned(), "5m".to_owned()),
     ]));
     for name in ["ALONDRA_PORT", "ALONDRA_SANDBOX"] {
         if native_environment.contains_key(name){continue}

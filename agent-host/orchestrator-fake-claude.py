@@ -15,6 +15,11 @@ records its arguments and every prompt it gets, and answers each prompt as its f
   fixture:another-input     ends with the result of a prompt that is not this one
 
 Any other prompt is answered and ends with its result.
+
+A batch started with --resume continues a conversation an earlier batch of the same test started:
+one it never started, or whose record the test removed, ends before it initializes, as Claude Code
+does when it finds no conversation to resume. Each answer reports as many input tokens as
+FIXTURE_CAPTURE.tokens holds (25 without it), the size of the conversation the test plays.
 """
 import json
 import os
@@ -34,8 +39,26 @@ def flag(name):
     return None
 
 
-session_id = flag('--session-id')
+resumed = flag('--resume')
+session_id = flag('--session-id') or resumed
+sessions = capture + '.sessions'
 serial = 0
+
+
+def known_sessions():
+    try:
+        with open(sessions) as stream:
+            return set(stream.read().split())
+    except FileNotFoundError:
+        return set()
+
+
+def tokens():
+    try:
+        with open(capture + '.tokens') as stream:
+            return int(stream.read().strip())
+    except FileNotFoundError:
+        return 25
 server = 'alondra-orchestrator'
 tools = ['Skill', 'Read', 'Glob', 'Grep'] + ['mcp__%s__%s' % (server, name) for name in ('tasks_in_progress', 'ask', 'create_task', 'close_request', 'settle_suggestion')]
 
@@ -65,7 +88,7 @@ def init():
 def assistant(message, content, **extra):
     send(dict(type='assistant', session_id=session_id, uuid=uuid(), parent_tool_use_id=None,
               message=dict(id='msg_' + str(serial), type='message', role='assistant', model=flag('--model'), content=content,
-                           stop_reason=None, stop_sequence=None, usage=dict(input_tokens=25, output_tokens=1)),
+                           stop_reason=None, stop_sequence=None, usage=dict(input_tokens=tokens(), output_tokens=1)),
               user_message_uuid=message['uuid'], user_message_uuids=[message['uuid']], **extra))
 
 
@@ -76,6 +99,9 @@ def result(message, input_id=None, **extra):
     value.update(extra)
     send(value)
     lifecycle(message, 'completed')
+    if session_id not in known_sessions():
+        with open(sessions, 'a') as stream:
+            stream.write(session_id + '\n')
 
 
 def hold(said='held'):
@@ -104,7 +130,7 @@ for raw in sys.stdin:
     text = message['message']['content']
     with open(capture + '.prompts', 'a') as stream:
         stream.write(json.dumps(text) + '\n')
-    if 'fixture:exit-before-init' in text:
+    if 'fixture:exit-before-init' in text or (resumed and resumed not in known_sessions()):
         sys.exit(3)
     for state in ('queued', 'started'):
         lifecycle(message, state)

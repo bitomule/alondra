@@ -41,6 +41,9 @@ struct NativeTurn {
     accepted_model: Option<String>,
     rerouted: bool,
     usage_baseline: Option<(i64, i64, i64)>,
+    /// The thread is the orchestrator's conversation resumed, not a new one.
+    resumed: bool,
+    measured: bool,
 }
 impl NativeTurn {
     fn fold(&mut self, message: &Value, input: &str, session: &str, stream: &mut Stream) -> anyhow::Result<BatchReport> {
@@ -52,7 +55,9 @@ impl NativeTurn {
             let thread = params["threadId"].as_str().filter(|id| !id.is_empty()).ok_or_else(|| anyhow::anyhow!("The native thread identity is missing"))?;
             anyhow::ensure!(self.thread.as_deref().is_none_or(|current| current == thread), "A batch cannot replace its native thread");
             anyhow::ensure!(self.announced.as_deref().is_none_or(|announced| announced == thread), "A Codex event before the thread was ready named a different thread");
-            if self.thread.is_none() { self.usage_baseline = Some((0, 0, 0)); }
+            // A new thread has spent nothing yet. A resumed one reports what all its turns spent: its
+            // first reading is the baseline, and only that reading's last request counts as this turn's.
+            if self.thread.is_none() && !self.resumed { self.usage_baseline = Some((0, 0, 0)); }
             self.thread = Some(thread.into());
             if let Some(process) = native_label(params,"processGeneration") {
                 anyhow::ensure!(self.process.as_deref().is_none_or(|current|current==process),"A batch cannot replace its native process");
@@ -156,6 +161,10 @@ impl NativeTurn {
                     stream.first_input_tokens.get_or_insert(tokens);
                     stream.input_tokens = Some(tokens);
                 }
+                if self.usage_baseline.is_none() && self.resumed && !self.measured {
+                    self.measure_last(&usage["last"], stream)?;
+                }
+                self.measured = true;
                 self.measure(&usage["total"], stream)?;
             }
             "turn/completed" => {
@@ -194,6 +203,15 @@ impl NativeTurn {
             anyhow::ensure!(turn.is_some() && turn == self.turn.as_deref(), "The native metadata belongs to a different or missing turn");
         }
         Ok(())
+    }
+
+    /// The first reading of a resumed thread: its last request alone is this turn's spending.
+    fn measure_last(&mut self, last: &Value, stream: &mut Stream) -> anyhow::Result<()> {
+        let saved = self.usage_baseline.take();
+        self.usage_baseline = Some((0, 0, 0));
+        let measured = self.measure(last, stream);
+        self.usage_baseline = saved;
+        measured
     }
 
     fn measure(&mut self, total: &Value, stream: &mut Stream) -> anyhow::Result<()> {
@@ -244,7 +262,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
     let (configuration, _preparing) = match configuration(&batch) { Ok(value) => value, Err(error) => return failed(format!("{error:#}")) };
     let profile = match profile(&batch) { Ok(value) => value, Err(error) => { crate::orchestrator_sdk::remove_folder(&configuration.state_directory); return failed(format!("{error:#}")) } };
     let run = batch.owner.run().to_owned();
-    let mut host = match BatchHost::start(ProviderOwner(batch.owner), &configuration, &batch.session, &profile, &batch.prompt) {
+    let mut host = match BatchHost::start(ProviderOwner(batch.owner), &configuration, &batch.session, batch.resume, &profile, &batch.prompt) {
         Ok(value) => value,
         Err(error) => {
             crate::orchestrator_sdk::remove_folder(&configuration.state_directory);
@@ -256,7 +274,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
         Err(error) => { stop(host, &batch.directory, Some(&configuration.state_directory)); return failed(format!("Cannot own the orchestrator host: {error:#}")); }
     };
     let mut output = Output { stream: Stream::for_input(host.input()), diagnostic: String::new(), exit_ok: false };
-    let mut native = NativeTurn::default();
+    let mut native = NativeTurn { resumed: batch.resume, ..NativeTurn::default() };
     if let Err(error) = ProcessOwner::record(&batch.directory, host.process_id(), &run, &batch.domain.orchestrator().injected).and_then(|()| spawned()) {
         output.stream.storage_failure=true;
         output.stream.error = Some(bounded(format!("Cannot record the Codex host: {error:#}")));
@@ -497,6 +515,24 @@ mod tests {
         native.fold(&json!({"method":"thread/tokenUsage/updated","params":{"threadId":"native","turnId":"turn","tokenUsage":{"total":{"inputTokens":100}}}}),"input","batch",&mut stream).unwrap();
         assert_eq!(stream.spent,previous);
     }
+    /// A resumed thread reports what all its turns spent: the turn that resumes it spends only its
+    /// own requests, never the earlier turns' again.
+    #[test]
+    fn a_resumed_thread_counts_only_what_this_turn_spent() {
+        let mut native = NativeTurn { resumed: true, ..NativeTurn::default() }; let mut stream = Stream::for_input("input");
+        stream.model = Some("advertised-model".into()); ready(&mut native, &mut stream);
+        let usage = |total: (i64, i64), last: (i64, i64)| json!({"method":"thread/tokenUsage/updated","params":{"threadId":"native","turnId":"turn","tokenUsage":{
+            "last":{"inputTokens":last.0,"cachedInputTokens":0,"outputTokens":last.1},
+            "total":{"inputTokens":total.0,"cachedInputTokens":0,"outputTokens":total.1}}}});
+        native.fold(&usage((90_000, 4_000), (3_000, 200)), "input", "batch", &mut stream).unwrap();
+        assert_eq!((stream.spent[0].input, stream.spent[0].output), (3_000, 200), "the earlier turns of the thread are not this turn's");
+        native.fold(&usage((94_000, 4_100), (4_000, 100)), "input", "batch", &mut stream).unwrap();
+        assert_eq!((stream.spent[0].input, stream.spent[0].output), (7_000, 300), "the next request adds what it spent");
+        let mut fresh = NativeTurn::default(); let mut stream = Stream::for_input("input");
+        stream.model = Some("advertised-model".into()); ready(&mut fresh, &mut stream);
+        fresh.fold(&usage((3_000, 200), (3_000, 200)), "input", "batch", &mut stream).unwrap();
+        assert_eq!((stream.spent[0].input, stream.spent[0].output), (3_000, 200), "a new thread counts from nothing");
+    }
     #[test]
     fn missing_native_thread_or_turn_cannot_consume_or_settle_a_batch() {
         for params in [
@@ -622,7 +658,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
         let runtime = crate::domain_orchestrator::load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none(), "{runtime:?}");
         assert!(runtime.failure.is_none() && runtime.last_error.is_none(), "{runtime:?}");
-        assert_eq!(runtime.note.as_deref(), Some("Normal Codex batch handled"), "the normal Handled path retains its native result; storage recovery does not set this note");
+        assert_eq!(runtime.conversation.as_ref().and_then(|conversation| conversation.last_words.as_deref()), Some("Normal Codex batch handled"), "the normal Handled path keeps its native result for the next conversation's handoff");
         assert_eq!(f.pending(), 0);
         assert_eq!(f.attempts(), ["handed"]);
         assert!(f.domain().state().unwrap().requests[&"normal-codex-request".into()].closed);

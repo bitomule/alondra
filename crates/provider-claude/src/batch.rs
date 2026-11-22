@@ -15,7 +15,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The Claude an orchestrator batch runs: its model, its tools and MCP server and nothing else,
-/// its plugins and settings. Every batch is a new conversation: no field resumes another.
+/// its plugins and settings. Whether the batch resumes the orchestrator's conversation or starts
+/// one is `BatchHost::start`'s `resume`.
 #[derive(Clone, Debug, Serialize)]
 pub struct OrchestratorProfile {
     pub model: String,
@@ -99,19 +100,21 @@ pub struct BatchHost<O: HostOwner> {
 }
 
 impl<O: HostOwner> BatchHost<O> {
-    /// Starts the host under `owner` and hands it the batch's one prompt. Once this returns the
-    /// prompt was offered to the SDK; any failure before it means Claude never saw it.
+    /// Starts the host under `owner` and hands it the batch's one prompt, as a new turn of
+    /// `session` when `resume`, or as the first turn of a new conversation with that id. Once this
+    /// returns the prompt was offered to the SDK; any failure before it means Claude never saw it.
     pub fn start(
         owner: O,
         configuration: &ClaudeConfiguration,
         session: &str,
+        resume: bool,
         profile: &OrchestratorProfile,
         prompt: &str,
     ) -> Result<Self, AdapterError> {
         let control = configuration.control()?;
         let session = SessionRecord {
             session_id: MessageUuid::new(session).map_err(|_| AdapterError::InvalidObservation)?,
-            continued: false,
+            continued: resume,
         };
         let mut host = OwnedHost::launch(
             &*configuration.hosts,

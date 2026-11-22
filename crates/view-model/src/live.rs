@@ -486,6 +486,29 @@ pub struct LiveOrchestrator {
     /// No batch starts because no Claude account has a session.
     #[serde(default)]
     pub waits_for_sign_in: bool,
+    /// The conversation every batch resumes, once there is one.
+    #[serde(default)]
+    pub conversation: Option<LiveConversation>,
+    /// What the orchestrator owes now: requests without an outcome, nodes' questions and
+    /// suggestions, stopped nodes' cases and plans to review.
+    #[serde(default)]
+    pub owes: u32,
+    /// Requests it left without an outcome after its reminder, now waiting for the user.
+    #[serde(default)]
+    pub handed_to_you: u32,
+}
+/// The orchestrator's conversation: how much of it there is before it starts anew, and why it
+/// started.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveConversation {
+    pub turns: u64,
+    pub tokens: u64,
+    pub limit: u64,
+    /// When its prompt cache expires, as RFC 3339.
+    #[serde(default)]
+    pub cache_expires_at: Option<String>,
+    /// first, size, cache_expired, account or lost.
+    pub started_because: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveBackground {

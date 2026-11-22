@@ -1,3 +1,5 @@
+//! Claude Code's own record of a session: the transcript a node or the orchestrator resumes, and
+//! the files of its subagents. Read, never written.
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -5,13 +7,13 @@ use std::path::{Component, Path, PathBuf};
 
 const WITNESS_BYTES: u64 = 8 * 1024 * 1024;
 
-pub(super) fn available(environment: &BTreeMap<String, String>, session: &str, directory: &Path) -> bool {
+pub fn available(environment: &BTreeMap<String, String>, session: &str, directory: &Path) -> bool {
     transcript(environment, session, directory).is_some()
 }
 
 /// The native transcript of `session`, which Claude Code keeps in a project folder of the profile
 /// `environment` selects, once a conversation record of it in `directory` proves it is that session's.
-pub(super) fn transcript(environment: &BTreeMap<String, String>, session: &str, directory: &Path) -> Option<PathBuf> {
+pub fn transcript(environment: &BTreeMap<String, String>, session: &str, directory: &Path) -> Option<PathBuf> {
     let session = alondra_foundation::MessageUuid::new(session).ok()?;
     if !normal_absolute(directory) || !std::fs::symlink_metadata(directory).is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink()) {
         return None;
@@ -31,7 +33,7 @@ pub(super) fn transcript(environment: &BTreeMap<String, String>, session: &str, 
 
 /// The transcripts of the subagents the session of `transcript` ran, which Claude Code keeps in a
 /// folder named after the session, next to its transcript.
-pub(super) fn subagent_transcripts(transcript: &Path) -> Vec<PathBuf> {
+pub fn subagent_transcripts(transcript: &Path) -> Vec<PathBuf> {
     let folder = transcript.with_extension("").join("subagents");
     let mut found: Vec<PathBuf> = std::fs::read_dir(folder).into_iter().flatten().filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))

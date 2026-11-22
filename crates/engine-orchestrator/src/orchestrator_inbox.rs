@@ -232,6 +232,53 @@ pub(crate) fn unresolved(state: &DomainState, requests: &[RequestId], suggestion
     left
 }
 
+/// The most items the ledger of a turn lists, and the longest line of each.
+const LEDGER_ITEMS: usize = 60;
+const LEDGER_LINE: usize = 200;
+
+/// What the orchestrator owes now, one item each: what a turn that resumes its conversation reads
+/// instead of the whole state, which the conversation already holds an earlier copy of. A request
+/// with no outcome comes with what it asks, as the user wrote it.
+pub fn ledger(state: &DomainState, with_requests: bool) -> Vec<String> {
+    let title = |i: &Interaction| i.card.effective_title().to_owned();
+    let of_task = |i: &Interaction| task_of(state, i).map_or(String::new(), |task| format!(" of task {} “{}”", task.id, task.title));
+    let mut requests = vec![];
+    for request in state.requests.values().filter(|request| with_requests && !request.closed) {
+        if state.tasks.values().any(|task| task.request_id == request.id) || asked_about(state, &request.id) || handed_to_user(state, &request.id) {
+            continue;
+        }
+        let what = if request.maintenance { "maintenance message" } else if request.message { "message" } else { "request" };
+        let body: String = request.body.trim().chars().take(BODY_SHOWN).collect();
+        requests.push(format!("{what} {} (no task of its own, no outcome yet):\n{body}", request.id));
+    }
+    let mut lines = vec![];
+    for i in state.interactions.values().filter(|i| waits(i)) {
+        let what = if i.card.kind == CardKind::Propose { "suggestion" } else { "question" };
+        if task_of(state, i).is_some_and(|task| !task.over()) {
+            lines.push(format!("{what} {}{}: {}", i.id, of_task(i), title(i)));
+        }
+    }
+    for case in state.interactions.values().filter(|i| state.unsettled_stall(i)) {
+        if task_of(state, case).is_some_and(|task| !task.over()) {
+            lines.push(format!("stopped node case {}{}", case.id, of_task(case)));
+        }
+    }
+    for (id, review) in &state.plan_reviews {
+        let held: Vec<String> = state.plan_review_waiting(review).map(|task| task.id.0.clone()).collect();
+        if !held.is_empty() {
+            lines.push(format!("plan review {id}: the plans of {} wait for your review", held.join(", ")));
+        }
+    }
+    let total = requests.len() + lines.len();
+    let mut shown: Vec<String> = requests.into_iter().take(LEDGER_ITEMS).collect();
+    let room = LEDGER_ITEMS.saturating_sub(shown.len());
+    shown.extend(lines.into_iter().take(room).map(|line| line.chars().take(LEDGER_LINE).collect::<String>()));
+    if total > shown.len() {
+        shown.push(format!("… and {} more: tasks_in_progress lists them", total - shown.len()));
+    }
+    shown
+}
+
 /// The open requests and the node suggestions a batch is asked to leave with an outcome.
 pub(crate) fn asked(state: &DomainState) -> (Vec<RequestId>, Vec<InteractionId>) {
     let requests = state.requests.values().filter(|request| !request.closed).map(|request| request.id.clone()).collect();
@@ -240,6 +287,12 @@ pub(crate) fn asked(state: &DomainState) -> (Vec<RequestId>, Vec<InteractionId>)
         .map(|i| i.id.clone())
         .collect();
     (requests, suggestions)
+}
+
+/// The orchestrator left this request without an outcome past its reminder, and it waits with the
+/// user as a problem card: it is the user's now, not something the orchestrator owes.
+pub(crate) fn handed_to_user(state: &DomainState, request: &RequestId) -> bool {
+    numbered(state, InboxCard::UnsplitProblem, &request.0).iter().any(|(_, problem)| state.open(problem))
 }
 
 /// The orchestrator waits for the user's answer about this request: nothing is left in it.

@@ -29,6 +29,20 @@ pub struct LastRequest {
     pub cache_ms: Millis,
 }
 
+/// The size from which a conversation whose prompt cache expired starts anew instead of resuming:
+/// below it, rewriting the cache costs less than what a new session reads again to go on. A node
+/// and the orchestrator share it.
+pub const REFRESH_FROM_TOKENS: u64 = 100_000;
+
+impl LastRequest {
+    /// Whether resuming after this request would write the whole conversation to the cache again:
+    /// it is at least `REFRESH_FROM_TOKENS` and its cache, for as long as the provider said it
+    /// lasts, expired by `now`.
+    pub fn starts_anew_at(&self, now: Millis) -> bool {
+        self.tokens >= REFRESH_FROM_TOKENS && now >= self.requested_at.saturating_add(self.cache_ms)
+    }
+}
+
 /// How a host of a task came to run its conversation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartKind {
