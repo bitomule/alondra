@@ -53,8 +53,6 @@ impl Canon {
             ObservedFact::Usage(report) => usage_text(report),
             ObservedFact::Worktree { subagent, .. } => format!("Worktree(subagent={subagent})"),
             ObservedFact::SubagentWorktree { .. } => "SubagentWorktree".into(),
-            ObservedFact::PullRequestOpened(pr) => format!("PullRequestOpened({})", pr.number),
-            ObservedFact::PullRequestNotNamed => "PullRequestNotNamed".into(),
             ObservedFact::PullRequestsChanged => "PullRequestsChanged".into(),
             ObservedFact::McpServers { servers } => format!("McpServers({})", servers.len()),
             ObservedFact::McpSignIn { server, .. } => format!("McpSignIn({server})"),

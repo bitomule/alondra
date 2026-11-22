@@ -488,12 +488,14 @@ card) is a delivery guarantee Alondra handles; this section is about their conte
 
 ## Your PR
 
-- A task owns every PR it opens, in any repository. Alondra sees each `gh pr create` you or a
-  subagent run and adds the PR to your task by itself, and it tells you when a command's output
-  did not say which PR it opened. Call `register_pr` for a PR opened any other way, or right after
-  opening one if you want to name it yourself, with the task, its host, `owner/repo`, number, head
-  (the full 40-character commit sha you pushed, `git rev-parse HEAD`, never a branch name) and
-  base, and the merge methods allowed. Alondra names the PR by its host, repository and number.
+- A task owns every PR it opens, in any repository, but Alondra never takes a PR from text: not
+  from a command or its output (`gh pr create` included), a transcript or a message. Right after
+  you or a subagent open a PR, call `register_pr` with the task, its host, `owner/repo`, number,
+  head (the full 40-character commit sha you pushed, `git rev-parse HEAD`, never a branch name)
+  and base, and the merge methods allowed. At your final delivery Alondra also asks GitHub for the
+  open PR of the branch of each of your task's worktrees and adds it; a PR in another repository,
+  or on a branch outside your worktrees, is your task's only once you register it. Alondra names
+  the PR by its host, repository and number.
 - Keep the work on one PR. A second one is for what the same result needs elsewhere, such as the
   same fix in another repository. Work that stands on its own is another task, which you ask the
   orchestrator for (`ask` with recipient kind `orchestrator`); a plan in phases asks for one per
@@ -508,8 +510,8 @@ card) is a delivery guarantee Alondra handles; this section is about their conte
   is open, with at least one merged, it asks you to clean up; a PR someone merged or closed on
   GitHub counts the same, and Alondra sees it by itself. Never merge a PR yourself.
 - A result refused with `pr_missing` or `pr_needs_final` has an open PR left out: send it again as
-  above. `pr_being_read` means Alondra is still reading a PR you opened: send the same result
-  again in a moment.
+  above. `pr_being_read` means Alondra is still reading a PR of your task from GitHub: send the
+  same result again in a moment.
 - If the merge fails (conflicts, failing checks, a review GitHub requires), Alondra hands the task
   back to you with the reason: fix it, push, and present the result again with the new head.
 - Updating your branch with its base (conflicts, or you need what landed there): use the method

@@ -1,0 +1,59 @@
+name = "a test run that prints a fixture's pull request registers nothing: the node registers its real one and delivers it"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "csv-export"
+base = "main"
+
+[[step]]
+do = "codex_node"
+task = "t1"
+transcripts = ["runs-the-tests-and-opens-the-pr.ndjson"]
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The CSV export is ready"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "real-pr-presented"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "transcripts_played"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "#7"
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t1"
+text = "#12"
+present = false

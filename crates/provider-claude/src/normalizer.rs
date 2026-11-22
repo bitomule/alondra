@@ -6,7 +6,7 @@ use alondra_agent_protocol::{
 };
 use alondra_foundation::{ContinuationId, MessageUuid, TurnId, WorkId};
 use alondra_provider_contract::{
-    pull_requests_named, runs_gh_pr_create, runs_gh_pr_close, reconciled_continuation, ENDED_WITHOUT_RESULT,
+    runs_gh_pr_close, reconciled_continuation, ENDED_WITHOUT_RESULT,
     AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome, UsageReport, UsageWindow,
     UsageWindowKind,
 };
@@ -55,9 +55,11 @@ struct Checkpoint {
     /// oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     isolated: Vec<String>,
-    /// The commands running `gh pr create` whose result is still to come, by tool use id.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pr_commands: BTreeSet<String>,
+    /// What a checkpoint written while Alondra still read `gh pr create`'s output keeps: it is
+    /// read and dropped, since no pull request is taken from a command's output.
+    #[serde(default, rename = "pr_commands", skip_serializing)]
+    _pr_create_commands: BTreeSet<String>,
+    /// The commands running `gh pr close` whose result is still to come, by tool use id.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pr_close_commands: BTreeSet<String>,
     /// Work that ended after its turn, oldest first: its notification wakes a root turn of
@@ -979,47 +981,29 @@ fn note_isolated_agents(payload: &Value, state: &mut Checkpoint) {
 }
 /// Most PR commands that can wait on their result at once.
 const MAX_PR_COMMANDS: usize = 64;
-/// Remembers each shell command, of the node or of a subagent, that runs `gh pr create`.
+/// Remembers each shell command, of the node or of a subagent, that runs `gh pr close`.
 fn note_pr_commands(payload: &Value, state: &mut Checkpoint) {
     for block in payload.pointer("/message/content").and_then(Value::as_array).into_iter().flatten() {
         let is_shell = block.get("type").and_then(Value::as_str) == Some("tool_use") && block.get("name").and_then(Value::as_str) == Some("Bash");
-        let creates = block.pointer("/input/command").and_then(Value::as_str).is_some_and(runs_gh_pr_create);
         let closes = block.pointer("/input/command").and_then(Value::as_str).is_some_and(runs_gh_pr_close);
         if let Some(id) = block.get("id").and_then(Value::as_str).filter(|id| is_shell && closes && id.len() <= 256) {
             if state.pr_close_commands.len() < MAX_PR_COMMANDS {
                 state.pr_close_commands.insert(id.to_owned());
             }
         }
-        if let Some(id) = block.get("id").and_then(Value::as_str).filter(|id| is_shell && creates && id.len() <= 256) {
-            if state.pr_commands.len() < MAX_PR_COMMANDS {
-                state.pr_commands.insert(id.to_owned());
-            }
-        }
     }
 }
-/// What the result of a remembered `gh pr create` says: the pull requests its output names.
+/// A remembered `gh pr close` that finished well: the task's registered pull requests need a
+/// fresh read from GitHub, whatever its output says.
 fn pull_request_facts(payload: &Value, state: &mut Checkpoint) -> Vec<Observation> {
     let mut facts = Vec::new();
     for block in payload.pointer("/message/content").and_then(Value::as_array).into_iter().flatten() {
         let is_result = block.get("type").and_then(Value::as_str) == Some("tool_result");
         let Some(id) = block.get("tool_use_id").and_then(Value::as_str).filter(|_| is_result) else { continue };
-        let creates = state.pr_commands.remove(id);
         let closes = state.pr_close_commands.remove(id);
-        if block.get("is_error").and_then(Value::as_bool) == Some(true) {
-            continue;
+        if closes && block.get("is_error").and_then(Value::as_bool) != Some(true) {
+            facts.push(Observation::PullRequestsChanged);
         }
-        if closes { facts.push(Observation::PullRequestsChanged); }
-        if !creates { continue; }
-        let output = match block.get("content") {
-            Some(Value::String(text)) => text.clone(),
-            Some(Value::Array(parts)) => parts.iter().filter_map(|part| part.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
-            _ => String::new(),
-        };
-        let named = pull_requests_named(&output);
-        if named.is_empty() {
-            facts.push(Observation::PullRequestNotNamed);
-        }
-        facts.extend(named.into_iter().map(Observation::PullRequestOpened));
     }
     facts
 }
@@ -1342,24 +1326,28 @@ mod tests {
         event(json!({"type":"user","uuid":THIRD,"message":{"content":[{"type":"tool_result","tool_use_id":id,"content":output,"is_error":is_error}]}}))
     }
 
+    /// A test run whose output prints a fixture's pull request, chained with the real
+    /// `gh pr create`, names two addresses: neither is a fact of the task. Its pull request comes
+    /// from `register_pr` or from GitHub's PR for the branch of its worktree.
     #[test]
-    fn a_pr_a_command_opened_is_a_fact_of_its_task_in_any_repository() {
+    fn no_pull_request_is_taken_from_a_commands_text_or_output() {
         let mut state = state();
-        fold(&shell_call("toolu_pr", "cd ../cloud && gh pr create --base main --head fix --title Fix | tail -1"), &session(), &mut state, input).unwrap();
-        let facts = fold(&shell_result("toolu_pr", "https://github.com/acme/storefront/pull/6\n", false), &session(), &mut state, input).unwrap();
-        assert_eq!(facts, vec![Observation::PullRequestOpened(alondra_provider_contract::OpenedPullRequest { host: "github.com".into(), repository: "acme/storefront".into(), number: 6 })]);
-        assert!(state.pr_commands.is_empty(), "the call is settled");
-
+        let output = "test fixtures ok: https://github.com/acme/app/pull/12\nhttps://github.com/acme/storefront/pull/6\n";
+        for (id, command) in [("toolu_pr", "make test && gh pr create --fill"), ("toolu_grep", "grep -rn \"gh pr create\" crates"), ("toolu_view", "gh pr view 6 --json url")] {
+            fold(&shell_call(id, command), &session(), &mut state, input).unwrap();
+            assert_eq!(fold(&shell_result(id, output, false), &session(), &mut state, input).unwrap(), vec![], "{command}");
+        }
         fold(&shell_call("toolu_hidden", "gh pr create --fill > /dev/null"), &session(), &mut state, input).unwrap();
-        assert_eq!(fold(&shell_result("toolu_hidden", "", false), &session(), &mut state, input).unwrap(), vec![Observation::PullRequestNotNamed]);
+        assert_eq!(fold(&shell_result("toolu_hidden", "", false), &session(), &mut state, input).unwrap(), vec![], "nothing asks the node which PR it was");
+    }
 
-        fold(&shell_call("toolu_failed", "gh pr create --fill"), &session(), &mut state, input).unwrap();
-        let failed = fold(&shell_result("toolu_failed", "a pull request already exists: https://github.com/o/r/pull/1", true), &session(), &mut state, input).unwrap();
-        assert_eq!(failed, vec![], "a command that failed opened nothing");
-
-        fold(&shell_call("toolu_view", "gh pr view 12 --json url"), &session(), &mut state, input).unwrap();
-        let viewed = fold(&shell_result("toolu_view", "https://github.com/o/r/pull/12", false), &session(), &mut state, input).unwrap();
-        assert_eq!(viewed, vec![], "naming a PR is not opening it");
+    #[test]
+    fn a_checkpoint_that_still_waits_on_a_pr_create_reads_and_forgets_it() {
+        let mut saved = serde_json::to_value(&state()).unwrap();
+        saved["pr_commands"] = json!(["toolu_pr"]);
+        let mut state: Checkpoint = serde_json::from_value(saved).unwrap();
+        assert_eq!(fold(&shell_result("toolu_pr", "https://github.com/acme/app/pull/12", false), &session(), &mut state, input).unwrap(), vec![]);
+        assert!(serde_json::to_value(&state).unwrap().get("pr_commands").is_none(), "it is never written again");
     }
 
     #[test]
