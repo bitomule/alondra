@@ -249,9 +249,9 @@ state = "running"
 [[step.expect]]
 check = "hosts"
 task = "t3"
-started = 5
+started = 4
 running = 1
-sessions = 3
+sessions = 2
 
 [[step.expect]]
 check = "cache_written"
