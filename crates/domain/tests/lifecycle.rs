@@ -1207,6 +1207,33 @@ fn a_host_with_anything_of_the_task_in_it_stays() {
     refused(asked, "a callback only its host can answer is open");
 }
 
+/// 21 November: 75 nodes the user paused kept their hosts for days with nothing in them. What a
+/// paused node goes on with waits in its task for the pause's end, so its host closes as a resting
+/// one's does, and the pause's end hands it to the host that resumes the session.
+#[test]
+fn a_node_resting_on_a_pause_closes_its_host_and_the_end_of_the_pause_brings_one_back() {
+    let mut task = running();
+    apply(&mut task, Event::Pause { card: "pause".into(), owner: Owner::User });
+    assert!(!task.can_release_host(), "the turn the pause cut is still open");
+    apply(&mut task, Event::Tell { input: input("resume"), answers: None });
+    ended(&mut task, "root", None, None);
+    assert!(task.can_release_host(), "what it goes on with waits for the pause, not for its host");
+    apply(&mut task, Event::HostReleased);
+    assert!(task.host_released() && !task.waits_for_slot(), "the pause holds it: {task:?}");
+    apply(&mut task, Event::EndPause { card: "pause".into() });
+    assert!(task.waits_for_slot(), "its turn waits for a slot like any other");
+    assert!(task.host_released(), "the end of the pause alone brings no host back");
+    apply(&mut task, Event::HostRetaken);
+    assert_eq!(task.pending_inputs(), vec![&input("resume")], "the host that resumes takes it");
+
+    let mut told = resting();
+    apply(&mut told, Event::Tell { input: input("told"), answers: None });
+    apply(&mut told, Event::Pause { card: "pause".into(), owner: Owner::User });
+    assert!(told.can_release_host(), "the input it was told waits for the pause too");
+    fact(&mut told, RuntimeFact::InputHeld { input: input("told") });
+    assert!(!told.can_release_host(), "an input its host holds keeps it");
+}
+
 
 use proptest::prelude::*;
 proptest! {
@@ -1223,8 +1250,9 @@ proptest! {
             let Some(event) = arbitrary_event(&task, action) else { continue };
             let _ = task.apply(task.revision(), event);
             if task.can_release_host() {
-                prop_assert_eq!(task.activity(), ActivityView::Resting, "only a resting execution closes its host: {:?}", task);
-                prop_assert!(task.pending_inputs().is_empty() && task.post_merge().is_none(), "nothing waits on its host: {:?}", task);
+                prop_assert!(task.activity() == ActivityView::Resting || (task.held_by_pause() && task.activity() == ActivityView::Starting),
+                    "only a resting execution, or one a pause holds before its next input, closes its host: {:?}", task);
+                prop_assert!((task.pending_inputs().is_empty() || task.held_by_pause()) && task.post_merge().is_none(), "nothing waits on its host: {:?}", task);
             }
             let live = task.live();
             if matches!(task.phase(), TaskPhase::Unstarted | TaskPhase::Completed | TaskPhase::Cancelled) {

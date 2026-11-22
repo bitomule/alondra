@@ -255,3 +255,4 @@ crates/engine-sdk/src/sdk_owner/conversation_file.rs	text.lines().map(|line| if 
 crates/daemon-engine/src/node_push.rs	let (stamp, said) = text.strip_prefix("[From ").and_then(|rest| rest.split_once("] ")).expect("every message is stamped");	own-grammar	the stamp Alondra puts on a message, read back by the push node of a test
 crates/daemon-engine/src/node_push.rs	(stamp.rsplit_once(" · ").expect("the stamp has a time").0.to_owned(), said.to_owned())	own-grammar	the stamp Alondra puts on a message, read back by the push node of a test
 crates/engine-sdk/src/engine_fixtures/orchestrator_tools.rs	assert!(card.body.contains("Choose a model before its native reasoning effort"), "{}", card.body);	display	a test fixture checks the text a card shows
+crates/engine-sdk/src/host_folders.rs	name.starts_with(NODE) && !name.contains('.')	own-grammar	host folder names are made by Alondra itself (sdk- for a node, o-/orchestrator- for a batch)

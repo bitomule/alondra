@@ -492,6 +492,7 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
     let backend = &on_account_provider(&domain, backend, provider, &launch.account)?;
     let suffix = crate::auth::random_hex(8);
     let agent = AgentId(format!("sdk-{suffix}"));
+    let _preparing = alondra_engine_ports::agent_host::Preparing::hold(&backend.state_root.join(&agent.0));
     let state = domain.state().map_err(|error| Failed::new(format!("reading the domain: {error:#}")))?;
     if reopening.as_ref().is_some_and(|reopening| state.pending_reopening(&launch.task) != Some(reopening.input.as_str())) {
         return Err(Failed::new("The task's reopening changed before admission; refresh the task".into()));
@@ -1138,7 +1139,11 @@ fn end_hosts_of_ended_tasks(domain: &DomainRuntime, backend: &SdkBackend) {
             if !matches!(hosts.claim(&directory), Ok(alondra_engine_ports::agent_host::Retained::Held)) { continue }
             mark_stopped_by_alondra(&directory);
             match hosts.end_holders(&directory) {
-                Ok(_) => log!("the SDK host of {node}, a node no task goes on with, still ran with no owner: it was stopped"),
+                Ok(ended) => {
+                    log!("the SDK host of {node}, a node no task goes on with, still ran with no owner: it was stopped");
+                    drop(ended);
+                    crate::host_folders::host_ended(domain, &directory, &|agent| domain.owns_sdk_host(agent));
+                }
                 Err(error) => log!("the SDK host of {node}, a node no task goes on with, still runs with no owner and did not stop: {error}"),
             }
         }
@@ -2129,11 +2134,21 @@ impl Driver {
     }
 
     /// `idle_release` asked to close this host. What the host said last can move the task on, so
-    /// all of it is read first: `false` until nothing is left to read and the answer is known.
+    /// all of it is read first: `false` until nothing is left to read and the answer is known. A
+    /// host whose connection broke says nothing more here; the host that resumes the session reads
+    /// what it journaled.
     pub fn settle_release(&mut self) -> Result<bool, Failed> {
         self.sealed();
-        if self.worker.readable(Duration::ZERO).unwrap_or(true) {
-            return self.observe().map(|_| false);
+        if !self.host_closed && self.worker.readable(Duration::ZERO).unwrap_or(true) {
+            match self.observe() {
+                Ok(_) => return Ok(false),
+                Err(_) if self.host_closed => {}
+                Err(failed) => return Err(failed),
+            }
+        }
+        if let Some(permit) = self.controls.pop_front() {
+            self.control(permit)?;
+            return Ok(false);
         }
         let held = crate::provider_transition::holds_execution(&self.domain, &self.task) || crate::account_move::holds_execution(&self.domain, &self.task);
         self.releases = !held && self.awaiting.is_none() && self.results.is_empty() && self.permits.is_empty() && self.controls.is_empty()
@@ -2376,6 +2391,7 @@ impl Drop for Driver {
             self.domain.engine().forget_context(&self.task);
         }
         self.domain.engine().host_ended(&self.agent);
+        crate::host_folders::host_ended(&self.domain, self.worker.state_directory(), &|agent| self.domain.owns_sdk_host(agent));
     }
 }
 

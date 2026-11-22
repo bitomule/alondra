@@ -77,6 +77,10 @@ pub async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing
     if let Err(error) = domain.engine().sweep_worktree_shells().await {
         log!("could not delete what ended tasks left of their worktrees: {error:#}");
     }
+    match blocking(|| crate::host_folders::sweep(&domain, &|agent| domain.owns_sdk_host(agent))) {
+        0 => {}
+        removed => log!("deleted the folders of {removed} hosts that nothing needs any more"),
+    }
     loop {
         let pause = match pass(&domain, sessions.as_ref(), &timing, alondra_core::now_millis()).await {
             Ok(()) => {
@@ -287,6 +291,7 @@ fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, en
         if let Err(error) = crate::files_retention::remove_task_scratch(domain.home(), &row.task_id.0) {
             log!("could not remove the scratch files of {}: {error}", row.task_id);
         }
+        crate::host_folders::task_closed(domain, &row.task_id, &|agent| domain.owns_sdk_host(agent));
     }
     if let Some(card) = &row.problem_id {
         let _ = domain.withdraw_problem(&InteractionId(card.clone()));

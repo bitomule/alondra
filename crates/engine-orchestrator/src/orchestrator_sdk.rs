@@ -7,7 +7,7 @@ use crate::orchestrator_provider::ProviderOwner;
 use crate::domain_store::batch_effects::BatchReport;
 use crate::orchestrator_process::{self as process, Output, ProcessOwner, Stream, bounded};
 use crate::sdk_backend::SdkBackend;
-use alondra_engine_ports::agent_host::VerifiedArtifact;
+use alondra_engine_ports::agent_host::{Preparing, VerifiedArtifact};
 use alondra_provider_claude::{BatchHost, ClaudeConfiguration, HostEvent, McpServer, OrchestratorProfile};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ fn failed(why: String) -> Output {
 }
 
 fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &AtomicBool) -> Output {
-    let configuration = match configuration(&batch) {
+    let (configuration, _preparing) = match configuration(&batch) {
         Ok(configuration) => configuration,
         Err(why) => return failed(why),
     };
@@ -49,17 +49,20 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
     let run = batch.owner.run().to_owned();
     let mut host = match BatchHost::start(ProviderOwner(batch.owner), &configuration, &batch.session, &profile, &batch.prompt) {
         Ok(host) => host,
-        Err(error) => return failed(format!("the SDK host did not take the batch: {error:?}")),
+        Err(error) => {
+            remove_folder(&configuration.state_directory);
+            return failed(format!("the SDK host did not take the batch: {error:?}"));
+        }
     };
     let _host = match crate::domain_orchestrator::HostGuard::attach(Arc::clone(&batch.domain), &run, host.stopper()) {
         Ok(guard) => guard,
-        Err(error) => { stop(host, &batch.directory); return failed(format!("Cannot own the orchestrator host: {error:#}")); }
+        Err(error) => { stop(host, &batch.directory, Some(&configuration.state_directory)); return failed(format!("Cannot own the orchestrator host: {error:#}")); }
     };
     let mut output = Output { stream: Stream::for_input(host.input()), diagnostic: String::new(), exit_ok: false };
     if let Err(error) = ProcessOwner::record(&batch.directory, host.process_id(), &run, &batch.domain.orchestrator().injected).and_then(|()| spawned()) {
         output.stream.storage_failure=true;
         output.stream.error = Some(bounded(format!("cannot record the SDK host: {error:#}")));
-        stop(host, &batch.directory);
+        stop(host, &batch.directory, None);
         return output;
     }
     let mut consumed=false;
@@ -108,23 +111,33 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
         if exited {break}
 
     }
-    stop(host, &batch.directory);
+    stop(host, &batch.directory, (!output.stream.storage_failure).then_some(configuration.state_directory.as_path()));
     output
 }
 
-fn stop(host: BatchHost<ProviderOwner>, directory: &Path) {
+/// Stops the batch's host, and deletes its folder, `spent`, once it ended: one whose batch could
+/// not record what it observed keeps its folder, whose outbox still holds it.
+fn stop(host: BatchHost<ProviderOwner>, directory: &Path, spent: Option<&Path>) {
     match host.stop(){
-        Ok(())=>{let _=std::fs::remove_file(directory.join("owner.json"));},
+        Ok(())=>{let _=std::fs::remove_file(directory.join("owner.json")); spent.into_iter().for_each(remove_folder);},
         Err(error)=>log!("orchestrator: the SDK host did not stop cleanly; its process record is retained: {error:?}"),
     }
 }
 
-fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
+/// The batch's host ended, and nothing reads its folder again: the batch alone knew its name.
+pub(crate) fn remove_folder(state_directory: &Path) {
+    if let Err(error) = std::fs::remove_dir_all(state_directory) {
+        log!("orchestrator: could not delete the folder of the batch's host {}: {error}", state_directory.display());
+    }
+}
+
+fn configuration(batch: &Batch) -> Result<(ClaudeConfiguration, Preparing), String> {
     let backend = &batch.backend.for_provider(alondra_core::accounts::Provider::Claude,&batch.home).and_then(|backend|backend.for_start())
         .and_then(|backend| backend.for_account(&batch.home, &batch.selection.account.account, &batch.domain.engine().registered_accounts(&batch.home, alondra_core::accounts::Provider::Claude)))
         .map_err(|error| format!("{error:#}"))?;
     std::fs::create_dir_all(&backend.state_root).map_err(|error| format!("creating the SDK state root: {error}"))?;
     let state_directory = backend.state_root.join(format!("o-{}", crate::auth::random_hex(8)));
+    let preparing = Preparing::hold(&state_directory);
     {
         use std::os::unix::fs::DirBuilderExt;
         std::fs::DirBuilder::new()
@@ -148,7 +161,7 @@ fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
             native_environment.insert(name.to_owned(), value);
         }
     }
-    Ok(ClaudeConfiguration {
+    Ok((ClaudeConfiguration {
         artifact: VerifiedArtifact::verify(&backend.node, &backend.host, &backend.node_sha256, &backend.host_sha256)
             .map_err(|error| format!("verifying the SDK host: {error}"))?,
         state_directory,
@@ -163,7 +176,7 @@ fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
         confinement: backend.confinement.clone(),
         hosts: alondra_engine_ports::agent_host::of(batch.domain.ports()).map_err(|error| format!("starting the SDK host: {error}"))?,
         worker: None,
-    })
+    }, preparing))
 }
 
 /// Alondra's own MCP server, allowed by rule: auto mode never needs its safety check to let the

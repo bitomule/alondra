@@ -2087,11 +2087,11 @@ impl DomainState {
     }
 
     /// Whether the host of `task` may close while it rests: its lifecycle keeps nothing in the host,
-    /// no pause or move holds the node, and a plan mode the resumed session would lose is not on.
+    /// no move holds the node, and a plan mode the resumed session would lose is not on. A paused
+    /// node closes it too: the end of its pause resumes the session in a new host.
     pub fn host_releasable(&self, task: &TaskId) -> bool {
         let Ok(lifecycle) = self.lifecycle_of(task) else { return false };
-        let paused = self.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| self.node_pause(agent).is_some());
-        lifecycle.can_release_host() && !paused && self.moving_to(task).is_none() && !self.in_plan_mode(task)
+        lifecycle.can_release_host() && self.moving_to(task).is_none() && !self.in_plan_mode(task)
     }
 
     /// The last model asked of the task's execution, which a host that resumes it opens with.

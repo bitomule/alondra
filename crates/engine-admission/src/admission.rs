@@ -727,7 +727,9 @@ fn domain_paused(state: &DomainState) -> BTreeMap<String, Paused> {
 /// release, a resume. The machine refuses what cannot be (pausing a node that waits on the user),
 /// and the gate reads back what it accepted. A node of the Agent SDK has no processes of its own
 /// to clean up, and its task's lifecycle keeps only that it is paused. Returns the resumes the
-/// machine refused, with the revision of their task's lifecycle.
+/// machine refused, with the revision of their task's lifecycle. A resumed node whose host closed
+/// while it rested comes back when the gate gives its turn a slot (`go_on`): taking it over here
+/// would ask the gate this look holds.
 fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) -> BTreeMap<String, u64> {
     let Ok(state) = domain.state() else { return BTreeMap::new() };
     let held = domain_paused(&state);
@@ -773,7 +775,8 @@ fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) -> BTr
     if ended {
         domain.seals.wake();
     }
-    for task in resumed {
+    let released = |task: &TaskId| state.lifecycle_of(task).is_ok_and(|lifecycle| lifecycle.host_released());
+    for task in resumed.into_iter().filter(|task| !released(task)) {
         domain.hosts().take_if_unowned(&task);
     }
     refused

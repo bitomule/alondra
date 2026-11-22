@@ -362,15 +362,43 @@ fn a_node_with_work_owed_after_its_merge_keeps_its_host() {
 }
 
 #[test]
-fn a_paused_node_keeps_what_its_pause_decided() {
+fn a_node_resting_on_a_pause_closes_its_host_like_any_resting_node() {
     let slice = Slice::new();
     enable(&slice);
     let mut driver = slice.launch();
     slice.settle(&mut driver);
     let agent = driver.agent().clone();
     assert!(slice.domain.gate().hold_back(&agent.0, alondra_engine_ports::admission::Reason::Disk, alondra_core::now_millis()));
-    assert!(!slice.domain.read().state().host_releasable(&TASK.into()));
+    assert!(slice.domain.read().state().host_releasable(&TASK.into()));
     driver.stop().unwrap();
+}
+
+// 21 November: 75 nodes the user paused kept their hosts for days with nothing in them, 3.8 GB in
+// all, since a paused node never closed its host. What it goes on with waits in its task for the
+// pause's end, so its host closes as a resting node's does, and resuming it resumes the same
+// session in a new host, told what it goes on with.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_the_user_paused_closes_its_host_and_its_resume_goes_on_with_the_same_session() {
+    let slice = Slice::new();
+    let (session, host) = resting_node(&slice);
+    let agent = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
+    slice.domain.admission().pause_by_user(&slice.domain, &agent.0, alondra_core::now_millis()).unwrap();
+    slice.domain.join_retakes();
+    assert!(slice.domain.read().state().host_releasable(&TASK.into()), "nothing of the task is in its host: {:?}", lifecycle(&slice.domain));
+
+    look_after_the_wait(&slice.domain);
+    until_released(&slice.domain, &[TASK]).await;
+    assert_eq!(survivors(&host), Vec::<String>::new());
+
+    assert!(slice.domain.admission().resume_now(&slice.domain, &agent.0, alondra_core::now_millis()));
+    gate_look(&slice).await;
+    gate_look(&slice).await;
+    until_last_prompt_ends_with(&slice.domain, &slice.capture, "run again what was cut.").await;
+    let starts = slice.starts();
+    slice.domain.stop_sdk_owners();
+    assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session goes on: {starts:?}");
+    assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
+    assert!(!lifecycle(&slice.domain).host_released());
 }
 
 // Codex: its thread resumes through `thread/resume`, as Claude's session through `--resume`.
