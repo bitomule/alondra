@@ -87,6 +87,7 @@ and one issuer, held in constants.
 |---|---|
 | How does a task move between states? | `crates/domain`, `crates/core` |
 | What does a task show, and what keeps it from standing still? | [`task-states.md`](task-states.md) |
+| Which state machines exist, what can each reach, and which invalid states are known? | [`state-machines.md`](state-machines.md) |
 | How are screens fed? | [`read-side.md`](read-side.md) |
 | How does a device reach a Mac? | [`../iroh-protocol.md`](../iroh-protocol.md) |
 | How do I build or test it? | [`../building-from-source.md`](../building-from-source.md), [`../running-tests.md`](../running-tests.md) |
