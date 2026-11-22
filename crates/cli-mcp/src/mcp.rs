@@ -435,7 +435,7 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
         (
             "register_pr",
             "register_pr",
-            "Add a PR to your Task, in any repository. A task owns every PR it opens, and Alondra already adds what gh pr create opens: call this for a PR opened another way, or to name one yourself.",
+            "Add a PR to your Task, in any repository. A task owns every PR it opens, but Alondra never takes one from a command or its output, gh pr create included: call this right after opening a PR. At a final delivery Alondra also adds the PR GitHub has open for the branch of each of your task's worktrees.",
             json!({"task_id":{"type":"string"},"host":{"type":"string"},"repository":{"type":"string"},"number":{"type":"integer","minimum":1},"head":{"type":"string","description":"The full 40-character commit sha you pushed (git rev-parse HEAD after git push), never a branch name"},"base":{"type":"string"},"allowed_methods":{"type":"array","items":{"type":"string","enum":["merge","squash","rebase"]},"minItems":1}}),
             vec![
                 "task_id",

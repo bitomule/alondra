@@ -1250,7 +1250,11 @@ impl Context<'_> {
         if let Some(capability) = self.capabilities.get(task) {
             return Ok(capability.clone());
         }
-        let capability = self.daemon().domain.bind_agent(&agent_of(task)).map_err(|e| Self::failed(index, e))?;
+        // A node launched as in production (Codex) is the agent its launch made, not the
+        // scenario's own.
+        let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
+        let agent = state.tasks.get(&task.to_owned().into()).and_then(|task| task.agent_id.as_ref()).map_or_else(|| agent_of(task), |agent| agent.0.clone());
+        let capability = self.daemon().domain.bind_agent(&agent).map_err(|e| Self::failed(index, e))?;
         let capability = capability.expose_for_child_environment().to_owned();
         self.capabilities.insert(task.to_owned(), capability.clone());
         Ok(capability)

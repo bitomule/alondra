@@ -427,12 +427,11 @@ fn prs_missing_from_delivery(prs: &[&PullRequest]) -> String {
     format!("{names} open in this task: a text result cannot be merged. Present them in the final delivery with targets [{{\"kind\":\"pull_request\"}}], which takes every open PR of the task: the user reviews and merges each on its own card")
 }
 fn opened_pr_unread(pr: &OpenedPr) -> String {
-    format!("Alondra is still reading {}#{} from GitHub, which this task opened: nothing was presented. Send the same result again in a moment", pr.repository, pr.number)
+    format!("Alondra is still reading {}#{} from GitHub, a PR of this task: nothing was presented. Send the same result again in a moment", pr.repository, pr.number)
 }
 fn opened_pr_after_delivery(repository: &str, number: u64) -> String {
     format!("{repository}#{number} is now part of this task. Your last delivery does not carry it: present the final result again with targets [{{\"kind\":\"pull_request\"}}], which takes every open PR of the task.")
 }
-const OPENED_PR_NOT_NAMED: &str = "You ran gh pr create and its output named no pull request, so Alondra does not know which it is. If it opened one, register it with register_pr.";
 pub fn merged_notice(number: u64, left: usize) -> String {
     match left {
         0 => format!("Pull request #{number} is merged; no pull request of this task is left to merge."),
@@ -4776,9 +4775,6 @@ impl DomainState {
             Command::AskToRegisterPr { task_id } => {
                 system(actor)?;
                 self.task(task_id)?;
-                if self.active(task_id).is_ok() {
-                    self.notify(task_id, None, OPENED_PR_NOT_NAMED, effects)?;
-                }
             }
             Command::LinkInteractionSubject {
                 interaction_id,

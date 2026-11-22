@@ -13,5 +13,5 @@ append_system_prompt: |
 Load the alondra skill, then say what you do next:
 
 Your PR acme/web#17 fixed the phone menu and it is merged. The live site is built from another
-repository, so you ported the fix there with `gh pr create`: https://github.com/acme/site/pull/6,
-still open. Nothing else is left to do in this task but getting that change merged.
+repository, so you ported the fix there with `gh pr create` and registered it with `register_pr`:
+https://github.com/acme/site/pull/6, still open. Nothing else is left to do in this task but getting that change merged.

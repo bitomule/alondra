@@ -31,6 +31,28 @@ it, its payload and its kind), never from its words.
 
 ## Deliveries and pull requests
 
+### How a task gets its pull requests
+
+A pull request becomes a task's only through a real action, never through text:
+
+- the task's node registers it with `register_pr`;
+- at a final delivery, the daemon asks GitHub which PR is open for the branch checked out in each
+  of the task's worktrees (`gh pr view` in that folder), and adds the one GitHub reports.
+
+Nothing else adds a PR to a task: not a command's line or output (`gh pr create` included), a
+transcript, a message, a hook's text or an address matched by pattern. A test run that prints a
+fixture's PR address, or a `grep` for `gh pr create`, changes nothing. A PR the node opens in
+another repository, or on a branch outside the task's worktrees, is the task's once the node
+registers it.
+
+The PRs noted for a task wait on a GitHub read before a delivery is admitted (`pr_being_read`).
+Databases written while Alondra still took PR addresses from `gh pr create`'s output could hold a
+PR GitHub never reads, such as a fixture's, which held every delivery of its task. The first
+open of the database by a release with this rule drops, once, every noted PR that is not a
+registered PR of its task; the open PR of a task's branch is noted again at its next final delivery.
+
+### Reading them before a delivery
+
 Before admitting a final delivery, the daemon rereads every unmerged PR registered by its task,
 including a task with only one PR and PRs last seen closed, which GitHub may have reopened.
 If GitHub cannot answer, the delivery waits for a successful read. A successful `gh pr close`
