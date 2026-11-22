@@ -476,8 +476,8 @@ fn failed_outcome(turn: &Value, scoped: bool) -> TurnOutcome {
     match error.get("codexErrorInfo").and_then(Value::as_str) {
         Some("badRequest") if scoped => TurnOutcome::Failed { code: "codex_request_rejected".into() },
         Some("contextWindowExceeded") if scoped => TurnOutcome::Failed { code: "codex_context_exceeded".into() },
-        Some("usageLimitExceeded") => TurnOutcome::ApiFailed(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }),
-        Some("unauthorized") => TurnOutcome::ApiFailed(ApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None }),
+        Some("usageLimitExceeded") => TurnOutcome::ApiFailed(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None, ..Default::default() }),
+        Some("unauthorized") => TurnOutcome::ApiFailed(ApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None, ..Default::default() }),
         _ => TurnOutcome::Failed { code: "codex_turn_failed".into() },
     }
 }

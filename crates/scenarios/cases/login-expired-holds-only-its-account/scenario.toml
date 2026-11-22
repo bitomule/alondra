@@ -78,6 +78,7 @@ max = "10m"
 do = "provider_down"
 error = "overloaded"
 status = 529
+said = 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'
 
 [[step]]
 do = "turn_end"
@@ -92,6 +93,14 @@ do = "rest"
 max = "10m"
 
 [[step]]
+do = "advance"
+by = "3m"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
 do = "checkpoint"
 name = "general-outage"
 screens = ["home"]
@@ -100,6 +109,11 @@ screens = ["home"]
 check = "view_shows"
 screen = "home"
 text = "claude-outage"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "overloaded_error"
 
 [[step.expect]]
 check = "view_shows"

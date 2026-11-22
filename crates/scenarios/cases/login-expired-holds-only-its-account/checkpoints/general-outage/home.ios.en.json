@@ -7,7 +7,7 @@
       "client": "ios",
       "cursor": "<cursor>",
       "data_epoch": "<data_epoch>",
-      "key": "card:claude-outage-t1-34",
+      "key": "card:claude-outage-t1-43",
       "protocol": 1,
       "sections": [
         {
@@ -19,7 +19,7 @@
                 {
                   "attachments": false,
                   "enabled": true,
-                  "id": "ans:claude-outage-t1-34@<revision>",
+                  "id": "ans:claude-outage-t1-43@<revision>",
                   "input": {
                     "kind": "none"
                   },
@@ -52,10 +52,10 @@
                 "tone": "critical"
               },
               "icon": "warning",
-              "id": "claude-outage-t1-34",
+              "id": "claude-outage-t1-43",
               "kind": "problem",
               "link": {
-                "key": "card:claude-outage-t1-34",
+                "key": "card:claude-outage-t1-43",
                 "kind": "view"
               },
               "meta": "Alondra",
@@ -64,18 +64,18 @@
                 "text": "Blocks Add the CSV export",
                 "tone": "warning"
               },
-              "subtitle": "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on.",
+              "subtitle": "Claude Code says: “API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}”. It failed again when Alondra retried it. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on.",
               "timestamps": [
                 {
-                  "at": "2026-11-15T09:01:14.000+00:00",
+                  "at": "2026-11-15T09:04:48.000+00:00",
                   "format": "relative",
                   "role": "created"
                 }
               ],
-              "title": "Claude's API is not answering: 2 tasks wait",
+              "title": "Claude's API is failing: 2 tasks wait",
               "title_is_separate": true,
               "type": "card",
-              "why": "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on."
+              "why": "Claude Code says: “API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}”. It failed again when Alondra retried it. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on."
             }
           ]
         },
@@ -227,7 +227,7 @@
         ],
         "version": "<version>"
       },
-      "title": "Claude's API is not answering: 2 tasks wait",
+      "title": "Claude's API is failing: 2 tasks wait",
       "version": "<version>",
       "view": "card"
     }
@@ -237,7 +237,7 @@
   "sections": [
     {
       "card_ids": [
-        "claude-outage-t1-34"
+        "claude-outage-t1-43"
       ],
       "card_waits": [
         "question"

@@ -223,7 +223,7 @@ fn a_disk_pause_ends_with_the_move_of_the_task_it_paused() {
 }
 
 fn usage_limit() -> SdkApiFailure {
-    SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }
+    SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None, ..Default::default() }
 }
 fn usage_holds(s: &DomainState) -> Vec<ClaudeHeld> {
     s.claude_held().into_iter().filter(|held| held.task == TaskId::from("t") && held.hold == ClaudeHold::Usage).collect()

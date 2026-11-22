@@ -1241,7 +1241,7 @@ fn move_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Action
                 Some(alondra_domain_rules::SystemCard::HostLost | alondra_domain_rules::SystemCard::SessionEnded
                     | alondra_domain_rules::SystemCard::StartProblem | alondra_domain_rules::SystemCard::Stalled
                     | alondra_domain_rules::SystemCard::ClaudeUsage { .. } | alondra_domain_rules::SystemCard::ClaudeSignedOut
-                    | alondra_domain_rules::SystemCard::ClaudeOutage))
+                    | alondra_domain_rules::SystemCard::ClaudeOutage { .. }))
         });
     if !recovery { return None; }
     let lang = context.lang;

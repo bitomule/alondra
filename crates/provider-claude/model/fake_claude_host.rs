@@ -50,16 +50,20 @@ pub fn assistant_errors() -> Vec<String> {
 pub const MODEL: &str = "demo-model";
 
 /// How the API answers a turn that fails: the error the SDK names and the HTTP status.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ApiError {
     pub error: String,
     pub status: Option<u16>,
+    /// Claude Code's finer code of the error (`api_error`), such as `connection_failed`.
+    pub detail: Option<String>,
+    /// What Claude Code writes of the error in its synthetic message.
+    pub said: Option<String>,
 }
 
 impl ApiError {
     /// The error an expired sign-in ends every turn with.
     pub fn signed_out() -> Self {
-        Self { error: "authentication_failed".into(), status: Some(401) }
+        Self { error: "authentication_failed".into(), status: Some(401), ..Self::default() }
     }
 }
 
@@ -629,6 +633,23 @@ impl ClaudeModel {
         Ok(())
     }
 
+    /// Claude Code loses the response it was reading in `task`'s turn, as when the Mac sleeps
+    /// mid-response: it writes the synthetic API error message it writes then, and goes on with the
+    /// same turn, which a later `end_turn` ends.
+    pub fn lose_response(&self, task: &str) -> Result<(), String> {
+        let host = self.running(task).ok_or_else(|| format!("no host of {task} runs"))?;
+        let mut state = lock(&host.state);
+        if state.turn.is_none() {
+            return Err(format!("the node of {task} has no turn running"));
+        }
+        let uuid = self.uuid();
+        let message = json!({"type": "assistant", "uuid": uuid, "parent_tool_use_id": null, "error": "server_error", "api_error": "computer_slept",
+            "is_api_error_message": true, "session_id": host.session, "message": {"role": "assistant", "model": "<synthetic>",
+            "content": [{"type": "text", "text": "API Error: Your computer went to sleep mid-response. The response above may be incomplete."}]}});
+        self.emit(&host, &mut state, "message", message);
+        Ok(())
+    }
+
     /// Claude reads the message the user wrote with `text` while its turn ran, in that same turn.
     pub fn read(&self, task: &str, text: &str) -> Result<(), String> {
         let host = self.running(task).ok_or_else(|| format!("no host of {task} runs"))?;
@@ -825,9 +846,14 @@ impl ClaudeModel {
                 }
                 let unused = json!({"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
                     "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}});
-                self.emit(host, state, "message", json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": last,
+                let content: Vec<Value> = error.said.iter().map(|said| json!({"type": "text", "text": said})).collect();
+                let mut message = json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": last,
                     "user_message_uuids": taken, "error": error.error, "session_id": host.session,
-                    "message": {"role": "assistant", "model": "<synthetic>", "content": [], "usage": unused}}));
+                    "message": {"role": "assistant", "model": "<synthetic>", "content": content, "usage": unused}});
+                if let Some(detail) = &error.detail {
+                    message["api_error"] = detail.as_str().into();
+                }
+                self.emit(host, state, "message", message);
                 let terminal = if limited { "blocking_limit" } else { "api_error" };
                 let mut payload = json!({"type": "result", "subtype": "success", "uuid": result, "user_message_uuid": last, "user_message_uuids": taken,
                     "is_error": true, "terminal_reason": terminal, "session_id": host.session});

@@ -66,16 +66,17 @@ impl ClaudeHold {
     pub fn of(card: &Interaction) -> Option<Self> {
         match card.system_card.as_ref()? {
             SystemCard::ClaudeSignedOut => Some(Self::SignedOut),
-            SystemCard::ClaudeOutage => Some(Self::Outage),
+            SystemCard::ClaudeOutage { .. } => Some(Self::Outage),
             SystemCard::ClaudeUsage { .. } => Some(Self::Usage),
             _ => None,
         }
     }
-    fn system_card(self, resets_at: Option<u64>) -> SystemCard {
+    /// The card of this hold after `failure`; one of the API is `quiet` until Alondra retried.
+    fn system_card(self, failure: &SdkApiFailure, quiet: bool) -> SystemCard {
         match self {
             Self::SignedOut => SystemCard::ClaudeSignedOut,
-            Self::Outage => SystemCard::ClaudeOutage,
-            Self::Usage => SystemCard::ClaudeUsage { resets_at },
+            Self::Outage => SystemCard::ClaudeOutage { quiet, detail: failure.detail.clone(), said: failure.said.clone() },
+            Self::Usage => SystemCard::ClaudeUsage { resets_at: failure.resets_at },
         }
     }
     /// What the task is told when Claude answers it again.
@@ -163,6 +164,14 @@ impl DomainState {
         let back_from_outage = matches!(last_hold(journal, &self.interactions), Some((card, false, false)) if self.claude_hold(card) == Some(ClaudeHold::Outage));
         let provider = self.task_account_key(task).provider;
         back_from_outage && !self.claude_held().iter().any(|held| held.task != *task && held.provider == provider && held.hold == ClaudeHold::Outage)
+    }
+
+    /// Whether `task` went on from waiting out the API, as Alondra's retry or the user's, and its
+    /// turn has not ended since: a failure now is the API failing again after a retry.
+    fn retried_on_outage(&self, task: &TaskId) -> bool {
+        self.lifecycle_journal.get(task).is_some_and(|journal| {
+            matches!(last_hold(journal, &self.interactions), Some((card, false, false)) if self.claude_hold(card) == Some(ClaudeHold::Outage))
+        })
     }
 
     /// When the usage limit `card` waits for resets, in Unix seconds, when Claude said.
@@ -259,13 +268,15 @@ impl DomainState {
     }
 
     /// The cards of Claude's holds Waiting for You shows: the oldest open one of each hold of each
-    /// account, and none of one a probe runs for. The others wait in the queue, out of sight.
+    /// account, and none of one a probe runs for. A quiet card of the API is never one: until
+    /// Alondra's retry fails too, the user hears nothing of it. The others wait in the queue, out
+    /// of sight.
     pub fn shown_claude_cards(&self) -> BTreeSet<InteractionId> {
         let probing = self.probing();
         let mut oldest: BTreeMap<(Provider, ClaudeHold, Option<AccountId>), &Interaction> = BTreeMap::new();
         for card in self.interactions.values().filter(|i| i.author == Author::System && self.open(i)) {
             let Some(waits_for) = self.provider_card_waits_for(card) else { continue };
-            if probing.contains(&waits_for) {
+            if probing.contains(&waits_for) || matches!(card.system_card, Some(SystemCard::ClaudeOutage { quiet: true, .. })) {
                 continue;
             }
             let first = oldest.entry(waits_for).or_insert(card);
@@ -299,7 +310,8 @@ impl DomainState {
     /// refuses the end of the turn: the same hold stays as it is, a hold on the API gives way to
     /// the sign-in or the limit, and any other pause (the user's, the machine's) stands, so the
     /// next turn meets the hold again if it still holds. Nor does a lifecycle that cannot wait now.
-    pub(super) fn hold_on_claude(&mut self, task: &TaskId, hold: ClaudeHold, resets_at: Option<u64>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
+    pub(super) fn hold_on_claude(&mut self, task: &TaskId, hold: ClaudeHold, failure: &SdkApiFailure, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
+        let resets_at = failure.resets_at;
         let standing = self.lifecycle(lifecycles, task)?.cards().into_iter()
             .find(|(_, reason)| *reason == LifecycleWait::Pause)
             .map(|(card, _)| card.clone());
@@ -332,7 +344,7 @@ impl DomainState {
             self.withdraw_hold(card);
         }
         let generation = self.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account).map_or(1, |account| account.sign_ins + 1);
-        let mut card = hold_card(id.clone(), task, key.provider, hold, hold.system_card(resets_at), revision);
+        let mut card = hold_card(id.clone(), task, key.provider, hold, hold.system_card(failure, key.provider == Provider::Claude && !self.retried_on_outage(task)), revision);
         card.card.cause = Some(credential_cause(&key, generation));
         self.insert_system_card(card)?;
         if announce {
