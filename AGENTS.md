@@ -53,8 +53,11 @@ or in the private repository that keeps it, never here.
   - A new integration test needs a Bazel target, or it does not run.
 - rustc and clippy compile incrementally (`.bazelrc`): an edit after the first build of a crate
   in a checkout recompiles only what changed. If rustc fails with an internal compiler error that
-  names its incremental state, run `bazelisk clean --expunge` (it deletes the state with the rest of the output base) and build again. A release builds with
-  `--config=release`, without it.
+  names its incremental state, run `bazelisk clean --expunge` (it deletes the state with the rest of the output base) and build again.
+  A link failure `Undefined symbols ... .llvm.<hash>` from a crate's own rlib is that state gone
+  incoherent: `make clean-incremental` drops this checkout's outputs and state. Incremental Rustc
+  and Clippy actions carry `no-cache`, so they never reach the disk or remote cache
+  (`tools/tests/test_release_config.py` guards it). A release builds with `--config=release`, without it.
 - Web (`web/`): `npm ci --include=dev`, `npm run typecheck`, `npm run build`, `npm run test:e2e`.
 - `musts validate` is the done-check before committing, when `musts` is installed. It asks only for
   the checks whose `paths` a change touches (`MUSTS.yml`); a change that only touches prose or images
