@@ -220,7 +220,7 @@ async fn every_request_of_a_handled_batch_ends_with_a_task_an_answer_or_a_questi
     f.tick().await;
     assert_eq!(f.unresolved(), Vec::<String>::new(), "petición sin resultado");
     assert_eq!(f.cards(UNSPLIT_NOTICE_PREFIX), [format!("{UNSPLIT_NOTICE_PREFIX}r-1-1")], "r-1 goes back to the orchestrator once");
-    assert_eq!(f.cards(UNSETTLED_NOTICE_PREFIX), [format!("{UNSETTLED_NOTICE_PREFIX}s-1")], "the suggestion goes back once");
+    assert_eq!(f.cards(UNSETTLED_NOTICE_PREFIX), [format!("{UNSETTLED_NOTICE_PREFIX}s-1-1")], "the suggestion goes back once");
     f.tick().await;
     assert_eq!(f.prompts().len(), 2, "the reminders are the next batch, a turn of their own");
     assert_eq!(f.unresolved(), Vec::<String>::new(), "petición sin resultado");

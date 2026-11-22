@@ -1548,6 +1548,12 @@ impl DomainStore {
             [id], |r| Ok((r.get(0)?, r.get(1)?)),
         ).optional()?)
     }
+    /// Whether a batch of the orchestrator that ended with its result was handed the notice of
+    /// `interaction_id`: one only discarded, expired or still waiting was never read.
+    pub fn orchestrator_notice_read(&self, interaction_id: &str) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM domain_messages m JOIN domain_outbox o ON o.message_id=m.id \
+            WHERE m.recipient_kind='orchestrator' AND m.interaction_id=?1 AND o.state='handed')", [interaction_id], |r| r.get(0))?)
+    }
     /// The notices for the orchestrator that left the outbox: handed to it, or given up.
     pub fn orchestrator_notices_out(&self) -> Result<Vec<String>> {
         let mut q = self.conn.prepare("SELECT DISTINCT m.interaction_id FROM domain_messages m JOIN domain_outbox o ON o.message_id=m.id \

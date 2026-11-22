@@ -1,6 +1,20 @@
 //! The orchestrator's inbox over the engine's and the SDK's own fixtures: what it hands back, reminds and settles
 //! when a dependency is cancelled, a start refuses a plan, a node stops or a decision holds plans.
 
+/// A batch of the orchestrator read every message waiting for it and ended with its result: what
+/// it owes is settled.
+fn turn_ends(domain: &alondra_engine_kernel::domain_runtime::DomainRuntime) {
+    {
+        let mut store = domain.store.lock().unwrap();
+        for message in store.pending_messages().unwrap().into_iter().filter(|message| message.recipient_kind == "orchestrator") {
+            if let Some(claim) = store.claim_message(message.id).unwrap() {
+                store.finish_message(claim.attempt_id, claim.version, alondra_core::delivery::State::Handed, None).unwrap();
+            }
+        }
+    }
+    alondra_engine_orchestrator::orchestrator_inbox::settle(domain);
+}
+
 /// A task that waits for a cancelled one is the orchestrator's to re-plan, handed back at every rest.
 mod cancelled_dependencies {
     use alondra_domain_rules::{Actor, Command, TaskId, TaskState};
@@ -176,9 +190,9 @@ mod stopped_nodes {
         let case = stall_case_of("turn-2");
         alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 24 * HOUR);
         assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)), "the clock reminds of nothing");
-        alondra_engine_orchestrator::orchestrator_inbox::settle(&runtime);
+        super::turn_ends(&runtime);
         let state = runtime.state().unwrap();
-        assert!(state.interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}").as_str())), "the orchestrator is reminded");
+        assert!(state.interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}-1").as_str())), "the orchestrator is reminded");
         assert!(state.open(&state.interactions[&case]) && !state.tasks[&task()].over(), "it gets one more go first");
         assert_eq!(state.tasks[&task()].stalls, 1);
         assert!(STALL_ATTEMPTS > state.tasks[&task()].stalls);
@@ -188,7 +202,7 @@ mod stopped_nodes {
         assert!(state.open(&state.interactions[&case]), "and so does the case");
         alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 48 * HOUR);
         assert!(runtime.state().unwrap().open(&runtime.state().unwrap().interactions[&case]), "the clock settles nothing");
-        alondra_engine_orchestrator::orchestrator_inbox::settle(&runtime);
+        super::turn_ends(&runtime);
         let runtime = runtime_reopened(&fixture, runtime);
         let state = runtime.state().unwrap();
         assert!(!state.open(&state.interactions[&case]), "Alondra settled it, and that outlives the restart");
@@ -215,7 +229,7 @@ mod stopped_nodes {
         let settle = Command::SettleStall { case_id: stall_case_of("turn-2"), task_id: task(), outcome: alondra_domain_rules::StallOutcome::Instruct { text: "Present it".into() } };
         let fresh = CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "orchestrator-instructs", settle) };
         runtime.execute(&Actor::Orchestrator { generation: state.orchestrator_generation }, &fresh, None, || Ok(())).unwrap();
-        alondra_engine_orchestrator::orchestrator_inbox::settle(&runtime);
+        super::turn_ends(&runtime);
         assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)));
     }
 }
@@ -235,6 +249,31 @@ mod held_plans {
 
     const HOUR: i64 = 3_600_000;
 
+    /// A review the orchestrator asked the user about waits for that answer: no reminder, no
+    /// release, however many of its batches end.
+    #[test]
+    fn a_review_the_orchestrator_asked_the_user_about_waits_for_the_answer() {
+        super::super::wired();
+        let (_home, domain) = redraft();
+        settle(&domain, "c-same", "c", PlanReviewOutcome::Unchanged { reason: "Phase C does not depend on the print size".into() }).unwrap();
+        let state = domain.state().unwrap();
+        let request = state.tasks[&TaskId::from("d")].request_id.clone();
+        domain.execute(&alondra_domain_rules::Actor::Orchestrator { generation: state.orchestrator_generation }, &alondra_domain_rules::CommandEnvelope {
+            protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "ask-about-d".into(),
+            expected_revision: state.revision, command: alondra_domain_rules::Command::AskQuestion {
+                attachments: vec![], interaction_id: "q-print".into(), scope: alondra_domain_rules::Scope::Orchestrator { request_id: Some(request) },
+                recipient: Recipient::User, body: "Should phase D keep the 360 px prints?".into(), blocking: false,
+                options: vec![alondra_domain_rules::QuestionOption { id: "keep".into(), label: "Keep".into(), description: None },
+                    alondra_domain_rules::QuestionOption { id: "change".into(), label: "Change".into(), description: None }],
+                card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Decide, "Choose the print size of phase D"),
+            } }, None, || Ok(())).unwrap();
+        for _ in 0..3 {
+            super::turn_ends(&domain);
+        }
+        assert_eq!(reminders(&domain), 0, "nothing reminds the orchestrator while the user decides");
+        assert!(held(&domain.state().unwrap(), &"d".into()).is_some(), "the plan waits for the user's answer");
+    }
+
     #[test]
     fn an_unreviewed_plan_is_released_unchanged_and_its_node_is_told() {
         super::super::wired();
@@ -244,12 +283,12 @@ mod held_plans {
         settle(&domain, "c-same", "c", PlanReviewOutcome::Unchanged { reason: "Phase C does not depend on the print size".into() }).unwrap();
         alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&domain, 24 * HOUR);
         assert_eq!(reminders(&domain), 0, "the clock reminds of nothing");
-        alondra_engine_orchestrator::orchestrator_inbox::settle(&domain);
+        super::turn_ends(&domain);
         assert_eq!(reminders(&domain), 1, "reminded when the turn ended with them unreviewed");
         let reminder = domain.state().unwrap().interactions.values().find(|i| i.id.0.starts_with(PLAN_REVIEW_NOTICE_PREFIX)).unwrap().body.clone();
         assert!(reminder.contains("Phase D: 360 px everywhere") && !reminder.contains("Phase C: group"), "only what is still held: {reminder}");
         assert!(held(&domain.state().unwrap(), &"d".into()).is_some(), "one more go for the orchestrator first");
-        alondra_engine_orchestrator::orchestrator_inbox::settle(&domain);
+        super::turn_ends(&domain);
         let state = domain.state().unwrap();
         assert!(held(&state, &"d".into()).is_none() && held(&state, &"e".into()).is_none(), "released");
         assert!(matches!(state.plan_reviews[&"decision-1".into()].dependents[&TaskId::from("d")].as_ref().unwrap().outcome, PlanReviewOutcome::Unchanged { .. }));
@@ -331,7 +370,7 @@ mod usage_hold {
     }
 
     fn reminded(domain: &DomainRuntime, case: &InteractionId) -> bool {
-        domain.state().unwrap().interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}").as_str()))
+        domain.state().unwrap().interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}-1").as_str()))
     }
 
     #[test]
@@ -352,7 +391,7 @@ mod usage_hold {
         }
         assert!(!reminded(&domain, &case), "nor a day after it");
         assert!(domain.state().unwrap().open(&domain.state().unwrap().interactions[&case]));
-        alondra_engine_orchestrator::orchestrator_inbox::settle(&domain);
+        super::turn_ends(&domain);
         assert!(reminded(&domain, &case), "a turn of the orchestrator that ends does");
     }
 }

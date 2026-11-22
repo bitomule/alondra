@@ -519,6 +519,19 @@ fn the_orchestrator_never_closes_a_request_of_the_user_without_an_answer_the_use
     let request = &s.requests[&"r".into()];
     assert!(request.closed && request.withdrawn);
     assert_eq!(the_card(&s, "r").card.effective_title(), "It no longer applies", "the user reads why on the Request's card");
+
+    asked(&mut s, user(), "r-work", false);
+    task(&mut s, "t-work", "r-work");
+    done(&mut s, "t-work", None);
+    let withdraw = |answer: Option<&str>| Command::CloseRequest {
+        request_id: "r-work".into(), answer: answer.map(Into::into), withdrawn: true, title: None, headline: Some("Not needed after all".into()),
+        folded_into: None, covered_by: vec![], outcome: Some(CloseOutcome::Withdrawn),
+    };
+    let error = exec(&mut s, orchestrator(), withdraw(None)).unwrap_err();
+    assert_eq!(error.code, "close_answer_required", "a withdrawn request with tasks of its own is told why too");
+    exec(&mut s, orchestrator(), withdraw(Some("The design changed and this work no longer applies."))).unwrap();
+    assert_eq!(the_card(&s, "r-work").card.effective_title(), "Not needed after all", "the card says why, never that it is done");
+    assert!(DoneCard::from_body(&the_card(&s, "r-work").body).is_none());
 }
 
 /// The orchestrator always says what came of a Request it closes, and the domain checks it against

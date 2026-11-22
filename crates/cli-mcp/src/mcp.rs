@@ -38,7 +38,7 @@ fn instructions(role: Role, user: &str) -> String {
             "{common} Your terminal does not reach {user}: these tools do; answers return here. Work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI: test with the e2e sandbox. Use ask only for a real decision whose options change what you do next, then end your turn; request_input, request_action and request_test for what only {user} has, does or tries. Never send the same card twice: replace your open one with replaces. Use request_plan_mode for an Alondra-managed planning turn, then end this turn. Produce the complete checklist plan in native plan mode; Alondra must receive and approve it before implementation. Native update_plan is progress, not approval. When you are done, deliver with present_result and is_final true; Alondra merges your PRs: never merge one yourself or ask {user} to authorize a merge. Stopped by the Mac's memory, disk or CPU: wait_for_machine. A missing MCP server: wait_for_mcp. Tasks: wait_for_tasks, never a card. Never wait out a usage limit yourself: end your turn."
         ),
         Role::Orchestrator => format!(
-            "{common} Name a Request with title_request before its second Task, then create cohesive Tasks with create_task, each with its launch plan; Alondra starts them itself. A node works on one Task for its whole life and closes with it; a Task owns every PR it opens. Answer a Request without a Task with close_request (headline and answer): Alondra writes the user's card; close one whose Tasks are over with close_request, its answer saying what came of it. A failure only {user} can resolve goes in raise_problem, never in an ask. Alondra merges PRs: never merge one yourself or ask {user} to authorize a merge."
+            "{common} Name a Request with title_request before its second Task, then create cohesive Tasks with create_task, each with its launch plan; Alondra starts them itself. A node works on one Task for its whole life and closes with it; a Task owns every PR it opens. Answer a Request without a Task with close_request (headline and answer, outcome answered): Alondra writes the user's card; close one whose Tasks are over with close_request and outcome tasks_ended, its answer saying what came of it. A failure only {user} can resolve goes in raise_problem, never in an ask. Alondra merges PRs: never merge one yourself or ask {user} to authorize a merge."
         ),
     }
 }
@@ -2800,7 +2800,7 @@ mod card_tool_tests {
         let skill = skill_text(Role::Node);
         assert!(skill.contains("`answer_clarification`") && skill.contains("`withdraw`") && skill.contains("never in `why`"));
         let orchestrator = instructions(Role::Orchestrator, "Ana");
-        assert!(orchestrator.contains("close_request (headline and answer)") && !orchestrator.contains("before close_request") && orchestrator.contains("raise_problem"));
+        assert!(orchestrator.contains("close_request (headline and answer, outcome answered)") && !orchestrator.contains("before close_request") && orchestrator.contains("raise_problem"));
     }
 
     #[test]

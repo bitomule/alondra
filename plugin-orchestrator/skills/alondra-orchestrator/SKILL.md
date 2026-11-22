@@ -501,9 +501,11 @@ stopped, refused or held by the usage limit counts for nothing.
      what the user decided (mission included); `reason` says what changed.
    - `cancelled`: the task no longer applies after the decision; `reason` says why.
    A held task never starts before you settle it, and `set_launch_plan` does not change its plan.
-   A product call is asked to the user first, as with suggestions. A review a batch leaves
-   unsettled comes back to you once; when the next batch ends with it unsettled, Alondra starts
-   each held task with the plan it has and tells its node what the user decided.
+   A product call is asked to the user first, with an `ask` about the held task's request: the
+   review waits for that answer, and you settle it once it comes. A review a batch leaves
+   unsettled, with no such question open, comes back to you once; when the batch that read that
+   reminder ends with it unsettled, Alondra starts each held task with the plan it has and tells
+   its node what the user decided.
 4. Nodes that cannot manage to deliver. A node that ends its turn with no result, no question,
    no work of its own and nothing it waits for has stopped. Alondra wakes it once with what
    happened; each stop after that is a case for you, never a card for the user. The case gives

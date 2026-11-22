@@ -70,7 +70,7 @@ fn stalled(domain: &DomainRuntime) -> InteractionId {
 }
 
 fn reminded(domain: &DomainRuntime, case: &InteractionId) -> bool {
-    domain.state().unwrap().interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}").as_str()))
+    domain.state().unwrap().interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}-1").as_str()))
 }
 
 /// The node has `text` pending as the answer to `case`.
@@ -79,6 +79,20 @@ fn instructed(domain: &DomainRuntime, case: &InteractionId, text: &str) -> bool 
     let answered = state.lifecycle_journal[&task()].iter().any(|record| matches!(record,
         LifecycleRecord::Answered { card, text: Some(said), .. } if card == case && said == text));
     answered && !state.lifecycle_of(&task()).unwrap().pending_inputs().is_empty()
+}
+
+/// A batch of the orchestrator read every message waiting for it and ended with its result: what
+/// it owes is settled.
+fn turn_ends(domain: &DomainRuntime) {
+    {
+        let mut store = domain.store.lock().unwrap();
+        for message in store.pending_messages().unwrap().into_iter().filter(|message| message.recipient_kind == "orchestrator") {
+            if let Some(claim) = store.claim_message(message.id).unwrap() {
+                store.finish_message(claim.attempt_id, claim.version, alondra_core::delivery::State::Handed, None).unwrap();
+            }
+        }
+    }
+    crate::orchestrator_inbox::settle(domain);
 }
 
 fn user_cards(domain: &DomainRuntime) -> Vec<InteractionId> {
@@ -146,8 +160,8 @@ fn after_three_cases_the_task_closes_with_its_result() {
         crate::orchestrator_inbox::settle_overdue(&domain, at);
     }
     assert!(domain.state().unwrap().tasks[&task()].stall_closing.is_none(), "the clock closes nothing");
-    crate::orchestrator_inbox::settle(&domain);
-    crate::orchestrator_inbox::settle(&domain);
+    turn_ends(&domain);
+    turn_ends(&domain);
     let state = domain.state().unwrap();
     assert_eq!(state.tasks[&task()].stall_closing, Some(StallClosing::Unsettled), "closed with what it got done");
     assert!(state.tasks[&task()].cancelled(), "{:?}", state.tasks[&task()].state);

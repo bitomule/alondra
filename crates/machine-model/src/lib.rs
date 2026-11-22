@@ -1282,7 +1282,8 @@ impl Machine {
     /// orchestrator rests every ten minutes of its clock; the rule itself reads no clock.
     fn turn_ended(&mut self) {
         let state = self.state();
-        for step in orchestrator_inbox::owed(&state) {
+        // The model's orchestrator reads every message of the turn that rests.
+        for step in orchestrator_inbox::owed(&state, &|_| true) {
             self.carry_out(&step);
         }
     }

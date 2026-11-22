@@ -144,6 +144,7 @@ impl Journal for DomainStore {
     fn metrics_inputs(&self, now: Millis) -> Result<MetricsInputs> { DomainStore::metrics_inputs(self, now) }
     fn orchestrator_delivery(&self, attempt_id: i64) -> Result<Option<String>> { DomainStore::orchestrator_delivery(self, attempt_id) }
     fn orchestrator_notices_out(&self) -> Result<Vec<String>> { DomainStore::orchestrator_notices_out(self) }
+    fn orchestrator_notice_read(&self, interaction_id: &str) -> Result<bool> { DomainStore::orchestrator_notice_read(self, interaction_id) }
     fn pending_messages(&self) -> Result<Vec<OutboxMessage>> { DomainStore::pending_messages(self) }
     fn plan_account_move(&mut self, _task: &TaskId, _plan: &AccountMovePlan) -> Result<i64> { DomainStore::plan_account_move(self, _task, _plan) }
     fn planned_tasks(&self) -> Result<std::collections::BTreeMap<TaskId, i64>> { DomainStore::planned_tasks(self) }

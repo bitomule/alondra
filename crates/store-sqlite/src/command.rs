@@ -338,7 +338,7 @@ pub(super) fn stage(
                             if next.requests.get(request).is_some_and(|r| r.maintenance) =>
                         {
                             format!(
-                                "Maintenance message {request} (sent with alondra send): act on it, then close it with close_request; it gets no card for the user."
+                                "Maintenance message {request} (sent with alondra send): act on it, then close it with close_request and outcome answered; it gets no card for the user."
                             )
                         }
                         Some(request) => super::wording::approved_plan_work(&next, request)

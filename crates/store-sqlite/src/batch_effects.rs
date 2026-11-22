@@ -84,8 +84,8 @@ impl DomainStore {
     }
 
     /// A turn of the orchestrator creates at most `TURN_TASK_LIMIT` new Tasks. A command that would
-    /// create one more is refused before it changes anything; one this turn already committed is
-    /// replayed as it was.
+    /// create one more is refused before it changes anything; one any turn already committed, as a
+    /// turn that carries on an interrupted one replays, is answered with its receipt as it was.
     fn within_task_limit(&mut self, run: &str, envelope: &CommandEnvelope) -> std::result::Result<(), StoreError> {
         use alondra_domain_rules::orchestrator_batch::{TURN_TASK_LIMIT, TURN_TASK_LIMIT_CODE};
         let creates = matches!(&envelope.command, Command::CreateTask { .. }
@@ -93,7 +93,7 @@ impl DomainStore {
         if !creates {
             return Ok(());
         }
-        let replayed: bool = self.conn.query_row("SELECT EXISTS(SELECT 1 FROM orchestrator_batch_effects WHERE run=?1 AND command_id=?2)", params![run, envelope.command_id.0], |row| row.get(0))
+        let replayed: bool = self.conn.query_row("SELECT EXISTS(SELECT 1 FROM orchestrator_batch_effects WHERE command_id=?1 AND data_epoch=?2)", params![envelope.command_id.0, envelope.data_epoch.0], |row| row.get(0))
             .map_err(|why| StoreError::Storage(why.into()))?;
         if replayed || self.tasks_created_in(run).map_err(StoreError::Storage)? < TURN_TASK_LIMIT {
             return Ok(());

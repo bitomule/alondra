@@ -376,7 +376,7 @@ impl Executor {
 
     fn prompt(&self, runtime: &Runtime, projects_root: Option<&Path>, messages: &[OutboxMessage]) -> Result<String> {
         let state = self.domain.state()?;
-        let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. Every open Request below marked (no task of its own) leaves this batch with its Tasks, an answer given with close_request, folded into the open Task that already covers it, or a question to the user: an answer written only in this conversation reaches nobody. Before create_task, compare each such Request with the open Tasks listed below: when one already covers what it asks, create no Task; send what is new to that Task's node and close the Request with close_request and folded_into naming that Task. Never two Tasks for the same work. A Request that lists its tasks already has them: never give it Tasks again unless every one of them has ended. After processing the batch, finish this invocation. Do not wait or poll for future work.\n");
+        let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. Every open Request below marked (no task of its own) leaves this batch with its Tasks, an answer given with close_request, folded into the open Task that already covers it, or a question to the user: an answer written only in this conversation reaches nobody. Before create_task, compare each such Request with the open Tasks listed below: when one already covers what it asks, create no Task; send what is new to that Task's node and close the Request with close_request and folded_into naming that Task (outcome folded). Never two Tasks for the same work. A Request that lists its tasks already has them: never give it Tasks again unless every one of them has ended. After processing the batch, finish this invocation. Do not wait or poll for future work.\n");
         text.push_str("This is a new conversation, as every batch is: nothing of an earlier batch is in it but what Alondra writes below, which is current. Call tasks_in_progress or node only for what it does not say; do not infer that existing tasks need to be started again. End with a short note, a few sentences at most, of what the next batch needs that Alondra does not already hold: it reaches the next batch and nobody else.\n");
         if let Some(note) = &runtime.note {
             text.push_str(&format!("\nYOUR NOTE FROM THE PREVIOUS BATCH:\n{note}\n"));
@@ -696,9 +696,13 @@ impl Executor {
         }
         self.save(&runtime)?;
         self.domain.orchestrator_progress();
+        // What waits for the orchestrator is read before Alondra adds its own notices: a re-plan it
+        // hands at every rest, or the word to go on after the task limit, must not keep what it
+        // owes the nodes from ever being settled.
+        let waiting = !self.pending()?.is_empty();
         crate::orchestrator_inbox::hand_replans(&self.domain);
         self.go_on_after_the_task_limit(run)?;
-        if !self.pending()?.is_empty() {
+        if waiting {
             return Ok(());
         }
         crate::orchestrator_inbox::settle(&self.domain);
@@ -1471,7 +1475,7 @@ mod tests {
         let prompt = last_prompt(&f);
         assert!(prompt.contains("(no task of its own): A node that waits holds no memory"), "{prompt}");
         assert!(prompt.contains("Before create_task, compare each such Request with the open Tasks listed below")
-            && prompt.contains("close the Request with close_request and folded_into naming that Task"), "{prompt}");
+            && prompt.contains("close the Request with close_request and folded_into naming that Task (outcome folded)"), "{prompt}");
     }
 
     #[tokio::test]

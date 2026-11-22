@@ -1376,12 +1376,14 @@ impl DomainState {
     }
     /// A Request the user made is never closed by the orchestrator in silence. One whose Tasks
     /// ended gets its Done card from them; any other, settled with no Task of its own (answered,
-    /// covered, folded or no longer wanted), has `answer` tell the user, who reads it on the
-    /// Request's card. A message, a maintenance message and a Request a node raised need none.
-    fn check_close_answer(&self, actor: &Actor, request_id: &RequestId, answer: Option<&str>) -> Result<()> {
+    /// covered or folded), and any it withdraws, Tasks or none, has `answer` tell the user, who
+    /// reads it on the Request's card. A message, a maintenance message and a Request a node
+    /// raised need none.
+    fn check_close_answer(&self, actor: &Actor, request_id: &RequestId, answer: Option<&str>, withdrawn: bool) -> Result<()> {
         let Some(request) = self.requests.get(request_id) else { return Ok(()) };
         let has_tasks = self.tasks.values().any(|task| &task.request_id == request_id);
-        let answers_the_user = matches!(actor, Actor::Orchestrator { .. }) && request.origin.the_user_asked() && !request.maintenance && !request.message && !has_tasks;
+        let answers_the_user = matches!(actor, Actor::Orchestrator { .. }) && request.origin.the_user_asked() && !request.maintenance && !request.message
+            && (!has_tasks || withdrawn);
         if answers_the_user && answer.is_none() {
             return refuse("close_answer_required", "answer",
                 "The user made this Request: say in answer what came of it, or why it no longer applies; the user reads it on the Request's card");
@@ -1416,7 +1418,8 @@ impl DomainState {
         }
         let tell = !request.maintenance && (!request.withdrawn || answer.is_some()) && request.origin.the_user_asked();
         let has_tasks = self.tasks.values().any(|t| &t.request_id == request_id);
-        if tell && has_tasks {
+        // A withdrawn Request is told why it no longer applies, never that it is done.
+        if tell && has_tasks && !withdrawn {
             self.tell_it_is_done(request_id, answer.map(String::as_str), created, effects)?;
         } else if let Some(answer) = answer.filter(|_| tell) {
             self.tell_the_answer(request_id, answer, headline, created, effects)?;
@@ -3584,7 +3587,7 @@ impl DomainState {
                 };
                 self.check_close_outcome(actor, request_id, *outcome, *withdrawn, folded_into.as_ref(), covered_by)?;
                 self.check_cover(covered_by, *withdrawn)?;
-                self.check_close_answer(actor, request_id, answer.as_deref())?;
+                self.check_close_answer(actor, request_id, answer.as_deref(), *withdrawn)?;
                 for (field, text) in [("answer", answer.as_deref()), ("title", title.as_deref())] {
                     if text.is_some_and(|text| text.trim().is_empty()) {
                         return refuse("invalid_input", field, "Provide non-empty text, or omit this field");
