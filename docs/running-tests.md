@@ -355,7 +355,10 @@ a Mac. The world decides what the provider answers:
   so the runner waits for calm after a virtual second only when one of them fell inside it
   (`clock::deadline_within`, asked before the advance); a second that can wake nobody needs no wait.
 - `bazel run //crates/scenarios:accept -- <case>...` writes what the checkpoints read into each
-  case's folder; the pull request shows that diff for a reviewer to read.
+  case's folder; the pull request shows that diff for a reviewer to read. `bazel run` has no test
+  wrapper, so `accept` makes its own short folder under `/tmp` (unless `ALONDRA_SHORT_TMPDIR`
+  already names one), exports it for the runner, and removes it when it ends. `ablate` runs
+  `bazelisk test`, which goes through the wrapper.
 - `bazel run //crates/scenarios:ablate -- <case> --revert <file>...` runs only that case without
   the fix (those files as they were on the base of the branch) and with it, and prints the block
   the pull request shows.
