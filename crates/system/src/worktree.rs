@@ -683,30 +683,59 @@ pub async fn release_finished_worktree(dir: &Path, slug: Option<&str>, give_up: 
     Ok(released)
 }
 
-async fn delete_finished_branch(repository: &Path, branch: &str, pr_merged: bool) {
-    if !pr_merged && !holds_nothing_of_its_own(repository, branch).await {
-        return;
-    }
-    if git(repository, &["branch", "-D", branch]).await.is_none() {
-        log!("could not delete the branch {branch} of {}", repository.display());
-    }
+/// What git says about a branch before it is deleted.
+struct BranchFacts {
+    /// Its tip is, or is an ancestor of, the tip of its own branch on a remote, read from that remote now.
+    on_its_remote: bool,
+    in_default: bool,
 }
 
-async fn holds_nothing_of_its_own(repository: &Path, branch: &str) -> bool {
-    match local_default_branch(repository).await {
-        Some(default) => git(repository, &["merge-base", "--is-ancestor", branch, &format!("refs/heads/{default}")]).await.is_some(),
-        None => false,
-    }
+fn branch_is_expendable(facts: &BranchFacts, pr_merged: bool) -> bool {
+    facts.in_default || (pr_merged && facts.on_its_remote)
 }
 
-async fn delete_saved_branch(repository: &Path, branch: &str) {
-    let on_a_remote = git(repository, &["rev-list", "--count", branch, "--not", "--remotes"]).await.is_some_and(|count| count == "0");
+fn saved_branch_is_expendable(facts: &BranchFacts) -> bool {
+    facts.on_its_remote || facts.in_default
+}
+
+async fn branch_facts(repository: &Path, branch: &str) -> BranchFacts {
     let in_default = match local_default_branch(repository).await {
         Some(default) => git(repository, &["merge-base", "--is-ancestor", branch, &format!("refs/heads/{default}")]).await.is_some(),
         None => false,
     };
-    if !(on_a_remote || in_default) {
-        log!("keeping the branch {branch}: it holds commits no remote has");
+    BranchFacts { on_its_remote: !in_default && is_on_its_remote(repository, branch).await, in_default }
+}
+
+async fn is_on_its_remote(repository: &Path, branch: &str) -> bool {
+    let Some(remotes) = git(repository, &["remote"]).await else { return false };
+    for remote in remotes.lines().filter(|remote| !remote.is_empty()) {
+        let fetched = Command::new("git")
+            .arg("-C").arg(repository)
+            .args(["fetch", "--quiet", remote, &format!("refs/heads/{branch}")])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .kill_on_drop(true)
+            .output().await
+            .is_ok_and(|out| out.status.success());
+        if fetched && git(repository, &["merge-base", "--is-ancestor", branch, "FETCH_HEAD"]).await.is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+async fn delete_finished_branch(repository: &Path, branch: &str, pr_merged: bool) {
+    let facts = branch_facts(repository, branch).await;
+    delete_unless_it_holds_something(repository, branch, branch_is_expendable(&facts, pr_merged)).await;
+}
+
+async fn delete_saved_branch(repository: &Path, branch: &str) {
+    let facts = branch_facts(repository, branch).await;
+    delete_unless_it_holds_something(repository, branch, saved_branch_is_expendable(&facts)).await;
+}
+
+async fn delete_unless_it_holds_something(repository: &Path, branch: &str, expendable: bool) {
+    if !expendable {
+        log!("keeping the branch {branch}: it holds commits that no remote or default branch has");
         return;
     }
     if git(repository, &["branch", "-D", branch]).await.is_none() {
@@ -1041,6 +1070,41 @@ mod tests {
         assert!(branch_remains(&other_root.join("repo"), "worktree-t-open").await, "its commits are in no merged pull request");
         assert!(matches!(release_finished_worktree(&merged, None, false, true).await, Ok(TaskWorktree::Removed { .. })));
         assert!(!branch_remains(&repo, "worktree-t-merged").await);
+    }
+
+    #[test]
+    fn a_branch_with_commits_nowhere_else_is_kept_whatever_a_merged_pr_says() {
+        let only_here = BranchFacts { on_its_remote: false, in_default: false };
+        assert!(!branch_is_expendable(&only_here, true), "a merged pull request proves nothing about commits made after the push");
+        assert!(!branch_is_expendable(&BranchFacts { on_its_remote: true, ..only_here }, false), "an open pull request still needs its branch");
+        assert!(branch_is_expendable(&BranchFacts { on_its_remote: true, ..only_here }, true));
+        assert!(branch_is_expendable(&BranchFacts { in_default: true, ..only_here }, false));
+        assert!(saved_branch_is_expendable(&BranchFacts { on_its_remote: true, in_default: false }));
+        assert!(!saved_branch_is_expendable(&only_here));
+    }
+
+    #[tokio::test]
+    async fn closing_a_task_keeps_a_branch_with_commits_made_after_its_last_push_even_when_a_pr_merged() {
+        let root = crate::test_support::Directory::new();
+        let repo = root.join("repo");
+        let dir = testing::task_worktree(&root, "t-late");
+        testing::git(&dir, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "after the push"]);
+        assert!(matches!(release_finished_worktree(&dir, None, true, true).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(branch_remains(&repo, "worktree-t-late").await, "its last commit exists nowhere else");
+    }
+
+    #[tokio::test]
+    async fn closing_a_task_keeps_the_branch_of_a_repository_without_a_remote_even_when_a_pr_merged() {
+        let root = crate::test_support::Directory::new();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        testing::git(&repo, &["init", "-q", "-b", "main"]);
+        testing::git(&repo, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "base"]);
+        let dir = repo.join(".claude/worktrees/t-norem");
+        testing::git(&repo, &["worktree", "add", "-q", "-b", "worktree-t-norem", dir.to_str().unwrap()]);
+        testing::git(&dir, &["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "only here"]);
+        assert!(matches!(release_finished_worktree(&dir, None, false, true).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(branch_remains(&repo, "worktree-t-norem").await, "its commits exist nowhere else");
     }
 
     #[tokio::test]
