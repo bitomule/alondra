@@ -413,10 +413,43 @@ pub struct OpenedPullRequest {
     pub number: u64,
 }
 
-/// Whether `agent` can be the id of a subagent Claude Code names an isolated worktree
-/// `agent-<agent>` after: one path segment of letters, digits, `-` and `_`.
+/// Whether `agent` can be the id of a subagent a provider names an isolated worktree after: one
+/// path segment of letters, digits, `-` and `_`.
 pub fn subagent_id(agent: &str) -> bool {
     (1..=64).contains(&agent.len()) && agent.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// A worktree a provider made for a session of a task's conversations, as for an isolated
+/// subagent, which may be gone since.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SessionWorktree {
+    pub path: std::path::PathBuf,
+    pub branch: Option<String>,
+}
+
+/// What Alondra keeps of a task's conversations: the agent its node runs as, if any, and each
+/// conversation's record as its provider wrote it, oldest first.
+pub struct Conversations<'a> {
+    pub agent: Option<&'a str>,
+    pub records: &'a [Vec<u8>],
+}
+
+/// The worktrees a provider noted the sessions of a task's conversations made. Each provider reads
+/// only what it keeps: a record another provider wrote names nothing to it.
+pub trait SessionWorktrees: Send + Sync {
+    fn made_by(&self, conversations: &Conversations<'_>) -> Vec<SessionWorktree>;
+}
+
+/// Every provider's, each asked in turn.
+pub struct EveryProvider(pub Vec<std::sync::Arc<dyn SessionWorktrees>>);
+
+impl SessionWorktrees for EveryProvider {
+    fn made_by(&self, conversations: &Conversations<'_>) -> Vec<SessionWorktree> {
+        let mut made: Vec<_> = self.0.iter().flat_map(|provider| provider.made_by(conversations)).collect();
+        made.sort();
+        made.dedup();
+        made
+    }
 }
 
 /// Whether a shell command line runs `gh pr create`, also inside `sh -c '...'`. It only says that

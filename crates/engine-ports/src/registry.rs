@@ -14,6 +14,7 @@ use crate::sdk::SdkEngine;
 use crate::sign_in_returns::SignInReturns;
 use alondra_view_model::Screens;
 use crate::worktrees::Worktrees;
+use alondra_provider_contract::SessionWorktrees;
 use alondra_domain_rules::{CommandEnvelope, CommandOutcome, DomainError, DomainState};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -58,6 +59,11 @@ impl Registry {
         self.port::<dyn Worktrees>().expect("the root gives the registry the Mac's worktrees")
     }
 
+    /// The worktrees each provider noted the sessions of a task's conversations made.
+    pub fn session_worktrees(&self) -> Arc<dyn SessionWorktrees> {
+        self.port::<dyn SessionWorktrees>().expect("the root gives the registry the providers' session worktrees")
+    }
+
     /// The provider accounts as the Mac keeps them.
     pub fn accounts(&self) -> Arc<dyn Accounts> {
         self.port::<dyn Accounts>().expect("the root gives the registry the Mac's accounts")
@@ -95,7 +101,7 @@ impl Registry {
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 16] {
+fn every_port() -> [(TypeId, &'static str); 17] {
     [
         (TypeId::of::<dyn Accounts>(), "Accounts"),
         (TypeId::of::<dyn AgentHost>(), "AgentHost"),
@@ -111,6 +117,7 @@ fn every_port() -> [(TypeId, &'static str); 16] {
         (TypeId::of::<dyn SdkEngine>(), "SdkEngine"),
         (TypeId::of::<dyn SdkHosts>(), "SdkHosts"),
         (TypeId::of::<dyn Screens>(), "Screens"),
+        (TypeId::of::<dyn SessionWorktrees>(), "SessionWorktrees"),
         (TypeId::of::<dyn SignInReturns>(), "SignInReturns"),
         (TypeId::of::<dyn Worktrees>(), "Worktrees"),
     ]
@@ -143,12 +150,12 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorAnswers", "OrchestratorEngine", "Plugins", "Processes", "SdkEngine", "SdkHosts", "Screens", "SignInReturns", "Worktrees"]);
+        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorAnswers", "OrchestratorEngine", "Plugins", "Processes", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "Worktrees"]);
         struct Answers;
         impl OrchestratorAnswers for Answers {
             fn settle_answers(&self, _: &dyn Runtime, _: &alondra_domain_rules::DomainState, _: &std::collections::BTreeSet<alondra_domain_rules::TaskId>) {}
         }
         registry.provide::<dyn OrchestratorAnswers>(Arc::new(Answers));
-        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "Plugins", "Processes", "SdkEngine", "SdkHosts", "Screens", "SignInReturns", "Worktrees"]);
+        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "Plugins", "Processes", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "Worktrees"]);
     }
 }

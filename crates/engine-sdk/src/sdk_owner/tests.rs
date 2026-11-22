@@ -1403,10 +1403,10 @@ async fn a_cancelled_sdk_task_with_unsaved_files_in_a_subagents_worktree_is_clos
     assert_eq!((card.tasks[0].files, card.tasks[0].paths.clone()), (1, vec![subagent.to_str().unwrap().to_owned()]));
 }
 
-// A subagent worktree Alondra never saw made is found under the native session of the task's
-// conversation, which is not its node's id, and settled with the task.
+// A subagent worktree Alondra never saw made is found by what the provider keeps of the task's
+// conversation, not by its node's id, and settled with the task.
 #[tokio::test]
-async fn a_cancelled_sdk_task_settles_a_subagent_worktree_only_its_sessions_notes_name() {
+async fn a_cancelled_sdk_task_settles_a_subagent_worktree_only_its_conversations_record_names() {
     let slice = Slice::new();
     let root = Directory::new();
     let own = alondra_engine_doubles::worktrees::testing::task_worktree(&root, TASK);
@@ -1416,15 +1416,12 @@ async fn a_cancelled_sdk_task_settles_a_subagent_worktree_only_its_sessions_note
     let state = slice.domain.state().unwrap();
     let stamp = state.lifecycle_of(&TASK.into()).unwrap().execution().unwrap().clone();
     let metadata = slice.domain.store.lock().unwrap().conversation_metadata(&TASK.into(), stamp.conversation().as_str()).unwrap().unwrap();
-    let session = alondra_provider_claude::conversation_session(&metadata).unwrap();
     let subagent = root.join("repo/.claude/worktrees/agent-a0000000000000001");
     alondra_engine_doubles::worktrees::make_worktree(&root.join("repo"), &subagent).unwrap();
     std::fs::write(subagent.join("draft.txt"), "x").unwrap();
-    let claude_home = Directory::new();
-    let notes = claude_home.join("projects/-repo").join(&session).join("subagents");
-    std::fs::create_dir_all(&notes).unwrap();
-    std::fs::write(notes.join("agent-a0000000000000001.meta.json"), serde_json::json!({"worktreePath": subagent, "spawnedWithWorktree": true}).to_string()).unwrap();
-    crate::watcher::use_claude_home_for_test(&claude_home);
+    let noted = alondra_engine_doubles::session_worktrees::Noted::default();
+    noted.note(&metadata, &subagent, None);
+    slice.domain.ports().provide::<dyn alondra_engine_ports::worktrees::SessionWorktrees>(std::sync::Arc::new(noted));
     slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
     slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
     let timing = crate::task_closer::Timing::new(None);

@@ -6,6 +6,7 @@ mod elicitation;
 mod ended;
 mod normalizer;
 mod records;
+mod session_worktrees;
 mod wire;
 
 #[cfg(test)]
@@ -20,6 +21,7 @@ pub use context::{ContextEvent, SessionFailure, context_event, native_message, a
 pub use ended::{EndedJournal, Retained};
 pub use normalizer::{background_left,live_scope,blocked_policy,LiveScope};
 pub use records::conversation_session;
+pub use session_worktrees::NoSessionWorktrees;
 pub use wire::HostOwner;
 pub use alondra_codex_protocol::{Execution, OrchestratorExecution, OrchestratorLane};
 #[cfg(test)]

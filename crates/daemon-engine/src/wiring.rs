@@ -86,11 +86,16 @@ pub fn held_cards() -> Arc<crate::domain_holds::HeldCards> {
     Arc::new(crate::domain_holds::HeldCards)
 }
 
-/// Gives the registry what the orchestrator asks of the engine.
+/// Gives the registry what the orchestrator asks of the engine, and the worktrees each provider
+/// noted a task's sessions made.
 pub fn wire(registry: &Registry) {
     registry.provide::<dyn OrchestratorEngine>(Arc::new(Engine));
     registry.provide::<dyn AdmissionEngine>(Arc::new(Engine));
     registry.provide::<dyn SdkEngine>(Arc::new(Engine));
+    registry.provide::<dyn alondra_provider_contract::SessionWorktrees>(Arc::new(alondra_provider_contract::EveryProvider(vec![
+        Arc::new(alondra_provider_claude::SubagentNotes { claude_home: crate::watcher::claude_home }),
+        Arc::new(alondra_provider_codex::NoSessionWorktrees),
+    ])));
 }
 
 /// What the orchestrator asks of the engine.

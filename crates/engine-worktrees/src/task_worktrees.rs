@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use alondra_domain_rules::{AgentId, Command, DomainState, Task, TaskId, WorktreeEnd, WorktreeOrigin};
-use alondra_engine_ports::worktrees::TaskWorktree;
+use alondra_engine_ports::worktrees::{Conversations, TaskWorktree};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
@@ -71,7 +71,7 @@ fn record(domain: &DomainRuntime, task: &TaskId, made: Made) -> Result<()> {
         Made::Subagent { agent } => {
             let launched = domain.launch_plan(task)?.map(|plan| plan.cwd);
             let Some(own) = domain.task_worktree(task)?.or(launched) else {
-                log!("{task} has neither a worktree of its own nor a launch folder to place subagent {agent}'s: its close finds it in Claude Code's notes");
+                log!("{task} has neither a worktree of its own nor a launch folder to place subagent {agent}'s: its close finds it in its provider's notes");
                 return Ok(());
             };
             let path = domain.ports().worktrees().subagent_worktree(Path::new(&own), &agent)
@@ -83,40 +83,29 @@ fn record(domain: &DomainRuntime, task: &TaskId, made: Made) -> Result<()> {
     domain.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))
 }
 
-/// The sessions Claude Code may have noted the task's subagents under: its node's, and the native
-/// session of each conversation the task had.
-fn sessions(domain: &DomainRuntime, task: &Task) -> Vec<String> {
-    let metadata = domain.store.lock_or_exit("the domain store").conversations_metadata(&task.id).unwrap_or_else(|why| {
-        log!("could not read the conversations of {}: {why}", task.id);
-        vec![]
-    });
-    let named = |record: &[u8]| serde_json::from_slice::<Value>(record).ok()?.get("session_id")?.as_str().map(str::to_owned);
-    let mut sessions: Vec<String> = task.agent_id.iter().map(|agent| agent.0.clone()).chain(metadata.iter().filter_map(|record| named(record))).collect();
-    sessions.sort();
-    sessions.dedup();
-    sessions
-}
-
-/// Records as the task's each worktree Claude Code noted it made for a subagent of the task's
-/// sessions that is still there and no task has: one whose making Alondra did not see, as when the
+/// Records as the task's each worktree a provider noted the sessions of the task's conversations
+/// made that is still there and no task has: one whose making Alondra did not see, as when the
 /// daemon was down. Closing then settles it as any other. The task as the domain has it after.
 pub fn recover_noted(domain: &DomainRuntime, task: &Task) -> Result<Task> {
     let state = domain.state()?;
     let worktrees = domain.ports().worktrees();
-    for session in sessions(domain, task) {
-        for noted in worktrees.noted_subagent_worktrees(&session) {
-            let path = noted.path.display().to_string();
-            if state.tasks.values().any(|other| other.worktrees.contains_key(&path)) || !worktrees.exists(&noted.path) {
-                continue;
-            }
-            if let Err(why) = domain.registrable_worktree(&noted.path) {
-                log!("{} does not take {path}, noted for one of its subagents: {why}", task.id);
-                continue;
-            }
-            let command = Command::RecordTaskWorktree { task_id: task.id.clone(), path: path.clone(), origin: WorktreeOrigin::Subagent, branch: noted.branch };
-            domain.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))?;
-            log!("{path}, which Claude Code noted for a subagent of {}, is recorded as its worktree", task.id);
+    let records = domain.store.lock_or_exit("the domain store").conversations_metadata(&task.id).unwrap_or_else(|why| {
+        log!("could not read the conversations of {}: {why}", task.id);
+        vec![]
+    });
+    let conversations = Conversations { agent: task.agent_id.as_ref().map(|agent| agent.0.as_str()), records: &records };
+    for noted in domain.ports().session_worktrees().made_by(&conversations) {
+        let path = noted.path.display().to_string();
+        if state.tasks.values().any(|other| other.worktrees.contains_key(&path)) || !worktrees.exists(&noted.path) {
+            continue;
         }
+        if let Err(why) = domain.registrable_worktree(&noted.path) {
+            log!("{} does not take {path}, noted for one of its sessions: {why}", task.id);
+            continue;
+        }
+        let command = Command::RecordTaskWorktree { task_id: task.id.clone(), path: path.clone(), origin: WorktreeOrigin::Subagent, branch: noted.branch };
+        domain.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))?;
+        log!("{path}, which its provider noted for a session of {}, is recorded as its worktree", task.id);
     }
     Ok(domain.state()?.tasks.get(&task.id).cloned().unwrap_or_else(|| task.clone()))
 }

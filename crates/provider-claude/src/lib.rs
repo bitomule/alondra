@@ -11,6 +11,7 @@ mod mcp;
 mod ended;
 mod normalizer;
 mod records;
+mod session_worktrees;
 mod wire;
 
 pub use adapter::{
@@ -24,6 +25,7 @@ pub use batch::{BatchHost, PendingHostEvent, HostEvent, McpServer, OrchestratorP
 pub use alondra_agent_protocol::{Execution, OrchestratorExecution, OrchestratorLane};
 pub use wire::HostOwner;
 pub use records::conversation_session;
+pub use session_worktrees::SubagentNotes;
 pub use normalizer::background_left;
 
 #[cfg(test)]

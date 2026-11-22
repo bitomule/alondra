@@ -1103,29 +1103,23 @@ async fn a_dirty_subagent_worktree_holds_the_close_and_tells_the_node() {
     assert!(task.worktrees.values().all(|worktree| worktree.end == Some(alondra_domain_rules::WorktreeEnd::Removed)), "{:?}", task.worktrees);
 }
 
-/// What Claude Code notes of an isolated subagent of `session` that made `dir`, in a Claude folder
-/// the test's worktrees read.
-fn noted_by_claude_code(session: &str, dir: &std::path::Path) -> crate::test_support::Directory {
-    let claude_home = crate::test_support::Directory::new();
-    let agent = dir.file_name().unwrap().to_str().unwrap();
-    let notes = claude_home.join("projects").join("-repo").join(session).join("subagents");
-    std::fs::create_dir_all(&notes).unwrap();
-    std::fs::write(notes.join(format!("{agent}.meta.json")), json!({
-        "agentType": "general-purpose", "worktreePath": dir, "spawnedWithWorktree": true, "worktreeBranch": format!("worktree-{agent}"), "finished": true,
-    }).to_string()).unwrap();
-    crate::watcher::use_claude_home_for_test(&claude_home);
-    claude_home
+/// The providers' notes the test's engine reads, in place of every provider's.
+fn noted_worktrees(rig: &Rig) -> alondra_engine_doubles::session_worktrees::Noted {
+    let noted = alondra_engine_doubles::session_worktrees::Noted::default();
+    rig.domain.ports().provide::<dyn alondra_engine_ports::worktrees::SessionWorktrees>(std::sync::Arc::new(noted.clone()));
+    noted
 }
 
-/// A task whose node launched a subagent in a worktree Alondra never saw made: only Claude Code's
+/// A task whose node launched a subagent in a worktree Alondra never saw made: only its provider's
 /// note of it says it is the task's.
-fn unseen_subagent_worktree(rig: &Rig, root: &std::path::Path) -> (std::path::PathBuf, crate::test_support::Directory) {
+fn unseen_subagent_worktree(rig: &Rig, root: &std::path::Path) -> (std::path::PathBuf, alondra_engine_doubles::session_worktrees::Noted) {
     let own = alondra_engine_doubles::worktrees::testing::task_worktree(root, "t");
     rig.domain.set_task_worktree(&"t".into(), own.to_str().unwrap()).unwrap();
     let dir = root.join("repo/.claude/worktrees/agent-a0000000000000009");
     alondra_engine_doubles::worktrees::make_worktree(&root.join("repo"), &dir).unwrap();
-    let notes = noted_by_claude_code(SESSION, &dir);
-    (dir, notes)
+    let noted = noted_worktrees(rig);
+    noted.note(SESSION, &dir, Some("worktree-agent-a0000000000000009"));
+    (dir, noted)
 }
 
 // The user's rule, 22 November: a task that ends leaves nothing it made, its subagents' worktrees
@@ -1137,7 +1131,7 @@ async fn a_clean_subagent_worktree_alondra_never_saw_made_goes_with_its_task() {
     let (dir, _notes) = unseen_subagent_worktree(&rig, &root);
     rig.confirm();
     rig.pass(T0).await;
-    assert!(!dir.exists(), "the clean worktree Claude Code noted for the task's subagent is deleted");
+    assert!(!dir.exists(), "the clean worktree its provider noted for the task's subagent is deleted");
     let task = rig.task();
     assert_eq!(task.state, TaskState::Done);
     assert_eq!(task.worktrees.get(dir.to_str().unwrap()).and_then(|worktree| worktree.end.clone()), Some(alondra_domain_rules::WorktreeEnd::Removed));
@@ -1161,11 +1155,11 @@ async fn an_unseen_subagent_worktree_with_work_not_saved_holds_the_close_and_tel
 async fn cancelling_a_task_settles_the_subagent_worktrees_alondra_never_saw_made() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let (dirty, _notes) = unseen_subagent_worktree(&rig, &root);
+    let (dirty, noted) = unseen_subagent_worktree(&rig, &root);
     std::fs::write(dirty.join("draft.txt"), "x").unwrap();
     let clean = root.join("repo/.claude/worktrees/agent-a0000000000000010");
     alondra_engine_doubles::worktrees::make_worktree(&root.join("repo"), &clean).unwrap();
-    add_note(SESSION, &clean);
+    noted.note(SESSION, &clean, None);
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     rig.pass(T0).await;
     rig.pass(T0 + MINUTE).await;
@@ -1177,21 +1171,11 @@ async fn cancelling_a_task_settles_the_subagent_worktrees_alondra_never_saw_made
     assert!(card.tasks[0].paths.contains(&dirty.to_str().unwrap().to_owned()), "{:?}", card.tasks);
 }
 
-/// Adds Claude Code's note of a subagent of `session` that made `dir` to the Claude folder the test
-/// reads.
-fn add_note(session: &str, dir: &std::path::Path) -> std::path::PathBuf {
-    let home = crate::watcher::claude_home();
-    let agent = dir.file_name().unwrap().to_str().unwrap();
-    let note = home.join("projects").join("-repo").join(session).join("subagents").join(format!("{agent}.meta.json"));
-    std::fs::write(&note, json!({"worktreePath": dir, "spawnedWithWorktree": true}).to_string()).unwrap();
-    note
-}
-
 #[tokio::test]
 async fn a_noted_worktree_another_open_task_holds_or_git_does_not_know_is_never_taken() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let (held, _notes) = unseen_subagent_worktree(&rig, &root);
+    let (held, noted) = unseen_subagent_worktree(&rig, &root);
     command(&rig.domain, user(), "request-u", Command::CreateRequest { request_id: "r-u".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "create-u", Command::CreateTask {
         plan_items: None, continues: None, task_id: "u".into(), request_id: "r-u".into(), title: "Other".into(), agent_id: None,
@@ -1203,7 +1187,7 @@ async fn a_noted_worktree_another_open_task_holds_or_git_does_not_know_is_never_
     let plain = root.join("repo/.claude/worktrees/agent-a0000000000000011");
     std::fs::create_dir_all(&plain).unwrap();
     std::fs::write(plain.join("notes.txt"), "x").unwrap();
-    add_note(SESSION, &plain);
+    noted.note(SESSION, &plain, None);
     rig.confirm();
     rig.pass(T0).await;
     let task = rig.task();

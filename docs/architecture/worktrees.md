@@ -41,11 +41,16 @@ Git's common directory identifies the project and the main checkout, regardless 
 folder. Claude Code subagent worktrees belong to that Git repository; Alondra records paths
 reported by Claude Code and derives background subagent paths from the common directory, or from
 the task's launch folder when the task has no worktree of its own. Before closing or cancelling a
-task, Alondra also reads the notes Claude Code keeps of each isolated subagent of the task's
-sessions (`projects/<folder>/<session>/subagents/agent-<id>.meta.json` in the Claude profile) and
-records each noted worktree that still exists, is a worktree Git lists and no task holds, so a
-worktree whose making the daemon missed is settled under the same rules as the others. Worktrees
-of Claude Code sessions that are not Alondra tasks are never recorded or touched.
+task, Alondra asks each provider which worktrees the sessions of the task's conversations made
+(the provider contract's `SessionWorktrees`) and records each one that still exists, is a worktree
+Git lists and no task holds, so a worktree whose making the daemon missed is settled under the same
+rules as the others. The engine only knows that contract. The Claude adapter answers from the notes
+Claude Code keeps of each isolated subagent
+(`projects/<folder>/<session>/subagents/agent-<id>.meta.json` in the Claude profile). The Codex
+adapter answers with none: Codex makes worktrees only through `--worktree`, its terminal UI's
+worktree tools and its desktop app, and Alondra runs it as `codex app-server`, which offers none of
+them ([Codex worktree crate](https://github.com/openai/codex/tree/main/codex-rs/worktree)).
+Worktrees of sessions that are not Alondra tasks are never recorded or touched.
 
 ## Availability and admission
 
