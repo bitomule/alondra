@@ -1632,6 +1632,24 @@ pub(super) fn add_task_pr_columns(tx: &rusqlite::Transaction<'_>) -> rusqlite::R
     }
     Ok(())
 }
+/// Alondra once took every pull request address a `gh pr create` command printed as a PR its task
+/// opened, so a fixture's address in a test run's output became a PR to read from GitHub, and one
+/// GitHub could not read held every delivery of its task. Once, every PR noted for a task that is
+/// not a registered PR of that task is dropped; the open PR of a task's branch is noted again from
+/// GitHub at its next final delivery.
+pub(super) fn drop_pr_notes_read_from_output(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    let done = tx.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='pr_notes_from_github'", [], |row| row.get::<_, i64>(0))? == 1;
+    if done {
+        return Ok(());
+    }
+    tx.execute_batch(
+        "UPDATE task_relations SET opened_prs=(SELECT json_group_array(json(noted.value)) FROM json_each(task_relations.opened_prs) noted
+           WHERE EXISTS(SELECT 1 FROM pull_requests p WHERE p.task_id=task_relations.task_id AND p.host=json_extract(noted.value,'$.host')
+             AND p.repository=json_extract(noted.value,'$.repository') AND p.number=json_extract(noted.value,'$.number')))
+         WHERE opened_prs<>'[]';
+         CREATE TABLE pr_notes_from_github(singleton INTEGER PRIMARY KEY CHECK(singleton=1));",
+    )
+}
 /// A task may own several PRs. SQLite keeps a column's UNIQUE for good, so the table is made again
 /// with its rows, its triggers and its indexes; the other tables' references to it wait for the
 /// rows to be back, at the end of this transaction.

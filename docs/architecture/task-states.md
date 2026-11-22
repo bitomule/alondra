@@ -31,6 +31,13 @@ deadlines that each say why they exist, and tests that prove no task is left sta
 Precedence, first match wins: ended; a card of yours the inbox lists; a live turn or work; your
 pause; a standing delivery; waiting, with its reason. `Waiting` without a reason cannot be built.
 
+Every task that has not ended is in exactly one block of the Tasks list, and it never depends on its
+request: `task_bucket` in `crates/views/src/tasks.rs` puts an open task in the active list whether its
+request is closed, cleared or missing, and a request is closed or cleared only while none of its tasks
+is open (the domain reopens it when one starts again). Only an ended task leaves the active list.
+`every_open_task_is_in_exactly_one_block_whatever_its_request_says` enumerates every task state against
+every request flag.
+
 `Situation` in `crates/core` is that state, computed once from the lifecycle. Labels, blocks,
 counters, the Live Activity and the gate's slots all read it; clients never compute a state.
 

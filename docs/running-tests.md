@@ -109,7 +109,10 @@ materialized locally.
   `engine-doubles/src/sdk.rs` for what the SDK asks the engine. That double fails a question it
   does not answer with the name of the question. A test that needs the real Node or Codex host, or a fake native
   Claude's scripted behaviour the model does not play, goes under the feature `real-hosts`, which
-  only `//crates/engine-sdk:engine_sdk_host_test` compiles. What the model plays is kept honest by
+  only `//crates/engine-sdk:engine_sdk_host_test` compiles; one that passes on the model is
+  `#[cfg(not(feature = "real-hosts"))]`, so it runs once, in `engine_sdk_engine_test`. The owner's
+  slice gets its hosts from the crate that compiles it (`crate::engine_tests::SliceHosts`). What the
+  model plays is kept honest by
   the behaviour cases of `provider-claude/src/host_cases/`, which `sdk_worker_test` runs on the real
   host and `claude_host_model_test` on the model.
 
@@ -355,7 +358,10 @@ a Mac. The world decides what the provider answers:
   so the runner waits for calm after a virtual second only when one of them fell inside it
   (`clock::deadline_within`, asked before the advance); a second that can wake nobody needs no wait.
 - `bazel run //crates/scenarios:accept -- <case>...` writes what the checkpoints read into each
-  case's folder; the pull request shows that diff for a reviewer to read.
+  case's folder; the pull request shows that diff for a reviewer to read. `bazel run` has no test
+  wrapper, so `accept` makes its own short folder under `/tmp` (unless `ALONDRA_SHORT_TMPDIR`
+  already names one), exports it for the runner, and removes it when it ends. `ablate` runs
+  `bazelisk test`, which goes through the wrapper.
 - `bazel run //crates/scenarios:ablate -- <case> --revert <file>...` runs only that case without
   the fix (those files as they were on the base of the branch) and with it, and prints the block
   the pull request shows.

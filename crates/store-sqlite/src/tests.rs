@@ -125,6 +125,52 @@ fn feedback_targets_roundtrip_and_older_databases_default_to_the_whole_delivery(
     store.integrity_check().unwrap();
 }
 
+/// A database from before Alondra stopped reading `gh pr create`'s output holds a fixture's PR a
+/// test run printed, noted as the task's: GitHub cannot read it, and every delivery of the task was
+/// turned down while it waited. Opening the database once drops it and keeps the registered PR
+/// waiting on its read; the task delivers its real PR, and a note made afterwards outlives restarts.
+#[test]
+fn a_pr_noted_from_a_commands_output_is_dropped_once_and_the_real_pr_is_delivered() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let pr = alondra_domain_rules::hosted_pr_id("github.com", "acme/widgets", 7);
+    let head = "1".repeat(40);
+    execute(&mut store, &agent(), "register", Command::RegisterPr {
+        task_id: "task-1".into(), pr_id: pr.clone(), host: "github.com".into(), repository: "acme/widgets".into(), number: 7,
+        head: head.clone(), base: "main".into(), allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
+    });
+    execute(&mut store, &Actor::System, "fixture-pr", Command::NotePrOpened {
+        task_id: "task-1".into(), host: "github.com".into(), repository: "acme/app".into(), number: 12,
+    });
+    execute(&mut store, &Actor::System, "closed", Command::NotePrChanges { task_id: "task-1".into() });
+    let noted = |store: &mut DomainStore| store.load().unwrap().tasks[&"task-1".into()].opened_prs.iter()
+        .map(|pr| format!("{}#{}", pr.repository, pr.number)).collect::<Vec<_>>();
+    assert_eq!(noted(&mut store), ["acme/app#12", "acme/widgets#7"]);
+    store.conn.execute_batch("DROP TABLE pr_notes_from_github;").unwrap();
+    drop(store);
+
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(noted(&mut store), ["acme/widgets#7"], "only the registered PR still waits on GitHub");
+    execute(&mut store, &Actor::System, "read", Command::RecordOpenedPr {
+        task_id: "task-1".into(), host: "github.com".into(), repository: "acme/widgets".into(), number: 7, head: head.clone(),
+        base: "main".into(), state: alondra_domain_rules::PrState::Open, merged_head: None, allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
+    });
+    execute(&mut store, &agent(), "present", Command::PresentResult {
+        checklist: vec![], task_id: "task-1".into(), interaction_id: "delivery-1".into(), body: "Review the change".into(),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: pr, head }], is_final: true, nothing_to_review: false, attachments: vec![],
+        card: alondra_domain_rules::CardSpec::delivery("Review the change", &[], true),
+    });
+    assert!(store.load().unwrap().tasks[&"task-1".into()].final_presentation.is_some());
+
+    execute(&mut store, &Actor::System, "branch-pr", Command::NotePrOpened {
+        task_id: "task-1".into(), host: "github.com".into(), repository: "acme/site".into(), number: 3,
+    });
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(noted(&mut store), ["acme/site#3"], "the cleanup runs once");
+}
+
 fn count(store: &DomainStore, table: &str) -> i64 {
     store
         .conn

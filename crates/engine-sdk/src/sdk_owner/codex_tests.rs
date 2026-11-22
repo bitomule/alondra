@@ -1621,7 +1621,7 @@ fn a_test_process_holding_a_codex_host() {
     let slice = Slice::new();
     configured(&slice, "complete");
     let driver = launch(&slice);
-    println!("\nholding {} {}", driver.worker.host_group().unwrap(), slice._state.display());
+    println!("\nholding {} {}", driver.worker.host_group().unwrap(), slice.hosts.root.display());
     loop {
         std::thread::park();
     }

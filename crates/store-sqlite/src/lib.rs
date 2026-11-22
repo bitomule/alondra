@@ -718,6 +718,7 @@ impl DomainStore {
         refresh_schema_object(&tx, "view", "events", EVENTS_VIEW)?;
         retention::upgrade(&tx)?;
         pr_adoption::upgrade(&tx)?;
+        repository::drop_pr_notes_read_from_output(&tx)?;
         if version != 0 {
             refresh_schema_object(&tx, "trigger", "schedule_launch_transition", SCHEDULE_LAUNCH_TRANSITION)?;
         }

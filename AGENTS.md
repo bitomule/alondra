@@ -63,8 +63,8 @@ or in the private repository that keeps it, never here.
   the checks whose `paths` a change touches (`MUSTS.yml`); a change that only touches prose or images
   no test loads must leave it empty, otherwise a `paths` entry is wrong: fix `MUSTS.yml`.
   Iterate with `bazelisk test <target>`, then `musts run` once when the change is done, never right
-  after a `bazelisk test` of the same tree. Commit `.musts/ledger.lock.yaml` and any
-  `MODULE.bazel.lock` change with the code.
+  after a `bazelisk test` of the same tree. Commit `.musts/ledger/` (one file per check, `musts` 0.10.1 or later
+  migrates the old `ledger.lock.yaml` itself) and any `MODULE.bazel.lock` change with the code.
 - **Iterating on a failure: run the test, not the binary.** Pass the test's name or module path to
   the test binary, `bazelisk test //crates/daemon-engine:daemon_engine_test --test_arg=domain_merges::`
   (several `--test_arg` filters are allowed), instead of the whole target. Each crate has one test

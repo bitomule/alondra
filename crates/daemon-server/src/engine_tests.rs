@@ -28,6 +28,7 @@ pub(crate) mod engine_assembly;
 #[path = "../../engine-sdk/src/engine_fixtures.rs"]
 pub(crate) mod engine_fixtures;
 pub(crate) use engine_fixtures::owner::SdkLaunches;
+pub(crate) use engine_fixtures::owner::ProcessHosts as SliceHosts;
 
 /// Opens every runtime the engine's fixtures open on this thread as the daemon does, with the gate
 /// of a test.

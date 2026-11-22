@@ -391,7 +391,8 @@ pub enum Command {
         base: String,
         allowed_methods: Vec<MergeMethod>,
     },
-    /// A node of the task was seen opening this PR: Alondra keeps it until GitHub says what it is.
+    /// GitHub has this PR open for the branch of one of the task's worktrees: Alondra keeps it
+    /// until GitHub says what it is. A command's text or output never notes a PR.
     NotePrOpened {
         task_id: TaskId,
         host: String,
@@ -402,7 +403,7 @@ pub enum Command {
     NotePrChanges {
         task_id: TaskId,
     },
-    /// What GitHub reports of a PR the task's node was seen opening: the PR is now the task's.
+    /// What GitHub reports of a PR noted for the task: the PR is now the task's.
     RecordOpenedPr {
         task_id: TaskId,
         host: String,
@@ -414,7 +415,8 @@ pub enum Command {
         merged_head: Option<String>,
         allowed_methods: Vec<MergeMethod>,
     },
-    /// A node ran `gh pr create` and its output named no PR: only the node can say which it was.
+    /// Kept so the commands already recorded still read: nothing sends it, and it changes nothing,
+    /// since running `gh pr create` no longer tells Alondra anything about a task's PRs.
     AskToRegisterPr {
         task_id: TaskId,
     },

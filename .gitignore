@@ -17,7 +17,7 @@ signing/signing.bzl
 __pycache__/
 
 
-# musts: per-machine state; MUSTS.yml and .musts/ledger.lock.yaml stay tracked
+# musts: per-machine state; MUSTS.yml and .musts/ledger/ stay tracked
 .musts/state.sqlite
 .musts/state.sqlite-*
 .musts/.lock*

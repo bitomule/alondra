@@ -2834,7 +2834,7 @@ impl Drop for Owner {
 
 #[cfg(all(test, feature = "whole-engine"))]
 pub use crate::engine_fixtures::owner as fixtures;
-#[cfg(all(test, feature = "real-hosts"))]
+#[cfg(all(test, feature = "whole-engine"))]
 #[path = "sdk_owner/tests.rs"]
 mod tests;
 
@@ -3186,5 +3186,5 @@ impl alondra_engine_ports::hosts::SdkHosts for Hosts {
     }
 }
 
-#[cfg(all(test, feature = "real-hosts"))]
+#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
 mod pause_tests;

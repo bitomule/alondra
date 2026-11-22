@@ -427,12 +427,11 @@ fn prs_missing_from_delivery(prs: &[&PullRequest]) -> String {
     format!("{names} open in this task: a text result cannot be merged. Present them in the final delivery with targets [{{\"kind\":\"pull_request\"}}], which takes every open PR of the task: the user reviews and merges each on its own card")
 }
 fn opened_pr_unread(pr: &OpenedPr) -> String {
-    format!("Alondra is still reading {}#{} from GitHub, which this task opened: nothing was presented. Send the same result again in a moment", pr.repository, pr.number)
+    format!("Alondra is still reading {}#{} from GitHub, a PR of this task: nothing was presented. Send the same result again in a moment", pr.repository, pr.number)
 }
 fn opened_pr_after_delivery(repository: &str, number: u64) -> String {
     format!("{repository}#{number} is now part of this task. Your last delivery does not carry it: present the final result again with targets [{{\"kind\":\"pull_request\"}}], which takes every open PR of the task.")
 }
-const OPENED_PR_NOT_NAMED: &str = "You ran gh pr create and its output named no pull request, so Alondra does not know which it is. If it opened one, register it with register_pr.";
 pub fn merged_notice(number: u64, left: usize) -> String {
     match left {
         0 => format!("Pull request #{number} is merged; no pull request of this task is left to merge."),
@@ -1304,6 +1303,18 @@ impl DomainState {
             },
             other => other.clone(),
         }).collect()
+    }
+    /// A Request is closed or cleared only while none of its Tasks is open: a Task that starts again (a reply
+    /// after its merge, a reopening) takes its Request back, so open work never sits under a Request the
+    /// lists consider completed.
+    fn reopen_requests_with_open_tasks(&mut self) {
+        let with_open_task: BTreeSet<&RequestId> = self.tasks.values().filter(|task| !task.over()).map(|task| &task.request_id).collect();
+        for request in self.requests.values_mut().filter(|request| (request.closed || request.cleared) && with_open_task.contains(&request.id)) {
+            request.closed = false;
+            request.withdrawn = false;
+            request.answer = None;
+            request.cleared = false;
+        }
     }
     /// A message to the orchestrator that made tasks is done once the last of them ends: nobody
     /// is left to close it, since `close_request` waits for its tasks.
@@ -3020,6 +3031,7 @@ impl DomainState {
         next.retire_cards_of_ended_tasks(&mut effects)?;
         next.reconcile_snoozed_cards(self, &mut effects);
         next.forget_what_ended_tasks_allowed();
+        next.reopen_requests_with_open_tasks();
         next.close_finished_messages();
         next.close_delivered_plans(self, &mut created, &mut effects)?;
         let ended_before = self.open_requests_with_every_task_over();
@@ -4843,9 +4855,6 @@ impl DomainState {
             Command::AskToRegisterPr { task_id } => {
                 system(actor)?;
                 self.task(task_id)?;
-                if self.active(task_id).is_ok() {
-                    self.notify(task_id, None, OPENED_PR_NOT_NAMED, effects)?;
-                }
             }
             Command::LinkInteractionSubject {
                 interaction_id,

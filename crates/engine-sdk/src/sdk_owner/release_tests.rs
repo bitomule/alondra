@@ -6,6 +6,7 @@ use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use crate::contexts::ContextsOf as _;
 use alondra_engine_admission::AdmissionOf as _;
+#[cfg(feature = "real-hosts")]
 use super::codex_tests::{claude_ready, git, request_move, resumed_threads, until_moved};
 use crate::sdk_owner::fixtures::codex::{configured, launch, transcript};
 use super::*;
@@ -95,6 +96,7 @@ fn launch_task(slice: &Slice, task: &str) -> Driver {
 
 // 7 November, 01:15: 39 `claude` and 35 `alondra-host` lived with 2 nodes at work, and the gate held
 // every start for the swap they caused.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn nodes_that_wait_keep_no_process_and_a_restarted_daemon_starts_none() {
     let slice = Slice::new();
@@ -126,6 +128,7 @@ async fn nodes_that_wait_keep_no_process_and_a_restarted_daemon_starts_none() {
 // 7 November, 07:45: 39 nodes worked under a limit of 8, since a resume took no slot, and the memory
 // ran out. A closed node with work waits its turn for a slot, as a state with no card.
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_rests_with_its_host_until_the_wait_passes() {
     let slice = Slice::new();
@@ -139,6 +142,7 @@ async fn a_node_rests_with_its_host_until_the_wait_passes() {
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn work_for_a_closed_node_resumes_its_session_with_no_card_and_no_turn_of_its_own() {
     let slice = Slice::new();
@@ -149,7 +153,7 @@ async fn work_for_a_closed_node_resumes_its_session_with_no_card_and_no_turn_of_
     assert_eq!(survivors(&host), Vec::<String>::new());
 
     tell(&slice, TASK, "Now the changelog.").await;
-    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Now the changelog.").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.hosts.capture, "Now the changelog.").await;
 
     let (starts, prompts) = (slice.starts(), slice.prompts());
     slice.domain.stop_sdk_owners();
@@ -161,6 +165,7 @@ async fn work_for_a_closed_node_resumes_its_session_with_no_card_and_no_turn_of_
     assert_eq!(archived_hosts(&slice), Vec::<String>::new(), "a closed host keeps no folder: it told everything before closing");
 }
 
+#[cfg(feature = "real-hosts")]
 fn archived_hosts(slice: &Slice) -> Vec<String> {
     std::fs::read_dir(&slice.backend.state_root).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .filter(|name| name.contains(".ended-")).collect()
@@ -172,6 +177,7 @@ fn archived_hosts(slice: &Slice) -> Vec<String> {
 // the first found that host live and refused, stopped it, could not start its own, and the user got
 // «stopped: Alondra could not resume its session». One takeover of a task runs at a time: the other
 // finds the task owned and the session goes on.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_once_and_asks_nobody() {
     use std::sync::mpsc::channel;
@@ -207,7 +213,7 @@ async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_o
     let lost = open_card(&slice.domain, alondra_domain_rules::HOST_LOST_PREFIX);
     assert!(lost.is_none(), "no card tells the user the session could not be resumed: {lost:?}");
     assert!(slice.domain.owns_sdk_host(&agent), "one host runs the finished task so it can clean up");
-    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Clean up and call cleanup_done.").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.hosts.capture, "Clean up and call cleanup_done.").await;
     let starts = slice.starts();
     slice.domain.stop_sdk_owners();
     assert_eq!(starts.len(), 2, "one host resumed the session: {starts:?}");
@@ -215,6 +221,7 @@ async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_o
 }
 
 // No host to stop: the task ends as one whose host ended, and no Claude starts just to end it.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_closed_node_ends_the_task_without_starting_anything() {
     let slice = Slice::new();
@@ -231,6 +238,7 @@ async fn cancelling_a_closed_node_ends_the_task_without_starting_anything() {
     assert_eq!(slice.domain.node_groups(), Vec::<i32>::new());
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test]
 async fn a_closed_node_moves_to_another_provider_like_a_resting_one() {
     use crate::domain_store::provider_transition::Phase;
@@ -257,6 +265,7 @@ async fn a_closed_node_moves_to_another_provider_like_a_resting_one() {
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_model_chosen_for_a_closed_node_reaches_it_and_stays_when_it_closes_again() {
     let slice = Slice::new();
@@ -274,14 +283,15 @@ async fn a_model_chosen_for_a_closed_node_reaches_it_and_stays_when_it_closes_ag
     look_after_the_wait(&slice.domain);
     until_released(&slice.domain, &[TASK]).await;
     tell(&slice, TASK, "Go on.").await;
-    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Go on.").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.hosts.capture, "Go on.").await;
     slice.domain.stop_sdk_owners();
-    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.hosts.capture).unwrap()).unwrap();
     assert!(capture["args"].as_array().unwrap().iter().any(|arg| arg == "--model=sonnet"), "the host that resumes opens with the model chosen: {capture}");
 }
 
 // The input committed after the owner decided, while its host ended: the release is refused, and
 // the task is taken over as after any host that ended.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_input_that_arrives_while_the_host_closes_reaches_the_host_that_replaces_it() {
     let slice = Slice::new();
@@ -301,6 +311,7 @@ fn an_input_that_arrives_while_the_host_closes_reaches_the_host_that_replaces_it
     replacement.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_whose_own_work_runs_after_its_turn_keeps_its_host() {
     let slice = Slice::new();
@@ -313,6 +324,7 @@ async fn a_node_whose_own_work_runs_after_its_turn_keeps_its_host() {
     drop((commands, host));
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_node_in_plan_mode_keeps_its_host_since_a_resumed_session_opens_out_of_it() {
     let slice = Slice::new();
@@ -324,6 +336,7 @@ fn a_node_in_plan_mode_keeps_its_host_since_a_resumed_session_opens_out_of_it() 
     driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_node_with_work_owed_after_its_merge_keeps_its_host() {
     let slice = Slice::new();
@@ -335,6 +348,7 @@ fn a_node_with_work_owed_after_its_merge_keeps_its_host() {
     driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_node_resting_on_a_pause_closes_its_host_like_any_resting_node() {
     let slice = Slice::new();
@@ -351,6 +365,7 @@ fn a_node_resting_on_a_pause_closes_its_host_like_any_resting_node() {
 // all, since a paused node never closed its host. What it goes on with waits in its task for the
 // pause's end, so its host closes as a resting node's does, and resuming it resumes the same
 // session in a new host, told what it goes on with.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_the_user_paused_closes_its_host_and_its_resume_goes_on_with_the_same_session() {
     let slice = Slice::new();
@@ -367,7 +382,7 @@ async fn a_node_the_user_paused_closes_its_host_and_its_resume_goes_on_with_the_
     assert!(slice.domain.admission().resume_now(&*slice.domain, &agent.0, alondra_core::now_millis()));
     gate_look(&slice).await;
     gate_look(&slice).await;
-    until_last_prompt_ends_with(&slice.domain, &slice.capture, "run again what was cut.").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.hosts.capture, "run again what was cut.").await;
     let starts = slice.starts();
     slice.domain.stop_sdk_owners();
     assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session goes on: {starts:?}");
@@ -376,6 +391,7 @@ async fn a_node_the_user_paused_closes_its_host_and_its_resume_goes_on_with_the_
 }
 
 // Codex: its thread resumes through `thread/resume`, as Claude's session through `--resume`.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_closed_codex_node_resumes_the_same_thread() {
     let slice = Slice::new();
@@ -400,6 +416,7 @@ async fn a_closed_codex_node_resumes_the_same_thread() {
 }
 
 // Codex reports its own work as a child agent or as a command with a process: neither closes.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_codex_node_with_a_child_agent_keeps_its_host() {
     let slice = Slice::new();
@@ -414,6 +431,7 @@ fn a_codex_node_with_a_child_agent_keeps_its_host() {
     driver.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_codex_node_with_a_command_running_after_its_turn_keeps_its_host() {
     keeps_its_host_while_its_command_runs("blocked_command");
@@ -421,11 +439,13 @@ fn a_codex_node_with_a_command_running_after_its_turn_keeps_its_host() {
 
 // A native exec_command returned a session id and the turn ended while the process lived, as
 // write_stdin confirmed: that session is the node's own work, so its host stays.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_codex_node_whose_exec_session_runs_on_after_its_turn_keeps_its_host() {
     keeps_its_host_while_its_command_runs("session_command");
 }
 
+#[cfg(feature = "real-hosts")]
 fn keeps_its_host_while_its_command_runs(mode: &str) {
     let slice = Slice::new();
     configured(&slice, "complete");
@@ -447,6 +467,7 @@ fn keeps_its_host_while_its_command_runs(mode: &str) {
 }
 
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn resumes_over_the_node_limit_wait_for_capacity_with_no_process_and_no_card() {
     let slice = Slice::new();
@@ -459,7 +480,7 @@ async fn resumes_over_the_node_limit_wait_for_capacity_with_no_process_and_no_ca
     }
     look_after_the_wait(&slice.domain);
     until_released(&slice.domain, &tasks).await;
-    std::fs::write(format!("{}.hold", slice.capture.display()), "").unwrap();
+    std::fs::write(format!("{}.hold", slice.hosts.capture.display()), "").unwrap();
     let limit = |slots| slice.domain.admission().tune(crate::admission::Tuning { spacing: 60_000, limit: Some(crate::admission::Limit::Fixed(slots)) });
     let working = || crate::admission::working_tasks(&*slice.domain, &slice.domain.read().state());
     limit(1);
@@ -487,6 +508,7 @@ async fn resumes_over_the_node_limit_wait_for_capacity_with_no_process_and_no_ca
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_whose_host_closed_while_it_rests_holds_no_capability_until_its_session_goes_on() {
     let slice = Slice::new();
@@ -499,12 +521,13 @@ async fn a_node_whose_host_closed_while_it_rests_holds_no_capability_until_its_s
     let retired = async { while holds(&slice.domain) { tokio::task::yield_now().await } };
     tokio::time::timeout(std::time::Duration::from_secs(60), retired).await.expect("the closed host's capability is retired");
     tell(&slice, TASK, "Now the changelog.").await;
-    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Now the changelog.").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.hosts.capture, "Now the changelog.").await;
     assert!(holds(&slice.domain), "the host that resumes the session is issued a new one");
     slice.domain.stop_sdk_owners();
 }
 
 /// A model selection of Claude's fixture catalog, as a launch records it.
+#[cfg(feature = "real-hosts")]
 fn claude_selection() -> alondra_core::model_selection::TaskSelection {
     use alondra_core::model_selection::*;
     let key = ModelKey { provider: Provider::Claude, model: "claude-fixture".into() };
@@ -518,9 +541,11 @@ fn claude_selection() -> alondra_core::model_selection::TaskSelection {
 
 /// How a resting conversation of `tokens` goes on once told something, its last request made
 /// `ago` milliseconds before: what each native Claude started with, and what the last was told.
+#[cfg(feature = "real-hosts")]
 struct Resumption { session: String, starts: Vec<serde_json::Value>, prompt: String, settings: serde_json::Value }
 
 /// How the host of a resting conversation stands when it is told something.
+#[cfg(feature = "real-hosts")]
 #[derive(Clone, Copy, PartialEq)]
 enum Standing {
     /// It closed, and a host that resumes the session takes its place.
@@ -531,11 +556,13 @@ enum Standing {
     Adopted,
 }
 
+#[cfg(feature = "real-hosts")]
 async fn resumed_after(slice: &mut Slice, tokens: u64, ago: alondra_core::Millis, selected: bool) -> Resumption {
     went_on_after(slice, tokens, ago, selected, Standing::Released).await
 }
 
 /// Where the daemon finds how large the resting conversation is and when its cache expires.
+#[cfg(feature = "real-hosts")]
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
     /// In the reading it kept of the task's last request.
@@ -553,6 +580,7 @@ enum Measured {
     InTranscriptOverEmpty,
 }
 
+#[cfg(feature = "real-hosts")]
 async fn went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_core::Millis, selected: bool, standing: Standing) -> Resumption {
     measured_went_on_after(slice, tokens, ago, selected, standing, Measured::Stored).await
 }
@@ -571,6 +599,7 @@ fn rfc3339(millis: alondra_core::Millis) -> String {
     format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z", rest / 3_600_000, rest / 60_000 % 60, rest / 1_000 % 60, rest % 1_000)
 }
 
+#[cfg(feature = "real-hosts")]
 async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_core::Millis, selected: bool, standing: Standing, measured: Measured) -> Resumption {
     enable(slice);
     claude_ready(slice);
@@ -639,7 +668,7 @@ async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_cor
         loop {
             let open = slice.domain.store.lock_or_exit("the domain store").provider_transition(&task).unwrap().is_some();
             let pending = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].pending_selection.is_some();
-            if !open && !pending && prompts_at(&slice.capture).last().is_some_and(|prompt| prompt.ends_with("Now the changelog.")) { break }
+            if !open && !pending && prompts_at(&slice.hosts.capture).last().is_some_and(|prompt| prompt.ends_with("Now the changelog.")) { break }
             if open {
                 match crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &task).await {
                     Ok(_) => {}
@@ -650,13 +679,14 @@ async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_cor
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), changed.changed()).await;
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(60), goes_on).await.unwrap_or_else(|_| panic!("the message never reached Claude: {:?}", prompts_at(&slice.capture)));
-    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(60), goes_on).await.unwrap_or_else(|_| panic!("the message never reached Claude: {:?}", prompts_at(&slice.hosts.capture)));
+    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.hosts.capture).unwrap()).unwrap();
     let args: Vec<&str> = capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
     let settings = args.iter().position(|arg| *arg == "--settings").map(|at| serde_json::from_str(args[at + 1]).unwrap()).unwrap_or_default();
-    Resumption { session, starts: slice.starts(), prompt: prompts_at(&slice.capture).last().unwrap().clone(), settings }
+    Resumption { session, starts: slice.starts(), prompt: prompts_at(&slice.hosts.capture).last().unwrap().clone(), settings }
 }
 
+#[cfg(feature = "real-hosts")]
 const HOURS_AGO: alondra_core::Millis = 4 * 60 * 60_000;
 
 // 19 November: four nodes came back from a usage limit hours later, each resumed its conversation,
@@ -664,6 +694,7 @@ const HOURS_AGO: alondra_core::Millis = 4 * 60 * 60_000;
 // twice the price of their input. A large conversation whose cache expired goes on in a new session
 // of the same model and account, which carries on from the task's records and finds the whole
 // conversation before it in a file it reads only when it needs to.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_conversation_whose_cache_expired_goes_on_in_a_new_session_that_can_read_the_old_one() {
     let mut slice = Slice::new();
@@ -688,6 +719,7 @@ async fn a_large_conversation_whose_cache_expired_goes_on_in_a_new_session_that_
 // expired came before that session answered with the size of its own, and found the old
 // conversation's reading: it started yet another new session, and each input after it one more.
 // The new session holds a conversation of its own, and goes on with the next input itself.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn the_new_session_that_took_over_a_large_conversation_goes_on_with_the_next_input_itself() {
     let mut slice = Slice::new();
@@ -698,14 +730,14 @@ async fn the_new_session_that_took_over_a_large_conversation_goes_on_with_the_ne
     let mut changed = slice.domain.subscribe();
     let latest = || slice.domain.store.lock_or_exit("the domain store").latest_provider_transition(&task).unwrap().unwrap().plan.id;
     let reached = async {
-        while !prompts_at(&slice.capture).iter().any(|prompt| prompt.ends_with("And the release date.")) && latest() == first {
+        while !prompts_at(&slice.hosts.capture).iter().any(|prompt| prompt.ends_with("And the release date.")) && latest() == first {
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), changed.changed()).await;
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(60), reached).await.unwrap_or_else(|_| panic!("the next input never reached Claude: {:?}", prompts_at(&slice.capture)));
+    tokio::time::timeout(std::time::Duration::from_secs(60), reached).await.unwrap_or_else(|_| panic!("the next input never reached Claude: {:?}", prompts_at(&slice.hosts.capture)));
     slice.domain.stop_sdk_owners();
     assert_eq!(latest(), first, "no other new session was requested");
-    let prompts = prompts_at(&slice.capture);
+    let prompts = prompts_at(&slice.hosts.capture);
     let next = prompts.iter().find(|prompt| prompt.ends_with("And the release date.")).unwrap();
     assert!(!next.contains("Current input:"), "the input went to the session as it is, not in another handoff: {next}");
     assert_eq!(slice.starts().len(), resumed.starts.len(), "no other session started: {:?}", slice.starts());
@@ -716,10 +748,11 @@ async fn the_new_session_that_took_over_a_large_conversation_goes_on_with_the_ne
 // what the handoff could take, and the new session was refused: its conversation resumed and wrote
 // 178,677 tokens to the cache again. The handoff of a new session is a few thousand tokens however
 // large the task's records are.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_task_with_records_of_64000_tokens_still_goes_on_in_a_new_session() {
     let records = "The request, repeated. ".repeat(3 * 64_000 / 23);
-    let mut slice = Slice::with_request_body(HostRoot::new(), "domain.sqlite", &records);
+    let mut slice = Slice::with_request_body(ProcessHosts::default(), "domain.sqlite", &records);
     let resumed = resumed_after(&mut slice, 250_403, HOURS_AGO, true).await;
     slice.domain.stop_sdk_owners();
     let last = resumed.starts.last().unwrap();
@@ -729,6 +762,7 @@ async fn a_task_with_records_of_64000_tokens_still_goes_on_in_a_new_session() {
     assert!(kept.contains(&records), "the complete records are in a file to search");
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_conversation_whose_cache_still_holds_resumes() {
     let mut slice = Slice::new();
@@ -737,6 +771,7 @@ async fn a_large_conversation_whose_cache_still_holds_resumes() {
     assert_eq!(resumed.starts.last().unwrap()["resume"].as_str(), Some(resumed.session.as_str()), "{:?}", resumed.starts);
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_small_conversation_whose_cache_expired_resumes() {
     let mut slice = Slice::new();
@@ -747,6 +782,7 @@ async fn a_small_conversation_whose_cache_expired_resumes() {
 
 // A task with no model recorded cannot say which model a new session would start with: its
 // conversation resumes, as it did before.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_conversation_no_handoff_can_be_prepared_for_resumes() {
     let mut slice = Slice::new();
@@ -760,6 +796,7 @@ async fn a_conversation_no_handoff_can_be_prepared_for_resumes() {
 // and a half after its last request, its first input wrote 458,795 tokens to the prompt cache. The
 // decision that a large conversation whose cache expired goes on in a new session is taken for any
 // input that arrives after the expiry, whether the host was relaunched, adopted or never stopped.
+#[cfg(feature = "real-hosts")]
 async fn goes_on_in_a_new_session(standing: Standing) {
     let mut slice = Slice::new();
     let resumed = went_on_after(&mut slice, 458_795, HOURS_AGO, true, standing).await;
@@ -772,16 +809,19 @@ async fn goes_on_in_a_new_session(standing: Standing) {
     assert!(std::fs::read_to_string(&file).unwrap().contains("large-context"));
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_conversation_whose_live_host_waited_past_its_cache_goes_on_in_a_new_session() {
     goes_on_in_a_new_session(Standing::Live).await;
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_conversation_whose_adopted_host_waited_past_its_cache_goes_on_in_a_new_session() {
     goes_on_in_a_new_session(Standing::Adopted).await;
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_conversation_whose_live_host_is_told_something_before_its_cache_expires_goes_on() {
     let mut slice = Slice::new();
@@ -794,6 +834,7 @@ async fn a_large_conversation_whose_live_host_is_told_something_before_its_cache
 // its conversation, went on in the same session, and its first input wrote 155,628 tokens to the
 // prompt cache. Without a stored reading, the size and the cache's expiry come from the last answer
 // in Claude Code's transcript of the session.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_conversation_with_no_stored_reading_whose_transcript_shows_its_cache_expired_goes_on_in_a_new_session() {
     let mut slice = Slice::new();
@@ -806,6 +847,7 @@ async fn a_large_conversation_with_no_stored_reading_whose_transcript_shows_its_
     assert!(resumed.prompt.contains(&file.display().to_string()) && resumed.prompt.ends_with("Now the changelog."), "{}", resumed.prompt);
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_conversation_with_no_stored_reading_whose_transcript_shows_its_cache_holds_resumes() {
     let mut slice = Slice::new();
@@ -819,6 +861,7 @@ async fn a_large_conversation_with_no_stored_reading_whose_transcript_shows_its_
 // limit, and its answer, which used no tokens, had replaced the reading of the conversation with
 // one of 0 tokens. An answer that used no tokens leaves the reading as it was, and a reading of 0
 // tokens is no reading: the transcript says how large the conversation is.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_conversation_whose_last_request_hit_the_usage_limit_goes_on_in_a_new_session() {
     let mut slice = Slice::new();
@@ -829,6 +872,7 @@ async fn a_large_conversation_whose_last_request_hit_the_usage_limit_goes_on_in_
     assert!(last["resume"].is_null() && last["session"].as_str() != Some(resumed.session.as_str()), "a new session, not the old one going on: {:?}", resumed.starts);
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_conversation_whose_kept_reading_says_no_tokens_goes_on_in_a_new_session() {
     let mut slice = Slice::new();
@@ -839,6 +883,7 @@ async fn a_large_conversation_whose_kept_reading_says_no_tokens_goes_on_in_a_new
     assert!(last["resume"].is_null() && last["session"].as_str() != Some(resumed.session.as_str()), "a new session, not the old one going on: {:?}", resumed.starts);
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_transcript_time_is_written_as_claude_code_writes_it() {
     for at in ["1970-01-01T00:00:00.000Z", "2026-02-28T23:59:59.999Z", "2028-02-29T12:30:05.042Z", "2026-11-20T07:38:00.000Z"] {
