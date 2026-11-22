@@ -13,7 +13,6 @@ alondra-daemon-engine-model.workspace = true
 alondra-daemon-support.workspace = true
 alondra-domain.workspace = true
 alondra-domain-rules.workspace = true
-alondra-engine-kernel.workspace = true
 alondra-process-group.workspace = true
 anyhow.workspace = true
 libc.workspace = true
@@ -23,6 +22,7 @@ tokio.workspace = true
 alondra-view-model.workspace = true
 
 [dev-dependencies]
+alondra-engine-kernel.workspace = true
 alondra-store-sqlite.workspace = true
 alondra-engine-doubles.workspace = true
 proptest.workspace = true

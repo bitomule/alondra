@@ -91,6 +91,23 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
+    /// An answer the phone could not save keeps the detail open with what was written and why.
+    func test_anAnswerThatCouldNotBeSavedKeepsItsTextAndWhy() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.questionID)) {
+            $0.reply = "Only if the title stays on one line"
+            $0.actions.error = "Alondra couldn’t prepare this request."
+        }
+        assertDetail(store)
+    }
+
+    func test_anAnswerThatCouldNotBeSavedKeepsItsTextAndWhy_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.spanishCard(Fixtures.questionID)) {
+            $0.reply = "Solo si el título cabe en una línea"
+            $0.actions.error = "Alondra no ha podido preparar esta petición."
+        }
+        assertDetail(store, language: .spanish)
+    }
+
     func test_aCardFromANewerDaemonAsksToUpdateForWhatItCannotUse() throws {
         assertDetail(ScreenStores.cardDetail(try Fixtures.newerDaemonCard()))
     }

@@ -135,7 +135,7 @@ impl Pushes {
 /// A node mod connected for a session, for tests of what is written down its connection.
 pub mod testing {
     use crate::locks::Poisonable as _;
-    use crate::domain_runtime::DomainRuntime;
+    use alondra_engine_ports::Runtime;
     use crate::live::LiveOf as _;
     use serde_json::Value;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -149,10 +149,10 @@ pub mod testing {
     }
 
     impl Node {
-        pub fn connect(domain: &Arc<DomainRuntime>, session: &str) -> Node {
+        pub fn connect(domain: Arc<dyn Runtime>, session: &str) -> Node {
             let node = Node { lines: Default::default(), silent: Default::default() };
             let mut receiver = domain.live().pushes.attach(session, 1);
-            let (lines, silent, domain, session) = (node.lines.clone(), node.silent.clone(), domain.clone(), session.to_owned());
+            let (lines, silent, session) = (node.lines.clone(), node.silent.clone(), session.to_owned());
             tokio::spawn(async move {
                 while let Some(line) = receiver.recv().await {
                     let line: Value = serde_json::from_str(&line).unwrap();

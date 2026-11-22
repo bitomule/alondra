@@ -1,12 +1,13 @@
 //! The accounts the user registered, as `options.toml` keeps them, and what the engine reads of
 //! them without asking Claude Code.
-use crate::domain_runtime::DomainRuntime;
+use crate::Runtime;
+use crate::sdk_backend::SdkOf as _;
 use alondra_core::accounts::{AccountId, AccountsConfig, Provider};
 use alondra_core::claude_account;
 use std::path::{Path, PathBuf};
 
 /// Whether a session one account started resumes with the other: both read the same conversations.
-pub fn share_sessions(domain: &DomainRuntime, one: &AccountId, other: &AccountId) -> bool {
+pub fn share_sessions(domain: &dyn Runtime, one: &AccountId, other: &AccountId) -> bool {
     let default_profile = domain.sdk().and_then(|(backend, _)| claude_account::configured_profile(&|key: &str| backend.native_environment.get(key).cloned()));
     domain.ports().accounts().shares_sessions(domain.home(), &claude_user_home(domain), default_profile.as_deref(), one, other)
 }
@@ -38,6 +39,6 @@ pub fn profiles(home: &Path) -> Vec<PathBuf> {
 }
 
 /// The HOME the nodes' Claude runs in, whose `~/.claude` the default account is.
-pub fn claude_user_home(domain: &DomainRuntime) -> PathBuf {
+pub fn claude_user_home(domain: &dyn Runtime) -> PathBuf {
     domain.sdk().and_then(|(backend, _)| backend.native_environment.get("HOME").map(PathBuf::from)).unwrap_or_else(crate::options::user_home)
 }

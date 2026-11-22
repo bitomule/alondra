@@ -5,6 +5,8 @@
 //! cancelled task's node has its turn cut. Work it declared after the merge holds the close until
 //! a fact ends it, never a clock. A close that keeps failing ends in a card the user answers.
 //! Nothing is closed while the node waits for the user.
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use crate::blocking_work::blocking;
 use crate::sdk_owner::SdkOwners as _;
 use crate::engine::EngineOf as _;
@@ -12,7 +14,7 @@ use alondra_core::clock;
 use alondra_domain_rules::SystemCard;
 use crate::locks::Poisonable as _;
 use alondra_engine_github::domain_github::execute_system;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::domain_store::TaskClosing;
 use alondra_engine_ports::node_close::{CloseOutcome, Sessions};
 use alondra_engine_ports::worktrees::Unreachable;
@@ -53,7 +55,7 @@ impl Timing {
     }
 }
 
-pub async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing: Timing) {
+pub async fn run(domain: Arc<dyn Runtime>, sessions: Arc<dyn Sessions>, timing: Timing) {
     let mut changed = domain.subscribe();
     let mut backoff = FIRST_BACKOFF;
     match domain.keep_attachments() {
@@ -65,7 +67,7 @@ pub async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing
         Err(error) => log!("could not keep the attachments of old cards: {error:#}"),
     }
     if let Some((backend, _)) = domain.sdk() {
-        match crate::ended_hosts::sweep(&domain, &backend.state_root) {
+        match crate::ended_hosts::sweep(&*domain, &backend.state_root) {
             Ok(0) => {}
             Ok(removed) => log!("deleted the folders of {removed} ended hosts whose task is over or has a later host"),
             Err(error) => log!("could not delete the folders of ended hosts: {error}"),
@@ -77,12 +79,12 @@ pub async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing
     if let Err(error) = domain.engine().sweep_worktree_shells().await {
         log!("could not delete what ended tasks left of their worktrees: {error:#}");
     }
-    match blocking(|| crate::host_folders::sweep(&domain, &|agent| domain.owns_sdk_host(agent))) {
+    match blocking(|| crate::host_folders::sweep(&*domain, &|agent| domain.owns_sdk_host(agent))) {
         0 => {}
         removed => log!("deleted the folders of {removed} hosts that nothing needs any more"),
     }
     loop {
-        let pause = match pass(&domain, sessions.as_ref(), &timing, alondra_core::now_millis()).await {
+        let pause = match pass(&*domain, sessions.as_ref(), &timing, alondra_core::now_millis()).await {
             Ok(()) => {
                 backoff = FIRST_BACKOFF;
                 timing.tick
@@ -128,7 +130,7 @@ fn due(state: &DomainState, task: &Task) -> Option<Due> {
 /// removed and its receipt recorded right after the commit that cancelled it, so the user never
 /// waits for the closer's pass to read it as cancelled. One with a worktree left behind waits for
 /// the closer, which releases worktrees.
-pub(crate) fn settle_unattended(domain: &DomainRuntime, state: &DomainState) {
+pub(crate) fn settle_unattended(domain: &dyn Runtime, state: &DomainState) {
     for task in state.tasks.values().filter(|task| matches!(due(state, task), Some(Due::Unattended))) {
         if task.open_worktrees().next().is_some() {
             continue;
@@ -142,7 +144,7 @@ pub(crate) fn settle_unattended(domain: &DomainRuntime, state: &DomainState) {
             }
         }
         let dequeued = {
-            let mut store = domain.store.lock_or_exit("the domain store");
+            let mut store = domain.store().lock_or_exit("the domain store");
             store.dequeue_launch(&task.id).and_then(|()| store.forget_auto_launch(&task.id))
         };
         if let Err(error) = dequeued {
@@ -157,10 +159,10 @@ pub(crate) fn settle_unattended(domain: &DomainRuntime, state: &DomainState) {
 
 /// Nothing of a task that ends without a node stays behind: not its worktree, not its launch.
 /// The receipt makes the task done or cancelled.
-async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
+async fn finish_unattended(domain: &dyn Runtime, task: &Task) -> Result<()> {
     if task.cancelled() {
         domain.engine().release_cancelled_worktrees(task).await?;
-        if !task.worktrees.is_empty() && !domain.state()?.tasks.get(&task.id).is_some_and(Task::ending) {
+        if !task.worktrees.is_empty() && !domain.state().tasks.get(&task.id).is_some_and(Task::ending) {
             return Ok(());
         }
         return record_unattended(domain, task);
@@ -170,13 +172,13 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
         let list: Vec<String> = left.iter().map(|(path, what)| format!("{path}: {what}")).collect();
         anyhow::bail!("the worktrees of {} hold work that is not saved: {}", task.id, list.join("; "));
     }
-    if !task.worktrees.is_empty() && !domain.state()?.tasks.get(&task.id).is_some_and(Task::ending) {
+    if !task.worktrees.is_empty() && !domain.state().tasks.get(&task.id).is_some_and(Task::ending) {
         return Ok(());
     }
     let dir = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir));
     if let Some(dir) = &dir { domain.engine().worktree_ready(dir).await?; }
     if let Some(dir) = dir.filter(|dir| domain.engine().may_handle_worktree(dir).is_ok() && domain.engine().worktree_heir(task, dir).is_ok_and(|heir| heir.is_none())) {
-        match domain.ports().worktrees().release_finished_worktree(Path::new(&dir), Some(&alondra_engine_ports::worktrees::slug(&task.id.0)), false, domain.state()?.merged_pr(task).is_some()).await {
+        match domain.ports().worktrees().release_finished_worktree(Path::new(&dir), Some(&alondra_engine_ports::worktrees::slug(&task.id.0)), false, domain.state().merged_pr(task).is_some()).await {
             Ok(TaskWorktree::Unsaved(left)) => anyhow::bail!("the worktree of {} has work that is not saved: {left}", task.id),
             Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_view_model::Lang::En)),
             Ok(TaskWorktree::Unavailable(why)) => return Err(Unreachable(why).into()),
@@ -187,9 +189,9 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
     record_unattended(domain, task)
 }
 
-fn record_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
+fn record_unattended(domain: &dyn Runtime, task: &Task) -> Result<()> {
     {
-        let mut store = domain.store.lock_or_exit("the domain store");
+        let mut store = domain.store().lock_or_exit("the domain store");
         store.dequeue_launch(&task.id)?;
         store.forget_auto_launch(&task.id)?;
     }
@@ -201,27 +203,27 @@ fn millis(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
-pub async fn pass(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Timing, now: i64) -> Result<()> {
+pub async fn pass(domain: &dyn Runtime, sessions: &dyn Sessions, timing: &Timing, now: i64) -> Result<()> {
     if let Err(error) = domain.engine().apply_cancelled_worktree_answers().await {
         log!("could not delete the worktrees the user chose to delete: {error:#}");
     }
-    let state = domain.state()?;
+    let state = domain.state();
     let due_tasks: Vec<(TaskId, Due)> = state.tasks.values().filter_map(|task| due(&state, task).map(|kind| (task.id.clone(), kind))).collect();
-    let rows = domain.store.lock_or_exit("the domain store").task_closings()?;
+    let rows = domain.store().lock_or_exit("the domain store").task_closings()?;
     for row in rows.iter().filter(|row| !due_tasks.iter().any(|(id, _)| id == &row.task_id)) {
         if let Some(card) = &row.problem_id {
             let _ = domain.withdraw_problem(&InteractionId(card.clone()));
         }
         forget_post_merge_check(domain, &row.task_id)?;
-        domain.store.lock_or_exit("the domain store").forget_task_closing(&row.task_id)?;
+        domain.store().lock_or_exit("the domain store").forget_task_closing(&row.task_id)?;
     }
     let mut failed = Vec::new();
     for (task_id, kind) in due_tasks {
         if let Err(error) = close_one(domain, sessions, timing, now, &task_id, kind).await {
             let reason = format!("{error:#}");
-            let state = domain.state()?;
+            let state = domain.state();
             if let Some(task) = state.tasks.get(&task_id) {
-                let row = domain.store.lock_or_exit("the domain store").begin_task_closing(&task_id, now)?;
+                let row = domain.store().lock_or_exit("the domain store").begin_task_closing(&task_id, now)?;
                 if error.downcast_ref::<Unreachable>().is_some() {
                     wait_for_folder(domain, timing, now, task, row, &reason)?;
                     continue;
@@ -258,13 +260,13 @@ fn card(state: &DomainState, id: &str) -> Card {
 /// Records what became of the node. A task that went back to work while its node was removed is
 /// released like one whose node the user closed, but Alondra starts its next node by itself: what
 /// a relaunch needs is kept, and the changes asked for reach the node that replaces it.
-fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd, agent: Option<&AgentId>) -> Result<()> {
-    let before = domain.state().ok();
+fn record_end(domain: &dyn Runtime, task_id: &TaskId, end: NodeEnd, agent: Option<&AgentId>) -> Result<()> {
+    let before = Some(domain.state());
     let back_to_work = matches!(end, NodeEnd::Closed | NodeEnd::Gone)
         && before.as_ref().and_then(|state| state.tasks.get(task_id)).is_some_and(|task| !task.over() && task.wrap_up.asked_at.is_none());
     if let Err(error) = execute_system(domain, Command::RecordNodeEnd { task_id: task_id.clone(), end, agent_id: agent.cloned() }) {
         if let Some(agent) = agent {
-            let current = domain.state()?;
+            let current = domain.state();
             // The old node's receipt no longer belongs to a task another node took over.
             if current.tasks.get(task_id).is_some_and(|task| task.agent_id.as_ref() != Some(agent)) {
                 return Ok(());
@@ -281,13 +283,13 @@ fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd, agent: Opt
     Ok(())
 }
 
-fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, end: NodeEnd) -> Result<()> {
+fn finish(domain: &dyn Runtime, row: &TaskClosing, agent: Option<&AgentId>, end: NodeEnd) -> Result<()> {
     if let Some(agent) = agent {
         domain.engine().set_close_interrupted(&agent.0, None);
     }
     record_end(domain, &row.task_id, end, agent)?;
     forget_post_merge_check(domain, &row.task_id)?;
-    if domain.state()?.tasks.get(&row.task_id).is_some_and(Task::over) {
+    if domain.state().tasks.get(&row.task_id).is_some_and(Task::over) {
         if let Err(error) = crate::files_retention::remove_task_scratch(domain.home(), &row.task_id.0) {
             log!("could not remove the scratch files of {}: {error}", row.task_id);
         }
@@ -296,18 +298,18 @@ fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, en
     if let Some(card) = &row.problem_id {
         let _ = domain.withdraw_problem(&InteractionId(card.clone()));
     }
-    domain.store.lock_or_exit("the domain store").forget_task_closing(&row.task_id)?;
+    domain.store().lock_or_exit("the domain store").forget_task_closing(&row.task_id)?;
     Ok(())
 }
 
-async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Timing, now: i64, task_id: &TaskId, kind: Due) -> Result<()> {
-    let state = domain.state()?;
+async fn close_one(domain: &dyn Runtime, sessions: &dyn Sessions, timing: &Timing, now: i64, task_id: &TaskId, kind: Due) -> Result<()> {
+    let state = domain.state();
     if state.tasks.get(task_id).is_some_and(|task| !state.closing_recovery_cards(task).is_empty()) {
         execute_system(domain, Command::ReconcileRecoveryCards { task_id: task_id.clone() })?;
     }
-    let state = domain.state()?;
+    let state = domain.state();
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
-    let mut row = domain.store.lock_or_exit("the domain store").begin_task_closing(task_id, now)?;
+    let mut row = domain.store().lock_or_exit("the domain store").begin_task_closing(task_id, now)?;
     if matches!(kind, Due::Cleanup) && !task.cancelled()
         && task.ending != Some(alondra_domain_rules::TaskEnding::Cancelling)
         && !state.unproved_checklist(task).is_empty()
@@ -330,7 +332,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
                 row.failures = 0;
                 row.problem_id = None;
                 row.next_attempt = 0;
-                domain.store.lock_or_exit("the domain store").save_task_closing(&row)?;
+                domain.store().lock_or_exit("the domain store").save_task_closing(&row)?;
             }
             Card::Unanswered => return Ok(()),
         }
@@ -341,7 +343,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     }
     if matches!(kind, Due::Unattended) {
         finish_unattended(domain, task).await?;
-        domain.store.lock_or_exit("the domain store").forget_task_closing(task_id)?;
+        domain.store().lock_or_exit("the domain store").forget_task_closing(task_id)?;
         return Ok(());
     }
     let Some(agent) = task.agent_id.clone() else {
@@ -402,7 +404,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     if !domain.engine().begin_watch(&agent.0) {
         return Ok(());
     }
-    match domain.store.lock_or_exit("the domain store").claim_task_removal(task_id, now) {
+    match domain.store().lock_or_exit("the domain store").claim_task_removal(task_id, now) {
         Ok(true) => {}
         claimed => {
             domain.engine().end_watch(&agent.0);
@@ -412,7 +414,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     }
     let interrupted = row.rm_started_at.is_some();
     row.rm_started_at = Some(now);
-    let saved = domain.store.lock_or_exit("the domain store").save_task_closing(&row);
+    let saved = domain.store().lock_or_exit("the domain store").save_task_closing(&row);
     let outcome = match saved {
         Ok(()) => domain.engine().close_node(sessions, &agent, false).await,
         Err(error) => Err(error),
@@ -422,7 +424,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         Ok(outcome) => outcome,
         Err(error) => {
             row.rm_started_at = None;
-            domain.store.lock_or_exit("the domain store").save_task_closing(&row)?;
+            domain.store().lock_or_exit("the domain store").save_task_closing(&row)?;
             return Err(error);
         }
     };
@@ -458,7 +460,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
 /// more is ended where it is, and its Claude session is never resumed.
 #[allow(clippy::too_many_arguments)]
 async fn close_sdk_node(
-    domain: &DomainRuntime, timing: &Timing, now: i64, state: &DomainState, task: &Task, agent: &AgentId, kind: Due,
+    domain: &dyn Runtime, timing: &Timing, now: i64, state: &DomainState, task: &Task, agent: &AgentId, kind: Due,
     row: TaskClosing, owned: bool,
 ) -> Result<()> {
     let cleanup = matches!(kind, Due::Cleanup);
@@ -508,7 +510,7 @@ async fn close_sdk_node(
         return hold_for_worktrees(domain, timing, now, task, agent, row, &left, cleanup);
     }
     forget_post_merge_check(domain, &task.id)?;
-    if !domain.store.lock_or_exit("the domain store").claim_task_removal(&task.id, now)? {
+    if !domain.store().lock_or_exit("the domain store").claim_task_removal(&task.id, now)? {
         return Ok(());
     }
     if !owned {
@@ -532,7 +534,7 @@ async fn close_sdk_node(
 
 /// Ends the host no owner of this daemon holds, without resuming its session, once it was ever
 /// started: one that never was has nothing to end.
-fn end_unowned_host(domain: &DomainRuntime, task: &Task) -> Result<(), String> {
+fn end_unowned_host(domain: &dyn Runtime, task: &Task) -> Result<(), String> {
     let Some((backend, runtime)) = domain.sdk() else { return Ok(()) };
     if !crate::sdk_owner::host_started(backend, domain, &task.id) {
         return Ok(());
@@ -546,7 +548,7 @@ fn end_unowned_host(domain: &DomainRuntime, task: &Task) -> Result<(), String> {
 /// facts of its end in its journal, which are committed, and a host that resumes the same Claude
 /// session takes its place, so the node can still be told to settle its worktrees. Nothing is
 /// guessed about a host this daemon cannot see.
-fn take_over(domain: &DomainRuntime, task: &Task) -> Result<(), String> {
+fn take_over(domain: &dyn Runtime, task: &Task) -> Result<(), String> {
     let (backend, runtime) = domain.sdk().ok_or("this daemon runs no Agent SDK host")?;
     let backend = backend.clone();
     let plugin = domain.ports().plugins().node(domain.home());
@@ -570,7 +572,7 @@ fn sdk_working(state: &DomainState, task: &Task) -> bool {
 /// the domain would refuse the end of the node: a task that stays open keeps its folder.
 #[allow(clippy::too_many_arguments)]
 async fn finish_with_worktree(
-    domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, cleanup: bool, end: NodeEnd,
+    domain: &dyn Runtime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, cleanup: bool, end: NodeEnd,
 ) -> Result<()> {
     if task.cancelled() {
         domain.engine().release_cancelled_worktrees(task).await?;
@@ -590,7 +592,7 @@ async fn finish_with_worktree(
     let Some(dir) = dir.filter(|dir| domain.engine().may_handle_worktree(dir).is_ok() && domain.engine().worktree_heir(task, dir).is_ok_and(|heir| heir.is_none())) else {
         return finish(domain, &row, Some(agent), end);
     };
-    match domain.ports().worktrees().release_finished_worktree(Path::new(&dir), Some(&alondra_engine_ports::worktrees::slug(&task.id.0)), false, domain.state()?.merged_pr(task).is_some()).await {
+    match domain.ports().worktrees().release_finished_worktree(Path::new(&dir), Some(&alondra_engine_ports::worktrees::slug(&task.id.0)), false, domain.state().merged_pr(task).is_some()).await {
         Ok(TaskWorktree::Unsaved(left)) => {
             let reason = format!("its session is closed, but its worktree has work that is not saved: {left}");
             failure(domain, timing, now, task, agent, row, &reason, (CloseStop::Unsaved, &left), cleanup)
@@ -608,8 +610,8 @@ async fn finish_with_worktree(
 
 /// Why the domain would refuse to record `end` for the node of `task` once its worktrees are
 /// released, found on a copy of the state, before anything is deleted.
-fn refused_end(domain: &DomainRuntime, task: &Task, agent: &AgentId, end: NodeEnd) -> Option<String> {
-    let mut probe = domain.state().ok()?.as_ref().clone();
+fn refused_end(domain: &dyn Runtime, task: &Task, agent: &AgentId, end: NodeEnd) -> Option<String> {
+    let mut probe = domain.state().as_ref().clone();
     for worktree in probe.tasks.get_mut(&task.id)?.worktrees.values_mut().filter(|worktree| worktree.end.is_none()) {
         worktree.end = Some(alondra_domain_rules::WorktreeEnd::Removed);
     }
@@ -623,36 +625,36 @@ fn refused_end(domain: &DomainRuntime, task: &Task, agent: &AgentId, end: NodeEn
 
 /// A check an earlier daemon kept on the work after the merge, with the card it may have raised:
 /// gone, as no clock asks about that work any more.
-fn forget_post_merge_check(domain: &DomainRuntime, task_id: &TaskId) -> Result<()> {
-    let check = domain.store.lock_or_exit("the domain store").post_merge_check(task_id)?;
+fn forget_post_merge_check(domain: &dyn Runtime, task_id: &TaskId) -> Result<()> {
+    let check = domain.store().lock_or_exit("the domain store").post_merge_check(task_id)?;
     let Some(check) = check else { return Ok(()) };
     if let Some(card) = &check.problem_id {
         let _ = domain.withdraw_problem(&InteractionId(card.clone()));
     }
-    domain.store.lock_or_exit("the domain store").forget_post_merge_check(task_id)
+    domain.store().lock_or_exit("the domain store").forget_post_merge_check(task_id)
 }
 
 /// The node said it still works on something after the merge: its margin starts over from now
 /// on every pass, so it runs again in full once the node says it is done.
-fn hold_while_working_after_merge(domain: &DomainRuntime, now: i64, mut row: TaskClosing) -> Result<()> {
+fn hold_while_working_after_merge(domain: &dyn Runtime, now: i64, mut row: TaskClosing) -> Result<()> {
     row.since = now;
     row.ready_since = None;
     row.failures = 0;
     row.last_error = None;
     row.next_attempt = 0;
-    domain.store.lock_or_exit("the domain store").save_task_closing(&row)
+    domain.store().lock_or_exit("the domain store").save_task_closing(&row)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn failure(
-    domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, reason: &str,
+    domain: &dyn Runtime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, reason: &str,
     (stop, detail): (CloseStop, &str), cleanup: bool,
 ) -> Result<()> {
     let told = already_told(&row, task, reason);
     let row = retry_later(timing, now, task, row, reason);
     if cleanup && !told {
         let text = close_failed_text(reason, &task.id, timing.retry.as_secs() / 60);
-        if let Ok(state) = domain.state() {
+        { let state = domain.state();
             tell_node(domain, &state, task, agent, &text);
         }
     }
@@ -676,43 +678,43 @@ fn retry_later(timing: &Timing, now: i64, task: &Task, mut row: TaskClosing, rea
 
 /// A worktree of the task is out of reach, as on a volume that is not mounted: the close waits for
 /// it without counting a failure, so no card is raised, and tries again later.
-fn wait_for_folder(domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, mut row: TaskClosing, reason: &str) -> Result<()> {
+fn wait_for_folder(domain: &dyn Runtime, timing: &Timing, now: i64, task: &Task, mut row: TaskClosing, reason: &str) -> Result<()> {
     log!("{reason}");
     row.last_error = Some(reason.to_owned());
     row.next_attempt = now + millis(timing.retry);
     row.attempted_cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
     row.rm_started_at = None;
-    domain.store.lock_or_exit("the domain store").save_task_closing(&row)
+    domain.store().lock_or_exit("the domain store").save_task_closing(&row)
 }
 
 /// The task cannot close while one of its worktrees holds work no remote has: its node, which
 /// keeps running, is told which and how to settle each, and the close is tried again later.
 #[allow(clippy::too_many_arguments)]
 fn hold_for_worktrees(
-    domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, left: &[(String, String)], cleanup: bool,
+    domain: &dyn Runtime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, left: &[(String, String)], cleanup: bool,
 ) -> Result<()> {
     let detail: Vec<String> = left.iter().map(|(path, what)| format!("{path}: {what}")).collect();
     let reason = format!("worktrees of the task hold work that is not saved: {}", detail.join("; "));
     let told = already_told(&row, task, &reason);
     let row = retry_later(timing, now, task, row, &reason);
     if !told {
-        let state = domain.state()?;
+        let state = domain.state();
         tell_node(domain, &state, task, agent, &alondra_engine_ports::worktrees::settle_text(&task.id, left));
     }
     count_failure(domain, task, row, CloseStop::Unsaved, &detail.join("\n"), cleanup)
 }
 
-fn count_failure(domain: &DomainRuntime, task: &Task, mut row: TaskClosing, stop: CloseStop, detail: &str, cleanup: bool) -> Result<()> {
+fn count_failure(domain: &dyn Runtime, task: &Task, mut row: TaskClosing, stop: CloseStop, detail: &str, cleanup: bool) -> Result<()> {
     if row.failures >= MAX_FAILURES && row.problem_id.is_none() {
         row.problem_id = raise_card(domain, task, stop, detail, cleanup);
     }
-    domain.store.lock_or_exit("the domain store").save_task_closing(&row)?;
+    domain.store().lock_or_exit("the domain store").save_task_closing(&row)?;
     Ok(())
 }
 
 /// Tells the task's node `text`: through its lifecycle when it runs through the Agent SDK, down
 /// its connection otherwise.
-fn tell_node(domain: &DomainRuntime, state: &DomainState, task: &Task, agent: &AgentId, text: &str) {
+fn tell_node(domain: &dyn Runtime, state: &DomainState, task: &Task, agent: &AgentId, text: &str) {
     if crate::sdk_owner::runs_through_sdk(state, agent) {
         let id = format!("closer-{}-{}", task.id, crate::auth::random_hex(8));
         if let Err(error) = domain.engine().tell_node(&task.id, text, &id) {
@@ -735,7 +737,7 @@ orchestrator about it (ask with recipient orchestrator). Then call cleanup_done 
     )
 }
 
-fn raise_card(domain: &DomainRuntime, task: &Task, stop: CloseStop, detail: &str, cleanup: bool) -> Option<String> {
+fn raise_card(domain: &dyn Runtime, task: &Task, stop: CloseStop, detail: &str, cleanup: bool) -> Option<String> {
     let id = format!("{CLOSE_PROBLEM_PREFIX}{}-{}", task.id, crate::auth::random_hex(6));
     let scope = if cleanup {
         Scope::Task { task_id: task.id.clone() }
@@ -761,7 +763,7 @@ mod tests;
 pub struct Unattended;
 
 impl crate::domain_runtime::CommitObserver for Unattended {
-    fn changed(&self, domain: &DomainRuntime, state: &DomainState) {
+    fn changed(&self, domain: &dyn Runtime, state: &DomainState) {
         settle_unattended(domain, state);
     }
 }

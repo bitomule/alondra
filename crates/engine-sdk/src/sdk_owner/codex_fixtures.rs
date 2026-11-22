@@ -55,7 +55,7 @@ pub fn launch(slice: &Slice) -> Driver { launch_selected(slice, selection()) }
 pub fn launch_selected(slice: &Slice, selected: alondra_core::model_selection::TaskSelection) -> Driver {
     let effective = selected.effective.as_ref().unwrap();
     let options = LaunchOptions { provider: Provider::Codex, model: Some(effective.model.model.clone()), effort: effective.reasoning_effort.clone(), selection: Some(selected), ..LaunchOptions::default() };
-    let mut driver = start(Arc::clone(&slice.domain), &slice.backend, Launch {
+    let mut driver = start(slice.domain.clone(), &slice.backend, Launch {
         task: TASK.into(), name: "Codex release notes".into(), directory: slice.worktree.display().to_string(),
         prompt: "Write the release notes through Codex".into(), plugin: slice.plugin.clone(),
         options,

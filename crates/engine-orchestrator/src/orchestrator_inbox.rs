@@ -432,7 +432,7 @@ pub fn settle_overdue(domain: &DomainRuntime, now: Millis) {
 /// The command that carries out `step`, for the steps one command settles.
 pub fn command_of(step: &Step) -> Option<Command> {
     Some(match step {
-        Step::Tell { id, card, text } | Step::Remind { id, card, text, .. } => crate::domain_runtime::problems::tell_command(id, Some(card.clone()), text.clone()),
+        Step::Tell { id, card, text } | Step::Remind { id, card, text, .. } => alondra_engine_ports::runtime::tell_command(id, Some(card.clone()), text.clone()),
         Step::Withdraw { question } => Command::Withdraw { interaction_id: question.clone() },
         Step::SettleStall { case, task, outcome } => Command::SettleStall { case_id: case.clone(), task_id: task.clone(), outcome: outcome.clone() },
         Step::ReleaseUnreviewed { review, task, note } => Command::SettlePlanReview {
@@ -495,7 +495,7 @@ fn discard(suggestion: &InteractionId) -> Command {
 }
 
 fn told(id: &str, card: &SystemCard, text: String) -> Command {
-    crate::domain_runtime::problems::tell_command(id, Some(card.clone()), text)
+    alondra_engine_ports::runtime::tell_command(id, Some(card.clone()), text)
 }
 
 /// Whether `step` creates the card its id names, which must not exist yet.

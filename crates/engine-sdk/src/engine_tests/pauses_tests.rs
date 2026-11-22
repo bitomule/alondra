@@ -1,4 +1,5 @@
 //! The pauses' tests (`engine-admission`'s `pauses`) that run nodes through the SDK.
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_domain_rules::{DomainState, TaskState};
 use alondra_core::Millis;
@@ -29,18 +30,18 @@ async fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_th
     super::wired();
     let mut node = SdkNode::working();
     node.pause();
-    crate::domain_messages::tell_sdk_node(&node.domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-paused", false).unwrap();
+    crate::domain_messages::tell_sdk_node(&*node.domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-paused", false).unwrap();
     node.step();
     assert_eq!(node.dispatched_inputs(), 0, "the owner hands nothing to the host while the node is paused");
     assert_eq!(node.pending_inputs(), 2, "the resume text and what it was told wait for the end of the pause");
     assert_eq!(node.prompts(), ["consume-and-hold"]);
 
-    assert!(node.domain.admission().resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    assert!(node.domain.admission().resume_now(&*node.domain, &node.agent(), alondra_core::now_millis()));
     node.gate_look().await;
     node.until_told("Use the short changelog format");
     let resumed = node.prompts().iter().filter(|prompt| prompt.contains("resumed you")).count();
     assert_eq!(resumed, 1, "{:?}", node.prompts());
-    assert!(node.domain.admission().paused(&node.domain, &node.agent()).is_none());
+    assert!(node.domain.admission().paused(&*node.domain, &node.agent()).is_none());
     assert_eq!(node.domain.state().unwrap().node_pause(&AgentId(node.agent())), None);
 }
 
@@ -56,13 +57,13 @@ async fn the_orchestrators_message_to_a_paused_node_waits_for_its_resume_and_ask
     let body: crate::domain_orchestrator_tools::SendBody = serde_json::from_value(serde_json::json!({
         "node": node.agent(), "text": "Say that a commit's author email is not private", "task": SDK_TASK,
     })).unwrap();
-    let sent = crate::domain_orchestrator_tools::send(&node.domain, &node.home, &orchestrator, body).await.unwrap();
+    let sent = crate::domain_orchestrator_tools::send(&*node.domain, &node.home, &orchestrator, body).await.unwrap();
     assert_eq!(sent["reaches"], "pause");
     node.step();
     assert_eq!(node.dispatched_inputs(), 0, "the message does not wake the paused node");
     assert_eq!(node.domain.state().unwrap().interactions.len(), cards, "no card asks the user about it");
 
-    assert!(node.domain.admission().resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    assert!(node.domain.admission().resume_now(&*node.domain, &node.agent(), alondra_core::now_millis()));
     node.gate_look().await;
     node.until_told("Say that a commit's author email is not private");
 }
@@ -81,7 +82,7 @@ async fn resuming_a_paused_sdk_node_whose_host_died_resumes_its_session_in_a_new
     node.lose_host();
 
     let mut changed = node.domain.subscribe();
-    assert!(node.domain.admission().resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    assert!(node.domain.admission().resume_now(&*node.domain, &node.agent(), alondra_core::now_millis()));
     node.gate_look().await;
     node.domain.join_retakes();
     assert!(node.domain.owns_sdk_host(&AgentId(node.agent())), "a new host took the task over");
@@ -103,14 +104,14 @@ async fn resuming_a_paused_sdk_node_no_host_can_take_over_gives_its_task_a_card_
     let mut node = SdkNode::working();
     node.pause();
     node.lose_host();
-    crate::sdk_owner::lost(&node.domain, &SDK_TASK.into(), "its new host stopped before it could take the task's next message");
+    crate::sdk_owner::lost(&*node.domain, &SDK_TASK.into(), "its new host stopped before it could take the task's next message");
     assert!(node.host_lost_card().is_none(), "the pause holds the task: the card waits for its resume");
 
     use std::os::unix::fs::PermissionsExt;
     let state_root = node.domain.sdk().unwrap().0.state_root.clone();
     let refuse = |refused: bool| std::fs::set_permissions(&state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
     refuse(true);
-    assert!(node.domain.admission().resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    assert!(node.domain.admission().resume_now(&*node.domain, &node.agent(), alondra_core::now_millis()));
     node.gate_look().await;
     node.domain.join_retakes();
     refuse(false);
@@ -131,7 +132,7 @@ async fn a_disk_hold_the_node_rested_through_ends_once_there_is_room_by_telling_
     let mut node = SdkNode::working();
     let domain = Arc::clone(&node.domain);
     domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-    assert!(domain.admission().hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
+    assert!(domain.admission().hold_back(&*domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
     interrupt_sdk_node(&*domain, &node.agent());
     node.step_until(SdkNode::turn_ended);
     assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Resting);
@@ -139,7 +140,7 @@ async fn a_disk_hold_the_node_rested_through_ends_once_there_is_room_by_telling_
 
     domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
     node.gate_look().await;
-    assert!(domain.admission().paused(&domain, &node.agent()).is_none(), "the pause ended");
+    assert!(domain.admission().paused(&*domain, &node.agent()).is_none(), "the pause ended");
     assert_eq!(node.pending_inputs(), 1, "recovery queues the carry-on instruction before the owner runs");
     node.until_told("held your next turn while the disk was nearly full");
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything");
@@ -159,10 +160,10 @@ async fn a_host_that_dies_under_a_disk_hold_of_a_delivery_sent_back_goes_on_once
     domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     node.deliver();
     node.get_it_back();
-    assert!(domain.admission().hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
+    assert!(domain.admission().hold_back(&*domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
 
     node.lose_host();
-    crate::sdk_owner::retake(&domain, SDK_TASK.into());
+    crate::sdk_owner::retake(&*domain, SDK_TASK.into());
     domain.join_retakes();
     assert!(domain.owns_sdk_host(&AgentId(node.agent())), "a new host took the task over");
     assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Resting);
@@ -171,7 +172,7 @@ async fn a_host_that_dies_under_a_disk_hold_of_a_delivery_sent_back_goes_on_once
     domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
     let mut changed = domain.subscribe();
     node.gate_look().await;
-    assert!(domain.admission().paused(&domain, &node.agent()).is_none(), "the pause ended");
+    assert!(domain.admission().paused(&*domain, &node.agent()).is_none(), "the pause ended");
     let capture = node.capture.clone();
     let told = move || crate::sdk_owner::fixtures::not_wakes(std::fs::read_to_string(format!("{}.prompts", capture.display())).unwrap_or_default()
         .lines().map(|line| serde_json::from_str(line).unwrap())).iter().any(|prompt: &String| prompt.contains("held your next turn"));
@@ -227,7 +228,7 @@ async fn an_interrupted_task_waits_for_instruction_instead_of_being_woken_by_the
     assert_eq!(node.lifecycle().awaits(), Some(&alondra_domain::Await::Instruction));
 
     let now = alondra_core::now_millis();
-    let look = |at| crate::admission::pass_at(&domain, &node.home, at);
+    let look = |at| crate::admission::pass_at(&*domain, &node.home, at);
     look(now).await.unwrap();
     look(now + LONG_WAIT - 1).await.unwrap();
     assert_eq!(node.pending_inputs(), 0, "not yet");
@@ -263,11 +264,11 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
     let sessions: Vec<String> = std::iter::once(node.agent()).chain(drivers.iter().map(|(_, driver)| driver.agent().0.clone())).collect();
     let now = alondra_core::now_millis();
     for session in &sessions {
-        assert!(gate.hold_back(&domain, session, Reason::Disk, now));
+        assert!(gate.hold_back(&*domain, session, Reason::Disk, now));
     }
     watch.measure_disk(alondra_engine_ports::disk::Space { free: 19 * GB, purgeable: 0, total: 500 * GB });
     node.gate_look().await;
-    assert_eq!(crate::admission::working_tasks(&domain, &domain.state().unwrap()).len(), 0, "their turns go on, but they take no slot while the disk holds them");
+    assert_eq!(crate::admission::working_tasks(&*domain, &domain.state().unwrap()).len(), 0, "their turns go on, but they take no slot while the disk holds them");
 
     let mut end_turn = |index: usize| {
         let (task, driver) = &mut drivers[index];
@@ -282,9 +283,9 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
         dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
     let high = Waiting { key: Key::Task("t-high".into()), priority: TaskPriority::High, resuming: false, since: now };
     run(&domain, user(), Command::SetPriority { task_id: "t-high".into(), priority: TaskPriority::High });
-    assert!(gate.ask(&domain, high, alondra_core::now_millis()).is_err(), "the nodes the disk held go first");
+    assert!(gate.ask(&*domain, high, alondra_core::now_millis()).is_err(), "the nodes the disk held go first");
 
-    let back = || sessions.iter().filter(|session| gate.paused(&domain, session).is_none()).count();
+    let back = || sessions.iter().filter(|session| gate.paused(&*domain, session).is_none()).count();
     assert_eq!(back(), 0);
     for expected in 1..=4 {
         node.gate_look().await;
@@ -294,7 +295,7 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
     node.gate_look().await;
     assert_eq!(back(), 4, "the four back reserve 12 GB: one more needs 20 GB");
     let state = domain.state().unwrap();
-    let at_work = crate::admission::working_tasks(&domain, &state);
+    let at_work = crate::admission::working_tasks(&*domain, &state);
     assert_eq!(at_work.len(), 4, "the five turns still held take no slot: only the four back do");
     assert_eq!(watch.disk_reserved(&crate::admission::reserving_tasks(&state, at_work.iter())), 12 * GB, "only the four back reserve");
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything");
@@ -310,11 +311,11 @@ async fn a_node_paused_for_disk_takes_no_slot_in_the_gate_or_the_header() {
     super::wired();
     let node = SdkNode::working();
     let domain = Arc::clone(&node.domain);
-    assert_eq!(crate::admission::working_tasks(&domain, &domain.state().unwrap()).len(), 1, "its turn works");
-    assert!(domain.admission().hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
+    assert_eq!(crate::admission::working_tasks(&*domain, &domain.state().unwrap()).len(), 1, "its turn works");
+    assert!(domain.admission().hold_back(&*domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
     node.gate_look().await;
     let state = domain.state().unwrap();
-    assert!(crate::admission::working_tasks(&domain, &state).is_empty(), "the disk holds it: no slot");
+    assert!(crate::admission::working_tasks(&*domain, &state).is_empty(), "the disk holds it: no slot");
     assert_eq!(domain.read().index().slots().len(), 0);
     assert_eq!(domain.read().index().activity().working, 0, "the header counts none either");
 }
@@ -341,7 +342,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
         alondra_domain_rules::RuntimeObservation::TurnStarted { turn: "turn-light".into(), input },
     ] });
     let now = alondra_core::now_millis();
-    let working = crate::admission::working_projects(&domain, &domain.state().unwrap());
+    let working = crate::admission::working_projects(&*domain, &domain.state().unwrap());
     assert_eq!(working.keys().map(|task| task.0.as_str()).collect::<Vec<_>>(), ["t-light", SDK_TASK]);
     let watch = &domain.machine_watch();
     let heavy: std::collections::BTreeMap<TaskId, Option<String>> = [(TaskId::from(SDK_TASK), None)].into();
@@ -351,24 +352,24 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     watch.measure_disk(alondra_engine_ports::disk::Space { free: 2 * GB, purgeable: 0, total: 500 * GB });
     assert!(watch.under_floor());
 
-    crate::admission::hold_for_disk(&domain, now + 2 * SAMPLE);
-    let held = domain.admission().paused(&domain, &node.agent()).expect("the heavier node is held");
+    crate::admission::hold_for_disk(&*domain, now + 2 * SAMPLE);
+    let held = domain.admission().paused(&*domain, &node.agent()).expect("the heavier node is held");
     assert_eq!(held.reason, Reason::Disk);
-    assert!(domain.admission().paused(&domain, "agent-light").is_none(), "the lightest goes on");
+    assert!(domain.admission().paused(&*domain, "agent-light").is_none(), "the lightest goes on");
     node.step();
     assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Working, "the turn it runs is not cut");
     assert_eq!(node.prompts(), ["consume-and-hold"]);
-    assert!(!crate::admission::working_tasks(&domain, &domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "the disk holds it: its turn runs but it takes no slot");
+    assert!(!crate::admission::working_tasks(&*domain, &domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "the disk holds it: its turn runs but it takes no slot");
 
     interrupt_sdk_node(&*domain, &node.agent());
     node.step_until(SdkNode::turn_ended);
-    crate::domain_messages::tell_sdk_node(&domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-held", false).unwrap();
+    crate::domain_messages::tell_sdk_node(&*domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-held", false).unwrap();
     node.gate_look().await;
     node.step();
-    assert!(!crate::admission::working_tasks(&domain, &domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "its turn ended: it holds no slot");
-    assert!(domain.admission().paused(&domain, &node.agent()).is_some(), "the disk has no room: it still waits");
+    assert!(!crate::admission::working_tasks(&*domain, &domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "its turn ended: it holds no slot");
+    assert!(domain.admission().paused(&*domain, &node.agent()).is_some(), "the disk has no room: it still waits");
     assert_eq!(node.dispatched_inputs(), 0, "what it is told waits for room");
-    let pacing = domain.admission().live(&domain, alondra_core::now_millis()).unwrap();
+    let pacing = domain.admission().live(&*domain, alondra_core::now_millis()).unwrap();
     assert!(matches!(pacing.queued.as_slice(), [queued] if queued.task_id == SDK_TASK && matches!(queued.hold, alondra_view_model::LiveHold::Disk { .. })),
         "it waits in the queue for the disk: {:?}", pacing.queued);
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
@@ -378,7 +379,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     node.gate_look().await;
     node.until_told("Use the short changelog format");
     assert!(node.prompts().iter().all(|prompt| !prompt.contains("held your next turn")), "{:?}", node.prompts());
-    assert!(domain.admission().paused(&domain, &node.agent()).is_none());
+    assert!(domain.admission().paused(&*domain, &node.agent()).is_none());
 }
 
 
@@ -394,11 +395,11 @@ async fn a_host_that_dies_under_a_disk_hold_while_its_turn_runs_never_leaves_its
     let domain = Arc::clone(&node.domain);
     domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
-    assert!(domain.admission().hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
+    assert!(domain.admission().hold_back(&*domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
     node.lose_host();
     node.gate_look().await;
     domain.join_retakes();
-    assert!(domain.admission().paused(&domain, &node.agent()).is_some(), "the disk still has no room");
+    assert!(domain.admission().paused(&*domain, &node.agent()).is_some(), "the disk still has no room");
     let agent = AgentId(node.agent());
     assert!(domain.owns_sdk_host(&agent) || node.lifecycle().activity() != alondra_domain::ActivityView::Working,
         "the task reads as running with no node: {:?}", node.lifecycle().activity());
@@ -423,11 +424,11 @@ async fn a_working_task_whose_ended_host_left_an_observation_no_owner_can_settle
     }
     node.lose_host();
     crate::domain_store::refuse_next(crate::domain_store::Refuse::Observation);
-    crate::sdk_owner::take_working_unowned(&domain, &domain.state().unwrap(), alondra_core::now_millis());
+    crate::sdk_owner::take_working_unowned(&*domain, &domain.state().unwrap(), alondra_core::now_millis());
     domain.join_retakes();
     let agent = AgentId(node.agent());
     assert!(domain.owns_sdk_host(&agent), "the first pass takes the task over");
-    crate::sdk_owner::take_working_unowned(&domain, &domain.state().unwrap(), alondra_core::now_millis() + 2 * MIN);
+    crate::sdk_owner::take_working_unowned(&*domain, &domain.state().unwrap(), alondra_core::now_millis() + 2 * MIN);
     domain.join_retakes();
     assert!(domain.owns_sdk_host(&agent), "and the task stays owned");
     domain.stop_sdk_owners();
@@ -444,7 +445,7 @@ async fn a_task_waiting_for_its_turn_to_start_with_no_host_of_its_own_is_taken_o
     node.tell(SDK_TASK, "Carry on");
     assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Starting);
     node.lose_host();
-    crate::sdk_owner::take_working_unowned(&domain, &domain.state().unwrap(), alondra_core::now_millis());
+    crate::sdk_owner::take_working_unowned(&*domain, &domain.state().unwrap(), alondra_core::now_millis());
     domain.join_retakes();
     assert!(domain.owns_sdk_host(&AgentId(node.agent())), "a host takes the waiting turn: {:?}", node.lifecycle().activity());
     domain.stop_sdk_owners();
@@ -468,7 +469,7 @@ async fn a_delivering_task_whose_hosts_end_before_taking_its_input_is_never_take
     let mut looks = vec![];
     for look in 0..4 {
         let before = journal().len();
-        crate::sdk_owner::take_working_unowned(&domain, &domain.state().unwrap(), alondra_core::now_millis() + look * 2 * MIN);
+        crate::sdk_owner::take_working_unowned(&*domain, &domain.state().unwrap(), alondra_core::now_millis() + look * 2 * MIN);
         domain.join_retakes();
         while domain.owns_sdk_host(&agent) || domain.sdk_owners().in_hand.lock().unwrap().contains_key(&TaskId::from(SDK_TASK)) {
             std::thread::yield_now();
@@ -494,7 +495,7 @@ async fn a_takeover_that_fails_after_recording_is_not_repeated_by_its_own_revisi
     let takeovers = || domain.read().state().lifecycle_journal[&TaskId::from(SDK_TASK)].iter()
         .filter(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TakenOver)).count();
     for look in 0..4 {
-        crate::sdk_owner::take_working_unowned(&domain, &domain.state().unwrap(), alondra_core::now_millis() + look * 2 * MIN);
+        crate::sdk_owner::take_working_unowned(&*domain, &domain.state().unwrap(), alondra_core::now_millis() + look * 2 * MIN);
         domain.join_retakes();
     }
     assert_eq!(takeovers(), 1, "every look after the first took the task over again");
@@ -524,13 +525,13 @@ async fn resume_on_the_card_of_a_paused_sdk_node_is_taken_while_the_card_is_open
         if reason == Reason::ByUser {
             node.pause();
         } else {
-            assert!(domain.admission().hold_back(&domain, &node.agent(), reason.clone(), alondra_core::now_millis()));
+            assert!(domain.admission().hold_back(&*domain, &node.agent(), reason.clone(), alondra_core::now_millis()));
             interrupt_sdk_node(&*domain, &node.agent());
             node.step_until(SdkNode::turn_ended);
         }
         let card = node_pause_card(&domain).unwrap_or_else(|| panic!("{reason:?}: the pause has its card"));
         assert_eq!(answer_resume(&domain, &card), Ok(()), "{reason:?}: the card's Resume is refused while the node is paused");
-        assert!(domain.admission().pauses(&domain).resumed.contains_key(&node.agent()), "{reason:?}: the user's resume waits for a slot");
+        assert!(domain.admission().pauses(&*domain).resumed.contains_key(&node.agent()), "{reason:?}: the user's resume waits for a slot");
     }
 }
 
@@ -558,14 +559,14 @@ async fn every_pause_with_its_host_lost_or_not_keeps_a_working_task_owned_and_it
             match &reason {
                 Reason::ByUser => node.pause(),
                 Reason::Disk => {
-                    assert!(domain.admission().hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
+                    assert!(domain.admission().hold_back(&*domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
                     if !host_lost {
                         interrupt_sdk_node(&*domain, &node.agent());
                         node.step_until(SdkNode::turn_ended);
                     }
                 }
                 declared => {
-                    assert!(domain.admission().hold_back(&domain, &node.agent(), declared.clone(), alondra_core::now_millis()));
+                    assert!(domain.admission().hold_back(&*domain, &node.agent(), declared.clone(), alondra_core::now_millis()));
                     interrupt_sdk_node(&*domain, &node.agent());
                     node.step_until(SdkNode::turn_ended);
                 }
@@ -578,13 +579,13 @@ async fn every_pause_with_its_host_lost_or_not_keeps_a_working_task_owned_and_it
             domain.join_retakes();
             owned_while_working(&node, &case);
             let card = node_pause_card(&domain).unwrap_or_else(|| panic!("{case}: the pause has its card"));
-            assert!(domain.admission().paused(&domain, &node.agent()).is_some(), "{case}: an open pause card is a pause the gate holds");
+            assert!(domain.admission().paused(&*domain, &node.agent()).is_some(), "{case}: an open pause card is a pause the gate holds");
             assert_eq!(answer_resume(&domain, &card), Ok(()), "{case}: the card's Resume is taken while it is open");
 
             domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
             node.gate_look().await;
             domain.join_retakes();
-            assert!(domain.admission().paused(&domain, &node.agent()).is_none(), "{case}: the pause ended");
+            assert!(domain.admission().paused(&*domain, &node.agent()).is_none(), "{case}: the pause ended");
             assert!(node_pause_card(&domain).is_none(), "{case}: the card of an ended pause is retired");
             owned_while_working(&node, &case);
             domain.stop_sdk_owners();
@@ -613,7 +614,7 @@ async fn ten_nodes_told_at_once_with_two_slots_never_work_more_than_two_and_the_
     std::thread::scope(|scope| {
         for (task, _) in &drivers {
             let (domain, task) = (&node.domain, TaskId::from(task.as_str()));
-            scope.spawn(move || domain.admission().may_take_turn(domain, &task, now));
+            scope.spawn(move || domain.admission().may_take_turn(&**domain, &task, now));
         }
     });
     let gate = node.gate();
@@ -657,14 +658,14 @@ async fn a_slot_that_frees_goes_to_the_waiting_turn_of_highest_priority_then_to_
     let now = alondra_core::now_millis();
     for (age, task) in ["t-low", "t-old", "t-new", "t-high"].into_iter().enumerate() {
         node.tell(task, "Go on");
-        assert!(!node.domain.admission().may_take_turn(&node.domain, &task.into(), now + age as Millis));
+        assert!(!node.domain.admission().may_take_turn(&*node.domain, &task.into(), now + age as Millis));
     }
     assert_eq!(node.waiting_turns(), ["t-high", "t-old", "t-new", "t-low"]);
     node.set_limit(1);
     node.gate_look().await;
     assert_eq!(node.waiting_turns(), ["t-old", "t-new", "t-low"]);
-    assert!(node.domain.admission().may_take_turn(&node.domain, &"t-high".into(), now + 10));
-    assert!(!node.domain.admission().may_take_turn(&node.domain, &"t-old".into(), now + 10));
+    assert!(node.domain.admission().may_take_turn(&*node.domain, &"t-high".into(), now + 10));
+    assert!(!node.domain.admission().may_take_turn(&*node.domain, &"t-old".into(), now + 10));
     for driver in &mut drivers {
         driver.stop().unwrap();
     }
@@ -695,7 +696,7 @@ async fn a_node_back_from_a_pause_starts_its_turn_on_the_slot_of_its_resume() {
     let mut node = SdkNode::working();
     node.pause();
     node.set_limit(1);
-    assert!(node.domain.admission().resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    assert!(node.domain.admission().resume_now(&*node.domain, &node.agent(), alondra_core::now_millis()));
     node.gate_look().await;
     for _ in 0..40 {
         node.step();
@@ -721,9 +722,9 @@ async fn a_high_tasks_input_goes_before_a_normal_node_coming_back_and_the_log_na
     run(&node.domain, user(), Command::SetPriority { task_id: "t-high".into(), priority: TaskPriority::High });
     node.set_limit(0);
     let now = alondra_core::now_millis();
-    assert!(node.domain.admission().resume_now(&node.domain, &node.agent(), now));
+    assert!(node.domain.admission().resume_now(&*node.domain, &node.agent(), now));
     node.tell("t-high", "The user's answer");
-    assert!(!node.domain.admission().may_take_turn(&node.domain, &"t-high".into(), now));
+    assert!(!node.domain.admission().may_take_turn(&*node.domain, &"t-high".into(), now));
     node.gate_look().await;
 
     let gate = node.gate();
@@ -735,7 +736,7 @@ async fn a_high_tasks_input_goes_before_a_normal_node_coming_back_and_the_log_na
 
     node.set_limit(1);
     node.gate_look().await;
-    assert!(node.domain.admission().may_take_turn(&node.domain, &"t-high".into(), alondra_core::now_millis()), "the slot is the high task's");
+    assert!(node.domain.admission().may_take_turn(&*node.domain, &"t-high".into(), alondra_core::now_millis()), "the slot is the high task's");
     assert!(node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(node.agent())), "the normal node still waits");
     high.stop().unwrap();
 }
@@ -750,14 +751,14 @@ async fn a_users_pause_on_a_node_whose_resume_waits_behind_a_pause_of_alondras_t
     let mut node = SdkNode::working();
     let agent = node.agent();
     node.set_limit(0);
-    assert!(node.domain.admission().hold_back(&node.domain, &agent, Reason::Declared { reason: "The build queue is full".into() }, alondra_core::now_millis()));
+    assert!(node.domain.admission().hold_back(&*node.domain, &agent, Reason::Declared { reason: "The build queue is full".into() }, alondra_core::now_millis()));
     interrupt_sdk_node(&*node.domain, &agent);
     node.step_until(SdkNode::turn_ended);
-    assert!(node.domain.admission().resume_now(&node.domain, &agent, alondra_core::now_millis()));
+    assert!(node.domain.admission().resume_now(&*node.domain, &agent, alondra_core::now_millis()));
     node.gate_look().await;
     assert!(node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(agent.clone())), "the user's Resume waits for a slot");
 
-    node.domain.admission().pause_by_user(&node.domain, &agent, alondra_core::now_millis()).unwrap();
+    node.domain.admission().pause_by_user(&*node.domain, &agent, alondra_core::now_millis()).unwrap();
     node.gate_look().await;
     assert!(!node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(agent.clone())), "the user's pause took it out of the queue");
     let state = node.domain.state().unwrap();
@@ -765,6 +766,6 @@ async fn a_users_pause_on_a_node_whose_resume_waits_behind_a_pause_of_alondras_t
     node.set_limit(6);
     node.gate_look().await;
     node.gate_look().await;
-    assert_eq!(node.domain.admission().paused(&node.domain, &agent).map(|paused| paused.reason), Some(Reason::ByUser), "a free slot does not bring it back");
+    assert_eq!(node.domain.admission().paused(&*node.domain, &agent).map(|paused| paused.reason), Some(Reason::ByUser), "a free slot does not bring it back");
 }
 

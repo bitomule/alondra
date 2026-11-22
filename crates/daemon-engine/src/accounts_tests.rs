@@ -1,3 +1,4 @@
+use crate::domain_runtime::DomainRuntime;
 use super::*;
 use alondra_engine_kernel::accounts_file::options_file;
 use crate::test_support::Directory;
@@ -44,7 +45,7 @@ fn claude_account_probes_keep_the_native_deadline_for_installed_and_pinned_backe
             native_environment: BTreeMap::from([("HOME".into(), f.user_home.display().to_string()), ("PATH".into(), f.claude.path.clone())]),
             confinement: None, state_root: f.home.join("hosts"), io_timeout_seconds: 30, installed_native, release: crate::sdk_backend::this_release(),
         });
-        let claude = Claude::of(&domain).unwrap();
+        let claude = Claude::of(&*domain).unwrap();
         assert_eq!(claude.executable, f.claude.executable);
         assert_eq!(claude.timeout, Some(Duration::from_secs(10)), "native probes stay bounded, including pinned custom binaries");
     }
@@ -219,10 +220,10 @@ fn accounts_sharing_one_email_are_checked_before_their_sessions_are_taken_over()
     let stored = |email: &str| vec![probe_account(email), AccountStatus { id: AccountId::parse("work").unwrap(), ..probe_account("work@example.org") }];
     let default = || domain.read().state().accounts[0].email.clone();
     record_probe_fixture(&domain, stored("stale@example.org"));
-    check_if_crossed(&domain);
+    check_if_crossed(&*domain);
     assert_eq!(default().as_deref(), Some("stale@example.org"), "accounts with their own emails wait for the usual check");
     record_probe_fixture(&domain, stored("work@example.org"));
-    check_if_crossed(&domain);
+    check_if_crossed(&*domain);
     assert_eq!(default().as_deref(), Some("me@example.org"), "the default account answers for its own profile");
 }
 
@@ -527,7 +528,7 @@ for raw in sys.stdin:
     let attempts = std::cell::Cell::new(0);
     crate::native_probe::retry_with(|| {
         attempts.set(attempts.get() + 1);
-        let outcome = check_current(&domain, &f.home);
+        let outcome = check_current(&*domain, &f.home);
         if attempts.get() == 1 {
             assert_eq!(outcome, crate::native_probe::Outcome::Stale);
             assert!(domain.read().state().model_catalogs.is_empty());

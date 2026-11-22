@@ -15,30 +15,10 @@ use crate::sign_in_returns::SignInReturns;
 use alondra_view_model::Screens;
 use crate::worktrees::Worktrees;
 use alondra_provider_contract::SessionWorktrees;
-use alondra_domain_rules::{CommandEnvelope, CommandOutcome, DomainError, DomainState};
 use std::any::{Any, TypeId};
+use crate::runtime::Runtime;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, PoisonError, RwLock};
-
-/// The runtime the ports are called on: the one place the engine keeps its state, and what a piece
-/// of the engine asks of it.
-pub trait Runtime: Any + Send + Sync {
-    fn ports(&self) -> &Registry;
-    /// The state each piece of the engine keeps in this runtime: read it with [`crate::extension`].
-    fn extensions(&self) -> &crate::extensions::Extensions;
-    /// Alondra's home.
-    fn home(&self) -> &Path;
-    /// The domain's last committed state.
-    fn state(&self) -> Arc<DomainState>;
-    /// Commits `envelope` as Alondra itself, at whatever revision the domain is at; a storage
-    /// failure comes back as the refusal a producer gets.
-    fn system_command(&self, envelope: CommandEnvelope) -> Result<CommandOutcome, DomainError>;
-    /// Wakes the owners of the SDK hosts to what waits for them.
-    fn wake_seals(&self);
-    /// The plan `task` starts with, if it has one.
-    fn launch_plan(&self, task: &alondra_domain_rules::TaskId) -> Option<alondra_domain_rules::LaunchPlan>;
-}
 
 #[derive(Default)]
 pub struct Registry(RwLock<HashMap<TypeId, Box<dyn Any + Send + Sync>>>);

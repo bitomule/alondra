@@ -22,7 +22,7 @@ const MIN: Millis = 60_000;
 fn runtime_progress_machine_watch_persists_off_the_async_worker() {
     super::wired();
     let fixture = Fixture::new();
-    let domain = fixture.open();
+    let domain = fixture.open_domain();
     domain.machine_watch().record_sample_threads();
     let driver = std::thread::current().id();
     let gauges = Arc::new(std::sync::Mutex::new(Some((Machine {
@@ -48,21 +48,21 @@ fn runtime_progress_machine_watch_persists_off_the_async_worker() {
 async fn a_node_the_user_paused_runs_no_tool_and_may_end_its_turn() {
     super::wired();
     let fixture = Fixture::new();
-    let domain = fixture.open();
-    node_with_task(&domain);
+    let domain = fixture.open_domain();
+    node_with_task(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>));
     domain.gate().pause_by_user("agent-a", alondra_core::now_millis()).unwrap();
     for tool in ["Bash", "mcp__plugin_alondra_alondra__present_result"] {
-        let (reply, result) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": tool}), Some(6)).await;
+        let (reply, result) = hook(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": tool}), Some(6)).await;
         result.unwrap();
         assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{tool}: {reply}");
         assert_eq!(reply["hookSpecificOutput"]["permissionDecisionReason"], PAUSED_BY_USER);
     }
-    assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}));
+    assert_eq!(hook(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}));
 
     domain.gate().release_by_user_message("agent-a");
-    let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await;
+    let (reply, _) = hook(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await;
     assert_ne!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{reply}");
-    assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0["decision"], "block");
+    assert_eq!(hook(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0["decision"], "block");
 }
 
 struct Home(crate::test_support::Directory);
@@ -94,7 +94,7 @@ fn run(domain: &DomainRuntime, actor: Actor, command: Command) {
 fn world() -> (Home, Arc<DomainRuntime>) {
     let home = home();
     let domain = open(&home.0);
-    alondra_engine_admission::measure_machine(&domain, &Machine { at: 1, memory_total: 16 << 30, memory_available: 12 << 30,
+    alondra_engine_admission::measure_machine(&*domain, &Machine { at: 1, memory_total: 16 << 30, memory_available: 12 << 30,
         memory_free_percent: Some(75), cpus: 11, ..Machine::default() }, alondra_engine_ports::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
     run(&domain, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     (home, domain)
@@ -131,7 +131,7 @@ fn reading_start_facts_hands_pauses_an_older_daemon_saved_without_holding_the_st
     let reading = Arc::clone(&domain);
     std::thread::spawn(move || {
         let state = reading.state().unwrap();
-        sent.send(alondra_daemon_engine::start_failures::facts(&reading, &state).is_ok()).ok();
+        sent.send(alondra_daemon_engine::start_failures::facts(&*reading, &state).is_ok()).ok();
     });
     assert_eq!(received.recv_timeout(std::time::Duration::from_secs(5)), Ok(true), "reading the start facts deadlocked");
 }
@@ -166,7 +166,7 @@ fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
         domain.admission().tune(Tuning { spacing: 0, limit: None });
         let now = alondra_core::now_millis();
         domain.machine_watch().measure_nodes(now - MIN, vec![cost; 30]);
-        let pacing = domain.admission().live(&domain, now).unwrap();
+        let pacing = domain.admission().live(&*domain, now).unwrap();
         assert_eq!((pacing.fixed, pacing.auto, pacing.limit, pacing.most), (None, auto, auto, most), "{cost} bytes a node");
 
         let state = domain.state().unwrap();
@@ -185,7 +185,7 @@ fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
         assert_eq!(menu.options[0].label, format!("Automatic ({auto}) · now"));
 
         std::fs::write(alondra_core::options::path_in(&home.0), format!("max_working_nodes = {}\n", most + 5)).unwrap();
-        let pacing = domain.admission().live(&domain, now).unwrap();
+        let pacing = domain.admission().live(&*domain, now).unwrap();
         assert_eq!((pacing.fixed, pacing.limit), (Some(most + 5), most), "a number over the most works as the most");
     }
 }
@@ -207,7 +207,7 @@ fn another_providers_capacity_does_not_admit_a_usage_paused_node() {
     let status = |provider| AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
         native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None };
     run(&domain, Actor::System, Command::RecordAccounts { accounts: vec![status(Provider::Claude), status(Provider::Codex)], reserve: alondra_core::usage::default_reserve() });
-    let record = |provider, windows| alondra_daemon_engine::usage_probe::record_for_provider(&domain, &AccountKey::new(provider, AccountId::default_account()),
+    let record = |provider, windows| alondra_daemon_engine::usage_probe::record_for_provider(&*domain, &AccountKey::new(provider, AccountId::default_account()),
         UsageReading { windows, plan: None, complete: true }, 1_000);
     record(Provider::Claude, vec![WindowReading { kind: WindowKind::Session, used: Share::FULL, resets_at: Some(9_000), exhausted: true }]);
     record(Provider::Codex, vec![
@@ -215,9 +215,9 @@ fn another_providers_capacity_does_not_admit_a_usage_paused_node() {
         WindowReading { kind: WindowKind::Other("codex:account:secondary:10080".into()), used: Share::of(0.2), resets_at: Some(9_000), exhausted: false },
     ]);
     domain.live().usage_pause.resume(2_000);
-    assert!(domain.admission().hold_back(&domain, "agent-t1", Reason::Usage, 2_000));
-    assert!(!domain.admission().snapshot(&domain, 2_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
+    assert!(domain.admission().hold_back(&*domain, "agent-t1", Reason::Usage, 2_000));
+    assert!(!domain.admission().snapshot(&*domain, 2_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
         "global Codex capacity cannot release this Claude account");
-    assert!(domain.admission().snapshot(&domain, 9_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
+    assert!(domain.admission().snapshot(&*domain, 9_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
         "its own declared reset admits the same node");
 }

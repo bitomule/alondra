@@ -3,6 +3,7 @@
 //! with the session it resumed, its folder and the account folder it ran with, and refuses a turn
 //! with Claude's usage limit when told. Every wait is on a fact the domain publishes, never on a
 //! clock.
+use crate::domain_runtime::DomainRuntime;
 use alondra_store_sqlite::AsSqlite as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::account_move::MovesOf as _;
@@ -101,7 +102,7 @@ impl World {
             prompt: "Write the release notes rate-limited".into(), plugin: self.home.join(crate::plugins::NODE),
             options: alondra_daemon_engine_model::LaunchOptions::default(), model: None, account: work(),
         };
-        crate::sdk_owner::launch(&self.domain, launch).await.unwrap();
+        crate::sdk_owner::launch(&*self.domain, launch).await.unwrap();
         self.until(|domain| domain.read().state().held_by_limit(&TASK.into()).is_some()).await;
         assert_eq!(self.domain.read().state().task_account(&TASK.into()), work());
     }
@@ -119,15 +120,15 @@ impl World {
         self.domain.stop_sdk_owners();
         self.domain = Self::boot(&self.home, &self.database, &self.backend);
         let (domain, backend) = (Arc::clone(&self.domain), self.backend.clone());
-        tokio::task::spawn_blocking(move || crate::sdk_owner::adopt_all(&domain, &backend)).await.unwrap();
+        tokio::task::spawn_blocking(move || crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &backend)).await.unwrap();
     }
 
     fn journal(&self) -> Vec<AccountMove> {
-        moves(&self.domain)
+        moves(&*self.domain)
     }
 
     fn step(&self) -> Option<AccountMoveStep> {
-        latest(&self.domain, &TASK.into()).map(|moving| moving.step)
+        latest(&*self.domain, &TASK.into()).map(|moving| moving.step)
     }
 
     fn starts(&self) -> Vec<serde_json::Value> {
@@ -176,7 +177,7 @@ async fn assert_stayed(world: &World, old: &AgentId) {
 async fn an_already_started_legacy_node_keeps_its_account_when_the_old_move_flag_is_on() {
     let world=World::new().await;let old=world.node();
     assert!(world.domain.state().unwrap().tasks[&TaskId::from(TASK)].selection.is_none());
-    tick(&world.domain).await;
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert_stayed(&world,&old).await;
     assert!(world.journal().is_empty());
     let state=world.domain.state().unwrap();let held=state.held_by_limit(&TASK.into()).unwrap();
@@ -191,7 +192,7 @@ async fn a_crash_after_each_pre_admission_step_undoes_the_old_move_without_chang
     for step in [AccountMoveStep::Planned,AccountMoveStep::HostStopped]{
         let mut world=World::new().await;let old=world.node();
         historical(&world,step,old.clone());
-        world.restart().await;tick(&world.domain).await;world.domain.join_retakes();
+        world.restart().await;tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;world.domain.join_retakes();
         assert_eq!(world.step(),Some(AccountMoveStep::Undone));
         assert_stayed(&world,&old).await;
     }
@@ -206,7 +207,7 @@ async fn a_move_that_can_no_longer_happen_is_undone_and_the_task_waits_on_its_ac
         let mut world=World::new().await;let old=world.node();
         historical(&world,step,old.clone());world.set_moving(false);world.restart().await;
         assert!(!world.domain.owns_sdk_host(&old),"pending historical journal fences startup until cancellation");
-        tick(&world.domain).await;world.domain.join_retakes();
+        tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;world.domain.join_retakes();
         assert_eq!(world.step(),Some(AccountMoveStep::Undone));
         assert!(world.journal()[0].undone.as_deref().unwrap().contains("creating a node"));
         assert_stayed(&world,&old).await;
@@ -218,7 +219,7 @@ async fn a_move_that_can_no_longer_happen_is_undone_and_the_task_waits_on_its_ac
 async fn with_the_setting_off_a_task_waits_on_its_accounts_limit() {
     let world = World::with_accounts(false);
     world.launch_limited().await;
-    tick(&world.domain).await;
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert!(world.journal().is_empty(), "nothing moves");
     assert_eq!(world.domain.state().unwrap().claude_held().len(), 1);
 }
@@ -229,11 +230,11 @@ async fn with_the_setting_off_a_task_waits_on_its_accounts_limit() {
 async fn when_every_account_is_at_its_limit_the_task_waits() {
     let world = World::new().await;
     world.accounts_seen("signed-out", AccountState::SignedOut, AccountState::SignedIn);
-    tick(&world.domain).await;
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert!(world.journal().is_empty(), "no account can take it");
     assert_eq!(world.domain.state().unwrap().claude_held().len(), 1, "it waits on its limit");
     world.accounts_seen("signed-in", AccountState::SignedIn, AccountState::SignedIn);
-    tick(&world.domain).await;
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert!(world.journal().is_empty(), "available alternatives do not change an already started node");
     assert_eq!(world.domain.state().unwrap().task_account(&TASK.into()),work());
 }
@@ -241,11 +242,11 @@ async fn when_every_account_is_at_its_limit_the_task_waits() {
 // Capacity observations keep initial account choice separate from existing-session recovery.
 #[tokio::test]
 async fn fresh_capacity_does_not_change_the_account_of_an_existing_node() {
-    let world=World::new().await;let old=world.node();tick(&world.domain).await;
+    let world=World::new().await;let old=world.node();tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     let reading=alondra_core::usage::UsageReading{windows:vec![],plan:None,complete:true};let now=alondra_core::now_millis();
     run(&world.domain,&Actor::System,"work-reset",Command::RecordAccountUsage{provider:Provider::Claude,account:work(),reading,at:now,day:alondra_daemon_engine_model::local_day(now)}).unwrap();
     assert!(can_take(&world.domain.state().unwrap(),&work(),now));
-    tick(&world.domain).await;
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert!(world.journal().is_empty());assert_stayed(&world,&old).await;
 }
 
@@ -253,7 +254,7 @@ async fn fresh_capacity_does_not_change_the_account_of_an_existing_node() {
 async fn a_typed_claude_node_never_enters_legacy_account_migration_even_when_enabled(){
     let world=World::new().await;let original=world.node();
     run(&world.domain,&Actor::System,"bind-modern-native-selection",Command::RecordTaskSelection{task_id:TASK.into(),selection:alondra_core::model_selection::TaskSelection::automatic(alondra_core::model_selection::ModelProfile::Implementation),pending:None}).unwrap();
-    tick(&world.domain).await;
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert!(world.journal().is_empty());assert_eq!(world.starts().len(),1);assert_eq!(world.node(),original);assert!(world.domain.owns_sdk_host(&original),"a held modern session is not stopped to migrate its cache");
     assert_eq!(world.domain.state().unwrap().tasks[&TaskId::from(TASK)].account_key(),alondra_core::accounts::AccountKey::new(Provider::Claude,work()));
     let state=world.domain.state().unwrap();let held=state.held_by_limit(&TASK.into()).unwrap();let stamp=state.lifecycle_of(&TASK.into()).unwrap().execution().unwrap().clone();
@@ -281,7 +282,7 @@ async fn historical_unstarted_destinations_are_parked_before_startup_or_explicit
     for step in [AccountMoveStep::Admitted,AccountMoveStep::Done]{
         let mut world=World::with_accounts(true);*world.domain.moves().crash_after.lock().unwrap()=Some(AccountMoveStep::Admitted);
         let launch=crate::sdk_owner::Launch{task:TASK.into(),name:"admitted-destination".into(),directory:world.worktree.to_str().unwrap().into(),prompt:"Write the release notes".into(),plugin:world.home.join(crate::plugins::NODE),options:Default::default(),model:None,account:AccountId::default_account()};
-        assert!(crate::sdk_owner::launch(&world.domain,launch).await.unwrap_err().message.contains("admission's commit"));
+        assert!(crate::sdk_owner::launch(&*world.domain,launch).await.unwrap_err().message.contains("admission's commit"));
         let destination=world.node();
         run(&world.domain,&Actor::System,"historical-source",Command::RegisterAgent{agent_id:"legacy-source".into(),name:"legacy-source".into(),at:0}).unwrap();
         historical(&world,step,"legacy-source".into());
@@ -289,7 +290,7 @@ async fn historical_unstarted_destinations_are_parked_before_startup_or_explicit
         std::fs::write(world.backend.state_root.join(life.execution().unwrap().instance().as_str()).join("host.lock"),b"").unwrap();
         *world.domain.moves().crash_after.lock().unwrap()=None;world.restart().await;
         assert!(crate::sdk_owner::launch_admitted(world.domain.clone(),&world.backend,TASK.into(),&world.home.join(crate::plugins::NODE)).err().unwrap().to_string().contains("never positively observed"));
-        tick(&world.domain).await;
+        tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
         assert_eq!(world.step(),Some(step));assert_eq!(world.node(),destination);
         assert_eq!(world.domain.state().unwrap().task_account(&TASK.into()),AccountId::default_account(),"no silent account rollback");
         assert!(world.starts().is_empty(),"a persisted lock and UUID must not cause a native launch");
@@ -311,8 +312,8 @@ async fn a_historical_started_destination_is_adopted_with_its_existing_physical_
     drop(driver);
     world.domain=World::boot(&world.home,&world.database,&world.backend);
     let (domain,backend)=(world.domain.clone(),world.backend.clone());
-    tokio::task::spawn_blocking(move||crate::sdk_owner::adopt_all(&domain,&backend)).await.unwrap();
-    tick(&world.domain).await;
+    tokio::task::spawn_blocking(move||crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&backend)).await.unwrap();
+    tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert_eq!(unsafe{libc::kill(native_pid,0)},0,"the original fixture native process remains alive");
     assert_eq!(world.step(),Some(AccountMoveStep::Done));assert_eq!(world.node(),destination);
     assert_eq!(world.domain.state().unwrap().task_account(&TASK.into()),AccountId::default_account());
@@ -325,7 +326,7 @@ async fn manual_replacement_of_an_existing_legacy_sdk_node_is_refused_before_sto
     let world=World::new().await;let original=world.node();let starts=world.starts();
     let pid=starts[0]["pid"].as_i64().unwrap() as i32;let revision=world.domain.state().unwrap().revision;
     let body=serde_json::from_value(serde_json::json!({"task":TASK,"replace":true,"provider":"codex","model":"opus","reason":"Change model","cwd":"/must-not-create-or-check-this-workspace"})).unwrap();
-    let error=crate::domain_orchestrator_tools::launch(&world.domain,&world.home,body,|_|None).await.unwrap_err();
+    let error=crate::domain_orchestrator_tools::launch(&*world.domain,&world.home,body,|_|None).await.unwrap_err();
     assert_eq!(error.code,"active_account_immutable");assert_eq!(world.domain.state().unwrap().revision,revision);
     assert_eq!(world.node(),original);assert!(world.domain.owns_sdk_host(&original));assert_eq!(world.starts(),starts);
     assert_eq!(unsafe{libc::kill(pid,0)},0,"forbidden replacement never stops the original native process");

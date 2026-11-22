@@ -5,6 +5,7 @@ use crate::domain_authority::{Authority, Capability, Principal};
 use crate::runtime_mutex::RuntimeMutex;
 use crate::domain_store::{schedule_command, Journal, JournalFiles, OwnerJournal, StagedOutcome, StoreError, TransportIdentity};
 use alondra_domain_rules::*;
+use alondra_engine_ports::Runtime as _;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -15,8 +16,6 @@ pub struct DomainRuntime {
     pub producer_work: crate::blocking_work::BlockingWork,
     pub external_work: crate::blocking_work::BlockingWork,
     pub command_work: crate::blocking_work::BlockingWork,
-    pub hook_work: crate::blocking_work::BlockingWork,
-    pub guard_work: crate::blocking_work::BlockingWork,
     home: PathBuf,
     /// A holder that panics can leave it half-changed, so the daemon exits: the guard stays held
     /// after the SQLite commit while the snapshot is published, the commit acknowledged, its seals
@@ -98,6 +97,82 @@ impl alondra_engine_ports::Runtime for DomainRuntime {
         Arc::clone(self.read().state())
     }
 
+    fn read(&self) -> Arc<ReadSnapshot> {
+        DomainRuntime::read(self)
+    }
+
+    fn live_read(&self) -> crate::domain_store::ReadTransaction<'_> {
+        DomainRuntime::live_read(self)
+    }
+
+    fn store(&self) -> &RuntimeMutex<Box<dyn Journal>> {
+        &self.store
+    }
+
+    fn subscribe(&self) -> watch::Receiver<Revision> {
+        DomainRuntime::subscribe(self)
+    }
+
+    fn subscribe_snapshots(&self) -> watch::Receiver<u64> {
+        DomainRuntime::subscribe_snapshots(self)
+    }
+
+    fn subscribe_schedules(&self) -> watch::Receiver<Revision> {
+        DomainRuntime::subscribe_schedules(self)
+    }
+
+    fn wake_subscribers(&self) {
+        DomainRuntime::wake_subscribers(self);
+    }
+
+    fn execute_as_system(&self, envelope: CommandEnvelope) -> Result<CommandOutcome, StoreError> {
+        DomainRuntime::execute_as_system(self, envelope)
+    }
+
+    fn execute_authorized(
+        &self,
+        actor: &Actor,
+        envelope: &CommandEnvelope,
+        transport: Option<TransportIdentity<'_>>,
+        launch: Option<&crate::domain_store::RequestLaunch>,
+        authorize: &mut dyn FnMut() -> std::result::Result<(), StoreError>,
+    ) -> Result<CommandOutcome, StoreError> {
+        DomainRuntime::execute_with(self, actor, envelope, transport, launch, authorize)
+    }
+
+    fn own_with(&self, scope: alondra_store::AuthorityScope, stage: &mut dyn FnMut(&mut dyn OwnerJournal) -> Result<(), StoreError>) -> Result<Vec<StagedOutcome>, StoreError> {
+        DomainRuntime::own(self, scope, stage).map(|((), outcomes)| outcomes)
+    }
+
+    fn own_projected_with(
+        &self,
+        scope: alondra_store::AuthorityScope,
+        stage: &mut dyn FnMut(&mut dyn OwnerJournal) -> Result<(), StoreError>,
+        project: &mut dyn FnMut(&mut dyn Journal) -> anyhow::Result<()>,
+    ) -> Result<Vec<StagedOutcome>, StoreError> {
+        DomainRuntime::own_projected(self, scope, stage, project).map(|((), outcomes)| outcomes)
+    }
+
+    fn take_seals(&self, task: &TaskId) -> alondra_store::Committed {
+        self.seals.take(task)
+    }
+
+    fn wait_for_seals(&self, task: &TaskId, timeout: std::time::Duration, stopped: &dyn Fn() -> bool) -> alondra_store::Committed {
+        self.seals.wait_for(task, timeout, stopped)
+    }
+
+    fn pause_for_seals(&self, timeout: std::time::Duration, stopped: &dyn Fn() -> bool) {
+        self.seals.pause(timeout, stopped);
+    }
+
+    fn forget_sealed_observations(&self, task: &TaskId) {
+        self.seals.forget_observations(task);
+    }
+
+    fn held(&self) -> &Mutex<std::collections::BTreeMap<AgentId, Vec<String>>> {
+        &self.held
+    }
+
     fn system_command(&self, envelope: CommandEnvelope) -> Result<CommandOutcome, DomainError> {
         self.execute_as_system(envelope.clone()).map_err(|error| error.into_domain_error(&envelope))
     }
@@ -109,18 +184,47 @@ impl alondra_engine_ports::Runtime for DomainRuntime {
     fn launch_plan(&self, task: &alondra_domain_rules::TaskId) -> Option<alondra_domain_rules::LaunchPlan> {
         DomainRuntime::launch_plan(self, task).ok().flatten()
     }
+
+    fn bind_agent(&self, session_id: &str) -> Result<Capability, StoreError> {
+        DomainRuntime::bind_agent(self, session_id)
+    }
+
+    fn revoke_agent(&self, session: &str) -> Result<(), StoreError> {
+        DomainRuntime::revoke_agent(self, session).map_err(StoreError::Storage)
+    }
+
+    fn admit_change(&self, bearer: &str, what: &str) -> Result<Principal, StoreError> {
+        DomainRuntime::admit_change(self, bearer, what)
+    }
+
+    fn resolve_bearer(&self, bearer: &str) -> Result<Principal, StoreError> {
+        DomainRuntime::resolve_bearer(self, bearer)
+    }
+
+    fn agent_capability(&self, session: &str) -> Option<[u8; 32]> {
+        DomainRuntime::agent_capability(self, session)
+    }
+
+    fn revoke_capability(&self, digest: &[u8; 32]) -> Result<(), StoreError> {
+        DomainRuntime::revoke_capability(self, digest).map_err(StoreError::Storage)
+    }
+
+    fn transport_receipt(&self, identity: TransportIdentity<'_>, authorize: &mut dyn FnMut() -> Result<(), StoreError>) -> Result<Option<CommandOutcome>, StoreError> {
+        DomainRuntime::transport_receipt(self, identity, authorize)
+    }
+
+    fn before_acknowledge(&self) {
+        DomainRuntime::before_acknowledge(self);
+    }
+
+    fn read_current_task_context(&self, bearer: &str, task: &TaskId, after: Option<&alondra_store::ContextRef>, limit: usize) -> std::result::Result<alondra_store::ContextPage, DomainError> {
+        DomainRuntime::read_current_task_context(self, bearer, task, after, limit)
+    }
 }
 
 impl DomainRuntime {
     pub fn ports(&self) -> &alondra_engine_ports::Registry {
         &self.ports
-    }
-
-    /// The runtime a port was called on: a daemon runs no other kind. A bridge while the pieces of
-    /// the engine are still written against this type; each asks the [`alondra_engine_ports::Runtime`]
-    /// context instead once it no longer depends on the kernel.
-    pub fn of(runtime: &dyn alondra_engine_ports::Runtime) -> &DomainRuntime {
-        (runtime as &dyn std::any::Any).downcast_ref().expect("ports are called on the engine's domain runtime")
     }
 
     pub fn note_orchestrator_progress(&self) {
@@ -186,8 +290,6 @@ impl DomainRuntime {
             producer_work: crate::blocking_work::BlockingWork::new(2),
             external_work: crate::blocking_work::BlockingWork::new(2),
             command_work: crate::blocking_work::BlockingWork::new(2),
-            hook_work: crate::blocking_work::BlockingWork::new(1),
-            guard_work: crate::blocking_work::BlockingWork::new(2),
             home: home.to_path_buf(),
             store: RuntimeMutex::new(store),
             reads: Mutex::new(reads),
@@ -458,19 +560,6 @@ impl DomainRuntime {
     pub fn reload(&self) {
         let state = self.store.lock_or_exit("the domain store").load().unwrap();
         self.publish(&state);
-    }
-    pub fn schedule_request_tools(
-        &self,
-        request_id: &RequestId,
-    ) -> Result<Option<Vec<String>>> {
-        self.store
-            .lock_or_exit("the domain store")
-            .schedule_request_tools(request_id)
-    }
-    pub fn was_schedule_launch_failed(&self, request_id: &RequestId) -> Result<bool> {
-        self.store
-            .lock_or_exit("the domain store")
-            .was_schedule_launch_failed(request_id)
     }
     pub fn subscribe(&self) -> watch::Receiver<Revision> {
         self.changed.subscribe()
@@ -770,70 +859,10 @@ impl DomainRuntime {
     pub fn launch_plan(&self, task_id: &TaskId) -> Result<Option<alondra_daemon_engine_model::LaunchPlan>> {
         self.store.lock_or_exit("the domain store").launch_plan(task_id)
     }
-    pub fn inherited_worktree(&self, agent: &str) -> Result<Option<String>> {
-        self.store.lock_or_exit("the domain store").inherited_worktree(agent)
-    }
-    pub fn set_inherited_worktree(&self, agent: &str, dir: &str, from_agent: &str) -> Result<()> {
-        self.store.lock_or_exit("the domain store").set_inherited_worktree(agent, dir, from_agent, alondra_core::now_millis())
-    }
     /// Why `path` cannot be a task's worktree, if it cannot.
-    pub fn registrable_worktree(&self, path: &Path) -> std::result::Result<(), String> {
-        let rules = self.store.lock_or_exit("the domain store").protected().clone();
-        rules.registrable(path)
-    }
     /// Gives every card whose attachments still sit in a worktree its own copy of them. A file
     /// that is gone or no longer matches its digest stays as it was; the names come back.
-    pub fn keep_attachments(&self) -> Result<(usize, Vec<String>)> {
-        let mut store = self.store.lock_or_exit("the domain store");
-        let roots = worktree_roots(&*store.load()?);
-        let (mut kept, mut lost) = (0, vec![]);
-        for (interaction, id, name, digest, reference) in store.attachments_kept_elsewhere()? {
-            match crate::domain_content::keep_attachment(&self.home, &reference, &digest, &roots) {
-                Ok(copy) => {
-                    store.keep_attachment_at(&interaction, &id, &copy)?;
-                    kept += 1;
-                }
-                Err(_) => lost.push(format!("{interaction}: {name}")),
-            }
-        }
-        Ok((kept, lost))
-    }
-    pub fn task_worktree(&self, task: &TaskId) -> Result<Option<String>> {
-        self.store.lock_or_exit("the domain store").task_worktree(task)
-    }
-    /// The worktree the task's node works in, kept for its next launch and recorded as the
-    /// task's own, which it ends only once that worktree is gone.
-    pub fn set_task_worktree(&self, task: &TaskId, dir: &str) -> Result<()> {
-        self.store.lock_or_exit("the domain store").set_task_worktree(task, dir, alondra_core::now_millis())?;
-        let command = Command::RecordTaskWorktree { task_id: task.clone(), path: dir.to_owned(), origin: WorktreeOrigin::Task, branch: None };
-        self.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))
-    }
-    /// Carries out `command` as the system, against the state it reads now.
-    pub fn execute_system_command(&self, command: Command) -> Result<(), StoreError> {
-        let state = self.state().map_err(StoreError::Storage)?;
-        let envelope = CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch.clone(),
-            command_id: format!("github-{}", crate::auth::random_hex(16)).into(),
-            expected_revision: state.revision,
-            command,
-        };
-        self.execute_as_system(envelope).map(drop)
-    }
-    pub fn forget_inherited_worktree(&self, agent: &str) -> Result<()> {
-        self.store.lock_or_exit("the domain store").forget_inherited_worktree(agent)
-    }
-    pub fn record_model_decision(&self, decision: &crate::domain_store::model_metrics::Decision) -> Result<()> {
-        self.store.lock_or_exit("the domain store").record_model_decision(decision)
-    }
 
-    pub fn record_spend(&self, spent: &crate::domain_store::metrics_fold::Spent<'_>) -> Result<()> {
-        self.store.lock_or_exit("the domain store").record_spend(spent)
-    }
-
-    pub fn record_session_start(&self, started: &alondra_engine_ports::journal::metrics::SessionStarted<'_>) -> Result<()> {
-        self.store.lock_or_exit("the domain store").record_session_start(started)
-    }
 
     pub fn session_starts(&self, task: &str) -> Result<Vec<alondra_engine_ports::journal::metrics::RecordedStart>> {
         self.store.lock_or_exit("the domain store").session_starts(task)
@@ -843,14 +872,6 @@ impl DomainRuntime {
         self.store.lock_or_exit("the domain store").record_release(version, at)
     }
 
-    pub fn prs_without_size(&self, now: alondra_core::Millis, limit: usize) -> Result<Vec<(String, String)>> {
-        self.store.lock_or_exit("the domain store").prs_without_size(now, limit)
-    }
-
-    pub fn record_pr_lines(&self, task_id: &str, lines: i64) -> Result<()> {
-        self.store.lock_or_exit("the domain store").record_pr_lines(task_id, lines)
-    }
-
     /// What the Metrics screen sums, with the tasks that ended since the last fold folded first.
     pub fn metrics_inputs(&self, now: alondra_core::Millis) -> Result<alondra_core::metrics::report::MetricsInputs> {
         const PASS: usize = 256;
@@ -858,15 +879,6 @@ impl DomainRuntime {
         self.store.lock_or_exit("the domain store").metrics_inputs(now)
     }
 
-    /// What the user chose when asking for the Request, if it was asked for with choices.
-    pub fn request_launch(
-        &self,
-        request_id: &RequestId,
-    ) -> Result<Option<crate::domain_store::RequestLaunch>> {
-        self.store
-            .lock_or_exit("the domain store")
-            .request_launch(request_id)
-    }
 
     pub fn execute_with(
         &self,
@@ -1655,7 +1667,7 @@ mod producer_revision_tests {
 
 mod capabilities;
 mod inbox;
-pub mod problems;
+
 mod rejections;
 
 #[cfg(test)]
@@ -1668,3 +1680,125 @@ mod wait_review_tests;
 mod poison_tests;
 #[cfg(test)]
 mod journal_tests;
+
+/// What the engine records through any runtime's journal, and the system commands it carries out
+/// against the state it reads now.
+pub trait RuntimeRecords {
+    /// The worktree the task's node works in, kept for its next launch and recorded as the
+    /// task's own, which it ends only once that worktree is gone.
+    fn set_task_worktree(&self, task: &TaskId, dir: &str) -> Result<()>;
+    /// Carries out `command` as the system, against the state it reads now.
+    fn execute_system_command(&self, command: Command) -> Result<(), StoreError>;
+    fn record_spend(&self, spent: &crate::domain_store::metrics_fold::Spent<'_>) -> Result<()>;
+    fn prs_without_size(&self, now: alondra_core::Millis, limit: usize) -> Result<Vec<(String, String)>>;
+    fn record_pr_lines(&self, task_id: &str, lines: i64) -> Result<()>;
+    fn registrable_worktree(&self, path: &Path) -> std::result::Result<(), String>;
+    fn task_worktree(&self, task: &TaskId) -> Result<Option<String>>;
+    fn schedule_request_tools(&self, request_id: &RequestId) -> Result<Option<Vec<String>>>;
+    fn inherited_worktree(&self, agent: &str) -> Result<Option<String>>;
+    fn set_inherited_worktree(&self, agent: &str, dir: &str, from_agent: &str) -> Result<()>;
+    fn forget_inherited_worktree(&self, agent: &str) -> Result<()>;
+    fn record_model_decision(&self, decision: &crate::domain_store::model_metrics::Decision) -> Result<()>;
+    /// What the user chose when asking for the Request, if it was asked for with choices.
+    fn request_launch(&self, request_id: &RequestId) -> Result<Option<crate::domain_store::RequestLaunch>>;
+    /// The plan `task` starts with, or why the journal could not say.
+    fn stored_launch_plan(&self, task: &TaskId) -> Result<Option<LaunchPlan>>;
+    fn was_schedule_launch_failed(&self, request_id: &RequestId) -> Result<bool>;
+    fn record_session_start(&self, started: &alondra_engine_ports::journal::metrics::SessionStarted<'_>) -> Result<()>;
+    /// Gives every card whose attachments still sit in a worktree its own copy of them. A file
+    /// that is gone or no longer matches its digest stays as it was; the names come back.
+    fn keep_attachments(&self) -> Result<(usize, Vec<String>)>;
+}
+
+impl<R: alondra_engine_ports::Runtime + ?Sized> RuntimeRecords for R {
+    fn set_task_worktree(&self, task: &TaskId, dir: &str) -> Result<()> {
+        self.store().lock_or_exit("the domain store").set_task_worktree(task, dir, alondra_core::now_millis())?;
+        let command = Command::RecordTaskWorktree { task_id: task.clone(), path: dir.to_owned(), origin: WorktreeOrigin::Task, branch: None };
+        self.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    fn execute_system_command(&self, command: Command) -> Result<(), StoreError> {
+        let state = alondra_engine_ports::Runtime::state(self);
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("github-{}", crate::auth::random_hex(16)).into(),
+            expected_revision: state.revision,
+            command,
+        };
+        self.execute_as_system(envelope).map(drop)
+    }
+
+    fn record_spend(&self, spent: &crate::domain_store::metrics_fold::Spent<'_>) -> Result<()> {
+        self.store().lock_or_exit("the domain store").record_spend(spent)
+    }
+
+    fn prs_without_size(&self, now: alondra_core::Millis, limit: usize) -> Result<Vec<(String, String)>> {
+        self.store().lock_or_exit("the domain store").prs_without_size(now, limit)
+    }
+
+    fn record_pr_lines(&self, task_id: &str, lines: i64) -> Result<()> {
+        self.store().lock_or_exit("the domain store").record_pr_lines(task_id, lines)
+    }
+
+    fn registrable_worktree(&self, path: &Path) -> std::result::Result<(), String> {
+        let rules = self.store().lock_or_exit("the domain store").protected().clone();
+        rules.registrable(path)
+    }
+
+    fn task_worktree(&self, task: &TaskId) -> Result<Option<String>> {
+        self.store().lock_or_exit("the domain store").task_worktree(task)
+    }
+
+    fn schedule_request_tools(&self, request_id: &RequestId) -> Result<Option<Vec<String>>> {
+        self.store().lock_or_exit("the domain store").schedule_request_tools(request_id)
+    }
+
+    fn inherited_worktree(&self, agent: &str) -> Result<Option<String>> {
+        self.store().lock_or_exit("the domain store").inherited_worktree(agent)
+    }
+
+    fn set_inherited_worktree(&self, agent: &str, dir: &str, from_agent: &str) -> Result<()> {
+        self.store().lock_or_exit("the domain store").set_inherited_worktree(agent, dir, from_agent, alondra_core::now_millis())
+    }
+
+    fn forget_inherited_worktree(&self, agent: &str) -> Result<()> {
+        self.store().lock_or_exit("the domain store").forget_inherited_worktree(agent)
+    }
+
+    fn record_model_decision(&self, decision: &crate::domain_store::model_metrics::Decision) -> Result<()> {
+        self.store().lock_or_exit("the domain store").record_model_decision(decision)
+    }
+
+    fn request_launch(&self, request_id: &RequestId) -> Result<Option<crate::domain_store::RequestLaunch>> {
+        self.store().lock_or_exit("the domain store").request_launch(request_id)
+    }
+
+    fn stored_launch_plan(&self, task: &TaskId) -> Result<Option<LaunchPlan>> {
+        self.store().lock_or_exit("the domain store").launch_plan(task)
+    }
+
+    fn was_schedule_launch_failed(&self, request_id: &RequestId) -> Result<bool> {
+        self.store().lock_or_exit("the domain store").was_schedule_launch_failed(request_id)
+    }
+
+    fn record_session_start(&self, started: &alondra_engine_ports::journal::metrics::SessionStarted<'_>) -> Result<()> {
+        self.store().lock_or_exit("the domain store").record_session_start(started)
+    }
+
+    fn keep_attachments(&self) -> Result<(usize, Vec<String>)> {
+        let mut store = self.store().lock_or_exit("the domain store");
+        let roots = worktree_roots(&*store.load()?);
+        let (mut kept, mut lost) = (0, vec![]);
+        for (interaction, id, name, digest, reference) in store.attachments_kept_elsewhere()? {
+            match crate::domain_content::keep_attachment(self.home(), &reference, &digest, &roots) {
+                Ok(copy) => {
+                    store.keep_attachment_at(&interaction, &id, &copy)?;
+                    kept += 1;
+                }
+                Err(_) => lost.push(format!("{interaction}: {name}")),
+            }
+        }
+        Ok((kept, lost))
+    }
+}

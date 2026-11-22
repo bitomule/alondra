@@ -49,19 +49,27 @@ pub const NO_HOST: &str = "this Alondra has no Agent SDK host, so no task or orc
 /// Set at startup only in a daemon that has an SDK backend: otherwise no task ever runs through the
 /// SDK.
 #[derive(Default)]
-struct Enabled(std::sync::OnceLock<(SdkBackend, std::sync::Weak<DomainRuntime>)>);
+struct Enabled(std::sync::OnceLock<(SdkBackend, std::sync::Weak<dyn alondra_engine_ports::Runtime>)>);
 
 crate::extension!(Enabled);
 
 impl DomainRuntime {
     /// Only a daemon whose configuration names an SDK backend calls this, once.
     pub fn enable_sdk(self: &std::sync::Arc<Self>, backend: SdkBackend) {
-        let _ = self.extension::<Enabled>().0.set((backend, std::sync::Arc::downgrade(self)));
+        let shared: std::sync::Arc<dyn alondra_engine_ports::Runtime> = self.clone();
+        let runtime = std::sync::Arc::downgrade(&shared);
+        let _ = self.extension::<Enabled>().0.set((backend, runtime));
     }
+}
 
-    /// The SDK backend and the runtime its owners run on, when this daemon has one.
-    pub fn sdk(&self) -> Option<(&SdkBackend, std::sync::Arc<DomainRuntime>)> {
-        let (backend, runtime) = self.extension::<Enabled>().0.get()?;
+/// The SDK backend of a runtime and the runtime its owners run on, when the daemon has one.
+pub trait SdkOf {
+    fn sdk(&self) -> Option<(&SdkBackend, std::sync::Arc<dyn alondra_engine_ports::Runtime>)>;
+}
+
+impl<R: alondra_engine_ports::Runtime + ?Sized> SdkOf for R {
+    fn sdk(&self) -> Option<(&SdkBackend, std::sync::Arc<dyn alondra_engine_ports::Runtime>)> {
+        let (backend, runtime) = alondra_engine_ports::extension::<Enabled>(self.as_runtime()).0.get()?;
         Some((backend, runtime.upgrade()?))
     }
 }

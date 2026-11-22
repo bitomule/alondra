@@ -6,6 +6,7 @@
 //! merge counts only when GitHub reports the PR merged. A merge GitHub refuses goes back to the
 //! node with GitHub's reason, as feedback on that delivery. A merge the user authorized does not
 //! wait for required checks the rulesets let the signed-in account bypass: it merges past them.
+use alondra_engine_ports::Runtime as _;
 use alondra_daemon_support::locks::Poisonable as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;

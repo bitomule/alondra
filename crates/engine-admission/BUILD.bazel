@@ -29,7 +29,6 @@ application_crate(
         "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
-        "//crates/engine-kernel:engine_kernel",
     ],
 )
 

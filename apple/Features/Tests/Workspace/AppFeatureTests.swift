@@ -274,7 +274,7 @@ final class AppFeatureTests: XCTestCase {
     // MARK: Hand-off
 
     @MainActor
-    func testAnActionSentFromAReviewThatLeftIsDeliveredByTheAppAndARefusalSaysWhyWithoutBringingTheCardBack() async throws {
+    func testAnActionSentFromAReviewThatLeftIsDeliveredByTheAppAndARefusalBringsTheCardBackWithItsTextAndWhy() async throws {
         let gate = Gate()
         let cards = ["c-1", "c-2"]
         var state = AppFeature.State()
@@ -290,7 +290,8 @@ final class AppFeatureTests: XCTestCase {
         }
         await store.send(.open(.inbox, key("card:c-1")))
         let id = try XCTUnwrap(store.state.inboxPath.ids.first)
-        let request = ActionRequest(commandId: "c", dataEpoch: try XCTUnwrap(store.state.triage.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "accept:c-1@1")
+        let request = ActionRequest(commandId: "c", dataEpoch: try XCTUnwrap(store.state.triage.screen.document).dataEpoch, client: .ios, lang: "en",
+                                    actionId: "accept:c-1@1", input: ActionInput(text: "Ship it on Friday"))
 
         await store.send(.inboxPath(.element(id: id, action: .cardDetail(.delegate(.handOff(request))))))
         await store.receive(\.triage.handedOff)
@@ -300,9 +301,33 @@ final class AppFeatureTests: XCTestCase {
         await store.receive(\.handOffAnswered)
         XCTAssertEqual(performed.value, [request])
         await store.receive(\.triage.handOffSettled)
-        XCTAssertEqual(store.state.triage.orderedIDs, ["c-2"], "never back as unanswered")
-        XCTAssertEqual(store.state.triage.currentID, "c-2")
+        XCTAssertEqual(store.state.triage.currentID, "c-1", "the refused card is back in front")
+        XCTAssertEqual(store.state.triage.cards[id: "c-1"]?.reply, "Ship it on Friday", "with what was written")
+        XCTAssertEqual(store.state.triage.cards[id: "c-1"]?.actions.error, "This card has changed")
         XCTAssertEqual(store.state.notice?.event, .failure("This card has changed"))
+    }
+
+    @MainActor
+    func testAnAnswerFromACardScreenTheMacNoLongerHasStaysOutAndSaysTheCardIsGone() async throws {
+        let cards = ["c-1", "c-2"]
+        var state = AppFeature.State()
+        state.triage.screen.document = try Fixtures.home(queue: cards)
+        state.triage.orderedIDs = cards
+        let store = makeStore(state)
+        store.dependencies.viewsClient.observe = { _ in AsyncThrowingStream { $0.finish() } }
+        store.dependencies.viewsClient.perform = { _ in try Responses.noLongerAvailable() }
+        await store.send(.open(.inbox, key("card:c-1")))
+        let id = try XCTUnwrap(store.state.inboxPath.ids.first)
+        let request = ActionRequest(commandId: "c", dataEpoch: try XCTUnwrap(store.state.triage.screen.document).dataEpoch, client: .ios, lang: "en",
+                                    actionId: "accept:c-1@1", input: ActionInput(text: "Ship it on Friday"))
+
+        await store.send(.inboxPath(.element(id: id, action: .cardDetail(.delegate(.handOff(request))))))
+        await store.receive(\.triage.handedOff)
+        await store.receive(\.handOffAnswered)
+        await store.receive(\.triage.handOffSettled)
+        await store.receive(\.triage.delegate.answerNotSent, OutcomeStyle.cardGone)
+        XCTAssertEqual(store.state.triage.orderedIDs, ["c-2"], "the Mac no longer asks it: it does not come back")
+        XCTAssertEqual(store.state.notice?.event, .failure(OutcomeStyle.cardGone))
     }
 
     @MainActor

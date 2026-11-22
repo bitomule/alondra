@@ -1,7 +1,7 @@
 //! Claude Code's `claude --bg` sessions on this Mac as the engine meets them: running `claude`,
 //! listing and stopping a session, and the moves of such sessions to the Agent SDK that an earlier
 //! release planned, one at a time.
-use crate::domain_runtime::DomainRuntime;
+use crate::Runtime;
 use crate::domain_store::{Handover, HandoverProcess, HandoverStep};
 use crate::locks::Poisonable as _;
 use alondra_core::clock;
@@ -147,8 +147,8 @@ impl Handovers {
     }
 }
 
-pub fn handover_of(domain: &DomainRuntime, agent: &AgentId) -> Option<Handover> {
-    match domain.store.lock_or_exit("the domain store").handovers() {
+pub fn handover_of(domain: &dyn Runtime, agent: &AgentId) -> Option<Handover> {
+    match domain.store().lock_or_exit("the domain store").handovers() {
         Ok(handovers) => handovers.into_iter().rev().find(|handover| handover.node == *agent),
         Err(error) => {
             log!("could not read the SDK handover journal: {error:#}");
@@ -158,7 +158,7 @@ pub fn handover_of(domain: &DomainRuntime, agent: &AgentId) -> Option<Handover> 
 }
 
 /// The task and SDK node that took over `agent`'s session, once its move is done.
-pub fn successor(domain: &DomainRuntime, agent: &AgentId) -> Option<(TaskId, AgentId)> {
+pub fn successor(domain: &dyn Runtime, agent: &AgentId) -> Option<(TaskId, AgentId)> {
     handover_of(domain, agent).filter(|handover| handover.step == HandoverStep::Done).and_then(|handover| Some((handover.task, handover.agent?)))
 }
 
@@ -168,8 +168,8 @@ pub trait HandoversOf {
     fn handovers(&self) -> &Handovers;
 }
 
-impl HandoversOf for crate::domain_runtime::DomainRuntime {
+impl<R: alondra_engine_ports::Runtime + ?Sized> HandoversOf for R {
     fn handovers(&self) -> &Handovers {
-        self.extension()
+        alondra_engine_ports::extension(self.as_runtime())
     }
 }

@@ -42,6 +42,8 @@ public struct ActionFeature: Sendable {
         public var handsOff = false
         /// The Mac has not answered for a while; the send goes on retrying on its own.
         public var stalled = false
+        /// The actions answer a card of the queue: one the Mac no longer has says so.
+        public var answersCard = false
         public var dataEpoch: String {
             didSet {
                 guard dataEpoch != oldValue else { return }
@@ -289,15 +291,20 @@ public struct ActionFeature: Sendable {
                 guard let action = state.action else { return .none }
                 guard draft.dataEpoch == state.dataEpoch, request.dataEpoch == state.dataEpoch,
                       state.pending == draft else { return .none }
-                state.pending = request
                 state.stamp = action.stamp ?? String(localized: "Sent")
+                if state.handsOff {
+                    let stall = stopStall(&state)
+                    state.pending = nil; state.inFlight = false; state.unsure = nil
+                    return .concatenate(stall, .send(.sending(request)), .send(.sent(request)))
+                }
+                state.pending = request
                 return deliver(request)
             case .sending, .sent, .settled:
                 return .none
             case let .answered(request, reply):
                 guard request.dataEpoch == state.dataEpoch else { return .none }
                 guard state.pending?.commandId == request.commandId else {
-                    switch OutcomeStyle(reply) {
+                    switch state.outcome(reply, answering: request) {
                     case .success(let message): return .send(.delegate(.completed(message)))
                     case .failure(let message): return .send(.delegate(.failed(message)))
                     case .ask(let changed): return .send(.delegate(.failed(changed.title)))
@@ -305,11 +312,12 @@ public struct ActionFeature: Sendable {
                 }
                 return .send(.response(reply))
             case let .response(reply):
+                let style = state.pending.map { state.outcome(reply, answering: $0) } ?? OutcomeStyle(reply)
                 let stall = stopStall(&state)
                 state.inFlight = false
                 state.pending = nil
                 state.unsure = nil
-                return .merge(stall, respond(reply, &state))
+                return .merge(stall, respond(reply, style, &state))
             case let .failed(message):
                 state.inFlight = false
                 state.stamp = nil
@@ -360,8 +368,8 @@ public struct ActionFeature: Sendable {
         }
     }
 
-    private func respond(_ reply: ActionResponse, _ state: inout State) -> Effect<Action> {
-        switch OutcomeStyle(reply) {
+    private func respond(_ reply: ActionResponse, _ style: OutcomeStyle, _ state: inout State) -> Effect<Action> {
+        switch style {
         case .success(let message):
             state.stamp = reply.stamp ?? state.stamp ?? state.action?.stamp
             state.error = nil
@@ -395,29 +403,26 @@ public struct ActionFeature: Sendable {
     }
 
     /// The stamp appears once the intent is prepared, before the daemon answers. Delivery runs on
-    /// even if the screen goes away. A screen that leaves on sending hands the request off
-    /// unprepared, to whoever outlives it.
+    /// even if the screen goes away. A screen that leaves on sending hands the request off once it
+    /// is saved on this device, to whoever outlives it; until then it keeps what was written.
     private func send(_ state: inout State) -> Effect<Action> {
         guard let action = state.action, let id = action.id else { return .none }
         let request = state.pending ?? makeRequest(state, actionID: id)
         state.error = nil
-        if state.handsOff {
-            state.stamp = action.stamp ?? String(localized: "Sent")
-            state.pending = nil; state.inFlight = false
-            return .concatenate(.send(.sending(request)), .send(.sent(request)))
-        }
         state.stamp = nil
         state.pending = request
         state.inFlight = true
         state.stalled = false
-        return .merge(.send(.sending(request)), stallTimer(request), .run { [viewsClient] send in
+        let preparation = Effect<Action>.run { [viewsClient] send in
             do {
                 let prepared = try await viewsClient.prepare(request)
                 try Task.checkCancellation()
                 await send(.prepared(request, prepared))
             } catch { await send(.undelivered(request, SendFailure(preparation: error))) }
         }
-        .cancellable(id: DeliveryID(commandID: request.commandId)))
+        .cancellable(id: DeliveryID(commandID: request.commandId))
+        if state.handsOff { return .merge(stallTimer(request), preparation) }
+        return .merge(.send(.sending(request)), stallTimer(request), preparation)
     }
 
     private func deliver(_ request: ActionRequest) -> Effect<Action> {
@@ -450,6 +455,12 @@ public struct ActionFeature: Sendable {
         guard let unsure = state.unsure, unsure.dataEpoch == request.dataEpoch, unsure.actionId == request.actionId,
               unsure.optionId == request.optionId, unsure.input == request.input else { return request }
         return unsure
+    }
+}
+
+extension ActionFeature.State {
+    func outcome(_ reply: ActionResponse, answering request: ActionRequest) -> OutcomeStyle {
+        answersCard ? OutcomeStyle(reply, answering: request) : OutcomeStyle(reply)
     }
 }
 

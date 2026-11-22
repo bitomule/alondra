@@ -5,6 +5,7 @@
 //! It runs when the daemon starts, every 15 minutes for an account nothing else measured meanwhile,
 //! and right after Claude refused work for running out. A probe that fails keeps the last good
 //! reading, which says how old it is. A stale reading retries at once, then backs off up to 30 seconds.
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
@@ -22,7 +23,7 @@ use alondra_core::usage::{AccountUsage, Share, UsageReading, WindowKind, WindowR
 use alondra_core::{Millis, now_millis};
 use serde::Deserialize;
 
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::sdk_backend::SdkBackend;
 
 pub(crate) const EVERY: Millis = 15 * 60_000;
@@ -55,16 +56,16 @@ impl Measured {
 }
 
 /// The accounts' usage together at `now`, as the gauges and the pace card read it.
-pub fn usage(domain: &DomainRuntime, now: Millis) -> Option<alondra_core::usage::Usage> {
+pub fn usage(domain: &dyn Runtime, now: Millis) -> Option<alondra_core::usage::Usage> {
     domain.read().index().usage(now, &alondra_daemon_engine_model::local_day(now))
 }
 
 /// Records what `account` said of its usage, unless the domain already holds it.
-pub fn record(domain: &DomainRuntime, account: &AccountId, reading: UsageReading, now: Millis) {
+pub fn record(domain: &dyn Runtime, account: &AccountId, reading: UsageReading, now: Millis) {
     record_for_provider(domain, &alondra_core::accounts::AccountKey::new(Provider::Claude, account.clone()), reading, now);
 }
 
-pub fn record_for_provider(domain: &DomainRuntime, account: &alondra_core::accounts::AccountKey, reading: UsageReading, now: Millis) {
+pub fn record_for_provider(domain: &dyn Runtime, account: &alondra_core::accounts::AccountKey, reading: UsageReading, now: Millis) {
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: domain.read().state().data_epoch.clone(),
@@ -194,7 +195,7 @@ fn available_accounts(state: &DomainState, now: Millis) -> Vec<alondra_core::acc
     eligible
 }
 
-pub fn follow(domain: &DomainRuntime, now: Millis) {
+pub fn follow(domain: &dyn Runtime, now: Millis) {
     let read = domain.read();
     let state = read.state();
     domain.live().measured.sync(state);
@@ -213,7 +214,7 @@ pub fn follow(domain: &DomainRuntime, now: Millis) {
 }
 
 /// Availability is checked across providers. A missing account or unknown reset cannot imply a timed quota limit.
-pub(crate) fn hold(domain: &DomainRuntime, now: Millis) {
+pub(crate) fn hold(domain: &dyn Runtime, now: Millis) {
     let read = domain.read();
     let state = read.state();
     if !available_accounts(state, now).is_empty() { return; }
@@ -230,7 +231,7 @@ pub(crate) fn hold(domain: &DomainRuntime, now: Millis) {
 
 /// Records that Claude refused `account` work for its usage, until `until` when Claude said: its
 /// readings say it ran out, so no new work starts on it, and the next probe measures the rest.
-pub fn record_limit(domain: &DomainRuntime, account: &AccountId, until: Option<Millis>, now: Millis) {
+pub fn record_limit(domain: &dyn Runtime, account: &AccountId, until: Option<Millis>, now: Millis) {
     let until = until.or_else(|| domain.live().measured.reset_after_limit(account, now)).filter(|until| *until > now);
     let window = WindowReading { kind: WindowKind::Session, used: Share::FULL, resets_at: until, exhausted: true };
     record(domain, account, UsageReading { windows: vec![window], plan: None, complete: false }, now);
@@ -313,7 +314,7 @@ impl ProbeSchedule {
     }
 }
 
-async fn measure_account(domain: &DomainRuntime, home: &Path, account: &AccountId) -> crate::native_probe::Outcome {
+async fn measure_account(domain: &dyn Runtime, home: &Path, account: &AccountId) -> crate::native_probe::Outcome {
     if !probed_accounts(domain.read().state()).iter().any(|status| status.id == *account) {
         return crate::native_probe::Outcome::Finished;
     }
@@ -350,13 +351,13 @@ async fn measure_account(domain: &DomainRuntime, home: &Path, account: &AccountI
 
 /// Keeps every account measured, and the live view's copy and the Mac-wide pause in step with
 /// what the accounts say.
-pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
+pub async fn run(domain: Arc<dyn Runtime>, home: std::path::PathBuf) {
     let mut changes = domain.subscribe();
     let mut pauses = domain.live().usage_pause.subscribe();
     let mut schedule = ProbeSchedule::default();
     loop {
         let now = now_millis();
-        follow(&domain, now);
+        follow(&*domain, now);
         let read = domain.read();
         let state = read.state();
         let accounts: Vec<AccountId> = probed_accounts(state).into_iter().map(|account| account.id.clone()).collect();
@@ -373,7 +374,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
         }
         for account in ready {
             schedule.probed.insert(account.clone(), now_millis());
-            let outcome = measure_account(&domain, &home, &account).await;
+            let outcome = measure_account(&*domain, &home, &account).await;
             schedule.finished(&account, outcome, now_millis());
         }
         let now = now_millis();

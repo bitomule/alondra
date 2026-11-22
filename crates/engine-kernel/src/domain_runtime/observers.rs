@@ -1,7 +1,6 @@
 //! How the subsystems hear of the runtime's commits without the runtime knowing them: each one
 //! registers a [`CommitObserver`] when the engine opens the runtime, and every commit tells them
 //! in that order.
-use super::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_domain_rules::{Actor, Command, CommandOutcome, DomainState};
 
@@ -16,17 +15,17 @@ pub trait CommitObserver: Send + Sync {
 
     /// A command this subsystem carries out itself instead of committing it, such as Resume on the
     /// card of a pause it holds.
-    fn carries_out<'a>(&'a self, _domain: &'a DomainRuntime, _actor: &Actor, _command: &Command) -> Option<Carried<'a>> {
+    fn carries_out<'a>(&'a self, _domain: &'a dyn alondra_engine_ports::Runtime, _actor: &Actor, _command: &Command) -> Option<Carried<'a>> {
         None
     }
 
     /// Readers are about to see `after` in place of `before`; the writer lock is still held.
-    fn published(&self, _domain: &DomainRuntime, _before: &DomainState, _after: &DomainState) {}
+    fn published(&self, _domain: &dyn alondra_engine_ports::Runtime, _before: &DomainState, _after: &DomainState) {}
 
     /// A command changed the domain to `state`; the writer lock is released.
-    fn changed(&self, _domain: &DomainRuntime, _state: &DomainState) {}
+    fn changed(&self, _domain: &dyn alondra_engine_ports::Runtime, _state: &DomainState) {}
 
     /// `command`, issued by the daemon or a client rather than through a bearer, changed the domain
     /// to `state`, after every observer heard of the change.
-    fn committed(&self, _domain: &DomainRuntime, _command: &Command, _state: &DomainState) {}
+    fn committed(&self, _domain: &dyn alondra_engine_ports::Runtime, _command: &Command, _state: &DomainState) {}
 }

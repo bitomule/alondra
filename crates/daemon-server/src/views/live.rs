@@ -1,3 +1,4 @@
+use alondra_daemon_engine::domain_runtime::RuntimeRecords as _;
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::contexts::ContextsOf as _;
@@ -664,7 +665,7 @@ async fn gather_inner(
         waits_for_session,
         launch_refusals,
         start_waits,
-        pacing: client.domain.admission().live(&client.domain, now),
+        pacing: client.domain.admission().live(&*client.domain, now),
         allowed_rules: keyed.allowed_rules,
         allow_always_missing: keyed.allow_always_missing,
         mcp_probes: keyed.mcp_probes,
@@ -750,7 +751,7 @@ pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_dom
         .find_map(|task| client.domain.contexts().used(&task.id))
         .map(|used| (used.percent(), used.window));
     let reported_wait = reading.reported_wait.as_ref()
-        .and_then(|(provider, instance)| alondra_daemon_engine::sdk_live::wait_file(&client.domain, *provider, instance))
+        .and_then(|(provider, instance)| alondra_daemon_engine::sdk_live::wait_file(&*client.domain, *provider, instance))
         .and_then(|path| alondra_daemon_engine::sdk_live::read_wait_file(&path))
         .map(|wait| alondra_view_model::LiveReportedWait { what: wait.what, progress: wait.progress, detail: wait.detail, since: timestamp(wait.since_ms) });
     Some(LiveNode {
@@ -989,7 +990,7 @@ async fn gather_keyed(
 fn allowed_rules(client: &crate::client_routes::Client, keys: &[String]) -> (Vec<alondra_view_model::LiveAllowedRule>, Vec<String>) {
     use crate::allow_always::RuleState;
     let rows = if keys.iter().any(|key| key == "machine") {
-        crate::allow_always::reconcile(&client.domain)
+        crate::allow_always::reconcile(&*client.domain)
     } else {
         client.domain.live_read().allowed_rules().unwrap_or_default()
     };
@@ -1988,13 +1989,13 @@ mod cache_tests {
             ] });
             domain.report(Envelope { session_id: agent, report: Report::TurnStart }, now);
         }
-        assert!(domain.admission().hold_back(&domain, "agent-harness", crate::pauses::Reason::Declared {
+        assert!(domain.admission().hold_back(&*domain, "agent-harness", crate::pauses::Reason::Declared {
             reason: "The build ran out of memory".into(),
         }, now));
 
         let read = domain.read();
         let state = Arc::clone(read.state());
-        let gate = domain.admission().snapshot(&domain, now).unwrap();
+        let gate = domain.admission().snapshot(&*domain, now).unwrap();
         let live = gather_at(&client, &read, Lang::En, &[], false, false, now).await;
         let tasks = client.views.render("tasks", &read, &live, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         let mut listed = vec![];
@@ -2513,7 +2514,7 @@ mod tests {
     /// The tasks one live gather looks at in a domain of `nodes` nodes of the Agent SDK, one task each.
     fn tasks_read_by_a_gather(nodes: usize) -> u64 {
         let fixture = alondra_daemon_engine::domain_transport::fixtures::Fixture::new();
-        let domain = fixture.open();
+        let domain = fixture.open_domain();
         for n in 0..nodes {
             let (agent, request, task) = (format!("sdk-{n}"), format!("request-{n}"), format!("task-{n}"));
             run(&domain, Actor::System, &format!("register-{n}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone(), at: 0 });
@@ -2524,7 +2525,7 @@ mod tests {
                 task_id: task.as_str().into(), request_id: request.as_str().into(), title: "Task".into(), agent_id: None, review_prs: false,
                 dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
             });
-            alondra_daemon_engine::domain_transport::fixtures::admitted_sdk_execution(&domain, &task, &agent, n);
+            alondra_daemon_engine::domain_transport::fixtures::admitted_sdk_execution(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &task, &agent, n);
         }
         let client = crate::client_routes::Client::open(domain.clone(), &fixture.0, Default::default());
         let read = domain.read();

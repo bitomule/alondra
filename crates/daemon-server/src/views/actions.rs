@@ -3,6 +3,7 @@
 //! Action IDs deliberately carry the subject revision. The renderer keeps no action table;
 //! every submission is checked against the current domain snapshot and then committed through
 //! the same command path as the resource API.
+use alondra_daemon_engine::sdk_backend::SdkOf as _;
 use alondra_engine_admission::AdmissionOf as _;
 
 use alondra_engine_sdk::sdk_owner::SdkOwners as _;
@@ -714,7 +715,7 @@ async fn execute_external(
             let limit = match request.option_id.as_deref() {
                 Some(alondra_core::options::AUTO) => alondra_core::options::NodeLimit::Auto,
                 Some(count) => match count.parse::<u32>() {
-                    Ok(count) if (1..=crate::admission::most_working_nodes(&domain)).contains(&count) => alondra_core::options::NodeLimit::Fixed(count),
+                    Ok(count) if (1..=crate::admission::most_working_nodes(&*domain)).contains(&count) => alondra_core::options::NodeLimit::Fixed(count),
                     _ => return Ok(rejected_field(lang, "option_id", "Choose an option")),
                 },
                 None => return Ok(rejected_field(lang, "option_id", "Choose an option")),
@@ -798,7 +799,7 @@ async fn execute_external(
             let Ok(account) = alondra_core::accounts::AccountId::parse(&action.subject) else { return Ok(rejected_field(lang, "account", "Choose an account")); };
             let key = alondra_core::accounts::AccountKey { provider, account };
             let (runtime, home) = (client.domain.clone(), home.to_path_buf());
-            match tokio::task::spawn_blocking(move || crate::accounts::refresh_models(&runtime, &home, &key)).await? {
+            match tokio::task::spawn_blocking(move || crate::accounts::refresh_models(&*runtime, &home, &key)).await? {
                 Ok(()) => Ok(to_applied(200, json!({"models_refreshed": true}))),
                 Err(message) => Ok(error_value("unavailable", &message)),
             }
@@ -822,7 +823,7 @@ async fn execute_external(
         }
         Verb::AccountCheck => {
             let (runtime, home) = (client.domain.clone(), home.to_path_buf());
-            tokio::task::spawn_blocking(move || crate::accounts::check(&runtime, &home)).await?;
+            tokio::task::spawn_blocking(move || crate::accounts::check(&*runtime, &home)).await?;
             Ok(to_applied(200, json!({"accounts_checked": true})))
         }
         Verb::AccountOrder => {
@@ -2440,11 +2441,11 @@ for line in sys.stdin:
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "4", "es"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert_eq!(fs::read_to_string(&options).unwrap(), "# mine\nmax_working_nodes = 4\n\n[defaults]\neffort = \"light\"\n");
-        assert_eq!(domain.admission().live(&domain, alondra_core::now_millis()).unwrap().fixed, Some(4));
+        assert_eq!(domain.admission().live(&*domain, alondra_core::now_millis()).unwrap().fixed, Some(4));
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "auto", "en"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert!(fs::read_to_string(&options).unwrap().contains("max_working_nodes = \"auto\""));
-        let most = crate::admission::most_working_nodes(&domain);
+        let most = crate::admission::most_working_nodes(&*domain);
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", &most.to_string(), "es"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", &(most + 1).to_string(), "es"), None, || Ok(())).await.unwrap();
@@ -3590,7 +3591,7 @@ for line in sys.stdin:
         let refused = execute_action(&domain, &client, &home.0, "test-device", interrupt("0b6f9a52-3c1e-4d7a-9f20-6a1b2c3d4e5f"), None, || Ok(())).await.unwrap();
         assert_eq!((refused["outcome"].as_str(), refused["code"].as_str()), (Some("rejected"), Some("session_unreachable")), "{refused}");
 
-        let node = crate::node_push::testing::Node::connect(&domain, "agent-a");
+        let node = crate::node_push::testing::Node::connect(domain.clone(), "agent-a");
         let applied = execute_action(&domain, &client, &home.0, "test-device", interrupt("1c7f0b63-4d2f-4e8b-8a31-7b2c3d4e5f60"), None, || Ok(())).await.unwrap();
         assert_eq!((applied["outcome"].as_str(), applied["stamp"].as_str()), (Some("applied"), Some("Interrumpido")), "{applied}");
         tokio::task::yield_now().await;

@@ -1,3 +1,4 @@
+use crate::domain_runtime::DomainRuntime;
 use super::*;
 use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
 use serde_json::{Value, json};
@@ -55,12 +56,12 @@ impl World {
             ran.lock().unwrap().push(args.join(" "));
             cli(self, args);
         };
-        check(&self.domain, &self.reports(), repo.map(Into::into), &run, &mut memory);
+        check(&*self.domain, &self.reports(), repo.map(Into::into), &run, &mut memory);
         self.memory = memory;
     }
 
     fn open(&self) -> Vec<(InteractionId, ReportHeldCard)> {
-        let mut open: Vec<_> = ours(&self.domain).into_iter().filter(|card| card.answer.is_none()).map(|card| (card.id, card.card.unwrap())).collect();
+        let mut open: Vec<_> = ours(&*self.domain).into_iter().filter(|card| card.answer.is_none()).map(|card| (card.id, card.card.unwrap())).collect();
         open.sort_by(|a, b| a.0.0.cmp(&b.0.0));
         open
     }
@@ -214,7 +215,7 @@ fn a_repository_changed_again_replaces_the_card_and_sends_nothing_nobody_confirm
 async fn an_answer_an_earlier_daemon_saw_is_not_acted_on_again() {
     let world = world();
     world.held(CURRENT, None);
-    raise(&world.domain, &card(None));
+    raise(&*world.domain, &card(None));
     let (id, _) = world.open().remove(0);
     world.answer(&id, SEND_OPTION);
     let ran = world.ran.clone();

@@ -280,6 +280,23 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(inWindow: true, pixelPrecision: 0.9999) { Harness(store: store) }
     }
 
+    /// An answer the Mac refused, or that could not be saved, brings its card back with what was written and why.
+    func test_aRefusedAnswerComesBackWithItsTextAndWhy() throws {
+        let store = try single(try Fixtures.card(Fixtures.questionID)) {
+            $0.cards[0].reply = "Only if the title stays on one line"
+            $0.cards[0].actions.error = "Your Mac couldn’t do it. Nothing changed; try again."
+        }
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_aRefusedAnswerComesBackWithItsTextAndWhy_es() throws {
+        let store = try single(try Fixtures.spanishCard(Fixtures.questionID), spanish: true) {
+            $0.cards[0].reply = "Solo si el título cabe en una línea"
+            $0.cards[0].actions.error = "Tu Mac no pudo hacerlo. No cambió nada; inténtalo de nuevo."
+        }
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
     func test_decideAnswered() throws {
         let store = try single(try Fixtures.card(Fixtures.questionID)) { state in
             state.cards[0].actions.action = state.cards[0].buttons.first

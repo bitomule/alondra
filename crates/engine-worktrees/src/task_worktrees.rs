@@ -7,12 +7,13 @@ use alondra_engine_ports::worktrees::{Conversations, TaskWorktree};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use crate::locks::Poisonable as _;
 
 /// Mounts a recorded worktree's volume from metadata kept on the daemon's own disk.
-pub async fn ready(domain: &DomainRuntime, path: &str) -> Result<()> {
-    let storage = domain.store.lock_or_exit("the domain store").worktree_storage_at(path)?;
+pub async fn ready(domain: &dyn Runtime, path: &str) -> Result<()> {
+    let storage = domain.store().lock_or_exit("the domain store").worktree_storage_at(path)?;
     if let Some((path, storage)) = storage {
         let worktrees = domain.ports().worktrees();
         tokio::task::spawn_blocking(move || worktrees.restore(&path, &storage))
@@ -56,20 +57,20 @@ pub fn made_by_tool(payload: &Value) -> Option<Made> {
 }
 
 /// Records the worktree a `claude --bg` node's tool made as its task's.
-pub fn record_from_hook(domain: &DomainRuntime, agent: &AgentId, payload: &Value) -> Result<()> {
+pub fn record_from_hook(domain: &dyn Runtime, agent: &AgentId, payload: &Value) -> Result<()> {
     let Some(made) = made_by_tool(payload) else { return Ok(()) };
-    let state = domain.state()?;
+    let state = domain.state();
     let Some(task) = state.tasks.values().find(|t| t.agent_id.as_ref() == Some(agent) && !t.state.terminal()).map(|t| t.id.clone()) else {
         return Ok(());
     };
     record(domain, &task, made)
 }
 
-fn record(domain: &DomainRuntime, task: &TaskId, made: Made) -> Result<()> {
+fn record(domain: &dyn Runtime, task: &TaskId, made: Made) -> Result<()> {
     let (path, branch, origin) = match made {
         Made::At { path, branch, subagent } => (path, branch, if subagent { WorktreeOrigin::Subagent } else { WorktreeOrigin::Entered }),
         Made::Subagent { agent } => {
-            let launched = domain.launch_plan(task)?.map(|plan| plan.cwd);
+            let launched = domain.launch_plan(task).map(|plan| plan.cwd);
             let Some(own) = domain.task_worktree(task)?.or(launched) else {
                 log!("{task} has neither a worktree of its own nor a launch folder to place subagent {agent}'s: its close finds it in its provider's notes");
                 return Ok(());
@@ -86,10 +87,10 @@ fn record(domain: &DomainRuntime, task: &TaskId, made: Made) -> Result<()> {
 /// Records as the task's each worktree a provider noted the sessions of the task's conversations
 /// made that is still there and no task has: one whose making Alondra did not see, as when the
 /// daemon was down. Closing then settles it as any other. The task as the domain has it after.
-pub fn recover_noted(domain: &DomainRuntime, task: &Task) -> Result<Task> {
-    let state = domain.state()?;
+pub fn recover_noted(domain: &dyn Runtime, task: &Task) -> Result<Task> {
+    let state = domain.state();
     let worktrees = domain.ports().worktrees();
-    let records = domain.store.lock_or_exit("the domain store").conversations_metadata(&task.id).unwrap_or_else(|why| {
+    let records = domain.store().lock_or_exit("the domain store").conversations_metadata(&task.id).unwrap_or_else(|why| {
         log!("could not read the conversations of {}: {why}", task.id);
         vec![]
     });
@@ -107,14 +108,14 @@ pub fn recover_noted(domain: &DomainRuntime, task: &Task) -> Result<Task> {
         domain.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))?;
         log!("{path}, which its provider noted for a session of {}, is recorded as its worktree", task.id);
     }
-    Ok(domain.state()?.tasks.get(&task.id).cloned().unwrap_or_else(|| task.clone()))
+    Ok(domain.state().tasks.get(&task.id).cloned().unwrap_or_else(|| task.clone()))
 }
 
 /// The open task that goes on working in the worktree at `path` once `task` lets it go: one that
 /// holds it, or one whose launch plan starts it there, which then takes it. A folder that cannot
 /// be a worktree, as a projects root other tasks were launched in, is nobody's to take.
-pub fn heir(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Option<TaskId>> {
-    let state = domain.state()?;
+pub fn heir(domain: &dyn Runtime, task: &Task, path: &str) -> Result<Option<TaskId>> {
+    let state = domain.state();
     if let Some(heir) = state.worktree_held_by_other(path, &task.id) {
         return Ok(Some(heir.clone()));
     }
@@ -124,7 +125,7 @@ pub fn heir(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Option<Ta
     }
     let mut launched_there = None;
     for other in state.tasks.values().filter(|other| other.id != task.id && !other.over()) {
-        if domain.launch_plan(&other.id)?.is_some_and(|plan| Path::new(&plan.cwd) == Path::new(path)) {
+        if domain.launch_plan(&other.id).is_some_and(|plan| Path::new(&plan.cwd) == Path::new(path)) {
             launched_there = Some(other.id.clone());
             break;
         }
@@ -142,7 +143,7 @@ pub use alondra_engine_ports::worktrees::{Unreachable, settle_text};
 
 /// What each worktree of the task that the node did not give up, and no other open task goes on
 /// in, still holds that no remote has: the work that keeps the task from closing, by path.
-pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, String)> {
+pub async fn leftovers(domain: &dyn Runtime, task: &Task) -> Vec<(String, String)> {
     let recovered = recover_noted(domain, task).unwrap_or_else(|why| {
         log!("could not recover the subagent worktrees of {}: {why}", task.id);
         task.clone()
@@ -172,7 +173,7 @@ pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, Stri
 
 /// Deletes every worktree of the task that can go, the ones the node gave up as they are, and
 /// records how each ended. What could not go is returned, by path.
-pub async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(String, String)>> {
+pub async fn release_all(domain: &dyn Runtime, task: &Task) -> Result<Vec<(String, String)>> {
     let task = &recover_noted(domain, task)?;
     let (mut left, mut unreachable) = (vec![], vec![]);
     for (path, worktree) in task.open_worktrees() {
@@ -187,7 +188,7 @@ pub async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(Str
             log!("leaving the worktree {path} of {} to {heir}, which goes on working in it", task.id);
             WorktreeEnd::HandedOver
         } else {
-            match domain.ports().worktrees().release_finished_worktree(Path::new(path), None, worktree.discard, domain.state()?.merged_pr(task).is_some()).await {
+            match domain.ports().worktrees().release_finished_worktree(Path::new(path), None, worktree.discard, domain.state().merged_pr(task).is_some()).await {
                 Ok(TaskWorktree::Removed { freed }) => {
                     log!("deleting the worktree {path} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_view_model::Lang::En));
                     WorktreeEnd::Removed
@@ -222,8 +223,8 @@ pub async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(Str
 /// itself) left it recorded as ended, so no later close would ever look at it again. It goes, and
 /// the record says so. A worktree with anything in it, one an open task still holds, and one on a
 /// volume that is not mounted are never touched. Returns how many went.
-pub async fn sweep_shells(domain: &DomainRuntime) -> Result<usize> {
-    let state = domain.state()?;
+pub async fn sweep_shells(domain: &dyn Runtime) -> Result<usize> {
+    let state = domain.state();
     let worktrees = domain.ports().worktrees();
     let mut gone = 0;
     for task in state.tasks.values().filter(|task| task.over()) {
@@ -257,16 +258,16 @@ pub async fn sweep_shells(domain: &DomainRuntime) -> Result<usize> {
 }
 
 /// Whether another task that has not ended works in `path`, or will start there.
-pub(crate) fn in_use(domain: &DomainRuntime, state: &DomainState, task: &TaskId, path: &str) -> bool {
+pub(crate) fn in_use(domain: &dyn Runtime, state: &DomainState, task: &TaskId, path: &str) -> bool {
     state.worktree_held_by_other(path, task).is_some()
         || state.tasks.values().filter(|other| &other.id != task && !other.over())
-            .any(|other| domain.launch_plan(&other.id).ok().flatten().is_some_and(|plan| Path::new(&plan.cwd) == Path::new(path)))
+            .any(|other| domain.launch_plan(&other.id).is_some_and(|plan| Path::new(&plan.cwd) == Path::new(path)))
 }
 
 /// Whether Alondra may look into or delete the recorded `path`: it is gone, an empty folder git
 /// left behind, or still a worktree.
 /// Why not, otherwise.
-pub fn may_handle(domain: &DomainRuntime, path: &str) -> std::result::Result<(), String> {
+pub fn may_handle(domain: &dyn Runtime, path: &str) -> std::result::Result<(), String> {
     let worktrees = domain.ports().worktrees();
     match worktrees.exists(Path::new(path)) && !worktrees.is_empty_shell(Path::new(path)) {
         true => domain.registrable_worktree(Path::new(path)),

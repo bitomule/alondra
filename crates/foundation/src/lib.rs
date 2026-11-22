@@ -1,5 +1,6 @@
 #[macro_use]
 pub mod log;
+pub mod principal;
 pub mod artifact_digest;
 pub mod changes;
 pub mod clock;

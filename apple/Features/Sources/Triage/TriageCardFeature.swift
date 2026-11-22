@@ -28,6 +28,7 @@ public struct TriageCardFeature: Sendable {
             self.id = id
             screen = ScreenFeature.State(key: .card(id))
             actions = .device(dataEpoch: dataEpoch)
+            actions.answersCard = true
         }
 
         public var card: Card? {

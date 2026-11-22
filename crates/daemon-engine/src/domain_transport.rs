@@ -11,7 +11,8 @@ use crate::allow_always::AllowAlwaysWait as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_agent_lifecycle as lifecycle;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
+
 use crate::domain_store::OutboxMessage;
 use crate::node_reports::Report;
 use alondra_core::delivery::State;
@@ -27,6 +28,32 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use alondra_daemon_support::blocking_work::BlockingWork;
+
+/// The one worker the hooks' writes run on, in the order they arrive.
+struct HookWork(BlockingWork);
+
+crate::extension!(HookWork, |_: &dyn Runtime| HookWork(BlockingWork::new(1)));
+
+/// The workers that answer a hook's guard, apart from the hooks' writes.
+struct GuardWork(BlockingWork);
+
+crate::extension!(GuardWork, |_: &dyn Runtime| GuardWork(BlockingWork::new(2)));
+
+pub trait TransportWork {
+    fn hook_work(&self) -> &BlockingWork;
+    fn guard_work(&self) -> &BlockingWork;
+}
+
+impl<R: Runtime + ?Sized> TransportWork for R {
+    fn hook_work(&self) -> &BlockingWork {
+        &alondra_engine_ports::extension::<HookWork>(self.as_runtime()).0
+    }
+
+    fn guard_work(&self) -> &BlockingWork {
+        &alondra_engine_ports::extension::<GuardWork>(self.as_runtime()).0
+    }
+}
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -39,7 +66,7 @@ struct Envelope {
     payload: Value,
 }
 
-pub async fn serve(listener: UnixListener, domain: Arc<DomainRuntime>) -> Result<()> {
+pub async fn serve(listener: UnixListener, domain: Arc<dyn Runtime>) -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await.context("accepting local hook")?;
         let domain = domain.clone();
@@ -51,7 +78,7 @@ pub async fn serve(listener: UnixListener, domain: Arc<DomainRuntime>) -> Result
     }
 }
 
-pub async fn handle(mut stream: UnixStream, domain: &Arc<DomainRuntime>) -> Result<()> {
+pub async fn handle(mut stream: UnixStream, domain: &Arc<dyn Runtime>) -> Result<()> {
     let len = stream.read_u32().await.context("reading the frame")? as u64;
     if len > MAX_HOOK_BYTES {
         bail!("hook input exceeds {MAX_HOOK_BYTES} bytes");
@@ -78,16 +105,16 @@ pub async fn handle(mut stream: UnixStream, domain: &Arc<DomainRuntime>) -> Resu
     answer_hook(stream, domain, frame).await
 }
 
-async fn answer_hook<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, domain: &Arc<DomainRuntime>, frame: Value) -> Result<()> {
+async fn answer_hook<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, domain: &Arc<dyn Runtime>, frame: Value) -> Result<()> {
     let envelope: Envelope = serde_json::from_value(frame).context("invalid local hook envelope")?;
     let event = text(&envelope.payload, "hook_event_name").unwrap_or_else(|| "unnamed".into());
     let payload = Arc::new(envelope.payload);
     let first = if event == "PreToolUse" {
         let checking = domain.clone();
         let input = payload.clone();
-        domain.guard_work.run(move || answer_first(&checking, &input)).await?
+        domain.guard_work().run(move || answer_first(&*checking, &input)).await?
     } else {
-        answer_first(domain, &payload)
+        answer_first(&**domain, &payload)
     };
     if let Some(reply) = first {
         let written = write_reply(&mut stream, 200, &serde_json::to_vec(&reply)?).await;
@@ -118,7 +145,7 @@ async fn write_reply<S: AsyncWrite + Unpin>(stream: &mut S, status: u16, body: &
 /// replies written to hooks Claude Code had already killed), so the reply goes first and the
 /// recording after. The Stop hook's hold-back and an elicitation's card are what recording decides,
 /// so they wait for it.
-fn answer_first(domain: &DomainRuntime, payload: &Value) -> Option<Value> {
+fn answer_first(domain: &dyn Runtime, payload: &Value) -> Option<Value> {
     let event = text(payload, "hook_event_name").unwrap_or_default();
     match event.as_str() {
         "Stop" | "Elicitation" => None,
@@ -128,7 +155,7 @@ fn answer_first(domain: &DomainRuntime, payload: &Value) -> Option<Value> {
             if let Some(reply) = unrecorded_pre_tool_use(domain, &session_id, tool.as_deref()) {
                 return Some(reply);
             }
-            let known = domain.state().ok()?.agents.contains_key(&AgentId(session_id));
+            let known = domain.state().agents.contains_key(&AgentId(session_id));
             Some(match forbidden_for_nodes(tool.as_deref(), payload.get("tool_input")).filter(|_| known) {
                 Some(reason) => pre_tool_use_denied(&reason),
                 None => json!({}),
@@ -139,7 +166,7 @@ fn answer_first(domain: &DomainRuntime, payload: &Value) -> Option<Value> {
 }
 
 /// A PreToolUse answered without recording the hook: a node the gate holds, and Alondra's own tools.
-fn unrecorded_pre_tool_use(domain: &DomainRuntime, session_id: &str, tool: Option<&str>) -> Option<Value> {
+fn unrecorded_pre_tool_use(domain: &dyn Runtime, session_id: &str, tool: Option<&str>) -> Option<Value> {
     if let Some(reason) = domain.gate().holding(session_id) {
         let why = if reason == alondra_engine_ports::admission::Reason::ByUser { PAUSED_BY_USER } else { PAUSED_FOR_MEMORY };
         return Some(pre_tool_use_denied(why));
@@ -152,23 +179,23 @@ fn pre_tool_use_denied(reason: &str) -> Value {
     json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}})
 }
 
-async fn record(domain: &Arc<DomainRuntime>, payload: Arc<Value>) -> Result<Reply> {
+async fn record(domain: &Arc<dyn Runtime>, payload: Arc<Value>) -> Result<Reply> {
     let recording = domain.clone();
-    domain.hook_work.run(move || respond(&recording, &payload)).await?
+    domain.hook_work().run(move || respond(&*recording, &payload)).await?
 }
 
-async fn withdraw(domain: &Arc<DomainRuntime>, id: InteractionId) -> Result<()> {
+async fn withdraw(domain: &Arc<dyn Runtime>, id: InteractionId) -> Result<()> {
     let withdrawing = domain.clone();
-    domain.hook_work.run(move || crate::domain_holds::withdraw(&withdrawing, &id)).await?
+    domain.hook_work().run(move || crate::domain_holds::withdraw(&*withdrawing, &id)).await?
 }
 
-async fn answer_after_recording<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, domain: &Arc<DomainRuntime>, payload: &Arc<Value>) -> Result<()> {
+async fn answer_after_recording<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, domain: &Arc<dyn Runtime>, payload: &Arc<Value>) -> Result<()> {
     let reply = record(domain, payload.clone()).await.context("recording it")?;
     let body = match reply {
         Reply::Plain(body) => body,
         Reply::Held(held) => {
             let answer = tokio::select! {
-                answer = crate::domain_holds::wait(domain, &held.id) => answer,
+                answer = crate::domain_holds::wait(&**domain, &held.id) => answer,
                 gone = stream.read_u8() => {
                     log!("hook holding {} went away: {gone:?}", held.id);
                     return withdraw(domain, held.id).await;
@@ -177,7 +204,7 @@ async fn answer_after_recording<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S
             answered(&held, answer?.and_then(|answers| answers.into_iter().next()))
         }
         Reply::Block { reason, session } => {
-            let unregistered = unregistered_pr(domain, &session).await.unwrap_or_default();
+            let unregistered = unregistered_pr(&**domain, &session).await.unwrap_or_default();
             json!({"decision": "block", "reason": format!("{reason}{unregistered}")})
         }
     };
@@ -193,19 +220,19 @@ async fn refuse(mut stream: UnixStream, reason: String) -> Result<()> {
 }
 
 /// One report of a node mod, as `alondra node event` hands it over.
-async fn node_event(mut stream: UnixStream, domain: &Arc<DomainRuntime>, report: Value) -> Result<()> {
+async fn node_event(mut stream: UnixStream, domain: &Arc<dyn Runtime>, report: Value) -> Result<()> {
     let envelope: crate::node_reports::Envelope = match serde_json::from_value(report) {
         Ok(envelope) => envelope,
         Err(error) => return refuse(stream, format!("invalid node report: {error}")).await,
     };
     let reporting = domain.clone();
-    domain.hook_work.run(move || {
+    domain.hook_work().run(move || {
         let domain = reporting;
         match &envelope.report {
             Report::SessionEnd | Report::TurnComplete { aborted: true, .. } => {
-                crate::domain_holds::release_session(&domain, &envelope.session_id)?
+                crate::domain_holds::release_session(&*domain, &envelope.session_id)?
             }
-            Report::ToolEnd { tool_use_id: Some(call) } => crate::domain_holds::release_call(&domain, &envelope.session_id, call)?,
+            Report::ToolEnd { tool_use_id: Some(call) } => crate::domain_holds::release_call(&*domain, &envelope.session_id, call)?,
             _ => {}
         }
         domain.report(envelope, alondra_core::now_millis());
@@ -218,7 +245,7 @@ async fn node_event(mut stream: UnixStream, domain: &Arc<DomainRuntime>, report:
 /// A card a node puts to the user, answered on the same connection. A mod helper that goes away
 /// leaves the card open: the mod's wait was cut, not the question, and its next post finds the card.
 /// A permission hook that goes away takes its card with it.
-async fn node_hold(mut stream: UnixStream, domain: &Arc<DomainRuntime>, card: Value) -> Result<()> {
+async fn node_hold(mut stream: UnixStream, domain: &Arc<dyn Runtime>, card: Value) -> Result<()> {
     let card: crate::domain_holds::Card = match serde_json::from_value(card) {
         Ok(card) => card,
         Err(error) => return refuse(stream, format!("invalid hold: {error}")).await,
@@ -226,8 +253,8 @@ async fn node_hold(mut stream: UnixStream, domain: &Arc<DomainRuntime>, card: Va
     let card = Arc::new(card);
     let posting = domain.clone();
     let request = card.clone();
-    let posted = domain.hook_work.run(move ||
-        crate::domain_holds::post(&posting, &request, posting.live().mods.is_node(&request.session_id))
+    let posted = domain.hook_work().run(move ||
+        crate::domain_holds::post(&*posting, &request, posting.live().mods.is_node(&request.session_id))
     ).await??;
     let mut written = None;
     let reply = match posted {
@@ -235,12 +262,12 @@ async fn node_hold(mut stream: UnixStream, domain: &Arc<DomainRuntime>, card: Va
         crate::domain_holds::Posted::Denied(reason) => crate::domain_holds::denied(card.kind, &reason),
         crate::domain_holds::Posted::Held(id) => {
             let answer = tokio::select! {
-                answer = crate::domain_holds::wait(domain, &id) => answer?,
+                answer = crate::domain_holds::wait(&**domain, &id) => answer?,
                 _ = stream.read_u8() => {
                     return if card.withdraw_when_gone { withdraw(domain, id).await } else { Ok(()) };
                 }
             };
-            let state = domain.state()?;
+            let state = domain.state();
             match (answer, state.holds.get(&id)) {
                 (Some(answer), Some(hold)) => {
                     let interaction = state.interactions.get(&id);
@@ -258,7 +285,7 @@ async fn node_hold(mut stream: UnixStream, domain: &Arc<DomainRuntime>, card: Va
                     reply
                 }
                 _ if card.kind == crate::domain_holds::Kind::Plan => {
-                    crate::domain_holds::denied(card.kind, &crate::domain_holds::plan_gone(domain, &card.session_id)?)
+                    crate::domain_holds::denied(card.kind, &crate::domain_holds::plan_gone(&**domain, &card.session_id)?)
                 }
                 _ => json!({"held": false}),
             }
@@ -275,7 +302,7 @@ async fn node_hold(mut stream: UnixStream, domain: &Arc<DomainRuntime>, card: Va
 /// reachable and the moment it closes, from either side, it is not. Down it go the session's
 /// pending outbox messages, each once per connection and again on the next until acknowledged,
 /// the direct messages and the interrupts addressed to it.
-async fn node_connection(mut stream: UnixStream, domain: &Arc<DomainRuntime>, hello: Value) -> Result<()> {
+async fn node_connection(mut stream: UnixStream, domain: &Arc<dyn Runtime>, hello: Value) -> Result<()> {
     let hello: crate::node_reports::Hello = match serde_json::from_value(hello) {
         Ok(hello) => hello,
         Err(error) => return refuse(stream, format!("invalid node connection: {error}")).await,
@@ -283,16 +310,16 @@ async fn node_connection(mut stream: UnixStream, domain: &Arc<DomainRuntime>, he
     let session = hello.session_id.clone();
     let connecting = domain.clone();
     let connecting_session = session.clone();
-    let number = domain.hook_work.run(move || {
+    let number = domain.hook_work().run(move || {
         let domain = connecting;
         let session = connecting_session;
         if domain.live().sandbox.load(std::sync::atomic::Ordering::Relaxed) {
-            register_probe(&domain, &session)?;
+            register_probe(&*domain, &session)?;
         }
         let launch_key = hello.launch_key.clone();
         let number = domain.connect_node(hello, alondra_core::now_millis());
         if let Some(key) = launch_key
-            && let Err(error) = crate::domain_sessions::reissue(&domain, &key, &AgentId(session.clone()))
+            && let Err(error) = crate::domain_sessions::reissue(&*domain, &key, &AgentId(session.clone()))
         {
             log!("could not issue {session} a new capability: {error:#}");
         }
@@ -313,8 +340,8 @@ async fn node_connection(mut stream: UnixStream, domain: &Arc<DomainRuntime>, he
         loop {
             let reading = domain.clone();
             let reading_session = session.clone();
-            let (pending, next_sent) = domain.hook_work.run(move || {
-                let pending = pending_lines(&reading, &reading_session, &mut sent)?;
+            let (pending, next_sent) = domain.hook_work().run(move || {
+                let pending = pending_lines(&*reading, &reading_session, &mut sent)?;
                 Ok::<_, anyhow::Error>((pending, sent))
             }).await??;
             sent = next_sent;
@@ -347,8 +374,8 @@ async fn node_connection(mut stream: UnixStream, domain: &Arc<DomainRuntime>, he
     })
 }
 
-fn register_probe(domain: &DomainRuntime, session: &str) -> Result<()> {
-    let state = domain.state()?;
+fn register_probe(domain: &dyn Runtime, session: &str) -> Result<()> {
+    let state = domain.state();
     if state.agents.contains_key(&AgentId(session.to_owned())) {
         return Ok(());
     }
@@ -367,7 +394,7 @@ fn register_probe(domain: &DomainRuntime, session: &str) -> Result<()> {
         }),
     ];
     for (actor, step, command) in steps {
-        let state = domain.state()?;
+        let state = domain.state();
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: format!("sandbox-probe-{step}-{session}").into(), expected_revision: state.revision, command,
@@ -379,17 +406,17 @@ fn register_probe(domain: &DomainRuntime, session: &str) -> Result<()> {
 
 /// The lines for this session's pending outbox messages that this connection has not carried yet.
 /// A session that moves to the SDK with them is carried none: they go with its move.
-fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>) -> Result<Vec<String>> {
-    let pending: Vec<OutboxMessage> = domain.store.lock_or_exit("the domain store").pending_messages()?.into_iter()
+fn pending_lines(domain: &dyn Runtime, session: &str, sent: &mut BTreeSet<i64>) -> Result<Vec<String>> {
+    let pending: Vec<OutboxMessage> = domain.store().lock_or_exit("the domain store").pending_messages()?.into_iter()
         .filter(|message| message.recipient_kind == "agent" && message.agent_id.as_deref() == Some(session)
             && !sent.contains(&message.id))
         .collect();
     if pending.is_empty() || crate::sdk_handover::holds_messages(domain, &AgentId(session.to_owned())) {
         return Ok(vec![]);
     }
-    let state = domain.state()?;
+    let state = domain.state();
     let origins: Vec<_> = {
-        let store = domain.store.lock_or_exit("the domain store");
+        let store = domain.store().lock_or_exit("the domain store");
         pending.iter().map(|message| store.message_origin(message.id)).collect::<Result<_, _>>()?
     };
     Ok(pending.into_iter().zip(origins).map(|(message, origin)| {
@@ -401,7 +428,7 @@ fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>
 }
 
 /// The mod took these messages: the outbox ones become handed, the direct ones stop being resent.
-async fn node_ack(mut stream: UnixStream, domain: &Arc<DomainRuntime>, ack: Value) -> Result<()> {
+async fn node_ack(mut stream: UnixStream, domain: &Arc<dyn Runtime>, ack: Value) -> Result<()> {
     #[derive(Deserialize)]
     struct Ack {
         session_id: String,
@@ -412,8 +439,8 @@ async fn node_ack(mut stream: UnixStream, domain: &Arc<DomainRuntime>, ack: Valu
         Err(error) => return refuse(stream, format!("invalid node acknowledgement: {error}")).await,
     };
     let acknowledging = domain.clone();
-    domain.hook_work.run(move || {
-        hand_over(&acknowledging, &ack.session_id, &ack.ids)?;
+    domain.hook_work().run(move || {
+        hand_over(&*acknowledging, &ack.session_id, &ack.ids)?;
         acknowledging.live().pushes.acknowledged(&ack.session_id, &ack.ids);
         Ok::<_, anyhow::Error>(())
     }).await??;
@@ -421,8 +448,8 @@ async fn node_ack(mut stream: UnixStream, domain: &Arc<DomainRuntime>, ack: Valu
     Ok(())
 }
 
-fn hand_over(domain: &DomainRuntime, session: &str, ids: &[String]) -> Result<()> {
-    let mut store = domain.store.lock_or_exit("the domain store");
+fn hand_over(domain: &dyn Runtime, session: &str, ids: &[String]) -> Result<()> {
+    let mut store = domain.store().lock_or_exit("the domain store");
     let pending = store.pending_messages()?;
     for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {
         if !pending.iter().any(|message| message.id == id && message.agent_id.as_deref() == Some(session)) {
@@ -435,8 +462,8 @@ fn hand_over(domain: &DomainRuntime, session: &str, ids: &[String]) -> Result<()
     Ok(())
 }
 
-pub async fn run(listener: UnixListener, domain: Arc<DomainRuntime>) -> Result<()> {
-    crate::domain_holds::release_orphans(&domain)?;
+pub async fn run(listener: UnixListener, domain: Arc<dyn Runtime>) -> Result<()> {
+    crate::domain_holds::release_orphans(&*domain)?;
     serve(listener, domain).await
 }
 
@@ -458,7 +485,7 @@ fn text(payload: &Value, key: &str) -> Option<String> {
 
 /// The bearer of a session that ended is revoked. Its settings file goes with it unless the Agent
 /// still has work: then `claude respawn` finds the file it passes again.
-pub fn session_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> {
+pub fn session_ended(domain: &dyn Runtime, agent: &AgentId) -> Result<()> {
     domain.revoke_agent(&agent.0)?;
     if crate::node_exit::has_open_task(domain, &agent.0) {
         crate::domain_sessions::suspend_for(domain.home(), agent)
@@ -467,7 +494,7 @@ pub fn session_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> {
     }
 }
 
-fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
+fn respond(domain: &dyn Runtime, payload: &Value) -> Result<Reply> {
     let Some(session_id) = text(payload, "session_id") else {
         return Ok(Reply::Plain(json!({})));
     };
@@ -477,7 +504,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
         return Ok(Reply::Plain(reply));
     }
     let agent_id = AgentId(session_id.clone());
-    let state = domain.state()?;
+    let state = domain.state();
     if !state.agents.contains_key(&agent_id) {
         return Ok(Reply::Plain(json!({})));
     }
@@ -538,8 +565,8 @@ pub(crate) const PAUSED_FOR_MEMORY: &str = "Alondra paused you because the Mac i
 
 /// The session bound to a Task works on it: its first hook after the assignment starts the
 /// Task, as the assigned Agent, so it shows as working without the Agent calling `start_task`.
-fn start_assigned(domain: &DomainRuntime, agent_id: &AgentId) -> Result<()> {
-    let state = domain.state()?;
+fn start_assigned(domain: &dyn Runtime, agent_id: &AgentId) -> Result<()> {
+    let state = domain.state();
     let waiting = state.tasks.values()
         .filter(|task| task.agent_id.as_ref() == Some(agent_id) && !task.started && task.state == TaskState::NotStarted);
     for task in waiting {
@@ -574,14 +601,14 @@ fn works_in_background(payload: &Value) -> bool {
     payload.get("background_tasks").and_then(Value::as_array).is_some_and(|tasks| !tasks.is_empty())
 }
 
-fn undelivered(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> Result<Option<String>> {
-    if driven_by_user(domain, agent_id) || works_in_background(payload) || paused(&*domain.state()?, agent_id) {
+fn undelivered(domain: &dyn Runtime, agent_id: &AgentId, payload: &Value) -> Result<Option<String>> {
+    if driven_by_user(domain, agent_id) || works_in_background(payload) || paused(&*domain.state(), agent_id) {
         return Ok(None);
     }
     hold_back(domain, agent_id)
 }
 
-fn driven_by_user(domain: &DomainRuntime, agent_id: &AgentId) -> bool {
+fn driven_by_user(domain: &dyn Runtime, agent_id: &AgentId) -> bool {
     !domain.live().mods.is_node(&agent_id.0) || domain.live().node(&agent_id.0).is_some_and(|node| node.attached)
 }
 
@@ -601,7 +628,7 @@ fn paused(state: &DomainState, agent_id: &AgentId) -> bool {
 /// blocked waits on the user in a terminal nobody reads, whatever turn its mod last reported: it
 /// is sent back too, so it asks through a card.
 /// `stop_blocks` reads the count kept for a Task, so a caller holding the store can answer.
-pub(crate) fn stopped_without_delivering(domain: &DomainRuntime, state: &DomainState, agent_id: &AgentId,
+pub(crate) fn stopped_without_delivering(domain: &dyn Runtime, state: &DomainState, agent_id: &AgentId,
     stop_blocks: impl Fn(&TaskId) -> Option<(u32, i64)>) -> Option<bool> {
     let session = agent_id.0.as_str();
     let idle = domain.live().mods.session(session).is_some_and(|reported| reported.connection.is_some()
@@ -639,10 +666,10 @@ fn undelivered_task<'a>(state: &'a DomainState, agent_id: &AgentId) -> Option<(&
 
 /// Counts one more turn end of the node's open Task without a result or a question, and gives the
 /// reason to send it back, or nothing once the cap let it stop and told the user.
-fn hold_back(domain: &DomainRuntime, agent_id: &AgentId) -> Result<Option<String>> {
-    let state = domain.state()?;
+fn hold_back(domain: &dyn Runtime, agent_id: &AgentId) -> Result<Option<String>> {
+    let state = domain.state();
     let Some((task, marker)) = undelivered_task(&state, agent_id) else { return Ok(None) };
-    let stored = domain.store.lock_or_exit("the domain store").stop_blocks(&task.id)?;
+    let stored = domain.store().lock_or_exit("the domain store").stop_blocks(&task.id)?;
     let blocks = match stored {
         Some((blocks, previous)) if previous == marker => blocks,
         Some((blocks, previous)) => {
@@ -656,7 +683,7 @@ fn hold_back(domain: &DomainRuntime, agent_id: &AgentId) -> Result<Option<String
     if blocks >= STOP_BLOCKS {
         return Ok(None);
     }
-    domain.store.lock_or_exit("the domain store").set_stop_blocks(&task.id, blocks + 1, marker)?;
+    domain.store().lock_or_exit("the domain store").set_stop_blocks(&task.id, blocks + 1, marker)?;
     Ok(Some(block_text(&crate::domain_messages::user_name(), &task.title)))
 }
 
@@ -676,11 +703,11 @@ pub(crate) fn block_text(user: &str, title: &str) -> String {
 
 /// The open PR of the node's branch that no Task registered, which the node should register
 /// and deliver. GitHub gets three seconds: the Stop hook waits on this answer.
-async fn unregistered_pr(domain: &DomainRuntime, session: &str) -> Option<String> {
+async fn unregistered_pr(domain: &dyn Runtime, session: &str) -> Option<String> {
     let dir = domain.ports().worktrees().worktree_of(session)?;
     let github = domain.ports().port::<alondra_engine_ports::github::GitHub>()?;
     let (host, repository, number) = github.reads.branch_pr(&dir).await?;
-    unregistered_pr_text(&*domain.state().ok()?, &host, &repository, number)
+    unregistered_pr_text(&*domain.state(), &host, &repository, number)
 }
 
 pub(crate) fn unregistered_pr_text(state: &DomainState, host: &str, repository: &str, number: u64) -> Option<String> {
@@ -823,7 +850,10 @@ pub mod fixtures {
             std::fs::create_dir(&home).unwrap();
             Self(home)
         }
-        pub fn open(&self) -> Arc<DomainRuntime> {
+        pub fn open(&self) -> Arc<dyn Runtime> {
+            self.open_domain()
+        }
+        pub fn open_domain(&self) -> Arc<crate::domain_runtime::DomainRuntime> {
             Arc::new(crate::wiring::open(&self.0).unwrap())
         }
     }
@@ -835,8 +865,8 @@ pub mod fixtures {
 
     /// The SDK execution of `task`, admitted for `agent`, launched in a remote workspace and in
     /// its first turn.
-    pub fn admitted_sdk_execution(domain: &Arc<DomainRuntime>, task: &str, agent: &str, n: usize) {
-        let state = domain.state().unwrap();
+    pub fn admitted_sdk_execution(domain: &Arc<dyn Runtime>, task: &str, agent: &str, n: usize) {
+        let state = domain.state();
         let admit = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("admit-{n}").as_str().into(),
             expected_revision: state.revision, command: Command::AdmitExecution {
@@ -860,7 +890,7 @@ pub mod fixtures {
                 Ok(())
             })
         }).unwrap();
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let Some(LifecycleRecord::Planned { input }) = state.lifecycle_journal.get(&task).and_then(|records| records.iter().next().cloned()) else {
             panic!("a task's journal starts planned")
         };
@@ -869,35 +899,35 @@ pub mod fixtures {
         ] });
     }
 
-    pub fn command(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, command: Command) {
-        let state = domain.state().unwrap();
+    pub fn command(domain: &Arc<dyn Runtime>, actor: Actor, id: &str, command: Command) {
+        let state = domain.state();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: id.into(), expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap();
     }
 
-    pub fn free_text_question(domain: &Arc<DomainRuntime>, id: &str, actor: Actor, scope: Scope, recipient: Recipient, body: &str) {
+    pub fn free_text_question(domain: &Arc<dyn Runtime>, id: &str, actor: Actor, scope: Scope, recipient: Recipient, body: &str) {
         command(domain, actor, &format!("ask-{id}"), Command::AskQuestion {
             attachments: vec![], interaction_id: id.into(), scope, recipient,
             body: body.into(), blocking: false, options: vec![], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
         });
     }
 
-    pub fn free_text_answer(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, text: &str) {
+    pub fn free_text_answer(domain: &Arc<dyn Runtime>, actor: Actor, id: &str, text: &str) {
         command(domain, actor, &format!("answer-{id}"), Command::AnswerQuestion {
             attachments: vec![], interaction_id: id.into(), option_id: String::new(),
             inputs: BTreeMap::from([("text".into(), InputValue::Text(text.into()))]),
         });
     }
 
-    pub fn outbox_message(domain: &Arc<DomainRuntime>, id: &str, recipient_kind: &str) -> OutboxMessage {
-        domain.store.lock_or_recover("a test's fixture").pending_messages().unwrap().into_iter()
+    pub fn outbox_message(domain: &Arc<dyn Runtime>, id: &str, recipient_kind: &str) -> OutboxMessage {
+        domain.store().lock_or_recover("a test's fixture").pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some(id) && message.recipient_kind == recipient_kind)
             .unwrap()
     }
 
-    pub fn node_with_task(domain: &Arc<DomainRuntime>) {
+    pub fn node_with_task(domain: &Arc<dyn Runtime>) {
         domain.live().mods.loaded_in("agent-a");
         command(domain, Actor::System, "register", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
@@ -934,7 +964,7 @@ pub mod fixtures {
         async fn tell(&self, _: impl Fn(bool) -> String + Send + Sync, _: bool) {}
     }
 
-    pub async fn hook(domain: &Arc<DomainRuntime>, payload: Value, ack: Option<u8>) -> (Value, Result<()>) {
+    pub async fn hook(domain: &Arc<dyn Runtime>, payload: Value, ack: Option<u8>) -> (Value, Result<()>) {
         let (mut client, server) = UnixStream::pair().unwrap();
         let body = serde_json::to_vec(&json!({"launched": true, "payload": payload})).unwrap();
         client.write_u32(body.len() as u32).await.unwrap();
@@ -957,12 +987,12 @@ pub mod fixtures {
         client.write_all(&body).await.unwrap();
     }
 
-    pub fn working_agent(domain: &Arc<DomainRuntime>, agent: &str) {
+    pub fn working_agent(domain: &Arc<dyn Runtime>, agent: &str) {
         working_agent_without_mod(domain, agent);
         domain.live().mods.loaded_in(agent);
     }
 
-    pub fn working_agent_without_mod(domain: &Arc<DomainRuntime>, agent: &str) {
+    pub fn working_agent_without_mod(domain: &Arc<dyn Runtime>, agent: &str) {
         let user = || Actor::User { user_id: "u".into() };
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
         command(domain, user(), &format!("request-{agent}"),
@@ -995,11 +1025,11 @@ pub mod fixtures {
         serde_json::from_slice(&bytes[2..]).unwrap()
     }
 
-    pub fn answer(domain: &Arc<DomainRuntime>, id: &InteractionId, option: &str, note: Option<&str>) {
+    pub fn answer(domain: &Arc<dyn Runtime>, id: &InteractionId, option: &str, note: Option<&str>) {
         answer_with(domain, id, option, note.map(|note| BTreeMap::from([(Hold::NOTE.to_owned(), InputValue::Text(note.into()))])).unwrap_or_default());
     }
 
-    pub fn answer_with(domain: &Arc<DomainRuntime>, id: &InteractionId, option: &str, inputs: BTreeMap<String, InputValue>) {
+    pub fn answer_with(domain: &Arc<dyn Runtime>, id: &InteractionId, option: &str, inputs: BTreeMap<String, InputValue>) {
         command(domain, Actor::User { user_id: "u".into() }, &format!("answer-{id}"), Command::AnswerQuestion {
             attachments: vec![], interaction_id: id.clone(), option_id: option.into(), inputs,
         });
@@ -1024,7 +1054,7 @@ mod tests {
     use super::fixtures::*;
 
     /// An Agent with a Task, a question and the User's answer queued for it.
-    fn answered_question(domain: &Arc<DomainRuntime>, agent: &str) {
+    fn answered_question(domain: &Arc<dyn Runtime>, agent: &str) {
         domain.live().mods.loaded_in(agent);
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent {
             agent_id: agent.into(), name: agent.into(), at: 0
@@ -1049,8 +1079,8 @@ mod tests {
         });
     }
 
-    fn agent_outbox(domain: &Arc<DomainRuntime>, agent: &str) -> Vec<(i64, String)> {
-        domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+    fn agent_outbox(domain: &Arc<dyn Runtime>, agent: &str) -> Vec<(i64, String)> {
+        domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
             .filter(|m| m.agent_id.as_deref() == Some(agent))
             .map(|m| (m.id, m.state)).collect()
     }
@@ -1060,8 +1090,8 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         answered_question(&domain, "agent-a");
-        let state = domain.state().unwrap();
-        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        let state = domain.state();
+        let message = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("question-agent-a"))
             .unwrap();
         let rendered = render(&state, &message);
@@ -1090,8 +1120,8 @@ mod tests {
             recipient: Recipient::Orchestrator, body: "Which API should I use?".into(), blocking: true,
             options: vec![QuestionOption { id: "new_api".into(), label: "New API".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
         });
-        let state = domain.state().unwrap();
-        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        let state = domain.state();
+        let message = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("question-1")).unwrap();
         let delivered = render(&state, &message);
         assert!(delivered.contains("Which API should I use?"), "{delivered}");
@@ -1107,7 +1137,7 @@ mod tests {
         command(&domain, Actor::Orchestrator { generation: 0 }, "answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: interaction_id.into(), option_id, inputs: Default::default(),
         });
-        assert!(matches!(&domain.state().unwrap().interactions[&"question-1".into()].payload,
+        assert!(matches!(&domain.state().interactions[&"question-1".into()].payload,
             InteractionPayload::Question { answer: Some(_), .. }));
     }
 
@@ -1122,8 +1152,8 @@ mod tests {
             body: "Second choice?".into(), blocking: true,
             options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
         });
-        let state = domain.state().unwrap();
-        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        let state = domain.state();
+        let message = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("question-agent-a")).unwrap();
         assert_eq!(render(&state, &message), "Answer to your card question-agent-a (Answer the question): Yes.");
 
@@ -1137,8 +1167,8 @@ mod tests {
             attachments: vec![], interaction_id: "orchestrator-question".into(),
             option_id: "yes".into(), inputs: Default::default(),
         });
-        let state = domain.state().unwrap();
-        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        let state = domain.state();
+        let message = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("orchestrator-question")
                 && message.recipient_kind == "orchestrator").unwrap();
         assert_eq!(render(&state, &message), "About \"Ship this?\" (card orchestrator-question, request \"Work\"): Yes.");
@@ -1168,8 +1198,8 @@ mod tests {
             attachments: vec![], interaction_id: "question".into(), option_id: "new".into(),
             inputs: BTreeMap::from([("text".into(), InputValue::Text("Keep the old response format".into()))]),
         });
-        let state = domain.state().unwrap();
-        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        let state = domain.state();
+        let message = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("question")
                 && message.recipient_kind == "agent").unwrap();
         assert_eq!(render(&state, &message), "Answer to your card question (Answer the question): New API. Keep the old response format");
@@ -1186,7 +1216,7 @@ mod tests {
         free_text_answer(&domain, user_actor(), "q", "Call it Atlas");
         free_text_question(&domain, "o", agent_actor(), task_scope(), Recipient::Orchestrator, "Which repo?");
         free_text_answer(&domain, Actor::Orchestrator { generation: 0 }, "o", "alondra");
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert!(from_user(&state, &outbox_message(&domain, "q", "agent")));
         assert!(!from_user(&state, &outbox_message(&domain, "o", "agent")));
     }
@@ -1215,8 +1245,8 @@ mod tests {
         assert_eq!(question_label(&"á".repeat(81)), format!("{}…", "á".repeat(80)));
     }
 
-    fn rendered_for(domain: &Arc<DomainRuntime>, id: &str, recipient_kind: &str) -> String {
-        let state = domain.state().unwrap();
+    fn rendered_for(domain: &Arc<dyn Runtime>, id: &str, recipient_kind: &str) -> String {
+        let state = domain.state();
         render(&state, &outbox_message(domain, id, recipient_kind))
     }
 
@@ -1288,13 +1318,13 @@ mod tests {
 
     const NOT_THE_USERS: &str = "\nThis is the orchestrator's answer, not a decision of the user: never present it as theirs.";
 
-    fn pick(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, option: &str) {
+    fn pick(domain: &Arc<dyn Runtime>, actor: Actor, id: &str, option: &str) {
         command(domain, actor, &format!("answer-{id}"), Command::AnswerQuestion {
             attachments: vec![], interaction_id: id.into(), option_id: option.into(), inputs: BTreeMap::new(),
         });
     }
 
-    fn asked_together(domain: &Arc<DomainRuntime>, recipient: &Recipient) {
+    fn asked_together(domain: &Arc<dyn Runtime>, recipient: &Recipient) {
         for index in 1..=2u8 {
             let mut card = CardSpec::derived(CardKind::Decide, "Pick one");
             card.group = Some(QuestionGroup { id: "together".into(), index, total: 2 });
@@ -1340,7 +1370,7 @@ mod tests {
         }
     }
 
-    fn suggestion(domain: &Arc<DomainRuntime>, id: &str) {
+    fn suggestion(domain: &Arc<dyn Runtime>, id: &str) {
         command(domain, agent_actor(), &format!("suggest-{id}"), Command::AskQuestion {
             attachments: vec![], interaction_id: id.into(), scope: task_scope(), recipient: Recipient::Orchestrator,
             body: "README.md:12".into(), blocking: false, options: alondra_domain_rules::suggestion_options(),
@@ -1367,7 +1397,7 @@ mod tests {
             "The orchestrator settled your suggestion: it is a new task, «Update the README flag» (t-readme), already created.");
         drop(domain);
         let reopened = fixture.open();
-        let state = reopened.state().unwrap();
+        let state = reopened.state();
         let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"p".into()].payload else { panic!("unanswered") };
         assert!(matches!(&answer.decision, Some(SuggestionDecision::NewTask { task_id, .. }) if task_id.0 == "t-readme"),
             "the decision survives the store: {answer:?}");
@@ -1386,8 +1416,8 @@ mod tests {
         assert_eq!(rendered_for(&domain, "p", "agent"), "The orchestrator settled your suggestion: discarded. Task 12 already covers it");
     }
 
-    fn attempts(domain: &Arc<DomainRuntime>) -> Vec<(i64, String, Option<String>)> {
-        domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().into_iter()
+    fn attempts(domain: &Arc<dyn Runtime>) -> Vec<(i64, String, Option<String>)> {
+        domain.store().lock().unwrap().delivery_evidence_page(0).unwrap().into_iter()
             .map(|item| (item.message_id, item.state, item.reason)).collect()
     }
 
@@ -1401,13 +1431,13 @@ mod tests {
         let driver = std::thread::current().id();
         let recorded = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let checked = recorded.clone();
-        domain.hook_work.on_start(move || {
+        domain.hook_work().on_start(move || {
             assert_ne!(std::thread::current().id(), driver, "hook recording occupies the async worker");
             checked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
         let guarded = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let checked = guarded.clone();
-        domain.guard_work.on_start(move || {
+        domain.guard_work().on_start(move || {
             assert_ne!(std::thread::current().id(), driver, "PreToolUse guard occupies the async worker");
             checked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
@@ -1442,7 +1472,7 @@ mod tests {
             let busy = {
                 let domain = domain.clone();
                 alondra_core::clock::spawn_thread(move || {
-                    let _writer = domain.store.lock().unwrap();
+                    let _writer = domain.store().lock().unwrap();
                     taken.send(()).unwrap();
                     clock::blocking_sleep(Duration::from_secs(2));
                 })
@@ -1486,7 +1516,7 @@ mod tests {
         let (reply, result) = hook(&domain, json!({"session_id": "stranger", "hook_event_name": "Stop"}), Some(6)).await;
         result.unwrap();
         assert_eq!(reply, json!({}), "an unknown session gets nothing and creates nothing");
-        assert!(domain.state().unwrap().agents.get(&"stranger".into()).is_none());
+        assert!(domain.state().agents.get(&"stranger".into()).is_none());
 
         let (reply, result) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "Stop"}), Some(6)).await;
         result.unwrap();
@@ -1500,13 +1530,13 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         answered_question(&domain, "session-a");
-        domain.held.lock().unwrap().entry("session-a".into()).or_default().push("Use the new API".into());
+        domain.held().lock().unwrap().entry("session-a".into()).or_default().push("Use the new API".into());
         let stop = json!({"session_id": "session-a", "hook_event_name": "Stop"});
         let (body, result) = hook(&domain, stop.clone(), Some(6)).await;
         result.unwrap();
         assert_eq!(body["hookSpecificOutput"]["additionalContext"], "Use the new API");
         assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "the outbox is not the Stop hook's");
-        domain.held.lock().unwrap().entry("session-a".into()).or_default().push("Only this".into());
+        domain.held().lock().unwrap().entry("session-a".into()).or_default().push("Only this".into());
         let (body, _) = hook(&domain, stop.clone(), Some(6)).await;
         assert_eq!(body["hookSpecificOutput"]["additionalContext"], "Only this");
         let (body, _) = hook(&domain, stop, Some(6)).await;
@@ -1586,7 +1616,7 @@ mod tests {
         hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PostToolUse", "tool_name": "Agent",
             "tool_input": {"isolation": "worktree", "prompt": "Fix it"},
             "tool_response": {"status": "completed", "agentId": "a9e1782746c156d58", "worktreePath": path, "worktreeBranch": "worktree-agent-a9e1782746c156d58"}}), Some(6)).await.1.unwrap();
-        let worktrees = domain.state().unwrap().tasks[&"task".into()].worktrees.clone();
+        let worktrees = domain.state().tasks[&"task".into()].worktrees.clone();
         assert_eq!(worktrees.keys().collect::<Vec<_>>(), [path]);
         assert_eq!(worktrees[path].origin, alondra_domain_rules::WorktreeOrigin::Subagent);
     }
@@ -1632,8 +1662,8 @@ mod tests {
         assert_eq!(serde_json::from_slice::<Value>(&reply[2..]).unwrap(), json!({}));
     }
 
-    fn task_state(domain: &Arc<DomainRuntime>) -> TaskState {
-        domain.state().unwrap().tasks[&TaskId::from("task")].state
+    fn task_state(domain: &Arc<dyn Runtime>) -> TaskState {
+        domain.state().tasks[&TaskId::from("task")].state
     }
 
     #[tokio::test]
@@ -1645,10 +1675,10 @@ mod tests {
         assert_eq!(task_state(&domain), TaskState::NotStarted, "a session that only opened has not worked yet");
         hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "prompt": "Work"}), Some(6)).await.1.unwrap();
         assert_eq!(task_state(&domain), TaskState::Running);
-        let revision = domain.state().unwrap().revision;
+        let revision = domain.state().revision;
         hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
-        assert_eq!(domain.state().unwrap().revision, revision, "a started Task is not started again");
-        let state = domain.state().unwrap();
+        assert_eq!(domain.state().revision, revision, "a started Task is not started again");
+        let state = domain.state();
         let refused = domain.execute(&agent_actor(), &CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: "start".into(), expected_revision: state.revision, command: Command::StartTask { task_id: "task".into() } }, None, || Ok(()));
         assert!(matches!(&refused, Err(crate::domain_store::StoreError::Domain(error)) if error.code == "no_effect"), "start_task says the task is already started: {refused:?}");
@@ -1680,8 +1710,8 @@ mod tests {
         assert!(!reason.contains("task-") && !reason.contains("agent-a"), "no internal ids: {reason}");
     }
 
-    fn problems(domain: &Arc<DomainRuntime>) -> Vec<alondra_domain_rules::Interaction> {
-        domain.state().unwrap().interactions.values().cloned().filter(|card| card.card.kind == CardKind::Problem).collect()
+    fn problems(domain: &Arc<dyn Runtime>) -> Vec<alondra_domain_rules::Interaction> {
+        domain.state().interactions.values().cloned().filter(|card| card.card.kind == CardKind::Problem).collect()
     }
 
     /// What Claude Code sends: the Stop after a block carries `stop_hook_active`, and those turn
@@ -1739,10 +1769,10 @@ mod tests {
         let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop",
             "background_tasks": [{"id": "b1", "type": "shell", "command": "make test"}]}), Some(6)).await;
         assert_eq!(reply, json!({}));
-        assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap(), None, "nothing counted");
+        assert_eq!(domain.store().lock().unwrap().stop_blocks(&"task".into()).unwrap(), None, "nothing counted");
     }
 
-    fn mod_report(domain: &Arc<DomainRuntime>, report: Value, at: alondra_core::Millis) {
+    fn mod_report(domain: &Arc<dyn Runtime>, report: Value, at: alondra_core::Millis) {
         let mut report = report;
         report["session_id"] = json!("agent-a");
         domain.report(serde_json::from_value(report).unwrap(), at);
@@ -1752,7 +1782,7 @@ mod tests {
 
     /// The node of the release, connected, its release script started in the background
     /// `minutes_ago` and still alive, and its turn ended behind it.
-    async fn waiting_for_release(domain: &Arc<DomainRuntime>, minutes_ago: i64) -> alondra_core::Millis {
+    async fn waiting_for_release(domain: &Arc<dyn Runtime>, minutes_ago: i64) -> alondra_core::Millis {
         let now = alondra_core::now_millis();
         let started = now - minutes_ago * 60_000;
         node_with_task(domain);
@@ -1770,7 +1800,7 @@ mod tests {
     const ABLATE: &str = "python3 ablate.py > ablation.txt";
 
     /// A turn end behind the ablation script and a Monitor on its results, with the node's words.
-    async fn ends_behind_its_ablation(domain: &Arc<DomainRuntime>, said: &str, at: alondra_core::Millis) {
+    async fn ends_behind_its_ablation(domain: &Arc<dyn Runtime>, said: &str, at: alondra_core::Millis) {
         let tasks = json!([{"id": "b1", "type": "shell", "command": ABLATE}, {"id": "m1", "type": "monitor", "description": "ablation results"}]);
         let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop", "last_assistant_message": said, "background_tasks": tasks});
         assert_eq!(hook(domain, stop, Some(6)).await.0, json!({}), "its own work will wake it: no hold-back");
@@ -1778,14 +1808,14 @@ mod tests {
         mod_report(domain, json!({"event": "background", "tasks": tasks}), at);
     }
 
-    async fn between_turns(domain: &Arc<DomainRuntime>, event: &str, extra: Value) {
+    async fn between_turns(domain: &Arc<dyn Runtime>, event: &str, extra: Value) {
         let mut payload = json!({"session_id": "agent-a", "hook_event_name": event});
         payload.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         hook(domain, payload, Some(6)).await.1.unwrap();
     }
 
     /// A subagent the node started in the background `minutes_ago`, with no shell call alive.
-    fn background_subagent(domain: &Arc<DomainRuntime>, minutes_ago: i64) {
+    fn background_subagent(domain: &Arc<dyn Runtime>, minutes_ago: i64) {
         let at = alondra_core::now_millis() - minutes_ago * 60_000;
         domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), at);
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.end", "id": "sub"})).unwrap(), at);
@@ -1809,7 +1839,7 @@ mod tests {
 
         background_subagent(&domain, 5);
         assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "its work runs and will wake it");
-        assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap(), None, "nothing counted");
+        assert_eq!(domain.store().lock().unwrap().stop_blocks(&"task".into()).unwrap(), None, "nothing counted");
 
         mod_report(&domain, json!({"event": "subagent.end", "id": "sub"}), alondra_core::now_millis());
         let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop", "background_tasks": []});
@@ -1852,7 +1882,7 @@ mod tests {
             number: 7, head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
             allowed_methods: vec![MergeMethod::Squash],
         });
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert_eq!(unregistered_pr_text(&state, "github.com", "Owner/Repo", 7), None);
         let text = unregistered_pr_text(&state, "github.com", "owner/repo", 8).unwrap();
         assert!(text.contains("owner/repo#8") && text.contains("register_pr"), "{text}");
@@ -1879,7 +1909,7 @@ mod tests {
         served: tokio::task::JoinHandle<Result<()>>,
     }
 
-    async fn connect(domain: &Arc<DomainRuntime>, session: &str) -> Connection {
+    async fn connect(domain: &Arc<dyn Runtime>, session: &str) -> Connection {
         let (mut client, server) = UnixStream::pair().unwrap();
         let body = serde_json::to_vec(&json!({"node_connect": {"session_id": session, "version": "2.1.287"}})).unwrap();
         client.write_u32(body.len() as u32).await.unwrap();
@@ -1910,7 +1940,7 @@ mod tests {
         }
     }
 
-    async fn acknowledge(domain: &Arc<DomainRuntime>, session: &str, ids: Value) -> Result<()> {
+    async fn acknowledge(domain: &Arc<dyn Runtime>, session: &str, ids: Value) -> Result<()> {
         let (mut client, server) = UnixStream::pair().unwrap();
         let body = serde_json::to_vec(&json!({"node_ack": {"session_id": session, "ids": ids}})).unwrap();
         client.write_u32(body.len() as u32).await.unwrap();
@@ -1973,11 +2003,11 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         connect(&domain, "8a73d968-0000").await.close().await;
-        assert!(domain.state().unwrap().agents.is_empty(), "a real daemon never invents an Agent");
+        assert!(domain.state().agents.is_empty(), "a real daemon never invents an Agent");
         domain.live().sandbox.store(true, std::sync::atomic::Ordering::Relaxed);
         connect(&domain, "8a73d968-0000").await.close().await;
         connect(&domain, "8a73d968-0000").await.close().await;
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert_eq!(state.agents[&"8a73d968-0000".into()].name, "test/8a73d968");
         assert_eq!(state.agents.len(), 1);
         let tasks: Vec<_> = state.tasks.values().collect();
@@ -2016,10 +2046,10 @@ mod tests {
             "requested_schema": {"type": "object", "properties": {"repo": {"type": "string", "title": "Repository"}}}})
     }
 
-    async fn open_hold(domain: &Arc<DomainRuntime>) -> InteractionId {
+    async fn open_hold(domain: &Arc<dyn Runtime>) -> InteractionId {
         let mut changed = domain.subscribe();
         loop {
-            let state = domain.state().unwrap();
+            let state = domain.state();
             let open = state.holds.keys().find(|id| matches!(state.interactions[*id].payload,
                 InteractionPayload::Question { answer: None, .. }) && !state.interactions[*id].withdrawn);
             if let Some(id) = open { return id.clone() }
@@ -2034,11 +2064,11 @@ mod tests {
     }
 
     /// A frame as Claude Code's hook or the node mod's helper sends it, answered by the user from a card while it waits.
-    async fn held(domain: &Arc<DomainRuntime>, frame: Value, option: &str, note: Option<&str>) -> (Value, InteractionId) {
+    async fn held(domain: &Arc<dyn Runtime>, frame: Value, option: &str, note: Option<&str>) -> (Value, InteractionId) {
         held_with(domain, frame, option, note.map(|note| BTreeMap::from([(Hold::NOTE.to_owned(), InputValue::Text(note.into()))])).unwrap_or_default()).await
     }
 
-    async fn held_with(domain: &Arc<DomainRuntime>, frame: Value, option: &str, inputs: BTreeMap<String, InputValue>) -> (Value, InteractionId) {
+    async fn held_with(domain: &Arc<dyn Runtime>, frame: Value, option: &str, inputs: BTreeMap<String, InputValue>) -> (Value, InteractionId) {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &frame).await;
         let handler = handle(server, domain);
@@ -2053,7 +2083,7 @@ mod tests {
         (body, id)
     }
 
-    async fn held_card(domain: &Arc<DomainRuntime>, card: Value, option: &str, note: Option<&str>) -> (Value, InteractionId) {
+    async fn held_card(domain: &Arc<dyn Runtime>, card: Value, option: &str, note: Option<&str>) -> (Value, InteractionId) {
         held(domain, json!({"node_hold": card}), option, note).await
     }
 
@@ -2070,11 +2100,11 @@ mod tests {
             let (reply, id) = held_card(&domain, permission("agent-a"), option, note).await;
             assert_eq!((reply["held"].as_bool(), reply["allowed"].as_bool()), (Some(true), Some(allowed)), "{option}");
             assert!(reply["reason"].as_str().unwrap().ends_with(reason), "{option}: {reply}");
-            let state = domain.state().unwrap();
+            let state = domain.state();
             assert_eq!(state.holds[&id], Hold::Permission);
             assert!(state.interactions[&id].body.contains("Bash: Clean the build"), "{}", state.interactions[&id].body);
             assert!(agent_outbox(&domain, "agent-a").is_empty());
-            assert!(crate::domain_messages::take_held(&domain, &"agent-a".into()).is_empty(), "the denial carries the words");
+            assert!(crate::domain_messages::take_held(&*domain, &"agent-a".into()).is_empty(), "the denial carries the words");
         }
     }
 
@@ -2101,8 +2131,8 @@ mod tests {
         json!({"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": content}], "behavior": "allow", "destination": destination})
     }
 
-    fn option_ids(domain: &Arc<DomainRuntime>, id: &InteractionId) -> Vec<String> {
-        let InteractionPayload::Question { options, .. } = &domain.state().unwrap().interactions[id].payload else { panic!("question") };
+    fn option_ids(domain: &Arc<dyn Runtime>, id: &InteractionId) -> Vec<String> {
+        let InteractionPayload::Question { options, .. } = &domain.state().interactions[id].payload else { panic!("question") };
         options.iter().map(|o| o.id.clone()).collect()
     }
 
@@ -2129,12 +2159,12 @@ mod tests {
         let id = open_hold(&domain).await;
         answer(&domain, &id, Hold::ALWAYS, None);
         waiting.await.expect("the pending rule reached settings confirmation");
-        let rows = domain.store.lock().unwrap().allowed_rules().unwrap();
+        let rows = domain.store().lock().unwrap().allowed_rules().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].state, alondra_daemon_engine_model::RuleState::Pending);
 
         let mut acknowledgement = Box::pin(acknowledge(&domain, "ack-agent", json!([format!("o-{message}")])));
-        let admitted = domain.hook_work.available() == 1;
+        let admitted = domain.hook_work().available() == 1;
         // Poll the real transport first so an occupied lane queues this acknowledgement.
         let initial = acknowledgement.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
         let completed_before_release = match initial {
@@ -2151,7 +2181,7 @@ mod tests {
         holding.await.unwrap().unwrap();
         if !completed_before_release { acknowledgement.await.unwrap(); }
         assert_eq!(body["allowed"], true);
-        assert_eq!(domain.store.lock().unwrap().allowed_rules().unwrap()[0].state, alondra_daemon_engine_model::RuleState::Active);
+        assert_eq!(domain.store().lock().unwrap().allowed_rules().unwrap()[0].state, alondra_daemon_engine_model::RuleState::Active);
         assert!(completed_before_release, "the real unrelated node acknowledgement queued behind settings confirmation");
         println!("settings_confirmation=held unrelated_node_ack=completed_before_release rule=active physical_jobs=drained");
     }
@@ -2168,21 +2198,21 @@ mod tests {
         assert_eq!(reply["permissions"], json!([{"type": "addRules", "behavior": "allow", "destination": "localSettings",
             "rules": [{"toolName": "Bash", "ruleContent": "make build *"}]}]), "never the user's global settings");
         assert_eq!(option_ids(&domain, &id), ["allow", "always", "deny"]);
-        assert_eq!(domain.state().unwrap().interactions[&id].card.allow_always, Some(alondra_core::allow_always::AllowAlways::Offered {
+        assert_eq!(domain.state().interactions[&id].card.allow_always, Some(alondra_core::allow_always::AllowAlways::Offered {
             repo: "app".into(), rules: vec!["make build *".into()], quiet: vec!["tail".into()] }));
-        let rows = crate::allow_always::reconcile(&domain);
+        let rows = crate::allow_always::reconcile(&*domain);
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].rule.as_str(), rows[0].interaction_id.as_str(), rows[0].task_id.as_deref()), ("make build *", id.0.as_str(), Some("task-agent-a")));
         assert_eq!(rows[0].settings, root.join(".claude/settings.local.json").to_string_lossy());
         assert_eq!(rows[0].state, alondra_daemon_engine_model::RuleState::Missing, "Claude Code never wrote it in this test, so it is not listed as active");
         std::fs::create_dir_all(root.join(".claude")).unwrap();
         std::fs::write(root.join(".claude/settings.local.json"), r#"{"permissions":{"allow":["Bash(make build *)"]}}"#).unwrap();
-        assert_eq!(crate::allow_always::reconcile(&domain)[0].state, alondra_daemon_engine_model::RuleState::Active);
-        let removed = crate::allow_always::remove_rule(&domain, rows[0].id).unwrap().unwrap();
+        assert_eq!(crate::allow_always::reconcile(&*domain)[0].state, alondra_daemon_engine_model::RuleState::Active);
+        let removed = crate::allow_always::remove_rule(&*domain, rows[0].id).unwrap().unwrap();
         assert_eq!(removed.rule, "make build *");
         assert_eq!(std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap(), r#"{"permissions":{"allow":[]}}"#);
-        assert_eq!(crate::allow_always::reconcile(&domain)[0].state, alondra_daemon_engine_model::RuleState::Removed);
-        assert!(crate::allow_always::remove_rule(&domain, rows[0].id).is_ok(), "removing again is harmless");
+        assert_eq!(crate::allow_always::reconcile(&*domain)[0].state, alondra_daemon_engine_model::RuleState::Removed);
+        assert!(crate::allow_always::remove_rule(&*domain, rows[0].id).is_ok(), "removing again is harmless");
     }
 
     #[tokio::test]
@@ -2197,9 +2227,9 @@ mod tests {
             let (reply, id) = held_card(&domain, card, option, None).await;
             assert!(reply.get("permissions").is_none(), "{option}: {reply}");
             assert_eq!(option_ids(&domain, &id), ["allow", "deny"], "no disabled third option");
-            assert_eq!(domain.state().unwrap().interactions[&id].card.allow_always,
+            assert_eq!(domain.state().interactions[&id].card.allow_always,
                 Some(alondra_core::allow_always::Refusal::new("rm -rf out", alondra_core::allow_always::Why::Deletes).into()));
-            assert!(crate::allow_always::reconcile(&domain).is_empty(), "nothing is remembered");
+            assert!(crate::allow_always::reconcile(&*domain).is_empty(), "nothing is remembered");
         }
     }
 
@@ -2213,7 +2243,7 @@ mod tests {
         let (reply, id) = held_card(&domain, card, Hold::ALLOW, None).await;
         assert!(reply.get("permissions").is_none());
         assert_eq!(option_ids(&domain, &id), ["allow", "deny"]);
-        assert_eq!(domain.state().unwrap().interactions[&id].card.allow_always, None);
+        assert_eq!(domain.state().interactions[&id].card.allow_always, None);
     }
 
     #[tokio::test]
@@ -2222,14 +2252,14 @@ mod tests {
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
         command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into(), reason: None });
-        let before = domain.state().unwrap().interactions.len();
+        let before = domain.state().interactions.len();
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_hold": permission("agent-a")})).await;
         let (result, reply) = tokio::join!(handle(server, &domain), reply(&mut client));
         result.unwrap();
         assert_eq!((reply["held"].as_bool(), reply["allowed"].as_bool()), (Some(true), Some(false)), "{reply}");
         assert!(reply["reason"].as_str().unwrap().contains("was cancelled"), "{reply}");
-        assert_eq!(domain.state().unwrap().interactions.len(), before, "no card is put to the user");
+        assert_eq!(domain.state().interactions.len(), before, "no card is put to the user");
     }
 
     #[tokio::test]
@@ -2238,14 +2268,14 @@ mod tests {
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
         command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into(), reason: None });
-        let before = domain.state().unwrap().interactions.len();
+        let before = domain.state().interactions.len();
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_hold": plan("agent-a")})).await;
         let (result, reply) = tokio::join!(handle(server, &domain), reply(&mut client));
         result.unwrap();
         assert_eq!((reply["held"].as_bool(), reply["approved"].as_bool()), (Some(true), Some(false)), "{reply}");
         assert!(reply["feedback"].as_str().unwrap().contains("was cancelled"), "{reply}");
-        assert_eq!(domain.state().unwrap().interactions.len(), before, "no card is put to the user");
+        assert_eq!(domain.state().interactions.len(), before, "no card is put to the user");
     }
 
     #[tokio::test]
@@ -2253,7 +2283,7 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
-        let before = domain.state().unwrap().interactions.len();
+        let before = domain.state().interactions.len();
         let (mut client, server) = UnixStream::pair().unwrap();
         let unlisted = json!({"session_id": "agent-a", "id": "toolu-plan", "kind": "plan", "input": {"plan": "# Ship the parser\n\n1. Split the lexer"}});
         send(&mut client, &json!({"node_hold": unlisted})).await;
@@ -2261,7 +2291,7 @@ mod tests {
         result.unwrap();
         assert_eq!((reply["held"].as_bool(), reply["approved"].as_bool()), (Some(true), Some(false)), "{reply}");
         assert!(reply["feedback"].as_str().unwrap().starts_with("Your plan has no checklist. Write its scope as Markdown checklist lines (`- [ ] …`)"), "{reply}");
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert_eq!(state.interactions.len(), before, "no card is put to the user");
         assert!(state.holds.is_empty());
     }
@@ -2275,19 +2305,19 @@ mod tests {
         std::fs::create_dir(worktree.path().join("docs")).unwrap();
         std::fs::write(worktree.path().join("docs/design.md"), "# Fast connection\n\n- [ ] Measure\n- [ ] Relay").unwrap();
         let cwd = worktree.path().to_str().unwrap();
-        let post = |id: &str, plan: &str| crate::domain_holds::post(&domain, &serde_json::from_value(json!({"session_id": "agent-a", "id": id,
+        let post = |id: &str, plan: &str| crate::domain_holds::post(&*domain, &serde_json::from_value(json!({"session_id": "agent-a", "id": id,
             "kind": "plan", "cwd": cwd, "input": {"plan": plan}})).unwrap(), true).unwrap();
         let mention = "# Step 1\n\nCreate docs/fast-connection.md with the diagram.\n\n- [ ] Ship the relay";
         let id = match post("toolu-mention", mention) {
             crate::domain_holds::Posted::Held(id) => id,
             _ => panic!("a plan that only mentions a Markdown file is put to the user as written"),
         };
-        assert_eq!(domain.state().unwrap().interactions[&id].body, mention);
+        assert_eq!(domain.state().interactions[&id].body, mention);
         let id = match post("toolu-plan", "# Step 1\n\nContext in [the plan](docs/design.md).\n\n- [ ] Ship the relay") {
             crate::domain_holds::Posted::Held(id) => id,
             _ => panic!("a plan whose cited file can be read is put to the user"),
         };
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let body = &state.interactions[&id].body;
         assert!(body.ends_with("## docs/design.md\n\n### Fast connection\n\n- ☐ Measure\n- ☐ Relay"), "{body}");
         assert_eq!(alondra_domain_rules::checklist_items(body).len(), 1, "the file's checkboxes are not points of the plan");
@@ -2301,13 +2331,13 @@ mod tests {
         working_agent(&domain, "agent-b");
         command(&domain, Actor::Orchestrator { generation: 0 }, "depend", Command::SetDependencies {
             task_id: "task-agent-a".into(), dependencies: BTreeSet::from(["task-agent-b".into()]), stack: None, reason: None,});
-        let before = domain.state().unwrap().interactions.len();
+        let before = domain.state().interactions.len();
         let card = json!({"session_id": "agent-a", "id": "toolu-plan", "kind": "plan", "input": {"plan": "# Step 1\n\n- [ ] Ship the relay"}});
-        match crate::domain_holds::post(&domain, &serde_json::from_value(card).unwrap(), true).unwrap() {
+        match crate::domain_holds::post(&*domain, &serde_json::from_value(card).unwrap(), true).unwrap() {
             crate::domain_holds::Posted::Denied(reason) => assert!(reason.contains("ask the orchestrator to remove it"), "{reason}"),
             _ => panic!("a plan of a waiting task is put to the user"),
         }
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert_eq!(state.interactions.len(), before, "no card is put to the user");
         assert!(state.holds.is_empty());
     }
@@ -2326,7 +2356,7 @@ mod tests {
         };
         let (result, (reply, id)) = tokio::join!(handle(server, &domain), driver);
         result.unwrap();
-        assert!(domain.state().unwrap().interactions[&id].withdrawn);
+        assert!(domain.state().interactions[&id].withdrawn);
         assert_eq!((reply["held"].as_bool(), reply["approved"].as_bool()), (Some(true), Some(false)), "{reply}");
         assert!(reply["feedback"].as_str().unwrap().contains("was cancelled"), "{reply}");
     }
@@ -2336,8 +2366,8 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
-        let post = |frame: Value| match crate::domain_holds::post(&domain, &serde_json::from_value(frame).unwrap(), true).unwrap() {
-            crate::domain_holds::Posted::Held(id) => domain.state().unwrap().interactions[&id].card.clone(),
+        let post = |frame: Value| match crate::domain_holds::post(&*domain, &serde_json::from_value(frame).unwrap(), true).unwrap() {
+            crate::domain_holds::Posted::Held(id) => domain.state().interactions[&id].card.clone(),
             _ => panic!("not held"),
         };
         let permission = post(permission("agent-a"));
@@ -2364,9 +2394,9 @@ mod tests {
         working_agent(&domain, "agent-a");
         let mut single = single_question("agent-a");
         single["input"]["questions"][0]["options"][0]["label"] = json!("Postgres (Recommended)");
-        let crate::domain_holds::Posted::Held(id) = crate::domain_holds::post(&domain, &serde_json::from_value(single).unwrap(), true).unwrap()
+        let crate::domain_holds::Posted::Held(id) = crate::domain_holds::post(&*domain, &serde_json::from_value(single).unwrap(), true).unwrap()
         else { panic!("not held") };
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let interaction = &state.interactions[&id];
         assert_eq!(interaction.card.recommended.as_deref(), Some("o0"));
         let InteractionPayload::Question { options, .. } = &interaction.payload else { panic!("question") };
@@ -2386,7 +2416,7 @@ mod tests {
             let (reply, id) = held_card(&domain, plan("agent-a"), option, note).await;
             assert_eq!(reply["approved"].as_bool(), Some(approved));
             assert_eq!(reply["feedback"].as_str().map(|text| text.split_once(' ').unwrap().1), feedback);
-            assert_eq!(domain.state().unwrap().holds[&id], Hold::Plan);
+            assert_eq!(domain.state().holds[&id], Hold::Plan);
         }
     }
 
@@ -2400,7 +2430,7 @@ mod tests {
             single["input"]["questions"][0]["options"][1]["label"] = json!("SQLite (Recommended)");
             let (reply, id) = held_card(&domain, single, option, note).await;
             assert_eq!(reply, json!({"held": true, "answers": {"Which database?": said}}));
-            let state = domain.state().unwrap();
+            let state = domain.state();
             assert_eq!(state.holds[&id], Hold::Question);
             let InteractionPayload::Question { options, .. } = &state.interactions[&id].payload else { panic!("question") };
             assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(), [("o0", "Postgres"), ("o1", "SQLite")]);
@@ -2411,7 +2441,7 @@ mod tests {
 
     const GROUP: [&str; 3] = ["hold-question-toolu-three-q1", "hold-question-toolu-three-q2", "hold-question-toolu-three-q3"];
 
-    async fn post_group(domain: &Arc<DomainRuntime>) -> (UnixStream, std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + '_>>) {
+    async fn post_group(domain: &Arc<dyn Runtime>) -> (UnixStream, std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + '_>>) {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_hold": three_questions("agent-a")})).await;
         let handler = Box::pin(handle(server, domain));
@@ -2429,7 +2459,7 @@ mod tests {
         working_agent(&domain, "agent-a");
         let (mut client, mut handler) = post_group(&domain).await;
         tokio::select! { _ = open_hold(&domain) => {}, result = &mut handler => panic!("answered without waiting: {result:?}") }
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let cards: Vec<_> = GROUP.iter().map(|id| &state.interactions[&(*id).into()].card).collect();
         assert_eq!(cards.iter().map(|card| (card.kind, card.need.as_str())).collect::<Vec<_>>(), [
             (CardKind::Decide, "How do the devices reach the Mac?"), (CardKind::Decide, "Which port should it listen on?"),
@@ -2462,7 +2492,7 @@ mod tests {
         answer(&domain, &GROUP[0].into(), "o0", None);
         answer(&domain, &GROUP[1].into(), "o0", None);
         command(&domain, Actor::User { user_id: "u".into() }, "retake", Command::ReopenAnswer { interaction_id: GROUP[0].into() });
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert!(matches!(&state.interactions[&GROUP[0].into()].payload, InteractionPayload::Question { answer: None, .. }));
         answer(&domain, &GROUP[2].into(), "o0", None);
         assert!(still_waiting(&mut handler).await, "a reopened question is still owed");
@@ -2490,7 +2520,7 @@ mod tests {
         let (result, body) = tokio::join!(handle(server, &domain), driver);
         result.unwrap();
         assert_eq!(body, json!({"held": false}));
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert!(GROUP.iter().all(|id| state.interactions[&(*id).into()].withdrawn), "all three go together, answered or not");
     }
 
@@ -2499,17 +2529,17 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
-        let post = || match crate::domain_holds::post(&domain, &serde_json::from_value(three_questions("agent-a")).unwrap(), true).unwrap() {
+        let post = || match crate::domain_holds::post(&*domain, &serde_json::from_value(three_questions("agent-a")).unwrap(), true).unwrap() {
             crate::domain_holds::Posted::Held(id) => id,
             _ => panic!("not held"),
         };
         let first = post();
         assert_eq!(first.0, GROUP[0]);
         assert_eq!(post(), first);
-        assert_eq!(domain.state().unwrap().interactions.values().filter(|i| i.card.group.is_some()).count(), 3);
+        assert_eq!(domain.state().interactions.values().filter(|i| i.card.group.is_some()).count(), 3);
     }
 
-    async fn answered_without_a_card(domain: &Arc<DomainRuntime>, card: Value) -> Value {
+    async fn answered_without_a_card(domain: &Arc<dyn Runtime>, card: Value) -> Value {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_hold": card})).await;
         let (result, body) = tokio::join!(handle(server, domain), reply(&mut client));
@@ -2528,8 +2558,8 @@ mod tests {
         for card in [permission("no-mod"), permission("idle"), permission("stranger")] {
             assert_eq!(answered_without_a_card(&domain, card.clone()).await, json!({"held": false}), "{card}");
         }
-        assert!(matches!(respond(&domain, &elicitation("no-mod")).unwrap(), Reply::Plain(body) if body == json!({})));
-        assert!(domain.state().unwrap().holds.is_empty());
+        assert!(matches!(respond(&*domain, &elicitation("no-mod")).unwrap(), Reply::Plain(body) if body == json!({})));
+        assert!(domain.state().holds.is_empty());
     }
 
     #[tokio::test]
@@ -2543,7 +2573,7 @@ mod tests {
             working_agent(&domain, "agent-a");
             let (reply, id) = held(&domain, json!({"launched": true, "payload": elicitation("agent-a")}), option, note).await;
             assert_eq!(reply["hookSpecificOutput"], expected);
-            let state = domain.state().unwrap();
+            let state = domain.state();
             assert_eq!(state.holds[&id], Hold::Elicitation);
             assert!(state.interactions[&id].body.starts_with("MCP server “github” requests your input.\n\nWhich repository?"));
             let InteractionPayload::Question { options, .. } = &state.interactions[&id].payload else { panic!("question") };
@@ -2563,7 +2593,7 @@ mod tests {
             working_agent(&domain, "agent-a");
             let (reply, id) = held_with(&domain, json!({"launched": true, "payload": remember("agent-a")}), Hold::ACCEPT, inputs).await;
             assert_eq!(reply["hookSpecificOutput"], json!({"hookEventName": "Elicitation", "action": "accept", "content": content}));
-            let InteractionPayload::Question { options, .. } = &domain.state().unwrap().interactions[&id].payload else { panic!("question") };
+            let InteractionPayload::Question { options, .. } = &domain.state().interactions[&id].payload else { panic!("question") };
             assert_eq!(options[0].description, None, "a form with a control per field asks for no words");
         }
     }
@@ -2586,12 +2616,12 @@ mod tests {
             handler.await.unwrap();
             id
         };
-        assert!(domain.state().unwrap().interactions[&id].withdrawn);
-        let Reply::Held(orphan) = respond(&domain, &elicitation("agent-a")).unwrap() else { panic!("held") };
+        assert!(domain.state().interactions[&id].withdrawn);
+        let Reply::Held(orphan) = respond(&*domain, &elicitation("agent-a")).unwrap() else { panic!("held") };
         drop(domain);
         let reopened = fixture.open();
-        crate::domain_holds::release_orphans(&reopened).unwrap();
-        assert!(reopened.state().unwrap().interactions[&orphan.id].withdrawn);
+        crate::domain_holds::release_orphans(&*reopened).unwrap();
+        assert!(reopened.state().interactions[&orphan.id].withdrawn);
     }
 
     #[tokio::test]
@@ -2612,13 +2642,13 @@ mod tests {
             handler.await.unwrap();
             id
         };
-        assert!(!domain.state().unwrap().interactions[&id].withdrawn, "a cut wait is not a withdrawn question");
+        assert!(!domain.state().interactions[&id].withdrawn, "a cut wait is not a withdrawn question");
         drop(domain);
 
         let reopened = fixture.open();
-        crate::domain_holds::release_orphans(&reopened).unwrap();
-        assert!(!reopened.state().unwrap().interactions[&id].withdrawn, "a restart keeps the mod's cards");
-        let before = reopened.state().unwrap().interactions.len();
+        crate::domain_holds::release_orphans(&*reopened).unwrap();
+        assert!(!reopened.state().interactions[&id].withdrawn, "a restart keeps the mod's cards");
+        let before = reopened.state().interactions.len();
 
         let (mut again, server) = UnixStream::pair().unwrap();
         send(&mut again, &json!({"node_hold": plan("agent-a")})).await;
@@ -2628,7 +2658,7 @@ mod tests {
             _ = open_hold(&reopened) => {},
             result = &mut handler => panic!("answered without waiting: {result:?}"),
         }
-        assert_eq!(reopened.state().unwrap().interactions.len(), before, "the same card, not a second one");
+        assert_eq!(reopened.state().interactions.len(), before, "the same card, not a second one");
         answer(&reopened, &id, Hold::APPROVE, None);
         let (result, body) = tokio::join!(handler, reply(&mut again));
         result.unwrap();
@@ -2652,7 +2682,7 @@ mod tests {
         };
         drop(hook);
         handler.await.unwrap();
-        assert!(domain.state().unwrap().interactions[&id].withdrawn, "the prompt was answered in the terminal or abandoned");
+        assert!(domain.state().interactions[&id].withdrawn, "the prompt was answered in the terminal or abandoned");
     }
 
     #[tokio::test]
@@ -2665,14 +2695,14 @@ mod tests {
         assert_eq!(again, first);
     }
 
-    async fn report(domain: &Arc<DomainRuntime>, report: Value) {
+    async fn report(domain: &Arc<dyn Runtime>, report: Value) {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_event": report})).await;
         let (result, _) = tokio::join!(handle(server, domain), reply(&mut client));
         result.unwrap();
     }
 
-    async fn withdrawn_by(domain: &Arc<DomainRuntime>, card: Value, ended: Value) -> (Value, InteractionId) {
+    async fn withdrawn_by(domain: &Arc<dyn Runtime>, card: Value, ended: Value) -> (Value, InteractionId) {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_hold": card})).await;
         let driver = async {
@@ -2706,7 +2736,7 @@ mod tests {
             } else {
                 assert_eq!(body, json!({"held": false}));
             }
-            assert!(domain.state().unwrap().interactions[&id].withdrawn);
+            assert!(domain.state().interactions[&id].withdrawn);
         }
 
         let (mut helper, server) = UnixStream::pair().unwrap();
@@ -2714,7 +2744,7 @@ mod tests {
         let driver = async {
             let id = open_hold(&domain).await;
             report(&domain, json!({"session_id": "agent-a", "event": "tool.end", "tool_use_id": "another-call"})).await;
-            assert!(!domain.state().unwrap().interactions[&id].withdrawn, "another call's end leaves the card");
+            assert!(!domain.state().interactions[&id].withdrawn, "another call's end leaves the card");
             answer(&domain, &id, Hold::APPROVE, None);
             reply(&mut helper).await
         };

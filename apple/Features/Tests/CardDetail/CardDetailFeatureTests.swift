@@ -395,6 +395,71 @@ final class CardDetailFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.comments.isEmpty)
     }
 
+    /// The detail emptied its field as the answer was tapped, before anything kept it on the phone.
+    @MainActor
+    func testTheDetailKeepsItsTextUntilTheAnswerIsSavedOnThePhoneAndHandsOffWhatWasSaved() async throws {
+        let gate = Gate()
+        let dismissed = LockIsolated(0)
+        let handedOff = LockIsolated<[ActionRequest]>([])
+        let card = try Fixtures.card(Fixtures.questionID)
+        var state = CardDetailFeature.State(key: ViewKey(rawValue: card.key))
+        state.screen.document = card
+        state.screen.phase = .loaded
+        state.actions.dataEpoch = card.dataEpoch
+        let store = TestStore(initialState: state) {
+            CombineReducers {
+                CardDetailFeature()
+                Reduce { _, action in
+                    if case .delegate(.handOff(let request)) = action { handedOff.withValue { $0.append(request) } }
+                    return .none
+                }
+            }
+        } withDependencies: {
+            $0.viewsClient.prepare = { request in
+                await gate.wait()
+                return ActionRequest(commandId: "saved-on-the-phone", dataEpoch: request.dataEpoch, client: request.client, lang: request.lang,
+                                     actionId: request.actionId, optionId: request.optionId, input: request.input, resolvesCard: request.resolvesItsCard)
+            }
+            $0.dismiss = DismissEffect { dismissed.withValue { $0 += 1 } }
+        }
+        store.exhaustivity = .off
+        let reply = try XCTUnwrap(store.state.subject?.replyAction)
+        await store.send(.replyChanged("Concise, but keep the greeting"))
+
+        await store.send(.actionTapped(reply))
+        await Task.megaYield()
+        XCTAssertEqual(store.state.reply, "Concise, but keep the greeting", "nothing is cleared before the phone keeps it")
+        XCTAssertEqual(dismissed.value, 0)
+        XCTAssertTrue(handedOff.value.isEmpty)
+
+        await gate.open()
+        await store.receive(\.actions.sent)
+        await store.skipReceivedActions()
+        XCTAssertEqual(handedOff.value.map(\.commandId), ["saved-on-the-phone"])
+        XCTAssertEqual(handedOff.value.first?.input.text, "Concise, but keep the greeting")
+        XCTAssertEqual(store.state.reply, "")
+        XCTAssertEqual(dismissed.value, 1)
+    }
+
+    @MainActor
+    func testAnAnswerThatCannotBeSavedOnThePhoneKeepsTheDetailOpenWithItsTextAndTheError() async throws {
+        let dismissed = LockIsolated(0)
+        let feed = FeedStub()
+        let store = store(try Fixtures.card(Fixtures.questionID), feed: feed, dismissed: dismissed)
+        store.dependencies.viewsClient.prepare = { _ in throw FeedError.commandIdentityConflict }
+        let reply = try XCTUnwrap(store.state.subject?.replyAction)
+        await store.send(.replyChanged("Concise, but keep the greeting"))
+
+        await store.send(.actionTapped(reply))
+        await store.receive(\.actions.undelivered)
+        await store.skipReceivedActions()
+        XCTAssertEqual(dismissed.value, 0, "the detail stays open")
+        XCTAssertEqual(feed.requests, [], "nothing was handed off")
+        XCTAssertEqual(store.state.reply, "Concise, but keep the greeting")
+        XCTAssertEqual(store.state.actions.error, "Alondra couldn’t prepare this request.")
+        XCTAssertFalse(store.state.actions.inFlight, "it can be sent again")
+    }
+
     @MainActor
     func testAnOptionButtonAnswersWithItsOptionID() async throws {
         let feed = FeedStub()

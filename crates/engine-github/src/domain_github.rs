@@ -1,6 +1,7 @@
 //! GitHub facts for domain v2 pull requests, read with `gh`. An observation records remote
 //! reality; a merged PR settles the final delivery that presented it. Merging is
 //! `domain_merges`'s, with the same `gh`.
+use alondra_engine_ports::Runtime as _;
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
@@ -16,16 +17,8 @@ use std::time::Duration;
 use alondra_engine_ports::github::GitHub;
 pub use alondra_engine_ports::github::{Closed, GhFailure, HttpAnswer, Observed, PrFacts, PrObserver, pr_url};
 
-pub fn execute_system(domain: &DomainRuntime, command: Command) -> Result<(), StoreError> {
-    let state = domain.state().map_err(StoreError::Storage)?;
-    let envelope = CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION,
-        data_epoch: state.data_epoch.clone(),
-        command_id: format!("github-{}", crate::auth::random_hex(16)).into(),
-        expected_revision: state.revision,
-        command,
-    };
-    domain.execute_as_system(envelope).map(|_| ())
+pub fn execute_system(domain: &dyn alondra_engine_ports::Runtime, command: Command) -> Result<(), StoreError> {
+    alondra_engine_kernel::domain_runtime::RuntimeRecords::execute_system_command(domain, command)
 }
 
 /// Only registered, open PRs need periodic observation. One final observation

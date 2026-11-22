@@ -1,5 +1,5 @@
 //! Schedule v2 presentation and trusted draft materialization. The launcher is P4.
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::domain_store::{StoreError, TransportIdentity};
 use alondra_domain_rules as d;
 use alondra_core::options::{self, Choice, OptionsFile};
@@ -114,11 +114,8 @@ fn visible(state: &d::DomainState, schedule: &d::Schedule) -> Value {
     value
 }
 
-pub fn read(domain: &DomainRuntime, path: &str) -> Value {
-    let state = match domain.state() {
-        Ok(state) => state,
-        Err(_) => return error("storage_unavailable", "domain transaction could not be completed"),
-    };
+pub fn read(domain: &dyn Runtime, path: &str) -> Value {
+    let state = domain.state();
     let body = if path == "/schedules" {
         let schedules: Vec<_> = state.schedule.schedules.values()
             .filter(|schedule| schedule.deleted_at.is_none())
@@ -150,7 +147,7 @@ fn old_frequency(frequency: d::ScheduleFrequency) -> crate::schedules::Frequency
 }
 
 impl ScheduleDraft {
-    fn materialize(mut self, domain: &DomainRuntime, home: &Path, schedule_id: d::ScheduleId, revision: i64, verified_user: bool) -> Result<d::Schedule, String> {
+    fn materialize(mut self, domain: &dyn Runtime, home: &Path, schedule_id: d::ScheduleId, revision: i64, verified_user: bool) -> Result<d::Schedule, String> {
         let file = alondra_daemon_engine_model::options::options_at(home).map_err(|error| error.to_string())?;
         let resolved = file.resolve(self.project.as_deref(), &self.options)?;
         alondra_engine_kernel::launches::validate_request_selection(domain, &resolved).map_err(|error| error.message)?;
@@ -204,7 +201,7 @@ impl ScheduleDraft {
 }
 
 pub fn encrypted_mutation(
-    domain: &DomainRuntime, home: &Path, sender: &str,
+    domain: &dyn Runtime, home: &Path, sender: &str,
     method: &str, path: &str, body: Option<&Value>,
     identity: TransportIdentity<'_>, authorize: impl Fn() -> anyhow::Result<()>,
 ) -> Value {
@@ -218,7 +215,7 @@ pub fn encrypted_mutation(
 /// transport identity whose receipt replays a retry; a loopback request has
 /// none, so its retry is a new command like any local HTTP call.
 pub fn mutation(
-    domain: &DomainRuntime, home: &Path,
+    domain: &dyn Runtime, home: &Path,
     method: &str, path: &str, body: Option<&Value>,
     identity: Option<TransportIdentity<'_>>, authorize: impl Fn() -> anyhow::Result<()>,
 ) -> Value {
@@ -226,7 +223,7 @@ pub fn mutation(
 }
 
 pub fn orchestrator_mutation(
-    domain: &DomainRuntime, home: &Path,
+    domain: &dyn Runtime, home: &Path,
     method: &str, path: &str, body: Option<&Value>,
     identity: Option<TransportIdentity<'_>>, authorize: impl Fn() -> anyhow::Result<()>,
 ) -> Value {
@@ -236,15 +233,15 @@ pub fn orchestrator_mutation(
 
 #[allow(clippy::too_many_arguments)]
 fn mutation_with_source(
-    domain: &DomainRuntime, home: &Path,
+    domain: &dyn Runtime, home: &Path,
     method: &str, path: &str, body: Option<&Value>,
     identity: Option<TransportIdentity<'_>>, authorize: impl Fn() -> anyhow::Result<()>, verified_user: bool,
 ) -> Value {
     if !approved_mutation_path(method, path, body.is_some()) {
         return error("invalid_input", "invalid Schedule operation");
     }
-    let receipt = |domain: &DomainRuntime| match identity {
-        Some(identity) => domain.transport_receipt(identity, || {
+    let receipt = |domain: &dyn Runtime| match identity {
+        Some(identity) => domain.transport_receipt(identity, &mut || {
             authorize().map_err(|_| d::DomainError::new("forbidden", "device approval was revoked").into())
         }),
         None => Ok(None),
@@ -255,10 +252,7 @@ fn mutation_with_source(
             Err(error_value) => return store_error(error_value),
         };
         if let Some(outcome) = prior { return run_response(&outcome); }
-        let state = match domain.state() {
-            Ok(state) => state,
-            Err(_) => return error("storage_unavailable", "domain transaction could not be completed"),
-        };
+        let state = domain.state();
         let (schedule_id, _) = schedule_path(path).expect("approved Schedule path");
         let Some(schedule) = state.schedule.schedules.get(&d::ScheduleId(schedule_id.into()))
             .filter(|schedule| schedule.deleted_at.is_none()) else {
@@ -294,10 +288,7 @@ fn mutation_with_source(
     if let Some(outcome) = prior {
         return mutation_response(method, path, body, &outcome);
     }
-    let state = match domain.state() {
-        Ok(state) => state,
-        Err(_) => return error("storage_unavailable", "domain transaction could not be completed"),
-    };
+    let state = domain.state();
     let command = if method == "DELETE" {
         let (schedule_id, _) = schedule_path(path).expect("approved Schedule path");
         let schedule_id = d::ScheduleId(schedule_id.into());
@@ -353,7 +344,7 @@ fn mutation_with_source(
 }
 
 /// An enabled Schedule would launch where Claude Code refuses to start, so it is not saved.
-fn untrusted_project(domain: &DomainRuntime, home: &Path, schedule: &d::Schedule) -> Option<Value> {
+fn untrusted_project(domain: &dyn Runtime, home: &Path, schedule: &d::Schedule) -> Option<Value> {
     if !schedule.enabled {
         return None;
     }
@@ -386,7 +377,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    struct Fixture { root: crate::test_support::Directory, home: std::path::PathBuf, domain: std::sync::Arc<DomainRuntime> }
+    struct Fixture { root: crate::test_support::Directory, home: std::path::PathBuf, domain: std::sync::Arc<crate::domain_runtime::DomainRuntime> }
     impl Fixture {
         fn new() -> Self {
             let root = crate::test_support::Directory::new();
@@ -421,7 +412,7 @@ mod tests {
         let accepted = || accounts.trusts(None, &parcel);
         let mut draft = Fixture::draft();
         draft["project"] = json!("Parcel");
-        let create = || mutation(&fixture.domain, &fixture.home, "POST", "/schedules", Some(&draft), None, || Ok(()));
+        let create = || mutation(&*fixture.domain, &fixture.home, "POST", "/schedules", Some(&draft), None, || Ok(()));
         accounts.refuse_trust_saves(true);
         let refused = create();
         assert_eq!(refused["body"]["code"], "untrusted_project");
@@ -440,7 +431,7 @@ mod tests {
         let _sdk = crate::model_fixture::SdkLaunches::enable(&fixture.domain, &fixture.home);
         let draft = Fixture::draft();
         let digest = [7u8; 32];
-        let create = || encrypted_mutation(&fixture.domain, &fixture.home, "phone",
+        let create = || encrypted_mutation(&*fixture.domain, &fixture.home, "phone",
             "POST", "/schedules", Some(&draft), ("phone", "create", &digest), || Ok(()));
         let first = create();
         assert_eq!(first["status"], 201);
@@ -453,38 +444,38 @@ mod tests {
         assert_eq!(create(), first);
         fs::write(&options_path, original_options).unwrap();
         assert_eq!(fixture.domain.state().unwrap().revision, initial_revision);
-        let conflict = encrypted_mutation(&fixture.domain, &fixture.home, "phone",
+        let conflict = encrypted_mutation(&*fixture.domain, &fixture.home, "phone",
             "POST", "/schedules", Some(&draft), ("phone", "create", &[6u8;32]), || Ok(()));
         assert_eq!(conflict["body"]["code"], "idempotency_conflict");
         let path = format!("/schedules/{schedule_id}");
         let run_path = format!("{path}/runs");
-        let run = encrypted_mutation(&fixture.domain, &fixture.home, "phone",
+        let run = encrypted_mutation(&*fixture.domain, &fixture.home, "phone",
             "POST", &run_path, None, ("phone", "run", &[8u8;32]), || Ok(()));
         assert_eq!(run["status"], 202);
         let run_id = run["body"]["run_id"].as_str().unwrap();
-        assert_eq!(encrypted_mutation(&fixture.domain, &fixture.home, "phone",
+        assert_eq!(encrypted_mutation(&*fixture.domain, &fixture.home, "phone",
             "POST", &run_path, None, ("phone", "run", &[8u8;32]), || Ok(())), run);
         assert_eq!(fixture.domain.state().unwrap().schedule.runs.len(), 1);
-        let detail = read(&fixture.domain, &path);
+        let detail = read(&*fixture.domain, &path);
         assert_eq!(detail["body"]["schedule"]["status"], "launching");
         assert_eq!(detail["body"]["schedule"]["revision"], 2);
-        crate::domain_schedule_runner::run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        crate::domain_schedule_runner::run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
         let finished = fixture.domain.state().unwrap();
         assert_eq!(finished.schedule.runs[&d::ScheduleRunId(run_id.into())].state, d::ScheduleRunState::Sent);
-        assert_eq!(read(&fixture.domain, &path)["body"]["schedule"]["status"], "sent");
+        assert_eq!(read(&*fixture.domain, &path)["body"]["schedule"]["status"], "sent");
         let mut update = draft.clone();
         update["revision"] = json!(3);
         update["title"] = json!("Updated review");
-        let changed = encrypted_mutation(&fixture.domain, &fixture.home, "phone", "PUT",
+        let changed = encrypted_mutation(&*fixture.domain, &fixture.home, "phone", "PUT",
             &path, Some(&update), ("phone", "update", &[9u8;32]), || Ok(()));
         assert_eq!(changed["status"], 200);
         assert_eq!(changed["body"]["revision"], 4);
-        assert_eq!(read(&fixture.domain, &path)["body"]["schedule"]["title"], "Updated review");
-        let deleted = encrypted_mutation(&fixture.domain, &fixture.home, "phone", "DELETE",
+        assert_eq!(read(&*fixture.domain, &path)["body"]["schedule"]["title"], "Updated review");
+        let deleted = encrypted_mutation(&*fixture.domain, &fixture.home, "phone", "DELETE",
             &path, None, ("phone", "delete", &[10u8;32]), || Ok(()));
         assert_eq!(deleted["body"]["ok"], true);
-        assert_eq!(read(&fixture.domain, "/schedules")["body"]["schedules"].as_array().unwrap().len(), 0);
-        assert_eq!(read(&fixture.domain, &path)["status"], 404);
+        assert_eq!(read(&*fixture.domain, "/schedules")["body"]["schedules"].as_array().unwrap().len(), 0);
+        assert_eq!(read(&*fixture.domain, &path)["status"], 404);
     }
 
     #[tokio::test]
@@ -492,11 +483,11 @@ mod tests {
         let fixture = Fixture::new();
         let mut draft = Fixture::draft();
         draft["enabled"] = json!(false);
-        let created = encrypted_mutation(&fixture.domain, &fixture.home, "phone",
+        let created = encrypted_mutation(&*fixture.domain, &fixture.home, "phone",
             "POST", "/schedules", Some(&draft),
             ("phone", "create-disabled", &[11u8; 32]), || Ok(()));
         let path = format!("/schedules/{}/runs", created["body"]["id"].as_str().unwrap());
-        let run = encrypted_mutation(&fixture.domain, &fixture.home, "phone",
+        let run = encrypted_mutation(&*fixture.domain, &fixture.home, "phone",
             "POST", &path, None, ("phone", "manual-disabled", &[12u8; 32]), || Ok(()));
         assert_eq!(run["status"], 202);
         let run_id = d::ScheduleRunId(run["body"]["run_id"].as_str().unwrap().into());
@@ -525,7 +516,7 @@ mod tests {
         let fixture = Fixture::new();
         let mut draft = Fixture::draft();
         draft["next_run"] = json!(1);
-        let rejected = encrypted_mutation(&fixture.domain, &fixture.home, "phone", "POST",
+        let rejected = encrypted_mutation(&*fixture.domain, &fixture.home, "phone", "POST",
             "/schedules", Some(&draft), ("phone", "bad", &[1u8;32]), || Ok(()));
         assert_eq!(rejected["status"], 422);
         assert!(fixture.domain.state().unwrap().schedule.schedules.is_empty());
@@ -533,7 +524,7 @@ mod tests {
         bad_interval["frequency"] = json!("every_days");
         bad_interval["interval"] = json!(0);
         bad_interval["start_at"] = json!(1000);
-        let rejected = encrypted_mutation(&fixture.domain, &fixture.home, "phone", "POST",
+        let rejected = encrypted_mutation(&*fixture.domain, &fixture.home, "phone", "POST",
             "/schedules", Some(&bad_interval), ("phone", "bad-interval", &[2u8;32]), || Ok(()));
         assert_eq!(rejected["status"], 422);
     }

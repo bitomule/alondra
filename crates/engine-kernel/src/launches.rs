@@ -1,11 +1,12 @@
 //! What a launch of a task's node is made of, below the engine's subsystems: the mission it starts
 //! with, the context a next node carries on from, the checks of the choices it was asked with, and
 //! the worktree it owns from the start.
-use crate::domain_runtime::DomainRuntime;
+use crate::Runtime;
+use crate::domain_runtime::RuntimeRecords as _;
 use alondra_domain_rules::{DomainError, DomainState, TaskId};
 use alondra_engine_ports::worktrees::Workplace;
 
-pub fn validate_request_selection(domain: &DomainRuntime, resolved: &alondra_core::options::Resolved) -> Result<(), DomainError> {
+pub fn validate_request_selection(domain: &dyn Runtime, resolved: &alondra_core::options::Resolved) -> Result<(), DomainError> {
     let Some(intent) = &resolved.selection else { return Ok(()) };
     let config = crate::accounts_file::config(domain.home()).map_err(|why| DomainError::new("settings_unavailable", why))?;
     if let Some(account) = &intent.account
@@ -32,7 +33,7 @@ pub fn validate_native_requirements(intent: Option<&alondra_core::model_selectio
 /// runs in it: it is cleaned with the task and its subagents' worktrees go beside it, even when the
 /// launch fails. A task that ended while the worktree was being made already had its close, so the
 /// worktree goes at once, unless it holds work not saved.
-pub async fn own_worktree(domain: &DomainRuntime, task: &TaskId, workplace: &Workplace) -> Result<(), DomainError> {
+pub async fn own_worktree(domain: &dyn Runtime, task: &TaskId, workplace: &Workplace) -> Result<(), DomainError> {
     let Some(dir) = domain.ports().worktrees().chosen(workplace) else { return Ok(()) };
     if !dir.join(".git").is_file() {
         return Ok(());
@@ -40,7 +41,7 @@ pub async fn own_worktree(domain: &DomainRuntime, task: &TaskId, workplace: &Wor
     let shown = dir.to_string_lossy();
     domain.set_task_worktree(task, &shown)
         .map_err(|error| DomainError::new("storage_unavailable", format!("could not record that {task} works in {shown}: {error:#}")))?;
-    let state = domain.state().map_err(|error| DomainError::new("storage_unavailable", format!("{error:#}")))?;
+    let state = domain.state();
     if !state.tasks.get(task).is_some_and(|ended| ended.state.terminal()) {
         return Ok(());
     }

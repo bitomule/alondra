@@ -2,13 +2,15 @@
 //! Agent for a Task, type a message into an Agent's session, press Esc in it and read the
 //! machine. Each call carries the orchestrator execution's bearer; the domain changes a call
 //! implies (the new Agent, an assignment, a reopened Task) are that orchestrator's commands.
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use crate::gate::GateOf as _;
 use crate::hosts::HostsOf as _;
 use crate::live::LiveOf as _;
 use crate::sdk_handover::HandoversOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
 use alondra_engine_ports::worktrees::Workplace;
 use alondra_domain_rules::{Actor, AgentId, DomainError, DomainState, ModelChooser, RequestId, TaskId};
@@ -28,13 +30,13 @@ const DEFAULT_MODEL: &str = "sonnet";
 /// What the user chose when asking for a Request: its project, options, issue and files.
 pub type Choices = crate::domain_store::RequestLaunch;
 
-pub fn request_choices(domain: &DomainRuntime, request: &RequestId) -> anyhow::Result<Option<Choices>> {
+pub fn request_choices(domain: &dyn Runtime, request: &RequestId) -> anyhow::Result<Option<Choices>> {
     domain.request_launch(request)
 }
 
 /// The orchestrator a local bearer belongs to, while its generation is current. A call that may
 /// change `what` is recorded against its execution before it acts.
-pub fn orchestrator(domain: &DomainRuntime, bearer: Option<&str>, what: Option<&str>) -> Result<Actor, DomainError> {
+pub fn orchestrator(domain: &dyn Runtime, bearer: Option<&str>, what: Option<&str>) -> Result<Actor, DomainError> {
     let refused = || DomainError::new("forbidden", "the orchestrator's capability is required");
     let bearer = bearer.ok_or_else(refused)?;
     let principal = match what {
@@ -47,8 +49,8 @@ pub fn orchestrator(domain: &DomainRuntime, bearer: Option<&str>, what: Option<&
     }
 }
 
-fn state(domain: &DomainRuntime) -> Result<std::sync::Arc<DomainState>, DomainError> {
-    domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))
+fn state(domain: &dyn Runtime) -> Result<std::sync::Arc<DomainState>, DomainError> {
+    Ok(domain.state())
 }
 
 /// An Agent by its id or its name.
@@ -74,20 +76,20 @@ pub enum Origin {
 
 /// Launches a Claude session for a Task with the options its Request was asked for, gives it its
 /// bearer through its settings file and assigns it the Task.
-pub async fn launch(domain: &DomainRuntime, home: &Path, body: LaunchBody,
+pub async fn launch(domain: &dyn Runtime, home: &Path, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>) -> Result<Value, DomainError> {
     launch_from(domain, home, body, choices, Origin::Orchestrator).await
 }
 
 /// `launch`, for either origin. An automatic launch holds the task's launch guard already.
-pub async fn launch_from(domain: &DomainRuntime, home: &Path, body: LaunchBody,
+pub async fn launch_from(domain: &dyn Runtime, home: &Path, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>, origin: Origin) -> Result<Value, DomainError> {
     let task = body.task.clone();
-    let cwd = body.cwd.clone().or_else(|| domain.launch_plan(&task).ok().flatten().map(|plan| plan.cwd));
+    let cwd = body.cwd.clone().or_else(|| domain.launch_plan(&task).map(|plan| plan.cwd));
     let launched = if matches!(origin, Origin::Orchestrator | Origin::Admitted) {
         let _launching = Launching::begin(domain, &body.task)?;
         let body = if matches!(origin, Origin::Admitted) {
-            let queue = domain.store.lock_or_exit("the domain store").launch_queue()
+            let queue = domain.store().lock_or_exit("the domain store").launch_queue()
                 .map_err(|error| DomainError::new("storage_unavailable", error.to_string()))?;
             match queue.into_iter().find(|row| row.task_id == body.task) {
                 Some(row) => LaunchBody::from_queue(&row.body)
@@ -118,23 +120,23 @@ pub async fn launch_from(domain: &DomainRuntime, home: &Path, body: LaunchBody,
 }
 
 /// Queues a launch the orchestrator or the user asked for; the gate starts it when its turn comes.
-pub fn enqueue(domain: &DomainRuntime, body: &LaunchBody, origin: &str, now: alondra_core::Millis) -> anyhow::Result<()> {
-    domain.store.lock_or_exit("the domain store").enqueue_launch(body.task_id(), &body.to_queue(), origin, now)?;
+pub fn enqueue(domain: &dyn Runtime, body: &LaunchBody, origin: &str, now: alondra_core::Millis) -> anyhow::Result<()> {
+    domain.store().lock_or_exit("the domain store").enqueue_launch(body.task_id(), &body.to_queue(), origin, now)?;
     domain.gate().poke();
     Ok(())
 }
 
 /// What the Tasks list says about a task that did not start: kept until it starts.
 /// The orchestrator's launch waits in the gate's queue, which starts it by itself once there is room.
-fn queue_at_gate(domain: &DomainRuntime, body: &LaunchBody, task: &TaskId, title: &str) -> Result<Value, DomainError> {
+fn queue_at_gate(domain: &dyn Runtime, body: &LaunchBody, task: &TaskId, title: &str) -> Result<Value, DomainError> {
     let now = alondra_core::now_millis();
     enqueue(domain, body, "orchestrator", now)
         .map_err(|error| DomainError::new("storage_unavailable", format!("could not queue the launch: {error:#}")))?;
     Ok(json!({"task": task, "queued": true, "message": format!("“{title}” is queued. {}", domain.gate().queued_text(task, now))}))
 }
 
-fn remember_refusal(domain: &DomainRuntime, task: &TaskId, refusal: Option<(&str, Option<&str>)>) {
-    let recorded = domain.store.lock_or_exit("the domain store")
+fn remember_refusal(domain: &dyn Runtime, task: &TaskId, refusal: Option<(&str, Option<&str>)>) {
+    let recorded = domain.store().lock_or_exit("the domain store")
         .set_launch_refusal(task, refusal, alondra_core::now_millis());
     if let Err(error) = recorded {
         log!("could not record why {task} did not start: {error:?}");
@@ -142,7 +144,7 @@ fn remember_refusal(domain: &DomainRuntime, task: &TaskId, refusal: Option<(&str
 }
 
 /// A launch that waits for usage: the task says so and the gate tries it again once there is some.
-fn usage_refusal(domain: &DomainRuntime, task: &TaskId, exhausted: &crate::usage_pause::Exhausted) -> DomainError {
+fn usage_refusal(domain: &dyn Runtime, task: &TaskId, exhausted: &crate::usage_pause::Exhausted) -> DomainError {
     remember_refusal(domain, task, Some(("usage_exhausted", None)));
     if exhausted.no_session {
         return DomainError::new("usage_exhausted", format!(
@@ -156,12 +158,12 @@ fn usage_refusal(domain: &DomainRuntime, task: &TaskId, exhausted: &crate::usage
 
 /// The right to launch a task's node, given back however the launch ends, a panic included.
 pub struct Launching<'a> {
-    domain: &'a DomainRuntime,
+    domain: &'a dyn Runtime,
     task: String,
 }
 
 impl<'a> Launching<'a> {
-    pub fn begin(domain: &'a DomainRuntime, task: &TaskId) -> Result<Self, DomainError> {
+    pub fn begin(domain: &'a dyn Runtime, task: &TaskId) -> Result<Self, DomainError> {
         if !domain.live().begin_launch(&task.0) {
             return Err(DomainError::new("conflict", format!("{task} is being launched already")));
         }
@@ -179,19 +181,19 @@ impl Drop for Launching<'_> {
 /// node is about to be stopped, because waiting for that node's turn to end can take minutes.
 /// The replacement and the message that tells the orchestrator how it ended run in a task of
 /// their own, which neither a dropped call nor a panic in the replacement leaves untold.
-pub async fn launch_replacing(domain: Arc<DomainRuntime>, home: PathBuf,
+pub async fn launch_replacing(domain: Arc<dyn Runtime>, home: PathBuf,
     body: LaunchBody, choices: impl FnOnce(&RequestId) -> Option<Choices> + Send + 'static) -> Result<Value, DomainError> {
     if !body.replace {
-        return launch(&domain, &home, body, choices).await;
+        return launch(&*domain, &home, body, choices).await;
     }
     let task = body.task.clone();
     let work_domain = Arc::clone(&domain);
     launch_replacement_work(domain, task, move |checked| async move {
-        launch_guarded(&work_domain, &home, body, choices, Origin::Orchestrator, Some(checked)).await
+        launch_guarded(&*work_domain, &home, body, choices, Origin::Orchestrator, Some(checked)).await
     }).await
 }
 
-pub async fn launch_replacement_work<F, W>(domain: Arc<DomainRuntime>, task: TaskId, work: F) -> Result<Value, DomainError>
+pub async fn launch_replacement_work<F, W>(domain: Arc<dyn Runtime>, task: TaskId, work: F) -> Result<Value, DomainError>
 where F: FnOnce(Box<dyn FnOnce() + Send>) -> W + Send + 'static,
       W: std::future::Future<Output = Result<Value, DomainError>> + Send + 'static,
 {
@@ -203,7 +205,7 @@ where F: FnOnce(Box<dyn FnOnce() + Send>) -> W + Send + 'static,
             let replacement = tokio::spawn({
                 let (domain, task, reached) = (domain.clone(), task.clone(), reached.clone());
                 async move {
-                    let _launching = Launching::begin(&domain, &task)?;
+                    let _launching = Launching::begin(&*domain, &task)?;
                     let on_checked: Box<dyn FnOnce() + Send> = Box::new(move || {
                         reached.store(true, std::sync::atomic::Ordering::SeqCst);
                         let _ = checked_tx.send(());
@@ -214,7 +216,7 @@ where F: FnOnce(Box<dyn FnOnce() + Send>) -> W + Send + 'static,
             let outcome = replacement.await.unwrap_or_else(|failure| Err(DomainError::new("launch_failed", format!(
                 "the replacement stopped unexpectedly ({failure}); check the task with tasks_in_progress before launching it again"))));
             if let (true, Err(error)) = (reached.load(std::sync::atomic::Ordering::SeqCst), &outcome) {
-                tell_replace_failed(&domain, &task, error);
+                tell_replace_failed(&*domain, &task, error);
             }
             outcome
         }
@@ -225,7 +227,7 @@ where F: FnOnce(Box<dyn FnOnce() + Send>) -> W + Send + 'static,
     Ok(json!({"task": task, "replacing": true, "message": format!(
         "Replacing the node of “{}”: Alondra waits for its turn to end (interrupting it if it takes too long), stops it and \
          starts the new node in its folder. This can take a few minutes; tasks_in_progress shows the new node once it works on the task. If \
-         the new node does not start, Alondra starts it again by itself; you are told only if the old node keeps the task.", task_title(&domain, &task))}))
+         the new node does not start, Alondra starts it again by itself; you are told only if the old node keeps the task.", task_title(&*domain, &task))}))
 }
 
 /// The account paid per use the user chose for the request, while it is still registered, on and
@@ -240,7 +242,7 @@ fn pinned_account(home: &Path, options: &alondra_core::options::Resolved) -> Opt
         .map(|account| account.id)
 }
 
-pub fn authorize_user_request_selection(domain: &DomainRuntime, resolved: &mut alondra_core::options::Resolved, explicit_account: bool) {
+pub fn authorize_user_request_selection(domain: &dyn Runtime, resolved: &mut alondra_core::options::Resolved, explicit_account: bool) {
     if let Some(intent) = resolved.selection.as_mut() {
         intent.paid_account_grant = None;
         if explicit_account { intent.authorize_paid_account(&domain.read().state().accounts); }
@@ -248,7 +250,7 @@ pub fn authorize_user_request_selection(domain: &DomainRuntime, resolved: &mut a
 }
 
 /// The connected providers that can serve a model named without its provider.
-pub(crate) fn providers_offering(domain: &DomainRuntime, accounts: &alondra_core::accounts::AccountsConfig, model: &str) -> Vec<alondra_core::accounts::Provider> {
+pub(crate) fn providers_offering(domain: &dyn Runtime, accounts: &alondra_core::accounts::AccountsConfig, model: &str) -> Vec<alondra_core::accounts::Provider> {
     alondra_core::model_selection::providers_offering(domain.read().index().model_catalogs(), accounts.connected_providers(), model)
 }
 
@@ -262,7 +264,7 @@ pub(crate) fn ambiguous_model(model: &str, offering: &[alondra_core::accounts::P
     DomainError::new("invalid_input", format!("“{model}” is offered by {}: name it {}", names.join(" and "), qualified.join(" or ")))
 }
 
-pub fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_domain_rules::Task, requested: &alondra_core::options::Resolved, file: &alondra_core::options::OptionsFile, body: &LaunchBody, prior_native: bool, reopening: bool)
+pub fn native_launch(domain: &dyn Runtime, home: &Path, task: &alondra_domain_rules::Task, requested: &alondra_core::options::Resolved, file: &alondra_core::options::OptionsFile, body: &LaunchBody, prior_native: bool, reopening: bool)
     -> Result<Option<(alondra_core::options::Resolved, alondra_core::accounts::AccountKey, String)>, DomainError>
 {
     use alondra_core::accounts::Provider;
@@ -393,13 +395,13 @@ pub fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_domain_
     Ok(Some((resolved, decision.account, decision.reason)))
 }
 
-fn task_title(domain: &DomainRuntime, task: &TaskId) -> String {
-    domain.state().ok().and_then(|state| state.tasks.get(task).map(|task| task.title.clone())).unwrap_or_else(|| task.0.clone())
+fn task_title(domain: &dyn Runtime, task: &TaskId) -> String {
+    domain.state().tasks.get(task).map(|task| task.title.clone()).unwrap_or_else(|| task.0.clone())
 }
 
 /// Only a replacement that did not finish is told: one that did shows in tasks_in_progress and the
 /// task, and one that left the task without a node is followed by the node Alondra starts by itself.
-fn tell_replace_failed(domain: &DomainRuntime, task: &TaskId, error: &DomainError) {
+fn tell_replace_failed(domain: &dyn Runtime, task: &TaskId, error: &DomainError) {
     if domain.live().closed_task(&task.0).is_some_and(|node| node.relaunch == crate::live::Relaunch::ByItself) {
         log!("the replacement of {task}'s node did not finish ({}); Alondra starts a new node by itself", error.message);
         return;
@@ -412,7 +414,7 @@ fn tell_replace_failed(domain: &DomainRuntime, task: &TaskId, error: &DomainErro
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBody,
+pub async fn launch_guarded(domain: &dyn Runtime, home: &Path, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>, origin: Origin,
     checked: Option<Box<dyn FnOnce() + Send>>) -> Result<Value, DomainError> {
     let conflict = |message: String| DomainError::new("conflict", message);
@@ -440,7 +442,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
     if prior_native && body.cwd.is_none() {
         body.cwd = domain.task_worktree(&task.id).map_err(|error| DomainError::new("storage_unavailable", error.to_string()))?;
     }
-    let plan = domain.launch_plan(&task.id).map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
+    let plan = domain.stored_launch_plan(&task.id).map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
     if prior_native && body.model.is_none() && body.relaunch_model.is_none()
         && let Some(effective) = task.selection.as_ref().and_then(|selection| selection.effective.as_ref())
     {
@@ -527,7 +529,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
             .or(domain.task_worktree(&task.id).map_err(plan_storage)?)
     } else { domain.task_worktree(&task.id).map_err(plan_storage)? }.map(PathBuf::from);
     let recorded = match &known {
-        Some(path) => domain.store.lock_or_exit("the domain store").worktree_storage(&path.to_string_lossy()).map_err(plan_storage)?,
+        Some(path) => domain.store().lock_or_exit("the domain store").worktree_storage(&path.to_string_lossy()).map_err(plan_storage)?,
         None => None,
     };
     let worktrees_root = recorded.map(|record| record.root).or_else(|| file.worktrees_root.clone());
@@ -707,7 +709,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
             })?;
         record_worktree(domain, launched["agent_id"].as_str(), &workplace, replaced.as_ref().zip(inherited.as_ref()));
         if origin == Origin::Auto {
-            let _ = domain.store.lock_or_exit("the domain store")
+            let _ = domain.store().lock_or_exit("the domain store")
                 .set_auto_launch(&task.id, crate::domain_store::AutoLaunchState::Launched, None, None, alondra_core::now_millis());
         }
         record(domain, Decision {
@@ -726,7 +728,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
 }
 
 /// The node took over the worktree Alondra chose for the task, or the one of the node it replaced.
-fn record_worktree(domain: &DomainRuntime, agent: Option<&str>, workplace: &Workplace, inherited: Option<(&AgentId, &String)>) {
+fn record_worktree(domain: &dyn Runtime, agent: Option<&str>, workplace: &Workplace, inherited: Option<(&AgentId, &String)>) {
     let owned = match inherited {
         Some((old, dir)) => Some((dir.clone(), old.0.clone())),
         None => domain.ports().worktrees().chosen(workplace).map(|dir| (dir.to_string_lossy().into_owned(), "alondra".to_owned())),
@@ -741,7 +743,7 @@ fn record_worktree(domain: &DomainRuntime, agent: Option<&str>, workplace: &Work
 /// Stops the `claude --bg` node being replaced once its turn ends, so it is not cut mid-edit: past
 /// the turn deadline it is interrupted, and then stopped either way. Its watch keeps the revival off
 /// it meanwhile; if the stop fails it is handed back to the revival and the task keeps it.
-pub async fn stop_replaced(domain: &DomainRuntime, old: &AgentId) -> Result<(), String> {
+pub async fn stop_replaced(domain: &dyn Runtime, old: &AgentId) -> Result<(), String> {
     let busy = || domain.live().node(&old.0).is_some_and(|node| node.busy);
     let deadline = domain.handovers().turn_deadline();
     if !until_idle(busy, deadline).await {
@@ -776,7 +778,7 @@ async fn until_idle(busy: impl Fn() -> bool, deadline: std::time::Duration) -> b
 }
 
 /// What the node that takes over a worktree is told about where it works.
-async fn continuing_in(domain: &DomainRuntime, dir: &Path) -> String {
+async fn continuing_in(domain: &dyn Runtime, dir: &Path) -> String {
     match domain.ports().worktrees().branch_in(dir).await {
         Some(branch) => format!("You continue in {}, branch {branch}: its files are the earlier node's work. Do not create another worktree and do not use EnterWorktree.", dir.display()),
         None => format!("You continue in {}: its files are the earlier node's work. Do not create another worktree and do not use EnterWorktree.", dir.display()),
@@ -784,14 +786,14 @@ async fn continuing_in(domain: &DomainRuntime, dir: &Path) -> String {
 }
 
 /// What the node Alondra made a worktree for is told about where it works.
-async fn made_for(domain: &DomainRuntime, dir: &Path) -> String {
+async fn made_for(domain: &dyn Runtime, dir: &Path) -> String {
     let branch = domain.ports().worktrees().branch_in(dir).await.map(|branch| format!(", branch {branch}")).unwrap_or_default();
     format!("You work in {}{branch}, the worktree Alondra made for this task. Do not create another worktree and do not use EnterWorktree.", dir.display())
 }
 
 /// The worktree Alondra may delete with the node: the one Claude Code made for it, or the one it
 /// inherited from the node it replaced. Never a folder it was only launched in.
-pub fn owned_worktree(domain: &DomainRuntime, session: &str) -> Option<String> {
+pub fn owned_worktree(domain: &dyn Runtime, session: &str) -> Option<String> {
     match domain.ports().worktrees().origin(session) {
         Some(alondra_engine_ports::worktrees::WorktreeOrigin::Made(dir)) => dir.to_str().map(str::to_owned),
         _ => domain.inherited_worktree(session).ok().flatten(),
@@ -799,19 +801,19 @@ pub fn owned_worktree(domain: &DomainRuntime, session: &str) -> Option<String> {
 }
 
 /// Where a node works: the worktree Claude Code made for it, else the folder it started in.
-fn node_folder(domain: &DomainRuntime, session: &str) -> Option<String> {
+fn node_folder(domain: &dyn Runtime, session: &str) -> Option<String> {
     domain.ports().worktrees().worktree_of(session).and_then(|dir| dir.to_str().map(str::to_owned))
         .or_else(|| domain.live().mods.session(session).and_then(|reported| reported.cwd))
 }
 
 /// A new node for a task whose node the user closed, launched with the task's mission in the
 /// folder the closed node worked in, else the project its request was asked for.
-pub async fn relaunch(domain: &DomainRuntime, home: &Path, task_id: &TaskId) -> Result<Value, DomainError> {
+pub async fn relaunch(domain: &dyn Runtime, home: &Path, task_id: &TaskId) -> Result<Value, DomainError> {
     relaunch_from(domain, home, task_id, Origin::Orchestrator).await
 }
 
 /// `relaunch`, for either origin. An automatic relaunch holds the task's launch guard already.
-pub async fn relaunch_from(domain: &DomainRuntime, home: &Path, task_id: &TaskId, origin: Origin) -> Result<Value, DomainError> {
+pub async fn relaunch_from(domain: &dyn Runtime, home: &Path, task_id: &TaskId, origin: Origin) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let waiting = current.tasks.get(task_id)
         .filter(|task| task.state == alondra_domain_rules::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
@@ -892,7 +894,7 @@ fn chooser(auto: bool) -> ModelChooser {
 }
 
 /// The decision is evidence for tuning the model policy; failing to keep it never undoes the work.
-pub fn record(domain: &DomainRuntime, decision: Decision) {
+pub fn record(domain: &dyn Runtime, decision: Decision) {
     if let Err(error) = domain.record_model_decision(&decision) {
         log!("could not record the model decision for {}: {error:#}", decision.task_id);
     }
@@ -916,7 +918,7 @@ pub struct SendBody {
 /// it is for the user. With a Task, the Agent is told which one;
 /// the Task must be the Agent's own: a node works on one Task for its whole life and closes with
 /// it, so a message never gives a node another Task nor brings a closed one back.
-pub async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, body: SendBody) -> Result<Value, DomainError> {
+pub async fn send(domain: &dyn Runtime, home: &Path, actor: &Actor, body: SendBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
     let node_runs =domain.live().mods.session(&agent_id.0).and_then(|reported| reported.model);
@@ -991,8 +993,8 @@ fn plan_storage(error: anyhow::Error) -> DomainError {
     DomainError::new("storage_unavailable", "the launch plan could not be read or stored")
 }
 
-pub fn get_launch_plan(domain: &DomainRuntime, task_id: &TaskId) -> Result<Value, DomainError> {
-    let store = domain.store.lock_or_exit("the domain store");
+pub fn get_launch_plan(domain: &dyn Runtime, task_id: &TaskId) -> Result<Value, DomainError> {
+    let store = domain.store().lock_or_exit("the domain store");
     if !state(domain)?.tasks.contains_key(task_id) {
         return Err(DomainError::new("not_found", "task does not exist"));
     }
@@ -1002,11 +1004,11 @@ pub fn get_launch_plan(domain: &DomainRuntime, task_id: &TaskId) -> Result<Value
 }
 
 /// Replaces the plan Alondra starts a task with by itself.
-pub fn set_launch_plan(domain: &DomainRuntime, home: &Path, body: LaunchPlanBody) -> Result<Value, DomainError> {
+pub fn set_launch_plan(domain: &dyn Runtime, home: &Path, body: LaunchPlanBody) -> Result<Value, DomainError> {
     change_launch_plan(domain, home, &body.task_id, Some(body.launch), None)
 }
 
-pub fn update_launch_plan(domain: &DomainRuntime, home: &Path, body: UpdateLaunchPlanBody) -> Result<Value, DomainError> {
+pub fn update_launch_plan(domain: &dyn Runtime, home: &Path, body: UpdateLaunchPlanBody) -> Result<Value, DomainError> {
     let changes = serde_json::to_value(body.changes).map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
     if changes.as_object().is_none_or(|fields| fields.is_empty()) {
         return Err(DomainError::new("invalid_input", "changes must contain at least one launch-plan field"));
@@ -1045,7 +1047,7 @@ pub fn editable_plan<'a>(state: &'a DomainState, task_id: &TaskId, launched: boo
     Ok(task)
 }
 
-fn change_launch_plan(domain: &DomainRuntime, home: &Path, task_id: &TaskId,
+fn change_launch_plan(domain: &dyn Runtime, home: &Path, task_id: &TaskId,
     replacement: Option<alondra_daemon_engine_model::LaunchPlan>, changes: Option<Value>) -> Result<Value, DomainError> {
     let _launching = Launching::begin(domain, task_id)?;
     let current = state(domain)?;
@@ -1055,7 +1057,7 @@ fn change_launch_plan(domain: &DomainRuntime, home: &Path, task_id: &TaskId,
         .is_none_or(|fields| fields.keys().any(|field| !matches!(field.as_str(), "model" | "effort" | "reason")))) {
         return Err(DomainError::new("invalid_input", "A terminal or reopened task can only change its next model, reasoning effort and reason; its mission, folder and approved scope stay unchanged"));
     }
-    let original = domain.launch_plan(task_id).map_err(plan_storage)?;
+    let original = domain.stored_launch_plan(task_id).map_err(plan_storage)?;
     let plan = match replacement {
         Some(plan) => plan,
         None => {
@@ -1074,7 +1076,7 @@ fn change_launch_plan(domain: &DomainRuntime, home: &Path, task_id: &TaskId,
     } else {
         crate::launch_plans::validate(domain, home, &task.request_id, &plan)?;
     }
-    let mut store = domain.store.lock_or_exit("the domain store");
+    let mut store = domain.store().lock_or_exit("the domain store");
     let now = state(domain)?;
     editable_plan(&now, task_id, store.task_was_launched(task_id).map_err(plan_storage)?)?;
     if now.revision != current.revision || store.launch_plan(task_id).map_err(plan_storage)? != original {
@@ -1095,7 +1097,7 @@ pub struct NodeBody {
 }
 
 /// Aborts the turn an Agent's session is running, to stop a call it is stuck in; its mod does it.
-pub fn interrupt(domain: &DomainRuntime, body: NodeBody) -> Result<Value, DomainError> {
+pub fn interrupt(domain: &dyn Runtime, body: NodeBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
     domain.live().pushes.interrupt(&agent_id.0)

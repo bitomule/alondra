@@ -1,11 +1,12 @@
 //! Schedule v2's local-calendar and launch preparation adapter. The command
 //! carrying this intent must be committed with its Run, Request, and Task before
 //! a technical launch claim can call Claude.
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use alondra_engine_kernel::launches::{MissionAuthor, producer_prompt};
 use crate::engine::EngineOf as _;
 use alondra_engine_ports::gate::GateOf as _;
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::domain_store::StoreError;
 use alondra_engine_ports::worktrees::Workplace;
 use alondra_domain_rules::{
@@ -107,7 +108,7 @@ pub(crate) fn prepare_intent(
 /// Prepares the workspace without starting a host. Configured storage is prepared before the
 /// launch claim, so a volume disappearing during worktree creation leaves the run pending.
 async fn prepare_sdk(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     launch: &ScheduleLaunchIntent,
     task: &TaskId,
     disallowed_tools: &[String],
@@ -144,7 +145,7 @@ struct Prepared {
 }
 
 async fn launch_through_sdk(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     launch: &ScheduleLaunchIntent,
     task: &TaskId,
     disallowed_tools: &[String],
@@ -185,7 +186,7 @@ async fn launch_through_sdk(
 }
 
 async fn prepare_claimed(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     launch: &ScheduleLaunchIntent,
     task: &TaskId,
     home: &Path,
@@ -196,7 +197,7 @@ async fn prepare_claimed(
     let recorded = match &known {
         Some(path) => {
             domain.engine().worktree_ready(path).await.map_err(|why| storage_error(why.to_string()))?;
-            domain.store.lock_or_exit("the domain store").worktree_storage(path).map_err(|why| storage_error(why.to_string()))?
+            domain.store().lock_or_exit("the domain store").worktree_storage(path).map_err(|why| storage_error(why.to_string()))?
         },
         None => None,
     };
@@ -222,8 +223,8 @@ async fn prepare_claimed(
     Ok((workplace, plugin, resolved))
 }
 
-pub fn execute_system(domain: &DomainRuntime, command: Command) -> Result<CommandOutcome, StoreError> {
-    let state = domain.state().map_err(StoreError::Storage)?;
+pub fn execute_system(domain: &dyn Runtime, command: Command) -> Result<CommandOutcome, StoreError> {
+    let state = domain.state();
     domain.execute_as_system(CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
@@ -281,7 +282,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot, at: i64) -> Result<(Reque
     Ok((request, task))
 }
 
-fn fail_run(domain: &DomainRuntime, run_id: &ScheduleRunId, reason: String) -> Result<()> {
+fn fail_run(domain: &dyn Runtime, run_id: &ScheduleRunId, reason: String) -> Result<()> {
     log!("scheduled run {run_id} could not start: {}", reason.trim());
     match execute_system(
         domain,
@@ -300,8 +301,8 @@ fn fail_run(domain: &DomainRuntime, run_id: &ScheduleRunId, reason: String) -> R
 
 /// A persisted Run claim either reaches an atomic Request/Task/intent commit or
 /// receives an explicit failure. A crash before either is interrupted on open.
-pub fn finish_claim(domain: &DomainRuntime, home: &Path, run_id: &ScheduleRunId) -> Result<()> {
-    let state = domain.state()?;
+pub fn finish_claim(domain: &dyn Runtime, home: &Path, run_id: &ScheduleRunId) -> Result<()> {
+    let state = domain.state();
     let Some(run) = state
         .schedule
         .runs
@@ -353,11 +354,11 @@ pub fn finish_claim(domain: &DomainRuntime, home: &Path, run_id: &ScheduleRunId)
 /// The successful ClaimScheduleLaunch commit is the irreversible boundary:
 /// exactly one caller may invoke Claude, even if the process dies afterward.
 async fn dispatch_pending(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     home: &Path,
     run_id: &ScheduleRunId,
 ) -> Result<()> {
-    let state = domain.state()?;
+    let state = domain.state();
     let Some(run) = state
         .schedule
         .runs
@@ -416,7 +417,7 @@ async fn dispatch_pending(
     let task = run.task_id.clone().context("sent run has no Task")?;
     let known = domain.task_worktree(&task)?;
     let retained = match &known {
-        Some(path) => domain.store.lock_or_exit("the domain store").worktree_storage(path)?,
+        Some(path) => domain.store().lock_or_exit("the domain store").worktree_storage(path)?,
         None => None,
     };
     let root = retained.as_ref().map(|record| record.root.clone()).or(root);
@@ -425,7 +426,7 @@ async fn dispatch_pending(
         if let Some(path) = &known {
             if domain.engine().worktree_ready(path).await.is_err() {
                 domain.gate().not_started(&key);
-                domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
+                domain.store().lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
                 return Ok(());
             }
         }
@@ -435,7 +436,7 @@ async fn dispatch_pending(
             result => {
                 domain.gate().not_started(&key);
                 if result.is_err() {
-                    domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
+                    domain.store().lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
                 }
                 return Ok(());
             }
@@ -447,7 +448,7 @@ async fn dispatch_pending(
             Ok(prepared) => Some(prepared),
             Err(error) if error.code == "worktrees_unavailable" => {
                 domain.gate().not_started(&key);
-                domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
+                domain.store().lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
                 return Ok(());
             }
             Err(error) => return fail_run(domain, run_id, error.message),
@@ -490,8 +491,8 @@ async fn dispatch_pending(
 /// A launch Alondra died in the middle of, by this daemon's SDK host or an earlier release's
 /// `claude --bg`: whether its node started is not known, so the run fails and says so, and its
 /// task waits for the user's answer like any other failed start.
-fn recover_uncertain(domain: &DomainRuntime, run_id: &ScheduleRunId) -> Result<()> {
-    let state = domain.state()?;
+fn recover_uncertain(domain: &dyn Runtime, run_id: &ScheduleRunId) -> Result<()> {
+    let state = domain.state();
     let Some((run, launch)) = state
         .schedule
         .runs
@@ -514,9 +515,9 @@ fn recover_uncertain(domain: &DomainRuntime, run_id: &ScheduleRunId) -> Result<(
 /// The user's answer to a scheduled run that did not start. "Try again" launches its schedule
 /// once more (the retry's run id derives from the failed one, so answering twice launches once);
 /// either way the failed run's Task never started and is cancelled, so it does not wait forever.
-fn answer_failed_launches(domain: &DomainRuntime, home: &Path) -> Result<()> {
+fn answer_failed_launches(domain: &dyn Runtime, home: &Path) -> Result<()> {
     use alondra_domain_rules::{InteractionPayload, LAUNCH_RETRY_OPTION, SystemCard};
-    let state = domain.state()?;
+    let state = domain.state();
     for (id, interaction) in &state.interactions {
         let Some(SystemCard::LaunchProblem { run: failed }) = &interaction.system_card else { continue };
         let failed = failed.as_str();
@@ -536,7 +537,7 @@ fn answer_failed_launches(domain: &DomainRuntime, home: &Path) -> Result<()> {
         let Some(task) = run.task_id.as_ref().filter(|_| retried) else { continue };
         match execute_system(domain, Command::CancelTask { task_id: task.clone(), reason: None }) {
             Ok(_) if gone => {
-                if let Err(error) = domain.store.lock_or_exit("the domain store").set_cancel_reason(task, "Its schedule no longer exists, so it cannot be launched again") {
+                if let Err(error) = domain.store().lock_or_exit("the domain store").set_cancel_reason(task, "Its schedule no longer exists, so it cannot be launched again") {
                     log!("could not say why {task} was cancelled: {error:#}");
                 }
             }
@@ -555,7 +556,7 @@ fn ordinary_conflict_code(code: &str) -> bool {
 /// Whether the schedule is launching again: the retry run exists or was just claimed. `None` when
 /// its schedule is gone, so nothing can launch it again.
 fn retry_launch(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     home: &Path,
     state: &DomainState,
     failed: &str,
@@ -597,11 +598,11 @@ fn retry_launch(
 }
 
 pub async fn run_cycle(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     home: &Path,
     due_enabled: bool,
 ) -> Result<()> {
-    let state = domain.state()?;
+    let state = domain.state();
     let claimed: Vec<_> = state
         .schedule
         .runs
@@ -613,7 +614,7 @@ pub async fn run_cycle(
         finish_claim(domain, home, &run_id)?;
     }
     let uncertain: Vec<_> = domain
-        .state()?
+        .state()
         .schedule
         .runs
         .values()
@@ -629,14 +630,14 @@ pub async fn run_cycle(
             log!("could not recover scheduled run {run_id}: {error:#}");
         }
     }
-    for (run_id, reason) in domain.state()?.scheduled_launches_of_ended_tasks() {
+    for (run_id, reason) in domain.state().scheduled_launches_of_ended_tasks() {
         fail_run(domain, &run_id, reason.into())?;
     }
     answer_failed_launches(domain, home)?;
     let paused = domain.engine().usage_paused() || domain.gate().disk_low();
     if due_enabled && !paused {
         let now = alondra_core::now_millis();
-        let state = domain.state()?;
+        let state = domain.state();
         let due: Vec<_> = state
             .schedule
             .schedules
@@ -668,7 +669,7 @@ pub async fn run_cycle(
             }
         }
     }
-    let state = domain.state()?;
+    let state = domain.state();
     let pending: Vec<_> = state
         .schedule
         .runs
@@ -702,9 +703,9 @@ fn nearest_run(state: &DomainState, due_enabled: bool) -> Option<i64> {
         .min()
 }
 
-fn rebase_runs(domain: &DomainRuntime, include_due: bool) -> Result<()> {
+fn rebase_runs(domain: &dyn Runtime, include_due: bool) -> Result<()> {
     let now = alondra_core::now_millis();
-    let state = domain.state()?;
+    let state = domain.state();
     let launching: BTreeSet<_> = state
         .schedule
         .runs
@@ -786,7 +787,7 @@ async fn wait_for_next_run(
 }
 
 pub async fn run(
-    domain: Arc<DomainRuntime>,
+    domain: Arc<dyn Runtime>,
     home: PathBuf,
     due_enabled: bool,
 ) -> Result<()> {
@@ -795,8 +796,8 @@ pub async fn run(
     let mut turn = domain.gate().subscribe();
     let mut system_clock = crate::schedule_clock::ClockChanges::new();
     loop {
-        run_cycle(&domain, &home, due_enabled).await?;
-        let deadline = if domain.engine().usage_paused() { None } else { nearest_run(&*domain.state()?, due_enabled) };
+        run_cycle(&*domain, &home, due_enabled).await?;
+        let deadline = if domain.engine().usage_paused() { None } else { nearest_run(&*domain.state(), due_enabled) };
         match wait_for_next_run(
             deadline,
             &mut schedule_changes,
@@ -807,11 +808,11 @@ pub async fn run(
         .await
         {
             WakeReason::Clock(crate::schedule_clock::ClockChange::SystemClock) => {
-                run_cycle(&domain, &home, due_enabled).await?;
-                rebase_runs(&domain, false)?;
+                run_cycle(&*domain, &home, due_enabled).await?;
+                rebase_runs(&*domain, false)?;
             }
             WakeReason::Clock(crate::schedule_clock::ClockChange::TimeZone) => {
-                rebase_runs(&domain, true)?
+                rebase_runs(&*domain, true)?
             }
             WakeReason::Closed => return Ok(()),
             WakeReason::Schedule | WakeReason::Deadline => (),
@@ -830,6 +831,7 @@ mod tests {
     use crate::model_fixture::SdkLaunches;
     use alondra_domain_rules::{InteractionId, InteractionPayload, Schedule, ScheduleFrequency};
     use std::collections::BTreeMap;
+    use crate::domain_runtime::DomainRuntime;
 
     #[test]
     fn an_auto_merge_request_keeps_the_merge_with_alondra() {
@@ -978,17 +980,17 @@ mod tests {
     fn scheduled_names_are_readable_unique_and_persisted() {
         let fixture = Fixture::new();
         fixture.claim("readable");
-        finish_claim(&fixture.domain, &fixture.home, &"readable".into()).unwrap();
+        finish_claim(&*fixture.domain, &fixture.home, &"readable".into()).unwrap();
         let state = fixture.domain.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("readable")];
         let task = run.task_id.as_ref().unwrap();
         assert!(task.0.starts_with("t-review-"), "{}", task.0);
         assert_eq!(run.launch.as_ref().unwrap().intent.name, format!("scheduled/{}", task.0));
         assert_eq!(alondra_engine_ports::worktrees::slug(&task.0), task.0);
-        finish_claim(&fixture.domain, &fixture.home, &"readable".into()).unwrap();
+        finish_claim(&*fixture.domain, &fixture.home, &"readable".into()).unwrap();
         assert_eq!(fixture.domain.state().unwrap().schedule.runs[&run.id], *run);
         fixture.claim("another");
-        finish_claim(&fixture.domain, &fixture.home, &"another".into()).unwrap();
+        finish_claim(&*fixture.domain, &fixture.home, &"another".into()).unwrap();
         assert_ne!(fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("another")].task_id.as_ref(), Some(task));
     }
 
@@ -999,9 +1001,9 @@ mod tests {
             let mut schedule = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
             schedule.title = title;
             schedule.revision += 1;
-            execute_system(&fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
+            execute_system(&*fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
             fixture.claim("title");
-            finish_claim(&fixture.domain, &fixture.home, &"title".into()).unwrap();
+            finish_claim(&*fixture.domain, &fixture.home, &"title".into()).unwrap();
             let state = fixture.domain.state().unwrap();
             let task = state.schedule.runs[&ScheduleRunId::from("title")].task_id.as_ref().unwrap();
             assert!(task.0.len() <= 64);
@@ -1034,14 +1036,14 @@ mod tests {
         task.id = "t-a245e78abcdef".into();
         let file = options_at(&fixture.home).unwrap();
         let launch = prepare_intent(&run.schedule_id, &run.id, snapshot, &file, &fixture.root.join("projects")).unwrap();
-        execute_system(&fixture.domain, Command::RecordScheduleRunSent {
+        execute_system(&*fixture.domain, Command::RecordScheduleRunSent {
             run_id: run.id.clone(), request, task, launch, finished_at: alondra_core::now_millis(),
         }).unwrap();
         let saved = fixture.domain.state().unwrap().schedule.runs[&run.id].clone();
         let mut schedule = fixture.domain.state().unwrap().schedule.schedules[&run.schedule_id].clone();
         schedule.title = "Changed title".into();
         schedule.revision += 1;
-        execute_system(&fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
+        execute_system(&*fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
         let reopened = Fixture::open(&fixture.home);
         finish_claim(&reopened, &fixture.home, &run.id).unwrap();
         assert_eq!(reopened.state().unwrap().schedule.runs[&run.id], saved);
@@ -1050,8 +1052,8 @@ mod tests {
     }
 
 
-    fn answer_problem(domain: &DomainRuntime, problem: &str, option: &str, id: &str) {
-        let state = domain.state().unwrap();
+    fn answer_problem(domain: &dyn Runtime, problem: &str, option: &str, id: &str) {
+        let state = domain.state();
         domain
             .execute(
                 &Actor::User { user_id: "u".into() },
@@ -1081,7 +1083,7 @@ mod tests {
         let sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         let project = fixture.in_project("App");
         fixture.claim("run-1");
-        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
         let state = fixture.domain.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("run-1")];
         let task = run.task_id.clone().unwrap();
@@ -1120,7 +1122,7 @@ mod tests {
         let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         let project = fixture.in_project("App");
         fixture.claim("run-1");
-        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
         let state = fixture.domain.state().unwrap();
         let task = state.schedule.runs[&ScheduleRunId::from("run-1")].task_id.clone().unwrap();
         let agent = state.tasks[&task].agent_id.clone().expect("the task is its SDK node's");
@@ -1155,7 +1157,7 @@ mod tests {
             deleted_at: None,
         };
         execute_system(
-            &fixture.domain,
+            &*fixture.domain,
             Command::CreateSchedule {
                 schedule: schedule.clone(),
             },
@@ -1171,7 +1173,7 @@ mod tests {
         updated.title = "Updated review".into();
         updated.revision = 2;
         execute_system(
-            &fixture.domain,
+            &*fixture.domain,
             Command::UpdateSchedule { schedule: updated },
         )
         .unwrap();
@@ -1182,7 +1184,7 @@ mod tests {
         );
 
         execute_system(
-            &fixture.domain,
+            &*fixture.domain,
             Command::DeleteSchedule {
                 schedule_id: "schedule-2".into(),
                 deleted_at: alondra_core::now_millis(),
@@ -1210,8 +1212,8 @@ mod tests {
         let sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         fixture.claim("manual-1");
         let (left, right) = tokio::join!(
-            run_cycle(&fixture.domain, &fixture.home, false),
-            run_cycle(&fixture.domain, &fixture.home, false),
+            run_cycle(&*fixture.domain, &fixture.home, false),
+            run_cycle(&*fixture.domain, &fixture.home, false),
         );
         left.unwrap();
         right.unwrap();
@@ -1233,7 +1235,7 @@ mod tests {
         let capture = sdk.capture();
         let environment: Vec<&str> = capture["env_keys"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
         assert!(environment.contains(&"ALONDRA_DOMAIN_CAPABILITY"), "its Claude reaches Alondra with that bearer: {environment:?}");
-        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
         assert_eq!(fixture.launches(), 1);
         assert_eq!(sdk.starts().len(), 1, "one Claude is started");
     }
@@ -1245,7 +1247,7 @@ mod tests {
         let fixture = Fixture::new();
         let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         fixture.claim("sdk-run");
-        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
         let state = fixture.domain.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("sdk-run")];
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
@@ -1259,11 +1261,11 @@ mod tests {
     async fn pending_resumes_but_dispatching_becomes_uncertain_after_restart() {
         let fixture = Fixture::new();
         fixture.claim("pending");
-        finish_claim(&fixture.domain, &fixture.home, &"pending".into()).unwrap();
+        finish_claim(&*fixture.domain, &fixture.home, &"pending".into()).unwrap();
         {
             let reopened = Arc::new(Fixture::open(&fixture.home));
             let sdk = SdkLaunches::enable(&reopened, &fixture.home);
-            run_cycle(&reopened, &fixture.home, false).await.unwrap();
+            run_cycle(&*reopened, &fixture.home, false).await.unwrap();
             let state = reopened.state().unwrap();
             let run = &state.schedule.runs[&ScheduleRunId::from("pending")];
             assert_eq!(run.state, ScheduleRunState::Sent);
@@ -1274,9 +1276,9 @@ mod tests {
 
         fixture.domain.reload();
         fixture.claim("uncertain");
-        finish_claim(&fixture.domain, &fixture.home, &"uncertain".into()).unwrap();
+        finish_claim(&*fixture.domain, &fixture.home, &"uncertain".into()).unwrap();
         execute_system(
-            &fixture.domain,
+            &*fixture.domain,
             Command::ClaimScheduleLaunch {
                 run_id: "uncertain".into(),
                 now: alondra_core::now_millis(),
@@ -1304,14 +1306,14 @@ mod tests {
     async fn an_uncertain_launch_whose_task_was_closed_fails_quietly_and_never_stops_the_runner() {
         let fixture = Fixture::new();
         fixture.claim("closed");
-        finish_claim(&fixture.domain, &fixture.home, &"closed".into()).unwrap();
+        finish_claim(&*fixture.domain, &fixture.home, &"closed".into()).unwrap();
         execute_system(
-            &fixture.domain,
+            &*fixture.domain,
             Command::ClaimScheduleLaunch { run_id: "closed".into(), now: alondra_core::now_millis() },
         )
         .unwrap();
         let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("closed")].task_id.clone().unwrap();
-        execute_system(&fixture.domain, Command::CancelTask { task_id: task, reason: None }).unwrap();
+        execute_system(&*fixture.domain, Command::CancelTask { task_id: task, reason: None }).unwrap();
         let restarted = Fixture::open(&fixture.home);
         run_cycle(&restarted, &fixture.home, false).await.unwrap();
 
@@ -1330,9 +1332,9 @@ mod tests {
     async fn cancelling_a_scheduled_task_before_it_launches_ends_its_run_for_good() {
         let fixture = Fixture::new();
         fixture.claim("cancelled");
-        finish_claim(&fixture.domain, &fixture.home, &"cancelled".into()).unwrap();
+        finish_claim(&*fixture.domain, &fixture.home, &"cancelled".into()).unwrap();
         let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("cancelled")].task_id.clone().unwrap();
-        execute_system(&fixture.domain, Command::CancelTask { task_id: task, reason: None }).unwrap();
+        execute_system(&*fixture.domain, Command::CancelTask { task_id: task, reason: None }).unwrap();
 
         let restarted = Fixture::open(&fixture.home);
         let run = &restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("cancelled")];
@@ -1345,15 +1347,15 @@ mod tests {
     async fn an_uncertain_launch_fails_its_run_at_once_and_is_retried_once_on_request() {
         let fixture = Fixture::new();
         fixture.claim("lost");
-        finish_claim(&fixture.domain, &fixture.home, &"lost".into()).unwrap();
+        finish_claim(&*fixture.domain, &fixture.home, &"lost".into()).unwrap();
         execute_system(
-            &fixture.domain,
+            &*fixture.domain,
             Command::ClaimScheduleLaunch { run_id: "lost".into(), now: alondra_core::now_millis() },
         )
         .unwrap();
         let restarted = Arc::new(Fixture::open(&fixture.home));
         let _sdk = SdkLaunches::enable(&restarted, &fixture.home);
-        run_cycle(&restarted, &fixture.home, false).await.unwrap();
+        run_cycle(&*restarted, &fixture.home, false).await.unwrap();
 
         let state = restarted.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("lost")];
@@ -1368,9 +1370,9 @@ mod tests {
             ["retry", "seen"]
         );
 
-        answer_problem(&restarted, "problem-launch-lost", "retry", "answer-retry");
-        run_cycle(&restarted, &fixture.home, false).await.unwrap();
-        run_cycle(&restarted, &fixture.home, false).await.unwrap();
+        answer_problem(&*restarted, "problem-launch-lost", "retry", "answer-retry");
+        run_cycle(&*restarted, &fixture.home, false).await.unwrap();
+        run_cycle(&*restarted, &fixture.home, false).await.unwrap();
         let state = restarted.state().unwrap();
         assert_eq!(state.agents.len(), 1, "the retry launches the schedule once");
         let retried = &state.schedule.runs[&ScheduleRunId::from("retry-lost")];
@@ -1396,14 +1398,14 @@ mod tests {
         accounts.set_trust(None, &[]);
         accounts.refuse_trust_saves(true);
         fixture.claim("untrusted");
-        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
         assert_eq!(fixture.launches(), 0, "Claude is never asked to start there");
         assert!(sdk.starts().is_empty());
         let state = fixture.domain.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("untrusted")];
         assert_eq!(run.state, ScheduleRunState::Failed);
         assert!(run.error.as_deref().unwrap().starts_with("Claude Code does not trust"));
-        let told = fixture.domain.store.lock().unwrap().pending_messages().unwrap();
+        let told = fixture.domain.store().lock().unwrap().pending_messages().unwrap();
         assert!(
             told.iter().any(|message| message.recipient_kind == "orchestrator"
                 && message.message.contains("Claude Code does not trust")),
@@ -1415,7 +1417,7 @@ mod tests {
     async fn returned_failure_commits_run_launch_and_marker_together() {
         let fixture = Fixture::new();
         fixture.claim("failed");
-        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
         let state = fixture.domain.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("failed")];
         assert_eq!(run.state, ScheduleRunState::Failed);
@@ -1438,7 +1440,7 @@ mod tests {
         );
         assert!(state.agents.is_empty(), "a launch that did not start registers no node");
         let task_id = run.task_id.as_ref().unwrap();
-        let told = fixture.domain.store.lock().unwrap().pending_messages().unwrap();
+        let told = fixture.domain.store().lock().unwrap().pending_messages().unwrap();
         assert!(
             told.iter().any(|message| message.recipient_kind == "orchestrator"
                 && message.task_id.as_deref() == Some(task_id.0.as_str())
@@ -1458,7 +1460,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            run_cycle(&fixture.domain, &fixture.home, false)
+            run_cycle(&*fixture.domain, &fixture.home, false)
                 .await
                 .is_err()
         );
@@ -1490,7 +1492,7 @@ mod tests {
             .unwrap()
             .execute_batch("DROP TRIGGER reject_failed_marker;")
             .unwrap();
-        run_cycle(&restarted, &fixture.home, false)
+        run_cycle(&*restarted, &fixture.home, false)
             .await
             .unwrap();
         assert!(restarted.state().unwrap().agents.is_empty() && sdk.starts().is_empty(), "recovery never launches Claude again");
@@ -1510,7 +1512,7 @@ mod tests {
         let mut schedule = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
         schedule.project = Some("app".into());
         schedule.revision += 1;
-        execute_system(&fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
+        execute_system(&*fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
         fixture.claim("storage-run");
         let options = alondra_core::options::path_in(&fixture.home);
         let original = std::fs::read_to_string(&options).unwrap_or_default();
@@ -1518,7 +1520,7 @@ mod tests {
         let root = alondra_core::options::WorktreesRoot { path: path.clone(), volume_id: "00000000-0000-0000-0000-000000000001".into() };
         std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
         let before = fixture.domain.state().unwrap().interactions.len();
-        for _ in 0..2 { run_cycle(&fixture.domain, &fixture.home, false).await.unwrap(); }
+        for _ in 0..2 { run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap(); }
         let state = fixture.domain.state().unwrap();
         assert_eq!(state.schedule.runs[&ScheduleRunId::from("storage-run")].launch.as_ref().unwrap().state, ScheduleLaunchState::Pending);
         assert_eq!(state.interactions.len(), before);
@@ -1527,7 +1529,7 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
         let root = fixture.domain.ports().worktrees().capture_root(&path).unwrap();
         std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
-        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
         assert_eq!(fixture.launches(), 1);
         assert_eq!(fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("storage-run")].launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
     }

@@ -18,8 +18,8 @@ impl Drop for ReleaseRead {
 fn runtime_progress_view_and_feed_sql_and_render_run_outside_the_async_worker() {
     super::wired();
     let fixture = Fixture::new();
-    let domain = fixture.open();
-    working_agent(&domain, "isolation");
+    let domain = fixture.open_domain();
+    working_agent(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), "isolation");
     let client = crate::client_routes::Client::open(domain.clone(), &fixture.0, Default::default());
     domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
     let driver = std::thread::current().id();
@@ -52,8 +52,8 @@ fn runtime_progress_view_and_feed_sql_and_render_run_outside_the_async_worker() 
 fn runtime_progress_a_held_view_and_hook_recording_do_not_stop_guards_or_machine_samples() {
     super::wired();
     let fixture = Fixture::new();
-    let domain = fixture.open();
-    working_agent(&domain, "progress");
+    let domain = fixture.open_domain();
+    working_agent(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), "progress");
     let client = crate::client_routes::Client::open(domain.clone(), &fixture.0, Default::default());
     let driver = std::thread::current().id();
     let (entered, started) = tokio::sync::oneshot::channel();
@@ -69,7 +69,7 @@ fn runtime_progress_a_held_view_and_hook_recording_do_not_stop_guards_or_machine
     });
     let (recording_entered, recording_started) = tokio::sync::oneshot::channel();
     let recording_entered = std::sync::Mutex::new(Some(recording_entered));
-    domain.hook_work.on_start(move || {
+    domain.hook_work().on_start(move || {
         if let Some(entered) = recording_entered.lock().unwrap().take() {
             assert_ne!(std::thread::current().id(), driver, "hook recording occupies the async worker");
             entered.send(()).unwrap();
@@ -86,7 +86,7 @@ fn runtime_progress_a_held_view_and_hook_recording_do_not_stop_guards_or_machine
         let (mut poster, server) = UnixStream::pair().unwrap();
         let recording = tokio::spawn({
             let domain = domain.clone();
-            async move { handle(server, &domain).await }
+            async move { handle(server, &(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await }
         });
         send_hook(&mut poster, json!({"session_id":"progress", "hook_event_name":"PostToolUse"})).await;
         assert_eq!(reply(&mut poster).await, json!({}));
@@ -94,7 +94,7 @@ fn runtime_progress_a_held_view_and_hook_recording_do_not_stop_guards_or_machine
         let (mut guard, server) = UnixStream::pair().unwrap();
         let guarding = tokio::spawn({
             let domain = domain.clone();
-            async move { handle(server, &domain).await }
+            async move { handle(server, &(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await }
         });
         send_hook(&mut guard, json!({"session_id":"progress", "hook_event_name":"PreToolUse", "tool_name":"Bash", "tool_input":{"command":"alondra answer q --option yes"}})).await;
         let denied = reply(&mut guard).await;
@@ -126,12 +126,12 @@ fn runtime_progress_a_held_view_and_hook_recording_do_not_stop_guards_or_machine
 fn an_answer_the_node_cannot_take_yet_waits_instead_of_being_dropped() {
     super::wired();
     let fixture = Fixture::new();
-    let domain = fixture.open();
-    node_with_task(&domain);
-    free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
-    free_text_answer(&domain, user_actor(), "q", "Call it Atlas");
+    let domain = fixture.open_domain();
+    node_with_task(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>));
+    free_text_question(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
+    free_text_answer(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), user_actor(), "q", "Call it Atlas");
     assert_eq!(crate::domain_delivery::tell_sdk_nodes(&domain), 0, "the task has no execution to take it yet");
-    assert_eq!(outbox_message(&domain, "q", "agent").state, "retryable", "the answer waits for the node");
+    assert_eq!(outbox_message(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), "q", "agent").state, "retryable", "the answer waits for the node");
 }
 
 #[test]
@@ -139,14 +139,14 @@ fn claudes_question_reaches_every_client_with_explanations_in_the_body() {
     super::wired();
     use alondra_views::{Client, Item, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
     let fixture = Fixture::new();
-    let domain = fixture.open();
-    working_agent(&domain, "agent-a");
+    let domain = fixture.open_domain();
+    working_agent(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), "agent-a");
     let mut single = single_question("agent-a");
     single["input"]["questions"][0]["options"] = json!([
         {"label": "Markdown", "description": "Headings and lists"}, {"label": "Plain text", "description": "No markup at all"}]);
-    let crate::domain_holds::Posted::Held(id) = crate::domain_holds::post(&domain, &serde_json::from_value(single).unwrap(), true).unwrap()
+    let crate::domain_holds::Posted::Held(id) = crate::domain_holds::post(&*domain, &serde_json::from_value(single).unwrap(), true).unwrap()
     else { panic!("not held") };
-    let crate::domain_holds::Posted::Held(first) = crate::domain_holds::post(&domain, &serde_json::from_value(three_questions("agent-a")).unwrap(), true).unwrap()
+    let crate::domain_holds::Posted::Held(first) = crate::domain_holds::post(&*domain, &serde_json::from_value(three_questions("agent-a")).unwrap(), true).unwrap()
     else { panic!("not held") };
     let read = domain.read();
     let live = LiveSnapshot::default();

@@ -3,7 +3,7 @@
 //! session is not a job `claude rm` knows: it only closes and its terminal stays open.
 //! Shared by the close route and by Alondra closing the node of a finished task.
 use crate::live::LiveOf as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_rules::AgentId;
 use axum::http::StatusCode;
 use serde_json::Value;
@@ -54,7 +54,7 @@ fn failed(status: StatusCode, message: impl Into<String>) -> CloseOutcome {
 /// Closes the session of `agent`. A session `claude agents` does not list is left alone, and
 /// closes only when `leave_if_not_listed` says so.
 pub async fn close_node(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     sessions: &dyn Sessions,
     agent: &AgentId,
     leave_if_not_listed: bool,
@@ -89,7 +89,7 @@ pub async fn close_node(
 
 /// `claude rm` until `claude agents` no longer lists the session. Its connection drops on the way,
 /// so the caller holds the session's watch: the revival must not restart what is being closed.
-async fn remove(domain: &DomainRuntime, sessions: &dyn Sessions, agent_id: &str, short: &str) -> anyhow::Result<CloseOutcome> {
+async fn remove(domain: &dyn Runtime, sessions: &dyn Sessions, agent_id: &str, short: &str) -> anyhow::Result<CloseOutcome> {
     let short = short.to_owned();
     let job = std::fs::read_to_string(crate::watcher::claude_home().join("jobs").join(&short).join("state.json"))
         .ok()

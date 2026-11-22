@@ -1,7 +1,7 @@
 //! The folders of hosts that ended, kept beside the folder of the host that replaced them as
 //! evidence of what it received. Nothing else reads them once their task is over or a later host
 //! ended after them.
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::SystemTime;
@@ -44,8 +44,8 @@ pub fn spent(folders: &[(String, SystemTime)], owner: impl Fn(&str) -> Owner) ->
 }
 
 /// Deletes the spent folders of `root` and returns how many went.
-pub fn sweep(domain: &DomainRuntime, root: &Path) -> std::io::Result<usize> {
-    let Ok(state) = domain.state() else { return Ok(0) };
+pub fn sweep(domain: &dyn Runtime, root: &Path) -> std::io::Result<usize> {
+    let state = domain.state();
     let mut folders = Vec::new();
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;

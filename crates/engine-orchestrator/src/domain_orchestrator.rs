@@ -3,6 +3,9 @@
 //! execution. The batch is claimed from the domain outbox before Claude runs
 //! and finished as handed, retryable or uncertain afterwards; finishing an
 //! invocation never completes a Task.
+use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
+use alondra_engine_ports::Runtime as _;
 use crate::engine::OrchestratorOf as _;
 use alondra_domain_rules::SystemCard;
 use crate::locks::Poisonable as _;
@@ -614,7 +617,7 @@ impl Executor {
                 other => other,
             }
         };
-        crate::metrics_capture::orchestrator_provider_batch(&self.domain, &session, selection.account.provider, &output.stream.spent, now_millis());
+        crate::metrics_capture::orchestrator_provider_batch(&*self.domain, &session, selection.account.provider, &output.stream.spent, now_millis());
         if let Some(context) = output.stream.context() {
             log!("orchestrator: batch {} read {} tokens in its first call and {} in its last (window {})",
                 run.id, context.first, context.last, context.window.map_or("unknown".to_owned(), |window| window.to_string()));

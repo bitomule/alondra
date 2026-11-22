@@ -3,6 +3,7 @@
 //! background, its subagents, workflows and task list. The SDK's messages say all of it (the
 //! `SDKMessage` types of `@anthropic-ai/claude-agent-sdk`); nothing here makes a node connected,
 //! starts its turn or moves its state, which the domain alone decides for a node of the SDK.
+use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use crate::node_reports::{Report, Reported, short_label};
 use crate::node_work::StepIn;
 use alondra_core::activity::Activity;
@@ -53,13 +54,13 @@ pub fn read_wait_file(path: &std::path::Path) -> Option<WaitReport> {
     Some(report)
 }
 
-pub fn wait_file(domain: &crate::domain_runtime::DomainRuntime, provider: alondra_core::accounts::Provider, instance: &str) -> Option<std::path::PathBuf> {
+pub fn wait_file(domain: &dyn alondra_engine_ports::Runtime, provider: alondra_core::accounts::Provider, instance: &str) -> Option<std::path::PathBuf> {
     let (backend, _) = domain.sdk()?;
     Some(backend.for_provider(provider, domain.home()).ok()?.state_root.join(instance).join("wait.json"))
 }
 
 /// Called before publishing a committed turn boundary, including host loss and interruptions.
-pub fn clear_ended_waits(domain: &crate::domain_runtime::DomainRuntime, before: &alondra_domain_rules::DomainState, after: &alondra_domain_rules::DomainState) {
+pub fn clear_ended_waits(domain: &dyn alondra_engine_ports::Runtime, before: &alondra_domain_rules::DomainState, after: &alondra_domain_rules::DomainState) {
     if domain.sdk().is_none() { return; }
     for (id, journal) in &before.lifecycle_journal {
         if after.lifecycle_journal.get(id).is_some_and(|new| new.len() == journal.len()) { continue; }
@@ -442,7 +443,7 @@ fn progress(name: &str, input: &Value, result: &Value) -> Option<Report> {
 }
 
 /// What one observation of a node's host says, kept with what its node mod would have reported.
-pub fn feed(domain: &crate::domain_runtime::DomainRuntime, reports: &crate::node_reports::Reports, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
+pub fn feed(domain: &dyn alondra_engine_ports::Runtime, reports: &crate::node_reports::Reports, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
     if let Some(message) = alondra_provider_claude::sdk_message(observation) {
         let now = alondra_core::now_millis();
         if let Some(steps) = reports.apply_sdk(&agent.0, &message, now) {
@@ -755,7 +756,7 @@ mod tests {
 pub struct EndedWaits;
 
 impl crate::domain_runtime::CommitObserver for EndedWaits {
-    fn published(&self, domain: &crate::domain_runtime::DomainRuntime, before: &alondra_domain_rules::DomainState, after: &alondra_domain_rules::DomainState) {
+    fn published(&self, domain: &dyn alondra_engine_ports::Runtime, before: &alondra_domain_rules::DomainState, after: &alondra_domain_rules::DomainState) {
         clear_ended_waits(domain, before, after);
     }
 }
