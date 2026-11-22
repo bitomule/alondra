@@ -1,0 +1,383 @@
+{
+  "client": "ios",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "key": "task:t1",
+  "protocol": 1,
+  "sections": [
+    {
+      "collapsed": false,
+      "id": "header",
+      "items": [
+        {
+          "items": [
+            {
+              "kind": "state",
+              "label": "Estado",
+              "tone": "neutral",
+              "value": "En espera · 1.º de 1 · tu respuesta espera hueco"
+            },
+            {
+              "kind": "request",
+              "label": "Solicitud",
+              "value": "Store the validated checks"
+            }
+          ],
+          "type": "facts"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "elapsed",
+      "items": [
+        {
+          "badges": [
+            {
+              "elapsed": {
+                "since": "2026-11-15T09:00:10.000+00:00"
+              },
+              "text": "desde las 09:00",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "icon": "history",
+          "id": "elapsed",
+          "struck": false,
+          "title": "En marcha",
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "since",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "since",
+          "struck": false,
+          "title": "Desde",
+          "trailing": {
+            "at": "2026-11-15T09:01:14.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "last_message",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Done",
+          "truncated": false,
+          "type": "markdown"
+        },
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "last_message_time",
+          "struck": false,
+          "title": "Último mensaje",
+          "trailing": {
+            "at": "2026-11-15T09:00:40.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ],
+      "title": "Lo último que dijo"
+    },
+    {
+      "collapsed": true,
+      "id": "request",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Keep the validated checks without conflicts",
+          "truncated": false,
+          "type": "markdown"
+        }
+      ],
+      "title": "Solicitud"
+    },
+    {
+      "collapsed": false,
+      "id": "options",
+      "items": [
+        {
+          "items": [
+            {
+              "kind": "priority",
+              "label": "Prioridad",
+              "value": "Normal"
+            },
+            {
+              "label": "Gestión de PR",
+              "value": "La revisas tú; al aceptarla, Alondra hace el merge"
+            },
+            {
+              "label": "Esfuerzo",
+              "value": "Automático"
+            }
+          ],
+          "type": "facts"
+        }
+      ],
+      "title": "Opciones"
+    },
+    {
+      "collapsed": false,
+      "id": "actions",
+      "items": [
+        {
+          "actions": [
+            {
+              "attachments": true,
+              "enabled": true,
+              "id": "msg:<node>@<revision>~t1",
+              "input": {
+                "kind": "text",
+                "multiline": true,
+                "placeholder": "Escribe al nodo de esta tarea…",
+                "required": true
+              },
+              "label": "Mensaje",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Interrumpir",
+                "message": "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.",
+                "title": "Interrumpir"
+              },
+              "enabled": true,
+              "id": "interrupt:<node>@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Interrumpir",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "pause:<node>@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Pausar",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "stamp": "En pausa",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "set_priority:t1@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Prioridad",
+              "options": [
+                {
+                  "description": "Arranca antes que Normal y Baja",
+                  "id": "high",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Alta",
+                  "style": "secondary"
+                },
+                {
+                  "description": "La de siempre",
+                  "id": "normal",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Normal · ahora",
+                  "style": "secondary"
+                },
+                {
+                  "description": "Arranca cuando no espera nada más",
+                  "id": "low",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Baja",
+                  "style": "secondary"
+                }
+              ],
+              "presentation": "menu",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Cancelar tarea",
+                "message": "¿Cancelar esta tarea?",
+                "title": "Cancelar tarea"
+              },
+              "enabled": true,
+              "id": "cancel:t1@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Cancelar tarea",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "risk",
+              "style": "destructive"
+            },
+            {
+              "attachments": false,
+              "disabled_reason": "Actualiza Alondra para usar esta función",
+              "enabled": false,
+              "id": "",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Cambiar modelo",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "plain"
+            }
+          ],
+          "type": "actions"
+        }
+      ]
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Aún sin medir",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Aún sin medir"
+            ],
+            "text": "con margen",
+            "value": 1.0
+          }
+        ],
+        "text": "con margen",
+        "value": 0.0
+      },
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disco",
+        "level": "calm",
+        "text": "550 GB libres",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    },
+    "summary": "0 tareas trabajando",
+    "summary_parts": [
+      {
+        "count": 0,
+        "id": "working",
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "version": "<version>"
+  },
+  "title": "Store the validated checks",
+  "version": "<version>",
+  "view": "task"
+}

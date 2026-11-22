@@ -466,18 +466,18 @@ impl Machine {
         let moved = !messages.is_empty();
         for message in messages {
             let state = self.state();
-            let task = message.task.or_else(|| state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&message.agent) && !task.state.terminal()).map(|task| task.id.clone()));
+            let task = message.task.clone().or_else(|| state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&message.agent) && !task.state.terminal()).map(|task| task.id.clone()));
             let Some(task) = task else { continue };
             let card = message.card.as_ref().and_then(|card| state.interactions.get(card));
-            let answers = card.filter(|card| {
-                let answered = matches!(&card.payload, InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. });
-                let node = state.tasks.get(&task).and_then(|task| task.agent_id.clone());
-                answered && matches!(&card.author, alondra_domain_rules::Author::Agent { agent_id } if Some(agent_id) == node.as_ref()) && card.scope == scope(&task)
-            }).map(|card| card.id.clone());
+            let answers = message.card.clone().filter(|card| state.answers_a_node_card(&task, card));
             let from_user = answers.is_some() && card.is_some_and(|card| card.recipient == Recipient::User);
-            let text = if message.text.trim().is_empty() { "Alondra has news for you".to_owned() } else { message.text };
-            if self.run(Actor::System, Command::TellNode { task_id: task.clone(), text, from_user, answers }).is_ok() {
-                self.take_if_unowned(&task);
+            let text = if message.text.trim().is_empty() { "Alondra has news for you".to_owned() } else { message.text.clone() };
+            match self.run(Actor::System, Command::TellNode { task_id: task.clone(), text, from_user, answers: answers.clone() }) {
+                Ok(_) => self.take_if_unowned(&task),
+                Err(code) if answers.is_some() && code != "task_not_active" && self.state().tasks.get(&task).is_some_and(|task| !task.state.terminal()) => {
+                    self.messages.push(message);
+                }
+                Err(_) => {}
             }
         }
         moved

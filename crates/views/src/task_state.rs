@@ -285,8 +285,7 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
         WaitsFor::PlanReview => plan_review_fact(task, context),
         WaitsFor::Step(Step::Starting) => from(t!(lang, "Starting", "Arrancando").into()),
         WaitsFor::Step(Step::Delivering) => {
-            let answer = context.domain.lifecycle_of(&task.id).ok().and_then(|lifecycle| lifecycle.obligation())
-                .is_some_and(|obligation| obligation.owed == alondra_domain::Owed::HandDecision);
+            let answer = context.domain.delivers_an_answer(&task.id);
             match (common::gate_queued(task, context), answer) {
                 (Some(queued), answer) => {
                     queue = Some(queued.position);

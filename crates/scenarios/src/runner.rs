@@ -588,6 +588,18 @@ impl Context<'_> {
                     card: CardSpec::delivery("Review the result", &[], true),
                 }).await?;
             }
+            Step::Ask { task, id, title, body } => {
+                self.node_command(index, task, "/questions", None, Command::AskQuestion {
+                    attachments: Vec::new(),
+                    interaction_id: id.clone().into(),
+                    scope: Scope::Task { task_id: task.clone().into() },
+                    recipient: Recipient::User,
+                    body: body.clone(),
+                    blocking: true,
+                    options: Vec::new(),
+                    card: CardSpec::derived(CardKind::Provide, title),
+                }).await?;
+            }
             Step::StackReady { task, presentation, pr } => {
                 let head = self.head(index, *pr)?;
                 self.node_command(index, task, &format!("/tasks/{task}/stack-readiness"), None, Command::PublishStackReadiness {

@@ -115,6 +115,27 @@ impl Situation {
 }
 
 impl DomainState {
+    /// A card the task's turn waits on that the user already answered: the answer is Alondra's to
+    /// hand to the node, between the answer and the delivery outbox telling it.
+    fn answered_wait(&self, card: &InteractionId) -> bool {
+        self.interactions.get(card).is_some_and(|i| !i.withdrawn && Self::answered_question(i))
+    }
+
+    /// Whether what `task` waits for is the user's answer to one of its cards reaching its node:
+    /// an answer the turn still waits on, a decision to hand over, or an input that answers a card.
+    pub fn delivers_an_answer(&self, task: &TaskId) -> bool {
+        let Ok(lifecycle) = self.lifecycle_of(task) else { return false };
+        if lifecycle.obligation().is_some_and(|obligation| obligation.owed == Owed::HandDecision) {
+            return true;
+        }
+        if let Some(Await::User(card)) = lifecycle.awaits() && self.answered_wait(card) {
+            return true;
+        }
+        let pending = lifecycle.pending_inputs();
+        self.lifecycle_journal.get(task).into_iter().flatten().any(|record| matches!(record,
+            LifecycleRecord::Told { input, answers: Some(_), .. } if pending.iter().any(|pending| pending.as_str() == input.as_str())))
+    }
+
     /// The one state `task` shows, given what the inbox lists of it.
     pub fn situation(&self, task: &Task, listing: &Listing<'_>) -> Reckoned {
         self.situation_with(task, listing, || self.obligation_of(&task.id))
@@ -159,6 +180,9 @@ impl DomainState {
                     _ => None,
                 })
                 .collect();
+            if waited.iter().any(|card| self.answered_wait(card)) {
+                return Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)).into();
+            }
             if let Some(card) = waited.iter().find(|card| !(listing.listed)(card)).cloned() {
                 return Reckoned { situation: Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)), unlisted: Some(card) };
             }

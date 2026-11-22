@@ -1,0 +1,347 @@
+{
+  "client": "ios",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "first_cards": [
+    {
+      "client": "ios",
+      "cursor": "<cursor>",
+      "data_epoch": "<data_epoch>",
+      "key": "card:where",
+      "protocol": 1,
+      "sections": [
+        {
+          "collapsed": false,
+          "id": "card",
+          "items": [
+            {
+              "context": [
+                {
+                  "icon": "task",
+                  "link": {
+                    "key": "task:t1",
+                    "kind": "view"
+                  },
+                  "state": {
+                    "text": "Te necesita",
+                    "tone": "warning"
+                  },
+                  "text": "Store the validated checks"
+                }
+              ],
+              "detail": "included",
+              "eyebrow": {
+                "text": "Aportar",
+                "tone": "accent"
+              },
+              "icon": "attachment",
+              "id": "where",
+              "kind": "provide",
+              "link": {
+                "key": "card:where",
+                "kind": "view"
+              },
+              "meta": "Store the validated checks",
+              "need": "Say where the validated checks live",
+              "reply": {
+                "attachments": true,
+                "enabled": true,
+                "id": "reply:where@<revision>",
+                "input": {
+                  "kind": "text",
+                  "multiline": true,
+                  "placeholder": "Escríbelo aquí o adjunta el archivo…",
+                  "required": false
+                },
+                "label": "Responder",
+                "presentation": "button",
+                "resolves_card": true,
+                "role": "neutral",
+                "stamp": "Respondiste",
+                "style": "secondary"
+              },
+              "state": {
+                "text": "Bloquea a Store the validated checks",
+                "tone": "warning"
+              },
+              "subtitle": "Say where the validated checks live",
+              "timestamps": [
+                {
+                  "at": "2026-11-15T09:00:40.000+00:00",
+                  "format": "relative",
+                  "role": "created"
+                }
+              ],
+              "title": "Say where the validated checks live",
+              "title_is_separate": true,
+              "type": "card",
+              "why": "Say where the validated checks live"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "id": "context",
+          "items": [
+            {
+              "items": [
+                {
+                  "label": "Tarea",
+                  "link": {
+                    "key": "task:t1",
+                    "kind": "view"
+                  },
+                  "value": "Store the validated checks"
+                }
+              ],
+              "type": "facts"
+            }
+          ],
+          "title": "Contexto"
+        }
+      ],
+      "status": {
+        "badge": 1,
+        "counts": [
+          {
+            "id": "inbox",
+            "label": "Bandeja",
+            "value": 1
+          },
+          {
+            "id": "tasks",
+            "label": "Tareas",
+            "value": 1
+          },
+          {
+            "id": "working",
+            "label": "trabajando",
+            "value": 0
+          },
+          {
+            "id": "needs_you",
+            "label": "esperando por ti",
+            "value": 1
+          },
+          {
+            "id": "queued",
+            "label": "en cola",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "en pausa",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "en espera",
+            "value": 0
+          }
+        ],
+        "gauges": [
+          {
+            "detail": "Puedes seguir: Claude tiene margen",
+            "id": "usage",
+            "label": "Claude",
+            "level": "calm",
+            "parts": [
+              {
+                "detail": "Aún sin medir",
+                "group": "Claude",
+                "label": "Default",
+                "level": "calm",
+                "lines": [
+                  "Aún sin medir"
+                ],
+                "text": "con margen",
+                "value": 1.0
+              }
+            ],
+            "text": "con margen",
+            "value": 0.0
+          },
+          {
+            "id": "memory",
+            "label": "RAM",
+            "level": "calm",
+            "text": "25%",
+            "value": 0.25
+          },
+          {
+            "id": "cpu",
+            "label": "CPU",
+            "level": "calm",
+            "text": "5%",
+            "value": 0.05
+          },
+          {
+            "id": "disk",
+            "label": "Disco",
+            "level": "calm",
+            "text": "550 GB libres",
+            "value": 0.5
+          }
+        ],
+        "orchestrator": {
+          "text": "inactivo",
+          "tone": "neutral"
+        },
+        "summary": "1 pregunta · 0 tareas trabajando",
+        "summary_parts": [
+          {
+            "count": 1,
+            "id": "questions",
+            "one": "{count} pregunta",
+            "other": "{count} preguntas"
+          },
+          {
+            "count": 0,
+            "id": "working",
+            "one": "{count} tarea trabajando",
+            "other": "{count} tareas trabajando"
+          }
+        ],
+        "version": "<version>"
+      },
+      "title": "Say where the validated checks live",
+      "version": "<version>",
+      "view": "card"
+    }
+  ],
+  "key": "home",
+  "protocol": 1,
+  "sections": [
+    {
+      "card_ids": [
+        "where"
+      ],
+      "card_waits": [
+        "question"
+      ],
+      "collapsed": false,
+      "count": 1,
+      "id": "queue",
+      "items": [],
+      "title": "Te espera"
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Aún sin medir",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Aún sin medir"
+            ],
+            "text": "con margen",
+            "value": 1.0
+          }
+        ],
+        "text": "con margen",
+        "value": 0.0
+      },
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disco",
+        "level": "calm",
+        "text": "550 GB libres",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    },
+    "summary": "1 pregunta · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "count": 1,
+        "id": "questions",
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "count": 0,
+        "id": "working",
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "version": "<version>"
+  },
+  "version": "<version>",
+  "view": "home"
+}
