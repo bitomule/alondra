@@ -53,7 +53,7 @@ fn clearing_takes_a_task_whose_request_closed_while_its_node_was_still_ending() 
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) }).unwrap();
     exec(&mut s, user(), Command::CancelTask { task_id: "c".into(), reason: None }).unwrap();
     assert!(s.tasks[&"c".into()].ending() && !s.tasks[&"c".into()].state.terminal());
-    exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None }).unwrap();
+    exec(&mut s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::TasksEnded), request_id: "r".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None }).unwrap();
     let seen = s.revision;
     exec(&mut s, user(), Command::ClearCompleted { seen }).unwrap();
     let index = ReadIndex::build(&s);

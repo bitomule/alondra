@@ -110,6 +110,8 @@ pub trait Journal: Send {
     fn auto_launches(&self) -> Result<Vec<AutoLaunch>>;
     fn batch_completed(&self, run: &str) -> Result<bool>;
     fn batch_effects(&self, run: &str) -> Result<Vec<BatchEffectRef>>;
+    /// How many new Tasks the commands of `run` created.
+    fn tasks_created_in(&mut self, run: &str) -> Result<usize>;
     fn batch_outcomes(&self, run: &str, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value>;
     fn batch_run_manifest(&self, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value>;
     fn batch_selection(&self, run: &str) -> Result<Option<records::BatchSelection>>;
@@ -165,6 +167,8 @@ pub trait Journal: Send {
     fn metrics_inputs(&self, now: Millis) -> Result<MetricsInputs>;
     fn orchestrator_delivery(&self, attempt_id: i64) -> Result<Option<String>>;
     fn orchestrator_notices_out(&self) -> Result<Vec<String>>;
+    /// Whether a batch that ended with its result was handed the orchestrator notice of `interaction_id`.
+    fn orchestrator_notice_read(&self, interaction_id: &str) -> Result<bool>;
     fn pending_messages(&self) -> Result<Vec<OutboxMessage>>;
     fn plan_account_move(&mut self, _task: &TaskId, _plan: &AccountMovePlan) -> Result<i64>;
     fn planned_tasks(&self) -> Result<std::collections::BTreeMap<TaskId, i64>>;

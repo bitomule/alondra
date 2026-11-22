@@ -1,41 +1,29 @@
 //! What the orchestrator asks of the rest of the engine, without that engine. An account is chosen
 //! from the domain's own records of accounts, models and order; the usage pause is the one the
-//! test sets, never a reading; and the clock over what every task is owed enforces only what the
-//! orchestrator owes, the one deadline it reminds and then settles itself.
+//! test sets, never a reading; and the clock over what every task is owed enforces nothing: what
+//! the orchestrator owes has no deadline.
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
-use alondra_domain::{Obligation, Owed, Party};
-use alondra_domain_rules::obligation_policy::ANSWER;
-use alondra_domain_rules::{AgentId, DomainError, DomainState, TaskId};
+use alondra_domain_rules::{AgentId, DomainError, DomainState};
 use alondra_engine_ports::Runtime;
 use alondra_engine_ports::extensions::extension;
-use alondra_engine_ports::orchestrator::{AccountWait, Exhausted, OrchestratorAnswers, OrchestratorEngine};
+use alondra_engine_ports::orchestrator::{AccountWait, Exhausted, OrchestratorEngine};
 use alondra_engine_ports::outbox::OutboxMessage;
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::sync::{Mutex, PoisonError};
 use tokio::sync::watch;
 
 pub struct Engine;
 
-/// What the double keeps in each runtime: the pause and the wait the test sets, and when the
-/// clock first saw each task owed an answer.
+/// What the double keeps in each runtime: the pause and the wait the test sets.
 pub struct Usage {
     pause: watch::Sender<Option<Exhausted>>,
     account_wait: AccountWait,
-    answers: Mutex<Answers>,
-}
-
-#[derive(Default)]
-struct Answers {
-    seen: BTreeMap<TaskId, (Obligation, Millis)>,
-    last_pass: Option<Millis>,
 }
 
 impl Default for Usage {
     fn default() -> Self {
-        Self { pause: watch::channel(None).0, account_wait: AccountWait::default(), answers: Mutex::default() }
+        Self { pause: watch::channel(None).0, account_wait: AccountWait::default() }
     }
 }
 
@@ -97,39 +85,8 @@ impl OrchestratorEngine for Engine {
         usage(runtime).pause.subscribe()
     }
 
-    /// A task owed an answer for the whole deadline since the clock first saw it is handed to the
-    /// orchestrator's port, and its deadline starts again; what the usage pause holds does not age.
-    fn settle_overdue(&self, runtime: &dyn Runtime, now: Millis) {
-        let state = runtime.state();
-        let held = usage(runtime).pause.borrow().is_some();
-        let mut due = BTreeSet::new();
-        {
-            let mut answers = usage(runtime).answers.lock().unwrap_or_else(PoisonError::into_inner);
-            let paused = if held { now - answers.last_pass.unwrap_or(now) } else { 0 };
-            answers.last_pass = Some(now);
-            let owed: BTreeMap<TaskId, Obligation> = state.tasks.iter().filter(|(_, task)| !task.over())
-                .filter_map(|(id, _)| Some((id.clone(), state.obligation_of(id)?)))
-                .filter(|(_, obligation)| obligation.party == Party::Alondra && obligation.owed == Owed::Answer)
-                .collect();
-            answers.seen.retain(|task, (seen, _)| owed.get(task) == Some(seen));
-            for (_, clock) in answers.seen.values_mut() {
-                *clock += paused;
-            }
-            for (task, obligation) in owed {
-                let (_, clock) = answers.seen.entry(task.clone()).or_insert((obligation, now));
-                if now - *clock >= ANSWER {
-                    *clock = now;
-                    due.insert(task);
-                }
-            }
-        }
-        if due.is_empty() {
-            return;
-        }
-        if let Some(orchestrator) = runtime.ports().port::<dyn OrchestratorAnswers>() {
-            orchestrator.settle_answers(runtime, &state, &due);
-        }
-    }
+    /// No deadline of the engine is enforced in the double.
+    fn settle_overdue(&self, _: &dyn Runtime, _: Millis) {}
 
     fn render_message(&self, state: &DomainState, message: &OutboxMessage) -> String {
         message.interaction_id.as_ref()

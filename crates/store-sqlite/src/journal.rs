@@ -88,6 +88,7 @@ impl Journal for DomainStore {
     fn auto_launches(&self) -> Result<Vec<AutoLaunch>> { DomainStore::auto_launches(self) }
     fn batch_completed(&self, run: &str) -> Result<bool> { DomainStore::batch_completed(self, run) }
     fn batch_effects(&self, run: &str) -> Result<Vec<BatchEffectRef>> { DomainStore::batch_effects(self, run) }
+    fn tasks_created_in(&mut self, run: &str) -> Result<usize> { DomainStore::tasks_created_in(self, run) }
     fn batch_outcomes(&self, run: &str, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value> { DomainStore::batch_outcomes(self, run, epoch, after, limit) }
     fn batch_run_manifest(&self, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value> { DomainStore::batch_run_manifest(self, epoch, after, limit) }
     fn batch_selection(&self, run: &str) -> Result<Option<records::BatchSelection>> { DomainStore::batch_selection(self, run) }
@@ -143,6 +144,7 @@ impl Journal for DomainStore {
     fn metrics_inputs(&self, now: Millis) -> Result<MetricsInputs> { DomainStore::metrics_inputs(self, now) }
     fn orchestrator_delivery(&self, attempt_id: i64) -> Result<Option<String>> { DomainStore::orchestrator_delivery(self, attempt_id) }
     fn orchestrator_notices_out(&self) -> Result<Vec<String>> { DomainStore::orchestrator_notices_out(self) }
+    fn orchestrator_notice_read(&self, interaction_id: &str) -> Result<bool> { DomainStore::orchestrator_notice_read(self, interaction_id) }
     fn pending_messages(&self) -> Result<Vec<OutboxMessage>> { DomainStore::pending_messages(self) }
     fn plan_account_move(&mut self, _task: &TaskId, _plan: &AccountMovePlan) -> Result<i64> { DomainStore::plan_account_move(self, _task, _plan) }
     fn planned_tasks(&self) -> Result<std::collections::BTreeMap<TaskId, i64>> { DomainStore::planned_tasks(self) }

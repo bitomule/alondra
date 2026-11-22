@@ -73,9 +73,14 @@ fn runs(machine: &Machine, task: &TaskId) -> bool {
 /// A step Alondra owes `task` that started so recently that its deadlines have not all passed yet:
 /// a world that never goes quiet (a node that asks again as soon as it is answered) ends the two
 /// hours with one under way.
+/// What the orchestrator owes has no deadline: it is reminded at the first rest after it and
+/// settled at the next, and the model's orchestrator rests every ten minutes of its clock.
 fn within_its_deadlines(machine: &Machine, state: &DomainState, task: &TaskId) -> bool {
     let Some(owed) = state.obligation_of(task).map(|obligation| obligation.owed) else { return false };
-    let bound = alondra_domain_rules::obligation_policy::deadline(&owed).unwrap_or(MINUTE) * 2 + world::PASS;
+    let bound = match owed {
+        Owed::Answer => 2 * 10 * MINUTE + 2 * world::PASS,
+        owed => alondra_domain_rules::obligation_policy::deadline(&owed).unwrap_or(MINUTE) * 2 + world::PASS,
+    };
     machine.owed_for(task) < bound
 }
 

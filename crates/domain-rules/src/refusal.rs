@@ -90,6 +90,7 @@ pub const INTERNAL_CODES: &[&str] = &[
     "plan_review_pending", "plan_review_not_found", "not_in_plan_review", "plan_review_settled",
     "plan_items_unknown", "plan_items_take_all", "plan_items_unavailable", "task_waiting", "continuation_request",
     "model_catalog_changed", "model_catalog_unavailable", "stall_needs_outcome", "stall_settled", "stall_limit", "plan_refused_needs_outcome",
+    "close_outcome_required", "close_outcome_mismatch", "close_answer_required",
 ];
 
 impl Refusal {

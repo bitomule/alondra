@@ -1,6 +1,22 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+/// What came of a Request the orchestrator closes, one of a closed set the domain checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseOutcome {
+    /// It needed no Task: `answer` is what the user asked for.
+    Answered,
+    /// Tasks that exist already did or do its work: `covered_by` names each.
+    Covered,
+    /// The open Task `folded_into` names carries it.
+    Folded,
+    /// It no longer applies: `withdrawn`.
+    Withdrawn,
+    /// Every Task of its own ended: `answer` is what came of them.
+    TasksEnded,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommandEnvelope {
@@ -117,6 +133,14 @@ pub enum Command {
         /// The open Task that already covers this Request: it gets no Task of its own.
         #[serde(default)]
         folded_into: Option<TaskId>,
+        /// The Tasks, of any Request and even over or archived, whose work already answers this
+        /// Request: each must exist. Only an outcome `covered` names them, and it must.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        covered_by: Vec<TaskId>,
+        /// What came of the Request. The orchestrator always says it, and the domain checks it
+        /// against the Request and the other fields; the user and Alondra may leave it out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<CloseOutcome>,
     },
     TitleRequest {
         request_id: RequestId,

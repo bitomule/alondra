@@ -7,7 +7,7 @@ use crate::disk::Disk;
 use crate::github::GitHub;
 use crate::hosts::SdkHosts;
 use crate::machine::MachineProbe;
-use crate::orchestrator::{OrchestratorAnswers, OrchestratorEngine};
+use crate::orchestrator::OrchestratorEngine;
 use crate::plugins::Plugins;
 use crate::processes::Processes;
 use crate::sdk::SdkEngine;
@@ -81,7 +81,7 @@ impl Registry {
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 17] {
+fn every_port() -> [(TypeId, &'static str); 16] {
     [
         (TypeId::of::<dyn Accounts>(), "Accounts"),
         (TypeId::of::<dyn AgentHost>(), "AgentHost"),
@@ -90,7 +90,6 @@ fn every_port() -> [(TypeId, &'static str); 17] {
         (TypeId::of::<dyn Disk>(), "Disk"),
         (TypeId::of::<GitHub>(), "GitHub"),
         (TypeId::of::<dyn MachineProbe>(), "MachineProbe"),
-        (TypeId::of::<dyn OrchestratorAnswers>(), "OrchestratorAnswers"),
         (TypeId::of::<dyn OrchestratorEngine>(), "OrchestratorEngine"),
         (TypeId::of::<dyn Plugins>(), "Plugins"),
         (TypeId::of::<dyn Processes>(), "Processes"),
@@ -130,12 +129,14 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorAnswers", "OrchestratorEngine", "Plugins", "Processes", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "Worktrees"]);
-        struct Answers;
-        impl OrchestratorAnswers for Answers {
-            fn settle_answers(&self, _: &dyn Runtime, _: &alondra_domain_rules::DomainState, _: &std::collections::BTreeSet<alondra_domain_rules::TaskId>) {}
-        }
-        registry.provide::<dyn OrchestratorAnswers>(Arc::new(Answers));
         assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "Plugins", "Processes", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "Worktrees"]);
+        struct Greeter;
+        impl Greets for Greeter {
+            fn greet(&self) -> &'static str {
+                "hi"
+            }
+        }
+        registry.provide::<dyn Greets>(Arc::new(Greeter));
+        assert_eq!(registry.missing().len(), 16, "a port outside the required ones never counts");
     }
 }

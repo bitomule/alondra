@@ -4,9 +4,8 @@ use crate::outbox::OutboxMessage;
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
-use alondra_domain_rules::{AgentId, DomainError, DomainState, TaskId};
+use alondra_domain_rules::{AgentId, DomainError, DomainState};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::PoisonError;
 use tokio::sync::watch;
@@ -35,13 +34,6 @@ pub trait OrchestratorEngine: Send + Sync {
     fn render_message(&self, state: &DomainState, message: &OutboxMessage) -> String;
     /// What `agent`'s node last said, as its mod reported it.
     fn last_words(&self, runtime: &dyn Runtime, agent: &AgentId) -> Option<String>;
-}
-
-/// What the clock over what every task is owed asks of the orchestrator, which `engine-orchestrator`
-/// provides.
-pub trait OrchestratorAnswers: Send + Sync {
-    /// Settles what the orchestrator owes the `due` tasks past its deadline.
-    fn settle_answers(&self, runtime: &dyn Runtime, state: &DomainState, due: &BTreeSet<TaskId>);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

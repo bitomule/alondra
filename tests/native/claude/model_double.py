@@ -173,7 +173,7 @@ def orchestrator_calls(scripts, text):
         if not re.search(r'The user created Request ' + re.escape(request) + r'\b', text):
             continue
         if script.get('answer') is not None:
-            calls.append(('toolu_close_' + request, 'close_request', {'request_id': request, 'answer': script['answer']}))
+            calls.append(('toolu_close_' + request, 'close_request', {'request_id': request, 'answer': script['answer'], 'outcome': 'answered'}))
         for task in script['tasks']:
             launch = {'name': 'sandbox/' + task['task_id'], 'cwd': os.path.join(os.path.dirname(os.path.dirname(scripts)), 'repo'), 'model': 'sonnet', 'reason': 'A scripted sandbox node'}
             calls.append(('toolu_create_' + task['task_id'], 'create_task', {

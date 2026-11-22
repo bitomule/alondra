@@ -1,10 +1,11 @@
 //! The one clock over what every live task is owed. It measures how long each step lasts, logs
 //! the steps past their deadline, and acts on those whose deadline `obligation_policy` enforces:
 //! an input handed to a process that then wrote nothing for too long is given to a host that
-//! resumes the same session, flagged as possibly received already, a node
-//! whose work ended with no turn to take up its notice is told, and what the orchestrator owes is
-//! reminded to it and then settled by Alondra. Nothing it does opens a card. The daemon keeps one
-//! clock, in `Live`: its own loop and every pass of the orchestrator step that one.
+//! resumes the same session, flagged as possibly received already, and a node whose work ended
+//! with no turn to take up its notice is told. What the orchestrator owes has no deadline: it is
+//! settled by state when a turn of the orchestrator ends (`orchestrator_inbox`). Nothing it does
+//! opens a card. The daemon keeps one clock, in `Live`: its own loop and every pass of the
+//! orchestrator step that one.
 use crate::gate::GateOf as _;
 use crate::hosts::HostsOf as _;
 use crate::live::LiveOf as _;
@@ -36,8 +37,6 @@ pub struct Overdue {
 /// What the daemon knows that the task's lifecycle does not.
 pub trait World {
     fn waits_for_slot(&self, task: &TaskId) -> bool;
-    /// The usage limit holds the orchestrator: what it owes does not age meanwhile.
-    fn orchestrator_held(&self) -> bool;
     /// When the task's node process last wrote anything, or started if it wrote nothing yet.
     /// `None` when it has no live process.
     fn last_output(&self, task: &TaskId) -> Option<Millis>;
@@ -61,8 +60,6 @@ pub enum Action {
     Requeue,
     /// The node is told its work ended.
     Wake,
-    /// The orchestrator is reminded of what it owes the task, and the next time Alondra settles it.
-    Answer,
 }
 
 /// The action for a step past its deadline.
@@ -70,7 +67,6 @@ pub fn action(owed: &Owed) -> Option<Action> {
     match owed {
         Owed::HandInput => Some(Action::Requeue),
         Owed::Wake => Some(Action::Wake),
-        Owed::Answer => Some(Action::Answer),
         _ => None,
     }
 }
@@ -85,7 +81,6 @@ pub struct Watch {
     seen: BTreeMap<TaskId, Seen>,
     finished: BTreeMap<String, Finished>,
     summarized_at: Option<Millis>,
-    last_pass: Option<Millis>,
     enforced: fn(&Owed) -> bool,
 }
 
@@ -104,7 +99,7 @@ fn effective(world: &dyn World, task: &TaskId, obligation: &Obligation) -> (Part
 
 impl Watch {
     pub fn enforcing(enforced: fn(&Owed) -> bool) -> Self {
-        Self { seen: BTreeMap::new(), finished: BTreeMap::new(), summarized_at: None, last_pass: None, enforced }
+        Self { seen: BTreeMap::new(), finished: BTreeMap::new(), summarized_at: None, enforced }
     }
 
     pub fn step(&mut self, state: &DomainState, world: &dyn World, now: Millis) -> Vec<Overdue> {
@@ -119,11 +114,6 @@ impl Watch {
 
     pub fn observe(&mut self, obligations: Vec<(TaskId, Obligation)>, world: &dyn World, now: Millis) -> Vec<Overdue> {
         let mut overdue = Vec::new();
-        let held = if world.orchestrator_held() { now - self.last_pass.unwrap_or(now) } else { 0 };
-        self.last_pass = Some(now);
-        for seen in self.seen.values_mut().filter(|seen| seen.owed == Owed::Answer) {
-            seen.clock += held;
-        }
         let live: std::collections::BTreeSet<&TaskId> = obligations.iter().map(|(task, _)| task).collect();
         let gone: Vec<TaskId> = self.seen.keys().filter(|task| !live.contains(task)).cloned().collect();
         for task in gone {
@@ -206,10 +196,6 @@ impl World for GateWorld<'_> {
         self.domain.gate().waits_for_slot(self.state, task)
     }
 
-    fn orchestrator_held(&self) -> bool {
-        self.domain.live().usage_pause.is_active()
-    }
-
     fn last_output(&self, task: &TaskId) -> Option<Millis> {
         let agent = self.state.tasks.get(task)?.agent_id.clone()?;
         self.domain.hosts().owns(&agent).then(|| self.domain.live().outputs.lock_or_recover("the node outputs").get(task).copied().unwrap_or_default())
@@ -223,27 +209,13 @@ pub fn pass(domain: &dyn Runtime, watch: &mut Watch, now: Millis) {
     for overdue in &late {
         log!("{} has waited {} s for {:?} owed by {:?}: past its deadline", overdue.task, overdue.age / 1000, overdue.owed, overdue.party);
     }
-    let mut answers = std::collections::BTreeSet::new();
     for (task, action) in watch.enforce(&late, now) {
-        if action == Action::Answer {
-            answers.insert(task);
-        } else if let Err(error) = apply(domain, &task, action) {
+        if let Err(error) = apply(domain, &task, action) {
             log!("{task} is past its deadline and Alondra could not act on it ({action:?}): {error}");
         }
     }
-    if !answers.is_empty() {
-        settle_answers(domain, &state, &answers);
-    }
     for line in watch.summary(now) {
         log!("{line}");
-    }
-}
-
-/// The orchestrator settles what it owes past its deadline.
-fn settle_answers(domain: &dyn Runtime, state: &DomainState, due: &std::collections::BTreeSet<TaskId>) {
-    match domain.ports().port::<dyn alondra_engine_ports::orchestrator::OrchestratorAnswers>() {
-        Some(orchestrator) => orchestrator.settle_answers(domain, state, due),
-        None => log!("no orchestrator settles what it owes {} past its deadline", due.iter().map(|task| task.0.as_str()).collect::<Vec<_>>().join(", ")),
     }
 }
 
@@ -265,7 +237,6 @@ pub fn apply(domain: &dyn Runtime, task: &TaskId, action: Action) -> Result<(), 
                 domain.hosts().requeue(task);
             }
         }
-        Action::Answer => settle_answers(domain, &state, &[task.clone()].into()),
     }
     Ok(())
 }

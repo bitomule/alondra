@@ -1580,7 +1580,7 @@ impl DomainState {
 /// What a node is told when it tries to send the user a Know card.
 pub const NODES_DO_NOT_NOTIFY: &str = "Nodes don't send notices. To ask/decide use ask; to need an action use request_action; for input use request_input; to have the user try something use request_test; report results in present_result.";
 /// What the orchestrator is told when it answers a maintenance message with a card.
-pub const ALONDRA_TELLS_THE_OUTCOME: &str = "Alondra tells the user how their request ended: answer a Request without Tasks with close_request (headline and answer), and close one whose Tasks are over with close_request (answer: what came of it). No card from you for it or its Tasks.";
+pub const ALONDRA_TELLS_THE_OUTCOME: &str = "Alondra tells the user how their request ended: answer a Request without Tasks with close_request (outcome answered, headline and answer), and close one whose Tasks are over with close_request (outcome tasks_ended, answer: what came of it). No card from you for it or its Tasks.";
 pub const MAINTENANCE_GETS_NO_CARD: &str = "this Request is a maintenance message sent with alondra send: act on it and close it with close_request, without a card for the user. It is answered only when sent with --reply.";
 
 /// The one name that always means the orchestrator, whatever session it runs in now.

@@ -8,9 +8,6 @@ impl World for Room {
     fn waits_for_slot(&self, _: &TaskId) -> bool {
         self.0
     }
-    fn orchestrator_held(&self) -> bool {
-        false
-    }
     fn last_output(&self, _: &TaskId) -> Option<Millis> {
         Some(0)
     }
@@ -20,9 +17,6 @@ impl World for Room {
 struct Process(Option<Millis>);
 impl World for Process {
     fn waits_for_slot(&self, _: &TaskId) -> bool {
-        false
-    }
-    fn orchestrator_held(&self) -> bool {
         false
     }
     fn last_output(&self, _: &TaskId) -> Option<Millis> {
@@ -136,12 +130,21 @@ fn a_hung_process_is_given_up_for_a_host_that_resumes_the_session_after_a_deadli
 
 #[test]
 fn only_an_enforced_deadline_is_acted_on() {
-    let mut watch = Watch::enforcing(|owed| matches!(owed, Owed::Wake | Owed::Answer));
+    let mut watch = Watch::enforcing(|owed| matches!(owed, Owed::Wake));
     acted(&mut watch, hand_input(1), 0);
     assert_eq!(acted(&mut watch, hand_input(1), 301 * S), vec![], "a deadline the policy does not enforce is only reported");
     let mut watch = Watch::default();
     acted(&mut watch, owes(Party::Alondra, Owed::Wake, 1), 0);
     assert_eq!(acted(&mut watch, owes(Party::Alondra, Owed::Wake, 1), 121 * S), vec![("t-1".into(), Action::Wake)]);
-    assert_eq!(acted(&mut watch, owes(Party::Alondra, Owed::Answer, 2), 0), vec![]);
-    assert_eq!(acted(&mut watch, owes(Party::Alondra, Owed::Answer, 2), 24 * HOUR), vec![("t-1".into(), Action::Answer)], "what the orchestrator owes is acted on past its deadline");
+}
+
+/// What the orchestrator owes has no deadline: no clock reminds it or settles it, however long it
+/// waits. A turn of the orchestrator that ends does (`orchestrator_inbox`).
+#[test]
+fn what_the_orchestrator_owes_is_never_on_the_clock() {
+    let mut watch = Watch::default();
+    assert_eq!(watch.observe(owes(Party::Alondra, Owed::Answer, 2), &Room(false), 0), vec![]);
+    let late = watch.observe(owes(Party::Alondra, Owed::Answer, 2), &Room(false), 24 * HOUR);
+    assert_eq!(late, vec![], "a day later it is not even past a deadline");
+    assert_eq!(watch.enforce(&late, 24 * HOUR), vec![]);
 }

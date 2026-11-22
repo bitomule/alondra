@@ -13,7 +13,7 @@ pub use effect::command_name;
 use effect::{answers_with_its_effect, effect_outside_the_domain};
 pub use open_pr::cancelled_pr_comment;
 mod stall;
-pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, UNSETTLED_AFTER_MERGE, UNSETTLED_DELIVERY, UNSETTLED_INSTRUCT, is_stall_case, stalled_card_id};
+pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, UNSETTLED_AFTER_MERGE, UNSETTLED_DELIVERY, UNSETTLED_INSTRUCT, UNSETTLED_UNANSWERED, is_stall_case, stalled_card_id};
 pub(in crate) use stall::{stalled_before, stalled_in_place_of};
 mod turn_result;
 pub use turn_result::TurnResult;
@@ -897,8 +897,9 @@ impl DomainState {
     fn settle_suggestion(&mut self, actor: &Actor, interaction_id: &InteractionId, decision: &SuggestionDecision,
         effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.fence(actor)?;
-        if !matches!(actor, Actor::Orchestrator { .. }) {
-            return fail("forbidden", "Only the orchestrator settles a suggestion");
+        let discarded_by_alondra = matches!(actor, Actor::System) && matches!(decision, SuggestionDecision::Discard { .. });
+        if !matches!(actor, Actor::Orchestrator { .. }) && !discarded_by_alondra {
+            return fail("forbidden", "Only the orchestrator settles a suggestion; Alondra only discards one left unsettled");
         }
         let i = self.interaction(interaction_id)?.clone();
         let (CardKind::Propose, Author::Agent { .. }, Scope::Task { task_id }) = (i.card.kind, &i.author, &i.scope) else {
@@ -947,7 +948,7 @@ impl DomainState {
         if let InteractionPayload::Question { answer, .. } = &mut i.payload {
             *answer = Some(Answer {
                 attachments: vec![], option_id: decision.option_id().into(), inputs,
-                responder: "alondra-orchestrator".into(), at_revision: at, decision: Some(decision.clone()),
+                responder: if discarded_by_alondra { "alondra" } else { "alondra-orchestrator" }.into(), at_revision: at, decision: Some(decision.clone()),
             });
         }
         i.revision = at;
@@ -1349,6 +1350,68 @@ impl DomainState {
         }
         Ok(())
     }
+    /// The orchestrator closes a Request with one outcome, and the outcome is what the Request and
+    /// the other fields show: answered or covered only while it has no Task of its own, its Tasks
+    /// ended only when it has some, covered with the Tasks it names, folded into a Task, withdrawn
+    /// as withdrawn. The user and Alondra may leave it out; one they give is checked the same way.
+    fn check_close_outcome(&self, actor: &Actor, request_id: &RequestId, outcome: Option<CloseOutcome>, withdrawn: bool,
+        folded_into: Option<&TaskId>, covered_by: &[TaskId]) -> Result<()> {
+        let Some(outcome) = outcome else {
+            if matches!(actor, Actor::Orchestrator { .. }) {
+                return refuse("close_outcome_required", "outcome",
+                    "Say what came of the Request: answered, covered (with covered_by), folded (with folded_into), withdrawn or tasks_ended");
+            }
+            if !covered_by.is_empty() {
+                return refuse("close_outcome_mismatch", "covered_by", "covered_by goes with the outcome covered");
+            }
+            return Ok(());
+        };
+        let has_tasks = self.tasks.values().any(|task| &task.request_id == request_id);
+        let mismatch = |fix: &str| refuse("close_outcome_mismatch", "outcome", fix);
+        if (outcome == CloseOutcome::Withdrawn) != withdrawn {
+            return mismatch("withdrawn goes with the outcome withdrawn, and only with it");
+        }
+        if (outcome == CloseOutcome::Folded) != folded_into.is_some() {
+            return mismatch("folded_into goes with the outcome folded, and only with it");
+        }
+        if (outcome == CloseOutcome::Covered) != !covered_by.is_empty() {
+            return mismatch("covered_by goes with the outcome covered, and it names at least one Task");
+        }
+        match outcome {
+            CloseOutcome::Answered | CloseOutcome::Covered if has_tasks =>
+                mismatch("This Request has Tasks of its own: once every one has ended, close it with the outcome tasks_ended"),
+            CloseOutcome::TasksEnded if !has_tasks =>
+                mismatch("This Request has no Task of its own: close it as answered, covered, folded or withdrawn"),
+            _ => Ok(()),
+        }
+    }
+    /// A Request the user made is never closed by the orchestrator in silence. One whose Tasks
+    /// ended gets its Done card from them; any other, settled with no Task of its own (answered,
+    /// covered or folded), and any it withdraws, Tasks or none, has `answer` tell the user, who
+    /// reads it on the Request's card. A message, a maintenance message and a Request a node
+    /// raised need none.
+    fn check_close_answer(&self, actor: &Actor, request_id: &RequestId, answer: Option<&str>, withdrawn: bool) -> Result<()> {
+        let Some(request) = self.requests.get(request_id) else { return Ok(()) };
+        let has_tasks = self.tasks.values().any(|task| &task.request_id == request_id);
+        let answers_the_user = matches!(actor, Actor::Orchestrator { .. }) && request.origin.the_user_asked() && !request.maintenance && !request.message
+            && (!has_tasks || withdrawn);
+        if answers_the_user && answer.is_none() {
+            return refuse("close_answer_required", "answer",
+                "The user made this Request: say in answer what came of it, or why it no longer applies; the user reads it on the Request's card");
+        }
+        Ok(())
+    }
+    /// The Tasks a Request is closed as covered by are Tasks Alondra knows, whatever their state:
+    /// an archived or finished Task still counts, a made-up id never does.
+    fn check_cover(&self, covered_by: &[TaskId], withdrawn: bool) -> Result<()> {
+        if withdrawn && !covered_by.is_empty() {
+            return refuse("invalid_input", "covered_by", "A withdrawn Request is covered by no Task: omit covered_by or withdrawn");
+        }
+        if let Some(missing) = covered_by.iter().find(|task| !self.tasks.contains_key(*task)) {
+            return refuse("not_found", "covered_by", &format!("No Task has the id {missing}: name only Tasks that exist, as tasks_in_progress or task_detail shows them"));
+        }
+        Ok(())
+    }
     #[allow(clippy::too_many_arguments)]
     fn close_request(&mut self, request_id: &RequestId, answer: Option<&String>, withdrawn: bool, title: Option<&String>, headline: Option<&str>,
         created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
@@ -1364,9 +1427,10 @@ impl DomainState {
         if title.is_some() {
             request.title = title.cloned();
         }
-        let tell = !request.maintenance && !request.withdrawn && request.origin.the_user_asked();
+        let tell = !request.maintenance && (!request.withdrawn || answer.is_some()) && request.origin.the_user_asked();
         let has_tasks = self.tasks.values().any(|t| &t.request_id == request_id);
-        if tell && has_tasks {
+        // A withdrawn Request is told why it no longer applies, never that it is done.
+        if tell && has_tasks && !withdrawn {
             self.tell_it_is_done(request_id, answer.map(String::as_str), created, effects)?;
         } else if let Some(answer) = answer.filter(|_| tell) {
             self.tell_the_answer(request_id, answer, headline, created, effects)?;
@@ -3519,7 +3583,7 @@ impl DomainState {
                     effects.push(DomainEffect::NotifyOrchestrator { interaction_id: None, request_id: Some(request_id.clone()) });
                 }
             }
-            Command::CloseRequest { request_id, answer, withdrawn, title, headline, folded_into } => {
+            Command::CloseRequest { request_id, answer, withdrawn, title, headline, folded_into, covered_by, outcome } => {
                 if !matches!(actor, Actor::System) {
                     self.manager(actor)?;
                 }
@@ -3533,6 +3597,9 @@ impl DomainState {
                 {
                     return fail("task_not_active", "Request still has unfinished Tasks");
                 };
+                self.check_close_outcome(actor, request_id, *outcome, *withdrawn, folded_into.as_ref(), covered_by)?;
+                self.check_cover(covered_by, *withdrawn)?;
+                self.check_close_answer(actor, request_id, answer.as_deref(), *withdrawn)?;
                 for (field, text) in [("answer", answer.as_deref()), ("title", title.as_deref())] {
                     if text.is_some_and(|text| text.trim().is_empty()) {
                         return refuse("invalid_input", field, "Provide non-empty text, or omit this field");

@@ -123,10 +123,6 @@ impl obligation_watch::World for Turns<'_> {
         self.state.waits_for_turn(task) && !self.granted.contains(task)
     }
 
-    fn orchestrator_held(&self) -> bool {
-        self.usage_holds
-    }
-
     fn last_output(&self, task: &TaskId) -> Option<Millis> {
         self.alive.contains(task).then_some(0)
     }
@@ -1242,6 +1238,9 @@ impl Machine {
         if now - self.last_rest >= 10 * MINUTE {
             self.last_rest = now;
             self.rests += 1;
+            if !self.world.usage_holds() {
+                self.by_the_clock(|machine| machine.turn_ended());
+            }
         }
         let obligations: BTreeMap<TaskId, (Revision, Owed)> = state.tasks.keys()
             .filter_map(|task| Some((task.clone(), state.obligation_of(task).map(|obligation| (obligation.since, obligation.owed))?)))
@@ -1278,16 +1277,20 @@ impl Machine {
         self.seen.clock_cards.extend(opened);
     }
 
+    /// A turn of the orchestrator ended handled with nothing waiting for it: what it owes the nodes
+    /// goes back to it once, then Alondra settles it (`orchestrator_inbox::owed`). The model's
+    /// orchestrator rests every ten minutes of its clock; the rule itself reads no clock.
+    fn turn_ended(&mut self) {
+        let state = self.state();
+        // The model's orchestrator reads every message of the turn that rests.
+        for step in orchestrator_inbox::owed(&state, &|_| true) {
+            self.carry_out(&step);
+        }
+    }
+
     /// What `obligation_watch::apply` does for `action`, through the commands `sdk_owner::untaken`
     /// stages and the owner's requeue.
     fn apply(&mut self, task: &TaskId, action: obligation_watch::Action) {
-        if action == obligation_watch::Action::Answer {
-            let state = self.state();
-            for (step, _) in orchestrator_inbox::overdue(&state, &BTreeSet::from([task.clone()])) {
-                self.carry_out(&step);
-            }
-            return;
-        }
         let Some(generation) = self.generation(task) else { return };
         match action {
             obligation_watch::Action::Requeue => {
@@ -1308,12 +1311,11 @@ impl Machine {
                     let _ = self.run(Actor::System, command);
                 }
             }
-            obligation_watch::Action::Answer => {}
         }
     }
 
-    /// What `orchestrator_inbox::carry_out` does with a step the orchestrator owes past its
-    /// deadline: the command `orchestrator_inbox::command_of` gives it.
+    /// What `orchestrator_inbox::carry_out` does with a step of what the orchestrator owes the
+    /// nodes: the command `orchestrator_inbox::command_of` gives it.
     fn carry_out(&mut self, step: &orchestrator_inbox::Step) {
         use orchestrator_inbox::Step;
         if let Step::TellPlanReview { id, card, review, number } = step {
@@ -1325,7 +1327,7 @@ impl Machine {
         }
         let Some(command) = orchestrator_inbox::command_of(step) else {
             if let Step::Close { .. } | Step::Raise { .. } = step {
-                panic!("a step past its deadline ends in a card for the user or outside what the orchestrator owes: {step:?}");
+                panic!("what the orchestrator owes a node ends in a card for the user or outside what it owes: {step:?}");
             }
             return;
         };

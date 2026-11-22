@@ -1,12 +1,21 @@
-//! Nothing waits in the orchestrator. Once it handled everything it was handed, every open request
-//! without a task, an answer or a question of its own is settled: a message was acted on and
-//! closes, a request of the user's goes back to it once and then becomes the user's Problem. A
-//! node's suggestion goes back once.
+//! Nothing waits in the orchestrator, and no clock decides it. Once a turn of the orchestrator
+//! ended for real (handled, not stopped, refused or held by the usage limit) and no message waits
+//! for it, every item it owes that has no outcome yet goes back to it once, at once, as a
+//! reminder; the next turn reads it. When that turn too ends handled and the item still has no
+//! outcome, it leaves the orchestrator:
 //!
-//! What a task waits for from the orchestrator has a deadline instead, whatever else it is busy
-//! with: a stopped node's case, a node's question and the review of the plans a decision holds.
-//! The first time it passes the orchestrator is reminded; the second time Alondra settles it
-//! itself, never with a card for the user.
+//! - an open request of the user's becomes the user's Problem; a message it acted on closes;
+//! - a node's question is withdrawn and its node told to decide by itself;
+//! - a node's suggestion is discarded with its reason;
+//! - the review of the plans a decision holds releases each with the plan it has;
+//! - a stopped node's case is settled by Alondra: the node goes on, or the task closes.
+//!
+//! Only a request reaches the user. Every outcome above is a fact of the domain the orchestrator
+//! reaches with its own tools, so the rule reads state only: the reminder is a card of the inbox,
+//! and its notice was read only once a batch that ended with its result was handed it. A reminder
+//! whose notice expired, or whose batch was stopped, discarded or given up, was never read: the
+//! next settle sends another instead of acting on it. A review the orchestrator asked the user
+//! about waits for that answer.
 //!
 //! A task that waits for a cancelled task, and a launch plan the start refused, are the
 //! orchestrator's to decide, so no clock settles them and no card asks the user. Alondra reads the
@@ -15,17 +24,16 @@
 use crate::engine::OrchestratorOf as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_engine_ports::Runtime;
-use alondra_domain_rules::obligation_policy::{ANSWER, Millis};
+use alondra_domain_rules::obligation_policy::Millis;
 use alondra_domain_rules::{
     Author, CardKind, CardSpec, Command, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PlanReview, PlanReviewOutcome, QuestionOption,
-    Request, RequestId, STALL_ATTEMPTS, Scope, StallOutcome, StartProblem, StartProblems, SystemCard, Task, TaskId, UNSETTLED_INSTRUCT,
+    Request, RequestId, STALL_ATTEMPTS, Scope, StallOutcome, StartProblem, StartProblems, SuggestionDecision, SystemCard, Task, TaskId, UNSETTLED_INSTRUCT,
 };
 use alondra_domain_rules::orchestrator_cards::{
     DEPENDENCY_CANCELLED_NOTICE_PREFIX, UNANSWERED_NOTICE_PREFIX, UNSETTLED_NOTICE_PREFIX, UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL, UNSPLIT_NOTICE_PREFIX,
     UNSPLIT_PROBLEM_PREFIX, UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL, UnsplitProblem,
     PLAN_REVIEW_NOTICE_PREFIX, PLAN_REFUSED_NOTICE_PREFIX, STALL_NOTICE_PREFIX,
 };
-use std::collections::BTreeSet;
 
 const UNSPLIT_CAUSE: &str = "request_unsplit";
 const BODY_SHOWN: usize = 2_000;
@@ -37,24 +45,25 @@ pub enum Step {
     Raise { request: RequestId, id: String, card: SystemCard, problem: UnsplitProblem },
     /// A reminder about a node's question or suggestion.
     Tell { id: String, card: SystemCard, text: String },
-    /// A card that no longer asks anything: a node's question nobody answered in time, whose node
-    /// is told to decide by itself, or a problem the user no longer has to settle.
+    /// A card that no longer asks anything: a node's question the orchestrator left unanswered
+    /// past its reminder, whose node is told to decide by itself, or a problem the user no longer
+    /// has to settle.
     Withdraw { question: InteractionId },
     /// A reminder about a decision of the user whose held plans are not reviewed yet.
     TellPlanReview { id: String, card: SystemCard, review: InteractionId, number: u32 },
-    /// Nobody reviewed the plan of a held task in time: it keeps its plan, and its node reads first
-    /// what was decided.
+    /// The orchestrator left the plan of a held task unreviewed past its reminder: it keeps its
+    /// plan, and its node reads first what was decided.
     ReleaseUnreviewed { review: InteractionId, task: TaskId, note: String },
     /// The case of a stopped node is still unsettled past its reminder: Alondra settles it.
     SettleStall { case: InteractionId, task: TaskId, outcome: StallOutcome },
+    /// A node's suggestion still without a decision past its reminder: Alondra discards it.
+    Discard { suggestion: InteractionId },
 }
 
-/// What is left in the orchestrator's inbox after it handled everything it was handed.
-pub(crate) fn steps(state: &DomainState) -> Vec<Step> {
-    let mut steps = vec![];
-    for interaction in state.interactions.values().filter(|i| waits(i) && i.card.kind == CardKind::Propose) {
-        steps.extend(unsettled(state, interaction));
-    }
+/// What is left in the orchestrator's inbox after a turn of it ended handled and it was handed
+/// everything waiting for it.
+pub(crate) fn steps(state: &DomainState, read: &dyn Fn(&str) -> bool) -> Vec<Step> {
+    let mut steps = owed(state, read);
     for problem in state.interactions.values().filter(|i| retired_problem(i) && state.open(i)) {
         steps.push(Step::Withdraw { question: problem.id.clone() });
     }
@@ -66,31 +75,38 @@ pub(crate) fn steps(state: &DomainState) -> Vec<Step> {
             steps.push(Step::Close { request: request.id.clone(), withdrawn: false });
             continue;
         }
-        steps.extend(unsplit(state, request));
+        steps.extend(unsplit(state, request, read));
     }
     steps
 }
 
-/// What the orchestrator owes past its deadline, each step with the tasks whose clock it acts on:
-/// a reminder the first time, then Alondra's own outcome.
-pub fn overdue(state: &DomainState, due: &BTreeSet<TaskId>) -> Vec<(Step, Vec<TaskId>)> {
-    let late = |i: &Interaction| task_of(state, i).filter(|task| !task.over() && due.contains(&task.id));
+/// What the orchestrator owes the nodes of live tasks and has no outcome yet: a reminder until
+/// one was `read` by a batch that ended with its result, then Alondra's own outcome. Called only
+/// when a turn ended handled and nothing waits for the orchestrator, never by a clock.
+pub fn owed(state: &DomainState, read: &dyn Fn(&str) -> bool) -> Vec<Step> {
+    let live = |i: &Interaction| task_of(state, i).filter(|task| !task.over());
     let mut steps = vec![];
+    for suggestion in state.interactions.values().filter(|i| waits(i) && i.card.kind == CardKind::Propose) {
+        if live(suggestion).is_some() {
+            steps.push(unsettled(state, suggestion, read));
+        }
+    }
     for case in state.interactions.values().filter(|i| state.unsettled_stall(i)) {
-        if let Some(task) = late(case) {
-            steps.push((stalled(state, case, task), vec![task.id.clone()]));
+        if let Some(task) = live(case) {
+            steps.push(stalled(state, case, task, read));
         }
     }
     for question in state.interactions.values().filter(|i| waits(i) && i.card.kind != CardKind::Propose) {
-        if let Some(task) = late(question) {
-            steps.push((unanswered(state, question), vec![task.id.clone()]));
+        if live(question).is_some() {
+            steps.push(unanswered(state, question, read));
         }
     }
     for (id, review) in &state.plan_reviews {
-        let held: Vec<TaskId> = state.plan_review_waiting(review).filter(|task| due.contains(&task.id)).map(|task| task.id.clone()).collect();
-        if !held.is_empty() {
-            steps.extend(unreviewed(state, id, held));
+        let held: Vec<&Task> = state.plan_review_waiting(review).collect();
+        if held.is_empty() || held.iter().any(|task| asked_about(state, &task.request_id)) {
+            continue;
         }
+        steps.extend(unreviewed(state, id, held.into_iter().map(|task| task.id.clone()).collect(), read));
     }
     steps
 }
@@ -145,7 +161,7 @@ pub(crate) fn unresolved(state: &DomainState, requests: &[RequestId], suggestion
     }
     for id in suggestions {
         let Some(suggestion) = state.interactions.get(id) else { continue };
-        if !waits(suggestion) || state.interactions.contains_key(&InteractionId(format!("{UNSETTLED_NOTICE_PREFIX}{id}"))) {
+        if !waits(suggestion) || !numbered(state, InboxCard::UnsettledNotice, &id.0).is_empty() {
             continue;
         }
         left.push(format!("suggestion {id}"));
@@ -183,13 +199,38 @@ fn numbered<'a>(state: &'a DomainState, kind: InboxCard, of: &str) -> Vec<(u32, 
         .collect()
 }
 
+/// The reminders of one kind about `subject`: the number the next one takes, and how many were
+/// read by a batch that ended with its result. A reminder an older daemon wrote under an id with
+/// no number never counts as read: it was written under another rule.
+struct Reminded {
+    next: u32,
+    read: u32,
+}
+
+fn reminded(state: &DomainState, prefix: &str, kind: InboxCard, subject: &str, read: &dyn Fn(&str) -> bool) -> Reminded {
+    let cards = numbered(state, kind, subject);
+    let next = cards.iter().map(|(number, _)| *number).max().unwrap_or(0) + 1;
+    let read = cards.iter().filter(|(number, card)| card.id.0 == inbox_card(prefix, kind, subject, *number).0 && read(&card.id.0)).count() as u32;
+    Reminded { next, read }
+}
+
+/// How the `number`th reminder about something opens: each says which it is, so a reminder sent
+/// again after the last one was never read is a new notice, not the same one repeated.
+fn reminder_of(number: u32) -> String {
+    if number <= 1 { "Reminder: ".to_owned() } else { format!("Reminder {number}, the last one never reached you: ") }
+}
+
+fn numbered_text(number: u32, text: String) -> String {
+    if number <= 1 { text } else { format!("{}{text}", reminder_of(number)) }
+}
+
 /// The id and the kind of the `number`th card of the inbox about `subject`.
 fn inbox_card(prefix: &str, about: InboxCard, subject: &str, number: u32) -> (String, SystemCard) {
     (format!("{prefix}{subject}-{number}"), SystemCard::Inbox { about, subject: subject.to_owned(), number })
 }
 
-fn unsplit(state: &DomainState, request: &Request) -> Option<Step> {
-    let reminders = numbered(state, InboxCard::UnsplitNotice, &request.id.0).len() as u32;
+fn unsplit(state: &DomainState, request: &Request, read: &dyn Fn(&str) -> bool) -> Option<Step> {
+    let reminders = reminded(state, UNSPLIT_NOTICE_PREFIX, InboxCard::UnsplitNotice, &request.id.0, read);
     let problems = numbered(state, InboxCard::UnsplitProblem, &request.id.0);
     let mut last: Option<(u32, Option<&str>)> = None;
     for (n, problem) in &problems {
@@ -206,7 +247,7 @@ fn unsplit(state: &DomainState, request: &Request) -> Option<Step> {
         return Some(Step::Close { request: request.id.clone(), withdrawn: true });
     }
     let raised = problems.len() as u32;
-    if reminders > raised {
+    if reminders.read > raised {
         let title = request.title.clone().unwrap_or_else(|| request.body.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().to_owned());
         let (id, card) = inbox_card(UNSPLIT_PROBLEM_PREFIX, InboxCard::UnsplitProblem, &request.id.0, raised + 1);
         return Some(Step::Raise {
@@ -227,8 +268,8 @@ fn unsplit(state: &DomainState, request: &Request) -> Option<Step> {
                 request.id)
         }
     };
-    let (id, card) = inbox_card(UNSPLIT_NOTICE_PREFIX, InboxCard::UnsplitNotice, &request.id.0, reminders + 1);
-    Some(Step::Remind { request: request.id.clone(), id, card, text })
+    let (id, card) = inbox_card(UNSPLIT_NOTICE_PREFIX, InboxCard::UnsplitNotice, &request.id.0, reminders.next);
+    Some(Step::Remind { request: request.id.clone(), id, card, text: numbered_text(reminders.next, text) })
 }
 
 pub(crate) use crate::domain_store::wording::approved_plan_work;
@@ -253,32 +294,43 @@ fn quoted(i: &Interaction) -> String {
     format!("\"{}\"\n{body}", i.card.effective_title())
 }
 
-fn unsettled(state: &DomainState, suggestion: &Interaction) -> Option<Step> {
-    let id = format!("{UNSETTLED_NOTICE_PREFIX}{}", suggestion.id);
-    (!state.interactions.contains_key(&InteractionId(id.clone()))).then(|| Step::Tell {
-        id,
-        card: SystemCard::Inbox { about: InboxCard::UnsettledNotice, subject: suggestion.id.0.clone(), number: 1 },
-        text: format!(
-            "Suggestion {} from a node has no decision, and nothing else waits for you. Settle it now with settle_suggestion: new_task (the call creates it), current_task or discard with the reason. If you asked the user about it, settle it once they answer.\nSuggestion: {}",
-            suggestion.id, quoted(suggestion)),
-    })
-}
-
-/// A delivered node's case left unsettled keeps the delivery with the user; any other gets the
-/// node back to work while it has attempts left, and closes the task after.
-fn stalled(state: &DomainState, case: &Interaction, task: &Task) -> Step {
-    let id = format!("{STALL_NOTICE_PREFIX}{}", case.id);
-    if state.interactions.contains_key(&InteractionId(id.clone())) {
-        let delivered = state.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.phase() == alondra_domain::TaskPhase::Delivered);
-        let outcome = if task.stalls <= STALL_ATTEMPTS && !delivered { StallOutcome::Instruct { text: UNSETTLED_INSTRUCT.into() } } else { StallOutcome::Unsettled };
-        return Step::SettleStall { case: case.id.clone(), task: task.id.clone(), outcome };
+/// A node's suggestion without a decision: the orchestrator is reminded, then Alondra discards it.
+fn unsettled(state: &DomainState, suggestion: &Interaction, read: &dyn Fn(&str) -> bool) -> Step {
+    let reminders = reminded(state, UNSETTLED_NOTICE_PREFIX, InboxCard::UnsettledNotice, &suggestion.id.0, read);
+    if reminders.read > 0 {
+        return Step::Discard { suggestion: suggestion.id.clone() };
     }
+    let (id, card) = inbox_card(UNSETTLED_NOTICE_PREFIX, InboxCard::UnsettledNotice, &suggestion.id.0, reminders.next);
     Step::Tell {
         id,
-        card: SystemCard::Inbox { about: InboxCard::StallNotice, subject: case.id.0.clone(), number: 1 },
+        card,
         text: format!(
-            "Reminder: case {} about the stopped node of Task “{}” ({}) is still unsettled. Settle it now with settle_stall: instruct with one concrete next step, or close with the result. If it is still unsettled in {} minutes, Alondra settles it itself: the node is told to go on, or, after {STALL_ATTEMPTS} cases, the task closes without a result of yours. Never ask the user about it.\nCase: {}",
-            case.id, task.title, task.id, ANSWER / 60_000, quoted(case)),
+            "{}suggestion {} from a node has no decision. Settle it now with settle_suggestion: new_task (the call creates it), current_task or discard with the reason. If this turn ends with it still unsettled, Alondra discards it.\nSuggestion: {}",
+            reminder_of(reminders.next), suggestion.id, quoted(suggestion)),
+    }
+}
+
+/// Why Alondra discards a suggestion the orchestrator left without a decision past its reminder.
+pub const UNSETTLED_DISCARD: &str = "The orchestrator did not settle this suggestion after a reminder, so Alondra discarded it. Raise it again if it still matters.";
+
+/// A delivered node's case left unsettled keeps the delivery with the user; any other gets the
+/// node back to work while it has attempts left, or while a message of the user's waits for it,
+/// and closes the task after.
+fn stalled(state: &DomainState, case: &Interaction, task: &Task, read: &dyn Fn(&str) -> bool) -> Step {
+    let reminders = reminded(state, STALL_NOTICE_PREFIX, InboxCard::StallNotice, &case.id.0, read);
+    if reminders.read > 0 {
+        let delivered = state.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.phase() == alondra_domain::TaskPhase::Delivered);
+        let goes_on = task.stalls <= STALL_ATTEMPTS && !delivered;
+        let outcome = if goes_on { StallOutcome::Instruct { text: UNSETTLED_INSTRUCT.into() } } else { StallOutcome::Unsettled };
+        return Step::SettleStall { case: case.id.clone(), task: task.id.clone(), outcome };
+    }
+    let (id, card) = inbox_card(STALL_NOTICE_PREFIX, InboxCard::StallNotice, &case.id.0, reminders.next);
+    Step::Tell {
+        id,
+        card,
+        text: format!(
+            "{}case {} about the stopped node of Task “{}” ({}) is still unsettled. Settle it now with settle_stall: instruct with one concrete next step, or close with the result. If this turn ends with it still unsettled, Alondra settles it itself: the node is told to go on, or, after {STALL_ATTEMPTS} cases, the task closes without a result of yours. Never ask the user about it.\nCase: {}",
+            reminder_of(reminders.next), case.id, task.title, task.id, quoted(case)),
     }
 }
 
@@ -299,33 +351,33 @@ fn plan_refused(state: &DomainState, problems: &StartProblems<'_>, task: &Task, 
     })
 }
 
-/// A node's question nobody answered in time: the orchestrator is reminded, then the question is
+/// A node's question without an answer: the orchestrator is reminded, then the question is
 /// withdrawn and its node told to decide by itself.
-fn unanswered(state: &DomainState, question: &Interaction) -> Step {
-    let reminders = numbered(state, InboxCard::UnansweredNotice, &question.id.0).len() as u32;
-    if reminders > 0 {
+fn unanswered(state: &DomainState, question: &Interaction, read: &dyn Fn(&str) -> bool) -> Step {
+    let reminders = reminded(state, UNANSWERED_NOTICE_PREFIX, InboxCard::UnansweredNotice, &question.id.0, read);
+    if reminders.read > 0 {
         return Step::Withdraw { question: question.id.clone() };
     }
-    let (id, card) = inbox_card(UNANSWERED_NOTICE_PREFIX, InboxCard::UnansweredNotice, &question.id.0, 1);
+    let (id, card) = inbox_card(UNANSWERED_NOTICE_PREFIX, InboxCard::UnansweredNotice, &question.id.0, reminders.next);
     Step::Tell {
         id,
         card,
         text: format!(
-            "Reminder: question {} from a node has no answer: its node stands still until you answer. Answer it now with answer_question, also if what it asked for is already done (say so). An answer written only in this conversation never reaches the node. If it is still unanswered in {} minutes, Alondra withdraws it and tells the node to decide by itself.\nQuestion: {}",
-            question.id, ANSWER / 60_000, quoted(question)),
+            "{}question {} from a node has no answer: its node stands still until you answer. Answer it now with answer_question, also if what it asked for is already done (say so). An answer written only in this conversation never reaches the node. If this turn ends with it still unanswered, Alondra withdraws it and tells the node to decide by itself.\nQuestion: {}",
+            reminder_of(reminders.next), question.id, quoted(question)),
     }
 }
 
-/// The held tasks of a review nobody settled in time: the orchestrator is reminded, then each
-/// starts with the plan it had.
-fn unreviewed(state: &DomainState, id: &InteractionId, held: Vec<TaskId>) -> Vec<(Step, Vec<TaskId>)> {
-    let reminders = numbered(state, InboxCard::PlanReviewNotice, &id.0).len() as u32;
-    if reminders == 0 {
-        let (notice, card) = inbox_card(PLAN_REVIEW_NOTICE_PREFIX, InboxCard::PlanReviewNotice, &id.0, 1);
-        return vec![(Step::TellPlanReview { id: notice, card, review: id.clone(), number: 1 }, held)];
+/// The held tasks of a review the orchestrator has not settled: it is reminded, then each starts
+/// with the plan it had.
+fn unreviewed(state: &DomainState, id: &InteractionId, held: Vec<TaskId>, read: &dyn Fn(&str) -> bool) -> Vec<Step> {
+    let reminders = reminded(state, PLAN_REVIEW_NOTICE_PREFIX, InboxCard::PlanReviewNotice, &id.0, read);
+    if reminders.read == 0 {
+        let (notice, card) = inbox_card(PLAN_REVIEW_NOTICE_PREFIX, InboxCard::PlanReviewNotice, &id.0, reminders.next);
+        return vec![Step::TellPlanReview { id: notice, card, review: id.clone(), number: reminders.next }];
     }
     let Some(note) = state.unreviewed_plan_note(id) else { return vec![] };
-    held.into_iter().map(|task| (Step::ReleaseUnreviewed { review: id.clone(), task: task.clone(), note: note.clone() }, vec![task])).collect()
+    held.into_iter().map(|task| Step::ReleaseUnreviewed { review: id.clone(), task, note: note.clone() }).collect()
 }
 
 /// A task that waits for a cancelled task is the orchestrator's to decide: cancel it, re-point it
@@ -365,35 +417,16 @@ fn dependency_cancelled(state: &DomainState, problems: &StartProblems<'_>, task:
 /// Carries the steps out; one that fails is tried again on the next pass.
 pub fn settle(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
-    for step in steps(&state) {
+    let read = |interaction: &str| domain.store.lock().map_or(false, |store| store.orchestrator_notice_read(interaction).unwrap_or(false));
+    for step in steps(&state, &read) {
         carry_out(domain, &state, &step);
     }
 }
 
-/// Steps the daemon's one clock at `now`. What the orchestrator owes past its deadline is settled
-/// on every pass of the orchestrator, busy or failing, so nothing a task waits for from it lasts
-/// for ever.
+/// Steps the daemon's one clock at `now`, on every pass of the orchestrator, busy or failing:
+/// what Alondra owes the nodes. Nothing the orchestrator owes is on it.
 pub fn settle_overdue(domain: &DomainRuntime, now: Millis) {
     domain.engine().settle_overdue(now);
-}
-
-/// What the clock over every task's obligations asks of the orchestrator.
-pub struct Answers;
-
-impl alondra_engine_ports::orchestrator::OrchestratorAnswers for Answers {
-    fn settle_answers(&self, runtime: &dyn Runtime, state: &DomainState, due: &BTreeSet<TaskId>) {
-        settle_answers(runtime, state, due);
-    }
-}
-
-/// What the orchestrator owes the `due` tasks past its deadline: a reminder the first time, then
-/// Alondra's own outcome.
-fn settle_answers(runtime: &dyn Runtime, state: &DomainState, due: &BTreeSet<TaskId>) {
-    for (step, tasks) in overdue(state, due) {
-        if carry_out(runtime, state, &step) {
-            log!("the orchestrator owed {} past its deadline: {step:?}", tasks.iter().map(|task| task.0.as_str()).collect::<Vec<_>>().join(", "));
-        }
-    }
 }
 
 /// The command that carries out `step`, for the steps one command settles.
@@ -405,6 +438,7 @@ pub fn command_of(step: &Step) -> Option<Command> {
         Step::ReleaseUnreviewed { review, task, note } => Command::SettlePlanReview {
             review_id: review.clone(), task_id: task.clone(), outcome: PlanReviewOutcome::Unchanged { reason: note.clone() },
         },
+        Step::Discard { suggestion } => discard(suggestion),
         _ => return None,
     })
 }
@@ -413,7 +447,7 @@ pub fn command_of(step: &Step) -> Option<Command> {
 fn carry_out(runtime: &dyn Runtime, state: &DomainState, step: &Step) -> bool {
     let current = runtime.state();
     let (command_id, command) = match step {
-        Step::Close { request, withdrawn } => (format!("settle-{request}"), Command::CloseRequest {
+        Step::Close { request, withdrawn } => (format!("settle-{request}"), Command::CloseRequest { covered_by: vec![], outcome: None,
             request_id: request.clone(), answer: None, withdrawn: *withdrawn, title: None, headline: None, folded_into: None,
         }),
         Step::Remind { id, card, text, .. } | Step::Tell { id, card, text } => (format!("tell-{id}"), told(id, card, text.clone())),
@@ -432,14 +466,15 @@ fn carry_out(runtime: &dyn Runtime, state: &DomainState, step: &Step) -> bool {
         Step::Withdraw { question } => (format!("withdraw-{question}-{}", current.revision), Command::Withdraw { interaction_id: question.clone() }),
         Step::TellPlanReview { id, card, review, number } => {
             let plan_of = |task: &alondra_domain_rules::TaskId| runtime.launch_plan(task);
-            let text = format!("Reminder {number}: these plans are still not reviewed. If they are still not in {} minutes, Alondra starts each with the plan it has and tells its node what the user decided. {}",
-                ANSWER / 60_000, crate::domain_store::wording::orchestrator_text(state, review, &plan_of));
+            let text = format!("Reminder {number}: these plans are still not reviewed. If this turn ends with them still not reviewed, Alondra starts each with the plan it has and tells its node what the user decided. {}",
+                crate::domain_store::wording::orchestrator_text(state, review, &plan_of));
             (format!("tell-{id}"), told(id, card, text))
         }
         Step::ReleaseUnreviewed { review, task, note } => (format!("settle-{review}-{task}"), Command::SettlePlanReview {
             review_id: review.clone(), task_id: task.clone(), outcome: PlanReviewOutcome::Unchanged { reason: note.clone() },
         }),
         Step::SettleStall { case, task, outcome } => (format!("settle-{case}"), Command::SettleStall { case_id: case.clone(), task_id: task.clone(), outcome: outcome.clone() }),
+        Step::Discard { suggestion } => (format!("discard-{suggestion}"), discard(suggestion)),
     };
     let done = if creates_card(step) && current.interactions.contains_key(&InteractionId(card_id(step).to_owned())) {
         Err(alondra_domain_rules::DomainError::new("invalid_input", "Already told"))
@@ -453,6 +488,10 @@ fn carry_out(runtime: &dyn Runtime, state: &DomainState, step: &Step) -> bool {
         log!("could not settle the orchestrator's inbox ({step:?}): {error:?}");
     }
     done.is_ok()
+}
+
+fn discard(suggestion: &InteractionId) -> Command {
+    Command::SettleSuggestion { interaction_id: suggestion.clone(), decision: SuggestionDecision::Discard { reason: UNSETTLED_DISCARD.to_owned() } }
 }
 
 fn told(id: &str, card: &SystemCard, text: String) -> Command {
@@ -497,6 +536,23 @@ mod tests {
         domain.state().unwrap().requests[&id.into()].closed
     }
 
+    /// A batch of the orchestrator read every message waiting for it and ended with its result:
+    /// what it owes is settled.
+    fn turn_ends(domain: &DomainRuntime) {
+        hand(domain);
+        settle(domain);
+    }
+
+    /// Every message waiting for the orchestrator was handed to a batch that ended with its result.
+    fn hand(domain: &DomainRuntime) {
+        let mut store = domain.store.lock().unwrap();
+        for message in store.pending_messages().unwrap().into_iter().filter(|message| message.recipient_kind == "orchestrator") {
+            if let Some(claim) = store.claim_message(message.id).unwrap() {
+                store.finish_message(claim.attempt_id, claim.version, alondra_core::delivery::State::Handed, None).unwrap();
+            }
+        }
+    }
+
     fn cards(domain: &DomainRuntime, prefix: &str) -> Vec<String> {
         domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(prefix)).map(|id| id.0.clone()).collect()
     }
@@ -508,8 +564,8 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let domain = crate::wiring::open(&home).unwrap();
         request(&domain, "m-1", true);
-        settle(&domain);
-        settle(&domain);
+        turn_ends(&domain);
+        turn_ends(&domain);
         assert!(closed(&domain, "m-1"));
         assert!(cards(&domain, UNSPLIT_NOTICE_PREFIX).is_empty(), "a message is never sent back");
     }
@@ -520,19 +576,19 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let domain = crate::wiring::open(&home).unwrap();
         request(&domain, "r-1", false);
-        settle(&domain);
+        turn_ends(&domain);
         assert_eq!(cards(&domain, UNSPLIT_NOTICE_PREFIX), [format!("{UNSPLIT_NOTICE_PREFIX}r-1-1")]);
         assert!(cards(&domain, UNSPLIT_PROBLEM_PREFIX).is_empty(), "the orchestrator gets one more go first");
-        settle(&domain);
+        turn_ends(&domain);
         let problem = format!("{UNSPLIT_PROBLEM_PREFIX}r-1-1");
         assert_eq!(cards(&domain, UNSPLIT_PROBLEM_PREFIX), [problem.clone()]);
-        settle(&domain);
+        turn_ends(&domain);
         assert_eq!(cards(&domain, UNSPLIT_PROBLEM_PREFIX).len(), 1, "an open problem is not raised twice");
         assert!(!closed(&domain, "r-1"), "a request of the user's never closes by itself");
         run(&domain, Actor::User { user_id: "u".into() }, "close-it", Command::AnswerQuestion {
             attachments: vec![], interaction_id: problem.as_str().into(), option_id: UNSPLIT_CLOSE.into(), inputs: Default::default(),
         });
-        settle(&domain);
+        turn_ends(&domain);
         let state = domain.state().unwrap();
         assert!(state.requests[&"r-1".into()].closed && state.requests[&"r-1".into()].withdrawn);
     }
@@ -557,7 +613,7 @@ mod tests {
             task_id: "t-1".into(), request_id: "split".into(), title: "Task".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
-        assert_eq!(steps(&domain.state().unwrap()), []);
+        assert_eq!(steps(&domain.state().unwrap(), &|_| true), []);
         assert!(matches!(domain.state().unwrap().interactions[&"q-1".into()].payload, InteractionPayload::Question { answer: None, .. }));
     }
 
@@ -590,7 +646,7 @@ mod tests {
         assert_eq!(orchestrator_messages(&domain), before, "the cancel leaves no message for the orchestrator");
         let state = domain.state().unwrap();
         assert!(state.requests[&"solo".into()].closed && state.requests[&"solo".into()].withdrawn);
-        assert_eq!(steps(&state), []);
+        assert_eq!(steps(&state, &|_| true), []);
 
         run(&domain, Actor::User { user_id: "u".into() }, "cancel-first", Command::CancelTask { task_id: "first".into(), reason: None });
         let state = domain.state().unwrap();
@@ -599,7 +655,7 @@ mod tests {
         let owed = state.obligation_of(&"second".into()).expect("it is still owed something");
         assert_eq!((owed.party, owed.owed), (Party::Alondra, Owed::Replan), "the orchestrator re-plans the task that waited for it");
         assert!(matches!(&replans(&state, 0)[..], [Step::Tell { text, .. }] if text.contains("it is yours to decide")), "{:?}", replans(&state, 0));
-        assert_eq!(overdue(&state, &BTreeSet::from(["second".into()])), [], "no clock acts on it");
+        assert_eq!(super::owed(&state, &|_| true), [], "nothing settles it for the orchestrator");
     }
 
     fn rest(domain: &DomainRuntime) {
@@ -665,7 +721,7 @@ mod tests {
         let reminders = || cards(&domain, DEPENDENCY_CANCELLED_NOTICE_PREFIX).len();
 
         for _ in 0..4 {
-            settle(&domain);
+            turn_ends(&domain);
         }
         assert_eq!(reminders(), 0, "a pass of an idle orchestrator is not a rest");
         hand_replans(&domain);
@@ -747,6 +803,7 @@ mod tests {
     }
 
     const MINUTE: Millis = 60_000;
+    const HOUR: Millis = 60 * MINUTE;
 
     /// Task `t`, whose node `a` runs a turn through the SDK.
     fn sdk_node_with_task(domain: &DomainRuntime) {
@@ -792,53 +849,100 @@ mod tests {
 
     /// 16 October: a node asked the orchestrator to create one task per phase of a migration; the
     /// orchestrator created the tasks and never answered, and the node could not deliver its PR.
+    /// Now the first turn of the orchestrator that ends with it unanswered gets a reminder at once,
+    /// and the next one that ends hands it back to the node. No clock takes part.
     #[test]
-    fn an_unanswered_question_goes_back_to_its_node_without_a_card() {
+    fn an_unanswered_question_goes_back_to_its_node_after_one_reminder_without_a_card() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = crate::wiring::open(&home).unwrap();
         sdk_node_with_task(&domain);
         ask(&domain, "q");
         node_step(&domain);
-        settle(&domain);
-        assert!(cards(&domain, UNANSWERED_NOTICE_PREFIX).is_empty(), "a handled batch reminds of nothing");
-        for minutes in [0, 9] {
-            settle_overdue(&domain, minutes * MINUTE);
-        }
-        assert!(cards(&domain, UNANSWERED_NOTICE_PREFIX).is_empty(), "nothing before its deadline");
-        settle_overdue(&domain, 10 * MINUTE);
+        turn_ends(&domain);
         let reminder = format!("{UNANSWERED_NOTICE_PREFIX}q-1");
-        assert_eq!(cards(&domain, UNANSWERED_NOTICE_PREFIX), [reminder.clone()]);
-        assert!(domain.state().unwrap().interactions[&reminder.as_str().into()].body.contains("Create one task per phase"));
-        settle_overdue(&domain, 19 * MINUTE);
-        assert!(open(&domain, "q"), "one more go for the orchestrator first");
-        settle_overdue(&domain, 21 * MINUTE);
+        assert_eq!(cards(&domain, UNANSWERED_NOTICE_PREFIX), [reminder.clone()], "the turn that ended without an answer is reminded at once");
+        let body = domain.state().unwrap().interactions[&reminder.as_str().into()].body.clone();
+        assert!(body.contains("Create one task per phase"), "{body}");
+        assert!(!body.contains("minutes"), "no deadline is promised: {body}");
+        settle_overdue(&domain, 24 * HOUR);
+        assert!(open(&domain, "q"), "a day on the clock changes nothing: one more turn for the orchestrator first");
+        turn_ends(&domain);
         let state = domain.state().unwrap();
-        assert!(state.interactions[&"q".into()].withdrawn, "the question is withdrawn");
+        assert!(state.interactions[&"q".into()].withdrawn, "the turn that read the reminder ended: the question is withdrawn");
         assert!(!state.waits_for_orchestrator(&"t".into()));
         assert!(node_messages(&domain).iter().any(|message| message.contains(
             "The orchestrator did not answer “Create the phase tasks”. Decide with what you know, or ask the user if it is theirs to decide.")),
             "{:?}", node_messages(&domain));
         assert!(user_cards(&domain).is_empty(), "no card for the user: {:?}", user_cards(&domain));
-        settle_overdue(&domain, 60 * MINUTE);
-        assert_eq!(cards(&domain, UNANSWERED_NOTICE_PREFIX).len(), 1);
+        turn_ends(&domain);
+        assert_eq!(cards(&domain, UNANSWERED_NOTICE_PREFIX).len(), 1, "one reminder, ever");
     }
 
-    /// The clock asks the orchestrator through its port on whatever runtime the root gives it: the
-    /// answers are settled through the runtime's context alone, never by taking it for the kernel's.
+    /// A reminder no batch that ended with its result read (its notice expired, or its batch was
+    /// stopped or discarded) settles nothing: Alondra reminds again, and acts only once a reminder
+    /// was read.
     #[test]
-    fn the_clock_settles_what_the_orchestrator_owes_on_any_runtime() {
+    fn a_reminder_no_ended_batch_read_is_sent_again_instead_of_acted_on() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = std::sync::Arc::new(crate::wiring::open(&home).unwrap());
+        let domain = crate::wiring::open(&home).unwrap();
         sdk_node_with_task(&domain);
         ask(&domain, "q");
         node_step(&domain);
-        settle(&domain);
-        let state = domain.state().unwrap();
-        use alondra_engine_ports::orchestrator::OrchestratorAnswers as _;
-        Answers.settle_answers(&alondra_engine_doubles::runtime::Forwarded(domain.clone()), &state, &BTreeSet::from(["t".into()]));
+        turn_ends(&domain);
         assert_eq!(cards(&domain, UNANSWERED_NOTICE_PREFIX), [format!("{UNANSWERED_NOTICE_PREFIX}q-1")]);
+        domain.store.lock().unwrap().discard_expired_orchestrator_messages(i64::MAX).unwrap();
+        settle(&domain);
+        assert!(open(&domain, "q"), "the reminder was never read: nothing is settled");
+        let mut reminders = cards(&domain, UNANSWERED_NOTICE_PREFIX);
+        reminders.sort();
+        assert_eq!(reminders, [format!("{UNANSWERED_NOTICE_PREFIX}q-1"), format!("{UNANSWERED_NOTICE_PREFIX}q-2")], "it is reminded again");
+        turn_ends(&domain);
+        assert!(domain.state().unwrap().interactions[&"q".into()].withdrawn, "read once, the next ended batch settles it");
+    }
+
+    /// A suggestion an older daemon reminded the orchestrator of, under an id with no number, is
+    /// reminded under this rule before Alondra discards it: the old rule left it open for good.
+    #[test]
+    fn a_suggestion_reminded_under_the_old_rule_is_reminded_again_before_it_is_discarded() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
+        node_with_task(&domain);
+        run(&domain, Actor::Agent { agent_id: "a".into() }, "suggest", Command::AskQuestion {
+            attachments: vec![], interaction_id: "p".into(), scope: Scope::Task { task_id: "t".into() },
+            recipient: alondra_domain_rules::Recipient::Orchestrator, body: "README.md:12".into(), blocking: false,
+            options: alondra_domain_rules::suggestion_options(),
+            card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Propose, "The README names the old flag").why("Not this task"),
+        });
+        let legacy = format!("{UNSETTLED_NOTICE_PREFIX}p");
+        let state = domain.state().unwrap();
+        carry_out(&domain, &state, &Step::Tell { id: legacy.clone(),
+            card: SystemCard::Inbox { about: InboxCard::UnsettledNotice, subject: "p".into(), number: 1 }, text: "Suggestion p has no decision.".into() });
+        turn_ends(&domain);
+        assert!(open(&domain, "p"), "the old reminder does not count");
+        assert!(cards(&domain, UNSETTLED_NOTICE_PREFIX).contains(&format!("{UNSETTLED_NOTICE_PREFIX}p-2")), "{:?}", cards(&domain, UNSETTLED_NOTICE_PREFIX));
+        turn_ends(&domain);
+        assert!(!open(&domain, "p"), "discarded once a reminder of this rule was read");
+    }
+
+    /// No clock reminds the orchestrator or settles for it what it owes the nodes, however long a
+    /// question, a stopped node's case or a suggestion waits.
+    #[test]
+    fn the_clock_never_reminds_or_settles_what_the_orchestrator_owes() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
+        sdk_node_with_task(&domain);
+        ask(&domain, "q");
+        node_step(&domain);
+        let revision = domain.state().unwrap().revision;
+        for hours in [1, 2, 24, 24 * 7] {
+            settle_overdue(&domain, hours * HOUR);
+        }
+        assert_eq!(domain.state().unwrap().revision, revision, "a week of clock changed nothing");
+        assert!(open(&domain, "q"));
     }
 
     #[test]
@@ -852,8 +956,7 @@ mod tests {
         assert!(!open(&domain, "answered"));
         ask(&domain, "late");
         run(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
-        let everyone: BTreeSet<TaskId> = domain.state().unwrap().tasks.keys().cloned().collect();
-        assert!(overdue(&domain.state().unwrap(), &everyone).is_empty(), "{:?}", overdue(&domain.state().unwrap(), &everyone));
+        assert!(owed(&domain.state().unwrap(), &|_| true).is_empty(), "{:?}", owed(&domain.state().unwrap(), &|_| true));
     }
 
     /// A problem raised before the deadline existed no longer asks the user anything.
@@ -871,12 +974,12 @@ mod tests {
             Some(SystemCard::Inbox { about: InboxCard::UnansweredProblem, subject: "q".into(), number: 1 }), "question_unanswered:q", need, why, problem.to_body(),
             vec![QuestionOption { id: "remind_again".into(), label: "Remind".into(), description: None }], None).unwrap();
         assert!(open(&domain, &id));
-        settle(&domain);
+        turn_ends(&domain);
         assert!(!open(&domain, &id));
     }
 
     #[test]
-    fn a_suggestion_left_unsettled_goes_back_once_and_never_to_the_user() {
+    fn a_suggestion_left_unsettled_goes_back_once_then_is_discarded_and_never_reaches_the_user() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = crate::wiring::open(&home).unwrap();
@@ -887,11 +990,20 @@ mod tests {
             options: alondra_domain_rules::suggestion_options(),
             card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Propose, "The README names the old flag").why("Not this task"),
         });
-        settle(&domain);
-        settle(&domain);
-        let reminder = format!("{UNSETTLED_NOTICE_PREFIX}p");
+        turn_ends(&domain);
+        let reminder = format!("{UNSETTLED_NOTICE_PREFIX}p-1");
         assert_eq!(cards(&domain, UNSETTLED_NOTICE_PREFIX), [reminder.clone()]);
         assert!(domain.state().unwrap().interactions[&reminder.as_str().into()].body.contains("settle_suggestion"));
+        assert!(open(&domain, "p"), "the reminder comes first");
+        turn_ends(&domain);
+        let state = domain.state().unwrap();
+        match &state.interactions[&"p".into()].payload {
+            InteractionPayload::Question { answer: Some(answer), .. } => assert_eq!(
+                answer.decision, Some(SuggestionDecision::Discard { reason: UNSETTLED_DISCARD.to_owned() }), "Alondra discards it with its reason"),
+            other => panic!("the suggestion is still open: {other:?}"),
+        }
+        turn_ends(&domain);
+        assert_eq!(cards(&domain, UNSETTLED_NOTICE_PREFIX), [reminder], "one reminder, ever");
         assert!(cards(&domain, "problem-").is_empty(), "a suggestion never becomes the user's card");
     }
 
@@ -900,7 +1012,7 @@ mod tests {
         Ask(usize),
         Answer(usize),
         Withdraw(usize),
-        BatchEnds,
+        TurnEnds,
         NodeStep,
         Minutes(i64),
     }
@@ -911,7 +1023,7 @@ mod tests {
             3 => (0..4usize).prop_map(Op::Ask),
             2 => (0..4usize).prop_map(Op::Answer),
             1 => (0..4usize).prop_map(Op::Withdraw),
-            2 => Just(Op::BatchEnds),
+            2 => Just(Op::TurnEnds),
             3 => Just(Op::NodeStep),
             4 => (1..12i64).prop_map(Op::Minutes),
         ]
@@ -920,11 +1032,12 @@ mod tests {
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig { cases: 48, ..proptest::prelude::ProptestConfig::default() })]
 
-        /// Whatever order the node asks and ends its turns, the orchestrator answers some and the node
-        /// withdraws others, every question its node waits on ends answered or withdrawn once its
-        /// deadlines pass, and none ever becomes a card for the user.
+        /// Whatever order the node asks and ends its turns, the orchestrator answers some, the node
+        /// withdraws others and time passes, every question its node waits on ends answered or
+        /// withdrawn once two turns of the orchestrator ended after it, time alone ends none, and
+        /// none ever becomes a card for the user.
         #[test]
-        fn no_question_to_the_orchestrator_outlives_its_deadlines(ops in proptest::collection::vec(op(), 1..24)) {
+        fn no_question_to_the_orchestrator_outlives_two_ended_turns(ops in proptest::collection::vec(op(), 1..24)) {
             let home = crate::test_support::Directory::new();
             std::fs::create_dir_all(&home).unwrap();
             let domain = crate::wiring::open(&home).unwrap();
@@ -954,7 +1067,7 @@ mod tests {
                         attachments: vec![], interaction_id: question(n).as_str().into(), option_id: "done".into(), inputs: Default::default(),
                     }),
                     Op::Withdraw(n) if exists(n) => execute(Actor::Agent { agent_id: "a".into() }, Command::Withdraw { interaction_id: question(n).as_str().into() }),
-                    Op::BatchEnds => settle(&domain),
+                    Op::TurnEnds => turn_ends(&domain),
                     Op::NodeStep => node_step(&domain),
                     Op::Minutes(minutes) => {
                         clock += minutes * MINUTE;
@@ -964,14 +1077,22 @@ mod tests {
                 }
                 proptest::prop_assert!(user_cards(&domain).is_empty(), "a card for the user: {:?}", user_cards(&domain));
             }
+            let waiting = |domain: &DomainRuntime| {
+                let state = domain.state().unwrap();
+                state.interactions.values().filter(|i| DomainState::asks_the_orchestrator(i) && state.open(i)).map(|i| i.id.clone()).collect::<Vec<_>>()
+            };
+            let before = waiting(&domain);
             for _ in 0..12 {
-                node_step(&domain);
-                clock += 5 * MINUTE;
+                clock += 60 * MINUTE;
                 settle_overdue(&domain, clock);
             }
-            let after = domain.state().unwrap();
-            let open: Vec<_> = after.interactions.values().filter(|i| DomainState::asks_the_orchestrator(i) && after.open(i)).map(|i| i.id.clone()).collect();
-            proptest::prop_assert!(open.is_empty(), "{open:?} outlived its deadlines");
+            proptest::prop_assert_eq!(waiting(&domain), before, "the clock alone settled a question");
+            for _ in 0..2 {
+                turn_ends(&domain);
+                node_step(&domain);
+            }
+            let open = waiting(&domain);
+            proptest::prop_assert!(open.is_empty(), "{open:?} outlived two ended turns");
         }
     }
 }

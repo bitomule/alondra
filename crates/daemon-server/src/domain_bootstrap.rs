@@ -51,7 +51,6 @@ pub fn wire(registry: &alondra_engine_ports::Registry) {
     alondra_daemon_engine::wiring::wire(registry);
     alondra_engine_sdk::wiring::wire(registry);
     alondra_engine_admission::wire(registry);
-    alondra_engine_orchestrator::wire(registry);
     alondra_github_gh::wire(registry);
 }
 

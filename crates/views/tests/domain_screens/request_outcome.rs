@@ -105,7 +105,8 @@ fn merged(s: &mut DomainState, task_id: &str, number: u64) {
 }
 
 fn close(s: &mut DomainState, request: &str, answer: Option<&str>, headline: Option<&str>) -> CommandOutcome {
-    ok(s, orchestrator(), Command::CloseRequest {
+    let outcome = if s.tasks.values().any(|task| task.request_id.0 == request) { alondra_domain_rules::CloseOutcome::TasksEnded } else { alondra_domain_rules::CloseOutcome::Answered };
+    ok(s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(outcome),
         request_id: request.into(), answer: answer.map(String::from), withdrawn: false, title: None, headline: headline.map(String::from), folded_into: None })
 }
 

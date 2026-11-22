@@ -24,14 +24,6 @@ pub mod orchestrator_sdk;
 pub mod stall_context;
 
 use alondra_engine_kernel::domain_runtime::DomainRuntime;
-use alondra_engine_ports::Registry;
-use alondra_engine_ports::orchestrator::OrchestratorAnswers;
-use std::sync::Arc;
-
-/// Gives the registry what the rest of the engine asks of the orchestrator.
-pub fn wire(registry: &Registry) {
-    registry.provide::<dyn OrchestratorAnswers>(Arc::new(orchestrator_inbox::Answers));
-}
 
 /// The runtime the orchestrator's tests open: the orchestrator's own port, the real agent hosts,
 /// doubles of the rest of the engine, and the faults a test injects at its home failing the orchestrator's writes there.
@@ -47,7 +39,6 @@ mod wiring {
         alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
         let domain = super::DomainRuntime::open_unwired_at(home, &crate::domain_store::active_path(home))?;
         alondra_engine_doubles::machine::wire(domain.ports(), alondra_daemon_support::watcher::claude_home);
-        crate::wire(domain.ports());
         domain.ports().provide::<dyn OrchestratorEngine>(Arc::new(alondra_engine_doubles::orchestrator::Engine));
         domain.ports().provide::<dyn SdkHosts>(Arc::new(alondra_engine_doubles::hosts::NoHosts));
         alondra_agent_runtime::wire(domain.ports(), Default::default());

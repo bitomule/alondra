@@ -155,6 +155,40 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         })?;
         ended(report, fakes, &user, &node)
     });
+    report.case("TC7", "A node's suggestion the orchestrator leaves unsettled comes back to it once, at once, and when that batch ends unsettled too Alondra discards it and tells the node; no clock waits and no card asks the user", |report| {
+        request(report, fakes, &user, &task_script("req-t7", "t-t7", "Sort the greeting file"), "Sort the greeting file")?;
+        let node = launched(report, fakes, "t-t7")?;
+        state(report, &user, "t-t7", WORKING)?;
+        let suggest = Step::Call { tool: "suggest".into(), arguments: json!({
+            "interaction_id": "s-t7", "scope": {"kind": "task", "task_id": "t-t7"},
+            "what": "The README names the old greeting file", "where": "README.md:1", "why_not_mine": "This task only sorts the greeting file",
+        }) };
+        act(report, fakes, &node, "the node suggests something outside its task and goes on", &[suggest])?;
+        let batches = fakes.dir.join("orchestrator").join("batches.jsonl");
+        let reminders = || -> usize {
+            let text = std::fs::read_to_string(&batches).unwrap_or_default();
+            text.lines().filter(|line| line.contains("Reminder: suggestion s-t7")).count()
+        };
+        wait(report, "the batch that left the suggestion unsettled is followed at once by one that reminds of it", || {
+            let seen = reminders();
+            Ok(((seen > 0).then_some(()), format!("{seen} reminders")))
+        })?;
+        wait(report, "when that batch ends unsettled too, Alondra discards it and the node hears why", || told(fakes, &node, "so Alondra discarded it"))?;
+        report.step("the orchestrator was reminded once", || {
+            anyhow::ensure!(reminders() == 1, "{} reminders", reminders());
+            Ok(())
+        })?;
+        report.step("no card asks the user about the suggestion", || {
+            if let Some(card) = user.inbox()?.into_iter().find(|id| id.contains("s-t7")) {
+                bail!("{card} asks the user");
+            }
+            Ok(())
+        })?;
+        let task = user.view("task:t-t7")?;
+        press(report, &user, &task, "cancel:", None, None, "the user cancels the task")?;
+        state(report, &user, "t-t7", CANCELLED)?;
+        ended(report, fakes, &user, &node)
+    });
     report.case("F1", "A final delivery with an uncommitted file is refused, naming the file", |report| {
         request(report, fakes, &user, &task_script("req-f1", "t-f1", "Add a scratch-free file"), "Add a scratch-free file")?;
         let node = launched(report, fakes, "t-f1")?;

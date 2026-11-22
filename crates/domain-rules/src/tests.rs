@@ -401,7 +401,7 @@ fn a_scheduled_request_tells_the_user_its_answer() {
     assert_eq!(state.requests[&RequestId::from("scheduled-request")].origin, RequestOrigin::Schedule);
     exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into(), reason: None }).unwrap();
     receipt(&mut state, "scheduled-task");
-    exec(&mut state, Actor::Orchestrator { generation: 0 }, Command::CloseRequest {
+    exec(&mut state, Actor::Orchestrator { generation: 0 }, Command::CloseRequest { covered_by: vec![], outcome: Some(CloseOutcome::TasksEnded),
         request_id: "scheduled-request".into(), answer: Some("Nothing to review this week".into()), withdrawn: false, title: None, headline: None, folded_into: None }).unwrap();
     let done = &state.interactions[&InteractionId::from("request-done-scheduled-request")];
     assert_eq!(crate::request_outcome::DoneCard::from_body(&done.body).and_then(|card| card.summary).as_deref(), Some("Nothing to review this week"));
@@ -1261,7 +1261,7 @@ fn closed_request_prevents_reopening_its_terminal_task() {
     exec(
         &mut s,
         user(),
-        Command::CloseRequest {
+        Command::CloseRequest { covered_by: vec![], outcome: None,
             request_id: "r".into(),
             answer: None,
             withdrawn: false,
@@ -1286,17 +1286,17 @@ fn orchestrator() -> Actor {
 fn a_request_that_needed_no_task_closes_with_its_answer_title_or_withdrawal() {
     let mut s = fixture();
     exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
-    reject_unchanged(&mut s, agent(), Command::CloseRequest { request_id: "q".into(), answer: Some("Yes".into()), withdrawn: false, title: None, headline: None, folded_into: None }, "forbidden");
-    reject_unchanged(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some(" ".into()), withdrawn: false, title: None, headline: None, folded_into: None }, "invalid_input");
-    exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some("Main is green".into()),
+    reject_unchanged(&mut s, agent(), Command::CloseRequest { covered_by: vec![], outcome: None, request_id: "q".into(), answer: Some("Yes".into()), withdrawn: false, title: None, headline: None, folded_into: None }, "forbidden");
+    reject_unchanged(&mut s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(CloseOutcome::Answered), request_id: "q".into(), answer: Some(" ".into()), withdrawn: false, title: None, headline: None, folded_into: None }, "invalid_input");
+    exec(&mut s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(CloseOutcome::Answered), request_id: "q".into(), answer: Some("Main is green".into()),
         withdrawn: false, title: Some("CI status".into()), headline: None, folded_into: None }).unwrap();
     let closed = &s.requests[&"q".into()];
     assert!(closed.closed && !closed.withdrawn);
     assert_eq!((closed.answer.as_deref(), closed.title.as_deref()), (Some("Main is green"), Some("CI status")));
     exec(&mut s, user(), Command::CreateRequest { request_id: "w".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
-    exec(&mut s, user(), Command::CloseRequest { request_id: "w".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None }).unwrap();
+    exec(&mut s, user(), Command::CloseRequest { covered_by: vec![], outcome: None, request_id: "w".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None }).unwrap();
     assert!(s.requests[&"w".into()].withdrawn);
-    reject_unchanged(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None }, "task_not_active");
+    reject_unchanged(&mut s, user(), Command::CloseRequest { covered_by: vec![], outcome: None, request_id: "r".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None }, "task_not_active");
 }
 /// Every `alondra send` used to be a Request whose answer became a card for the user.
 #[test]
@@ -1311,12 +1311,12 @@ fn a_maintenance_message_closes_without_a_card_unless_it_asked_for_an_answer() {
     let error = exec(&mut s, orchestrator(), info("m-info", "m")).unwrap_err();
     assert_eq!(error.code, "maintenance_request");
     assert!(error.message.contains("--reply"), "{error}");
-    let closed = exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "m".into(), answer: Some("Launched".into()),
+    let closed = exec(&mut s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(CloseOutcome::Answered), request_id: "m".into(), answer: Some("Launched".into()),
         withdrawn: false, title: Some("Two more nodes".into()), headline: None, folded_into: None }).unwrap();
     assert_eq!(cards(&s), 0);
     assert!(!closed.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
     exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
-    exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some("Main is green".into()),
+    exec(&mut s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(CloseOutcome::Answered), request_id: "q".into(), answer: Some("Main is green".into()),
         withdrawn: false, title: None, headline: None, folded_into: None }).unwrap();
     assert_eq!(cards(&s), 1);
     exec(&mut s, user(), Command::CreateRequest { request_id: "q2".into(), body: "And now?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
@@ -2958,7 +2958,7 @@ fn completed_work() -> DomainState {
     for (request, message) in [("q", false), ("m", true)] {
         exec(&mut s, user(), Command::CreateRequest { request_id: request.into(), body: "Is main green?".into(),
             auto_merge: false, maintenance: false, message }).unwrap();
-        exec(&mut s, orchestrator(), Command::CloseRequest { request_id: request.into(), answer: Some("Yes".into()),
+        exec(&mut s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(CloseOutcome::Answered), request_id: request.into(), answer: Some("Yes".into()),
             withdrawn: false, title: None, headline: None, folded_into: None }).unwrap();
     }
     s
@@ -3302,7 +3302,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::AcknowledgeRequestTasks, true),
         (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false }, true),
         (Command::CreateCardReply { request_id: "fresh-reply".into(), interaction_id: ids.interaction.into(), body: "Explain".into(), auto_merge: false }, false),
-        (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None }, false),
+        (Command::CloseRequest { covered_by: vec![], outcome: None, request_id: ids.request.into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None }, false),
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into(), at: 0 }, true),
         (Command::MoveNode { agent_id: ids.agent.into(), event: NodeEvent::Resumed}, false),
         (Command::RecordLastWords { agent_id: ids.agent.into(), text: "Done for now".into() }, false),
@@ -4958,7 +4958,7 @@ fn a_message_closes_when_its_last_task_ends_and_a_users_request_does_not() {
 #[test]
 fn alondra_closes_a_request_but_never_one_with_open_tasks() {
     let mut s = fixture();
-    let close = |withdrawn| Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn, title: None, headline: None, folded_into: None };
+    let close = |withdrawn| Command::CloseRequest { covered_by: vec![], outcome: None, request_id: "r".into(), answer: None, withdrawn, title: None, headline: None, folded_into: None };
     assert!(exec(&mut s, Actor::System, close(false)).is_err());
     exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     exec(&mut s, Actor::System, close(true)).unwrap();

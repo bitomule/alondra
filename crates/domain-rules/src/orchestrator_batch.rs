@@ -7,6 +7,10 @@ use alondra_core::text::Lang;
 use alondra_core::text::{t, tf};
 
 pub const BATCH_PROBLEM_PREFIX: &str = "problem-orchestrator-";
+/// The most new Tasks one turn of the orchestrator creates: the next one is refused with
+/// `turn_task_limit`, before it changes anything, and the orchestrator goes on in its next turn.
+pub const TURN_TASK_LIMIT: usize = 10;
+pub const TURN_TASK_LIMIT_CODE: &str = "turn_task_limit";
 pub const BATCH_CONTINUE: &str = "continue";
 pub const BATCH_CONTINUE_LABEL: &str = "Continue without running it again";
 pub const BATCH_RETRY: &str = "retry";

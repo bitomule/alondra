@@ -71,7 +71,8 @@ fn cancel(s: &mut DomainState, task_id: &str) {
     ok(s, user(), Command::CancelTask { task_id: task_id.into(), reason: None });
 }
 fn close(s: &mut DomainState, request: &str, answer: Option<&str>, headline: Option<&str>) -> CommandOutcome {
-    ok(s, orchestrator(), Command::CloseRequest {
+    let outcome = if s.tasks.values().any(|task| task.request_id.0 == request) { CloseOutcome::TasksEnded } else { CloseOutcome::Answered };
+    ok(s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(outcome),
         request_id: request.into(), answer: answer.map(String::from), withdrawn: false, title: None, headline: headline.map(String::from), folded_into: None })
 }
 fn cards(s: &DomainState, request: &str) -> Vec<Interaction> {
@@ -204,7 +205,7 @@ fn only_the_users_own_requests_hear_how_they_ended() {
     asked(&mut s, user(), "r", false);
     task(&mut s, "design", "r");
     cancel(&mut s, "design");
-    let withdrawn = exec(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None });
+    let withdrawn = exec(&mut s, user(), Command::CloseRequest { covered_by: vec![], outcome: None, request_id: "r".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None });
     assert_eq!(withdrawn.unwrap_err().code, "no_effect", "cancelling its only task already withdrew it");
     assert!(cards(&s, "r").is_empty(), "the user withdrew it: they know how it ended");
 }
@@ -400,7 +401,7 @@ fn card_title_contract_request_answer_fields_are_checked_before_closing() {
     cases.push(("answer", Some(" ".into()), None, Some("Release result".into())));
     cases.push(("title", Some("Complete answer.".into()), Some(" ".into()), None));
     for (field, answer, title, headline) in cases {
-        let error = exec(&mut s, orchestrator(), Command::CloseRequest {
+        let error = exec(&mut s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(CloseOutcome::Answered),
             request_id: "r".into(), answer, title, headline, withdrawn: false, folded_into: None }).unwrap_err();
         assert_eq!(error.code, "invalid_input");
         assert_eq!(error.subject.as_deref(), Some(field));
@@ -419,7 +420,7 @@ fn card_title_contract_request_subject_bounds_metadata_without_changing_the_answ
     asked(&mut s, user(), "r", false);
     let metadata = format!("{}\nSecond line", "Request metadata ".repeat(20));
     let body = "# A different heading\n\nKeep this answer literally.";
-    ok(&mut s, orchestrator(), Command::CloseRequest {
+    ok(&mut s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(CloseOutcome::Answered),
         request_id: "r".into(), answer: Some(body.into()), title: Some(metadata.clone()), headline: None, withdrawn: false, folded_into: None });
     let card = the_card(&s, "r");
     let title = card.card.title.as_deref().unwrap();
@@ -431,7 +432,7 @@ fn card_title_contract_request_subject_bounds_metadata_without_changing_the_answ
 }
 
 fn fold(s: &mut DomainState, request: &str, task: &str) -> Result<CommandOutcome, DomainError> {
-    exec(s, orchestrator(), Command::CloseRequest {
+    exec(s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(CloseOutcome::Folded),
         request_id: request.into(), answer: Some("Task «Release an idle node» already does this.".into()), withdrawn: false, title: None,
         headline: Some("Added to an open task".into()), folded_into: Some(task.into()),
     })
@@ -467,6 +468,112 @@ fn folding_into_a_missing_or_finished_task_is_refused() {
     assert!(!s.requests[&"r-waiting".into()].closed);
 }
 
+fn cover(s: &mut DomainState, request: &str, tasks: &[&str]) -> Result<CommandOutcome, DomainError> {
+    exec(s, orchestrator(), Command::CloseRequest {
+        request_id: request.into(), answer: Some("Task «Release an idle node» already did this.".into()), withdrawn: false, title: None,
+        headline: Some("Already done".into()), folded_into: None, covered_by: tasks.iter().map(|task| (*task).into()).collect(),
+        outcome: Some(CloseOutcome::Covered),
+    })
+}
+
+/// A Request closed because Tasks that exist already did its work names them, and each must be a
+/// Task Alondra knows: a finished or archived one counts, an id no Task has never does.
+#[test]
+fn a_request_covered_by_existing_tasks_names_them_and_a_made_up_one_is_refused() {
+    let mut s = state();
+    asked(&mut s, user(), "r-idle", false);
+    task(&mut s, "t-idle", "r-idle");
+    done(&mut s, "t-idle", None);
+    s.tasks.get_mut(&"t-idle".into()).unwrap().archived = true;
+    asked(&mut s, user(), "r-again", false);
+    let error = cover(&mut s, "r-again", &["t-idle", "t-nobody"]).unwrap_err();
+    assert_eq!((error.code.as_str(), error.subject.as_deref()), ("not_found", Some("covered_by")));
+    assert!(error.message.contains("t-nobody"), "{}", error.message);
+    assert!(!s.requests[&"r-again".into()].closed, "nothing closes on a made-up reference");
+    cover(&mut s, "r-again", &["t-idle"]).unwrap();
+    assert!(s.requests[&"r-again".into()].closed, "an archived, finished Task covers it");
+    asked(&mut s, user(), "r-gone", false);
+    let error = exec(&mut s, user(), Command::CloseRequest {
+        request_id: "r-gone".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None, covered_by: vec!["t-idle".into()],
+        outcome: Some(CloseOutcome::Withdrawn),
+    }).unwrap_err();
+    assert_eq!((error.code.as_str(), error.subject.as_deref()), ("close_outcome_mismatch", Some("outcome")), "{error:?}");
+}
+
+/// The orchestrator may settle a Request of the user's itself, with no Task, but never in silence:
+/// whatever the outcome, even withdrawn, its answer reaches the user on the Request's card.
+#[test]
+fn the_orchestrator_never_closes_a_request_of_the_user_without_an_answer_the_user_reads() {
+    let mut s = state();
+    asked(&mut s, user(), "r", false);
+    let close = |answer: Option<&str>, outcome: CloseOutcome| Command::CloseRequest {
+        request_id: "r".into(), answer: answer.map(Into::into), withdrawn: outcome == CloseOutcome::Withdrawn, title: None,
+        headline: Some("It no longer applies".into()), folded_into: None, covered_by: vec![], outcome: Some(outcome),
+    };
+    for outcome in [CloseOutcome::Answered, CloseOutcome::Withdrawn] {
+        let error = exec(&mut s, orchestrator(), close(None, outcome)).unwrap_err();
+        assert_eq!((error.code.as_str(), error.subject.as_deref()), ("close_answer_required", Some("answer")), "{outcome:?}");
+        assert!(!s.requests[&"r".into()].closed);
+    }
+    exec(&mut s, orchestrator(), close(Some("The flag was removed upstream, so there is nothing to change."), CloseOutcome::Withdrawn)).unwrap();
+    let request = &s.requests[&"r".into()];
+    assert!(request.closed && request.withdrawn);
+    assert_eq!(the_card(&s, "r").card.effective_title(), "It no longer applies", "the user reads why on the Request's card");
+
+    asked(&mut s, user(), "r-work", false);
+    task(&mut s, "t-work", "r-work");
+    done(&mut s, "t-work", None);
+    let withdraw = |answer: Option<&str>| Command::CloseRequest {
+        request_id: "r-work".into(), answer: answer.map(Into::into), withdrawn: true, title: None, headline: Some("Not needed after all".into()),
+        folded_into: None, covered_by: vec![], outcome: Some(CloseOutcome::Withdrawn),
+    };
+    let error = exec(&mut s, orchestrator(), withdraw(None)).unwrap_err();
+    assert_eq!(error.code, "close_answer_required", "a withdrawn request with tasks of its own is told why too");
+    exec(&mut s, orchestrator(), withdraw(Some("The design changed and this work no longer applies."))).unwrap();
+    assert_eq!(the_card(&s, "r-work").card.effective_title(), "Not needed after all", "the card says why, never that it is done");
+    assert!(DoneCard::from_body(&the_card(&s, "r-work").body).is_none());
+}
+
+/// The orchestrator always says what came of a Request it closes, and the domain checks it against
+/// the Request: no outcome, or one the Request or the other fields contradict, closes nothing.
+#[test]
+fn the_orchestrator_closes_a_request_only_with_an_outcome_the_request_bears_out() {
+    let mut s = state();
+    asked(&mut s, user(), "r-idle", false);
+    task(&mut s, "t-idle", "r-idle");
+    asked(&mut s, user(), "r", false);
+    let close = |outcome: Option<CloseOutcome>, withdrawn: bool, folded_into: Option<&str>, covered_by: &[&str]| Command::CloseRequest {
+        request_id: "r".into(), answer: Some("Main is green".into()), withdrawn, title: None, headline: Some("Main is green".into()),
+        folded_into: folded_into.map(Into::into), covered_by: covered_by.iter().map(|task| (*task).into()).collect(), outcome,
+    };
+    let refused = [
+        (close(None, false, None, &[]), "close_outcome_required"),
+        (close(Some(CloseOutcome::TasksEnded), false, None, &[]), "close_outcome_mismatch"),
+        (close(Some(CloseOutcome::Covered), false, None, &[]), "close_outcome_mismatch"),
+        (close(Some(CloseOutcome::Answered), false, None, &["t-idle"]), "close_outcome_mismatch"),
+        (close(Some(CloseOutcome::Answered), false, Some("t-idle"), &[]), "close_outcome_mismatch"),
+        (close(Some(CloseOutcome::Folded), false, None, &[]), "close_outcome_mismatch"),
+        (close(Some(CloseOutcome::Answered), true, None, &[]), "close_outcome_mismatch"),
+    ];
+    for (command, code) in refused {
+        let error = exec(&mut s, orchestrator(), command.clone()).unwrap_err();
+        assert_eq!((error.code.as_str(), error.subject.as_deref()), (code, Some("outcome")), "{command:?}");
+        assert!(!s.requests[&"r".into()].closed, "{command:?} closed it");
+    }
+    exec(&mut s, orchestrator(), close(Some(CloseOutcome::Answered), false, None, &[])).unwrap();
+    assert!(s.requests[&"r".into()].closed);
+    asked(&mut s, user(), "r-work", false);
+    task(&mut s, "t-work", "r-work");
+    done(&mut s, "t-work", None);
+    let ended = |outcome| Command::CloseRequest {
+        request_id: "r-work".into(), answer: Some("Shipped".into()), withdrawn: false, title: None, headline: None, folded_into: None, covered_by: vec![], outcome: Some(outcome),
+    };
+    let error = exec(&mut s, orchestrator(), ended(CloseOutcome::Answered)).unwrap_err();
+    assert_eq!(error.code, "close_outcome_mismatch", "a Request with Tasks of its own closes as tasks_ended");
+    exec(&mut s, orchestrator(), ended(CloseOutcome::TasksEnded)).unwrap();
+    assert!(s.requests[&"r-work".into()].closed);
+}
+
 #[test]
 fn a_request_with_its_own_tasks_cannot_be_folded() {
     let mut s = state();
@@ -485,7 +592,7 @@ fn a_withdrawn_request_folds_into_no_task() {
     asked(&mut s, user(), "r-idle", false);
     task(&mut s, "t-idle", "r-idle");
     asked(&mut s, user(), "r-waiting", false);
-    let error = exec(&mut s, user(), Command::CloseRequest {
+    let error = exec(&mut s, user(), Command::CloseRequest { covered_by: vec![], outcome: None,
         request_id: "r-waiting".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: Some("t-idle".into()),
     }).unwrap_err();
     assert_eq!((error.code.as_str(), error.subject.as_deref()), ("invalid_input", Some("folded_into")));
