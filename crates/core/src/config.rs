@@ -9,8 +9,6 @@ pub const DEFAULT_LABEL: &str = "dev.alondra.alondrad";
 pub const DEFAULT_RETENTION_HOURS: f64 = 14.0 * 24.0;
 pub const DEFAULT_DEVICE_EXPIRY_DAYS: f64 = 30.0;
 pub const DEFAULT_CLOSE_FREE_NODES_AFTER: Duration = Duration::from_secs(30 * 60);
-pub const DEFAULT_COMPACT_IDLE_NODES_AT: f64 = 30.0;
-pub const DEFAULT_COMPACT_ORCHESTRATOR_AT: f64 = 50.0;
 pub const OFF: &str = "off";
 
 /// What `config.toml` says. Every key is optional: a missing key falls back to the default,
@@ -40,11 +38,10 @@ pub struct FileConfig {
     /// anyway, as `30m`, `2h` or `7d`, or `off` to close it only once the node says it cleaned up.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_free_nodes_after: Option<String>,
-    /// How full an idle node's context may be, in percent, before Alondra compacts it to give it
-    /// a new task. 0 turns it off.
+    /// Accepted so an older file still loads; Alondra no longer compacts a conversation on its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_idle_nodes_at: Option<f64>,
-    /// Compact the on-demand orchestrator after a turn at this context percentage; zero disables.
+    /// Accepted so an older file still loads; Alondra no longer compacts a conversation on its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_orchestrator_at: Option<f64>,
     /// Accepted so an older file still loads; Alondra no longer reads it.
@@ -99,14 +96,8 @@ impl FileConfig {
         if let Some(after) = &file.close_free_nodes_after {
             parse_switchable_duration(after).map_err(|e| format!("close_free_nodes_after: {e}"))?;
         }
-        if file.compact_idle_nodes_at.is_some_and(|p| !(0.0..=100.0).contains(&p)) {
-            return Err("compact_idle_nodes_at: a percentage from 0 (off) to 100".into());
-        }
         if file.device_expiry_days.is_some_and(|days| !(days.is_finite() && days >= 0.0)) {
             return Err("device_expiry_days: a number of days, 0 to turn it off".into());
-        }
-        if file.compact_orchestrator_at.is_some_and(|p| !(0.0..=100.0).contains(&p)) {
-            return Err("compact_orchestrator_at: a percentage from 0 (off) to 100".into());
         }
         if file.report.as_ref().and_then(|r| r.repo.as_deref()).is_some_and(|repo| !is_github_repo(repo)) {
             return Err("report.repo: a GitHub owner/repo".into());
@@ -187,10 +178,6 @@ pub struct Config {
     /// How long Alondra waits for the node of a finished task to clean up before it closes the node
     /// anyway. 30 minutes unless set; `None` closes it only once the node says it cleaned up.
     pub close_free_nodes_after: Option<Duration>,
-    /// Compact an idle node whose context is at least this full, in percent, before typing it
-    /// a new task. 30 unless set; `None` is off.
-    pub compact_idle_nodes_at: Option<f64>,
-    pub compact_orchestrator_at: Option<f64>,
     /// Days a paired device may go unused before Alondra unpairs it on its own. 30 unless set;
     /// `None` is off.
     pub device_expiry_days: Option<f64>,
@@ -272,19 +259,6 @@ impl Config {
                 .and_then(|v| parse_switchable_duration(&v).ok())
                 .or_else(|| file.close_free_nodes_after.as_deref().and_then(|v| parse_switchable_duration(v).ok()))
                 .unwrap_or(Some(DEFAULT_CLOSE_FREE_NODES_AFTER)),
-            compact_idle_nodes_at: Some(
-                var("ALONDRA_COMPACT_IDLE_NODES_AT")
-                    .and_then(|v| if v.eq_ignore_ascii_case(OFF) { Some(0.0) } else { v.parse::<f64>().ok().filter(|p| (0.0..=100.0).contains(p)) })
-                    .or(file.compact_idle_nodes_at)
-                    .unwrap_or(DEFAULT_COMPACT_IDLE_NODES_AT),
-            )
-            .filter(|p| *p > 0.0),
-            compact_orchestrator_at: Some(
-                var("ALONDRA_COMPACT_ORCHESTRATOR_AT")
-                    .and_then(|v| if v.eq_ignore_ascii_case(OFF) { Some(0.0) } else { v.parse::<f64>().ok().filter(|p| (0.0..=100.0).contains(p)) })
-                    .or(file.compact_orchestrator_at)
-                    .unwrap_or(DEFAULT_COMPACT_ORCHESTRATOR_AT),
-            ).filter(|p| *p > 0.0),
             device_expiry_days: Some(
                 var("ALONDRA_DEVICE_EXPIRY_DAYS")
                     .and_then(|v| v.parse::<f64>().ok().filter(|d| d.is_finite() && *d >= 0.0))
@@ -595,15 +569,9 @@ mod tests {
     }
 
     #[test]
-    fn idle_nodes_are_compacted_from_thirty_percent_unless_the_config_says_otherwise() {
-        assert_eq!(resolve(&FileConfig::default(), &[]).compact_idle_nodes_at, Some(30.0));
-        let file = FileConfig::parse("compact_idle_nodes_at = 50\n").unwrap();
-        assert_eq!(resolve(&file, &[]).compact_idle_nodes_at, Some(50.0));
-        assert_eq!(resolve(&file, &[("ALONDRA_COMPACT_IDLE_NODES_AT", "20")]).compact_idle_nodes_at, Some(20.0));
-        assert_eq!(resolve(&file, &[("ALONDRA_COMPACT_IDLE_NODES_AT", "off")]).compact_idle_nodes_at, None);
-        assert_eq!(resolve(&file, &[("ALONDRA_COMPACT_IDLE_NODES_AT", "lots")]).compact_idle_nodes_at, Some(50.0), "a broken env value falls through to the file");
-        assert_eq!(resolve(&FileConfig::parse("compact_idle_nodes_at = 0").unwrap(), &[]).compact_idle_nodes_at, None);
-        assert!(FileConfig::parse("compact_idle_nodes_at = 130").unwrap_err().contains("compact_idle_nodes_at"));
+    fn a_file_from_when_alondra_compacted_on_its_own_still_loads() {
+        let file = FileConfig::parse("compact_idle_nodes_at = 130\ncompact_orchestrator_at = 50\n").unwrap();
+        assert_eq!((file.compact_idle_nodes_at, file.compact_orchestrator_at), (Some(130.0), Some(50.0)));
         assert_eq!(FileConfig::parse(&file.render()).unwrap(), file);
     }
 
@@ -619,18 +587,6 @@ mod tests {
         let file = FileConfig::parse("auto_update = true\n").unwrap();
         assert!(resolve(&file, &[]).auto_update);
         assert!(!resolve(&file, &[("ALONDRA_AUTO_UPDATE", "0")]).auto_update);
-        assert_eq!(FileConfig::parse(&file.render()).unwrap(), file);
-    }
-
-    #[test]
-    fn orchestrator_compaction_has_an_independent_validated_threshold() {
-        assert_eq!(resolve(&FileConfig::default(), &[]).compact_orchestrator_at, Some(50.0));
-        let file = FileConfig::parse("compact_orchestrator_at = 70").unwrap();
-        assert_eq!(resolve(&file, &[]).compact_orchestrator_at, Some(70.0));
-        assert_eq!(resolve(&file, &[("ALONDRA_COMPACT_ORCHESTRATOR_AT", "40")]).compact_orchestrator_at, Some(40.0));
-        assert_eq!(resolve(&file, &[("ALONDRA_COMPACT_ORCHESTRATOR_AT", "off")]).compact_orchestrator_at, None);
-        assert!(FileConfig::parse("compact_orchestrator_at = 101").is_err());
-        assert!(FileConfig::parse("compact_orchestrator_at = nan").is_err());
         assert_eq!(FileConfig::parse(&file.render()).unwrap(), file);
     }
 

@@ -201,7 +201,7 @@ mod tests {
         apply("model/rerouted",json!({"threadId":"root","turnId":"two","fromModel":"second","toModel":"third","reason":"highRiskCyberActivity"}),8);assert!(contexts.used(&task).is_none());
         apply("model/rerouted",json!({"threadId":"root","turnId":"one","fromModel":"third","toModel":"stale","reason":"highRiskCyberActivity"}),9);
         apply("thread/tokenUsage/updated",json!({"threadId":"root","turnId":"two","tokenUsage":{"last":{"totalTokens":500},"modelContextWindow":64000}}),10);
-        assert_eq!(contexts.used(&task).unwrap().window,Some(64000));assert!(contexts.readings().is_empty(),"Codex has no proven cache expiry");
+        assert_eq!(contexts.used(&task).unwrap().window,Some(64000));assert!(contexts.last_request(&task).is_none(),"Codex has no proven cache expiry");
         assert_eq!(session.model.as_deref(),Some("third"));
     }
     #[test]

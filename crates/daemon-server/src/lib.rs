@@ -60,7 +60,6 @@ pub use alondra_daemon_engine::{
     domain_store,
     domain_transport,
     home_renames,
-    idle_compaction,
     issues,
     launch_plans,
     local_network_card,

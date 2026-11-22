@@ -1582,25 +1582,6 @@ fn only_alondra_sets_the_model_and_mode_or_reads_mcp_status_of_an_sdk_task() {
     assert!(serde_json::from_str::<Command>(r#"{"kind":"set_permission_mode","task_id":"t","mode":"dont_ask"}"#).is_ok());
 }
 
-#[test]
-fn compacting_a_resting_conversation_keeps_the_card_it_waits_on() {
-    let mut s = world();
-    let card = sdk_woken_turn(&mut s, "t", "a");
-    let compact = || Command::CompactConversation { task_id: "t".into() };
-    assert_eq!(refused_unchanged(&mut s, Actor::System, compact()), "conflict", "a turn runs");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
-    assert_eq!(refused_unchanged(&mut s, user(), compact()), "forbidden");
-    must(&mut s, Actor::System, compact());
-    let LifecycleRecord::Compacted { input } = last(&s, "t") else { panic!("compacted") };
-    let id = TaskId::from("t");
-    assert_eq!(writes_texts(&id, &s.lifecycle_journal[&id]).get(&alondra_domain::InputId::new(input.as_str()).unwrap()).map(String::as_str), Some(COMPACT));
-    let lifecycle = replay(&id, &s.lifecycle_journal[&id]).unwrap();
-    assert_eq!(lifecycle.cards().iter().map(|(card, _)| card.0.clone()).collect::<Vec<_>>(), vec![card.clone()], "the card it waits on stays");
-    assert!(matches!(&s.interactions[&InteractionId::from(card.as_str())].payload, InteractionPayload::Question { answer: None, .. }));
-    assert_eq!(refused_unchanged(&mut s, Actor::System, compact()), "conflict", "its compaction is already pending");
-    assert_aggregate_rules(&s);
-}
-
 fn mcp_server(name: &str, status: McpStatus) -> McpServerState {
     McpServerState { name: name.into(), status, error: None, source: None, transport: None, url: None, traits: Default::default() }
 }

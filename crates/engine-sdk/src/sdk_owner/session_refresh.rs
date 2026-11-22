@@ -106,7 +106,7 @@ fn last_request_in(jsonl: &str) -> Option<LastRequest> {
         }
     }
     let (tokens, requested_at) = answered?;
-    Some(LastRequest { tokens, requested_at, cache_ms: cache_ms.unwrap_or(HOUR_MS), compactable: false })
+    Some(LastRequest { tokens, requested_at, cache_ms: cache_ms.unwrap_or(HOUR_MS) })
 }
 
 const HOUR_MS: Millis = 60 * 60_000;
@@ -213,7 +213,7 @@ mod tests {
     const HOUR: Millis = 60 * 60_000;
 
     fn last(tokens: u64) -> Option<LastRequest> {
-        Some(LastRequest { tokens, requested_at: 10 * HOUR, cache_ms: HOUR, compactable: false })
+        Some(LastRequest { tokens, requested_at: 10 * HOUR, cache_ms: HOUR })
     }
 
     #[test]
@@ -246,7 +246,7 @@ mod tests {
     fn a_transcripts_last_answer_says_how_large_the_conversation_is_and_when_its_cache_expires() {
         let user = serde_json::json!({"type": "user", "timestamp": "2026-11-20T07:39:00.000Z", "message": {"role": "user", "content": "go on"}}).to_string();
         let jsonl = [answer("2026-11-20T07:00:00.000Z", wrote(0, 9)), answer(AT, wrote(2_000, 0)), user].join("\n");
-        assert_eq!(last_request_in(&jsonl), Some(LastRequest { tokens: 250_003, requested_at: AT_MS, cache_ms: HOUR, compactable: false }));
+        assert_eq!(last_request_in(&jsonl), Some(LastRequest { tokens: 250_003, requested_at: AT_MS, cache_ms: HOUR }));
         let minutes = answer(AT, wrote(0, 2_000));
         assert_eq!(last_request_in(&minutes).map(|last| last.cache_ms), Some(5 * 60_000));
     }
@@ -255,7 +255,7 @@ mod tests {
     fn an_answer_that_wrote_no_cache_lasts_as_long_as_the_last_cache_written() {
         let read_only = serde_json::json!({"input_tokens": 3, "cache_read_input_tokens": 250_000, "cache_creation_input_tokens": 0, "output_tokens": 1});
         let jsonl = [answer("2026-11-20T07:00:00.000Z", wrote(0, 9)), answer(AT, read_only.clone())].join("\n");
-        assert_eq!(last_request_in(&jsonl), Some(LastRequest { tokens: 250_003, requested_at: AT_MS, cache_ms: 5 * 60_000, compactable: false }));
+        assert_eq!(last_request_in(&jsonl), Some(LastRequest { tokens: 250_003, requested_at: AT_MS, cache_ms: 5 * 60_000 }));
         assert_eq!(last_request_in(&answer(AT, read_only)).map(|last| last.cache_ms), Some(HOUR), "nodes ask for an hour");
     }
 
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn the_log_says_what_the_decision_rests_on() {
-        let last = Some(LastRequest { tokens: 155_628, requested_at: 10 * HOUR, cache_ms: HOUR, compactable: false });
+        let last = Some(LastRequest { tokens: 155_628, requested_at: 10 * HOUR, cache_ms: HOUR });
         assert_eq!(basis(last, Some(Source::Derived), "", 14 * HOUR), "reading derived from the transcript: 155628 tokens, cache expired 180 min ago");
         assert_eq!(basis(last, Some(Source::Stored), "", 10 * HOUR + 30 * 60_000), "stored reading: 155628 tokens, cache holds 30 more min");
         assert_eq!(basis(None, None, "its session is not recorded", 0), "no reading of its conversation (its session is not recorded)");

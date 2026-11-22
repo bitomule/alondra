@@ -53,7 +53,6 @@ impl DomainState {
             Command::ClearMcpSignIn { task_id, server } => self.mcp_sign_out_guard(actor, task_id, server).map(drop),
             Command::CompleteMcpSignIn { task_id, server, state } => self.mcp_complete_guard(actor, task_id, server, state).map(drop),
             Command::WaitForMcp { task_id, server } => self.mcp_wait_guard(actor, task_id, server).map(drop),
-            Command::CompactConversation { task_id } => self.compact_guard(actor, task_id).map(drop),
             Command::BeginAccountLogin { account, attempt, .. } => self.begin_account_login_guard(actor, account, attempt),
             Command::CancelAccountLogin { account, attempt } => self.cancel_account_login_guard(actor, account, attempt),
             Command::ChangeAccounts { provider, change } => self.accounts_guard(actor, *provider, change),
@@ -405,13 +404,6 @@ impl DomainState {
         let lifecycle = self.sdk_lifecycle(task_id)?;
         let control = format!("control-{task_id}-{}", lifecycle.revision() + 1);
         self.judged(task_id, lifecycle, LifecycleRecord::ControlRequested { control, operation })
-    }
-
-    /// Alondra has the task's resting SDK execution compact its conversation.
-    pub(super) fn compact_guard(&self, actor: &Actor, task_id: &TaskId) -> Result<LifecycleRecord> {
-        system(actor)?;
-        let lifecycle = self.sdk_lifecycle(task_id)?;
-        self.judged(task_id, lifecycle, LifecycleRecord::Compacted { input: self.next_input(task_id) })
     }
 
     /// Alondra cancels on its own only a task nothing has started; anyone else must manage it.
