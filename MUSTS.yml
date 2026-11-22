@@ -1925,6 +1925,18 @@ checks:
       targets:
         - //tools:release_config_test
 
+  module-lock:
+    uses: bazel/test
+    paths:
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "MODULE.bazel.lock"
+      - "tools/BUILD.bazel"
+      - "tools/tests/test_module_lock.py"
+    with:
+      targets:
+        - //tools:module_lock_test
+
   sandbox-tool:
     uses: bazel/test
     paths:
