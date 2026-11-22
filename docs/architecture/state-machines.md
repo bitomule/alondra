@@ -51,7 +51,8 @@ to its fix group and issue.
 |---|---|---|---|
 | S1 | [F-GH-2](#f-gh-2--an-already-answered-delete-unsaved-changes-card-deletes-the-recreated-worktree-of-a-reopened-task-on-every-closer-pass) · An already-answered "delete unsaved changes?" card deletes the recreated worktree of a reopened task, on every closer pass | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S1 | [F-GH-4](#f-gh-4--closing-a-task-with-a-merged-pr-deletes-the-branch-of-a-remote-less-repo-another-repo-with-commits-that-exist-only-there-pr-503) · Closing a task with a merged PR deletes the branch of a remote-less repo (another repo) with commits that exist only there (PR #503) | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
-| S1 | [F-ORCH-5](#f-orch-5--a-non-domain-error-in-the-schedule-runner-stops-the-whole-daemon-with-an-unreadable-optionstoml-it-enters-a-restart-loop) · A non-domain error in the schedule runner stops the whole daemon; with an unreadable `options.toml` it enters a restart loop | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 |
+| S1 | [F-STORE-7](#f-store-7--a-request-cleared-and-then-taken-back-by-its-task-leaves-its-cleared-row-and-the-daemon-no-longer-loads-its-state) · A request cleared and then taken back by its task leaves its «cleared» row, and the daemon no longer loads its state | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
+| S1 | [F-ORCH-5](#f-orch-5--a-non-domain-error-in-the-schedule-runner-stops-the-whole-daemon-with-an-unreadable-optionstoml-it-enters-a-restart-loop) · A non-domain error in the schedule runner stops the whole daemon; with an unreadable `options.toml` it enters a restart loop | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S1 | [F-STORE-4](#f-store-4--a-released-task-whose-closed-task-nodesjson-entry-is-lost-is-left-without-a-node-forever-nothing-relaunches-it-or-says-so) · A released task whose `closed-task-nodes.json` entry is lost is left without a node forever: nothing relaunches it or says so | low | [G2](#g2--a-released-task-always-has-a-way-back) · #519 |
 | S2 | [F-CARDS-1](#f-cards-1--a-request-whose-tasks-ended-depends-on-a-single-message-to-the-orchestrator-if-that-batch-does-not-close-it-it-stays-open-forever-with-no-result-card-issue-353) · A request whose tasks ended depends on a single message to the orchestrator: if that batch does not close it, it stays open forever with no result card (issue #353) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
 | S2 | [F-CARDS-2](#f-cards-2--replacing-one-question-of-a-group-leaves-the-group-incomplete-forever-the-node-never-receives-the-other-answers) · Replacing one question of a group leaves the group incomplete forever: the node never receives the other answers | low | [G6](#g6--card-protocol-replacements-approvals-and-stale-deliveries) · #523 |
@@ -77,16 +78,16 @@ to its fix group and issue.
 | S2 | [F-GH-8](#f-gh-8--the-github-api-limit-still-raises-technical-cards-one-per-pr-in-the-watcher-and-another-per-pr-in-the-merger) · The GitHub API limit still raises technical cards: one per PR in the watcher and another per PR in the merger | low | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S2 | [F-LIFE-1](#f-life-1--an-unstarted-task-that-waits-for-other-tasks-shows-as-queued-slot-wait-not-waiting-for-tasks) · An unstarted task that waits for other tasks shows as "Queued" (slot wait), not "Waiting for tasks" | high | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
 | S2 | [F-LIFE-2](#f-life-2--reopening-a-task-whose-sdk-node-the-user-left-open-creates-a-claude---bg-execution-nobody-runs) · Reopening a task whose SDK node the user left open creates a `claude --bg` execution nobody runs | low | [G2](#g2--a-released-task-always-has-a-way-back) · #519 |
-| S2 | [F-ORCH-1](#f-orch-1--a-daemon-restart-in-the-middle-of-a-batch-stops-the-orchestrator-until-the-user-answers-a-card) · A daemon restart in the middle of a batch stops the orchestrator until the user answers a card | medium | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 |
+| S2 | [F-ORCH-1](#f-orch-1--a-daemon-restart-in-the-middle-of-a-batch-stops-the-orchestrator-until-the-user-answers-a-card) · A daemon restart in the middle of a batch stops the orchestrator until the user answers a card | medium | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-ORCH-2](#f-orch-2--replanning-reminders-feed-themselves-one-batch-per-reminder-without-end) · Replanning reminders feed themselves: one batch per reminder, without end | low-medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
-| S2 | [F-ORCH-3](#f-orch-3--after-24-h-of-launch-failures-requests-are-left-untreated-and-the-watchdog-restarts-in-vain-every-5-min) · After 24 h of launch failures, requests are left untreated and the watchdog restarts in vain every 5 min | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 |
-| S2 | [F-ORCH-4](#f-orch-4--a-scheduled-launch-that-did-start-is-considered-failed-after-a-restart-and-answering-the-card-cancels-the-live-task) · A scheduled launch that did start is considered failed after a restart, and answering the card cancels the live task | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 |
+| S2 | [F-ORCH-3](#f-orch-3--after-24-h-of-launch-failures-requests-are-left-untreated-and-the-watchdog-restarts-in-vain-every-5-min) · After 24 h of launch failures, requests are left untreated and the watchdog restarts in vain every 5 min | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
+| S2 | [F-ORCH-4](#f-orch-4--a-scheduled-launch-that-did-start-is-considered-failed-after-a-restart-and-answering-the-card-cancels-the-live-task) · A scheduled launch that did start is considered failed after a restart, and answering the card cancels the live task | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-PROV-1](#f-prov-1--a-usage-reading-measured-before-a-limit-erases-it-when-it-arrives-later-the-account-reads-as-having-margin-again) · A usage reading measured before a limit erases it when it arrives later: the account reads as having margin again | low | [G8](#g8--one-owner-per-host-and-provider-facts-in-order) · #525 |
 | S2 | [F-SERVER-D1](#f-server-d1--a-transient-failure-on-the-first-enrollment-permanently-revokes-a-devices-relay-access-while-it-still-shows-as-paired) · A transient failure on the first enrollment permanently revokes a device's relay access while it still shows as paired | medium-low | [G11](#g11--devices-relay-and-self-update) · #528 |
 | S2 | [F-SERVER-D4](#f-server-d4--if-the-macs-own-terminal-is-revoked-the-tui-stays-on-device-not-paired-forever) · If the Mac's own terminal is revoked, the TUI stays on «device not paired» forever | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
 | S2 | [F-SERVER-R4](#f-server-r4--if-live-activity-pruning-fails-after-a-revocation-the-removed-mac-keeps-the-live-activity-alive-indefinitely) · If Live Activity pruning fails after a revocation, the removed Mac keeps the Live Activity alive indefinitely | low | [G11](#g11--devices-relay-and-self-update) · #528 |
-| S2 | [F-STORE-1](#f-store-1--a-second-process-applies-restart-recovery-to-the-live-database) · A second process applies restart recovery to the live database | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 |
-| S2 | [F-STORE-2](#f-store-2--alondrad---preflight-does-not-exercise-the-json-files-the-real-startup-requires) · `alondrad --preflight` does not exercise the JSON files the real startup requires | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 |
+| S2 | [F-STORE-1](#f-store-1--a-second-process-applies-restart-recovery-to-the-live-database) · A second process applies restart recovery to the live database | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
+| S2 | [F-STORE-2](#f-store-2--alondrad---preflight-does-not-exercise-the-json-files-the-real-startup-requires) · `alondrad --preflight` does not exercise the JSON files the real startup requires | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S3 | [F-CARDS-6](#f-cards-6--createtask-and-setdependencies-accept-an-already-cancelled-dependency-the-task-is-born-waiting-for-something-that-will-not-come-issue-323) · `CreateTask` and `SetDependencies` accept an already cancelled dependency: the task is born waiting for something that will not come (issue #323) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
 | S3 | [F-CLIENTS-A5](#f-clients-a5--if-preparing-an-answer-fails-the-queue-iphone-and-the-sidebar-mac-leave-the-card-sending-forever) · If preparing an answer fails, the queue (iPhone) and the sidebar (Mac) leave the card "sending" forever | low | [G10](#g10--apple-apps-optimistic-actions-and-per-mac-state) · #527 |
 | S3 | [F-CLIENTS-R2](#f-clients-r2--direct-http-route-a-refusal-from-the-mac-is-read-as-cut-midway) · Direct HTTP route: a refusal from the Mac is read as "cut midway" | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
@@ -99,13 +100,13 @@ to its fix group and issue.
 | S3 | [F-ENGINE-8](#f-engine-8--own_worktree-does-not-delete-the-worktree-of-a-task-that-ended-while-starting-the-domain-command-rejects-it-before-reaching-that-branch) · `own_worktree` does not delete the worktree of a task that ended while starting: the domain command rejects it before reaching that branch | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S3 | [F-GH-6](#f-gh-6--an-attachment-of-a-user-message-to-an-open-task-is-deleted-after-30-days-even-though-the-task-is-still-open) · An attachment of a user message to an open task is deleted after 30 days even though the task is still open | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S3 | [F-GH-9](#f-gh-9--the-merger-rereads-github-on-every-domain-commit-for-a-pr-closed-outside-or-with-a-new-head-until-the-watcher-sees-it) · The merger rereads GitHub on every domain commit for a PR closed outside or with a new head, until the watcher sees it | medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
-| S3 | [F-ORCH-6](#f-orch-6--the-orchestrators-progress-marks-have-done-nothing-since-277) · The orchestrator's progress marks have done nothing since #277 | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 |
-| S3 | [F-ORCH-7](#f-orch-7--an-accepted-cancellation-http-200-can-be-lost-orchestratorjson-is-written-without-a-lock-from-two-threads) · An accepted cancellation (HTTP 200) can be lost: `orchestrator.json` is written without a lock from two threads | very | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 |
+| S3 | [F-ORCH-6](#f-orch-6--the-orchestrators-progress-marks-have-done-nothing-since-277) · The orchestrator's progress marks have done nothing since #277 | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
+| S3 | [F-ORCH-7](#f-orch-7--an-accepted-cancellation-http-200-can-be-lost-orchestratorjson-is-written-without-a-lock-from-two-threads) · An accepted cancellation (HTTP 200) can be lost: `orchestrator.json` is written without a lock from two threads | very | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S3 | [F-ORCH-8](#f-orch-8--create_task-carries-no-priority-and-automatic-launch-wakes-in-the-same-commit-issue-352) · `create_task` carries no priority and automatic launch wakes in the same commit (issue #352) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
 | S3 | [F-SERVER-D5](#f-server-d5--a-direct-request-from-a-revoked-or-conflicting-id-reaches-the-user-approval-fails-with-500-and-the-client-ends-up-seeing-expired) · A direct request from a revoked or conflicting id reaches the user, approval fails with 500 and the client ends up seeing «Expired» | low | [G11](#g11--devices-relay-and-self-update) · #528 |
 | S3 | [F-SERVER-D7](#f-server-d7--a-failed-brew-upgrade-blocks-self-update-of-that-version-until-another-one-is-released) · A failed `brew upgrade` blocks self-update of that version until another one is released | medium | [G11](#g11--devices-relay-and-self-update) · #528 |
 | S3 | [F-SERVER-R6](#f-server-r6--a-crash-between-take-and-the-send-leaves-live--someno-token-and-blocks-the-start-for-up-to-7-h-45) · A crash between `take` and the send leaves `live = Some(no token)` and blocks the start for up to 7 h 45 | low | [G11](#g11--devices-relay-and-self-update) · #528 |
-| S3 | [F-STORE-3](#f-store-3--retry-of-an-uncertain-orchestrator-message-older-than-24-h-discards-itself) · "Retry" of an uncertain orchestrator message older than 24 h discards itself | medium | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 |
+| S3 | [F-STORE-3](#f-store-3--retry-of-an-uncertain-orchestrator-message-older-than-24-h-discards-itself) · "Retry" of an uncertain orchestrator message older than 24 h discards itself | medium | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 
 Hypotheses (not counted above) are listed at the end of each area, with what is missing to
 confirm them. The fix work does not treat a hypothesis as fixed: it either confirms it with a
@@ -171,8 +172,10 @@ Related: issue #323 (new evidence).
 
 ### G3 · The daemon survives its own restarts and recoverable errors
 
-Issue: #520 · Severity: S1 (F-ORCH-5), S2 otherwise · Findings: F-ORCH-5, F-ORCH-1, F-ORCH-3,
-F-ORCH-4, F-ORCH-6, F-ORCH-7, F-STORE-1, F-STORE-2, F-STORE-3 · Depends on: none.
+Issue: #520 · Severity: S1 (F-STORE-7, F-ORCH-5), S2 otherwise · Findings: F-STORE-7, F-ORCH-5, F-ORCH-1,
+F-ORCH-3, F-ORCH-4, F-ORCH-6, F-ORCH-7, F-STORE-1, F-STORE-2 (the part not referred), F-STORE-3 · Depends on:
+none · **Fixed in `2fc1e9349`**: every finding was reproduced on `main` (093f26be0) by its new test, failing, before the
+fix; the ablation output is in the pull request.
 
 - **Expected behaviour**: a failure of one scheduled run (unreadable options, a launch error, a
   non-ordinary claim error) is recorded on that run and the schedule worker goes on; only storage
@@ -190,6 +193,53 @@ F-ORCH-4, F-ORCH-6, F-ORCH-7, F-STORE-1, F-STORE-2, F-STORE-3 · Depends on: non
   run pending with its reason (today `Err`; ablation: restore the `?` at `domain_schedule_runner.rs:415`);
   the orchestrator restart test through the path real startup takes (today the test only exercises
   `recover()`); a store test opening a second recovery against a live database.
+- **Final behaviour** (what the code does since the fix):
+  - F-STORE-7: saving a request that is no longer cleared deletes its `cleared_requests` row, so a request a task
+    took back (`AdoptOpenPr`, `reopen_requests_with_open_tasks`) loads open after a restart.
+  - F-ORCH-5: a scheduled run's failure is that run's: unreadable settings leave it Pending with the launch refusal
+    `launch_failed` and the detail «Alondra's settings file can't be read: …» (the reasons `launch_refusals`
+    accepts are a closed SQL set; a new one would need a schema migration), its slot goes back to the gate and the
+    next cycle retries it; any other non-storage error of one run is logged and the other runs go on.
+    Only a storage error (`StoreError::Storage` or SQLite) still stops the schedule worker, and the daemon with it.
+  - F-ORCH-4: an uncertain scheduled launch whose task already has a node is recorded Handed to that node; only a
+    task without a node fails its run. Answering a «could not start» card never cancels or relaunches a task that
+    has a node.
+  - F-ORCH-1: on SIGTERM, a new release or a handover the daemon writes `cut_by_shutdown` (the active batch) into
+    `orchestrator.json`. The next start resumes that batch without a card: confirmed effects are handed off, a
+    batch with no effect is offered again, and unconfirmed operations go to the next batch as evidence in its
+    handoff. A batch cut any other way (a crash that also lost its terminal report) keeps asking: it may have lost
+    a refusal, which existing tests protect (`a_claude_denial_cannot_be_replayed_…`).
+  - F-ORCH-3: when the messages a failed start was retrying have all expired, the failure no longer holds the inbox:
+    `last_error`, `failure` and `retry_at` are cleared and `settle` sends the open requests back. The watchdog
+    no longer restarts the executor while a start's backoff is waiting.
+  - F-ORCH-6: batch claim, host start, `handled`, recovery and each tool operation's admission and end count as
+    progress again (`note_orchestrator_progress`); the read `orchestrator_progress` is `#[must_use]`.
+  - F-ORCH-7: `orchestrator.json` has one writer at a time (`Orchestrator.record`); the cancel and the host's start
+    read, change and write their field under that lock, so neither lands between the other's read and write.
+  - F-STORE-1: the daemon holds `daemon.lock` exclusively before it opens the domain database; a second `alondrad`
+    on the same HOME is refused before its restart recovery runs. `--test-service-push` never opens the domain
+    database: it reads the service's devices and sends (the documented default was «sent by the live daemon through
+    its API»; the push needs nothing from the domain, so the diagnostic process simply no longer opens it).
+  - F-STORE-2 (the part not referred): the preflight snapshot also carries `domain-capabilities.json`,
+    `devices.json`, `options.toml`, `options.pending`, `orchestrator.json` and `admission.json`, with their bytes and
+    permission bits, so a file the real startup refuses makes preflight fail. The binary smoke test stays with the
+    tests-by-layer work.
+  - F-STORE-3: retrying an uncertain orchestrator message older than 24 h is refused with `delivery_expired` («…more
+    than 24 hours old… discard it instead»); discarding it still works.
+- **Tests** (each failed on `main` before its fix): `store-sqlite` `tests::a_cleared_request_its_ended_task_takes_back_loads_open_after_a_restart`,
+  `tests::retrying_an_uncertain_orchestrator_message_past_its_24_hours_is_refused_and_discarding_it_works`;
+  `engine-sdk` `domain_schedule_runner::tests::unreadable_settings_leave_a_pending_run_waiting_with_its_reason_and_the_runner_going_on`,
+  `…::a_launch_cut_after_its_node_was_admitted_is_handed_to_that_node_and_answering_never_cancels_it`,
+  `…::answering_a_failed_launch_card_leaves_a_task_that_got_its_node_running`; `engine-kernel`
+  `batch_operations::tests::admitting_and_finishing_a_tool_operation_each_count_as_orchestrator_progress`;
+  `engine-orchestrator` `recovery_decisions::a_batch_cut_by_the_daemons_stop_is_offered_again_on_the_next_start_without_a_card`,
+  `…::a_batch_cut_by_the_daemons_stop_hands_its_unconfirmed_operation_to_the_next_batch_as_evidence`,
+  `…::a_batch_cut_without_the_daemons_stop_still_asks_before_anything_runs_again` (guard, passes before and after),
+  `tests::the_hosts_start_holds_the_record_from_its_read_to_its_write_so_a_cancel_cannot_land_in_between`,
+  `tests::a_request_whose_message_expired_during_failed_starts_goes_back_to_the_orchestrator`,
+  `watchdog::tests::the_watchdog_waits_out_a_failed_starts_backoff`; `alondrad`
+  `startup_tests::a_second_daemon_is_refused_before_its_restart_recovery_touches_the_live_daemons_deliveries`;
+  `daemon-server` `preflight::tests::preflight_refuses_a_state_file_the_real_startup_cannot_read`.
 
 ### G4 · The admission gate counts what is really running
 
@@ -2108,7 +2158,7 @@ related-coverage notes and the open-issues list in a second pass, which also con
   `handover.rs:58-67` (claim and finish in two transactions; a cut between them leaves `uncertain`, conservative).
 - **Invariants**: enforced: states by CHECK; a single live attempt per message in practice (the claim requires
   `pending/retryable`); ids never reused (there is no `DELETE` of `domain_messages`/`delivery_attempts`).
-  **Assumed, not enforced**: that only one process opens the database as writer (see F-STORE-1).
+  **Enforced since G3**: only one daemon opens the database as writer (`daemon.lock`, F-STORE-1).
 - **Persistence and restart**: `dispatching` → `uncertain` (never redelivered just because of a restart). Delivery to
   an SDK node is idempotent by `command_id = tell-outbox-{message.id}` while the receipt lives (one week). User push:
   `uncertain` counts as already notified (`user_push_handed`, `lib.rs:1584`).
@@ -2201,8 +2251,8 @@ related-coverage notes and the open-issues list in a second pass, which also con
 `crates/alondrad/src/lib.rs:121-158` and `crates/alondrad/src/assemble.rs:180-300`:
 1. `home_renames::apply`, `refuse_legacy_home`, `migrate_and_fence` (exclusive lock only if there is a marker or a
    cutover), `retire_empty_older_sidecar`;
-2. `HomeLock::shared` (shared: it does not exclude another daemon) and `ensure_ready`;
-3. `wiring::open` → `DomainStore::open` (recovery of M-STORE-9) + `recover_settings` + `fill_task_*` + `load` (replay)
+2. `HomeLock::shared` (shared with the CLI) and `ensure_ready`;
+3. `HomeLock::daemon` (exclusive `daemon.lock`: a second daemon stops here, F-STORE-1), then `wiring::open` → `DomainStore::open` (recovery of M-STORE-9) + `recover_settings` + `fill_task_*` + `load` (replay)
    + `capabilities::load` + commands `ReviewWaits` and `AcknowledgeRequestTasks`;
 4. `DomainDaemon::over` (`Auth::open`);
 5. `assemble`: `service.recover_interrupted()` and `action_results::recover_interrupted` (`assemble.rs:187-190`),
@@ -2258,6 +2308,7 @@ switch.
 ### Findings
 
 #### F-STORE-1 · A second process applies restart recovery to the live database
+**Status**: FIXED in `2fc1e9349` (G3, #520). The daemon takes `daemon.lock` exclusively (`HomeLock::daemon`) before `wiring::open` (`alondrad/src/lib.rs`, `open_as_writer`), and `--test-service-push` no longer opens the domain database. Test: `alondrad` `startup_tests::a_second_daemon_is_refused_before_its_restart_recovery_touches_the_live_daemons_deliveries`. Recovery stays inside `DomainStore::open`, where the tests that reopen a store to simulate a restart rely on it; the lock makes the daemon its only production caller on a live HOME.
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: low · **Overlap**: none found in the `git log` of those
 files. No task in the related-coverage notes and no issue in the open-issues list deals with exclusion between daemon
 processes. the tests-by-layer work (host model) (point 30, `binary_smoke_test` with `--preflight`) runs the real binary in
@@ -2304,6 +2355,7 @@ tests, but not a second process over a live home folder. New evidence.
   `store-sqlite/src/lib.rs:724-735`.
 
 #### F-STORE-2 · `alondrad --preflight` does not exercise the JSON files the real startup requires
+**Status**: FIXED in `2fc1e9349` (G3, #520). The part this group owns: `preflight.rs` copies the startup's JSON and TOML state files into the snapshot (`STATE_FILES`, bytes and permission bits). Test: `daemon-server` `preflight::tests::preflight_refuses_a_state_file_the_real_startup_cannot_read`. The binary smoke test remains referred.
 **Class**: CONFIRMED (a coverage gap; whether it fires depends on a future format change) · **Severity**: S2 ·
 **Probability**: low · **Overlap**: the tests-by-layer work (host model), point 30 (`//crates/alondrad:binary_smoke_test`
 with `--preflight`), tests that the binary starts its preflight, but not what the snapshot copies. New evidence for
@@ -2331,6 +2383,7 @@ that task: its test could include a `domain-capabilities.json` of another format
   real home folder read-only. File: `daemon-server/src/preflight.rs`.
 
 #### F-STORE-3 · "Retry" of an uncertain orchestrator message older than 24 h discards itself
+**Status**: FIXED in `2fc1e9349` (G3, #520). A retry of an expired orchestrator message is refused with `delivery_expired` before anything changes (`resolve_uncertain_authenticated`). Test: `store-sqlite` `tests::retrying_an_uncertain_orchestrator_message_past_its_24_hours_is_refused_and_discarding_it_works`.
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: medium (nobody checks `alondra delivery list` daily) ·
 **Overlap**: orchestrator area (TTL of its inbox); new evidence on the interaction with `alondra delivery`.
 the stalled-node recovery work (phase 4) changes the `ANSWER` deadline of the orchestrator inbox, not the 24 h expiry of the
@@ -2349,6 +2402,25 @@ outbox. No open issue.
   reconciliation.
 - **Expected fix and files**: at least, reject the retry with a clear error if it already expired; or count the age
   from the user's reconciliation.
+
+#### F-STORE-7 · A request cleared and then taken back by its task leaves its «cleared» row, and the daemon no longer loads its state
+**Status**: FIXED in `2fc1e9349` (G3, #520). Saving a request whose `cleared` went from true to false deletes its
+`cleared_requests` row (`store-sqlite/src/repository.rs`). Test: `store-sqlite`
+`tests::a_cleared_request_its_ended_task_takes_back_loads_open_after_a_restart`.
+**Class**: CONFIRMED (reproduced on `main` 093f26be0 by the test above: the reload failed with
+`invalid_input: Cleared Request is still open`) · **Severity**: S1 (every later command fails and the daemon does not
+start again until `domain.db` is edited by hand) · **Probability**: low · **Overlap**: found by the audit node after
+#530; #536 added a second writer of `cleared = false`.
+- **Invalid state/transition and broken invariant**: a request open in memory and «cleared» in SQLite; `validate`
+  refuses the loaded state («Cleared Request is still open»).
+- **Evidence**: the save only inserted into `cleared_requests` when `cleared` is true and never deleted
+  (`repository.rs`), while the load sets `cleared = true` for every row. `AdoptOpenPr` (`domain-rules/src/rules.rs`)
+  and, since #536, `reopen_requests_with_open_tasks` write `cleared = false`.
+- **Minimal sequence**: 1) a request is cleared while its last task is still ending; 2) the task ends with its pull
+  request open; 3) the open-PR sweep runs `AdoptOpenPr`: in memory `closed = false`, `cleared = false`, the row stays;
+  4) the next full reload (routine, after each launch dequeue) reads it cleared and open and refuses it.
+- **Deterministic test and ablation**: the store test registers a PR, cancels the task, closes and clears its request,
+  ends the node, adopts the PR and reopens the database. Ablation: drop the `DELETE` and the reload fails.
 
 #### F-STORE-4 · A released task whose `closed-task-nodes.json` entry is lost is left without a node forever: nothing relaunches it or says so
 **Class**: CONFIRMED (it was a hypothesis). Every path that relaunches a released task depends only on that entry, and
@@ -2901,8 +2973,8 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
 ### M-ORCH-1 · Orchestrator execution (`orchestrator.json`, `Runtime`)
 - **Kind**: implicit, composite. **Defined in**: `domain_orchestrator.rs:37-71` (`Runtime`), `:82-95` (`Failure`),
   `:97-104` (`Run`).
-- **Source of truth**: the file `HOME/orchestrator.json` (written as `.next` + rename, `:125-132`), with no lock between
-  writers. **Copies and derivatives**: `DomainRuntime.orchestrator_rests` (atomic, reloaded on every tick `:457`),
+- **Source of truth**: the file `HOME/orchestrator.json` (written as `.next` + rename), one writer at a time under
+  `Orchestrator.record` since G3 (F-ORCH-7). **Copies and derivatives**: `DomainRuntime.orchestrator_rests` (atomic, reloaded on every tick `:457`),
   `Orchestrator.runs/stop/host` in memory (`engine.rs:16-26`), rows `orchestrator_batch_runs`/`delivery_attempts`
   (M-ORCH-2/3). `status()` derives the phase (`:964-981`). The file and the database are written in different
   transactions, so they can diverge; `recovery.rs` exists to reconcile them.
@@ -2937,9 +3009,10 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
   Representable but meaningless: `active_run=None AND failure=Denied`.
 - **Persistence and restart**: the file survives; `runs`, `stop`, `host`, the watchdog and the deadline clock are lost.
   An empty `runs` after a restart is exactly what makes a batch "cold" (F-ORCH-1).
-- **Concurrency**: one loop (`run` `:1020-1066`) with `Ownership` (a file lock between processes) and `HostGuard` (one
-  host). But the HTTP server (`decide`) and the closure `mark_spawned` (`:542-552`) do load -> modify -> save of the same
-  file without a lock (F-ORCH-7).
+- **Concurrency**: one loop (`run`) with `Ownership` (a file lock between processes) and `HostGuard` (one host). The
+  HTTP server's `cancel` and the closure `mark_spawned` read, change and write under `Orchestrator.record`, and every
+  other write takes the same lock (F-ORCH-7, fixed). The tick's own copy is still held across a batch; it is the
+  only writer while the batch runs besides those two.
 
 ### M-ORCH-2 · Delivery of each message to the orchestrator (outbox)
 - **Kind**: explicit in SQL (chains with a version CAS). **Defined in**: `store-sqlite/src/lib.rs:1697-1798`, `:1806-1891`;
@@ -3040,6 +3113,7 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
 ### Findings
 
 #### F-ORCH-1 · A daemon restart in the middle of a batch stops the orchestrator until the user answers a card
+**Status**: FIXED in `2fc1e9349` (G3, #520). A batch cut by the daemon's own stop (`note_shutdown` on SIGTERM, a new release or a handover writes `cut_by_shutdown`) resumes without a card through `startup_recovery`; a batch cut without that mark keeps the conservative card. Tests: `engine-orchestrator` `recovery_decisions::a_batch_cut_by_the_daemons_stop_*` and `…::a_batch_cut_without_the_daemons_stop_still_asks_before_anything_runs_again`.
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: medium: batches are frequent (every request, reminder or case) and the daemon restarts on every version · **Overlap**: the provider adapters work (phase 6) moves the orchestrator onto the adapters (it may touch this recovery): the evidence is NEW. Not in open issues. `git log` of the file shows no fix after d3dcbf2c9, which introduced `cold_batch`.
 - **Invalid state/transition and broken invariant**: the orchestrator stays Ambiguous (`active_run` + `last_error`,
   `failure=Interrupted`) with a `problem-orchestrator-<run>` card for the user, caused by a technical fact of Alondra's
@@ -3114,6 +3188,7 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
   `hand_replans`), `domain_orchestrator.rs` (`handled`).
 
 #### F-ORCH-3 · After 24 h of launch failures, requests are left untreated and the watchdog restarts in vain every 5 min
+**Status**: FIXED in `2fc1e9349` (G3, #520). With no message left to retry, `tick` clears the launch failure and settles; the watchdog is suspended while a start's backoff waits. Tests: `tests::a_request_whose_message_expired_during_failed_starts_goes_back_to_the_orchestrator`, `watchdog::tests::the_watchdog_waits_out_a_failed_starts_backoff`.
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: low (24 consecutive hours of launch failures) · **Overlap**: none known.
 - **Invalid state/transition and broken invariant**: "Failed with no exit" (M-ORCH-1): `active_run=None`,
   `last_error=Some`, `failure=Launch`, no pending messages. No transition leaves it except a new message from another
@@ -3146,6 +3221,7 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
   the last claimed message is discarded, or settle anyway); the watchdog does not restart for a legitimate backoff.
 
 #### F-ORCH-4 · A scheduled launch that did start is considered failed after a restart, and answering the card cancels the live task
+**Status**: FIXED in `2fc1e9349` (G3, #520). `recover_uncertain` records the launch Handed to the node a task already has; `answer_failed_launches` leaves such a task alone. Tests: `engine-sdk` `domain_schedule_runner::tests::a_launch_cut_after_its_node_was_admitted_is_handed_to_that_node_and_answering_never_cancels_it`, `…::answering_a_failed_launch_card_leaves_a_task_that_got_its_node_running`.
 **Class**: CONFIRMED (the displayed state is inferred; the chain failure -> card -> cancellation is read end to end) · **Severity**: S2 · **Probability**: low (a window of seconds during host start, coinciding with a restart) · **Overlap**: none.
 - **Invalid state/transition and broken invariant**: run `Failed` + `problem-launch-<run>` ("could not start") over a task
   that was admitted with a node and a running host. Both options of the card cancel that task, and "Try again" also
@@ -3182,6 +3258,7 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
   `domain_schedule_runner.rs`.
 
 #### F-ORCH-5 · A non-domain error in the schedule runner stops the whole daemon; with an unreadable `options.toml` it enters a restart loop
+**Status**: FIXED in `2fc1e9349` (G3, #520). Unreadable settings leave the run Pending with the refusal `launch_failed` and its reason in the detail; `run_cycle` isolates each run's failure and only storage errors stop the worker. Test: `engine-sdk` `domain_schedule_runner::tests::unreadable_settings_leave_a_pending_run_waiting_with_its_reason_and_the_runner_going_on`.
 **Class**: CONFIRMED for the propagation; the concrete trigger requires "non-modern" options (no connected providers and no model controls), so that the execution has no `selection` · **Severity**: S1 (everything stopped) · **Probability**: low · **Overlap**: none.
 - **Invalid state/transition and broken invariant**: the daemon process ends because of a recoverable failure of a scheduled
   execution; on return, the same Pending execution brings it down again.
@@ -3210,6 +3287,7 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
   that policy is kept.
 
 #### F-ORCH-6 · The orchestrator's progress marks have done nothing since #277
+**Status**: FIXED in `2fc1e9349` (G3, #520). The six call sites count progress with `note_orchestrator_progress`; the read is `#[must_use]`. Test: `engine-kernel` `batch_operations::tests::admitting_and_finishing_a_tool_operation_each_count_as_orchestrator_progress`.
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: low · **Overlap**: none.
 - **Invalid state/transition and broken invariant**: the watchdog measures progress with a counter that batch claim, host
   start, `handled`, recovery and the start and end of each tool operation no longer increment.
@@ -3226,6 +3304,7 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
   count).
 
 #### F-ORCH-7 · An accepted cancellation (HTTP 200) can be lost: `orchestrator.json` is written without a lock from two threads
+**Status**: FIXED in `2fc1e9349` (G3, #520). One writer at a time through `Orchestrator.record`; the cancel and the host's start are locked read-change-write. Test: `tests::the_hosts_start_holds_the_record_from_its_read_to_its_write_so_a_cancel_cannot_land_in_between` (a write hook checks the lock is held at the write, so a cancel waits; no threads or sleeps).
 **Class**: CONFIRMED (a concrete interleaving; a very narrow window) · **Severity**: S3 · **Probability**: very low · **Overlap**: none.
 - **Invalid state/transition and broken invariant**: `cancel` answers 200 and the batch goes on; it breaks rule 5 ("An
   acknowledged command had an effect").
