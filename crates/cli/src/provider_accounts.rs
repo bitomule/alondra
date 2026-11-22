@@ -30,6 +30,8 @@ pub(crate) struct Row {
     pub plan: Option<String>,
     #[serde(default)]
     pub profile: Option<String>,
+    #[serde(default)]
+    pub antigravity: Option<alondra_core::accounts::AntigravityStatus>,
 }
 
 /// The section as the file holds it, and every account as the daemon last saw it.
@@ -98,7 +100,7 @@ fn check(client: &Client) -> Result<Listing> {
 }
 
 fn status(row: &Row) -> AccountStatus {
-    AccountStatus {
+    AccountStatus { antigravity: row.antigravity.clone(),
         provider: row.provider, id: row.id.clone(), name: row.name.clone(), state: row.state,
         native_identity: None, email: row.email.clone(), plan: row.plan.clone(), billing: row.billing.clone(), sign_ins: 0, profile: row.profile.clone(),
     }
@@ -136,7 +138,7 @@ pub fn list(json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&json!({"schema": "alondra.accounts/1", "ok": true, "distribution": listing.config.distribution, "accounts": accounts}))?);
         return Ok(());
     }
-    let mixed = listing.accounts.iter().any(|row| row.provider == Provider::Claude) && listing.accounts.iter().any(|row| row.provider == Provider::Codex);
+    let mixed = Provider::ALL.iter().filter(|provider| listing.accounts.iter().any(|row| row.provider == **provider)).count() > 1;
     for (row, line) in listing.accounts.iter().zip(lines(&listing.accounts)) {
         if mixed { println!("[{}] {line}", row.provider.as_str()); } else { println!("{line}"); }
     }
@@ -152,12 +154,16 @@ fn print_row(listing: &Listing, id: &AccountId) {
 
 /// Registers an account named `name` and prints the provider's own command that signs it in. The
 /// provider is connected first when it is not yet. Alondra never runs the command.
-pub fn add(provider: Provider, name: &str) -> Result<()> {
-    for line in add_with(&daemon(), provider, name)? { println!("{line}"); }
+pub fn add(provider: Provider, name: &str, antigravity: Option<alondra_core::antigravity_account::Settings>) -> Result<()> {
+    if antigravity.is_some() && provider != Provider::Antigravity {
+        bail!(tr!("--access, --project, --location and --credentials-file are for Antigravity accounts: add --provider antigravity",
+            "--access, --project, --location y --credentials-file son para cuentas de Antigravity: añade --provider antigravity"));
+    }
+    for line in add_with(&daemon(), provider, name, antigravity)? { println!("{line}"); }
     Ok(())
 }
 
-fn add_with(client: &Client, provider: Provider, name: &str) -> Result<Vec<String>> {
+fn add_with(client: &Client, provider: Provider, name: &str, antigravity: Option<alondra_core::antigravity_account::Settings>) -> Result<Vec<String>> {
     let name = name.trim();
     if name.is_empty() {
         bail!(tr!("Give the account a name: alondra accounts add Work", "Dale un nombre a la cuenta: alondra accounts add Trabajo"));
@@ -167,7 +173,7 @@ fn add_with(client: &Client, provider: Provider, name: &str) -> Result<Vec<Strin
     if seen.config.find(provider, name).is_some_and(|account| account.name.trim().eq_ignore_ascii_case(name)) {
         bail!(trf!("There is already an account called {name}", "Ya hay una cuenta que se llama {name}"));
     }
-    let next = seen.config.changed(provider, &AccountChange::Add { name: name.into() }).map_err(anyhow::Error::msg)?;
+    let next = seen.config.changed(provider, &AccountChange::Add { antigravity, name: name.into() }).map_err(anyhow::Error::msg)?;
     let listed = save(client, &seen, &next)?;
     let row = listed.accounts.iter().find(|row| row.provider == provider && row.name.trim().eq_ignore_ascii_case(name)).context("the account is not in the listing")?;
     let state = state_text(row);
@@ -295,6 +301,80 @@ pub fn remove_for(provider: Provider, name: &str) -> Result<()> {
     let next = seen.config.changed(provider, &alondra_core::accounts::AccountChange::Remove { account: row.id.clone() }).map_err(anyhow::Error::msg)?;
     save(&client, &seen, &next)?;
     Ok(())
+}
+
+/// Sets the key of the named Antigravity account `name`, read from standard input without echoing
+/// it, or removes it (`clear`). It goes to the daemon as the account's credential action, sealed
+/// like every action; Alondra keeps it in a file of the account's folder only the user can read.
+pub fn set_key(provider: Provider, name: &str, clear: bool) -> Result<()> {
+    let (provider, name) = match alondra_core::accounts::AccountKey::parse_wire(name.trim()) {
+        Ok(key) if name.contains('/') => (key.provider, key.account.as_str().to_owned()),
+        _ => (provider, name.trim().to_owned()),
+    };
+    if provider != Provider::Antigravity {
+        bail!(tr!("Only an Antigravity account keeps a key: alondra accounts set-key antigravity/<account>",
+            "Solo una cuenta de Antigravity guarda una clave: alondra accounts set-key antigravity/<cuenta>"));
+    }
+    let seen = listing(&daemon())?;
+    let row = provider_row(&seen, provider, &name)?.clone();
+    if row.default {
+        bail!(tr!("The default account is agy's own sign-in: add a named account for a key",
+            "La cuenta principal es la sesión propia de agy: añade una cuenta con nombre para usar una clave"));
+    }
+    let shown = shown_name(&row);
+    if !row.antigravity.as_ref().is_some_and(|status| status.access.takes_key()) {
+        bail!(trf!("{shown} signs in with Google and keeps no key", "{shown} inicia sesión con Google y no guarda ninguna clave"));
+    }
+    let key = if clear { None } else { Some(read_secret(&trf!("Key for {shown}: ", "Clave para {shown}: "))?) };
+    let client = crate::client::Client::for_user(Duration::from_secs(120));
+    let view = client.views(alondra_view_model::accounts::KEY, None).context(tr!("Alondra is not running on this Mac: start it and try again", "Alondra no está en marcha en este Mac: arráncalo y vuelve a probar"))?;
+    let wanted = |action: &alondra_view_model::Action| alondra_view_model::action_id::ActionId::parse(&action.id).is_ok_and(|id|
+        id.verb == alondra_view_model::action_id::Verb::AccountCredential && id.subject == row.id.as_str() && id.extra.as_deref() == Some(provider.as_str()))
+        && (action.option_id.as_deref() == Some("clear")) == clear;
+    let action = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+        alondra_view_model::Item::Row(row) => Some(row.actions.iter()),
+        _ => None,
+    }).flatten().find(|action| wanted(action)).cloned()
+        .with_context(|| if clear { trf!("{shown} has no key to remove", "{shown} no tiene ninguna clave que quitar") } else { tr!("Update Alondra to set an account's key", "Actualiza Alondra para poner la clave de una cuenta").into() })?;
+    let input = match &key { Some(key) => json!({"text": key.expose()}), None => json!({}) };
+    let reply = client.action(&view.data_epoch, &action.id, action.option_id.as_deref(), input)?;
+    drop(key);
+    if reply["outcome"] != "applied" {
+        bail!("{}", reply["message"].as_str().unwrap_or("the key could not be saved"));
+    }
+    let listed = listing(&daemon())?;
+    let state = provider_row(&listed, provider, row.id.as_str()).map(state_text).unwrap_or_default();
+    println!("{}", if clear { trf!("Removed the key of {shown}: {state}", "Quitada la clave de {shown}: {state}") } else { trf!("Saved the key of {shown}: {state}", "Guardada la clave de {shown}: {state}") });
+    Ok(())
+}
+
+/// One line of standard input, without echoing it when it is a terminal.
+fn read_secret(prompt: &str) -> Result<alondra_core::antigravity_account::Secret> {
+    use std::io::{BufRead as _, IsTerminal as _, Write as _};
+    let stdin = std::io::stdin();
+    let terminal = stdin.is_terminal();
+    let mut saved: Option<libc::termios> = None;
+    if terminal {
+        eprint!("{prompt}");
+        let _ = std::io::stderr().flush();
+        let mut attributes = unsafe { std::mem::zeroed::<libc::termios>() };
+        if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut attributes) } == 0 {
+            saved = Some(attributes);
+            attributes.c_lflag &= !libc::ECHO;
+            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &attributes) };
+        }
+    }
+    let mut line = String::new();
+    let read = stdin.lock().read_line(&mut line);
+    if let Some(attributes) = saved {
+        unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &attributes) };
+        eprintln!();
+    }
+    read.context(tr!("Could not read the key", "No se pudo leer la clave"))?;
+    let key = alondra_core::antigravity_account::Secret::new(line.trim().to_owned());
+    line.clear();
+    if key.expose().is_empty() { bail!(tr!("Write the key, or use --clear to remove it", "Escribe la clave, o usa --clear para quitarla")); }
+    Ok(key)
 }
 
 #[cfg(test)]

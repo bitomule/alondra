@@ -75,6 +75,8 @@ pub(crate) async fn execute(batch: Batch, spawned: impl FnOnce() -> anyhow::Resu
     match batch.selection.account.provider {
         alondra_core::accounts::Provider::Claude => crate::orchestrator_sdk::execute(batch, spawned, cancel).await,
         alondra_core::accounts::Provider::Codex => crate::orchestrator_codex::execute(batch, spawned, cancel).await,
+        alondra_core::accounts::Provider::Antigravity => crate::orchestrator_process::Output { stream: Default::default(),
+            diagnostic: "The orchestrator does not run on Antigravity".into(), exit_ok: false },
     }
 }
 
@@ -123,7 +125,7 @@ mod tests {
             std::fs::create_dir_all(&directory).unwrap();
             let domain = crate::wiring::open(&directory).unwrap();
             let publish = |email: &str| {
-                let account = AccountStatus { provider, id: AccountId::default_account(), name: "Native account".into(), state: AccountState::SignedIn,
+                let account = AccountStatus { antigravity: None, provider, id: AccountId::default_account(), name: "Native account".into(), state: AccountState::SignedIn,
                     native_identity: None, email: Some(email.into()), plan: None, billing: Default::default(), sign_ins: 0, profile: None };
                 let state = domain.read();
                 let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.state().data_epoch.clone(),

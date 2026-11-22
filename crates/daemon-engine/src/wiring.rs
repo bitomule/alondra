@@ -314,6 +314,7 @@ impl SdkEngine for Engine {
         match provider {
             Provider::Claude => crate::sdk_live::feed(runtime, &runtime.live().mods, agent, observation),
             Provider::Codex => crate::codex_live::feed(runtime, &runtime.live().mods, agent, observation),
+            Provider::Antigravity => {}
         }
     }
 
@@ -343,7 +344,7 @@ impl SdkEngine for Engine {
         let event = match provider {
             Provider::Claude => alondra_provider_claude::context_event(observation)?,
             // Codex live scope binds current root thread, turn and native model before telemetry.
-            Provider::Codex => return None,
+            Provider::Codex | Provider::Antigravity => return None,
         };
         let start = runtime.contexts().observed(task, event, at)?;
         Some(SessionStart { kind: start.kind, requested_at: start.requested_at, since_previous: start.since_previous, tokens: start.tokens,

@@ -1,7 +1,7 @@
 use super::*;
 
 fn row(id: &str, email: Option<&str>, state: AccountState) -> Row {
-    Row {
+    Row { antigravity: None,
         provider: Provider::Claude,
         id: AccountId::parse(id).unwrap(), name: id.to_uppercase(), enabled: true, default: id == "default",
         billing: AccountBilling::default(), state, email: email.map(str::to_owned), plan: Some("max".into()), profile: None,
@@ -80,7 +80,7 @@ fn adding_an_account_registers_it_and_tells_the_providers_own_command_without_si
     let after = json!({"version": "v2", "config": config(json!([{"id": "work", "name": "Work"}])), "supported_providers": ["claude", "codex"],
         "accounts": [account("default", "Default", "signed_in", None), account("work", "Work", "signed_out", Some("~/.alondra/provider-accounts/codex/work"))]});
     let (client, server) = fake_daemon(vec![before, after]);
-    let lines = add_with(&client, Provider::Codex, "Work").unwrap();
+    let lines = add_with(&client, Provider::Codex, "Work", None).unwrap();
     assert_eq!(server.join().unwrap(), ["GET /settings/accounts?capabilities=provider_accounts", "PUT /settings/accounts?capabilities=provider_accounts"],
         "the account is only written to the settings: no sign-in action reaches the daemon");
     assert_eq!(lines, ["Added Work: signed out", "On the Mac, run CODEX_HOME=~/.alondra/provider-accounts/codex/work codex login"]);

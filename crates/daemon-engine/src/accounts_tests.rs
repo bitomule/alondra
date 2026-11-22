@@ -325,7 +325,7 @@ fn known_native_denials_filter_automatic_codex_before_choosing_a_compatible_clau
     let f = fixture(); let mut config = AccountsConfig::fresh(); config.connect(Provider::Codex); config.connect(Provider::Claude);
     let keys = vec![AccountKey::native(Provider::Codex), AccountKey::native(Provider::Claude)]; config.set_order(keys.clone()).unwrap();
     f.store(&config).unwrap(); let domain = crate::wiring::open(&f.home).unwrap();
-    let statuses = keys.iter().map(|key| AccountStatus { provider:key.provider,id:key.account.clone(),name:"Personal".into(),state:AccountState::SignedIn,native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None }).collect();
+    let statuses = keys.iter().map(|key| AccountStatus { antigravity: None, provider:key.provider,id:key.account.clone(),name:"Personal".into(),state:AccountState::SignedIn,native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None }).collect();
     record_account_command(&domain,Command::RecordAccounts {accounts:statuses,reserve:alondra_core::usage::Share::of(config.distribution.reserve)});
     record_account_command(&domain,Command::RecordAccountConfiguration {order:keys.clone(),version:version(&config)});
     for key in keys {
@@ -347,7 +347,7 @@ fn known_native_denials_filter_automatic_codex_before_choosing_a_compatible_clau
 
 
 fn probe_account(email: &str) -> AccountStatus {
-    AccountStatus { provider: Provider::Claude, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
+    AccountStatus { antigravity: None, provider: Provider::Claude, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
         native_identity: None, email: Some(email.into()), plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }
 }
 
@@ -575,4 +575,69 @@ fn connecting_claude_on_a_fresh_install_gives_the_orchestrator_a_model_claude_ad
     replace_configuration_authorized(&domain, &f.home, &user, &version(&current), &both, || Ok(())).unwrap();
     let kept = alondra_core::options::OptionsFile::parse(&std::fs::read_to_string(&options).unwrap()).unwrap().model_profiles;
     assert_eq!(kept[&Provider::Claude][&ModelProfile::Orchestrator], chosen, "a later connection keeps the user's choice");
+}
+
+#[test]
+fn antigravity_accounts_are_checked_with_their_models_and_usage_only_when_due_and_run_no_node() {
+    use alondra_core::antigravity_account::{Access, Check, CheckReport, Settings, Unavailable, UsageOutcome, Version};
+    use alondra_core::model_selection::{ModelProfile, TaskSelection};
+    let f = fixture();
+    let bin = f.user_home.parent().unwrap().join("agy-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("agy"), "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(bin.join("agy"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let domain = Arc::new(crate::wiring::open(&f.home).unwrap());
+    domain.enable_sdk(crate::sdk_backend::SdkBackend { provider: Provider::Claude, origin: None,
+        node: f.claude.executable.clone(), node_sha256: String::new(), host: f.claude.executable.clone(), host_sha256: String::new(),
+        native: f.claude.executable.clone(), native_sha256: String::new(), host_environment: BTreeMap::new(),
+        native_environment: BTreeMap::from([("HOME".into(), f.user_home.display().to_string()), ("PATH".into(), format!("{}:/usr/bin:/bin", bin.display()))]),
+        confinement: None, state_root: f.home.join("hosts"), io_timeout_seconds: 30, installed_native: false, release: crate::sdk_backend::this_release() });
+    let doubles = alondra_engine_doubles::accounts::of(domain.ports());
+    let mut config = AccountsConfig::fresh();
+    config.connect(Provider::Antigravity);
+    let config = config.changed(Provider::Antigravity, &AccountChange::Add { name: "Studio".into(), antigravity: Some(Settings::of(Access::ApiKey)) }).unwrap();
+    std::fs::write(alondra_core::options::path_in(&f.home), config.to_toml()).unwrap();
+    let studio = AccountKey::new(Provider::Antigravity, AccountId::parse("studio").unwrap());
+    let folder = doubles.prepare_antigravity(&f.home, &studio, &f.user_home.join(".gemini")).unwrap().unwrap();
+    let usage = alondra_core::antigravity_account::parse_usage(&serde_json::json!({"groups": [{"name": "All Models", "buckets": [
+        {"id": "gemini-4-neon-high", "remaining_fraction": 0.4, "reset_time": "2030-01-01T00:00:00Z"},
+        {"id": "claude-opus-max", "remaining_fraction": 0, "reset_time": "2030-01-02T00:00:00Z"}]}]})).unwrap();
+    doubles.answer_antigravity_usage(None, Ok(UsageOutcome::Read(usage)));
+
+    let status = |state: &alondra_domain_rules::DomainState, key: &AccountKey| state.accounts.iter().find(|status| status.provider == key.provider && status.id == key.account).cloned().unwrap();
+    let studio_probes = |probes: &[alondra_core::antigravity_account::Probe]| probes.iter().filter(|probe| probe.launch.environment.get("GEMINI_HOME").map(PathBuf::from) == Some(folder.clone())).count();
+    assert_eq!(check_current(&*domain, &f.home), crate::native_probe::Outcome::Finished);
+    assert_eq!(status(&domain.read().state().clone(), &studio).state, AccountState::SignedOut, "an API key account with no key is signed out");
+    assert_eq!(studio_probes(&doubles.antigravity_probes()), 0, "and no agy starts to learn it");
+    doubles.set_antigravity_key(&f.home, &studio, Some(&alondra_core::antigravity_account::Secret::new("AIza-fixture".into()))).unwrap();
+    assert_eq!(check_current(&*domain, &f.home), crate::native_probe::Outcome::Finished);
+    let state = domain.read().state().clone();
+    let native = AccountKey::native(Provider::Antigravity);
+    assert_eq!(status(&state, &native).state, AccountState::SignedIn);
+    assert_eq!(status(&state, &studio).billing, AccountBilling::PayPerUse, "an API key is billed per use");
+    assert!(status(&state, &studio).antigravity.unwrap().key_set, "the screens learn that a key is set");
+    assert!(state.model_catalogs.iter().any(|catalog| catalog.account == native && catalog.models[0].model == "fixture-gemini"));
+    let measured = state.account_usage.iter().find(|usage| usage.provider == Provider::Antigravity && usage.account.is_default()).unwrap();
+    assert_eq!(measured.windows.len(), 2, "one window per pool");
+    assert!(!measured.plan_exhausted(0), "a pool that ran out leaves the others working");
+    assert!(!state.account_usage.iter().any(|usage| usage.provider == Provider::Antigravity && usage.account == studio.account), "an API key has no usage reading");
+    assert_eq!(studio_probes(&doubles.antigravity_probes()), 1, "a new key checks the account again, which is never read for usage");
+
+    let started = doubles.antigravity_probes().len();
+    assert_eq!(check_current(&*domain, &f.home), crate::native_probe::Outcome::Finished);
+    assert_eq!(doubles.antigravity_probes().len(), started, "an account checked today starts no agy again");
+    doubles.answer_antigravity(Some(&folder), CheckReport { version: Some(Version(1, 1, 22)), check: Check::Unavailable(Unavailable::TooOld) });
+    check_now(&*domain, &f.home);
+    assert!(doubles.antigravity_probes().len() > started, "asking for a check checks again");
+    let state = domain.read().state().clone();
+    let studio_status = status(&state, &studio);
+    assert_eq!(studio_status.state, AccountState::Unavailable);
+    assert_eq!(studio_status.antigravity.unwrap().unavailable, Some(Unavailable::TooOld));
+
+    let mut pinned = TaskSelection::automatic(ModelProfile::Implementation);
+    pinned.account = Some(native.clone());
+    let refused = select_for_launch(&*domain, &f.home, &pinned, 100).unwrap_err();
+    assert_eq!((refused.code.as_str(), refused.message.as_str()), ("provider_unavailable", alondra_core::antigravity_account::NODES_NOT_AVAILABLE));
+    let automatic = select_for_launch(&*domain, &f.home, &TaskSelection::automatic(ModelProfile::Implementation), 100).unwrap_err();
+    assert_eq!(automatic.code, "account_unavailable", "automatic choice never starts a node on Antigravity");
 }

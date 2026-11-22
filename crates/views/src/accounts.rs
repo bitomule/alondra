@@ -35,7 +35,7 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
     }
     if let Some(check) = common::action(Verb::AccountCheck, "accounts", context.domain.revision, t!(lang, "Check accounts", "Comprobar cuentas"), Style::Secondary) { section.actions.push(check); }
     view.sections.push(section);
-    let provider_rows = [Provider::Claude, Provider::Codex].into_iter().map(|provider| {
+    let provider_rows = Provider::ALL.into_iter().map(|provider| {
         if accounts.iter().any(|account| account.provider == provider) { add_row(provider, context) } else { connect_row(provider, context) }
     }).collect();
     view.sections.push(list_style(common::section("providers", Some(t!(lang, "Providers", "Proveedores").into()), provider_rows)));
@@ -59,7 +59,9 @@ fn list_style(mut section: super::Section) -> super::Section {
 pub(super) fn usage_line(account: &AccountStatus, measured: Option<&alondra_core::usage::AccountUsage>, context: &RenderContext<'_>) -> Option<String> {
     let lang = context.lang;
     let mut parts = vec![];
-    if account.provider == Provider::Codex {
+    if account.provider == Provider::Antigravity && account.billing == AccountBilling::PayPerUse {
+        parts.push(t!(lang, "billed per use", "se paga por uso").into());
+    } else if account.provider == Provider::Codex {
         parts.push(quota_summary(measured, context.live.observed_at, lang));
     } else {
         if native_limit_reported(measured) { parts.push(t!(lang, "Provider reported a usage limit", "El proveedor ha comunicado un límite de uso").into()); }
@@ -118,7 +120,11 @@ fn account_row(account: &AccountStatus, position: usize, measured: Option<&alond
     let shown = name(account, lang);
     let measured_plan = measured.and_then(|usage| usage.plan.as_deref());
     let margin_weight = spread_by_margin(account, context).then(|| weight_text(account, measured_plan, lang)).flatten();
-    let about = [Some(provider_name(account.provider).into()), account.email.clone(), billing(account, lang), margin_weight].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    let antigravity = account.antigravity.as_ref();
+    let access = antigravity.map(|status| access_label(status.access, lang).to_owned());
+    let key = antigravity.filter(|status| status.access.takes_key() && !account.id.is_default()).map(|status| key_label(status.key_set, lang).to_owned());
+    let billed = billing(account, lang).filter(|_| account.provider != Provider::Antigravity || account.billing != AccountBilling::PayPerUse);
+    let about = [Some(provider_name(account.provider).into()), access, account.email.clone(), billed, key, margin_weight].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     let subtitle = [Some(about), usage_line(account, measured, context)].into_iter().flatten().filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n");
     let id = format!("{}-{}", account.provider.as_str(), account.id);
     let mut row = common::row(&id, KEY, Icon::Machine, shown.clone(), (!subtitle.is_empty()).then_some(subtitle));
@@ -142,8 +148,33 @@ fn account_row(account: &AccountStatus, position: usize, measured: Option<&alond
         row.actions.push(rename);
     }
     if let Some(refresh) = scoped_action(Verb::AccountModels, account, t!(lang, "Refresh models", "Actualizar modelos"), Style::Secondary, context) { row.actions.push(refresh); }
+    row.actions.extend(key_actions(account, context));
     row.actions.extend(remove_action(account, &shown, context));
     Item::Row(row)
+}
+
+/// Setting, replacing and removing the key of a named Antigravity account that takes one. The key
+/// is typed into a secret field and goes to the account's file; the screen only says whether one
+/// is set.
+fn key_actions(account: &AccountStatus, context: &RenderContext<'_>) -> Vec<Action> {
+    let lang = context.lang;
+    let Some(status) = account.antigravity.as_ref().filter(|status| status.access.takes_key() && !account.id.is_default()) else { return vec![] };
+    let placeholder = if status.access == alondra_core::antigravity_account::Access::ApiKey { t!(lang, "Gemini API key", "Clave de API de Gemini") }
+        else { t!(lang, "Agent Platform key", "Clave de Agent Platform") };
+    let mut actions = vec![];
+    let label = if status.key_set { t!(lang, "Replace key", "Cambiar clave") } else { t!(lang, "Set key", "Poner clave") };
+    if let Some(mut set) = scoped_action(Verb::AccountCredential, account, label, if status.key_set { Style::Secondary } else { Style::Primary }, context) {
+        set.input = Input::Text { placeholder: placeholder.into(), required: true, multiline: false, secret: true };
+        set.description = Some(t!(lang, "Alondra keeps it in a file only you can read, and gives it only to this account's agy", "Alondra la guarda en un archivo que solo tú puedes leer y solo se la da al agy de esta cuenta").into());
+        set.stamp = Some(t!(lang, "Key saved", "Clave guardada").into());
+        actions.push(set);
+    }
+    if status.key_set && let Some(mut clear) = scoped_action(Verb::AccountCredential, account, t!(lang, "Remove key", "Quitar clave"), Style::Destructive, context) {
+        clear.option_id = Some("clear".into());
+        clear.stamp = Some(t!(lang, "Key removed", "Clave quitada").into());
+        actions.push(clear);
+    }
+    actions
 }
 
 /// The weight to count the account for: its plan's, or one the user picks.
@@ -201,8 +232,20 @@ fn add_row(provider: Provider, context: &RenderContext<'_>) -> Item {
     row.link = None;
     if let Some(mut add) = common::action(Verb::AccountAdd, provider.as_str(), context.domain.revision, t!(lang, "Add", "Añadir"), Style::Primary) {
         add.role = Some(Role::Advance);
-        add.input = Input::Text { placeholder: t!(lang, "Account name", "Nombre de la cuenta").into(), required: true, multiline: false, secret: false };
+        let input = Input::Text { placeholder: t!(lang, "Account name", "Nombre de la cuenta").into(), required: true, multiline: false, secret: false };
         add.stamp = Some(t!(lang, "Added", "Añadida").into());
+        if provider == Provider::Antigravity {
+            use alondra_core::antigravity_account::Access;
+            add.presentation = Presentation::Menu;
+            add.description = Some(t!(lang, "A Google Cloud project account is added with alondra accounts add on the Mac, which takes its project",
+                "Una cuenta de proyecto de Google Cloud se añade con alondra accounts add en el Mac, que pide su proyecto").into());
+            for access in [Access::Google, Access::Enterprise, Access::ApiKey] {
+                add.options.push(super::ActionOption { id: access.as_str().into(), label: access_label(access, lang).into(), description: None,
+                    style: Style::Secondary, input: input.clone(), key: None });
+            }
+        } else {
+            add.input = input;
+        }
         row.actions.push(add);
     }
     Item::Row(row)
@@ -332,13 +375,18 @@ fn account_presentation(account: &AccountStatus, position: usize, measured: Opti
     let freshness = Label { text, tone: if windows.iter().any(|window| window.stale) { Tone::Warning } else { Tone::Neutral }, elapsed: None };
     let reason = if native_limit_reported(measured) { Some(t!(lang, "The provider reported a usage limit. Check accounts again or choose another account; no usage percentage was reported.", "El proveedor ha comunicado un límite de uso. Vuelve a comprobar las cuentas o elige otra; no se ha informado un porcentaje de uso.").into()) } else { match account.state {
         AccountState::SignedOut => Some(account_sign_in_hint(account, lang)),
-        AccountState::Unavailable => Some(t!(lang, "The native provider could not be checked", "No se pudo comprobar el proveedor nativo").into()),
+        AccountState::Unavailable => Some(account.antigravity.as_ref().and_then(|status| status.unavailable).map_or_else(
+            || t!(lang, "The native provider could not be checked", "No se pudo comprobar el proveedor nativo").into(), |why| unavailable_label(why, lang).into())),
         AccountState::Disabled => Some(t!(lang, "New work is disabled; running work continues", "Trabajo nuevo desactivado; el trabajo en curso continúa").into()),
         _ => None,
     } };
     let model_catalog = context.index.model_catalogs().iter().find(|catalog| catalog.account == key).cloned();
     super::AccountPresentation { model_catalog, key: key.clone(), position: u32::try_from(position).unwrap_or(u32::MAX), availability: state_badge(account.state, lang), reason,
         usage_summary: (account.provider == Provider::Codex).then(|| quota_summary(measured, context.live.observed_at, lang)),
-        quota_source: (account.provider == Provider::Codex && !windows.is_empty()).then(|| t!(lang, "Source: Codex account/rateLimits/read", "Origen: Codex account/rateLimits/read").into()),
+        quota_source: (!windows.is_empty()).then(|| match account.provider {
+            Provider::Codex => Some(t!(lang, "Source: Codex account/rateLimits/read", "Origen: Codex account/rateLimits/read").into()),
+            Provider::Antigravity => Some(t!(lang, "Source: agy /usage", "Origen: agy /usage").into()),
+            Provider::Claude => None,
+        }).flatten(),
         email: account.email.clone(), plan: account.plan.clone(), active_nodes: u32::try_from(context.index.nodes_on_account_key(&key)).unwrap_or(u32::MAX), freshness, windows }
 }

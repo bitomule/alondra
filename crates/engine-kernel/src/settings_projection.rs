@@ -84,7 +84,7 @@ mod tests {
         config.set_order(keys.clone()).unwrap();
         fs::write(alondra_core::options::path_in(&home), config.to_toml()).unwrap();
         let runtime = crate::domain_runtime::DomainRuntime::open_unwired(&home).unwrap();
-        seed(&runtime, Command::RecordAccounts { accounts: keys.iter().map(|key| AccountStatus {
+        seed(&runtime, Command::RecordAccounts { accounts: keys.iter().map(|key| AccountStatus { antigravity: None,
             provider: key.provider, id: key.account.clone(), name: key.provider.as_str().into(), state: AccountState::SignedIn,
             native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
         }).collect(), reserve: alondra_core::usage::default_reserve() });

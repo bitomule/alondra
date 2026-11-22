@@ -454,7 +454,7 @@ async fn accounts_check(
     };
     let (domain, home) = (state.domain(), state.home.clone());
     match tokio::task::spawn_blocking(move || {
-        crate::accounts::check(&*domain, &home);
+        crate::accounts::check_now(&*domain, &home);
         crate::accounts::read(&*domain, &home, lang)
     }).await {
         Ok(reply) => crate::accounts::for_client(reply, query.provider_accounts()).into_response(),
@@ -1571,7 +1571,7 @@ mod tests {
         use alondra_core::model_selection::*;
         use alondra_core::usage::*;
         let mut state = alondra_domain_rules::DomainState::new("quota-test");
-        state.accounts = vec![AccountStatus { provider: Provider::Codex, id: AccountId::default_account(),
+        state.accounts = vec![AccountStatus { antigravity: None, provider: Provider::Codex, id: AccountId::default_account(),
             name: "Native".into(), state: AccountState::SignedIn, native_identity: None, email: None, plan: None,
             billing: AccountBilling::default(), sign_ins: 0, profile: None }];
         state.model_catalogs.push(AccountModelCatalog { account: AccountKey::native(Provider::Codex), revision: "one".into(), measured_at: 1,

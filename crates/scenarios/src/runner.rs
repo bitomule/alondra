@@ -945,7 +945,7 @@ impl Context<'_> {
         std::fs::write(alondra_core::options::path_in(&self.config.home), settings.to_toml()).map_err(|e| Self::failed(index, e))?;
         let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
         let mut accounts = state.accounts.clone();
-        accounts.push(AccountStatus {
+        accounts.push(AccountStatus { antigravity: None,
             provider: Provider::Codex, id: AccountId::default_account(), name: "Codex".into(), state: AccountState::SignedIn,
             native_identity: Some("demo-workspace".into()), email: Some("ana@example.com".into()), plan: None, billing: Default::default(),
             sign_ins: 0, profile: None,

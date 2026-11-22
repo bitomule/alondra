@@ -164,7 +164,7 @@ pub fn connect_claude_and_codex(f: &Fixture) {
     let keys = vec![AccountKey::native(Provider::Claude), AccountKey::native(Provider::Codex)];
     config.set_order(keys.clone()).unwrap();
     std::fs::write(alondra_core::options::path_in(&f.home), config.to_toml()).unwrap();
-    let statuses = keys.iter().map(|key| AccountStatus { provider: key.provider, id: key.account.clone(), name: "Personal".into(), state: AccountState::SignedIn,
+    let statuses = keys.iter().map(|key| AccountStatus { antigravity: None, provider: key.provider, id: key.account.clone(), name: "Personal".into(), state: AccountState::SignedIn,
         native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }).collect();
     command(&f.domain, Actor::System, Command::RecordAccounts { accounts: statuses, reserve: alondra_core::usage::Share::of(config.distribution.reserve) });
     command(&f.domain, Actor::System, Command::RecordAccountConfiguration { order: keys.clone(), version: alondra_core::accounts::config_version(&config) });

@@ -1434,7 +1434,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
                 use alondra_core::model_selection::{AccountModelCatalog,CatalogModel};
                 let key = AccountKey::new(Provider::Claude,AccountId::default_account());
                 if domain.read().state().accounts.is_empty() {
-                seed_command(&domain,"fixture-account",Command::RecordAccounts { accounts: vec![AccountStatus { provider: Provider::Claude,id: key.account.clone(),name:"Default".into(),state:AccountState::SignedIn,native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None }],reserve:alondra_core::usage::default_reserve() });
+                seed_command(&domain,"fixture-account",Command::RecordAccounts { accounts: vec![AccountStatus { antigravity: None, provider: Provider::Claude,id: key.account.clone(),name:"Default".into(),state:AccountState::SignedIn,native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None }],reserve:alondra_core::usage::default_reserve() });
                 }
                 seed_command(&domain,"fixture-account-order",Command::RecordAccountConfiguration { order:vec![key.clone()],version:"fixture-accounts".into() });
                 let file = alondra_core::options::OptionsFile::parse(&std::fs::read_to_string(&option_path).unwrap()).unwrap();
@@ -2612,7 +2612,7 @@ mod tests {
 
     fn accounts_seen(f: &Fixture, id: &str, state: alondra_core::accounts::AccountState) {
         use alondra_core::accounts::{AccountBilling, AccountId, AccountStatus, Provider};
-        let accounts = vec![AccountStatus {
+        let accounts = vec![AccountStatus { antigravity: None,
             provider: Provider::Claude, id: AccountId::default_account(), name: "default".into(), state,
             native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
         }];
@@ -2700,7 +2700,7 @@ mod tests {
 
     #[test]
     fn the_orchestrator_waits_for_a_sign_in_only_when_no_account_may_have_a_session() {
-        let seen = |states: &[(&str, AccountState)]| none_signed_in(&states.iter().map(|(id, state)| AccountStatus {
+        let seen = |states: &[(&str, AccountState)]| none_signed_in(&states.iter().map(|(id, state)| AccountStatus { antigravity: None,
             provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: (*id).into(), state: *state,
             native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
         }).collect::<Vec<_>>());

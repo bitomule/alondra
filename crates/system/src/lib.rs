@@ -10,6 +10,7 @@ mod test_support;
 #[macro_use]
 extern crate alondra_foundation;
 
+pub mod antigravity_account;
 pub mod claude_account;
 pub mod claude_trust;
 pub mod codex_account;
@@ -105,6 +106,27 @@ impl Accounts for MacAccounts {
     }
     fn remove_codex(&self, home: &Path, key: &AccountKey) -> std::io::Result<()> {
         codex_account::remove(home, key)
+    }
+    fn prepare_antigravity(&self, home: &Path, key: &AccountKey, shared_from: &Path) -> Result<Option<PathBuf>, String> {
+        antigravity_account::prepare(home, key, shared_from)
+    }
+    fn remove_antigravity(&self, home: &Path, key: &AccountKey) -> std::io::Result<()> {
+        antigravity_account::remove(home, key)
+    }
+    fn set_antigravity_key(&self, home: &Path, key: &AccountKey, secret: Option<&alondra_core::antigravity_account::Secret>) -> Result<(), String> {
+        antigravity_account::set_key(home, key, secret)
+    }
+    fn antigravity_key(&self, home: &Path, key: &AccountKey) -> Result<Option<alondra_core::antigravity_account::Secret>, String> {
+        antigravity_account::key(home, key)
+    }
+    fn antigravity_key_set(&self, home: &Path, key: &AccountKey) -> bool {
+        antigravity_account::key_set(home, key)
+    }
+    fn check_antigravity(&self, probe: &alondra_core::antigravity_account::Probe) -> alondra_core::antigravity_account::CheckReport {
+        antigravity_account::check(probe)
+    }
+    fn antigravity_usage(&self, probe: &alondra_core::antigravity_account::Probe) -> Result<alondra_core::antigravity_account::UsageOutcome, String> {
+        antigravity_account::usage(probe)
     }
     fn shares_sessions(&self, home: &Path, user_home: &Path, default_profile: Option<&Path>, one: &AccountId, other: &AccountId) -> bool {
         claude_account::shares_sessions(home, user_home, default_profile, one, other)

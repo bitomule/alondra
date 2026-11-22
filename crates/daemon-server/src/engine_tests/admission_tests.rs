@@ -210,7 +210,7 @@ fn another_providers_capacity_does_not_admit_a_usage_paused_node() {
         RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn-t1".into(), input },
     ] });
     domain.report(alondra_daemon_engine::node_reports::Envelope { session_id: "agent-t1".into(), report: alondra_daemon_engine::node_reports::Report::TurnStart }, 1_000);
-    let status = |provider| AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
+    let status = |provider| AccountStatus { antigravity: None, provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
         native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None };
     run(&domain, Actor::System, Command::RecordAccounts { accounts: vec![status(Provider::Claude), status(Provider::Codex)], reserve: alondra_core::usage::default_reserve() });
     let record = |provider, windows| alondra_daemon_engine::usage_probe::record_for_provider(&*domain, &AccountKey::new(provider, AccountId::default_account()),

@@ -100,6 +100,12 @@ impl WindowKind {
         let window = match *window { "primary" => "Primary", "secondary" => "Secondary", _ => return None };
         Some(match self.duration_minutes() { Some(minutes) => format!("{window} · {minutes} min"), None => window.into() })
     }
+    /// The pool an Antigravity window is about, as `agy /usage` named its first model: none for
+    /// another window.
+    pub fn antigravity_pool(&self) -> Option<&str> {
+        let Self::Other(name) = self else { return None };
+        name.strip_prefix(crate::antigravity_account::WINDOW_PREFIX)?.rsplit_once(':').map(|(_, pool)| pool)
+    }
     fn account_wide(&self, provider: Provider) -> bool {
         matches!(self, Self::Session | Self::Weekly) || matches!((provider, self), (Provider::Codex, Self::Other(name)) if name.starts_with("codex:account:"))
     }
@@ -262,7 +268,7 @@ impl AccountUsage {
     /// When the account's session or week, which hold back every model, comes back after running
     /// out. A window of one model alone leaves the others working.
     pub fn plan_exhausted_until(&self, now: Millis) -> Option<Millis> {
-        self.ran_out(now, |kind| kind.account_wide(self.provider))
+        self.ran_out(now, |kind| kind.account_wide(self.provider)).or_else(|| self.every_pool_ran_out(now).flatten())
     }
 
     fn ran_out(&self, now: Millis, counts: impl Fn(&WindowKind) -> bool) -> Option<Millis> {
@@ -282,9 +288,19 @@ impl AccountUsage {
             .or_else(|| self.windows.iter().filter_map(|window| window.reading.resets_at.filter(|reset| *reset > now)).min())
     }
 
-    /// Whether the session or the week ran out and has not reset.
+    /// Whether the session or the week ran out and has not reset. An Antigravity account has
+    /// neither: each pool of models runs out on its own, and the account stops once all of them did.
     pub fn plan_exhausted(&self, now: Millis) -> bool {
-        self.plan_ran_out(now).next().is_some()
+        self.plan_ran_out(now).next().is_some() || self.every_pool_ran_out(now).is_some()
+    }
+
+    /// When an Antigravity account whose every pool ran out gets one back: the soonest reset, or
+    /// `Some(None)` when one has no known reset. None while a pool has room.
+    fn every_pool_ran_out(&self, now: Millis) -> Option<Option<Millis>> {
+        if self.provider != Provider::Antigravity { return None; }
+        let pools: Vec<_> = self.windows.iter().map(|window| &window.reading).filter(|reading| reading.kind.antigravity_pool().is_some()).collect();
+        let spent = !pools.is_empty() && pools.iter().all(|reading| (reading.exhausted || reading.used == Share::FULL) && reading.resets_at.is_none_or(|reset| reset > now));
+        spent.then(|| pools.iter().map(|reading| reading.resets_at).collect::<Option<Vec<_>>>().and_then(|resets| resets.into_iter().min()))
     }
 
     fn plan_ran_out(&self, now: Millis) -> impl Iterator<Item = &WindowReading> {
@@ -297,6 +313,7 @@ impl AccountUsage {
 
     /// When the session and the week it ran out of have reset: none when one has no known reset.
     fn can_work_at(&self, now: Millis) -> Option<Millis> {
+        if let Some(back) = self.every_pool_ran_out(now) { return back; }
         let mut at = now;
         for reading in self.plan_ran_out(now) {
             at = at.max(reading.resets_at?);
@@ -508,7 +525,7 @@ fn or_implicit(accounts: &[AccountStatus]) -> std::borrow::Cow<'_, [AccountStatu
         return std::borrow::Cow::Borrowed(accounts);
     }
     let account = crate::accounts::ProviderAccount::implicit_default();
-    std::borrow::Cow::Owned(vec![AccountStatus {
+    std::borrow::Cow::Owned(vec![AccountStatus { antigravity: None,
         provider: Provider::Claude, id: account.id, name: account.name, state: AccountState::Unchecked, native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0, profile: None,
     }])
 }
@@ -627,7 +644,7 @@ pub fn quota_evidence(usage: Option<&AccountUsage>, now: Millis) -> String {
         "; provider reported a usage limit without a percentage"
     } else { "" };
     if windows.is_empty() { return format!("quota unknown{limit}"); }
-    let source = match usage.provider { Provider::Codex => "account/rateLimits/read", Provider::Claude => "native usage" };
+    let source = match usage.provider { Provider::Codex => "account/rateLimits/read", Provider::Claude => "native usage", Provider::Antigravity => "agy /usage" };
     format!("quota {remaining} ({source}; {windows}){limit}")
 }
 

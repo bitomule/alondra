@@ -643,7 +643,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
 "#;
         std::fs::write(alondra_core::options::path_in(&f.executor.home),text).unwrap();
         let options=alondra_core::options::OptionsFile::parse(text).unwrap();
-        f.run(Actor::System,"codex-policy-roster",Command::RecordAccounts{accounts:vec![AccountStatus{provider:Provider::Codex,id:AccountId::default_account(),name:"Native fixture".into(),state:AccountState::SignedIn,native_identity:Some("fixture-workspace".into()),email:Some("first@example.test".into()),plan:None,billing:Default::default(),sign_ins: 0, profile: None}],reserve:alondra_core::usage::default_reserve()});
+        f.run(Actor::System,"codex-policy-roster",Command::RecordAccounts{accounts:vec![AccountStatus{ antigravity: None,provider:Provider::Codex,id:AccountId::default_account(),name:"Native fixture".into(),state:AccountState::SignedIn,native_identity:Some("fixture-workspace".into()),email:Some("first@example.test".into()),plan:None,billing:Default::default(),sign_ins: 0, profile: None}],reserve:alondra_core::usage::default_reserve()});
         f.run(Actor::System,"codex-policy-order",Command::RecordAccountConfiguration{order:vec![key.clone()],version:"codex-policy-fixture".into()});
         let version=alondra_core::model_selection::profiles_version(&options.model_profiles);
         f.run(Actor::System,"codex-policy-profiles",Command::RecordModelProfiles{profiles:options.model_profiles,version});
@@ -690,7 +690,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
 "#;
             std::fs::write(alondra_core::options::path_in(&f.executor.home),text).unwrap();
             let options=alondra_core::options::OptionsFile::parse(text).unwrap();
-            f.run(Actor::System,"codex-policy-roster",Command::RecordAccounts{accounts:vec![AccountStatus{provider:Provider::Codex,id:AccountId::default_account(),name:"Native fixture".into(),state:AccountState::SignedIn,native_identity:Some("fixture-workspace".into()),email:Some("first@example.test".into()),plan:None,billing:Default::default(),sign_ins: 0, profile: None}],reserve:alondra_core::usage::default_reserve()});
+            f.run(Actor::System,"codex-policy-roster",Command::RecordAccounts{accounts:vec![AccountStatus{ antigravity: None,provider:Provider::Codex,id:AccountId::default_account(),name:"Native fixture".into(),state:AccountState::SignedIn,native_identity:Some("fixture-workspace".into()),email:Some("first@example.test".into()),plan:None,billing:Default::default(),sign_ins: 0, profile: None}],reserve:alondra_core::usage::default_reserve()});
             f.run(Actor::System,"codex-policy-order",Command::RecordAccountConfiguration{order:vec![key.clone()],version:"codex-policy-fixture".into()});
             let version=alondra_core::model_selection::profiles_version(&options.model_profiles);
             f.run(Actor::System,"codex-policy-profiles",Command::RecordModelProfiles{profiles:options.model_profiles,version});
@@ -732,7 +732,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
 "#;
             std::fs::write(alondra_core::options::path_in(&f.executor.home),text).unwrap();
             let options=alondra_core::options::OptionsFile::parse(text).unwrap();
-            f.run(Actor::System,"codex-policy-roster",Command::RecordAccounts{accounts:vec![AccountStatus{provider:Provider::Codex,id:AccountId::default_account(),name:"Native fixture".into(),state:AccountState::SignedIn,native_identity:Some("fixture-workspace".into()),email:Some("first@example.test".into()),plan:None,billing:Default::default(),sign_ins: 0, profile: None}],reserve:alondra_core::usage::default_reserve()});
+            f.run(Actor::System,"codex-policy-roster",Command::RecordAccounts{accounts:vec![AccountStatus{ antigravity: None,provider:Provider::Codex,id:AccountId::default_account(),name:"Native fixture".into(),state:AccountState::SignedIn,native_identity:Some("fixture-workspace".into()),email:Some("first@example.test".into()),plan:None,billing:Default::default(),sign_ins: 0, profile: None}],reserve:alondra_core::usage::default_reserve()});
             f.run(Actor::System,"codex-policy-order",Command::RecordAccountConfiguration{order:vec![key.clone()],version:"codex-policy-fixture".into()});
             let version=alondra_core::model_selection::profiles_version(&options.model_profiles);
             f.run(Actor::System,"codex-policy-profiles",Command::RecordModelProfiles{profiles:options.model_profiles,version});

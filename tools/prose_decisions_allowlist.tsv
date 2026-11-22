@@ -255,3 +255,5 @@ crates/daemon-engine/src/node_push.rs	let (stamp, said) = text.strip_prefix("[Fr
 crates/daemon-engine/src/node_push.rs	(stamp.rsplit_once(" · ").expect("the stamp has a time").0.to_owned(), said.to_owned())	own-grammar	the stamp Alondra puts on a message, read back by the push node of a test
 crates/engine-sdk/src/engine_fixtures/orchestrator_tools.rs	assert!(card.body.contains("Choose a model before its native reasoning effort"), "{}", card.body);	display	a test fixture checks the text a card shows
 crates/engine-sdk/src/host_folders.rs	name.starts_with(NODE) && !name.contains('.')	own-grammar	host folder names are made by Alondra itself (sdk- for a node, o-/orchestrator- for a batch)
+crates/core/src/antigravity_account.rs	let model = model.trim().to_ascii_lowercase();	own-grammar	model id grammar of the agy catalog
+crates/core/src/usage.rs	name.strip_prefix(crate::antigravity_account::WINDOW_PREFIX)?.rsplit_once(':').map(|(_, pool)| pool)	own-grammar	window name Alondra writes for an Antigravity pool

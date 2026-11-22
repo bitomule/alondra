@@ -1132,7 +1132,7 @@ fn a_turn_the_limit_ends_while_the_api_holds_its_task_waits_for_the_limit_instea
 }
 
 fn accounts_seen(s: &mut DomainState, states: &[(&str, alondra_core::accounts::AccountState)]) {
-    let accounts = states.iter().map(|(id, state)| alondra_core::accounts::AccountStatus {
+    let accounts = states.iter().map(|(id, state)| alondra_core::accounts::AccountStatus { antigravity: None,
         provider: alondra_core::accounts::Provider::Claude, id: alondra_core::accounts::AccountId::parse(id).unwrap(), name: id.to_uppercase(), state: *state,
         native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0,
         profile: (*id != "default").then(|| format!("~/.alondra/accounts/{id}")),
@@ -2345,7 +2345,7 @@ fn a_pause_keeps_its_owner_in_the_journal() {
 
 fn mixed_default_accounts(s: &mut DomainState, codex_state: alondra_core::accounts::AccountState) {
     use alondra_core::accounts::*;
-    let accounts=[Provider::Claude,Provider::Codex].into_iter().map(|provider|AccountStatus {provider,id:AccountId::default_account(),name:format!("{provider:?} personal"),state:if provider==Provider::Codex {codex_state} else {AccountState::SignedIn},native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None}).collect();
+    let accounts=[Provider::Claude,Provider::Codex].into_iter().map(|provider|AccountStatus { antigravity: None,provider,id:AccountId::default_account(),name:format!("{provider:?} personal"),state:if provider==Provider::Codex {codex_state} else {AccountState::SignedIn},native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None}).collect();
     must(s,Actor::System,Command::RecordAccounts {accounts,reserve:alondra_core::usage::default_reserve()});
 }
 

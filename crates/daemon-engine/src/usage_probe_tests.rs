@@ -65,7 +65,7 @@ fn an_account_is_probed_at_start_every_15_minutes_while_quiet_and_right_after_a_
 // that comes back signed in) is due, an account first seen or unchanged is not.
 #[test]
 fn a_new_sign_in_is_measured_at_once() {
-    let claude = |state, sign_ins| AccountStatus { provider: Provider::Claude, id: id("claude-2"), name: "Claude 2".into(), state, native_identity: None,
+    let claude = |state, sign_ins| AccountStatus { antigravity: None, provider: Provider::Claude, id: id("claude-2"), name: "Claude 2".into(), state, native_identity: None,
         email: None, plan: None, billing: AccountBilling::default(), sign_ins, profile: None };
     let mut schedule = ProbeSchedule::default();
     assert!(schedule.signed_in_again(&[&claude(AccountState::SignedOut, 0)]).is_empty(), "first seen");
@@ -182,7 +182,7 @@ async fn a_stale_usage_probe_retries_with_a_fresh_fence_and_makes_the_account_se
     backend.native_environment.insert("STALE_OPTIONS".into(), options.display().to_string());
     domain.enable_sdk(backend);
     let account = AccountId::default_account();
-    readiness_accounts(&domain, vec![AccountStatus {
+    readiness_accounts(&domain, vec![AccountStatus { antigravity: None,
         provider: Provider::Claude, id: account.clone(), name: "Personal".into(), state: AccountState::SignedIn,
         native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }]);
@@ -286,7 +286,7 @@ fn the_readings_and_the_days_start_survive_a_restart() {
 }
 
 fn two_accounts(domain: &DomainRuntime) {
-    let accounts = ["default", "work"].map(|account| AccountStatus {
+    let accounts = ["default", "work"].map(|account| AccountStatus { antigravity: None,
         provider: Provider::Claude, id: id(account), name: account.into(), state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }).to_vec();
     let read = domain.read();
@@ -338,7 +338,7 @@ fn readiness_accounts(domain: &DomainRuntime, accounts: Vec<AccountStatus>) {
 }
 
 fn codex_status(state: AccountState) -> AccountStatus {
-    AccountStatus { provider: Provider::Codex, id: id("default"), name: "Personal".into(), state, native_identity: None, email: None, plan: None,
+    AccountStatus { antigravity: None, provider: Provider::Codex, id: id("default"), name: "Personal".into(), state, native_identity: None, email: None, plan: None,
         billing: AccountBilling::default(), sign_ins: 0, profile: None }
 }
 
@@ -465,4 +465,23 @@ fn the_account_rows_recorded_before_the_margin_fix_load_and_spread_work_to_claud
 
 fn hosts() -> alondra_agent_runtime::owned_host::ProcessHosts {
     alondra_agent_runtime::owned_host::ProcessHosts::new(Default::default())
+}
+
+// Antigravity accounts run no node yet: one signed in, by subscription or with a key, neither ends
+// nor shortens the wait while every Claude account is out.
+#[test]
+fn an_antigravity_account_never_ends_the_wait_for_claude() {
+    let home = Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
+    let antigravity = |account: &str, billing| AccountStatus { provider: Provider::Antigravity, id: id(account), name: account.into(), state: AccountState::SignedIn,
+        native_identity: None, email: None, plan: None, billing, sign_ins: 0, profile: None,
+        antigravity: Some(alondra_core::accounts::AntigravityStatus::of(&Default::default(), false)) };
+    let claude = AccountStatus { antigravity: None, provider: Provider::Claude, id: id("default"), name: "Personal".into(), state: AccountState::SignedIn,
+        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None };
+    readiness_accounts(&domain, vec![claude, antigravity("default", AccountBilling::default()), antigravity("studio", AccountBilling::PayPerUse)]);
+    let now = now_millis();
+    record_limit(&domain, &id("default"), Some(now + 3_600_000), now);
+    follow(&domain, now);
+    assert_eq!(domain.live().usage_pause.current().map(|standing| standing.until), Some(now + 3_600_000), "the Mac waits for Claude's reset");
 }

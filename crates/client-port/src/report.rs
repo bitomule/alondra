@@ -73,7 +73,7 @@ pub fn omitted_label(key: &str) -> String {
 
 /// The checks of `alondra doctor`, by id: the only ids `doctor.json` may carry.
 pub const CHECK_IDS: &[&str] = &[
-    "mac", "providers", "codex", "claude", "claude.profile", "claude.signin", "projects", "identity", "config", "service",
+    "mac", "providers", "codex", "antigravity", "claude", "claude.profile", "claude.signin", "projects", "identity", "config", "service",
     "alondrad", "login-item", "state", "startup", "upgrade", "update", "hooks", "codex.signin", "plugin", "validate",
     "relay", "direct", "devices", "notifications", "tuicr",
 ];

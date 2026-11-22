@@ -3,6 +3,7 @@
 mod test_support;
 
 pub mod accounts;
+pub mod antigravity_account;
 pub mod codex_account;
 pub mod codex_login;
 pub mod home_lock;

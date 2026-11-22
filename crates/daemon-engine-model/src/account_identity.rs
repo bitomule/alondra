@@ -176,7 +176,7 @@ impl alondra_engine_ports::journal::KnownIdentity for NativeAccountIdentity {
 #[cfg(test)]
 mod tests{
     use super::*;
-    fn status()->AccountStatus{AccountStatus{provider:alondra_core::accounts::Provider::Codex,id:alondra_core::accounts::AccountId::default_account(),name:"Native account".into(),state:alondra_core::accounts::AccountState::SignedIn,email:Some("native@example.test".into()),native_identity:None,plan:None,billing:AccountBilling::Subscription{plan:None,weight:None},sign_ins: 0, profile: None}}
+    fn status()->AccountStatus{AccountStatus{ antigravity: None,provider:alondra_core::accounts::Provider::Codex,id:alondra_core::accounts::AccountId::default_account(),name:"Native account".into(),state:alondra_core::accounts::AccountState::SignedIn,email:Some("native@example.test".into()),native_identity:None,plan:None,billing:AccountBilling::Subscription{plan:None,weight:None},sign_ins: 0, profile: None}}
     #[test]
     fn repeated_same_email_reauthentication_preserves_native_identity(){
         let directory=crate::test_support::Directory::new();std::fs::create_dir_all(&directory).unwrap();let mut account=status();

@@ -796,7 +796,7 @@ impl<H: Hosts> Slice<H> {
     }
 
     pub fn accounts_seen(&self, id: &str, work: AccountState) {
-        let accounts = [("default", AccountState::SignedIn), ("work", work)].map(|(id, state)| AccountStatus {
+        let accounts = [("default", AccountState::SignedIn), ("work", work)].map(|(id, state)| AccountStatus { antigravity: None,
             provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None,
         }).to_vec();
         self.run(&Actor::System, id, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
@@ -869,7 +869,7 @@ pub fn claude_ready<H: Hosts>(slice: &Slice<H>) {
     let state=slice.domain.state().unwrap();
     let mut accounts=state.accounts.clone();
     accounts.retain(|account|!(account.provider==Provider::Claude && account.id.is_default()));
-    accounts.push(alondra_core::accounts::AccountStatus{provider:Provider::Claude,id:AccountId::default_account(),name:"Claude fixture".into(),state:alondra_core::accounts::AccountState::SignedIn,native_identity:None,email:None,plan:None,billing:Default::default(),sign_ins:0,profile:None});
+    accounts.push(alondra_core::accounts::AccountStatus{ antigravity: None,provider:Provider::Claude,id:AccountId::default_account(),name:"Claude fixture".into(),state:alondra_core::accounts::AccountState::SignedIn,native_identity:None,email:None,plan:None,billing:Default::default(),sign_ins:0,profile:None});
     slice.run(&system(),"claude-fixture-account",Command::RecordAccounts{accounts,reserve:state.account_reserve});
     claude_window(slice,Some(200_000),1);
 }

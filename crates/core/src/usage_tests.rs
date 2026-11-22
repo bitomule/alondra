@@ -46,7 +46,7 @@ fn id(text: &str) -> AccountId {
 }
 
 fn status(text: &str, state: AccountState, billing: AccountBilling) -> AccountStatus {
-    AccountStatus { provider: Provider::Claude, id: id(text), name: text.into(), state, native_identity: None, email: None, plan: None, billing, sign_ins: 0, profile: None }
+    AccountStatus { antigravity: None, provider: Provider::Claude, id: id(text), name: text.into(), state, native_identity: None, email: None, plan: None, billing, sign_ins: 0, profile: None }
 }
 
 fn window(kind: WindowKind, used: f64, resets_at: Millis) -> WindowReading {

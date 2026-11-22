@@ -69,6 +69,7 @@ pub fn measured_key(provider: Provider, model: &str) -> String {
     match provider {
         Provider::Claude => crate::model_label::model_family(bare),
         Provider::Codex => bare.to_ascii_lowercase(),
+        Provider::Antigravity => crate::antigravity_account::model_family(bare),
     }
 }
 

@@ -141,7 +141,7 @@ pub(crate) fn observe(home: &Path, claude: Option<&Claude>, config: &AccountsCon
                 AccountBilling::Subscription { plan, .. } => plan.clone(),
                 AccountBilling::PayPerUse => None,
             };
-            let mut status = AccountStatus {
+            let mut status = AccountStatus { antigravity: None,
                 provider: Provider::Claude, id: account.id.clone(), name: account.name.clone(), state: AccountState::Disabled,
                 native_identity: None, email: None, plan: configured_plan.clone(), billing: account.billing.clone(), sign_ins: 0, profile: None,
             };
@@ -259,6 +259,13 @@ pub(crate) fn select_for_node_with_tools(domain: &dyn Runtime, home: &Path, inte
     use alondra_domain_rules::DomainError;
     require_initial_check(domain)?;
     let config = config(home).map_err(|why| DomainError::new("settings_unavailable", why))?;
+    let antigravity = provider == Some(Provider::Antigravity) || preferred_account.is_some_and(|key| key.provider == Provider::Antigravity)
+        || intent.account.as_ref().is_some_and(|key| key.provider == Provider::Antigravity)
+        || intent.requested.as_ref().is_some_and(|model| model.provider == Provider::Antigravity);
+    if antigravity {
+        return Err(DomainError::new("provider_unavailable", alondra_core::antigravity_account::NODES_NOT_AVAILABLE)
+            .because(alondra_domain_rules::Refusal::ProviderNotYet { provider: Provider::Antigravity.display_name().into() }));
+    }
     let read = domain.read();
     let state = read.state();
     if let Some(pinned) = &intent.account
@@ -272,7 +279,7 @@ pub(crate) fn select_for_node_with_tools(domain: &dyn Runtime, home: &Path, inte
         if configured && explicit_paid && !eligible.contains(pinned) { eligible.push(pinned.clone()); }
     }
     let effective_denied = !denied_tools.is_empty() || intent.native_tool_denials.as_ref().is_some_and(|tools| !tools.is_empty());
-    eligible.retain(|key| config.accounts(key.provider).iter().any(|account| account.id == key.account && account.enabled)
+    eligible.retain(|key| key.provider != Provider::Antigravity && config.accounts(key.provider).iter().any(|account| account.id == key.account && account.enabled)
         && provider.is_none_or(|provider| key.provider == provider) && (!effective_denied || key.provider != Provider::Codex));
     let mut eligible = alondra_core::usage::ranked_for_launch(state.account_policy, &eligible, &state.accounts, &state.account_usage, state.account_reserve, now, &alondra_daemon_engine_model::local_day(now));
     if let Some(preferred) = preferred_account
@@ -503,6 +510,7 @@ fn read_models(domain: &dyn Runtime, home: &Path, key: &AccountKey) -> Result<(P
             if let Some(why) = report.catalog_error { return Err(format!("Native model metadata is unavailable: {why}")); }
             report.catalog
         }
+        Provider::Antigravity => crate::antigravity_accounts::read_models(domain, home, &file.accounts, key)?,
         Provider::Claude => {
             let (backend, _) = domain.sdk().ok_or("The Claude SDK host is not available on this Mac")?;
             let hosts = domain.ports().port::<dyn AgentHost>().ok_or("The Claude SDK host is not available on this Mac")?;
@@ -511,6 +519,12 @@ fn read_models(domain: &dyn Runtime, home: &Path, key: &AccountKey) -> Result<(P
     };
     if catalog.models.is_empty() { return Err("This account did not advertise any models".into()); }
     Ok((fence, catalog))
+}
+
+/// Checks every account's sign-in now, Antigravity's too, as when the user asks for it.
+pub fn check_now(domain: &dyn Runtime, home: &Path) {
+    crate::antigravity_accounts::forget_checks(home);
+    check(domain, home);
 }
 
 /// Checks every account's sign-in and records what it saw.
@@ -540,7 +554,7 @@ pub fn check_current(domain: &dyn Runtime, home: &Path) -> crate::native_probe::
             let mut reports = vec![];
             for account in config.accounts(Provider::Codex) {
                 let key = AccountKey::new(Provider::Codex, account.id.clone());
-                let mut status = AccountStatus { provider: Provider::Codex, id: account.id.clone(), name: account.name,
+                let mut status = AccountStatus { antigravity: None, provider: Provider::Codex, id: account.id.clone(), name: account.name,
                     state: AccountState::Disabled, native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0, profile: None };
                 if account.enabled {
                     let folder = alondra_core::accounts::provider_folder(home, &key);
@@ -562,6 +576,8 @@ pub fn check_current(domain: &dyn Runtime, home: &Path) -> crate::native_probe::
                 }
                 statuses.push(status);
             }
+            let (antigravity, antigravity_found) = crate::antigravity_accounts::observe(domain, home, &config, &known, now);
+            statuses.extend(antigravity);
             let order: Vec<_> = config.ordered_accounts().into_iter().map(|(key, _)| key).collect();
             statuses.sort_by_key(|status| order.iter().position(|key| key.provider == status.provider && key.account == status.id));
             let user_home = Claude::user_home(domain);
@@ -581,6 +597,7 @@ pub fn check_current(domain: &dyn Runtime, home: &Path) -> crate::native_probe::
                     Err(why) => log!("Codex quota could not be read: {why}"),
                 }
             }
+            commands.extend(antigravity_found);
             if let Err(why) = publish_current_probe(domain, home, fence, commands) {
                 log!("Discarded native account metadata: {why}");
                 return crate::native_probe::Outcome::of(&why);
@@ -678,7 +695,7 @@ pub(crate) fn migrate_legacy_settings(domain: &dyn Runtime, home: &Path) -> Resu
     let read = domain.read();
     let statuses = file.accounts.ordered_accounts().into_iter().map(|(key, account)| {
         read.state().accounts.iter().find(|old| old.provider == key.provider && old.id == key.account).cloned()
-            .unwrap_or(AccountStatus { provider: key.provider, id: key.account, name: account.name, state: if account.enabled { AccountState::Unchecked } else { AccountState::Disabled },
+            .unwrap_or(AccountStatus { antigravity: None, provider: key.provider, id: key.account, name: account.name, state: if account.enabled { AccountState::Unchecked } else { AccountState::Disabled },
                 native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0, profile: None })
     }).collect();
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(), command_id: format!("provider-settings-migration-{}", crate::auth::random_hex(16)).into(),
@@ -688,6 +705,43 @@ pub(crate) fn migrate_legacy_settings(domain: &dyn Runtime, home: &Path) -> Resu
         Command::RecordDistribution { policy: file.accounts.distribution.policy, move_when_exhausted: file.accounts.distribution.move_when_exhausted },
         Command::RecordModelProfiles { profiles: file.model_profiles.clone(), version: alondra_core::model_selection::profiles_version(&file.model_profiles) }];
     crate::settings_projection::apply(domain, home, &Actor::System, envelope, Some(previous), target, recorded).map_err(|why| why.to_string())
+}
+
+/// Sets (`secret`) or clears the key of the named Antigravity account `key`: written to its folder
+/// through the accounts port, then only that its credential changed is committed as `actor`. The
+/// next check sees the account with it. The key is in no error, log line or reply. A key is cleared
+/// whatever the account's access, so one an account kept before its access changed can still go.
+pub fn set_credential_authorized(domain: &dyn Runtime, home: &Path, actor: &Actor, key: &AccountKey, secret: Option<alondra_core::antigravity_account::Secret>,
+    authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused>
+{
+    use alondra_domain_rules::DomainError;
+    let refuse = |code: &str, message: &str| ChangeRefused::Domain(DomainError::new(code, message));
+    if key.provider != Provider::Antigravity { return Err(refuse("invalid_input", "Only an Antigravity account keeps a key of Alondra's")); }
+    if key.account.is_default() { return Err(refuse("invalid_input", "The default account is agy's own sign-in: add a named account for a key")); }
+    let config = config(home).map_err(|why| ChangeRefused::Store(Refused::Invalid(why)))?;
+    if !config.accounts(Provider::Antigravity).iter().any(|account| account.id == key.account) { return Err(refuse("not_found", "The account is no longer listed")); }
+    if secret.is_some() && !config.antigravity_settings(&key.account).access.takes_key() { return Err(refuse("invalid_input", "This account signs in with Google and keeps no key")); }
+    if let Some(problem) = secret.as_ref().and_then(|secret| alondra_core::antigravity_account::key_problem(secret.expose())) { return Err(refuse("invalid_input", problem)); }
+    let read = domain.read();
+    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(),
+        command_id: format!("account-credential-{}", crate::auth::random_hex(16)).into(), expected_revision: 0,
+        command: Command::RecordAccountCredential { account: key.clone(), set: secret.is_some() } };
+    if !read.state().accounts.iter().any(|status| status.provider == key.provider && status.id == key.account && status.antigravity.is_some()) {
+        return Err(refuse("not_found", "The account is no longer listed"));
+    }
+    drop(read);
+    authorize().map_err(|_| refuse("forbidden", "device approval was revoked"))?;
+    let accounts = domain.ports().accounts();
+    let user_home = crate::antigravity_accounts::Antigravity::of(domain).map_or_else(|| Claude::user_home(domain), |agy| agy.user_home);
+    accounts.prepare_antigravity(home, key, &crate::antigravity_accounts::Antigravity::shared(&user_home)).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
+    accounts.set_antigravity_key(home, key, secret.as_ref()).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
+    drop(secret);
+    domain.execute(actor, &envelope, None, || Ok(())).map_err(|why| match why {
+        crate::domain_store::StoreError::Domain(why) => ChangeRefused::Domain(why),
+        why => ChangeRefused::Store(Refused::Folder(why.to_string())),
+    })?;
+    crate::antigravity_accounts::forget(home, key);
+    Ok(())
 }
 
 /// Why a change from Settings was not made.
@@ -901,6 +955,7 @@ pub fn read(domain: &dyn Runtime, home: &Path, lang: Lang) -> Reply {
                 "default": account.id.is_default(), "billing": account.billing, "state": state,
                 "email": status.and_then(|s| s.email.clone()), "plan": status.and_then(|s| s.plan.clone()),
                 "profile": alondra_core::accounts::shown_profile(home, &user_home, &key),
+                "antigravity": status.and_then(|s| s.antigravity.clone()),
             })
         })
         .collect();
@@ -914,6 +969,7 @@ pub fn for_client(mut reply: Reply, provider_accounts: bool) -> Reply {
     if let Some(config) = reply.body.get_mut("config").and_then(serde_json::Value::as_object_mut) {
         config.remove("connected");
         config.remove("codex");
+        config.remove("antigravity");
         if let Some(distribution) = config.get_mut("distribution").and_then(serde_json::Value::as_object_mut) { distribution.remove("order"); }
     }
     if let Some(rows) = reply.body.get_mut("accounts").and_then(serde_json::Value::as_array_mut) {
@@ -1015,14 +1071,19 @@ pub(crate) fn store(accounts: &dyn Accounts, home: &Path, user_home: &Path, clau
 }
 
 fn prepare_account_changes(accounts: &dyn Accounts, home: &Path, user_home: &Path, claude: Option<&Claude>, codex: Option<&Codex>, current: &AccountsConfig, next: &AccountsConfig, working: &[AccountKey]) -> Result<Vec<AccountKey>, Refused> {
-    let ids = |config: &AccountsConfig| -> Vec<AccountKey> { Provider::ALL.into_iter().flat_map(|provider| config.listed(provider).iter().filter(|account| !account.id.is_default()).map(move |account| AccountKey::new(provider, account.id.clone()))).collect() };
+    let ids = |config: &AccountsConfig| -> Vec<AccountKey> { Provider::ALL.into_iter().flat_map(|provider| config.listed(provider).into_owned().into_iter().filter(|account| !account.id.is_default()).map(move |account| AccountKey::new(provider, account.id))).collect() };
     let (before, after) = (ids(&current), ids(&next));
     let shared = claude_account::config_folder(claude.and_then(Claude::default_profile).as_deref(), user_home);
     for id in after.iter().filter(|id| !before.contains(id)) {
         match id.provider {
             Provider::Claude => { accounts.prepare_claude(home, &id.account, &shared).map_err(|e| Refused::Folder(e.to_string()))?; }
             Provider::Codex => { accounts.prepare_codex(home, id).map_err(Refused::Folder)?; }
+            Provider::Antigravity => { accounts.prepare_antigravity(home, id, &crate::antigravity_accounts::Antigravity::shared(user_home)).map_err(Refused::Folder)?; }
         }
+    }
+    for id in after.iter().filter(|id| id.provider == Provider::Antigravity && before.contains(id)) {
+        let (was, is) = (current.antigravity_settings(&id.account).access, next.antigravity_settings(&id.account).access);
+        if was.takes_key() && !is.takes_key() { accounts.set_antigravity_key(home, id, None).map_err(Refused::Folder)?; }
     }
     let removed: Vec<AccountKey> = before.iter().filter(|id| !after.contains(id)).cloned().collect();
     if let Some(busy) = removed.iter().find(|id| working.contains(*id)) {
@@ -1033,6 +1094,7 @@ fn prepare_account_changes(accounts: &dyn Accounts, home: &Path, user_home: &Pat
         match id.provider {
             Provider::Claude => sign_out(home, claude, &id.account)?,
             Provider::Codex => sign_out_codex(home, codex, id)?,
+            Provider::Antigravity => {}
         }
     }
     Ok(removed)
@@ -1043,6 +1105,7 @@ fn cleanup_account_folders(accounts: &dyn Accounts, home: &Path, removed: &[Acco
         let deleted = match id.provider {
             Provider::Claude => accounts.remove_claude(home, &id.account),
             Provider::Codex => accounts.remove_codex(home, id),
+            Provider::Antigravity => accounts.remove_antigravity(home, id),
         };
         if let Err(why) = deleted { log!("Account {} is no longer registered, but its private folder needs cleanup: {why}", id.wire_id()); }
     }

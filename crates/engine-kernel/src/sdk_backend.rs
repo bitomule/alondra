@@ -218,6 +218,7 @@ impl SdkBackend {
         match backend.provider {
             alondra_core::accounts::Provider::Claude => { compatible(&backend.native, &backend.native_sha256)?; }
             alondra_core::accounts::Provider::Codex => { compatible_codex(&backend.native, &backend.native_sha256)?; }
+            alondra_core::accounts::Provider::Antigravity => bail!(alondra_core::antigravity_account::NODES_NOT_AVAILABLE),
         }
         Ok(backend)
     }
@@ -621,6 +622,7 @@ mod tests {
 impl SdkBackend {
     /// Selects a provider before checking its native executable. A Codex-only start never probes Claude.
     pub fn for_provider(&self, provider: alondra_core::accounts::Provider, home: &Path) -> Result<Self> {
+        ensure!(provider != alondra_core::accounts::Provider::Antigravity, alondra_core::antigravity_account::NODES_NOT_AVAILABLE);
         if self.provider == provider {
             let mut selected=self.clone();
             if provider==alondra_core::accounts::Provider::Codex {remove_codex_auth_environment(&mut selected.native_environment);}

@@ -175,18 +175,25 @@ fn run_probe(hosts: &dyn AgentHost, backend: &SdkBackend, folder: Option<&Path>,
     serde_json::from_str(out.trim()).map_err(|error| format!("the probe's answer: {error}"))
 }
 
+/// Whether nodes run on `provider`'s accounts: Antigravity's are checked, but run no node yet, so
+/// they never end or extend a wait for capacity.
+fn runs_nodes(provider: Provider) -> bool {
+    provider != Provider::Antigravity
+}
+
 /// Brings the live view's copy and the Mac-wide pause in step with what the domain committed: when
 /// no account can work, the Mac waits until the soonest one can, or until one has a session when
 /// none has; when one can again before that, the wait ends.
 fn available_accounts(state: &DomainState, now: Millis) -> Vec<alondra_core::accounts::AccountKey> {
     let mut eligible = alondra_core::usage::eligible_account_keys(&state.account_order, &state.accounts, &state.account_usage, now);
+    eligible.retain(|key| runs_nodes(key.provider));
     if state.account_policy == Policy::Margin {
         let day = alondra_daemon_engine_model::local_day(now);
         let chosen = alondra_core::usage::choose_account(Policy::Margin, Provider::Claude, &state.accounts, &state.account_usage, state.account_reserve, now, &day);
         eligible.retain(|key| key.provider != Provider::Claude || chosen.as_ref() == Some(&key.account));
     }
     // Paid accounts are considered only for readiness. Launch selection still requires the user's explicit grant.
-    for account in &state.accounts {
+    for account in state.accounts.iter().filter(|account| runs_nodes(account.provider)) {
         if account.state == AccountState::SignedIn && account.billing == AccountBilling::PayPerUse {
             let capacity = AccountStatus { billing: AccountBilling::default(), ..account.clone() };
             eligible.extend(alondra_core::usage::eligible_account_keys(&[], &[capacity], &state.account_usage, now));
@@ -218,7 +225,7 @@ pub(crate) fn hold(domain: &dyn Runtime, now: Millis) {
     let read = domain.read();
     let state = read.state();
     if !available_accounts(state, now).is_empty() { return; }
-    let accounts: Vec<_> = state.accounts.iter().filter(|status| status.state == AccountState::SignedIn && status.billing != AccountBilling::PayPerUse).cloned().collect();
+    let accounts: Vec<_> = state.accounts.iter().filter(|status| runs_nodes(status.provider) && status.state == AccountState::SignedIn && status.billing != AccountBilling::PayPerUse).cloned().collect();
     let until = accounts.iter().map(|status| status.provider).collect::<std::collections::BTreeSet<_>>().into_iter()
         .filter_map(|provider| alondra_core::usage::margin_returns_at(provider, &accounts, &state.account_usage, now)).min();
     drop(read);

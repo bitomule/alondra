@@ -47,6 +47,7 @@ pub use alondra_engine_ports::disk;
 pub use alondra_store_sqlite::domain_database_migration;
 pub use alondra_daemon_engine::{
     accounts,
+    antigravity_accounts,
     allow_always,
     claude_access,
     cleanup,

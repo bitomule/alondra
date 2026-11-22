@@ -4,7 +4,7 @@
   "view": "accounts",
   "key": "accounts",
   "client": "mac",
-  "version": "vb09ed63fa68c04f0",
+  "version": "v70c3992a8aeebcef",
   "cursor": "cursor-1",
   "title": "Accounts",
   "status": {
@@ -933,6 +933,32 @@
               "style": "primary",
               "role": "advance",
               "description": "On the Mac, run codex login",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Connected",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "antigravity-connect",
+          "icon": "machine",
+          "title": "Connect Antigravity",
+          "subtitle": "Use the Antigravity session you signed in to on the Mac",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "provider_connect:antigravity@6",
+              "label": "Connect",
+              "style": "primary",
+              "role": "advance",
+              "description": "On the Mac, run agy acp --login",
               "presentation": "button",
               "input": {
                 "kind": "none"

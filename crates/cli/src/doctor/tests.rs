@@ -214,6 +214,7 @@ impl System for Fake {
         self.fingerprint.clone()
     }
     fn codex_version(&self) -> Option<String> { self.tools.get("codex").cloned() }
+    fn agy_version(&self) -> Option<String> { self.tools.get("agy").cloned() }
     fn native_accounts(&self) -> Option<Value> { self.health.borrow().as_ref().ok()?.get("provider_accounts").cloned() }
     fn tool(&self, program: &str, _args: &[&str]) -> Option<String> {
         self.tools.get(program).cloned()
@@ -1422,4 +1423,30 @@ fn only_a_login_item_turned_off_is_reported_and_only_a_person_fixes_it() {
     assert_eq!(c.status, Status::Warn);
     assert!(c.detail.contains("turned off in System Settings > General > Login Items & Extensions"), "{}", c.detail);
     assert!(matches!(&c.fix, Some(Fix::Person(way)) if way.contains("Allow in the Background")), "{:?}", c.fix);
+}
+
+#[test]
+fn the_doctor_checks_that_agy_is_installed_and_recent_enough_once_antigravity_is_connected() {
+    let check = |printed: Option<&str>| {
+        let mut sys = Fake::healthy();
+        *sys.options.borrow_mut() = Some("[accounts]\nconnected = [\"claude\", \"antigravity\"]\n".into());
+        if let Some(printed) = printed { sys.tools.insert("agy".into(), printed.into()); }
+        let env = Env { sys: &sys, deep: false, first_run: false, yes: false, select: Selection::All };
+        diagnose(&env).into_iter().find(|outcome| outcome.id == "antigravity")
+    };
+    english();
+    let current = check(Some("1.5.14\n")).unwrap();
+    assert_eq!((current.status, current.detail.as_str()), (Status::Pass, "1.5.14"));
+    let old = check(Some("1.1.22")).unwrap();
+    assert_eq!(old.status, Status::Fail);
+    assert_eq!(old.fix, Some(Fix::Person("agy update".into())));
+    assert!(old.detail.contains("1.5.12"), "{}", old.detail);
+    assert_eq!(check(None).unwrap().status, Status::Fail, "agy is not installed");
+    crate::i18n::set_for_this_thread(Lang::Es);
+    assert!(check(None).unwrap().detail.contains("Instala Antigravity CLI"));
+    english();
+    let mut sys = Fake::healthy();
+    *sys.options.borrow_mut() = Some("[accounts]\nconnected = [\"claude\"]\n".into());
+    let env = Env { sys: &sys, deep: false, first_run: false, yes: false, select: Selection::All };
+    assert!(diagnose(&env).iter().all(|outcome| outcome.id != "antigravity"), "nothing is checked of a provider not connected");
 }

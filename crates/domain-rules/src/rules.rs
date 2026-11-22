@@ -3056,7 +3056,7 @@ impl DomainState {
             // one, Delete and Claim the one they read. The rule checks it.
             Command::CreateSchedule { .. } | Command::UpdateSchedule { .. } => Some(0),
             Command::BeginAccountLogin { .. } | Command::CancelAccountLogin { .. } | Command::RecordAccountLogin { .. } => Some(0),
-            Command::SetAccountOrder { .. } | Command::SetModelProfile { .. } | Command::ReplaceAccountConfiguration { .. } => Some(0),
+            Command::SetAccountOrder { .. } | Command::SetModelProfile { .. } | Command::ReplaceAccountConfiguration { .. } | Command::RecordAccountCredential { .. } => Some(0),
             // Clearing takes only what the user saw at `seen`, so any snapshot may ask for it.
             Command::ClearCompleted { .. } => Some(0),
             // A setting of this Mac's, not of anything the client read: any snapshot may change it.
@@ -3534,6 +3534,7 @@ impl DomainState {
                 let accounts = alondra_core::options::OptionsFile::parse(accounts).map_err(|why| DomainError::new("invalid_input", why))?.accounts;
                 self.replace_account_configuration(actor, &accounts, expected_config_version)?;
             }
+            Command::RecordAccountCredential { account, set } => self.record_account_credential(actor, account, *set)?,
             Command::RecordAccountConfiguration { order, version } => {
                 system(actor)?;
                 self.validate_account_order(order)?;

@@ -124,6 +124,10 @@ impl DomainState {
         let task = self.active(task_id)?;
         if task.pending_selection.is_some() { return fail("selection_pending", "This task is already changing its model or account"); }
         if self.current_account(task).as_ref() == Some(account) { return fail("same_account", "The task already runs on this account"); }
+        if account.provider == alondra_core::accounts::Provider::Antigravity {
+            return fail("provider_unavailable", alondra_core::antigravity_account::NODES_NOT_AVAILABLE)
+                .map_err(|error| error.because(Refusal::ProviderNotYet { provider: account.provider.display_name().into() }));
+        }
         let status = self.accounts.iter().find(|status| AccountKey::new(status.provider, status.id.clone()) == *account)
             .ok_or_else(|| DomainError::new("not_found", "The destination account is not connected"))?;
         if status.state != AccountState::SignedIn { return fail("account_unavailable", "The destination account is off or signed out"); }

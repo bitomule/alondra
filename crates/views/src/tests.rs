@@ -575,7 +575,7 @@ fn golden_fixture() -> DomainState {
         task.account = Some(alondra_core::accounts::AccountId::parse("work").unwrap());
         task.project = Some("Demo Garden".into());
     }
-    state.accounts = golden_accounts().into_iter().map(|account| alondra_core::accounts::AccountStatus {
+    state.accounts = golden_accounts().into_iter().map(|account| alondra_core::accounts::AccountStatus { antigravity: None,
         provider: alondra_core::accounts::Provider::Claude, id: account.id, name: account.name, state: alondra_core::accounts::AccountState::SignedIn,
         native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0, profile: None,
     }).collect();
@@ -4341,7 +4341,7 @@ fn a_task_detail_names_the_claude_account_its_node_runs_on_once_there_are_severa
     };
     state.tasks.get_mut(&"t-1".into()).unwrap().account = Some(AccountId::default_account());
     assert_eq!(account(&state, Lang::En), None, "with the one default account there is nothing to tell apart");
-    let status = |id: &str, name: &str, billing| AccountStatus { provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: name.into(),
+    let status = |id: &str, name: &str, billing| AccountStatus { antigravity: None, provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: name.into(),
         state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing, sign_ins: 0, profile: None };
     state.accounts = vec![status("default", "Principal", AccountBilling::default()), status("work", "Trabajo", AccountBilling::default()),
         status("api", "API", AccountBilling::PayPerUse)];
@@ -8699,7 +8699,7 @@ fn accounts_fixture() -> (DomainState, LiveSnapshot) {
     use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
     use alondra_core::usage::{AccountUsage, Share, UsageWindow, WindowKind, WindowReading};
     let (mut state, live) = (golden_fixture(), golden_live());
-    let account = |id: &str, name: &str, state, email: Option<&str>, plan: Option<&str>, weight| AccountStatus {
+    let account = |id: &str, name: &str, state, email: Option<&str>, plan: Option<&str>, weight| AccountStatus { antigravity: None,
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: name.into(), state, native_identity: None, email: email.map(Into::into),
         plan: plan.map(Into::into), billing: AccountBilling::Subscription { plan: None, weight }, sign_ins: 0,
         profile: (id != "default").then(|| format!("~/.alondra/accounts/{id}")),
@@ -9185,7 +9185,7 @@ fn a_codex_task_waiting_for_its_usage_limit_names_codex() {
     live.task_usage_until.insert("t-1".into(), "2026-11-11T08:05:08.000+01:00".into());
     assert_eq!(badge(&state, &live, Lang::En), "Waiting · Codex limit until 08:05");
     assert_eq!(badge(&state, &live, Lang::Es), "En espera · Límite de Codex hasta las 08:05");
-    let account = |id: &str, name: &str| alondra_core::accounts::AccountStatus { provider: alondra_core::accounts::Provider::Codex, id: alondra_core::accounts::AccountId::parse(id).unwrap(), name: name.into(),
+    let account = |id: &str, name: &str| alondra_core::accounts::AccountStatus { antigravity: None, provider: alondra_core::accounts::Provider::Codex, id: alondra_core::accounts::AccountId::parse(id).unwrap(), name: name.into(),
         state: alondra_core::accounts::AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None };
     state.accounts = vec![account("default", "Personal"), account("work", "Work")];
     state.tasks.get_mut(&"t-1".into()).unwrap().account = Some(alondra_core::accounts::AccountId::parse("work").unwrap());
@@ -9746,7 +9746,7 @@ fn codex_hold_cards_use_qualified_account_names_and_native_sign_in_guidance() {
     task.account = Some(AccountId::parse("work").unwrap());
     state.accounts = [
         (Provider::Claude, "Claude work"), (Provider::Codex, "Codex work"),
-    ].map(|(provider, name)| AccountStatus { provider, id: AccountId::parse("work").unwrap(), name: name.into(), state: AccountState::SignedOut,
+    ].map(|(provider, name)| AccountStatus { antigravity: None, provider, id: AccountId::parse("work").unwrap(), name: name.into(), state: AccountState::SignedOut,
         native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0,
         profile: Some(if provider == Provider::Codex { "~/.alondra/provider-accounts/codex/work" } else { "~/.alondra/accounts/work" }.into()) }).to_vec();
     let mut interaction = state.interactions[&"i-1".into()].clone();
@@ -10257,7 +10257,7 @@ fn a_delivery_in_its_turn_and_after_it_matches_goldens() {
 #[test]
 fn a_signed_out_account_names_the_providers_own_command_and_nothing_signs_it_in() {
     use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
-    let account = |provider, id: &str, name: &str, profile: Option<&str>| AccountStatus { provider, id: AccountId::parse(id).unwrap(), name: name.into(),
+    let account = |provider, id: &str, name: &str, profile: Option<&str>| AccountStatus { antigravity: None, provider, id: AccountId::parse(id).unwrap(), name: name.into(),
         state: AccountState::SignedOut, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: profile.map(Into::into) };
     let mut state = golden_fixture();
     state.accounts = vec![
@@ -10449,7 +10449,7 @@ fn client_text_contracts_account_move_is_only_offered_to_rescue_a_stuck_task() {
     use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
     use alondra_core::model_selection::{AccountModelCatalog, CatalogModel};
     let mut state = fixture();
-    let account = |provider, id: &str, name: &str, state| AccountStatus { provider, id: AccountId::parse(id).unwrap(), name: name.into(), state, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None };
+    let account = |provider, id: &str, name: &str, state| AccountStatus { antigravity: None, provider, id: AccountId::parse(id).unwrap(), name: name.into(), state, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None };
     state.accounts = vec![account(Provider::Claude, "default", "Personal", AccountState::SignedIn), account(Provider::Codex, "default", "Work", AccountState::SignedIn), account(Provider::Claude, "old", "Old", AccountState::Disabled)];
     state.model_catalogs = state.accounts.iter().map(|account| AccountModelCatalog { account: alondra_core::accounts::AccountKey::new(account.provider, account.id.clone()), revision: "catalog".into(), measured_at: 1, native_default: Some("model".into()),
         models: vec![CatalogModel { model: "model".into(), display_name: "Model".into(), reasoning_efforts: vec![], default_reasoning_effort: None, context_window: None, input_modalities: vec![], is_default: true, hidden: false }] }).collect();
@@ -10906,5 +10906,59 @@ fn a_running_task_waiting_for_the_user_under_a_closed_request_is_listed_as_worki
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let (block, _) = active_row(&state, &LiveSnapshot::default(), client, Lang::En, "t-1");
         assert!(block.starts_with("block:"), "{client:?}: {block}");
+    }
+}
+
+#[test]
+fn antigravity_accounts_show_their_access_key_and_sign_in_and_never_the_key() {
+    use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, AntigravityStatus, Provider};
+    use alondra_core::antigravity_account::{Access, Unavailable};
+    use alondra_core::usage::{AccountUsage, Share, UsageWindow, WindowKind, WindowReading};
+    let (mut state, live) = accounts_fixture();
+    let account = |id: &str, name: &str, access, state, key_set, unavailable| AccountStatus {
+        provider: Provider::Antigravity, id: AccountId::parse(id).unwrap(), name: name.into(), state, native_identity: None, email: None, plan: None,
+        billing: alondra_core::antigravity_account::Access::default_billing(access), sign_ins: 0,
+        profile: (id != "default").then(|| format!("~/.alondra/provider-accounts/antigravity/{id}")),
+        antigravity: Some(AntigravityStatus { access, project: (access == Access::CloudProject).then(|| "demo-project".into()), location: None, key_set, unavailable }),
+    };
+    state.accounts.extend([
+        account("default", "Default", Access::Google, AccountState::SignedIn, false, None),
+        account("studio", "Studio", Access::ApiKey, AccountState::SignedIn, true, None),
+        account("fresh", "Fresh", Access::ApiKey, AccountState::SignedOut, false, None),
+        account("lab", "Lab", Access::CloudProject, AccountState::SignedOut, false, None),
+        account("work-g", "Work G", Access::Enterprise, AccountState::Unavailable, false, Some(Unavailable::TooOld)),
+    ]);
+    state.account_usage.push(AccountUsage { provider: Provider::Antigravity, account: AccountId::default_account(), plan: None, day_start: None,
+        windows: vec![UsageWindow { reading: WindowReading { kind: WindowKind::Other("antigravity:all-models:gemini-4-neon-high".into()), used: Share::of(0.4), resets_at: None, exhausted: false }, measured_at: 1_759_225_000_000 }] });
+    for lang in [Lang::En, Lang::Es] {
+        let view = render(&state, &live, Client::Tui, lang, "accounts", "");
+        let rows: Vec<Row> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+            Item::Row(row) => Some(row.clone()),
+            _ => None,
+        }).collect();
+        let row = |id: &str| rows.iter().find(|row| row.id == format!("antigravity-{id}")).unwrap_or_else(|| panic!("{id}")).clone();
+        let labels = |row: &Row| row.actions.iter().map(|action| action.label.clone()).collect::<Vec<_>>();
+        let reason = |row: &Row| row.account.as_ref().and_then(|account| account.reason.clone()).unwrap_or_default();
+        let es = lang == Lang::Es;
+        let default = row("default");
+        assert_eq!(default.subtitle.as_deref(), Some(if es { "Antigravity · Cuenta de Google\ngemini-4-neon-high 40 %" } else { "Antigravity · Google account\ngemini-4-neon-high 40 %" }));
+        assert!(!labels(&default).iter().any(|label| label.contains("key") || label.contains("clave")), "a Google account takes no key");
+        let studio = row("studio");
+        assert_eq!(studio.subtitle.as_deref(), Some(if es { "Antigravity · Clave de API de Gemini · Clave puesta\nse paga por uso" } else { "Antigravity · Gemini API key · Key set\nbilled per use" }));
+        let key = studio.actions.iter().find(|action| action.label == if es { "Cambiar clave" } else { "Replace key" }).unwrap();
+        assert!(matches!(key.input, Input::Text { secret: true, .. }), "the key is typed in a secret field");
+        assert!(key.id.starts_with("account_credential:studio@") && key.id.ends_with("~antigravity"), "{}", key.id);
+        let clear = studio.actions.iter().find(|action| action.label == if es { "Quitar clave" } else { "Remove key" }).unwrap();
+        assert_eq!(clear.option_id.as_deref(), Some("clear"));
+        let fresh = row("fresh");
+        assert!(fresh.subtitle.as_deref().unwrap().contains(if es { "Sin clave" } else { "No key" }));
+        assert!(labels(&fresh).contains(&(if es { "Poner clave" } else { "Set key" }).to_owned()));
+        assert!(!labels(&fresh).iter().any(|label| label == "Remove key" || label == "Quitar clave"));
+        assert!(reason(&fresh).contains("alondra accounts set-key antigravity/fresh"), "{}", reason(&fresh));
+        assert!(reason(&row("lab")).contains("gcloud auth application-default login --project demo-project"), "{}", reason(&row("lab")));
+        assert_eq!(reason(&row("work-g")), if es { "Actualiza Antigravity CLI con agy update" } else { "Update Antigravity CLI with agy update" });
+        let add = rows.iter().find(|row| row.id == "antigravity-add").unwrap();
+        let options: Vec<_> = add.actions[0].options.iter().map(|option| option.id.as_str()).collect();
+        assert_eq!(options, ["google", "enterprise", "api_key"], "a Cloud project account is added from the CLI, which takes its project");
     }
 }

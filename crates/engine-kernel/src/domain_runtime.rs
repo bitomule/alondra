@@ -1242,6 +1242,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::SetAccountOrder { .. }
         | Command::ReplaceAccountConfiguration { .. }
         | Command::RecordAccountConfiguration { .. }
+        | Command::RecordAccountCredential { .. }
         | Command::RecordModelCatalog { .. }
         | Command::RecordModelProfiles { .. }
         | Command::SetModelProfile { .. }
