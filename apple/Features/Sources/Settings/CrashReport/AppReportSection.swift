@@ -24,8 +24,8 @@ public enum AppReportSection {
     public static func text(app: App, entries: [AppLogEntry], measurements: [String], budget: Int = budget) -> String {
         let vocabulary = Set(entries.flatMap { $0.components.flatMap { ReportShapes.tokens($0.text) } })
         var redactor = ReportRedactor(vocabulary: vocabulary, prefix: pseudonymPrefix)
-        let header = line(["kind": "app", "client": app.client, "version": redactor.value(app.version, hint: .value),
-                           "system": redactor.value(app.system, hint: .value), "connection": connectionWords(app.connection)])
+        let header = line(["kind": "app", "client": app.client, "version": redactor.versionField(app.version),
+                           "system": redactor.versionField(app.system), "connection": connectionWords(app.connection)])
         let measured = measurements.compactMap { text -> String? in
             guard let data = text.data(using: .utf8),
                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }

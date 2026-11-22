@@ -44,6 +44,15 @@ import AlondraFeatures
             "words of the code's own text stay")
     }
 
+    @Test func theAppsOwnVersionStaysWhileAnAddressTripleInALineGetsAPseudonym() throws {
+        let versions = AppReportSection.App(client: "ios", version: "10.2.7 (4)", system: "26.1.0", connection: .unreachable(.deviceRevoked(macName: "Mac")))
+        let entries = [entry("net", [.init(text: "Peer at ", argument: .string("192.168.1")), .init(text: " runs ", argument: .string("10.2.7"))])]
+        let rows = try rows(AppReportSection.text(app: versions, entries: entries, measurements: []))
+        #expect(rows[0]["version"] as? String == "10.2.7 (4)")
+        #expect(rows[0]["system"] as? String == "26.1.0")
+        #expect(rows[1]["message"] as? String == "Peer at app-value-1 runs app-value-2")
+    }
+
     @Test func measurementsGoWholeAndTheOldestLinesAreCutToFit() throws {
         let measurement = #"{"at":"2026-10-24T03:10:11.637Z","route":"irohRelay","ms":212,"ok":true}"#
         let entries = (0..<400).map { entry("feed", [.init(text: "Change ", argument: .number("\($0)")), .init(text: " applied")], after: Double($0)) }
