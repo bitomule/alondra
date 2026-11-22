@@ -1,12 +1,14 @@
 #!/bin/bash
 # Wraps every `bazel test` (`test --run_under` in tools/test-wrapper.bazelrc, which a user bazelrc
-# with its own --run_under imports last). The test's TMPDIR is the TEST_TMPDIR Bazel gives it, emptied
-# when the test exits, fails or is cut, so tests that never clean their temp dirs cannot fill the disk.
-# macOS caps a unix socket path at 104 bytes and TEST_TMPDIR is longer than that leaves room for, so
-# the wrapper also makes a private short folder, ALONDRA_SHORT_TMPDIR, only for the fixtures that bind
-# a socket (and for xcrun's lookup cache), removed with the test too. Whatever still runs from either
-# folder when the test ends dies with its process group, and a passing test that left an Alondra host
-# (a process whose stdin is a host.lock, the host's ownership lock) fails.
+# with its own --run_under imports last). The test's TMPDIR is a short private folder the wrapper makes
+# under /tmp and removes when the test exits, fails or is cut, so tests that never clean their temp dirs
+# cannot fill the disk. It is short because macOS caps a unix socket path at 104 bytes, and outside the
+# execroot because Bazel's TEST_TMPDIR is neither: it is longer than a socket leaves room for, and the
+# execroot links the checkout's .git, so a fixture there would find the real repository above it.
+# ALONDRA_SHORT_TMPDIR names the same folder for the fixtures that bind a socket. Bazel's TEST_TMPDIR is
+# emptied too. Whatever still runs from either folder when the test ends dies with its process group,
+# and a passing test that left an Alondra host (a process whose stdin is a host.lock, the host's
+# ownership lock) fails.
 #
 # The test may execute only itself and the interpreters of its script: every other program it runs is
 # listed in its target's TEST_EXECS, which the guard below turns into a kernel sandbox that refuses
@@ -245,7 +247,6 @@ export ALONDRA_SHORT_TMPDIR="$dir"
 scratch=
 if [ -n "$TEST_TMPDIR" ] && [ -d "$TEST_TMPDIR" ]; then
     scratch=$(cd "$TEST_TMPDIR" && pwd -P)
-    export TMPDIR="$scratch"
 fi
 # xcrun, and the /usr/bin shims of git, python3 and the other developer tools, add an entry to
 # their lookup cache for every new HOME and rewrite the whole cache each time. Tests give every

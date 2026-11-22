@@ -88,18 +88,32 @@ class BazelTestTmpdirTest(unittest.TestCase):
             text=True,
         )
 
-    def test_the_tests_tmpdir_is_the_one_bazel_gives_it_and_only_sockets_get_a_short_folder(self):
-        given = self.root / "given"
-        given.mkdir()
+    def test_the_tests_tmpdir_is_a_short_private_folder_outside_bazels_and_both_go(self):
+        given = self.root / "execroot" / "_main" / "_tmp" / ("0" * 32)
+        given.mkdir(parents=True)
         report = self.root / "report"
-        script = f'echo "$TMPDIR" > {report}; echo "$ALONDRA_SHORT_TMPDIR" >> {report}; touch "$TMPDIR/left-behind" "$ALONDRA_SHORT_TMPDIR/also"'
+        script = f'echo "$TMPDIR" > {report}; echo "$ALONDRA_SHORT_TMPDIR" >> {report}; touch "$TMPDIR/left-behind" "{given}/also"'
         result = subprocess.run([str(wrapper), "/bin/sh", "-c", script], env=self.environment(TEST_TMPDIR=str(given)))
         self.assertEqual(result.returncode, 0)
         used, short = report.read_text().split()
-        self.assertEqual(Path(used), given.resolve(), "fixtures go in the folder Bazel manages")
-        self.assertTrue(short.startswith((str(self.root), str(self.root.resolve()))), short)
-        self.assertFalse(Path(short).exists(), "the short folder goes with the test")
+        self.assertEqual(used, short, "sockets and every other fixture share the one short folder")
+        self.assertTrue(used.startswith((str(self.root / "bt."), str(self.root.resolve() / "bt."))), used)
+        self.assertFalse(Path(used).resolve().is_relative_to(given.resolve()), "never inside the execroot, which links the checkout")
+        self.assertFalse(Path(used).exists(), "the short folder goes with the test")
         self.assertTrue(given.is_dir() and not list(given.iterdir()), "what the test left in Bazel's folder goes too")
+
+    @GUARDED
+    def test_programs_the_test_writes_under_its_socket_folder_run_when_declared(self):
+        given = self.root / "given"
+        given.mkdir()
+        script = 'printf "#!/bin/sh\\nexit 0\\n" > "$ALONDRA_SHORT_TMPDIR/fake" && chmod +x "$ALONDRA_SHORT_TMPDIR/fake" && "$ALONDRA_SHORT_TMPDIR/fake"'
+        result = subprocess.run(
+            [str(wrapper), "/bin/sh", "-c", script],
+            env=self.environment("/usr/bin/printf /bin/chmod tmpdir", TEST_TMPDIR=str(given)),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     @GUARDED
     def test_a_test_that_runs_an_undeclared_program_fails_and_says_how_to_see_it(self):

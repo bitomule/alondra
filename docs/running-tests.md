@@ -50,13 +50,15 @@ that the release's tests name (`RELEASE_ONLY_TESTS` in `deploy/brew/local-releas
 
 ## Where a test writes
 
-A test owns everything it creates. The wrapper gives it `TMPDIR`, which is the `TEST_TMPDIR` Bazel
-manages, and empties it when the test ends, fails or is cut. A unix socket path is capped at 104
-bytes and `TEST_TMPDIR` is longer than that leaves room for, so the wrapper also makes a short private
-folder, `ALONDRA_SHORT_TMPDIR`, for the fixtures that bind a socket (`Directory::for_unix_socket`, the
-scenario runner), and removes it too. Test code never falls back to `/tmp`: a fixture that finds no
-short folder fails and says to run through Bazel. `//tools:test_scratch_guard_test` refuses a fallback
-to, or a file created in, a shared temporary folder in test-side Rust code.
+A test owns everything it creates. The wrapper gives it `TMPDIR`, a short private folder it makes
+under `/tmp`, and removes it when the test ends, fails or is cut; `ALONDRA_SHORT_TMPDIR` names the
+same folder for the fixtures that bind a socket (`Directory::for_unix_socket`, the scenario runner).
+It is not Bazel's `TEST_TMPDIR`: a unix socket path is capped at 104 bytes and `TEST_TMPDIR` is longer
+than that leaves room for, and it sits in the execroot, which links the checkout's `.git`, so a git or
+project lookup from a fixture there would find the real repository. The wrapper empties `TEST_TMPDIR`
+too. Test code never falls back to `/tmp`: a fixture that finds no short folder fails and says to run
+through Bazel. `//tools:test_scratch_guard_test` refuses a fallback to, or a file created in, a shared
+temporary folder in test-side Rust code.
 
 ## Invalid cached executables
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""A test owns what it creates, in the folder Bazel gives it.
+"""A test owns what it creates, in the folder the test wrapper gives it.
 
 Test-side Rust code never falls back to, or creates anything in, a shared system temporary folder
-(/tmp, /private/tmp, /var/tmp): the test wrapper (tools/test-tmpdir.sh) gives each test TMPDIR (Bazel's
-TEST_TMPDIR) and, for fixtures that bind a socket, a short private ALONDRA_SHORT_TMPDIR, and removes both
-when the test ends. A fixture that cannot find them fails and says so, instead of littering /tmp.
+(/tmp, /private/tmp, /var/tmp): the test wrapper (tools/test-tmpdir.sh) gives each test a short private
+TMPDIR, also named ALONDRA_SHORT_TMPDIR for fixtures that bind a socket, and removes it when the test
+ends. A fixture that cannot find them fails and says so, instead of littering /tmp.
 """
 import os
 import re

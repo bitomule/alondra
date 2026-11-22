@@ -78,3 +78,12 @@ fn removes_read_only_folders_when_a_test_panics() {
     assert!(result.is_err());
     assert!(!path.parent().unwrap().exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_tests_temporary_folder_holds_a_socket_and_has_no_checkout_above_it() {
+    let temporary = std::fs::canonicalize(std::env::var_os("TMPDIR").expect("run through Bazel")).unwrap();
+    assert_eq!(test_support::socket_root(&temporary), temporary, "tempfile fixtures bind sockets too");
+    let repository = temporary.ancestors().find(|folder| folder.join(".git").exists());
+    assert_eq!(repository, None, "a git or project lookup from a fixture would find a real checkout");
+}
