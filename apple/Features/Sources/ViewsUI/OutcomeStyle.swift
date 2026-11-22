@@ -13,6 +13,20 @@ public enum OutcomeStyle: Equatable, Sendable {
 
     public static var transportFailure: String { SendFailure.unreached.message }
 
+    public static var cardGone: String { String(localized: "Your answer wasn’t sent: this card is no longer on your Mac.") }
+
+    /// The reply to an answer that takes its card out of the queue: one the Mac no longer has says so.
+    public init(_ reply: ActionResponse, answering request: ActionRequest) {
+        self = reply.outcome == .noLongerAvailable && request.resolvesItsCard ? .failure(Self.cardGone) : Self(reply)
+    }
+
+    public var message: String {
+        switch self {
+        case .success(let message), .failure(let message): message
+        case .ask(let changed): changed.title
+        }
+    }
+
     public init(_ reply: ActionResponse) {
         if let result = reply.result {
             switch result.kind {

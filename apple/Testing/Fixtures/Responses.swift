@@ -13,6 +13,11 @@ enum Responses {
         try response(#"{"protocol":1,"outcome":"rejected","message":"\#(message)"\#(field.map { #","field":"\#($0)""# } ?? "")}"#)
     }
 
+    /// The Mac no longer has what was answered: the card was answered elsewhere, withdrawn or closed.
+    static func noLongerAvailable(_ message: String = "This is no longer available.") throws -> ActionResponse {
+        try response(#"{"protocol":1,"outcome":"no_longer_available","message":"\#(message)"}"#)
+    }
+
     /// A refusal as the server words it now: the typed `result` carries the sentence the card shows.
     static func refused(_ title: String) throws -> ActionResponse {
         try response(#"{"protocol":1,"outcome":"rejected","message":"raw domain text","result":{"kind":"refused","title":"\#(title)"}}"#)
