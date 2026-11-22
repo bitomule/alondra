@@ -1231,6 +1231,22 @@ fn lifetime_pr_survives_cancel_reopen_and_register_is_noop() {
     .unwrap();
     assert_eq!(s.tasks[&"t".into()].pr_id, Some("pr".into()), "the first PR stays the task's");
 }
+/// A task that is open again, by whatever path, takes its Request back: a closed or cleared Request with open work
+/// under it read as completed and hid the task from the Tasks list.
+#[test]
+fn a_request_closed_or_cleared_under_an_open_task_is_open_again() {
+    for (closed, cleared, withdrawn) in [(true, false, false), (false, true, false), (true, true, true)] {
+        let mut s = fixture();
+        let request = s.requests.get_mut(&"r".into()).unwrap();
+        (request.closed, request.cleared, request.withdrawn, request.answer) = (closed, cleared, withdrawn, Some("Done".into()));
+        assert!(!s.tasks[&"t".into()].over());
+        exec(&mut s, user(), Command::SetMergeMethod { method: MergeMethod::Rebase }).unwrap();
+        let request = &s.requests[&"r".into()];
+        assert_eq!((request.closed, request.cleared, request.withdrawn, request.answer.as_deref()), (false, false, false, None),
+            "closed={closed} cleared={cleared}");
+    }
+}
+
 #[test]
 fn closed_request_prevents_reopening_its_terminal_task() {
     let mut s = fixture();
