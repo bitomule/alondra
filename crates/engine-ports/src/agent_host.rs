@@ -269,7 +269,7 @@ impl EndedHost {
         }
         std::fs::rename(&self.state_dir, archive)?;
         let parent = archive.parent().ok_or_else(|| refused("ended host archive has no parent"))?;
-        std::fs::File::open(parent)?.sync_all()
+        alondra_foundation::durability::flush(&std::fs::File::open(parent)?)
     }
 }
 

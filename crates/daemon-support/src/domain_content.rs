@@ -26,7 +26,7 @@ impl Prepared {
                 unsafe {
                     libc::unlinkat(folder.as_raw_fd(), name.as_ptr(), 0);
                 }
-                let _ = folder.sync_all();
+                let _ = alondra_foundation::durability::flush(&folder);
             }
         }
     }
@@ -204,7 +204,7 @@ fn store_verified(home: &Path, reference: &str, digest: &str, source_roots: &[Pa
             output.write_all(&buffer[..count])?;
         }
         ensure!(hex(&hash.finalize()) == digest, "document SHA256 mismatch");
-        output.sync_all()?;
+        alondra_foundation::durability::flush(&output)?;
         let linked = unsafe {
             libc::linkat(
                 folder.as_raw_fd(),
@@ -224,7 +224,7 @@ fn store_verified(home: &Path, reference: &str, digest: &str, source_roots: &[Pa
         }
         let mut installed = open_at(&folder, &target, libc::O_RDONLY)?;
         verify(&mut installed, digest)?;
-        folder.sync_all()?;
+        alondra_foundation::durability::flush(&folder)?;
         Ok(())
     })();
     unsafe {
@@ -235,7 +235,7 @@ fn store_verified(home: &Path, reference: &str, digest: &str, source_roots: &[Pa
             libc::unlinkat(folder.as_raw_fd(), target.as_ptr(), 0);
         }
     }
-    folder.sync_all()?;
+    alondra_foundation::durability::flush(&folder)?;
     result?;
     Ok((managed, created))
 }
@@ -255,7 +255,7 @@ fn managed_folder(home: &Path) -> Result<File> {
             return Err(error.into());
         }
     } else {
-        root.sync_all()?;
+        alondra_foundation::durability::flush(&root)?;
     }
     open_at(&root, &name, libc::O_RDONLY | libc::O_DIRECTORY)
 }

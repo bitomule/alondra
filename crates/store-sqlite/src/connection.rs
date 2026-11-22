@@ -8,6 +8,11 @@ use std::{
 };
 
 pub(super) fn open(path: &Path) -> Result<(Connection, PathBuf)> {
+    open_as(path, alondra_foundation::durability::relaxed())
+}
+
+/// `relaxed` commits without waiting for the disk, as the fixtures of a test run ask.
+fn open_as(path: &Path, relaxed: bool) -> Result<(Connection, PathBuf)> {
     let parent = fs::canonicalize(
         path.parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -23,15 +28,15 @@ pub(super) fn open(path: &Path) -> Result<(Connection, PathBuf)> {
             "unsafe domain database path"
         ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            OpenOptions::new()
+            let created = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
                 .custom_flags(libc::O_NOFOLLOW)
-                .open(&path)?
-                .sync_all()?;
-            File::open(&parent)?.sync_all()?;
+                .open(&path)?;
+            alondra_foundation::durability::flush(&created)?;
+            alondra_foundation::durability::flush(&File::open(&parent)?)?;
         }
         Err(error) => return Err(error.into()),
     }
@@ -58,7 +63,7 @@ pub(super) fn open(path: &Path) -> Result<(Connection, PathBuf)> {
         super::SCHEMA_VERSION, path.display());
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "synchronous", "FULL")?;
+    conn.pragma_update(None, "synchronous", if relaxed { "OFF" } else { "FULL" })?;
     ensure!(
         conn.pragma_query_value(None, "foreign_keys", |r| r.get::<_, i64>(0))? == 1,
         "foreign keys unavailable"
@@ -104,6 +109,14 @@ mod tests {
         );
         conn.execute_batch("CREATE TABLE parents(id INTEGER PRIMARY KEY); CREATE TABLE children(parent_id INTEGER REFERENCES parents(id));").unwrap();
         assert!(conn.execute("INSERT INTO children VALUES(42)", []).is_err());
+    }
+
+    #[test]
+    fn a_relaxed_connection_commits_without_waiting_for_the_disk() {
+        let fixture = Fixture::new();
+        let (conn, _) = open_as(&fixture.path(), true).unwrap();
+        assert_eq!(conn.pragma_query_value(None, "synchronous", |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0)).unwrap(), "wal");
     }
 
     #[test]

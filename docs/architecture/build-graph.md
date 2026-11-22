@@ -812,6 +812,16 @@ inside the commits (339 thread-seconds). The share of wall-clock time, the conte
 11 or so tests that run at once (the Mac was also swapping), and the sampler's own cost are not
 measured.
 
+That switch is `alondra_foundation::durability` (2026-11-22). The engine's test fixtures call
+`relax()` when they wire a runtime (`wired()` in `engine-sdk`, `daemon-server` and `alondrad`); from
+then on the process opens the domain database with `synchronous=OFF` and `durability::flush` skips
+`sync_all` in the SQLite store, the capability registry, the session settings, the managed
+documents, the orchestrator's owner file, the retired host folders and the home renames. `relax()`
+panics outside `bazel test`, so the daemon always opens with `synchronous=FULL`, and the scenarios
+never relax it. One run of `engine_sdk_test` each, on a shared Mac: 9.6 s before, 7.0 s after; one
+run does not separate the switch from the machine's load, and the sampled 5.5% is the share it can
+remove.
+
 ## Output adapter `system`: git, worktrees and disks (2026-11-18)
 
 `crates/system` runs git, makes and deletes the task worktrees and reads the disks. The engine asks

@@ -84,6 +84,7 @@ checks:
       - "crates/core/src/codex_login.rs"
       - "crates/core/src/config.rs"
       - "crates/foundation/src/daemon_log.rs"
+      - "crates/foundation/src/durability.rs"
       - "crates/foundation/src/log.rs"
       - "crates/foundation/src/save.rs"
       - "crates/foundation/src/lib.rs"

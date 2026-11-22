@@ -48,7 +48,7 @@ fn rename(home: &Path, from: &str, to: &str) -> Result<()> {
     } else {
         fs::rename(&from, home.join(to))?;
     }
-    fs::File::open(home)?.sync_all()?;
+    alondra_foundation::durability::flush(&fs::File::open(home)?)?;
     Ok(())
 }
 
