@@ -61,17 +61,17 @@ test('a Codex node inherits its own host wait report path', async (t) => {
   assert.equal(readFileSync(capture, 'utf8'), join(f.config.stateDirectory, 'wait.json'));
 });
 
-test('an adopted persistent Codex host ends its native command group and retains exit evidence', { timeout: 15000 }, failedAdoptedHost);
+test('an adopted persistent Codex host ends its native command group and retains exit evidence', failedAdoptedHost);
 
-test('a normally force-stopped adopted Codex host ends without its owner acknowledging exit', { timeout: 15000 }, (t) => failedAdoptedHost(t, 'codex.cjs', false, true));
+test('a normally force-stopped adopted Codex host ends without its owner acknowledging exit', (t) => failedAdoptedHost(t, 'codex.cjs', false, true));
 
-test('a normally ended adopted Codex host keeps its owner lane through terminal ACK', { timeout: 15000 }, (t) => failedAdoptedHost(t, 'codex.cjs', false, true, true));
+test('a normally ended adopted Codex host keeps its owner lane through terminal ACK', (t) => failedAdoptedHost(t, 'codex.cjs', false, true, true));
 
-test('advancing terminal ACKs renew shutdown inactivity while duplicates do not', { timeout: 15000 }, (t) => failedAdoptedHost(t, 'codex-ack-progress-fixture.mjs', false, true, true, true));
+test('advancing terminal ACKs renew shutdown inactivity while duplicates do not', (t) => failedAdoptedHost(t, 'codex-ack-progress-fixture.mjs', false, true, true, true));
 
-test('failed-session cleanup keeps ownership through blocked output and a journal-close error', { timeout: 15000 }, (t) => failedAdoptedHost(t, 'codex-failed-cleanup-fixture.mjs', true));
+test('failed-session cleanup keeps ownership through blocked output and a journal-close error', (t) => failedAdoptedHost(t, 'codex-failed-cleanup-fixture.mjs', true));
 
-test('native evidence already written before exit drains before the exit observation', { timeout: 15000 }, async (t) => {
+test('native evidence already written before exit drains before the exit observation', async (t) => {
   const f = fixture(t, { nativeFailure: true, env: { ALONDRA_FAKE_MODE: 'hold', ALONDRA_FAKE_FINAL_TEXT: 'Final native evidence' } });
   f.session.offer('00000000-0000-4000-8000-000000000003', 'Exit after writing final evidence');
   await f.next(method('alondra/inputAccepted'));
@@ -87,7 +87,7 @@ test('native evidence already written before exit drains before the exit observa
   assert(final < f.events.findIndex((event) => event.type === 'process_exited'));
 });
 
-test('native turn acceptance survives exit while its response is still unread', { timeout: 15000 }, async (t) => {
+test('native turn acceptance survives exit while its response is still unread', async (t) => {
   const f = fixture(t, {
     nativeFailure: true,
     env: { ALONDRA_FAKE_MODE: 'complete_then_exit', ALONDRA_FAKE_FINAL_TEXT: 'Final accepted turn' },
@@ -104,7 +104,7 @@ test('native turn acceptance survives exit while its response is still unread', 
   assert(final >= 0 && final < exit, 'the accepted turn retains its final native item');
 });
 
-test('a turn/start Codex answers with an error refuses only that input and the session takes the next', { timeout: 15000 }, async (t) => {
+test('a turn/start Codex answers with an error refuses only that input and the session takes the next', async (t) => {
   const f = fixture(t, { env: { ALONDRA_FAKE_MODE: 'refuse_first_turn_start' } });
   f.session.offer('00000000-0000-4000-8000-000000000003', 'Codex refuses this turn');
   const rejected = await f.next(method('alondra/inputRejected'));
@@ -117,7 +117,7 @@ test('a turn/start Codex answers with an error refuses only that input and the s
   assert(!f.events.some(method('alondra/transportFailed')));
 });
 
-test('native stdout EOF ends the session even when the app-server process stays alive', { timeout: 15000 }, async (t) => {
+test('native stdout EOF ends the session even when the app-server process stays alive', async (t) => {
   const f = fixture(t, { nativeFailure: true, env: { ALONDRA_FAKE_MODE: 'close_stdout' } });
   f.session.offer('00000000-0000-4000-8000-000000000003', 'Close only the output pipe');
   await f.next(method('alondra/inputAccepted'));
@@ -127,7 +127,7 @@ test('native stdout EOF ends the session even when the app-server process stays 
   assert.throws(() => f.session.offer('00000000-0000-4000-8000-000000000004', 'Must not disappear'), InputNotOffered);
 });
 
-test('stdout EOF rejects a pending control and kills a native process ignoring SIGTERM', { timeout: 15000 }, async (t) => {
+test('stdout EOF rejects a pending control and kills a native process ignoring SIGTERM', async (t) => {
   const f = fixture(t, { nativeFailure: true });
   await f.next(method('alondra/threadReady'));
   writeFileSync(f.accountFile, JSON.stringify({ closeMcpStdout: true }));
@@ -137,14 +137,27 @@ test('stdout EOF rejects a pending control and kills a native process ignoring S
   assert.equal(f.events.find((event) => event.type === 'process_exited').signal, 'SIGKILL');
 });
 
-test('a missing executable finishes the session after an asynchronous spawn failure', { timeout: 15000 }, async (t) => {
+test('a stopped Codex gets its stop signal before its input ends, so its exit is the stop and not a clean exit', async (t) => {
+  const f = fixture(t);
+  await f.next(method('alondra/threadReady'));
+  const { child } = f.session;
+  const destroy = child.stdin.destroy.bind(child.stdin);
+  let signalledBeforeEnd;
+  child.stdin.destroy = (...args) => { signalledBeforeEnd ??= child.killed; return destroy(...args); };
+  f.session.close();
+  await f.session.finished;
+  assert.equal(signalledBeforeEnd, true, 'the native never reads the end of its input before the stop signal');
+  assert.deepEqual(f.events.filter((event) => event.type === 'process_exited').map(({ exit_code, signal }) => [exit_code, signal]), [[null, 'SIGTERM']]);
+});
+
+test('a missing executable finishes the session after an asynchronous spawn failure', async (t) => {
   const f = fixture(t, { nativeFailure: true, config: { executable: resolve('agent-host/missing-codex-fixture') } });
   await f.session.finished;
   assert.equal(f.session.failure, 'native_spawn_failed');
   assert.equal(f.events.filter((event) => event.type === 'process_exited').length, 1);
 });
 
-test('native exit releases host pipes inherited by a surviving descendant', { timeout: 15000 }, async (t) => {
+test('native exit releases host pipes inherited by a surviving descendant', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'alondra-codex-exit-'));
   const host = spawn(process.execPath, [resolve('agent-host/codex-exit-fixture.mjs'), home, resolve('agent-host/fake-codex.py')], { stdio: 'ignore' });
   const exited = once(host, 'exit');
@@ -160,7 +173,7 @@ test('native exit releases host pipes inherited by a surviving descendant', { ti
   assert.equal(typeof JSON.parse(readFileSync(join(home, 'descendant'), 'utf8')), 'number');
 });
 
-test('raw native final item is authoritative and input acceptance precedes early notifications', { timeout: 15000 }, async (t) => {
+test('raw native final item is authoritative and input acceptance precedes early notifications', async (t) => {
   const f = fixture(t);
   f.session.offer('00000000-0000-4000-8000-000000000003', 'Hello');
   await f.next(method('turn/completed'));
@@ -176,7 +189,7 @@ test('raw native final item is authoritative and input acceptance precedes early
   assert.equal(mapping.threadId, '00000000-0000-4000-8000-000000000001');
 });
 
-test('same native request is shown once and only exact epoch/item/request can answer it', { timeout: 15000 }, async (t) => {
+test('same native request is shown once and only exact epoch/item/request can answer it', async (t) => {
   const f = fixture(t, { env: { ALONDRA_FAKE_MODE: 'question' } });
   f.session.offer('00000000-0000-4000-8000-000000000003', 'Ask');
   const asked = await f.next((event) => event.type === 'decision_requested');
@@ -193,7 +206,7 @@ test('same native request is shown once and only exact epoch/item/request can an
   assert.deepEqual(response.result, { answers: { language: { answers: ['English'] } } });
 });
 
-test('orchestrator policy removes inherited MCP and all mutating native tool families', { timeout: 15000 }, async (t) => {
+test('orchestrator policy removes inherited MCP and all mutating native tool families', async (t) => {
   const profile = { model: 'fixture-model', tools: [], disallowed_tools: [], plugins: [], mcp_servers: { alondra: { command: '/safe/alondra', args: ['orchestrator-mcp'] } }, settings: { codex: { developerInstructions: 'Persistent role instructions', config: { 'features.image_generation': true, 'features.imagegenext': true, 'features.code_mode': true, 'features.code_mode_only': true, 'features.code_mode_host': true, 'features.code_mode_tool_search': true, 'features.code_mode_only_strict_3p_tools': true, 'features.code_mode_host_grpc': true, 'features.code_mode_prewarm': true, 'features.sleep_tool': true, 'features.multi_agent_v2': { enabled: true, disable_native_tools: false } } } } };
   const f = fixture(t, { config: { orchestrator: profile } });
   f.session.offer('00000000-0000-4000-8000-000000000003', 'Plan work');
@@ -224,7 +237,7 @@ test('same account model and effort apply on next turn while role instructions s
   assert.equal(first.collaborationMode.mode, 'plan'); assert.equal(next.collaborationMode.mode, 'default');
 });
 
-test('a native plan approves into the next default turn only after its exact card answer', { timeout: 15000 }, async (t) => {
+test('a native plan approves into the next default turn only after its exact card answer', async (t) => {
   const f = fixture(t, { env: { ALONDRA_FAKE_MODE: 'plan' }, config: { worker: { model: 'fixture-model', plugins: [], settings: { codex: { mcp_servers: { alondra: { command: '/safe/alondra', args: ['mcp-node'] } } } }, disallowed_tools: [] } } });
   await f.session.setPermissionMode('plan');
   f.session.offer('00000000-0000-4000-8000-000000000003', 'Plan this change');
@@ -244,7 +257,7 @@ test('a native plan approves into the next default turn only after its exact car
 });
 
 for (const answerNewestFirst of [false, true]) {
-  test(`a superseded native plan closes without another revision turn (newest answered first: ${answerNewestFirst})`, { timeout: 15000 }, async (t) => {
+  test(`a superseded native plan closes without another revision turn (newest answered first: ${answerNewestFirst})`, async (t) => {
     const f = fixture(t, { env: { ALONDRA_FAKE_MODE: 'replace_plan' } });
     f.session.offer('00000000-0000-4000-8000-000000000003', 'Plan the change');
     const first = await f.next((event) => event.type === 'decision_requested' && event.kind === 'plan');
@@ -271,7 +284,7 @@ for (const answerNewestFirst of [false, true]) {
   });
 }
 
-test('denying a newer native plan by policy preserves the users feedback on the older plan', { timeout: 15000 }, async (t) => {
+test('denying a newer native plan by policy preserves the users feedback on the older plan', async (t) => {
   const f = fixture(t, { env: { ALONDRA_FAKE_MODE: 'replace_plan' } });
   f.session.offer('00000000-0000-4000-8000-000000000003', 'Plan the change');
   const first = await f.next((event) => event.type === 'decision_requested' && event.kind === 'plan');
@@ -292,7 +305,7 @@ test('denying a newer native plan by policy preserves the users feedback on the 
 });
 
 for (const accountId of ['default', 'work']) {
-  test(`only additional account ${accountId} forces file credential storage`, { timeout: 15000 }, async (t) => {
+  test(`only additional account ${accountId} forces file credential storage`, async (t) => {
     const f = fixture(t, { config: { accountId, hostRelease: 'fixture-release' } });
     await f.next(method('alondra/threadReady'));
     assert.deepEqual(JSON.parse(readFileSync(join(f.home, 'argv'), 'utf8')), accountId === 'default' ? ['app-server', '--listen', 'stdio://'] : ['-c', 'cli_auth_credentials_store="file"', 'app-server', '--listen', 'stdio://']);
@@ -314,7 +327,7 @@ test('role MCP environment is explicit and incomplete or confused role contexts 
   assert.throws(() => alondraMcpEnvironment({ ...config, env: { ...config.env, ALONDRA_ORCHESTRATOR: '1' } }), /cannot inherit/);
 });
 
-test('ambiguous inherited MCP names fail closed before creating a native thread or offering input', { timeout: 15000 }, async (t) => {
+test('ambiguous inherited MCP names fail closed before creating a native thread or offering input', async (t) => {
   for (const name of ['inherited.danger', 'inherited"danger', 'inherited\ndanger']) {
     const profile = { model: 'fixture-model', tools: [], disallowed_tools: [], plugins: [], mcp_servers: { alondra: { command: '/safe/alondra', args: ['mcp-orchestrator'] } }, settings: { codex: { developerInstructions: 'Persistent role instructions' } } };
     const f = fixture(t, { env: { ALONDRA_FAKE_INHERITED_MCP_NAMES: JSON.stringify([name]) }, config: { orchestrator: profile } });
@@ -328,19 +341,19 @@ test('ambiguous inherited MCP names fail closed before creating a native thread 
 
 const apiAccount={accountRead:{account:{type:'apiKey'},requiresOpenaiAuth:true},authStatus:{authMethod:'apikey',authToken:null,requiresOpenaiAuth:true}};
 const managedAccount=(workspace='fixture-workspace')=>({accountRead:{account:{type:'chatgpt',email:'first@example.test',planType:'plus'},requiresOpenaiAuth:true},authStatus:{authMethod:'chatgpt',authToken:null,requiresOpenaiAuth:true},rateLimits:{accountId:workspace,ordinaryUsageAllowed:true,rateLimits:{},rateLimitsByLimitId:null}});
-test('API key without its exact original grant is refused before any native thread or input',{timeout:15000},async(t)=>{
+test('API key without its exact original grant is refused before any native thread or input',async(t)=>{
   const f=fixture(t,{account:apiAccount});f.session.offer('00000000-0000-4000-8000-000000000091','Must not incur billable inference');
   const refusal=await f.next((event)=>method('alondra/inputRefused')(event)||method('turn/completed')(event));assert.equal(refusal.payload.params.code,'paid_authorization_required');assert.equal(refusal.payload.params.nativeSubmitted,false);
   assert(!f.messages().some((request)=>['thread/start','thread/resume','turn/start'].includes(request.method)));assert(!f.events.some(method('alondra/inputAccepted')));assert(!f.events.some(method('alondra/transportFailed')));
   assert(f.messages().filter((request)=>request.method==='getAuthStatus').every((request)=>request.params.includeToken===false && request.params.refreshToken===false));
 });
-test('each native turn rechecks mode and same-email workspace before submission',{timeout:15000},async(t)=>{
+test('each native turn rechecks mode and same-email workspace before submission',async(t)=>{
   const f=fixture(t,{account:managedAccount()});f.session.offer('00000000-0000-4000-8000-000000000092','First authorized input');await f.next(method('turn/completed'));
   writeFileSync(f.accountFile,JSON.stringify(managedAccount('different-workspace')));f.session.offer('00000000-0000-4000-8000-000000000093','Do not transfer this session');
   const refusal=await f.next((event)=>method('alondra/inputRefused')(event)||(method('alondra/inputAccepted')(event)&&event.payload.params.inputId.endsWith('93')));assert.equal(refusal.payload.params.code,'native_account_identity_changed');assert.equal(f.messages().filter((request)=>request.method==='turn/start').length,1);
   assert.equal(JSON.parse(readFileSync(join(f.home,'execution','native-auth-account.json'),'utf8')).workspaceId,'fixture-workspace');
 });
-test('a same-process API key requires an exact paid grant and cannot resume as an unverified new process',{timeout:15000},async(t)=>{
+test('a same-process API key requires an exact paid grant and cannot resume as an unverified new process',async(t)=>{
   const profile={plugins:[],settings:{codex:{nativeAccountPolicy:{paidAccountId:'default'},mcp_servers:{alondra:{command:'/unused-fixture-mcp'}}}},disallowed_tools:[]};
   const f=fixture(t,{account:apiAccount,config:{worker:profile,accountId:'default'}});f.session.offer('00000000-0000-4000-8000-000000000094','Explicitly authorized paid input');await f.next(method('turn/completed'));
   f.session.offer('00000000-0000-4000-8000-000000000095','Same process and original grant');await f.next((event)=>method('alondra/inputAccepted')(event) && event.payload.params.inputId.endsWith('95'));
@@ -349,19 +362,19 @@ test('a same-process API key requires an exact paid grant and cannot resume as a
   try {await refused;await rejected;
   assert(second.some((event)=>method('alondra/inputRefused')(event)&&event.payload.params.code==='native_api_key_resume_unverifiable'));assert(!f.messages().some((request)=>request.method==='thread/resume'));}finally{later.close();await later.finished;}
 });
-test('no-auth and external authentication do not inherit subscription permission',{timeout:15000},async(t)=>{
+test('no-auth and external authentication do not inherit subscription permission',async(t)=>{
   for(const account of [{accountRead:{account:null,requiresOpenaiAuth:false},authStatus:{authMethod:null,requiresOpenaiAuth:false}}, {...managedAccount(),authStatus:{authMethod:'chatgptAuthTokens',authToken:null,requiresOpenaiAuth:true}}]){
     const f=fixture(t,{account});f.session.offer('00000000-0000-4000-8000-000000000097','Unsupported credential mode');const result=await f.next((event)=>method('alondra/inputRefused')(event)||method('alondra/inputAccepted')(event));assert(method('alondra/inputRefused')(result));assert(!f.messages().some((request)=>request.method==='turn/start'));
   }
 });
 
-test('effective provider credential and custom role overrides cannot borrow subscription metadata',{timeout:15000},async(t)=>{
+test('effective provider credential and custom role overrides cannot borrow subscription metadata',async(t)=>{
   for(const config of [{model_provider:'other'},{model_providers:{openai:{env_key:'UNRELATED_PAID_KEY'}}},{model_providers:{openai:{auth:{type:'command'}}}},{model_providers:{openai:{http_headers:{Authorization:'fixture-only'}}}},{agents:{reviewer:{config_file:'unverified-role.toml'}}}]){
     const f=fixture(t,{account:{...managedAccount(),configRead:{config}}});f.session.offer('00000000-0000-4000-8000-000000000098','Do not use another provider credential');const result=await f.next((event)=>method('alondra/inputRefused')(event)||method('alondra/inputAccepted')(event));assert(method('alondra/inputRefused')(result));assert(!f.messages().some((request)=>request.method==='thread/start'||request.method==='turn/start'));
   }
 });
 
-test('managed authentication uses the actual account schema and tolerates missing optional usage identity',{timeout:15000},async(t)=>{
+test('managed authentication uses the actual account schema and tolerates missing optional usage identity',async(t)=>{
   for (const account of [{...managedAccount(null)}, {...managedAccount(),rateLimitsError:true}, {...managedAccount(),rateLimits:{accountId:'unvalidated-id',rateLimits:{}}}]) {
     assert(!('workspaceRouting' in account.accountRead));
     const f=fixture(t,{account});f.session.offer('00000000-0000-4000-8000-000000000099','Positive managed authentication can start without optional quota metadata');await f.next(method('turn/completed'));
@@ -369,7 +382,7 @@ test('managed authentication uses the actual account schema and tolerates missin
     assert.equal(f.events.some(method('alondra/inputRefused')),false);assert(f.messages().some((request)=>request.method==='turn/start'));
   }
 });
-test('optional workspace missing-known-missing transitions never upgrade original proof or reject the same managed session',{timeout:15000},async(t)=>{
+test('optional workspace missing-known-missing transitions never upgrade original proof or reject the same managed session',async(t)=>{
   for (const initial of [null,'fixture-workspace']) {
     const f=fixture(t,{account:managedAccount(initial)});f.session.offer('00000000-0000-4000-8000-000000000100','Original managed input');await f.next(method('turn/completed'));
     for (const [suffix,workspace] of [['101','fixture-workspace'],['102',null],['103','fixture-workspace']]) {
@@ -382,7 +395,7 @@ test('optional workspace missing-known-missing transitions never upgrade origina
   }
 });
 
-test('each native submission records its causal start before acceptance and public user echo',{timeout:15000},async(t)=>{
+test('each native submission records its causal start before acceptance and public user echo',async(t)=>{
   const f=fixture(t);f.session.offer('00000000-0000-4000-8000-000000000090','Causally scoped input');await f.next(method('turn/completed'));
   const starting=f.events.findIndex(method('alondra/inputStarting'));const accepted=f.events.findIndex(method('alondra/inputAccepted'));assert(starting>=0 && starting<accepted);assert.equal(f.events[starting].payload.params.inputId,'00000000-0000-4000-8000-000000000090');assert(!('prompt' in f.events[starting].payload.params));
 });
@@ -399,7 +412,7 @@ const codeCellEvents = (f) => f.events.filter((event) => event.type === 'sdk' &&
 
 // Codex keeps a yielded script after its turn and advances it only in a later turn, so a paused
 // script is not work: the node rests, and interrupting never takes the native process down.
-test('a Code Mode script still running after its turn is not work and interrupting keeps the process', { timeout: 15000 }, async (t) => {
+test('a Code Mode script still running after its turn is not work and interrupting keeps the process', async (t) => {
   const f = fixture(t);
   await f.next(method('alondra/threadReady'));
   assert.equal(f.messages().find((m) => m.method === 'thread/start').params.experimentalRawEvents, undefined);
@@ -416,7 +429,7 @@ test('a Code Mode script still running after its turn is not work and interrupti
   assert.equal(f.events.some(method('alondra/transportFailed')), false);
 });
 
-test('a child with a paused script settles once its turn and background terminals are done', { timeout: 15000 }, async (t) => {
+test('a child with a paused script settles once its turn and background terminals are done', async (t) => {
   const f = fixture(t); const child = 'child-thread';
   await f.next(method('alondra/threadReady'));
   nativeMessage(f, 'turn/started', { threadId: nativeThread, turn: { id: 'parent-turn' } });
@@ -434,7 +447,7 @@ const workerProfile = (instructions) => ({ model: 'fixture-model', plugins: [], 
 
 // Production, 0.3.9: every Codex node stopped after the release, because each saved thread was
 // refused for having been started under the previous release's instructions.
-test('a thread saved under the instructions of the release before resumes under the current ones', { timeout: 15000 }, async (t) => {
+test('a thread saved under the instructions of the release before resumes under the current ones', async (t) => {
   const f = fixture(t, { config: { worker: workerProfile('Instructions of the release before') } });
   await f.session.ready;
   f.session.close(); await f.session.finished;
@@ -452,7 +465,7 @@ test('a thread saved under the instructions of the release before resumes under 
   } finally { later.close(); await later.finished; }
 });
 
-test('an input whose session could not start is refused as never offered, and the session says why it ended', { timeout: 15000 }, async (t) => {
+test('an input whose session could not start is refused as never offered, and the session says why it ended', async (t) => {
   const f = fixture(t, { account: { failResumes: 1 }, config: { worker: workerProfile('Instructions') } });
   await f.session.ready;
   f.session.close(); await f.session.finished;
@@ -491,7 +504,7 @@ async function nativeRequestWritten(home, session, method) {
 }
 
 for (const [silentOn, step] of [['initialize', 'initialize'], ['thread/start', 'thread_start'], ['thread/resume', 'thread_resume']]) {
-  test(`a Codex that never answers ${silentOn} refuses the input as never offered and says which step did not answer`, { timeout: 15000 }, async (t) => {
+  test(`a Codex that never answers ${silentOn} refuses the input as never offered and says which step did not answer`, async (t) => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const resume = silentOn === 'thread/resume';
     const f = fixture(t, resume ? { config: { worker: workerProfile('Instructions') } } : { config: { worker: workerProfile('Instructions'), openingTimeoutMs: 200 }, env: { ALONDRA_FAKE_SILENT_ON: silentOn } });
@@ -517,7 +530,7 @@ for (const [silentOn, step] of [['initialize', 'initialize'], ['thread/start', '
 }
 
 for (const mode of ['complete', 'child']) {
-  test(`a cold resume never reads Codex's history file and keeps ${mode} turns going`, { timeout: 15000 }, async (t) => {
+  test(`a cold resume never reads Codex's history file and keeps ${mode} turns going`, async (t) => {
     const f = fixture(t, { env: { ALONDRA_FAKE_MODE: mode } });
     await f.session.ready;
     f.session.close(); await f.session.finished;

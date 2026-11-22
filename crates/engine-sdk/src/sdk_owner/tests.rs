@@ -3497,13 +3497,13 @@ async fn tell_as_user(domain: &DomainRuntime, home: &Path, agent: &AgentId, text
     crate::domain_messages::deliver(domain, home, &user(), "Alice", agent, message, true).await.unwrap()
 }
 
-/// Waits until the last prompt Claude got ends with `text`, or fails once a minute passed: a
-/// message that never arrives is a failure, never a hang.
+/// Waits on the domain until the last prompt Claude got ends with `text`. The fake native Claude and
+/// the model both record a prompt before they queue and start it, and the owner commits those
+/// lifecycle events, so a commit always follows the prompt: no clock decides when it arrived, and a
+/// message that never arrives ends at the target's timeout.
 pub async fn until_last_prompt_ends_with(domain: &DomainRuntime, hosts: &impl super::fixtures::Hosts, text: &str) {
     let mut changed = domain.subscribe();
-    let arrived = changed.wait_for(|_| not_wakes(hosts.prompts().into_iter()).last().is_some_and(|prompt| prompt.ends_with(text)));
-    tokio::time::timeout(std::time::Duration::from_secs(60), arrived).await
-        .unwrap_or_else(|_| panic!("the message never reached Claude: {:?}", hosts.prompts())).unwrap();
+    changed.wait_for(|_| not_wakes(hosts.prompts().into_iter()).last().is_some_and(|prompt| prompt.ends_with(text))).await.unwrap();
 }
 
 #[cfg(feature = "real-hosts")]
