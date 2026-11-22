@@ -422,6 +422,100 @@ class LocalReleaseTests(unittest.TestCase):
             for child in self.root.iterdir():
                 shutil.rmtree(child) if child.is_dir() else child.unlink()
 
+    def prepared_directory(self, source='source'):
+        output = self.root / 'artifacts'
+        output.mkdir()
+        archives(output)
+        rehearsed(output)
+        (output / l.MANIFEST).write_text(json.dumps(l.manifest('0.1.2', source, output)))
+        return output
+
+    def retry(self, output, **patches):
+        with patch.dict(os.environ, {'ALONDRA_RELEASE_DIR': str(output)}), \
+             patch.object(sys, 'argv', ['local-release.py', '0.1.2']), \
+             patch.object(l, 'preflight', return_value='source'), patch.object(l, 'tag_state'), \
+             patch.object(l, 'prepare') as prepare, patch.object(l, 'publish') as publish:
+            try:
+                l.main()
+            finally:
+                self.prepare, self.publish = prepare, publish
+
+    def snapshot(self, output):
+        return {p.name: p.read_bytes() for p in output.iterdir()}
+
+    def test_a_retry_after_a_partial_preparation_prepares_again_without_touching_anything(self):
+        output, _, signed, _, _ = self.release_fixture()
+        output.mkdir()
+        (output / f'alondra-0.1.2-{l.release.TARGETS[0]}.tar.gz').write_bytes(b'half written')
+        (output / l.UNFINISHED_MANIFEST).write_text('{"sch')
+        rehearsed(output)
+        l.prepare('0.1.2', 'source', output)
+        self.assertTrue(signed)
+        l.verify_prepared('0.1.2', 'source', output)
+
+    def test_a_directory_with_files_no_preparation_writes_is_left_as_it_is(self):
+        output, _, signed, _, _ = self.release_fixture()
+        output.mkdir()
+        (output / 'notes.txt').write_text('mine')
+        (output / f'alondra-0.1.2-{l.release.TARGETS[0]}.tar.gz').write_bytes(b'half written')
+        before = self.snapshot(output)
+        with self.assertRaisesRegex(RuntimeError, 'notes.txt'):
+            l.prepare('0.1.2', 'source', output)
+        self.assertEqual(before, self.snapshot(output))
+        self.assertEqual(signed, [])
+
+    def test_a_retry_with_a_complete_valid_preparation_publishes_those_bytes(self):
+        output = self.prepared_directory()
+        before = self.snapshot(output)
+        self.retry(output)
+        self.prepare.assert_not_called()
+        self.publish.assert_called_once_with('0.1.2', 'source', output, retry=False)
+        self.assertEqual(before, self.snapshot(output))
+
+    def test_a_retry_never_replaces_a_preparation_of_another_source_or_a_corrupt_one(self):
+        output = self.prepared_directory(source='other source')
+        for damage in (None, 'truncated', 'bytes'):
+            if damage == 'truncated':
+                (output / l.MANIFEST).write_text('{"sche')
+            if damage == 'bytes':
+                self.prepared_directory_bytes(output)
+            before = self.snapshot(output)
+            with self.assertRaisesRegex(RuntimeError, 'kept as they are'):
+                self.retry(output)
+            self.prepare.assert_not_called()
+            self.publish.assert_not_called()
+            self.assertEqual(before, self.snapshot(output))
+
+    def prepared_directory_bytes(self, output):
+        (output / l.MANIFEST).write_text(json.dumps(l.manifest('0.1.2', 'source', output)))
+        next(output.glob('*.tar.gz')).write_bytes(b'changed after the manifest')
+
+    def test_a_published_version_is_refused_before_its_directory_is_touched(self):
+        output = self.prepared_directory()
+        before = self.snapshot(output)
+        def git(*args, **kwargs):
+            return 'abc\trefs/tags/alondra-v0.1.2\n' if args[:2] == ('git', 'ls-remote') else ''
+        with patch.dict(os.environ, {'ALONDRA_RELEASE_DIR': str(output)}), \
+             patch.object(sys, 'argv', ['local-release.py', '0.1.2']), \
+             patch.object(l, 'preflight', return_value='source'), patch.object(l, 'run', side_effect=git), \
+             patch.object(l, 'prepare') as prepare, patch.object(l, 'publish') as publish, \
+             self.assertRaisesRegex(RuntimeError, 'Tag exists'):
+            l.main()
+        prepare.assert_not_called()
+        publish.assert_not_called()
+        self.assertEqual(before, self.snapshot(output))
+
+    def test_the_manifest_appears_whole_or_not_at_all(self):
+        output, *_ = self.release_fixture()
+        real = pathlib.Path.write_text
+        def crash_after_writing_the_manifest(path, *args, **kwargs):
+            real(path, *args, **kwargs)
+            if path.name == l.UNFINISHED_MANIFEST:
+                raise OSError('killed')
+        with patch.object(pathlib.Path, 'write_text', crash_after_writing_the_manifest), self.assertRaises(OSError):
+            l.prepare('0.1.2', 'source', output)
+        self.assertFalse((output / l.MANIFEST).exists())
+
     def test_a_failed_upgrade_rehearsal_leaves_nothing_publishable(self):
         output, *_ = self.release_fixture(failure='rehearsal')
         with self.assertRaises(subprocess.CalledProcessError):

@@ -22,6 +22,8 @@ IDENTITY = '137E48D7AF54AAA3DFC56B9820DACC897C20AF15'
 TEAM = '658YBSK6MG'
 LOW_FREE = 8 * 1024**3
 REHEARSAL = 'upgrade-rehearsal.json'
+MANIFEST = 'manifest.json'
+UNFINISHED_MANIFEST = MANIFEST + '.partial'
 SDK_HANDOVER = 'sdk-handover'
 FIRST_SDK_RELEASE = (0, 3, 0)
 FRESH_SDK = 'fresh-sdk'
@@ -189,11 +191,40 @@ def verify_rehearsal(ver, output):
 
 
 def verify_prepared(ver, source, output):
-    saved = json.loads((output / 'manifest.json').read_text())
+    saved = json.loads((output / MANIFEST).read_text())
     if saved != manifest(ver, source, output):
         raise RuntimeError('Prepared manifest/source/version/checksums differ; never rebuild a published version')
     release.render(ver, output)  # Same strict archive allowlist as the publisher.
     verify_rehearsal(ver, output)
+
+
+def discard_unfinished_preparation(ver, output):
+    """A preparation that stopped before its manifest was never publishable: only what a preparation
+    itself writes is removed, so anything else in the directory stops the retry untouched."""
+    if not output.exists():
+        return
+    if (output / MANIFEST).exists():
+        raise RuntimeError(f'{output.name} holds a finished preparation; it is verified, never rebuilt over')
+    owned = {REHEARSAL, UNFINISHED_MANIFEST, *(f'alondra-{ver}-{target}.tar.gz' for target in release.TARGETS)}
+    strangers = sorted(entry.name for entry in output.iterdir() if entry.name not in owned)
+    if strangers:
+        raise RuntimeError(f'The release directory holds files no preparation writes ({", ".join(strangers)}); '
+                           'move that directory aside before preparing again')
+    for entry in output.iterdir():
+        entry.unlink()
+
+
+def finished_preparation(ver, source, output):
+    """True when a complete preparation of exactly this source is already there to publish; a
+    preparation that does not match is never replaced, whoever might have published its bytes."""
+    if not (output / MANIFEST).exists():
+        return False
+    try:
+        verify_prepared(ver, source, output)
+    except (RuntimeError, ValueError, OSError) as error:
+        raise RuntimeError(f'The prepared artifacts of {ver} do not match this source ({error}); '
+                           'they are kept as they are: move the release directory aside to prepare again') from None
+    return True
 
 
 def smoke(ver, target, archive):
@@ -287,8 +318,8 @@ def prepare(ver, source, output):
     identities = run('security', 'find-identity', '-v', '-p', 'codesigning', capture=True)
     if not any(len(parts := line.split()) > 1 and parts[1] == IDENTITY for line in identities.splitlines()):
         raise RuntimeError('The approved Developer ID identity is not available in the local keychain')
-    # Never overwrite prior archives, including partially prepared artifacts.
-    output.mkdir(parents=True, exist_ok=False)
+    discard_unfinished_preparation(ver, output)
+    output.mkdir(parents=True, exist_ok=True)
     output.chmod(0o700)
     bazel('test', TEST_WRAPPER, '//crates/...', '//deploy/brew/...', WRAPPER_TEST, *RELEASE_ONLY_TESTS)
     built = release_build(ver)
@@ -310,7 +341,9 @@ def prepare(ver, source, output):
                 payload / 'alondra-codex-host', built['alondra-codex-host.json'], output)
         smoke(ver, target, output / f'alondra-{ver}-{target}.tar.gz')
     rehearse_upgrade(ver, output)
-    (output / 'manifest.json').write_text(json.dumps(manifest(ver, source, output), indent=2) + '\n')
+    unfinished = output / UNFINISHED_MANIFEST
+    unfinished.write_text(json.dumps(manifest(ver, source, output), indent=2) + '\n')
+    unfinished.replace(output / MANIFEST)
     verify_prepared(ver, source, output)
     print(f'Prepared immutable release artifacts: {output}')
 
@@ -348,12 +381,15 @@ def main():
             raise RuntimeError('Another local release of this version is running') from None
         retry_source = None
         if args.retry_publish:
-            retry_source = json.loads((output / 'manifest.json').read_text())['source']
+            retry_source = json.loads((output / MANIFEST).read_text())['source']
             verify_prepared(ver, retry_source, output)
         source = preflight(ver, retry_source=retry_source)
         tag_state(ver, source, args.retry_publish)
         if not args.retry_publish:
-            prepare(ver, source, output)
+            if finished_preparation(ver, source, output):
+                print(f'Reusing the verified artifacts already prepared: {output}')
+            else:
+                prepare(ver, source, output)
         if not args.prepare:
             publish(ver, source, output, retry=args.retry_publish)
 
