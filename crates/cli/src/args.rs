@@ -838,8 +838,8 @@ fn compact_hook_payload(payload: &mut serde_json::Value) {
 
 fn status(json: bool) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(10));
-    let home = client.views("home", None)?;
-    let tasks = client.views("tasks", None)?;
+    let home = cli::read_patiently(|| client.views("home", None))?;
+    let tasks = cli::read_patiently(|| client.views("tasks", None))?;
     if json {
         println!("{}", serde_json::to_string_pretty(&cli::status_json(&home, &tasks))?);
     } else {
