@@ -7,13 +7,13 @@ import XCTest
 
 @MainActor
 final class AccountOrderFeatureTests: XCTestCase {
-    private func document(version: String = "cfg-a", epoch: String = "epoch") throws -> ViewDocument {
+    private func document(version: String = "cfg-a", epoch: String = "epoch", providers: [String] = ["codex", "claude"]) throws -> ViewDocument {
         let account: (String) -> [String: Any] = { provider in [
             "key": ["provider": provider, "account": "work"], "position": provider == "codex" ? 1 : 2,
             "availability": ["text": "Signed in", "tone": "success"], "active_nodes": 0,
             "freshness": ["text": "Usage not reported", "tone": "neutral"], "windows": []
         ] }
-        let rows: [[String: Any]] = ["codex", "claude"].map { provider in ["type": "row", "id": provider + "-work", "icon": "machine", "title": "Work", "depth": 0, "struck": false, "account": account(provider)] }
+        let rows: [[String: Any]] = providers.map { provider in ["type": "row", "id": provider + "-work", "icon": "machine", "title": "Work", "depth": 0, "struck": false, "account": account(provider)] }
         let action: [String: Any] = ["id": "account_order:accounts@1~" + version, "label": "Reorder accounts", "style": "secondary", "presentation": "button", "input": ["kind": "none"], "attachments": false, "enabled": true]
         let view: [String: Any] = ["protocol": 1, "view": "accounts", "key": "accounts", "client": "ios", "version": "view-" + version, "cursor": "cursor", "data_epoch": epoch,
             "account_configuration": ["version": version], "status": ["version": "s", "summary": "Ready", "badge": 0, "counts": [], "gauges": [], "orchestrator": ["text": "idle", "tone": "neutral"]],
@@ -21,11 +21,18 @@ final class AccountOrderFeatureTests: XCTestCase {
         return try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: view))
     }
 
-    private func state() throws -> ServerSettingsFeature.State {
-        let view = try document()
+    private func state(providers: [String] = ["codex", "claude"]) throws -> ServerSettingsFeature.State {
+        let view = try document(providers: providers)
         var state = ServerSettingsFeature.State(key: .accounts, client: .ios, lang: "en")
         state.document = view; state.actions.dataEpoch = view.dataEpoch
         return state
+    }
+
+    func testAnAntigravityAccountRowDecodesAndIsNamedAfterItsProvider() throws {
+        let accounts = try state(providers: ["antigravity", "claude"]).accountRows.compactMap(\.account)
+        XCTAssertEqual(accounts.map(\.key.provider), [.antigravity, .claude])
+        XCTAssertEqual(accounts.map(\.key.provider.displayName), ["Antigravity", "Claude"])
+        XCTAssertEqual(accounts.map(\.key.wireID), ["antigravity/work", "claude/work"])
     }
 
     func testReorderStaysADraftAndCancelDoesNotChangeTheCommittedOrder() async throws {

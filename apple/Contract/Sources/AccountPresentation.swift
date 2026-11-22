@@ -1,8 +1,14 @@
 import Foundation
 
 public enum AccountProvider: String, Codable, Equatable, Hashable, Sendable, KnownValueDecodable {
-    case claude, codex
-    public var displayName: String { self == .claude ? "Claude" : "Codex" }
+    case claude, codex, antigravity
+    public var displayName: String {
+        switch self {
+        case .claude: "Claude"
+        case .codex: "Codex"
+        case .antigravity: "Antigravity"
+        }
+    }
 }
 
 public struct ViewProtocolRange: Codable, Equatable, Sendable {
