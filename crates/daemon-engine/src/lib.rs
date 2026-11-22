@@ -67,7 +67,6 @@ pub mod domain_transport;
 pub mod gate;
 pub mod host_fixtures;
 pub mod hosts;
-pub mod idle_compaction;
 pub mod obligation_watch;
 pub use alondra_daemon_engine_model::issues;
 pub mod launch_plans;

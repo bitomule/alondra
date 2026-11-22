@@ -38,27 +38,14 @@ pub enum Relaunch {
     ByItself,
 }
 
-/// The conversation's size after its last request, and when that request's cache expires.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Reading {
-    pub tokens: u64,
-    pub expires_at: Millis,
-}
-
 /// The last request of a task this daemon timed: how large the conversation was after it, when it
-/// started, how long its cache lasts, and whether a compaction may still be asked for it.
+/// started and how long its cache lasts. A file an older daemon wrote also says whether that
+/// daemon could still compact it, which nothing reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastRequest {
     pub tokens: u64,
     pub requested_at: Millis,
     pub cache_ms: Millis,
-    pub compactable: bool,
-}
-
-impl LastRequest {
-    pub fn reading(&self) -> Reading {
-        Reading { tokens: self.tokens, expires_at: self.requested_at.saturating_add(self.cache_ms) }
-    }
 }
 
 /// How a host of a task came to run its conversation.

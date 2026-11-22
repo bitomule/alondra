@@ -1,6 +1,6 @@
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine::live::LiveOf as _;
-use alondra_daemon_engine::idle_compaction::ContextsOf as _;
+use alondra_daemon_engine::contexts::ContextsOf as _;
 use crate::locks::Poisonable as _;
 use super::reset_time;
 use super::observation::{Observation, Metric, Cause, Stage};

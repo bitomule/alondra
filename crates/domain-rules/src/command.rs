@@ -888,10 +888,6 @@ pub enum Command {
         task_id: TaskId,
         server: String,
     },
-    /// The Task's resting SDK execution compacts its conversation; the cards it waits on stay.
-    CompactConversation {
-        task_id: TaskId,
-    },
     /// Alondra lets go of what nobody reads any more of the cards of done or cancelled Tasks.
     CompactEndedTasks {
         task_ids: Vec<TaskId>,

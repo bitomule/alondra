@@ -340,8 +340,6 @@ pub(crate) async fn assemble_with(
     tasks.spawn(provider_transition::run(state_domain.clone()));
     tasks.spawn(obligation_watch::run(state_domain.clone()));
     tasks.spawn(alondra_daemon_engine::report_held_card::run(domain.clone(), config.home.clone(), seams.own_cli.clone(), config.fast_timing));
-    let compaction = if config.fast_timing { &idle_compaction::Timing::SANDBOX } else { &idle_compaction::Timing::LIVE };
-    tasks.spawn(idle_compaction::run(state_domain.clone(), compaction));
     let release = if config.fast_timing { &idle_release::Timing::SANDBOX } else { &idle_release::Timing::LIVE };
     tasks.spawn(idle_release::run(state_domain.clone(), release));
     let closer = if config.fast_timing { task_closer::Timing::sandbox(config.close_free_nodes_after) } else { task_closer::Timing::new(config.close_free_nodes_after) };

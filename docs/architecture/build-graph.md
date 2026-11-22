@@ -271,7 +271,7 @@ observers; a test that needs another subsystem runs with the engine.
 - `engine-live`: what each node's mod reports or its Agent SDK or Codex host observes
   (`node_reports`, `node_work`, `sdk_live`, `codex_live`) and what each SDK task measured of its
   conversation (`contexts`). The feeds take the node reports they write as an argument instead
-  of reaching them through the engine's live state; `idle_compaction` re-exports `contexts`.
+  of reaching them through the engine's live state.
 - `engine-worktrees`: each task's worktree (`task_worktrees`), those of cancelled tasks
   (`cancelled_worktrees`) and the startup moves of HOME files (`home_renames`). They carry out
   system commands through the kernel's `DomainRuntime::execute_system_command`.

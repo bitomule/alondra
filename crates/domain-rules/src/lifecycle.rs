@@ -88,7 +88,7 @@ pub enum ReviewOutcome {
     KeptByUser,
 }
 
-/// The text of the input that asks an SDK execution to compact its conversation.
+/// The text of the input an older journal's `Compacted` record asked an SDK execution to run.
 pub const COMPACT: &str = "/compact";
 /// The code of a takeover refused because its host never answered the last one.
 pub const REPEATED_TAKEOVER: &str = "repeated_takeover";
@@ -471,7 +471,8 @@ pub enum LifecycleRecord {
     },
     /// The intent to run `operation` on the task's SDK execution, recorded before it reaches it.
     ControlRequested { control: String, operation: ControlRecord },
-    /// The resting SDK execution is asked to compact its conversation with `input`.
+    /// The resting SDK execution was asked to compact its conversation with `input`. Alondra no
+    /// longer compacts on its own; the record stays so a journal that holds one still replays.
     Compacted { input: String },
     /// The SDK execution asks the user, on `card`, for the decision its host persisted at `epoch`.
     DecisionAsked { card: InteractionId, epoch: u64, reason: DecisionReason },

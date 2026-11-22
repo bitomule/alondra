@@ -3,7 +3,7 @@
 use crate::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
-use crate::idle_compaction::ContextsOf as _;
+use crate::contexts::ContextsOf as _;
 use alondra_engine_admission::AdmissionOf as _;
 use super::codex_tests::{claude_ready, git, request_move, resumed_threads, until_moved};
 use crate::sdk_owner::fixtures::codex::{configured, launch, transcript};
@@ -211,33 +211,6 @@ async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_o
     slice.domain.stop_sdk_owners();
     assert_eq!(starts.len(), 2, "one host resumed the session: {starts:?}");
     assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session goes on: {starts:?}");
-}
-
-// Compaction is an input no `TellNode` carries: the look at the state finds it. The closed host
-// keeps what was measured of its conversation, so the cache can still be saved before it expires.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_large_closed_conversation_is_resumed_to_compact_before_its_cache_expires() {
-    use crate::idle_compaction::{Timing as Compaction, compact_due};
-    let slice = Slice::new();
-    enable(&slice);
-    let mut driver = slice.launch_with("large-context");
-    slice.settle(&mut driver);
-    let session = slice.starts().last().unwrap()["session"].as_str().unwrap().to_owned();
-    slice.domain.add_sdk_owner(Owner::spawn(driver));
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
-
-    let readings = slice.domain.contexts().readings();
-    assert_eq!(readings.len(), 1, "closing the host forgets nothing of the conversation");
-    compact_due(&slice.domain, readings[0].1.expires_at - Compaction::LIVE.lead, &Compaction::LIVE);
-    assert_eq!(lifecycle(&slice.domain).pending_inputs().len(), 1, "the compaction waits for a host");
-    assert_eq!(slice.starts().len(), 1, "nothing but the gate starts one");
-    gate_look(&slice).await;
-    let mut changed = slice.domain.subscribe();
-    let compacted = changed.wait_for(|_| lifecycle(&slice.domain).pending_inputs().is_empty());
-    tokio::time::timeout(std::time::Duration::from_secs(60), compacted).await.expect("the compaction never reached the node").unwrap();
-    slice.domain.stop_sdk_owners();
-    assert_eq!(slice.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()));
 }
 
 // No host to stop: the task ends as one whose host ended, and no Claude starts just to end it.

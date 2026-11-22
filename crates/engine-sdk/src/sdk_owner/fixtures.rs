@@ -6,7 +6,7 @@
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use alondra_daemon_engine::gate::GateOf as _;
 use alondra_engine_sdk::sdk_owner::SdkOwners as _;
-use alondra_daemon_engine::idle_compaction::ContextsOf as _;
+use alondra_daemon_engine::contexts::ContextsOf as _;
 use alondra_engine_sdk::sdk_owner::*;
 use alondra_engine_sdk::domain_runtime::DomainRuntime;
 use alondra_engine_sdk::domain_store::StoreError;

@@ -1,4 +1,4 @@
-name = "large conversations the usage limit held past their prompt cache go on in new sessions, which write little to the cache, though the request that hit the limit answered with no tokens; a result accepted hours later still closes, and its cleanup goes on in another new session that does not read the whole conversation again; once that task closed and its texts were let go, a task the limit holds afterwards goes on hours later in a new session too"
+name = "large conversations the usage limit held past their prompt cache go on in new sessions, which write little to the cache, though the request that hit the limit answered with no tokens; a result that waits hours for the user is never compacted while it waits, and once accepted it still closes, and its cleanup goes on in another new session that does not read the whole conversation again; once that task closed and its texts were let go, a task the limit holds afterwards goes on hours later in a new session too"
 max_virtual = "14h"
 
 [[step]]
@@ -139,7 +139,26 @@ task = "t1"
 
 [[step]]
 do = "advance"
-by = "2h"
+by = "57m"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "resting-in-the-last-minutes-of-its-cache"
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 3
+running = 0
+sessions = 2
+
+[[step]]
+do = "advance"
+by = "3750s"
 
 [[step]]
 do = "press"

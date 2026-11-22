@@ -5,7 +5,7 @@ use alondra_store_sqlite::AsSqlite as _;
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use crate::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
-use crate::idle_compaction::ContextsOf as _;
+use crate::contexts::ContextsOf as _;
 use super::*;
 use alondra_engine_admission::AdmissionOf as _;
 use crate::test_support::Directory;
@@ -2385,58 +2385,6 @@ fn a_model_claude_does_not_offer_is_rejected_by_the_host_and_never_reaches_claud
     assert!(!driver.waits_for_host());
     driver.stop().unwrap();
 }
-
-// C5: Alondra compacts a resting SDK task that waits on its card: `/compact` reaches Claude, the
-// compaction turn runs and ends, and the task rests again on the same single card.
-#[test]
-fn compacting_a_resting_task_runs_a_compaction_turn_and_keeps_its_one_card() {
-    let slice = Slice::new();
-    let mut driver = slice.launch();
-    slice.settle(&mut driver);
-    let before = Slice::read_cards(&slice.domain);
-    assert_eq!(before.len(), 1);
-    slice.run(&system(), "compact", Command::CompactConversation { task_id: TASK.into() });
-    assert_eq!(driver.pending_permits(), 1, "the compaction is an input the owner sends");
-    driver.step(&|| false).unwrap();
-    slice.settle(&mut driver);
-    assert_eq!(slice.prompts(), ["Write the release notes", "/compact"]);
-    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting);
-    assert_eq!(Slice::read_cards(&slice.domain), before, "the same card waits, unanswered, and no other");
-    assert_eq!(slice.stored_cards(), 1);
-    driver.stop().unwrap();
-}
-
-// A large conversation resting on its card compacts once, in the last minutes of the prompt cache
-// its last request wrote, and keeps that card; before then nothing happens.
-#[test]
-fn a_large_conversation_resting_on_its_card_compacts_once_before_its_cache_expires() {
-    use crate::idle_compaction::{Timing, compact_due};
-    let slice = Slice::new();
-    let mut driver = slice.launch_with("large-context");
-    slice.settle(&mut driver);
-    let before = Slice::read_cards(&slice.domain);
-    assert_eq!(before.len(), 1);
-    let readings = slice.domain.contexts().readings();
-    assert_eq!(readings.len(), 1, "the answer's usage was measured");
-    let reading = readings[0].1;
-    assert_eq!(reading.tokens, 250_403);
-    let opens = reading.expires_at - Timing::LIVE.lead;
-    assert_eq!(compact_due(&slice.domain, opens - 1, &Timing::LIVE), Some(opens), "too early, it looks again when the window opens");
-    assert_eq!(driver.pending_permits(), 0);
-    compact_due(&slice.domain, opens, &Timing::LIVE);
-    assert_eq!(driver.pending_permits(), 1, "the compaction is an input the owner sends");
-    driver.step(&|| false).unwrap();
-    slice.settle(&mut driver);
-    assert_eq!(slice.prompts(), ["large-context", "/compact"]);
-    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting);
-    assert_eq!(Slice::read_cards(&slice.domain), before, "the same card waits, unanswered, and no other");
-    compact_due(&slice.domain, opens + 1, &Timing::LIVE);
-    assert_eq!(driver.pending_permits(), 0, "one rest compacts once");
-    driver.stop().unwrap();
-}
-
-
-
 
 #[test]
 fn ending_a_host_rejects_controls_whose_preparation_left_no_command() {

@@ -2816,7 +2816,6 @@ impl DomainState {
             | Command::RecordMcpSignIn { task_id, .. }
             | Command::CompleteMcpSignIn { task_id, .. }
             | Command::WaitForMcp { task_id, .. }
-            | Command::CompactConversation { task_id }
             | Command::TellNode { task_id, .. }
             | Command::RecordDecisionRequest { task_id, .. }
             | Command::RefuseDecisionRequest { task_id, .. }
@@ -5606,10 +5605,6 @@ impl DomainState {
                 self.record_mcp_sign_in(actor, task_id, *generation, server, sign_in)?;
             }
             Command::CompleteMcpSignIn { task_id, server, state } => self.complete_mcp_sign_in(actor, task_id, server, state)?,
-            Command::CompactConversation { task_id } => {
-                let record = self.compact_guard(actor, task_id)?;
-                self.decide(lifecycles, task_id, record)?;
-            }
             Command::CompactEndedTasks { task_ids } => {
                 system(actor)?;
                 self.compact_ended_tasks(task_ids)?;

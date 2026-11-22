@@ -1123,7 +1123,6 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::CompleteMcpSignIn { task_id, .. }
         | Command::WaitForMcp { task_id, .. }
         | Command::WaitForTasks { task_id, .. }
-        | Command::CompactConversation { task_id }
         | Command::TellNode { task_id, .. }
         | Command::RecordDecisionRequest { task_id, .. }
         | Command::RefuseDecisionRequest { task_id, .. }

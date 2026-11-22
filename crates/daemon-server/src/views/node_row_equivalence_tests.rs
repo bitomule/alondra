@@ -51,7 +51,7 @@ impl Fixture {
     }
 
     fn context(&self, task: &str, tokens: u64) {
-        use alondra_daemon_engine::idle_compaction::ContextEvent;
+        use alondra_daemon_engine::contexts::ContextEvent;
         let contexts = self.client.domain.contexts();
         let _ = contexts.observed(&task.into(), ContextEvent::Answered {
             tokens, cache: None, model: Some("fixture-model".into()), cached: Default::default(),

@@ -16,7 +16,7 @@ use alondra_engine_ports::{Registry, Runtime};
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
 use alondra_domain_rules::{AgentId, DomainError, DomainState, NodeEvent, StartFacts, Task, TaskId};
-use crate::idle_compaction::ContextsOf as _;
+use crate::contexts::ContextsOf as _;
 use std::collections::BTreeMap;
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
 use alondra_engine_ports::journal::JournalFiles;
