@@ -48,6 +48,16 @@ the daemon. The tests that start the real daemon several times are `manual` targ
 that the release's tests name (`RELEASE_ONLY_TESTS` in `deploy/brew/local-release.py`);
 `bazelisk test //crates/alondrad:codex_adoption_process_test` runs them on request.
 
+## Where a test writes
+
+A test owns everything it creates. The wrapper gives it `TMPDIR`, which is the `TEST_TMPDIR` Bazel
+manages, and empties it when the test ends, fails or is cut. A unix socket path is capped at 104
+bytes and `TEST_TMPDIR` is longer than that leaves room for, so the wrapper also makes a short private
+folder, `ALONDRA_SHORT_TMPDIR`, for the fixtures that bind a socket (`Directory::for_unix_socket`, the
+scenario runner), and removes it too. Test code never falls back to `/tmp`: a fixture that finds no
+short folder fails and says to run through Bazel. `//tools:test_scratch_guard_test` refuses a fallback
+to, or a file created in, a shared temporary folder in test-side Rust code.
+
 ## Invalid cached executables
 
 `make test` selects the repository's test wrapper explicitly, including when a user bazelrc

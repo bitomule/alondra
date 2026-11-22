@@ -174,18 +174,27 @@ const SOCKET_ROOT_LIMIT: usize = 32;
 pub fn socket_root(temporary: &Path) -> PathBuf {
     match temporary.canonicalize() {
         Ok(root) if root.as_os_str().len() <= SOCKET_ROOT_LIMIT => root,
-        _ => std::fs::canonicalize("/tmp").expect("resolve short fixture root"),
+        _ => panic!(
+            "{} cannot hold a host's socket: a unix socket path is capped at 104 bytes. Run the test through \
+             Bazel, whose wrapper (tools/test-tmpdir.sh) gives it a short private folder in ALONDRA_SHORT_TMPDIR",
+            temporary.display()
+        ),
     }
+}
+
+/// The folder for fixtures that bind a socket: the short private one the test wrapper makes.
+pub fn short_temporary() -> PathBuf {
+    std::env::var_os("ALONDRA_SHORT_TMPDIR").or_else(|| std::env::var_os("TMPDIR")).map(PathBuf::from).unwrap_or_default()
 }
 
 #[cfg(unix)]
 impl Directory {
     /// Keeps macOS socket names within sockaddr_un limits while retaining fixture cleanup. Under the
-    /// test's own TMPDIR when that is short: whatever removes it, also when the test was cut, ends
-    /// the hosts running here, which end themselves once their lock is gone.
+    /// test's own short folder, never a shared one: whatever removes it, also when the test was cut,
+    /// ends the hosts running here, which end themselves once their lock is gone.
     pub fn for_unix_socket() -> Self {
         use std::os::unix::fs::PermissionsExt;
-        let root = socket_root(Path::new(&std::env::var_os("TMPDIR").unwrap_or_default()));
+        let root = socket_root(&short_temporary());
         let owner = tempfile::Builder::new()
             .prefix("as-")
             .permissions(std::fs::Permissions::from_mode(0o700))

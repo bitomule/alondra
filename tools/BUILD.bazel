@@ -213,6 +213,16 @@ low_opt_rust_test(
 )
 
 sh_test(
+    name = "test_scratch_guard_test",
+    srcs = ["tests/test_test_scratch_guard.py"],
+    data = [
+        "test_scratch_guard.py",
+        "//:tree",
+    ],
+    size = "small",
+)
+
+sh_test(
     name = "hermetic_tests_test",
     srcs = ["tests/test_hermetic_tests.py"],
     data = [

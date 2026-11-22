@@ -1805,6 +1805,17 @@ checks:
       targets:
         - //tools:public_data_guard_test
 
+  test-scratch-ownership:
+    uses: bazel/test
+    paths:
+      - "crates/**/*.rs"
+      - "tools/test_scratch_guard.py"
+      - "tools/tests/test_test_scratch_guard.py"
+      - "tools/test-tmpdir.sh"
+    with:
+      targets:
+        - //tools:test_scratch_guard_test
+
   hermetic-tests:
     uses: bazel/test
     paths:

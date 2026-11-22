@@ -1,5 +1,5 @@
-//! Who owns each file under `~/.alondra/files`, and when it goes. Nothing here deletes: the sweep
-//! lists what the rule would remove today, so a person approves it first.
+//! Who owns each file under `~/.alondra/files`, and when it goes. The sweep lists what the rule
+//! removes at a given time, `remove_listed` deletes it, and the retention loop does so every hour.
 //!
 //! - `tasks/<task>/` is a task's scratch: it goes when the task is closed.
 //! - `results/<task>/` is a delivery kept for the card: it stays while its task is open or its card
@@ -87,6 +87,37 @@ pub fn sweep(home: &Path, state: &DomainState, now: SystemTime) -> Report {
         }
     }
     report
+}
+
+/// What `remove_listed` took off the disk.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Removed {
+    pub entries: usize,
+    pub bytes: u64,
+}
+
+/// Deletes every entry of `report` the rule marked for removal. An entry that is already gone or
+/// cannot be deleted stays for the next pass and is logged.
+pub fn remove_listed(home: &Path, report: &Report) -> Removed {
+    let files = home.join("files");
+    let mut removed = Removed::default();
+    for entry in report.entries.iter().filter(|entry| entry.remove) {
+        let path = files.join(&entry.path);
+        let gone = match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&path),
+            Ok(_) => std::fs::remove_file(&path),
+            Err(error) => Err(error),
+        };
+        match gone {
+            Ok(()) => {
+                removed.entries += 1;
+                removed.bytes += entry.bytes;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => log!("could not remove {}: {error}", entry.path),
+        }
+    }
+    removed
 }
 
 impl Report {
@@ -231,6 +262,26 @@ mod tests {
         assert!(swept.entries[0].remove, "{:?}", swept.entries[0]);
         assert_eq!(swept.remove_bytes, "findings".len() as u64);
         assert!(report.exists(), "the sweep only lists");
+    }
+
+    #[test]
+    fn removing_the_listed_entries_deletes_what_the_rule_marks_and_keeps_the_rest() {
+        let home = Directory::new();
+        let now = SystemTime::now();
+        std::fs::create_dir_all(home.join("files/results/t-old")).unwrap();
+        std::fs::create_dir_all(home.join("files/results/t-new")).unwrap();
+        std::fs::write(home.join("files/results/t-old/result.md"), "old").unwrap();
+        std::fs::write(home.join("files/results/t-new/result.md"), "new").unwrap();
+        std::fs::create_dir_all(home.join("files/images")).unwrap();
+        std::fs::write(home.join("files/images/stale.png"), "stale").unwrap();
+        aged(&home.join("files/results/t-old/result.md"), 15, now);
+        aged(&home.join("files/images/stale.png"), 31, now);
+        let state = DomainState::new("epoch");
+        let removed = remove_listed(&home, &sweep(&home, &state, now));
+        assert_eq!(removed, Removed { entries: 2, bytes: ("old".len() + "stale".len()) as u64 });
+        assert!(!home.join("files/results/t-old").exists() && !home.join("files/images/stale.png").exists());
+        assert!(home.join("files/results/t-new/result.md").exists(), "a result younger than 14 days stays");
+        assert_eq!(remove_listed(&home, &sweep(&home, &state, now)), Removed::default(), "nothing is left to remove");
     }
 
     #[test]

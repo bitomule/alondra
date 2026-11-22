@@ -440,6 +440,17 @@ impl Port for Worktrees {
         answer(async move { self.release(dir, |top| top.file_name().is_some_and(|name| name == slug), false, remove) })
     }
 
+    fn release_finished_worktree<'a>(&'a self, dir: &'a Path, slug: Option<&'a str>, give_up: bool, pr_merged: bool) -> Git<'a, Result<TaskWorktree, String>> {
+        answer(async move {
+            let branch = linked_top(dir).and_then(|top| Some((repository_of(&top)?, top.file_name()?.to_string_lossy().into_owned())));
+            let released = self.release(dir, |top| slug.is_none_or(|slug| top.file_name().is_some_and(|name| name == slug)), give_up && slug.is_none(), true)?;
+            if let (TaskWorktree::Removed { .. }, true, Some(branch)) = (&released, pr_merged, branch) {
+                self.state().branches.remove(&branch);
+            }
+            Ok(released)
+        })
+    }
+
     fn release_recorded_worktree<'a>(&'a self, dir: &'a Path, give_up: bool) -> Git<'a, Result<TaskWorktree, String>> {
         answer(async move { self.release(dir, |_| true, give_up, true) })
     }

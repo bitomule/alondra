@@ -23,7 +23,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let temporary = std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+        let temporary = std::env::var_os("ALONDRA_SHORT_TMPDIR").or_else(|| std::env::var_os("TMPDIR")).map(PathBuf::from).expect("run through Bazel: its test wrapper gives the test a short temporary folder");
         let root = temporary.join(format!("ad-{name}-{}", nanos() % 1_000_000_000));
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
