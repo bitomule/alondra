@@ -21,6 +21,7 @@ use std::sync::Mutex;
 pub use alondra_daemon_engine::host_fixtures::{HostRoot, fixture_backend, runfile};
 use super::fixtures::*;
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn unchanged_driver_pause_checks_do_not_query_the_domain() {
     let slice = Slice::new();
@@ -50,6 +51,7 @@ fn unchanged_driver_pause_checks_do_not_query_the_domain() {
 // A1: a task launched through the SDK backend runs its first turn on the real host; the end of
 // that turn commits one card with the raw observation, and every acknowledgement leaves only
 // once readers see the commit it seals.
+#[cfg(feature = "real-hosts")]
 fn host_left_running(slice: &Slice) -> Vec<alondra_process_group::Member> {
     let driver = slice.launch();
     let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
@@ -62,6 +64,7 @@ pub fn survivors(processes: &[alondra_process_group::Member]) -> Vec<String> {
     processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect()
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_test_that_leaves_a_host_running_fails_and_the_host_ends_with_it() {
     let slice = Slice::new();
@@ -74,18 +77,20 @@ fn a_test_that_leaves_a_host_running_fails_and_the_host_ends_with_it() {
     assert_eq!(survivors(&processes), Vec::<String>::new(), "the host's group ended with the test");
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_reaper_whose_pipe_closes_while_its_parent_still_lives_ends_the_hosts_and_their_folder() {
     let mut slice = Slice::new();
     let processes = host_left_running(&slice);
-    let root = slice._state.to_path_buf();
-    slice._state.close_reaper_pipe();
+    let root = slice.hosts.root.to_path_buf();
+    slice.hosts.root.close_reaper_pipe();
     assert_eq!(survivors(&processes), Vec::<String>::new(), "the reaper killed the host's group");
     assert!(!root.parent().unwrap().exists(), "the reaper removed the hosts' folder");
 }
 
 /// Starts the ignored test `name` in a process of its own, with one test thread: the runner then
 /// writes `test <name> ... ` before the test runs, on the line the test prints to next.
+#[cfg(feature = "real-hosts")]
 pub(super) fn test_process_holding(name: &str) -> std::process::Child {
     std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--ignored", "--exact", "--nocapture", name])
@@ -99,6 +104,7 @@ pub(super) fn test_process_holding(name: &str) -> std::process::Child {
 
 /// The `<group> <folder>` a test process announces on a line of its own once it holds its host.
 /// Its output ending first fails the test with how the process ended.
+#[cfg(feature = "real-hosts")]
 pub(super) fn host_announcement(owner: &mut std::process::Child) -> String {
     use std::io::BufRead;
     let announced = std::io::BufReader::new(owner.stdout.take().unwrap()).lines().map_while(Result::ok)
@@ -108,17 +114,19 @@ pub(super) fn host_announcement(owner: &mut std::process::Child) -> String {
 
 /// The test process `a_test_process_killed_mid_test_leaves_no_host_and_no_folder` kills. It also
 /// stands for a test that hangs: left alone, it runs until Bazel's timeout cuts it.
+#[cfg(feature = "real-hosts")]
 #[test]
 #[ignore = "started by a_test_process_killed_mid_test_leaves_no_host_and_no_folder"]
 fn a_test_process_holding_a_host() {
     let slice = Slice::new();
     let driver = slice.launch();
-    println!("\nholding {} {}", driver.worker.host_group().unwrap(), slice._state.display());
+    println!("\nholding {} {}", driver.worker.host_group().unwrap(), slice.hosts.root.display());
     loop {
         std::thread::park();
     }
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_test_process_killed_mid_test_leaves_no_host_and_no_folder() {
     use std::io::Read;
@@ -142,6 +150,7 @@ fn a_test_process_killed_mid_test_leaves_no_host_and_no_folder() {
 // A2: the node stopped twice, so its case goes to the orchestrator, never the user. The
 // orchestrator's settlement commits with its dispatch prepared, the owner claims and sends it, and
 // the host's Claude gets the instruction as written; its next stop is a case of its own at once.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn the_orchestrators_instruction_on_a_stopped_node_commits_and_reaches_the_sdk() {
     let slice = Slice::new();
@@ -190,6 +199,7 @@ fn the_orchestrators_instruction_on_a_stopped_node_commits_and_reaches_the_sdk()
 
 // A tool result of 5 MiB, twice in its SDK message, is kept shrunk with the evidence of what it
 // was: its turn ends with its case and the orchestrator's instruction reaches the same Claude.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_huge_tool_result_is_kept_shrunk_and_the_node_goes_on() {
     let slice = Slice::new();
@@ -210,6 +220,7 @@ fn a_huge_tool_result_is_kept_shrunk_and_the_node_goes_on() {
 // turn just closed. What someone tells the node while its turn runs reaches the same native
 // turn: the host takes it into its streaming input and Claude consumes it in that turn, which then
 // ends with one card.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_message_mid_turn_reaches_claude_inside_the_turn() {
     let slice = Slice::new();
@@ -244,6 +255,7 @@ fn a_message_mid_turn_reaches_claude_inside_the_turn() {
 // A3: the writer stops between the commit of the turn end and its publication. A runtime opened
 // on the same database gets the host's unacknowledged event again: the exact replay publishes
 // the committed card once and acknowledges it, with no second card.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_crash_between_commit_and_publication_reconciles_without_a_second_card() {
     let slice = Slice::new();
@@ -291,6 +303,7 @@ fn measured<T>(domain: &DomainRuntime, step: impl FnOnce() -> T) -> (T, Work) {
     })
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn the_slice_counts_its_aggregate_loads_decodes_and_index_builds() {
     let slice = Slice::new();
@@ -326,6 +339,7 @@ fn the_slice_counts_its_aggregate_loads_decodes_and_index_builds() {
     driver.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn stopping_the_owners_leaves_no_process_of_their_hosts() {
     let slice = Slice::new();
@@ -344,6 +358,7 @@ fn stopping_the_owners_leaves_no_process_of_their_hosts() {
     assert!(left.is_empty(), "SDK host processes survived the daemon shutdown: {left:?}");
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn the_log_names_each_claude_session_once_and_every_turn_end() {
     let init = |session: &str| serde_json::json!({"type": "system", "subtype": "init", "session_id": session, "model": "claude-opus-5-5"});
@@ -358,6 +373,7 @@ fn the_log_names_each_claude_session_once_and_every_turn_end() {
     assert_eq!(claude_said(&init("f4bc77bd"), &mut session).as_deref(), Some("the SDK host's Claude runs session f4bc77bd with claude-opus-5-5"));
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn the_orchestrators_node_and_tasks_in_progress_show_an_sdk_node_as_the_domain_holds_it() {
     let slice = Slice::new();
@@ -382,6 +398,7 @@ fn the_orchestrators_node_and_tasks_in_progress_show_an_sdk_node_as_the_domain_h
     assert_eq!(shown["sdk_host"].as_bool(), Some(false), "no host runs it once its owner stopped: {shown}");
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test]
 async fn cancelling_an_sdk_task_with_background_work_stops_its_host_and_ends_the_task() {
     let slice = Slice::new();
@@ -410,6 +427,7 @@ async fn cancelling_an_sdk_task_with_background_work_stops_its_host_and_ends_the
 // 20 October: a task was cancelled while its node was mid-turn; Alondra never managed to close the
 // node and asked the user again and again to "Close it now". The node of a cancelled task is
 // Alondra's to close: its turn is interrupted, its host stopped, and the user hears nothing.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_an_sdk_task_mid_turn_interrupts_the_turn_stops_its_host_and_asks_nobody() {
     let slice = Slice::new();
@@ -434,6 +452,7 @@ async fn cancelling_an_sdk_task_mid_turn_interrupts_the_turn_stops_its_host_and_
 
 // The node delivers, its host dies with nothing left in its worktrees, and the user accepts the
 // result: the task closes without the session, which is gone, with its node's end as the fact.
+#[cfg(feature = "real-hosts")]
 #[tokio::test]
 async fn accepting_a_task_whose_host_died_closes_it() {
     let slice = Slice::new();
@@ -463,6 +482,7 @@ async fn accepting_a_task_whose_host_died_closes_it() {
 // told the node why, that message woke the closer again and kept the node's lifecycle at work: 1563
 // messages in two hours, and a daemon start that replayed them took seconds. A failed take-over waits
 // for the next attempt and tells nothing to a node nothing runs.
+#[cfg(feature = "real-hosts")]
 #[tokio::test]
 async fn a_session_no_host_can_take_over_is_tried_once_per_retry_and_its_node_is_told_nothing() {
     let slice = Slice::new();
@@ -496,6 +516,7 @@ async fn a_session_no_host_can_take_over_is_tried_once_per_retry_and_its_node_is
 // gave its worktree up, and still the closer took the execution over: a new host resumed the Claude
 // session in the worktree being deleted, and every notice queued for it became one more turn. A task
 // that owes nothing more ends its host where it is and its session is never resumed.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_closing_task_that_owes_nothing_ends_its_unowned_host_without_resuming_its_session() {
     let slice = Slice::new();
@@ -536,6 +557,7 @@ async fn a_closing_task_that_owes_nothing_ends_its_unowned_host_without_resuming
 // A worktree of the task holds work that is not saved: its node is told once which, not again on
 // every retry while nothing changes, and the node's new confirmation closes it at once instead of
 // after the retry's pause.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_sdk_node_is_told_once_about_its_unsaved_worktree_and_its_confirmation_closes_it_at_once() {
     let slice = Slice::new();
@@ -581,6 +603,7 @@ async fn an_sdk_node_is_told_once_about_its_unsaved_worktree_and_its_confirmatio
 // node's end was refused (`UnresolvedDispatch`) and the close failed. The close now lets that
 // handoff get its receipt first. The owner is held between recording the command and sending it
 // until the close waits for it, or until the host is gone, as the close used to leave it.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_task_that_closes_while_its_node_is_handed_an_input_closes_at_once() {
     let slice = Slice::new();
@@ -617,6 +640,7 @@ async fn a_task_that_closes_while_its_node_is_handed_an_input_closes_at_once() {
 // the input that hand-back gives the task is what the node's Claude is told, once. Before, that
 // input had no text, the store refused the observer's commit for the dispatch it lacked, and the
 // daemon died on it at every start.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_delivery_behind_its_pr_goes_back_to_the_sdk_node_with_what_changed() {
     let slice = Slice::new();
@@ -653,6 +677,7 @@ async fn a_delivery_behind_its_pr_goes_back_to_the_sdk_node_with_what_changed() 
 }
 
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn cancelling_an_sdk_task_that_waits_on_its_card_stops_its_host_and_ends_the_task() {
     let slice = Slice::new();
@@ -684,6 +709,7 @@ fn instruct(domain: &dyn alondra_engine_ports::Runtime, instruction: &str) {
 // B1: the daemon crashes with the host still running. A fresh daemon on the same database adopts
 // that live host with the next owner generation, and the orchestrator's instruction reaches the same
 // native Claude, which starts only once; its next turn ends with a card of its own.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_turn() {
     let slice = Slice::new();
@@ -715,6 +741,7 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
 
 /// The stranded host is gone with its whole group, and a host that resumes the same Claude
 /// session took the execution: what the orchestrator says next reaches that session.
+#[cfg(feature = "real-hosts")]
 fn assert_replaced(slice: &Slice, domain: &Arc<DomainRuntime>, mut driver: Driver, session: &str, stranded: &[alondra_process_group::Member]) {
     let left: Vec<String> = stranded.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
     assert!(left.is_empty(), "the stranded host's processes survived: {left:?}");
@@ -732,6 +759,7 @@ fn assert_replaced(slice: &Slice, domain: &Arc<DomainRuntime>, mut driver: Drive
 // found live, but their owner's socket was gone and each adoption failed as Disconnected; every
 // execution was left as it was, for good. A live host that refuses its adoption is now ended by
 // the lock it holds, waited out until it exits, and replaced like a host that ended.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn at_start_a_live_host_that_refuses_its_adoption_is_ended_and_replaced_by_one_that_resumes_the_session() {
     let slice = Slice::new();
@@ -750,6 +778,7 @@ fn at_start_a_live_host_that_refuses_its_adoption_is_ended_and_replaced_by_one_t
 
 // The same stranded host, met by a daemon that is running: taking the execution over, as the
 // move to the SDK or the closer of a task does, ends it and replaces it the same way.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_running_daemon_ends_a_live_host_that_refuses_its_adoption_and_resumes_the_session() {
     let slice = Slice::new();
@@ -761,8 +790,10 @@ fn a_running_daemon_ends_a_live_host_that_refuses_its_adoption_and_resumes_the_s
 }
 
 /// Ends what a test's background commands left, on success and on failure alike.
+#[cfg(feature = "real-hosts")]
 pub struct BackgroundCommands(Vec<alondra_process_group::Member>);
 
+#[cfg(feature = "real-hosts")]
 impl BackgroundCommands {
     pub fn of(slice: &Slice) -> Self {
         Self(background_commands(slice).into_iter().filter_map(|pid| alondra_process_group::process(pid).unwrap()).collect())
@@ -772,6 +803,7 @@ impl BackgroundCommands {
     }
 }
 
+#[cfg(feature = "real-hosts")]
 impl Drop for BackgroundCommands {
     fn drop(&mut self) {
         alondra_process_group::end_tree(&self.0, std::time::Duration::from_secs(5)).unwrap();
@@ -779,6 +811,7 @@ impl Drop for BackgroundCommands {
 }
 
 
+#[cfg(feature = "real-hosts")]
 pub fn assert_stopped_whole(slice: &Slice, agent: &AgentId, commands: &BackgroundCommands, host: &[alondra_process_group::Member]) {
     assert_eq!(commands.running(), Vec::<String>::new(), "the background command and its child ended");
     assert_eq!(survivors(host), Vec::<String>::new(), "the host and its Claude ended");
@@ -804,6 +837,7 @@ pub fn assert_stopped_whole(slice: &Slice, agent: &AgentId, commands: &Backgroun
 // it would not adopt, and the command with it. A host's end is a fact: the resumed session is told
 // the command ended and will not report back, instead of waiting for a notification no process
 // will send.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn background_work_its_replaced_host_ended_is_reported_to_the_resumed_session_which_goes_on() {
     let slice = Slice::new();
@@ -820,6 +854,7 @@ fn background_work_its_replaced_host_ended_is_reported_to_the_resumed_session_wh
 
 /// A host whose failed turn read the notification of its background command, with the end of that
 /// turn still unread by its owner: a turn end that moves the task's runtime twice.
+#[cfg(feature = "real-hosts")]
 fn ending_on_a_read_notification(slice: &Slice) -> Driver {
     let mut driver = slice.launch_with("background-command-silent");
     until_own_work(slice, &mut driver);
@@ -839,6 +874,7 @@ fn ending_on_a_read_notification(slice: &Slice) -> Driver {
 // Production, 2026-11-07 (t-main-red-accounts-email-lowercase): a host stopped at the end of a turn
 // that read a notification, cancelled. The cancel applies, and taking the execution over commits
 // what the task no longer waits for.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_task_cancelled_with_a_turn_end_unread_is_cancelled_and_its_host_is_taken_over() {
     let slice = Slice::new();
@@ -855,6 +891,7 @@ fn a_task_cancelled_with_a_turn_end_unread_is_cancelled_and_its_host_is_taken_ov
 // B2: the writer crashes between the turn-end commit and its publication. A fresh daemon adopts the
 // live host, which re-sends the unacknowledged event; the adopting owner sees the store already has
 // it (Duplicate), acknowledges it once and publishes exactly one card.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_unacknowledged_turn_end_comes_back_to_the_adopting_owner_once() {
     let slice = Slice::new();
@@ -888,6 +925,7 @@ fn an_unacknowledged_turn_end_comes_back_to_the_adopting_owner_once() {
 // B3: the orchestrator's instruction is claimed and recorded, then the daemon dies before the host receives it.
 // A fresh daemon adopts and reconciles the unsent dispatch by re-sending its exact bytes: the host
 // offers it to the same Claude exactly once.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_send_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     let slice = Slice::new();
@@ -909,6 +947,7 @@ fn a_send_the_host_never_got_is_sent_once_by_the_adopting_owner() {
 // B5: the store issued the permit of the orchestrator's instruction and the daemon died before claiming it:
 // the permit lived only in that daemon. The adopting owner gets it again and the answer reaches
 // the same Claude once.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_answer_whose_permit_the_dead_daemon_never_claimed_is_sent_by_the_adopting_owner() {
     let slice = Slice::new();
@@ -931,6 +970,7 @@ fn an_answer_whose_permit_the_dead_daemon_never_claimed_is_sent_by_the_adopting_
 // B4: the host offered the orchestrator's instruction but the daemon crashed before recording its receipt. A
 // fresh daemon adopts and reconciles it from the retained receipt: it is handed, and the host is
 // not asked to offer it a second time.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_send_the_host_offered_is_not_offered_again_when_its_receipt_was_lost() {
     let slice = Slice::new();
@@ -949,6 +989,7 @@ fn a_send_the_host_offered_is_not_offered_again_when_its_receipt_was_lost() {
     adopted.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 fn archived_receipt_after_an_empty_successor(slice: &Slice, mut driver: Driver) -> Driver {
     slice.settle(&mut driver);
     instruct(&*driver.domain, "Keep the archived receipt");
@@ -998,6 +1039,7 @@ fn archived_receipt_after_an_empty_successor(slice: &Slice, mut driver: Driver) 
     resumed
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_archived_claude_receipt_reconciles_after_a_successor_that_only_attached() {
     let slice = Slice::new();
@@ -1014,6 +1056,7 @@ fn an_archived_claude_receipt_reconciles_after_a_successor_that_only_attached() 
 // took 256 commands at most, and each daemon connection tracked 256 commands for good: a long node
 // crossed them and its host stopped serving. Now a turn writes over 20 MiB and the node then takes
 // more than 256 inputs, through the same host.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs() {
     let slice = Slice::new();
@@ -1026,7 +1069,7 @@ fn a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs() {
         driver.step(&|| false).unwrap();
         slice.settle(&mut driver);
     }
-    let native_prompts = std::fs::read_to_string(format!("{}.prompts", slice.capture.display())).unwrap();
+    let native_prompts = std::fs::read_to_string(format!("{}.prompts", slice.hosts.capture.display())).unwrap();
     assert_eq!(native_prompts.lines().count(), 260, "the same host served more than 256 native inputs");
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 65, "every explicit input reached the same Claude");
@@ -1040,6 +1083,7 @@ fn a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs() {
 // before the daemon recorded the receipt. The next daemon reads the compacted journal from disk:
 // the answer was handed, so it goes to the resumed session flagged as maybe received already, never
 // as an answer the host never got.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
     let slice = Slice::new();
@@ -1063,6 +1107,7 @@ fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
 // Claude's 401 ends the turn with `authentication_failed`: the task waits on its card asking the
 // user to sign in, committed and published before the host is acknowledged. Once the user signs
 // in and says so, the task goes on and Claude's answer leaves no card open.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_signed_out_turn_waits_on_the_sign_in_card_until_claude_answers_again() {
     let slice = Slice::new();
@@ -1081,7 +1126,7 @@ fn a_signed_out_turn_waits_on_the_sign_in_card_until_claude_answers_again() {
     assert_eq!(stored, 1, "its card, committed");
     assert!(!acknowledged.lock().unwrap().is_empty(), "the host's observations were acknowledged after their commit");
 
-    std::fs::write(format!("{}.recovered", slice.capture.display()), "").unwrap();
+    std::fs::write(format!("{}.recovered", slice.hosts.capture.display()), "").unwrap();
     let state = slice.domain.state().unwrap();
     let signed_in = Command::AnswerQuestion { interaction_id: card, option_id: SIGNED_IN.into(), inputs: BTreeMap::new(), attachments: vec![] };
     slice.domain.execute_with(&user(), &envelope(&state, "client-signed-in", signed_in), None, None, || Ok(())).unwrap();
@@ -1100,6 +1145,7 @@ fn a_signed_out_turn_waits_on_the_sign_in_card_until_claude_answers_again() {
 // The API kept failing past Claude Code's retries: the task waits with no announcement, and the
 // daemon's scheduled probe, run as the daemon runs it, sends exactly that task on once Claude
 // answers again.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_overloaded_api_holds_the_task_until_the_scheduled_probe_finds_claude_answering() {
     let slice = Slice::new();
@@ -1108,7 +1154,7 @@ fn an_overloaded_api_holds_the_task_until_the_scheduled_probe_finds_claude_answe
     let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
     assert_eq!(held, [(TASK.to_owned(), ClaudeHold::Outage)]);
     assert_eq!(Slice::read_cards(&*slice.domain), [], "no card that tells the task to go on");
-    std::fs::write(format!("{}.recovered", slice.capture.display()), "").unwrap();
+    std::fs::write(format!("{}.recovered", slice.hosts.capture.display()), "").unwrap();
     crate::claude_access::probe(&*slice.domain, ClaudeHold::Outage, None);
     assert_eq!(driver.pending_permits(), 1, "the probe's dispatch reached the owner");
     driver.step(&|| false).unwrap();
@@ -1124,6 +1170,7 @@ fn an_overloaded_api_holds_the_task_until_the_scheduled_probe_finds_claude_answe
 // back and Claude's own turn hit the limit again. The domain refused that second wait, so the end
 // of the turn went unrecorded and the owner stopped. Both ends are recorded and the task waits for
 // the limit once.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_turn_claude_opens_by_itself_on_the_usage_limit_that_holds_its_task_keeps_the_owner_going() {
     let slice = Slice::new();
@@ -1143,6 +1190,7 @@ fn a_turn_claude_opens_by_itself_on_the_usage_limit_that_holds_its_task_keeps_th
 // 25-26 Oct: the usage limit came back at 01:00 and the daemon woke only the nodes its hooks saw
 // stop. Usage coming back probes Claude with a task of the Agent SDK the limit holds too, whatever
 // its card says of the reset, and Claude answering it lets the task go on.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn usage_coming_back_lets_a_task_of_the_agent_sdk_the_limit_held_go_on() {
     let slice = Slice::new();
@@ -1150,7 +1198,7 @@ fn usage_coming_back_lets_a_task_of_the_agent_sdk_the_limit_held_go_on() {
     slice.settle(&mut driver);
     let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
     assert_eq!(held, [(TASK.to_owned(), ClaudeHold::Usage)]);
-    std::fs::write(format!("{}.recovered", slice.capture.display()), "").unwrap();
+    std::fs::write(format!("{}.recovered", slice.hosts.capture.display()), "").unwrap();
     crate::usage_pause::wake_nodes(&*slice.domain);
     assert_eq!(driver.pending_permits(), 1, "the probe's dispatch reached the owner");
     driver.step(&|| false).unwrap();
@@ -1163,6 +1211,7 @@ fn usage_coming_back_lets_a_task_of_the_agent_sdk_the_limit_held_go_on() {
 
 // Each launch made a provider binding of its own while the store keeps one active binding per
 // host: every task after the first was refused with BindingRevoked.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_second_task_starts_through_the_same_sdk_host() {
     let slice = Slice::new();
@@ -1200,6 +1249,7 @@ fn a_second_task_starts_through_the_same_sdk_host() {
 // configuration, is bound to the account as its credential, and the task keeps its account. The
 // default account's execution has no `CLAUDE_CONFIG_DIR`; an account the user never registered
 // gets no Claude at all. Signing an account in again binds its next executions to a new generation.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_execution_runs_on_its_accounts_folder_and_is_bound_to_that_account() {
     let slice = Slice::new();
@@ -1210,7 +1260,7 @@ fn an_execution_runs_on_its_accounts_folder_and_is_bound_to_that_account() {
     slice.task("sdk-on-work");
     let mut on_work = slice.launch_on("sdk-on-work", "work").expect("a registered account launches");
     slice.settle(&mut on_work);
-    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.hosts.capture).unwrap()).unwrap();
     assert_eq!(capture["env_value_sha256"]["CLAUDE_CONFIG_DIR"].as_str(), Some(sha256(folder.to_str().unwrap()).as_str()), "its own folder");
     assert_eq!(slice.credential("sdk-on-work"), ("work".into(), 1));
     assert_eq!(slice.domain.read().state().tasks[&TaskId::from("sdk-on-work")].account.as_ref().map(AccountId::as_str), Some("work"));
@@ -1218,7 +1268,7 @@ fn an_execution_runs_on_its_accounts_folder_and_is_bound_to_that_account() {
 
     let mut on_default = slice.launch();
     slice.settle(&mut on_default);
-    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.hosts.capture).unwrap()).unwrap();
     let keys: Vec<&str> = capture["env_keys"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
     assert!(!keys.contains(&"CLAUDE_CONFIG_DIR"), "the user's default profile: {keys:?}");
     assert_eq!(slice.credential(TASK), ("default".into(), 1));
@@ -1243,6 +1293,7 @@ fn an_execution_runs_on_its_accounts_folder_and_is_bound_to_that_account() {
 // `claude --bg` gets the model, effort and denied tools of its launch as flags. Through the SDK the
 // host gives them to its Claude, and a host that resumes the session after the first ended gives
 // them again: they are kept beside the execution.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_session() {
     let slice = Slice::new();
@@ -1254,7 +1305,7 @@ fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_
     }, capabilities(), None, None).unwrap();
     slice.settle(&mut driver);
     let launched = |slice: &Slice| -> Vec<String> {
-        let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+        let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.hosts.capture).unwrap()).unwrap();
         capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect()
     };
     let has = |args: &[String], flag: &str, value: &str| {
@@ -1279,6 +1330,7 @@ fn the_launchs_model_effort_and_denied_tools_reach_claude_and_survive_a_resumed_
 
 // A node's Claude edits its own worktree without a permission card, by the path it was given and
 // by its real path behind a symlink; a path a rule cannot spell literally gets no rule.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_node_may_edit_only_inside_its_own_worktree_without_asking() {
     let scratch = Directory::new();
@@ -1297,6 +1349,7 @@ fn a_node_may_edit_only_inside_its_own_worktree_without_asking() {
 // new one, and the old runtime is interrupted only for the exact committed replacement.
 // «Replace» stops the node's host through its owner and starts the task on a new execution: its
 // first generation's open request is withdrawn with it, and an answer to that card is refused.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn native_recovery_preserves_every_queued_user_input_and_stages_the_whole_new_generation_before_offer() {
     let slice=Slice::new();let mut driver=slice.launch_working();let original_agent=driver.agent().clone();
@@ -1333,14 +1386,15 @@ fn native_recovery_preserves_every_queued_user_input_and_stages_the_whole_new_ge
     let delivered:Vec<String>=slice.prompts().into_iter().skip(1).collect();
     assert_eq!(delivered,expected,"every original payload reaches the same native session exactly once and in order");
     assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].account_key(),original_account);
-    let capture:serde_json::Value=serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    let capture:serde_json::Value=serde_json::from_slice(&std::fs::read(&slice.hosts.capture).unwrap()).unwrap();
     let args:Vec<&str>=capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
     assert!(args.windows(2).any(|pair|pair==["--resume",native.as_str()]) || args.iter().any(|arg|*arg==format!("--resume={native}")),"{args:?}");
-    let starts:Vec<serde_json::Value>=std::fs::read_to_string(format!("{}.starts",slice.capture.display())).unwrap().lines().map(|line|serde_json::from_str(line).unwrap()).collect();
+    let starts:Vec<serde_json::Value>=std::fs::read_to_string(format!("{}.starts",slice.hosts.capture.display())).unwrap().lines().map(|line|serde_json::from_str(line).unwrap()).collect();
     let resumed=starts.last().unwrap();assert_eq!(resumed["resume"].as_str(),Some(native.as_str()));assert_eq!(resumed["cwd"].as_str(),Some(slice.worktree.to_str().unwrap()));assert!(resumed["history"].as_u64().unwrap()>0);
     replacement.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn replacement_requires_positive_original_native_session_evidence_before_stopping_its_host() {
     let slice=Slice::new();let mut driver=slice.launch();let original=driver.agent().clone();
@@ -1351,6 +1405,7 @@ fn replacement_requires_positive_original_native_session_evidence_before_stoppin
     driver.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() {
     let slice = Slice::new();
@@ -1369,7 +1424,7 @@ fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() 
         model: None, account: AccountId::default_account(),
     }).unwrap();
     slice.settle(&mut replacement);
-    let capture:serde_json::Value=serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    let capture:serde_json::Value=serde_json::from_slice(&std::fs::read(&slice.hosts.capture).unwrap()).unwrap();
     let args:Vec<&str>=capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
     assert!(args.windows(2).any(|pair|pair==["--resume",native.as_str()]) || args.iter().any(|arg|*arg==format!("--resume={native}")), "replacement must resume the exact original native conversation: {args:?}");
     let state = slice.domain.state().unwrap();
@@ -1382,6 +1437,7 @@ fn replacing_an_sdk_node_starts_a_new_execution_and_its_old_cards_are_refused() 
 
 // The orchestrator's replace goes through the launch every source uses: the owner stops the old
 // host, its open request is closed with its card, and a new generation runs the task.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn the_orchestrators_replace_stops_the_sdk_node_and_closes_its_request_before_a_new_generation_runs() {
     let slice = Slice::new();
@@ -1410,6 +1466,7 @@ async fn the_orchestrators_replace_stops_the_sdk_node_and_closes_its_request_bef
 
 // A cancelled SDK task is closed whatever its subagent left in its worktree: the worktrees with
 // nothing unsaved are deleted, the one with unsaved files waits for the user's answer on a card.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cancelled_sdk_task_with_unsaved_files_in_a_subagents_worktree_is_closed_and_the_user_decides_on_them() {
     let slice = Slice::new();
@@ -1443,6 +1500,7 @@ async fn a_cancelled_sdk_task_with_unsaved_files_in_a_subagents_worktree_is_clos
 
 // A subagent worktree Alondra never saw made is found by what the provider keeps of the task's
 // conversation, not by its node's id, and settled with the task.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_cancelled_sdk_task_settles_a_subagent_worktree_only_its_conversations_record_names() {
     let slice = Slice::new();
@@ -1475,12 +1533,13 @@ async fn a_cancelled_sdk_task_settles_a_subagent_worktree_only_its_conversations
 // The task's native Claude loads every settings source of the user's default profile, with no
 // strict MCP that would hide the user's servers, and Alondra's node plugin, launch settings and a
 // capability issued to its node on top: its Alondra MCP server reaches the daemon as that node.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn the_tasks_claude_loads_the_users_profile_and_alondras_plugin_settings_and_capability() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
-    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.hosts.capture).unwrap()).unwrap();
     let args: Vec<&str> = capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
     let after = |flag: &str| args.iter().position(|arg| *arg == flag).and_then(|at| args.get(at + 1)).copied()
         .or_else(|| args.iter().find_map(|arg| arg.strip_prefix(&format!("{flag}="))));
@@ -1517,6 +1576,7 @@ fn the_tasks_claude_loads_the_users_profile_and_alondras_plugin_settings_and_cap
 
 /// The Mac goes down: every process of the host's group is killed, its native Claude included, and
 /// the daemon with them.
+#[cfg(feature = "real-hosts")]
 pub fn kill_host_and_daemon(driver: Driver) {
     kill_host(&driver);
     drop(driver);
@@ -1526,6 +1586,7 @@ pub fn kill_host_and_daemon(driver: Driver) {
 // that comes back finds no process holding the host's lock, launches a fresh host for the same
 // execution with the next owner generation, and the orchestrator's instruction resumes the same native session with its
 // transcript: one more Claude starts, with --resume of the stored session.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_dead_host_is_replaced_by_one_that_resumes_the_same_claude_session() {
     let slice = Slice::new();
@@ -1555,6 +1616,7 @@ fn a_dead_host_is_replaced_by_one_that_resumes_the_same_claude_session() {
 // R2: the Mac shuts down mid-turn. The ended host's turn ended with it, and a host's end is not
 // the user's decision: the resumed session is told to go on by itself, with no card. Before, the
 // task held on «was interrupted when its session closed» until someone pressed «Carry on».
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_turn_cut_by_the_end_of_its_host_goes_on_by_itself_in_the_resumed_session() {
     let slice = Slice::new();
@@ -1568,6 +1630,7 @@ fn a_turn_cut_by_the_end_of_its_host_goes_on_by_itself_in_the_resumed_session() 
     resumed.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn unknown_native_commands_recover_after_rollback_unacknowledged_commit_and_host_exit() {
     let slice = Slice::new();
@@ -1624,6 +1687,7 @@ fn unknown_native_commands_recover_after_rollback_unacknowledged_commit_and_host
 // Production, 2026-11-07 (t-idle-node-release-processes): the adapter refused an observation the
 // ended host left, and every takeover stopped on it. The observation is discarded with why, and
 // the resumed session goes on by itself.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_ended_host_whose_observation_cannot_be_settled_is_taken_over() {
     let slice = Slice::new();
@@ -1645,6 +1709,7 @@ fn an_ended_host_whose_observation_cannot_be_settled_is_taken_over() {
 // host left and kept the seal of every observation queued. Each SDK owner scans that queue on every
 // commit, so the takeover slowed down with each event it committed: hours later it had committed
 // 30 thousand of 40 thousand, and the task's inputs waited behind it.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_takeover_keeps_no_seal_of_what_its_ended_host_observed() {
     let slice = Slice::new();
@@ -1685,6 +1750,7 @@ fn assert_goes_on_by_itself(slice: &Slice, domain: &DomainRuntime, resumed: &mut
 // puts a host that resumes the same Claude session in its place, and the task goes on in it by
 // itself instead of staying «working». A replacement that ends before it was handed anything is not
 // replaced again: it would only end again.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_host_that_dies_under_the_daemon_is_replaced_by_one_that_resumes_the_session() {
     let slice = Slice::new();
@@ -1713,6 +1779,7 @@ fn a_host_that_dies_under_the_daemon_is_replaced_by_one_that_resumes_the_session
 // it as a host that ended with its Claude, and a host that resumes the same session takes its
 // place, and the task goes on in that session by itself. Before, the owner refused
 // the Claude's exit from a live host and stopped, leaving the task «working».
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_claude_that_crashes_under_its_live_host_is_resumed_by_a_new_host() {
     let slice = Slice::new();
@@ -1733,6 +1800,7 @@ fn a_claude_that_crashes_under_its_live_host_is_resumed_by_a_new_host() {
 // went, leaving its host running with nobody to read it, for good. An owner whose step fails now
 // stops its host, waits for its group to end, and puts a host that resumes the same session in its
 // place, where the task goes on by itself.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_owner_whose_step_fails_stops_its_host_and_resumes_the_session_in_a_new_one() {
     let slice = Slice::new();
@@ -1752,11 +1820,12 @@ fn an_owner_whose_step_fails_stops_its_host_and_resumes_the_session_in_a_new_one
 
 /// A node cut by a restart whose resumed session works on in a long turn, with a message handed to
 /// it that it has not read yet: the state of t-corrupt-journal-detail-codex on 2026-10-27 at 17:42.
+#[cfg(feature = "real-hosts")]
 fn resumed_with_an_unread_message(slice: &Slice) -> (Arc<DomainRuntime>, Driver) {
     let mut driver = slice.launch_with("consume-and-hold");
     slice.until_working(&mut driver);
     kill_host_and_daemon(driver);
-    std::fs::write(format!("{}.hold", slice.capture.display()), "").unwrap();
+    std::fs::write(format!("{}.hold", slice.hosts.capture.display()), "").unwrap();
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
     resumed.step(&|| false).unwrap();
@@ -1776,6 +1845,7 @@ fn resumed_with_an_unread_message(slice: &Slice) -> (Arc<DomainRuntime>, Driver)
 }
 
 /// Nobody is asked about the message: it goes again, flagged, to the session the new host resumes.
+#[cfg(feature = "real-hosts")]
 fn assert_message_goes_again_by_itself(domain: &DomainRuntime) {
     assert!(open_card(domain, HANDOFF_DOUBT_PREFIX).is_none(), "no card asks whether to send the message again");
     assert!(open_card(domain, SESSION_ENDED_PREFIX).is_none(), "no card asks how the task goes on");
@@ -1789,6 +1859,7 @@ fn assert_message_goes_again_by_itself(domain: &DomainRuntime) {
 // then its owner stopped on an error of Alondra's own. The resumed session had not finished a turn,
 // so its end was taken for a session that keeps closing, and the user got «closed before confirming
 // it read your message: send it again?». An end Alondra caused is no such sign: it resumes again.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_message_cut_when_the_owner_of_a_resumed_session_fails_goes_again_without_asking() {
     let slice = Slice::new();
@@ -1802,6 +1873,7 @@ fn a_message_cut_when_the_owner_of_a_resumed_session_fails_goes_again_without_as
 }
 
 // The same message when the daemon stops (a restart, an update) while the resumed session works.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_message_cut_when_the_daemon_stops_a_resumed_session_goes_again_without_asking() {
     let slice = Slice::new();
@@ -1818,6 +1890,7 @@ fn a_message_cut_when_the_daemon_stops_a_resumed_session_goes_again_without_aski
 // A replacement whose owner fails before it was handed anything is not replaced again: it would only
 // end again. Its owner still stops it, and the task gets a card that says what happened and offers
 // to try again or cancel; it is never left as it is.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_replacement_whose_owner_fails_is_stopped_and_its_task_gets_a_card_to_try_again() {
     let slice = Slice::new();
@@ -1846,6 +1919,7 @@ async fn a_replacement_whose_owner_fails_is_stopped_and_its_task_gets_a_card_to_
 // recorded; its owner gave up with the host-lost card. The claim stayed open with no owner, and every
 // later resume or move of the task was refused for an unresolved dispatch. A host known dead settles
 // its claims when its owner gives up: the message goes back to the queue as never delivered.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_replacement_that_gives_up_with_a_claimed_message_leaves_no_claim_holding_the_task() {
     let slice = Slice::new();
@@ -1877,6 +1951,7 @@ async fn a_replacement_that_gives_up_with_a_claimed_message_leaves_no_claim_hold
 // The daemon's start could not take the execution over (here no new host can get its folder): the
 // task gets a card with that reason instead of being left as it is. Once that is fixed, «Try
 // again» takes it over and the same session goes on.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_execution_the_start_could_not_take_over_gets_a_card_and_try_again_resumes_it() {
     let slice = Slice::new();
@@ -1899,7 +1974,7 @@ async fn an_execution_the_start_could_not_take_over_gets_a_card_and_try_again_re
     let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
     assert!(restarted.owns_sdk_host(&agent), "the execution was taken over again");
     let mut changed = restarted.subscribe();
-    let capture = slice.capture.clone();
+    let capture = slice.hosts.capture.clone();
     changed.wait_for(|_| prompts_at(&capture).last().is_some_and(|prompt| prompt.starts_with("Your session was cut off when its host stopped"))).await.unwrap();
     restarted.stop_sdk_owners();
     let starts = slice.starts();
@@ -1910,6 +1985,7 @@ async fn an_execution_the_start_could_not_take_over_gets_a_card_and_try_again_re
 // daemon's own retake took the execution over a moment later. The card stayed open and held the
 // task paused for the user, so the input it waited for never went to the new host and the watch
 // gave host after host up for it. A takeover that works closes the card of the outage it ends.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_takeover_that_works_without_the_user_closes_the_host_lost_card_and_the_input_goes() {
     let slice = Slice::new();
@@ -1934,6 +2010,7 @@ async fn a_takeover_that_works_without_the_user_closes_the_host_lost_card_and_th
 // A session whose account changed identity could not be taken over, and each «Try again» opened a
 // card with its own push. An outage tells the user once, however many times it is tried, and a
 // takeover that works ends it.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_execution_that_stays_lost_has_one_open_card_and_one_push_however_many_times_it_is_retried() {
     let slice = Slice::new();
@@ -1974,6 +2051,7 @@ async fn an_execution_that_stays_lost_has_one_open_card_and_one_push_however_man
 // The service named an added account's folder, so sessions of the default account ran on it and
 // recorded its email. Once the default account answers for itself, those sessions take its email
 // and its guard lets them go on; a session of any other account stays as it was.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn sessions_that_recorded_the_account_their_host_really_ran_on_go_on_under_their_own() {
     let slice = Slice::new();
@@ -2013,6 +2091,7 @@ fn sessions_that_recorded_the_account_their_host_really_ran_on_go_on_under_their
 }
 
 // Refusing a turn-end reaction must not discard the actual end or replace its running host.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn refused_turn_end_reactions_keep_the_same_host_and_record_its_next_turn() {
     let slice = Slice::new();
@@ -2064,6 +2143,7 @@ fn refused_turn_end_reactions_keep_the_same_host_and_record_its_next_turn() {
 // A subagent hands its report back after the turn ended: Claude starts a turn by itself while the
 // task rests. Its owner reads it as it comes: the case that asked the orchestrator how the task
 // goes on is withdrawn and the node works, with nothing sent to it.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_claude_starts_while_its_task_rests_is_read_as_it_comes() {
     let slice = Slice::new();
@@ -2072,7 +2152,7 @@ async fn a_turn_claude_starts_while_its_task_rests_is_read_as_it_comes() {
     let card = open_card(&slice.domain, STALLED_PREFIX).expect("the turn ended on its case").id;
     let owner = Owner::spawn(driver);
     let mut changed = slice.domain.subscribe();
-    std::fs::write(format!("{}.own-turn", slice.capture.display()), "").unwrap();
+    std::fs::write(format!("{}.own-turn", slice.hosts.capture.display()), "").unwrap();
     let reader = Arc::clone(&slice.domain);
     changed.wait_for(|_| reader.read().state().interactions[&card].withdrawn).await.unwrap();
     assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Working, "the node works");
@@ -2091,6 +2171,7 @@ async fn a_turn_claude_starts_while_its_task_rests_is_read_as_it_comes() {
 // leave plan mode with 41 points in its journal, unread, asked from a turn Claude opened by itself
 // while what the user told it waited. «Try again» reads that journal: the plan is refused with
 // why, and a host that resumes the same session takes the task.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn try_again_on_a_task_whose_ended_host_left_a_refused_plan_resumes_its_session() {
     let slice = Slice::new();
@@ -2116,7 +2197,7 @@ async fn try_again_on_a_task_whose_ended_host_left_a_refused_plan_resumes_its_se
     let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
     assert!(restarted.owns_sdk_host(&agent), "the execution was taken over again: {:?}", open_card(&restarted, HOST_LOST_PREFIX).and_then(|card| card.card.content));
     let mut changed = restarted.subscribe();
-    let capture = slice.capture.clone();
+    let capture = slice.hosts.capture.clone();
     changed.wait_for(|_| prompts_at(&capture).last().is_some_and(|prompt| prompt.starts_with("Your session was cut off when its host stopped"))).await.unwrap();
     restarted.stop_sdk_owners();
     let starts = slice.starts();
@@ -2126,12 +2207,14 @@ async fn try_again_on_a_task_whose_ended_host_left_a_refused_plan_resumes_its_se
     assert!(refused, "the plan the ended host left was refused for its length");
 }
 
+#[cfg(feature = "real-hosts")]
 pub fn prompts_at(capture: &Path) -> Vec<String> {
     let path = PathBuf::from(format!("{}.prompts", capture.display()));
     std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
 }
 
 /// The descriptor of this process that is connected to the socket at `path`.
+#[cfg(feature = "real-hosts")]
 fn connected_to(path: &Path) -> libc::c_int {
     use std::os::unix::ffi::OsStrExt;
     (0..4096)
@@ -2152,6 +2235,7 @@ fn connected_to(path: &Path) -> libc::c_int {
 // Before, the owner took a host whose exit it could not see yet as alive, detached, and the task
 // stayed «working» until the daemon restarted. Here the host closes its end and lives on, which
 // orders the two facts with no clock: the connection fails first, the host ends only when stopped.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_host_whose_connection_fails_before_its_exit_is_seen_is_replaced() {
     let slice = Slice::new();
@@ -2172,6 +2256,7 @@ fn a_host_whose_connection_fails_before_its_exit_is_seen_is_replaced() {
 // R3: a normal shutdown stops the host (5d) mid-turn: what the stopping host wrote after the last
 // acknowledgement (its Claude's exit, the end of its SDK iterator) is committed as evidence, and
 // the task goes on by itself in the session the next daemon resumes.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_host_stopped_mid_turn_by_a_normal_shutdown_leaves_evidence_the_next_daemon_commits() {
     let slice = Slice::new();
@@ -2191,6 +2276,7 @@ fn a_host_stopped_mid_turn_by_a_normal_shutdown_leaves_evidence_the_next_daemon_
 // session then ended before it showed it read it; the Mac went down before the receipt was kept.
 // Nobody is asked: the resumed session gets the same words once more, flagged as possibly received
 // already, and its transcript tells Claude whether it was.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_doubtful_answer_goes_again_to_the_resumed_session_flagged_unasked() {
     let slice = Slice::new();
@@ -2218,6 +2304,7 @@ fn a_doubtful_answer_goes_again_to_the_resumed_session_flagged_unasked() {
 
 // R5: the orchestrator's instruction was claimed and recorded, and the Mac went down before the host got it. The ended
 // host's journal shows it never took the command, so it goes once to the resumed session, unasked.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_answer_the_ended_host_never_took_goes_to_the_resumed_session_unasked() {
     let slice = Slice::new();
@@ -2243,6 +2330,7 @@ fn an_answer_the_ended_host_never_took_goes_to_the_resumed_session_unasked() {
 // Every turn whose result is not a success ends as failed, with its code. Claude ended this one
 // at its turn limit: the task waits for no one, neither the API nor the host, and its card names
 // the error.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_turn_claude_ends_as_failed_asks_how_to_go_on_and_names_its_error() {
     let slice = Slice::new();
@@ -2255,6 +2343,7 @@ fn a_turn_claude_ends_as_failed_asks_how_to_go_on_and_names_its_error() {
 }
 
 /// Moves the owner until it fails: the provider refused the same input twice.
+#[cfg(feature = "real-hosts")]
 fn until_the_owner_fails(driver: &mut Driver) {
     for _ in 0..5000 {
         if driver.step(&|| false).is_err() {
@@ -2267,6 +2356,7 @@ fn until_the_owner_fails(driver: &mut Driver) {
 // Claude answered the prompt with a result that never delivered it. The same words go again at
 // once with no card, and when Claude refuses that one too the owner gives its host up, so a host
 // that resumes the same session takes the message.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_prompt_claude_never_delivers_goes_again_without_a_card_and_a_second_time_changes_host() {
     let slice = Slice::new();
@@ -2281,6 +2371,7 @@ fn a_prompt_claude_never_delivers_goes_again_without_a_card_and_a_second_time_ch
 
 // A prompt Claude completes without starting fails its turn, as Claude does with one its
 // transcript already holds: it is sent again at once and, refused again, goes to a resuming host.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_message_claude_completes_without_starting_it_goes_again_without_a_card() {
     let slice = Slice::new();
@@ -2295,6 +2386,7 @@ fn a_message_claude_completes_without_starting_it_goes_again_without_a_card() {
     let _ = driver.stop();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_host_whose_state_folder_is_removed_ends_its_group() {
     let slice = Slice::new();
@@ -2327,6 +2419,7 @@ fn a_host_whose_state_folder_is_removed_ends_its_group() {
 
 // C2: Alondra sets the model and the permission mode and reads the MCP status. Each control reaches
 // Claude with the host's receipt, and the MCP status comes back as kept host evidence.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn model_permission_mode_and_mcp_status_controls_reach_claude_and_the_status_is_kept() {
     let slice = Slice::new();
@@ -2353,6 +2446,7 @@ fn model_permission_mode_and_mcp_status_controls_reach_claude_and_the_status_is_
 
 // C3: refusal without effect. The execution's binding does not permit setting the model: the
 // command is refused with the capability error, and nothing of it is kept or sent.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_control_the_binding_does_not_permit_is_refused_with_no_effect() {
     let slice = Slice::new();
@@ -2374,6 +2468,7 @@ fn a_control_the_binding_does_not_permit_is_refused_with_no_effect() {
 
 // C4: refusal by the host. Claude does not offer the model: the host refuses before touching it,
 // the control is recorded rejected, and Claude never got a request to change its model.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_model_claude_does_not_offer_is_rejected_by_the_host_and_never_reaches_claude() {
     let slice = Slice::new();
@@ -2387,6 +2482,7 @@ fn a_model_claude_does_not_offer_is_rejected_by_the_host_and_never_reaches_claud
     driver.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn ending_a_host_rejects_controls_whose_preparation_left_no_command() {
     let slice = Slice::new();
@@ -2417,6 +2513,7 @@ fn ending_a_host_rejects_controls_whose_preparation_left_no_command() {
 // worktrees after the cancel. Every close failed: the lifecycle refused the host's end, and the
 // claimed input with no command held every change of the execution. The user got a card that
 // neither «Try again» nor «Leave it open» could settle.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cancelled_task_whose_ended_host_left_a_claim_with_no_command_closes_and_asks_nobody() {
     let slice = Slice::new();
@@ -2446,6 +2543,7 @@ async fn a_cancelled_task_whose_ended_host_left_a_claim_with_no_command_closes_a
 // C6: the daemon dies after recording a read of the MCP status and before the host gets it. A
 // fresh daemon adopts the host and reconciles the control once: Claude answers it a single time
 // and its status is kept.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_control_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     let slice = Slice::new();
@@ -2467,6 +2565,7 @@ fn a_control_the_host_never_got_is_sent_once_by_the_adopting_owner() {
 
 // C7: an interrupt whose turn ended before the owner claimed it is revoked by the claim and never
 // reaches Claude.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_interrupt_whose_turn_already_ended_is_revoked_and_never_sent() {
     let slice = Slice::new();
@@ -2492,6 +2591,7 @@ fn an_interrupt_whose_turn_already_ended_is_revoked_and_never_sent() {
 
 // C8: a quiet turn never holds back a control. With nothing from the host, a step returns to look
 // for what to send instead of blocking on the host, and the interrupt that comes next is sent.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_step_on_a_quiet_turn_returns_to_send_the_interrupt_that_comes_next() {
     let slice = Slice::new();
@@ -2508,11 +2608,13 @@ fn a_step_on_a_quiet_turn_returns_to_send_the_interrupt_that_comes_next() {
 }
 
 /// Claude got an answer, or the user is asked for one.
+#[cfg(feature = "real-hosts")]
 fn decided_or_asked(slice: &Slice) -> bool {
     !slice.decisions().is_empty() || !Slice::decision_cards(&slice.domain).is_empty()
 }
 
 /// The response the SDK gave Claude for its one decision, as the fake Claude received it.
+#[cfg(feature = "real-hosts")]
 pub fn only_response(slice: &Slice) -> serde_json::Value {
     let decisions = slice.decisions();
     assert_eq!(decisions.len(), 1, "Claude got one answer: {decisions:?}");
@@ -2523,6 +2625,7 @@ pub fn only_response(slice: &Slice) -> serde_json::Value {
 // D1: Claude asks to run a command. Its card and kept request commit with the host's event, and
 // readers see them before the host is acknowledged; the user allows it, the command Claude asked
 // for is what runs, the request settles and no decision card is left waiting.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_permission_card_commits_before_the_ack_and_allowing_it_runs_the_command_claude_asked_for() {
     let slice = Slice::new();
@@ -2560,6 +2663,7 @@ fn a_permission_card_commits_before_the_ack_and_allowing_it_runs_the_command_cla
 }
 
 // D2: the user denies the command with a note: Claude is denied with the user's words.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_denied_command_reaches_claude_with_the_users_words() {
     let slice = Slice::new();
@@ -2580,6 +2684,7 @@ fn repo(slice: &Slice) {
 
 // D3: «Permitir siempre» on a command of a repo: Claude runs it, and the rule is written into the
 // repo's local settings and remembered as active.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn allowing_a_command_always_writes_its_rule_for_the_repo_and_runs_it() {
     let slice = Slice::new();
@@ -2598,6 +2703,7 @@ fn allowing_a_command_always_writes_its_rule_for_the_repo_and_runs_it() {
 
 /// Tells the node to ask for `command` run from `cwd` and runs the owner until Claude has its
 /// answer or the user is asked: the card, or `None` when nobody was asked.
+#[cfg(feature = "real-hosts")]
 fn asks_again(slice: &Slice, driver: &mut Driver, cwd: &str, command: &str) -> Option<String> {
     let answered = slice.decisions().len();
     slice.run(&Actor::System, &format!("tell-{answered}"), Command::TellNode {
@@ -2615,6 +2721,7 @@ fn asks_again(slice: &Slice, driver: &mut Driver, cwd: &str, command: &str) -> O
     card
 }
 
+#[cfg(feature = "real-hosts")]
 fn allowed_in_task(slice: &Slice) -> Vec<(String, u32)> {
     slice.domain.state().unwrap().tasks[&TaskId(TASK.into())].allowed.iter().map(|(card, grant)| (card.0.clone(), grant.uses)).collect()
 }
@@ -2623,6 +2730,7 @@ fn allowed_in_task(slice: &Slice) -> Vec<(String, u32)> {
 // same folder runs again without a card, and nothing else does: another target, another folder,
 // another branch or a path outside the worktree asks again. Revoked, it asks again; once the task
 // ends, nothing it allowed is left.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_command_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_same_folder() {
     let slice = Slice::new();
@@ -2673,6 +2781,7 @@ fn a_command_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_sa
 }
 
 // D4: Claude asks one question: the option the user chose reaches Claude under the question's text.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_question_is_answered_to_claude_by_its_text() {
     let slice = Slice::new();
@@ -2689,6 +2798,7 @@ fn a_question_is_answered_to_claude_by_its_text() {
 
 // D5: Claude asks two questions together: a card each, answered in either order, and only once
 // both are answered do the answers reach Claude, each under its question's text.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn two_questions_reach_claude_together_once_the_last_is_answered() {
     for order in [[0, 1], [1, 0]] {
@@ -2711,6 +2821,7 @@ fn two_questions_reach_claude_together_once_the_last_is_answered() {
 
 // D6: Claude Code asks to leave plan mode with the plan file Claude wrote; its Review card shows
 // that plan, and once it is approved Claude goes on with exactly what it asked with, in auto mode.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_approved_plan_lets_claude_go_on_with_it() {
     let slice = Slice::new();
@@ -2720,7 +2831,7 @@ fn an_approved_plan_lets_claude_go_on_with_it() {
     assert!(shown.as_deref().is_some_and(|plan| plan.contains("- [ ] Change the fixture")), "the card shows the plan: {shown:?}");
     slice.answer(&card, Hold::APPROVE, None).unwrap();
     slice.rest(&mut driver);
-    let plan_file = format!("{}.plan.md", slice.capture.display());
+    let plan_file = format!("{}.plan.md", slice.hosts.capture.display());
     assert_eq!(only_response(&slice), serde_json::json!({"behavior": "allow", "toolUseID": "toolu_fixture_1",
         "updatedInput": {"plan": "# Fixture plan\n\n- [ ] Change the fixture\n- [ ] Test the fixture", "planFilePath": plan_file},
         "updatedPermissions": [{"type": "setMode", "mode": "auto", "destination": "session"}]}));
@@ -2729,6 +2840,7 @@ fn an_approved_plan_lets_claude_go_on_with_it() {
 
 // D16: Claude asks to leave plan mode before it wrote its plan file, so Claude Code sends no plan:
 // Claude is told to write it first, and the user gets no card with nothing to review.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_plan_claude_never_wrote_sends_it_back_to_write_one_without_a_card() {
     let slice = Slice::new();
@@ -2753,6 +2865,7 @@ fn tell(slice: &Slice, driver: &Driver, text: &str) {
 // while what the user told it waited behind that turn Claude asked to leave plan mode with 41
 // points. Alondra refuses the plan for its length and Claude gets why as the tool's result; it
 // shortens the plan, the user approves it on its card, and what the user told it reaches Claude.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_plan_refused_in_a_turn_claude_started_by_itself_reaches_claude_and_its_shorter_plan_is_reviewed() {
     let slice = Slice::new();
@@ -2777,6 +2890,7 @@ fn a_plan_refused_in_a_turn_claude_started_by_itself_reaches_claude_and_its_shor
 
 // Alondra cannot record Claude's request as a card: Claude is denied it with why, as a decision
 // of Alondra's own, and goes on; the node keeps its host and nobody is asked.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_request_alondra_cannot_ask_is_denied_to_claude_with_why_and_the_node_goes_on() {
     let slice = Slice::new();
@@ -2798,6 +2912,7 @@ fn a_request_alondra_cannot_ask_is_denied_to_claude_with_why_and_the_node_goes_o
 }
 
 // D7: the user asks for changes to the plan: Claude is told so with the user's words.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn changes_requested_to_a_plan_reach_claude_as_its_denial() {
     let slice = Slice::new();
@@ -2809,6 +2924,7 @@ fn changes_requested_to_a_plan_reach_claude_as_its_denial() {
 }
 
 // D8: an MCP server asks for input: the user's accepted answer reaches it as its form's values.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_accepted_request_for_input_reaches_its_server_as_the_forms_values() {
     let slice = Slice::new();
@@ -2821,6 +2937,7 @@ fn an_accepted_request_for_input_reaches_its_server_as_the_forms_values() {
 }
 
 // D9: the user declines an MCP server's request for input: the server is told it was declined.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_declined_request_for_input_reaches_its_server_declined() {
     let slice = Slice::new();
@@ -2832,6 +2949,7 @@ fn a_declined_request_for_input_reaches_its_server_declined() {
 }
 
 // D10: Claude calls Alondra's own tool, served by the Alondra plugin: it runs without a card.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn alondras_own_tool_runs_without_asking_the_user() {
     let slice = Slice::new();
@@ -2845,6 +2963,7 @@ fn alondras_own_tool_runs_without_asking_the_user() {
 }
 
 // D11: a tool that only takes the name of Alondra's, from a server the user configured, is asked.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_tool_that_only_takes_alondras_name_is_put_to_the_user() {
     let slice = Slice::new();
@@ -2859,6 +2978,7 @@ fn a_tool_that_only_takes_alondras_name_is_put_to_the_user() {
 
 // D12: what nodes may never do is denied by Alondra's own rule even when it reaches Claude's
 // permission callback: Claude is told why, and the user is not asked.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_node_running_a_user_only_command_is_denied_without_a_card() {
     let slice = Slice::new();
@@ -2875,6 +2995,7 @@ fn a_node_running_a_user_only_command_is_denied_without_a_card() {
 
 // D13: the user interrupts while Claude waits on its card: the request is cancelled, Claude is
 // denied, the card stops waiting and an answer to it is refused; the task pauses without a card.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_interrupt_cancels_the_decision_withdraws_its_card_and_refuses_a_late_answer() {
     let slice = Slice::new();
@@ -2901,6 +3022,7 @@ fn an_interrupt_cancels_the_decision_withdraws_its_card_and_refuses_a_late_answe
 
 // D14: the daemon dies after the user's answer committed and its response was recorded, before the
 // host got it. The adopting owner sends it once: Claude gets the answer a single time.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_answer_the_host_never_got_is_sent_once_by_the_adopting_owner() {
     let slice = Slice::new();
@@ -2922,6 +3044,7 @@ fn an_answer_the_host_never_got_is_sent_once_by_the_adopting_owner() {
 // card; the interrupt reaches the host first and cancels the request there, and once the host has
 // news the owner sends the recorded answer, which names the request's epoch: the host refuses it
 // as stale, the response is recorded rejected and Claude got only the cancellation.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_response_to_a_request_claude_no_longer_waits_on_is_rejected_and_never_reaches_claude() {
     let slice = Slice::new();
@@ -2972,6 +3095,7 @@ fn assert_the_orchestrator_closes_it_from_its_case(slice: &Slice) {
     assert_eq!(open_for_user(&state), 0, "nobody asked the user");
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn the_orchestrator_closes_a_stopped_sdk_task_from_its_case() {
     let slice = Slice::new();
@@ -2982,6 +3106,7 @@ fn the_orchestrator_closes_a_stopped_sdk_task_from_its_case() {
 }
 
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn the_orchestrator_closes_a_task_stopped_after_an_approved_plan_from_its_case() {
     let slice = Slice::new();
@@ -2996,12 +3121,14 @@ fn the_orchestrator_closes_a_task_stopped_after_an_approved_plan_from_its_case()
 
 /// The owner of a node that just started, held on the first thing its host says until every
 /// process of that host has exited: it is in the middle of reading its host when the host ends.
+#[cfg(not(feature = "real-hosts"))]
 fn owner_reading_when_its_host_ends(slice: &Slice) -> (AgentId, std::sync::mpsc::Receiver<String>, Vec<alondra_process_group::Member>) {
     owner_reading_when_its_host_ends_after(slice, |_| {})
 }
 
 /// `owner_reading_when_its_host_ends`, with `prepare` run on the driver first. An owner that fails
 /// before its host's first word fails the test with its reason instead of leaving it waiting.
+#[cfg(not(feature = "real-hosts"))]
 fn owner_reading_when_its_host_ends_after(slice: &Slice, prepare: impl FnOnce(&mut Driver)) -> (AgentId, std::sync::mpsc::Receiver<String>, Vec<alondra_process_group::Member>) {
     enum Seen { Holding, Failed(String) }
     let mut driver = slice.launch_with("consume-and-hold");
@@ -3035,6 +3162,7 @@ fn owner_reading_when_its_host_ends_after(slice: &Slice, prepare: impl FnOnce(&m
     (agent, failures, processes)
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 #[should_panic(expected = "the owner failed before its host's first word")]
 fn an_owner_that_fails_before_its_host_speaks_fails_the_test_instead_of_hanging_it() {
@@ -3044,6 +3172,7 @@ fn an_owner_that_fails_before_its_host_speaks_fails_the_test_instead_of_hanging_
 
 /// Alondra ended the host itself: its owner reported no failure, no card asks the user, no host
 /// took its place and none of its processes is left.
+#[cfg(not(feature = "real-hosts"))]
 fn assert_ended_quietly(slice: &Slice, agent: &AgentId, failures: &std::sync::mpsc::Receiver<String>, processes: &[alondra_process_group::Member]) {
     assert_eq!(failures.try_iter().collect::<Vec<_>>(), Vec::<String>::new(), "the owner reported the end it caused as a failure");
     assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_none(), "no card asks to try again");
@@ -3068,6 +3197,7 @@ pub async fn close_pass(slice: &Slice) {
 // 22 October: the user accepted a task and Alondra closed its node; the node's owner was reading
 // its host when the host ended and logged «the SDK owner of … stopped: the connection to the SDK
 // host failed». Alondra ended that host itself: its owner stops as a closed execution, quietly.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_a_done_task_ends_its_host_with_no_failure_of_its_owner() {
     let slice = Slice::new();
@@ -3080,6 +3210,7 @@ async fn closing_a_done_task_ends_its_host_with_no_failure_of_its_owner() {
     assert_ended_quietly(&slice, &agent, &failures, &processes);
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_task_ends_its_host_with_no_failure_of_its_owner() {
     let slice = Slice::new();
@@ -3091,6 +3222,7 @@ async fn cancelling_a_task_ends_its_host_with_no_failure_of_its_owner() {
     assert_ended_quietly(&slice, &agent, &failures, &processes);
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_a_task_whose_pr_merged_ends_its_host_with_no_failure_of_its_owner() {
     let slice = Slice::new();
@@ -3112,6 +3244,7 @@ async fn closing_a_task_whose_pr_merged_ends_its_host_with_no_failure_of_its_own
 }
 
 // The orchestrator's replace and a node's move to another host stop the old host through its owner.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn replacing_a_node_ends_its_host_with_no_failure_of_its_owner() {
     let slice = Slice::new();
@@ -3121,6 +3254,7 @@ fn replacing_a_node_ends_its_host_with_no_failure_of_its_owner() {
 }
 
 // A daemon that exits for its upgrade stops every host it owns.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_daemon_that_stops_ends_its_hosts_with_no_failure_of_their_owners() {
     let slice = Slice::new();
@@ -3131,6 +3265,7 @@ fn a_daemon_that_stops_ends_its_hosts_with_no_failure_of_their_owners() {
 
 // A host that dies by itself while its task is open is a failure: its owner says so and, with no
 // host to take its place in this daemon, the task asks the user on its card.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_that_dies_while_its_task_is_open_is_a_failure_of_its_owner() {
     let slice = Slice::new();
@@ -3152,6 +3287,7 @@ async fn a_host_that_dies_while_its_task_is_open_is_a_failure_of_its_owner() {
 // runs, so the command Claude left running goes on; once the command ended and Claude took up its
 // notification, the node rests, and a host of this release that resumes the same session takes the
 // old one's place, with no card. What the orchestrator says next reaches that session.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before_and_moves_the_node_once_it_rests() {
     let slice = Slice::new();
@@ -3174,6 +3310,7 @@ async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before
 // the release before and the owner's next step. The answer is not handed to that host: a host of
 // this release takes its place first, and the answer reaches the same session there. The owner is
 // stepped by hand up to the step that finds the node at rest; the answer comes before the next.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_answer_that_comes_as_the_node_rests_on_a_host_of_the_release_before_reaches_this_release() {
     let mut slice = Slice::new();
@@ -3228,6 +3365,7 @@ async fn an_answer_that_comes_as_the_node_rests_on_a_host_of_the_release_before_
 // The same upgrade, with the daemon gone right after it stopped the host of the release before
 // and before a host of this release took its place: the next start finds the host ended and puts
 // one of this release that resumes the session in its place, and nothing is lost or asked.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_daemon_gone_while_it_moved_a_resting_node_to_this_release_leaves_it_to_the_next_start() {
     let slice = Slice::new();
@@ -3262,6 +3400,7 @@ fn a_daemon_gone_while_it_moved_a_resting_node_to_this_release_leaves_it_to_the_
 
 // A live host this release cannot carry on with (here, one of a release older than the oldest it
 // adopts) is ended and replaced by one that resumes the session, as every host was before.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_live_host_of_a_release_older_than_the_oldest_adoptable_is_replaced_as_before() {
     let slice = Slice::new();
@@ -3280,6 +3419,7 @@ fn a_live_host_of_a_release_older_than_the_oldest_adoptable_is_replaced_as_befor
     assert_replaced(&slice, &restarted, replaced, &session, &processes);
 }
 
+#[cfg(feature = "real-hosts")]
 #[path = "codex_tests.rs"]
 mod codex_tests;
 
@@ -3287,9 +3427,11 @@ mod codex_tests;
 mod untaken;
 #[path = "release_tests.rs"]
 mod release_tests;
+#[cfg(not(feature = "real-hosts"))]
 #[path = "capability_tests.rs"]
 mod capability_tests;
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn fixture_current_revision_keeps_actor_fences_and_client_staleness() {
     let slice = Slice::new();
@@ -3305,6 +3447,7 @@ fn fixture_current_revision_keeps_actor_fences_and_client_staleness() {
     assert!(matches!(stale, StoreError::Domain(error) if error.code == "stale_revision"));
 }
 
+#[cfg(feature = "real-hosts")]
 async fn tell_as_user(domain: &DomainRuntime, home: &Path, agent: &AgentId, text: &str) -> serde_json::Value {
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();
     crate::domain_messages::deliver(domain, home, &user(), "Alice", agent, message, true).await.unwrap()
@@ -3312,6 +3455,7 @@ async fn tell_as_user(domain: &DomainRuntime, home: &Path, agent: &AgentId, text
 
 /// Waits until the last prompt Claude got ends with `text`, or fails once a minute passed: a
 /// message that never arrives is a failure, never a hang.
+#[cfg(feature = "real-hosts")]
 pub async fn until_last_prompt_ends_with(domain: &DomainRuntime, capture: &Path, text: &str) {
     let mut changed = domain.subscribe();
     let arrived = changed.wait_for(|_| prompts_at(capture).last().is_some_and(|prompt| prompt.ends_with(text)));
@@ -3323,6 +3467,7 @@ pub async fn until_last_prompt_ends_with(domain: &DomainRuntime, capture: &Path,
 // it. Its execution had no owner in the daemon: its host's owner was gone and nothing took it over,
 // so the message waited for an owner that never came. Writing to it now takes it over: a host that
 // resumes the same Claude session takes the message.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_to_a_task_whose_execution_no_owner_holds_takes_it_over_and_reaches_its_session() {
     let slice = Slice::new();
@@ -3333,7 +3478,7 @@ async fn a_message_to_a_task_whose_execution_no_owner_holds_takes_it_over_and_re
     let (session, _) = strand_host(&slice, driver);
     assert!(!slice.domain.owns_sdk_host(&agent));
     tell_as_user(&slice.domain, &slice._home, &agent, "Are you there?").await;
-    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Are you there?").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.hosts.capture, "Are you there?").await;
     assert!(slice.domain.owns_sdk_host(&agent), "the execution was taken over");
     slice.domain.stop_sdk_owners();
     assert_eq!(slice.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {:?}", slice.starts());
@@ -3342,6 +3487,7 @@ async fn a_message_to_a_task_whose_execution_no_owner_holds_takes_it_over_and_re
 // The task's card says Alondra could not resume its session, with «Try again» and «Cancel». The user
 // writes to the node instead: the message was held behind that card and nothing resumed. Writing is
 // their «Try again»: the card leaves and a host that resumes the session gets what they wrote.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn the_users_message_to_a_task_whose_host_was_lost_is_its_try_again() {
     let slice = Slice::new();
@@ -3359,8 +3505,8 @@ async fn the_users_message_to_a_task_whose_host_was_lost_is_its_try_again() {
     let told = tell_as_user(&restarted, &slice._home, &agent, "Are you there?").await;
     assert_ne!(told["reaches"], "pause", "nothing holds the message: {told}");
     assert!(open_card(&restarted, &card.id.0).is_none(), "the card left the user's inbox");
-    until_last_prompt_ends_with(&restarted, &slice.capture, "Are you there?").await;
-    let prompts = prompts_at(&slice.capture);
+    until_last_prompt_ends_with(&restarted, &slice.hosts.capture, "Are you there?").await;
+    let prompts = prompts_at(&slice.hosts.capture);
     assert!(prompts.last().unwrap().starts_with("Your session was cut off when its host stopped"), "{prompts:?}");
     restarted.stop_sdk_owners();
     assert_eq!(slice.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {:?}", slice.starts());
@@ -3369,6 +3515,7 @@ async fn the_users_message_to_a_task_whose_host_was_lost_is_its_try_again() {
 // The thread that owns a node's host panics: it held nothing any more but still counted as the
 // owner, so nothing could take the execution over until the daemon restarted. It no longer counts,
 // and the user's message takes the execution over.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_owner_whose_thread_panicked_owns_nothing_and_a_message_takes_its_execution_over() {
     let slice = Slice::new();
@@ -3383,12 +3530,13 @@ async fn an_owner_whose_thread_panicked_owns_nothing_and_a_message_takes_its_exe
     }
     assert!(!slice.domain.owns_sdk_host(&agent), "an owner whose thread is gone owns nothing");
     tell_as_user(&slice.domain, &slice._home, &agent, "Are you there?").await;
-    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Are you there?").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.hosts.capture, "Are you there?").await;
     slice.domain.stop_sdk_owners();
 }
 
 
 /// The previous host admitted a conversation but never supplied positive native-session evidence.
+#[cfg(not(feature = "real-hosts"))]
 fn reopen_without_native_witness(slice: &Slice) -> (AgentId, String) {
     let mut original = slice.launch();
     let old_node = original.agent().clone();
@@ -3414,6 +3562,7 @@ fn prepared_reopened_launch(slice: &Slice, prompt: &str) -> Launch {
     }
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn reopening_unproven_claude_history_starts_a_new_node_and_clean_session_with_the_mission() {
     let slice = Slice::new();
@@ -3443,16 +3592,19 @@ fn reopening_unproven_claude_history_starts_a_new_node_and_clean_session_with_th
     replacement.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_cancellation_after_reopening_preparation_prevents_any_new_execution_admission() {
     stale_reopening_does_not_admit(false);
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn another_reopening_after_preparation_cannot_admit_a_node_for_the_previous_reopening() {
     stale_reopening_does_not_admit(true);
 }
 
+#[cfg(not(feature = "real-hosts"))]
 fn stale_reopening_does_not_admit(reopen_again: bool) {
     let slice = Slice::new();
     let (_, input) = reopen_without_native_witness(&slice);
@@ -3492,6 +3644,7 @@ fn stale_reopening_does_not_admit(reopen_again: bool) {
     assert_eq!(slice.starts(), before_starts, "no native process starts for the stale reopening");
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn reopening_a_session_whose_native_history_disappeared_starts_clean_without_a_resume_retry() {
     let slice = Slice::new();
@@ -3511,7 +3664,7 @@ fn reopening_a_session_whose_native_history_disappeared_starts_clean_without_a_r
     let witness = slice._home.join(".claude/projects").join(project).join(format!("{native}.jsonl"));
     assert!(witness.is_file(), "the native fixture supplied its real-shaped history witness");
     std::fs::remove_file(witness).unwrap();
-    std::fs::remove_file(format!("{}.transcript-{native}", slice.capture.display())).unwrap();
+    std::fs::remove_file(format!("{}.transcript-{native}", slice.hosts.capture.display())).unwrap();
     slice.run(&user(), "reopen-missing-history", Command::ReopenTask { task_id: TASK.into() });
     let input = slice.domain.state().unwrap().pending_reopening(&TASK.into()).unwrap().to_owned();
     let reopening = prepare_reopening(&*slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
@@ -3532,6 +3685,7 @@ fn reopening_a_session_whose_native_history_disappeared_starts_clean_without_a_r
     replacement.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_failed_reopening_workspace_cannot_replace_the_original_admissions_native_directory() {
     let slice = Slice::new();
@@ -3572,6 +3726,7 @@ fn a_failed_reopening_workspace_cannot_replace_the_original_admissions_native_di
 
 /// Swaps the slice's native Claude for one that never gets a prompt, so its session never opens,
 /// and returns where the working one waits to be put back.
+#[cfg(feature = "real-hosts")]
 fn hold_prompts(slice: &Slice) -> PathBuf {
     let fake = slice._home.join("native-fake");
     std::fs::copy(&slice.backend.native, &fake).unwrap();
@@ -3582,6 +3737,7 @@ fn hold_prompts(slice: &Slice) -> PathBuf {
 /// A takeover adopted a live host that never took the input it was handed, and its owner went
 /// without a word. The next look does not adopt that host again, which would change nothing: it
 /// ends it, and a fresh host takes the same input, which reaches Claude once.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_takeover_its_host_never_answered_hands_the_same_input_to_a_fresh_host() {
     let slice = Slice::new();
@@ -3606,7 +3762,7 @@ async fn a_takeover_its_host_never_answered_hands_the_same_input_to_a_fresh_host
     crate::sdk_owner::take_working_unowned(&*slice.domain, &slice.domain.state().unwrap(), alondra_core::now_millis());
     slice.domain.join_retakes();
     assert!(ignoring.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "the host that never took the input was ended");
-    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Add the tests first").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.hosts.capture, "Add the tests first").await;
     let told = slice.prompts().iter().filter(|prompt| prompt.ends_with("Add the tests first")).count();
     assert_eq!(told, 1, "the input reached Claude once: {:?}", slice.prompts());
     for prefix in [HANDOFF_DOUBT_PREFIX, HOST_LOST_PREFIX, SESSION_ENDED_PREFIX, DROPPED_PREFIX] {
@@ -3616,6 +3772,7 @@ async fn a_takeover_its_host_never_answered_hands_the_same_input_to_a_fresh_host
 }
 
 /// Tells the node `text` as the user does, through the daemon `domain`.
+#[cfg(feature = "real-hosts")]
 fn tell_through(domain: &DomainRuntime, slice: &Slice, driver: &Driver, text: &str) {
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();
     tokio::runtime::Runtime::new().unwrap()
@@ -3624,12 +3781,14 @@ fn tell_through(domain: &DomainRuntime, slice: &Slice, driver: &Driver, text: &s
 }
 
 /// Sends `signal` to every process of the host's group.
+#[cfg(feature = "real-hosts")]
 fn signal_host(driver: &Driver, signal: &str) {
     let group = driver.worker.host_group().unwrap();
     assert!(std::process::Command::new("/bin/kill").args([signal, "--", &format!("-{group}")]).status().unwrap().success());
 }
 
 /// The mission and then the user's message reached Claude, each once, and nobody was asked.
+#[cfg(feature = "real-hosts")]
 fn mission_then_message(slice: &Slice, domain: &DomainRuntime) {
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 2, "{prompts:?}");
@@ -3645,6 +3804,7 @@ fn mission_then_message(slice: &Slice, domain: &DomainRuntime) {
 // The daemon went down with a task whose Claude never opened its session. The host that takes it
 // over gets its mission again and opens the session with it, and the message the user sent
 // meanwhile follows.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_session_that_never_opened_gets_its_mission_and_the_queued_message_from_the_host_that_takes_over() {
     let slice = Slice::new();
@@ -3663,6 +3823,7 @@ fn a_session_that_never_opened_gets_its_mission_and_the_queued_message_from_the_
 
 // A host took the mission but its Claude never opens the session. Once the deadline passes,
 // another host takes its place and gets it again; the user's message waits and follows.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_host_whose_claude_never_opens_the_session_is_replaced_once_its_deadline_passes() {
     let slice = Slice::new();
@@ -3692,6 +3853,7 @@ fn a_host_whose_claude_never_opens_the_session_is_replaced_once_its_deadline_pas
 // that never opened went without a receipt (here the host is stopped and the handoff waits out its
 // I/O timeout).
 // The host is replaced by itself, however many ended before, and nobody is asked.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_takeover_whose_first_input_is_uncertain_relaunches_by_itself_without_a_card() {
     let mut slice = Slice::new();
@@ -3718,6 +3880,7 @@ fn a_takeover_whose_first_input_is_uncertain_relaunches_by_itself_without_a_card
 }
 
 // An uncertain mission is retried automatically even when its session never opened.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_uncertain_mission_whose_session_never_opened_reaches_claude_without_a_card() {
     let slice = Slice::new();
@@ -3742,6 +3905,7 @@ fn an_uncertain_mission_whose_session_never_opened_reaches_claude_without_a_card
 // it, because its Claude never started. Offering the input reset the count of replacements, so the
 // task was resumed without end. After SILENT_HOSTS hosts in a row whose Claude never ran, the
 // task holds on the card that says Alondra could not resume its session.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_claude_that_never_starts_in_its_resumed_session_ends_on_the_lost_host_card_and_not_in_endless_hosts() {
     let slice = Slice::new();
@@ -3749,7 +3913,7 @@ async fn a_claude_that_never_starts_in_its_resumed_session_ends_on_the_lost_host
     slice.until_working(&mut driver);
     let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
     kill_host_and_daemon(driver);
-    std::fs::remove_file(format!("{}.transcript-{session}", slice.capture.display())).unwrap();
+    std::fs::remove_file(format!("{}.transcript-{session}", slice.hosts.capture.display())).unwrap();
     let restarted = slice.restart();
     let resumed = slice.take_over(&restarted);
     let first_generation = u64::try_from(owner_generation(&slice.database)).unwrap();
@@ -3784,6 +3948,7 @@ async fn a_claude_that_never_starts_in_its_resumed_session_ends_on_the_lost_host
 
 // A task working with no owner is taken over once; while its lifecycle stands where that take
 // over left it, ten minutes of looks take it over no more, and a new fact makes it due again.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_unowned_task_is_not_retaken_twice_without_a_new_fact() {
     let mut taken = BTreeMap::new();
@@ -3795,6 +3960,7 @@ fn an_unowned_task_is_not_retaken_twice_without_a_new_fact() {
     assert_eq!(due_unowned(&mut taken, vec![(task.clone(), 8)], 11 * 60_000), [task]);
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pause_by_the_user_stops_the_host_its_background_commands_and_every_turn_until_it_resumes() {
     let slice = Slice::new();
@@ -3811,12 +3977,13 @@ async fn a_pause_by_the_user_stops_the_host_its_background_commands_and_every_tu
 
     assert!(gate.resume_now(&*slice.domain, &agent.0, alondra_core::now_millis()));
     crate::admission::pass_at(&*slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
-    until_last_prompt_ends_with(&slice.domain, &slice.capture, "run again what was cut.").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.hosts.capture, "run again what was cut.").await;
     slice.domain.stop_sdk_owners();
     assert_eq!(slice.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session goes on: {:?}", slice.starts());
     assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn no_pause_but_the_users_kills_what_the_node_runs() {
     use alondra_engine_ports::admission::Reason;
@@ -3834,6 +4001,7 @@ async fn no_pause_but_the_users_kills_what_the_node_runs() {
     }
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_a_restarted_daemon_adopts_for_a_paused_node_stops_at_the_gates_next_look() {
     let slice = Slice::new();
@@ -3856,6 +4024,7 @@ async fn a_host_a_restarted_daemon_adopts_for_a_paused_node_stops_at_the_gates_n
     restarted.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_takeover_the_full_disk_refused_waits_for_space_and_then_resumes_the_same_session() {
     let slice = Slice::new();
@@ -3890,7 +4059,7 @@ async fn a_takeover_the_full_disk_refused_waits_for_space_and_then_resumes_the_s
     assert!(restarted.sdk_owners().waiting_for_space.lock().unwrap().is_empty());
     assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
     let mut changed = restarted.subscribe();
-    let capture = slice.capture.clone();
+    let capture = slice.hosts.capture.clone();
     changed.wait_for(|_| prompts_at(&capture).last().is_some_and(|prompt| prompt.starts_with("Your session was cut off when its host stopped"))).await.unwrap();
     restarted.stop_sdk_owners();
     let starts = slice.starts();
@@ -3902,6 +4071,7 @@ async fn a_takeover_the_full_disk_refused_waits_for_space_and_then_resumes_the_s
 /// of 6. They hold no slot, so it starts, and the gate, the log's "waiting on the user" and the
 /// apps' count agree on who works. A plan approved once every slot is taken again waits for a
 /// slot like any turn, and goes on when one frees.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() {
     use crate::admission::{Hold as Held, Key, Limit, Tuning, Waiting};
@@ -3960,6 +4130,7 @@ fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() 
 
 /// The answer to a decision lets a turn go on that took no slot while it waited on the user: the
 /// answer waits for one with the turn held, an interrupt never does.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_approved_plan_reaches_claude_only_when_the_gate_has_a_slot() {
     let slice = Slice::new();
@@ -3983,6 +4154,7 @@ fn an_approved_plan_reaches_claude_only_when_the_gate_has_a_slot() {
 /// only an owner that asked waited in the queue, and the turn kept counting as working meanwhile.
 /// The answer waits in the queue because the domain says so, takes no slot while it waits, and goes
 /// on when one frees though nobody asked.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_answered_permission_goes_on_when_a_slot_frees_with_nobody_asking() {
     let slice = Slice::new();
@@ -4007,6 +4179,7 @@ fn an_answered_permission_goes_on_when_a_slot_frees_with_nobody_asking() {
 }
 
 /// With a free slot, the pass that sees the answer gives it the slot: its owner need not ask first.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_answered_permission_with_room_goes_on_in_the_same_pass() {
     let slice = Slice::new();
@@ -4022,6 +4195,7 @@ fn an_answered_permission_with_room_goes_on_in_the_same_pass() {
 }
 
 /// The owner of a turn the gate gave a slot ends before it starts it: the slot goes back.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_host_that_ends_with_a_slot_it_never_used_gives_it_back() {
     let slice = Slice::new();
@@ -4042,6 +4216,7 @@ fn a_host_that_ends_with_a_slot_it_never_used_gives_it_back() {
 
 /// The orchestrator's answer to a node that stopped is one more input: it waits for a slot like any
 /// turn, and reaches Claude as written once one frees.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn the_orchestrators_instruction_waits_for_a_slot_like_any_turn() {
     let slice = Slice::new();
@@ -4066,6 +4241,7 @@ fn the_orchestrators_instruction_waits_for_a_slot_like_any_turn() {
     driver.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_adopted_host_without_a_process_is_ended_at_adoption() {
     let slice = Slice::new();
@@ -4090,6 +4266,7 @@ fn an_adopted_host_without_a_process_is_ended_at_adoption() {
 /// An answer whose task has no owner in this daemon is not left waiting for one: the pass that
 /// gives it a slot has a host take the task over, without waiting for the minute between takeovers
 /// of tasks that read as working with no owner.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_answered_permission_of_a_task_without_an_owner_is_retaken() {
     let slice = Slice::new();
@@ -4107,17 +4284,20 @@ fn an_answered_permission_of_a_task_without_an_owner_is_retaken() {
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 fn gate_pass(domain: &DomainRuntime, home: &std::path::Path) {
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
         .block_on(crate::admission::pass_at(domain, home, alondra_core::now_millis())).unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 fn slots(domain: &DomainRuntime, limit: u32) {
     domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(limit)) });
 }
 
 /// A node with a background command in a group of its own, a shell with a child of its own, under
 /// an owner that runs by itself, as a daemon's are.
+#[cfg(feature = "real-hosts")]
 pub(super) fn node_with_a_background_group(slice: &Slice) -> (AgentId, String, BackgroundCommands, Vec<alondra_process_group::Member>) {
     slice.domain.enable_sdk(slice.backend.clone());
     slice.domain.admission().ignore_mac();

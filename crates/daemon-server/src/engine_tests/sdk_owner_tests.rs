@@ -457,7 +457,7 @@ fn an_sdk_node_without_its_models_window_shows_no_context() {
 #[ignore="opt-in: real pinned Codex, real Alondra MCP CLI and authenticated loopback daemon; no credentials or external inference"]
 async fn an_actual_codex_cli_asks_enters_native_plan_and_presents_the_result_through_alondra(){
     super::wired();
-    let slice=Slice::with_database_name(HostRoot::new(),crate::domain_store::DATABASE);configured(&slice,"complete");
+    let slice=Slice::with_database_name(ProcessHosts::default(),crate::domain_store::DATABASE);configured(&slice,"complete");
     for args in [vec!["init","-b","main"],vec!["config","user.name","Alondra fixture"],vec!["config","user.email","fixture@example.invalid"],vec!["commit","--allow-empty","-m","Initial fixture"]] {
         let output=std::process::Command::new("/usr/bin/git").args(args).current_dir(&slice.worktree).env_clear().env("HOME",&*slice._home).env("PATH","/usr/bin:/bin").env("GIT_CONFIG_NOSYSTEM","1").env("GIT_CONFIG_GLOBAL","/dev/null").output().unwrap();
         assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));

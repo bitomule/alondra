@@ -141,6 +141,71 @@ impl Drop for SdkLaunches {
     }
 }
 
+/// The hosts of `engine_fixtures::owner::Slice` played by the model: the same doubled hosts serve
+/// every daemon the slice opens, so a restarted one finds the hosts the one before left.
+#[cfg(feature = "whole-engine")]
+pub struct ModelHosts {
+    pub hosts: Arc<InProcessHosts>,
+    model: std::sync::OnceLock<ClaudeModel>,
+    state: crate::test_support::Directory,
+}
+
+#[cfg(feature = "whole-engine")]
+impl Default for ModelHosts {
+    fn default() -> Self {
+        Self { hosts: Arc::default(), model: std::sync::OnceLock::new(), state: crate::test_support::Directory::for_unix_socket() }
+    }
+}
+
+#[cfg(feature = "whole-engine")]
+impl ModelHosts {
+    pub fn model(&self) -> &ClaudeModel {
+        self.model.get().expect("the slice made its backend")
+    }
+}
+
+#[cfg(feature = "whole-engine")]
+impl crate::engine_fixtures::owner::Hosts for ModelHosts {
+    fn backend(&mut self, home: &Path) -> crate::sdk_backend::SdkBackend {
+        let model = ClaudeModel::new(home, Arc::default());
+        model.set_turns(Turns::Answered);
+        self.hosts.set_serve(model.clone());
+        let probe = model.clone();
+        self.hosts.set_probe(move |run| probe.probe(run));
+        assert!(self.model.set(model).is_ok(), "one backend per slice");
+        model_backend(home, &self.state)
+    }
+
+    fn serve(&self, domain: &DomainRuntime) {
+        self.hosts.provide(domain.ports());
+    }
+
+    fn starts(&self) -> Vec<Value> {
+        self.model().starts().iter().map(NativeStart::record).collect()
+    }
+
+    fn prompts(&self) -> Vec<String> {
+        self.model().prompts()
+    }
+
+    fn controls(&self) -> Vec<Value> {
+        panic!("the model keeps no control requests: this test runs on real hosts")
+    }
+
+    fn decisions(&self) -> Vec<Value> {
+        panic!("the model keeps no decisions: this test runs on real hosts")
+    }
+}
+
+#[cfg(feature = "whole-engine")]
+impl Drop for ModelHosts {
+    fn drop(&mut self) {
+        if let Some(model) = self.model.get() {
+            model.close();
+        }
+    }
+}
+
 /// Whether `card` is one an ended turn of `task` rests on: the case the orchestrator settles when
 /// the node stopped, or the user's card when the turn was interrupted or failed.
 fn rests_on(task: &str, card: &InteractionId) -> bool {
