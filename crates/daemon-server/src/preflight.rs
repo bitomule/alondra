@@ -17,6 +17,17 @@ const DATABASES: [&str; 5] = [
     "schedules.db",
 ];
 
+/// The state files the startup reads beside the databases, and refuses to start on when one is
+/// unreadable or of another format: the snapshot carries them so preflight refuses the same.
+const STATE_FILES: [&str; 6] = [
+    "domain-capabilities.json",
+    "devices.json",
+    "options.toml",
+    "options.pending",
+    "orchestrator.json",
+    "admission.json",
+];
+
 /// How the root opens the engine at a home, on the journal it is kept in: it puts the engine
 /// together, which this crate does not see.
 pub type Opener = fn(&Path, &dyn JournalFiles) -> Result<crate::domain_runtime::DomainRuntime>;
@@ -79,6 +90,9 @@ fn snapshot(home: &Path, into: &Path, files: &dyn JournalFiles) -> Result<()> {
     for source in files.preflight_staging_files(home)? {
         copy_private_file(&source, &into.join(source.file_name().unwrap()))?;
     }
+    for name in STATE_FILES {
+        copy_state_file(&home.join(name), &into.join(name)).with_context(|| format!("copying {name}"))?;
+    }
     let marker = [crate::domain_cutover::MARKER, crate::domain_cutover::PREVIOUS_MARKER]
         .map(|name| home.join(name))
         .into_iter()
@@ -108,6 +122,23 @@ fn open_source(source: &Path) -> rusqlite::Result<Connection> {
     }
     let uri = format!("file:{}?immutable=1", source.display());
     Connection::open_with_flags(uri, flags | OpenFlags::SQLITE_OPEN_URI)
+}
+
+/// A copy with the source's bytes and permission bits, so the startup judges it as it would the
+/// original; a link is refused, as the startup refuses it.
+fn copy_state_file(source: &Path, target: &Path) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let metadata = match std::fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    anyhow::ensure!(metadata.is_file(), "{} must be a regular file", source.display());
+    let mut from = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(source)?;
+    let mut to = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(target)?;
+    std::io::copy(&mut from, &mut to)?;
+    to.set_permissions(std::fs::Permissions::from_mode(metadata.permissions().mode() & 0o777))?;
+    Ok(())
 }
 
 fn copy_private_file(source: &Path, target: &Path) -> Result<()> {
@@ -275,6 +306,21 @@ mod tests {
         std::fs::write(&artifact, b"another artifact").unwrap();
         let refused = format!("{:#}", run_for(&config, &user, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles).unwrap_err());
         assert!(refused.contains("does not have the SHA256"), "{refused}");
+    }
+
+    #[test]
+    fn preflight_refuses_a_state_file_the_real_startup_cannot_read() {
+        for name in ["domain-capabilities.json", "devices.json"] {
+            let (home, config) = committed_domain_home("state-file");
+            assert!(run(&config, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles).is_ok());
+            std::fs::write(home.join(name), b"{\"format\": 2").unwrap();
+            std::fs::set_permissions(home.join(name), std::fs::Permissions::from_mode(0o600)).unwrap();
+            let before = contents(&home);
+            let refused = run(&config, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles);
+            assert!(refused.is_err(), "{name}: a binary that cannot start on this HOME passed preflight");
+            assert_eq!(contents(&home), before, "preflight must not write to the HOME it checks");
+            std::fs::remove_dir_all(home).unwrap();
+        }
     }
 
     #[test]

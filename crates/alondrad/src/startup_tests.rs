@@ -156,3 +156,24 @@ fn the_engines_tests_hear_of_commits_as_the_daemon_does() {
     let names = |observers: Vec<Box<dyn domain_runtime::CommitObserver>>| observers.iter().map(|observer| observer.name()).collect::<Vec<_>>();
     assert_eq!(names(engine_assembly::observers()), names(crate::wiring::observers()));
 }
+
+/// `alondrad` started by hand (or a diagnostic) next to the live daemon opened the domain database
+/// and turned the push the daemon was sending into an uncertain delivery; the daemon's own finish
+/// then failed and stopped it.
+#[test]
+fn a_second_daemon_is_refused_before_its_restart_recovery_touches_the_live_daemons_deliveries() {
+    let home = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    let (_writer, live) = open_as_writer(&home, crate::engine::open).unwrap();
+    let epoch = live.state().unwrap().data_epoch.clone();
+    live.execute_fixture(&alondra_domain_rules::Actor::User { user_id: "u".into() }, alondra_domain_rules::CommandEnvelope {
+        protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: epoch, command_id: "request".into(), expected_revision: 0,
+        command: alondra_domain_rules::Command::CreateRequest { request_id: "r".into(), body: "Fix the login".into(), auto_merge: false, maintenance: false, message: false },
+    }).unwrap();
+    let message = live.store.lock().unwrap().pending_messages().unwrap()[0].id;
+    let claim = live.store.lock().unwrap().claim_message(message).unwrap().unwrap();
+    let second = open_as_writer(&home, crate::engine::open);
+    assert!(second.as_ref().is_err_and(|error| error.to_string().contains("another Alondra daemon")), "{:?}", second.err());
+    assert!(live.store.lock().unwrap().finish_message(claim.attempt_id, claim.version, alondra_core::delivery::State::Handed, None).unwrap(),
+        "the live daemon's delivery is still its own");
+}

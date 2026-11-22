@@ -69,6 +69,11 @@ pub struct Runtime {
     /// The context the latest batch read.
     #[serde(default)]
     pub last_context: Option<BatchContext>,
+    /// The batch the daemon cut when it stopped on purpose (a signal, a new release, a
+    /// handover): the next start resumes it without the user. A batch cut any other way (a
+    /// crash that also lost its last writes) may have lost a refusal, so it still asks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_by_shutdown: Option<String>,
 }
 
 /// Tokens the model read in a batch's first call and in its last one: its context at the start
@@ -122,10 +127,23 @@ pub fn load(home: &Path) -> Result<Runtime> {
 /// Writes the runtime record a test seeds, with no fault injected.
 #[cfg(test)]
 pub(crate) fn save(home: &Path, runtime: &Runtime) -> Result<()> {
-    store(home, runtime, &crate::engine::Injected::default())
+    write(home, runtime, &crate::engine::Injected::default())
 }
 
-fn store(home: &Path, runtime: &Runtime, injected: &crate::engine::Injected) -> Result<()> {
+fn store(home: &Path, runtime: &Runtime, orchestrator: &crate::engine::Orchestrator) -> Result<()> {
+    let _one_writer = orchestrator.record.lock_or_recover("the orchestrator record");
+    write(home, runtime, &orchestrator.injected)
+}
+
+/// Reads the record, changes it and writes it back with no other writer in between.
+fn update(home: &Path, orchestrator: &crate::engine::Orchestrator, change: impl FnOnce(&mut Runtime)) -> Result<()> {
+    let _one_writer = orchestrator.record.lock_or_recover("the orchestrator record");
+    let mut runtime = load(home)?;
+    change(&mut runtime);
+    write(home, &runtime, &orchestrator.injected)
+}
+
+fn write(home: &Path, runtime: &Runtime, injected: &crate::engine::Injected) -> Result<()> {
     let next = home.join(format!("{FILE}.next"));
     injected.write("runtime_write")?;
     std::fs::write(&next, serde_json::to_vec(runtime)?)?;
@@ -134,9 +152,26 @@ fn store(home: &Path, runtime: &Runtime, injected: &crate::engine::Injected) -> 
     Ok(())
 }
 
+fn mark_host_started(runtime: &mut Runtime) {
+    if let Some(run) = runtime.active_run.as_mut() { run.spawned = true; }
+}
+
+/// Marks the batch running while the daemon stops on purpose, so the next start resumes it.
+pub fn note_shutdown(domain: &DomainRuntime, home: &Path) {
+    if load(home).is_ok_and(|runtime| runtime.active_run.is_none()) {
+        return;
+    }
+    let noted = update(home, domain.orchestrator(), |runtime| {
+        runtime.cut_by_shutdown = runtime.active_run.as_ref().map(|run| run.id.clone());
+    });
+    if let Err(error) = noted {
+        log!("orchestrator: could not record the batch this stop cuts: {error:#}");
+    }
+}
+
 impl Executor {
     fn save(&self, runtime: &Runtime) -> Result<()> {
-        store(&self.home, runtime, &self.domain.orchestrator().injected)
+        store(&self.home, runtime, self.domain.orchestrator())
     }
 }
 
@@ -366,15 +401,23 @@ impl Executor {
     }
 
     pub(crate) fn cancel(&self, run_id: &str) -> Result<()> {
-        let mut runtime = load(&self.home)?;
-        if runtime.active_run.as_ref().is_none_or(|run| run.id != run_id) {
-            bail!("no running execution {run_id}");
-        }
-        if runtime.last_error.is_some() {
+        let ambiguous = {
+            let orchestrator = self.domain.orchestrator();
+            let _one_writer = orchestrator.record.lock_or_recover("the orchestrator record");
+            let mut runtime = load(&self.home)?;
+            if runtime.active_run.as_ref().is_none_or(|run| run.id != run_id) {
+                bail!("no running execution {run_id}");
+            }
+            if runtime.last_error.is_none() {
+                runtime.cancel_requested = true;
+                write(&self.home, &runtime, &orchestrator.injected)?;
+            }
+            runtime.last_error.is_some()
+        };
+        if ambiguous {
             return self.acknowledge(run_id);
         }
-        runtime.cancel_requested = true;
-        self.save(&runtime)
+        Ok(())
     }
 
     fn prompt(&self, runtime: &Runtime, projects_root: Option<&Path>, messages: &[OutboxMessage]) -> Result<String> {
@@ -491,9 +534,16 @@ impl Executor {
             }).collect();
         if pending.is_empty() && runtime.pending_resolutions.is_empty() {
             crate::orchestrator_inbox::hand_replans(&self.domain);
-            if runtime.last_error.is_none() {
-                crate::orchestrator_inbox::settle(&self.domain);
+            if runtime.last_error.is_some() {
+                log!("orchestrator: the messages its failed start was retrying expired; the failure no longer holds the inbox ({})",
+                    runtime.last_error.as_deref().unwrap_or_default());
+                runtime.last_error = None;
+                runtime.failure = None;
+                runtime.retry_at = None;
+                runtime.consecutive_failures = 0;
+                self.save(&runtime)?;
             }
+            crate::orchestrator_inbox::settle(&self.domain);
             return Ok(());
         }
         let (Some(orchestrator_plugin), Some(node_plugin)) = (
@@ -529,7 +579,7 @@ impl Executor {
         runtime.last_error = None;
         runtime.failure = None;
         runtime.retry_at = None;
-        self.domain.orchestrator_progress();
+        self.domain.note_orchestrator_progress();
         self.save(&runtime)?;
         self.bind_session(&session);
         let projects_root = crate::options::options_at(&self.home).ok()
@@ -547,12 +597,9 @@ impl Executor {
         let spawned_domain = Arc::clone(&self.domain);
         let spawned_capability = capability.expose_for_child_environment().to_owned();
         let mark_spawned = move || {
-            let mut runtime = load(&home)?;
-            if let Some(run) = runtime.active_run.as_mut() { run.spawned = true; }
-            let injected = &spawned_domain.orchestrator().injected;
-            store(&home, &runtime, injected)?;
-            spawned_domain.orchestrator_progress();
-            injected.spawned(&spawned_capability);
+            update(&home, spawned_domain.orchestrator(), mark_host_started)?;
+            spawned_domain.note_orchestrator_progress();
+            spawned_domain.orchestrator().injected.spawned(&spawned_capability);
             Ok(())
         };
         let mut stopped = stop.clone();
@@ -698,7 +745,7 @@ impl Executor {
             self.domain.orchestrator().runs.lock_or_recover("the orchestrator runs").remove(&handoff.run_id);
         }
         self.save(&runtime)?;
-        self.domain.orchestrator_progress();
+        self.domain.note_orchestrator_progress();
         // What waits for the orchestrator is read before Alondra adds its own notices: a re-plan it
         // hands at every rest, or the word to go on after the task limit, must not keep what it
         // owes the nodes from ever being settled.
@@ -1643,6 +1690,33 @@ mod tests {
         assert_eq!(f.starts().len(), 1, "the fresh message remains eligible for execution");
     }
 
+    /// The orchestrator could not start for a day: the request's message expired while its start
+    /// kept failing, and the provider is back.
+    #[tokio::test]
+    async fn a_request_whose_message_expired_during_failed_starts_goes_back_to_the_orchestrator() {
+        let f = fixture();
+        let domain = &f.executor.domain;
+        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "lost".into(), body: "Fix the login".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        let message = outbox(domain)[0].0;
+        {
+            let mut store = domain.store.lock().unwrap();
+            let claim = store.claim_message(message).unwrap().unwrap();
+            assert!(store.finish_message(claim.attempt_id, claim.version, State::Retryable, Some("orchestrator_launch_failed")).unwrap());
+            let expired = now_millis().saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS) - 1;
+            store.sqlite_mut().set_message_created_at_for_test(message, expired).unwrap();
+        }
+        save(&f.executor.home, &Runtime {
+            last_error: Some("The orchestrator host did not start".into()), failure: Some(Failure::Launch),
+            retry_at: Some(now_millis() - 1), consecutive_failures: 30, ..Runtime::default()
+        }).unwrap();
+        f.tick().await;
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.last_error.is_none() && runtime.failure.is_none() && runtime.retry_at.is_none(), "{runtime:?}");
+        assert_eq!(reminders(domain), ["request-unsplit-lost-1"], "the request is not left without a task or a card");
+    }
+
     #[test]
     fn orchestrator_claim_rechecks_expiry_and_keeps_the_exact_cutoff_eligible() {
         let f = fixture();
@@ -2046,6 +2120,32 @@ mod tests {
             assert!(unhandled(domain).is_empty(),"An unknown physical result is never reoffered");
         }
         assert!(attempts(domain).iter().any(|(id,state,_)| *id==claim.message.id && state=="uncertain"));
+    }
+
+    /// The host's start read the record, the user's cancel was answered with 200 and written, and
+    /// the start wrote back the copy it read before the cancel. The start's read and write now hold
+    /// the record's one lock, which the cancel takes too.
+    #[test]
+    fn the_hosts_start_holds_the_record_from_its_read_to_its_write_so_a_cancel_cannot_land_in_between() {
+        let f = fixture();
+        save(&f.executor.home, &Runtime {
+            active_run: Some(Run { id: "running".into(), message_ids: vec![], attempts: vec![], started_at: 1, spawned: false }),
+            ..Runtime::default()
+        }).unwrap();
+        let domain = Arc::clone(&f.executor.domain);
+        let free_while_writing = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&free_while_writing);
+        f.executor.domain.orchestrator().injected.fail_writes(move |point| {
+            if point == "runtime_write" {
+                seen.lock().unwrap().push(domain.orchestrator().record.try_lock().is_ok());
+            }
+            Ok(())
+        });
+        update(&f.executor.home, f.executor.domain.orchestrator(), mark_host_started).unwrap();
+        f.executor.cancel("running").unwrap();
+        assert_eq!(*free_while_writing.lock().unwrap(), [false, false], "a writer could slip between the read and the write");
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.cancel_requested && runtime.active_run.unwrap().spawned);
     }
 
     #[tokio::test]

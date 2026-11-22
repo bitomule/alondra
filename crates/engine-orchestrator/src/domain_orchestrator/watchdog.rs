@@ -160,6 +160,7 @@ impl Executor {
                         runtime.failure,
                         Some(Failure::Launch | Failure::SessionMissing)
                     )
+                    || runtime.active_run.is_none() && runtime.retry_at.is_some_and(|at| at > now_millis())
             });
         if !watchdog.observe(
             now,
