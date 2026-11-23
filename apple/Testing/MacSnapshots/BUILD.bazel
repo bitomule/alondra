@@ -36,7 +36,7 @@ swift_test(
         "//apple/Testing/Fixtures:RequestedFormCard.swift",
         "//apple/Testing/Fixtures:SpanishTestData.swift",
     ],
-    data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + glob(["Fixtures/*.png"]) + [
+    data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [
         "//apple:macOS/Resources/Localizable.xcstrings",
         "//apple/Design:Resources/AlondraDesign.xcstrings",
         "//fixtures/diffs",

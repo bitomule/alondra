@@ -44,7 +44,7 @@ final class MacMultilineFieldSnapshotTests: XCTestCase {
             window.contentView = hosting
             hosting.frame = CGRect(origin: .zero, size: size)
             hosting.layoutSubtreeIfNeeded()
-            assertAppSnapshot(of: hosting as NSView, as: .image(perceptualPrecision: screenColorPerceptualPrecision, size: size),
+            assertAppSnapshot(of: hosting as NSView, as: .image(perceptualPrecision: 0.98, size: size),
                               named: name, file: file, testName: testName, line: line)
         }
     }
