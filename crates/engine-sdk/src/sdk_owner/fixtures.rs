@@ -195,6 +195,11 @@ pub trait Hosts: Default {
     /// native writes every request it gets to the transcript its environment names, and reads its
     /// account answers from the sidecar beside it, as the repository's fake native Codex does.
     fn codex_executables(&self, home: &Path) -> (PathBuf, PathBuf);
+    /// The socket of the host in `folder` goes: the host lives on, holds its lock, and no owner can
+    /// reach it again.
+    fn strand(&self, folder: &Path);
+    /// Whether the native Claude whose start recorded `pid` still runs.
+    fn native_runs(&self, pid: i32) -> bool;
 }
 
 /// A host a test watches: whether anything of it still runs, and a wait until nothing does.
@@ -310,6 +315,14 @@ impl Hosts for ProcessHosts {
         std::fs::copy(runfile("FIXTURE_CODEX_NATIVE"), &native).unwrap();
         std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
         (runfile("FIXTURE_CODEX_HOST"), native)
+    }
+
+    fn strand(&self, folder: &Path) {
+        std::fs::remove_file(folder.join("s")).unwrap();
+    }
+
+    fn native_runs(&self, pid: i32) -> bool {
+        running(pid)
     }
 }
 
@@ -634,12 +647,12 @@ pub fn owner_generation(database: &Path) -> i64 {
 /// The owner of the task's host goes without stopping it, as the owner of 0.3.0 did when a step
 /// failed, and the host's owner socket goes too: the host lives on, holds its lock, and no owner
 /// can ever reach it again.
-pub fn strand_host(slice: &Slice<ProcessHosts>, driver: Driver) -> (String, HostWatch) {
+pub fn strand_host<H: Hosts>(slice: &Slice<H>, driver: Driver) -> (String, HostWatch) {
     let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
     let processes = slice.hosts.watch(driver.worker.host_group().unwrap());
     let folder = slice.backend.state_root.join(&driver.agent().0);
     drop(driver);
-    std::fs::remove_file(folder.join("s")).unwrap();
+    slice.hosts.strand(&folder);
     assert!(processes.runs(), "the host still runs");
     (session, processes)
 }
@@ -925,11 +938,6 @@ impl Slice<ProcessHosts> {
         let pid: i32 = std::fs::read_to_string(format!("{}.background", self.hosts.capture.display())).unwrap().parse().unwrap();
         alondra_process_group::members(alondra_process_group::group(pid).unwrap().unwrap()).unwrap()
             .into_iter().find(|member| member.pid == pid).expect("the background command runs")
-    }
-
-    /// Claude starts a turn on the prompts it held with `stall-while-held`, from now on.
-    pub fn let_claude_start(&self) {
-        std::fs::write(format!("{}.start", self.hosts.capture.display()), "").unwrap();
     }
 
     /// Ends the command Claude left running in the background.

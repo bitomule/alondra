@@ -148,7 +148,6 @@ impl World {
         self.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap()
     }
 
-    #[cfg(feature = "real-hosts")]
     /// Waits until the task's execution of `generation` ended a turn with Claude's answer and
     /// rests on the card that turn ended on.
     async fn until_answered(&self, generation: u64) {
@@ -156,7 +155,6 @@ impl World {
     }
 }
 
-#[cfg(feature = "real-hosts")]
 /// Whether `card` is one a turn of the task's execution of `generation` ended on.
 fn rested(card: &InteractionId, generation: u64) -> bool {
     [STALLED_PREFIX, TURN_ENDED_PREFIX].iter().any(|prefix| card.0.starts_with(&format!("{prefix}{TASK}-{generation}-")))
@@ -314,7 +312,7 @@ async fn historical_unstarted_destinations_are_parked_before_startup_or_explicit
     }
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_historical_started_destination_is_adopted_with_its_existing_physical_process_and_binding(){
     let mut world=World::with_accounts(true);
@@ -330,14 +328,14 @@ async fn a_historical_started_destination_is_adopted_with_its_existing_physical_
     let (domain,backend)=(world.domain.clone(),world.backend.clone());
     tokio::task::spawn_blocking(move||crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&backend)).await.unwrap();
     tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
-    assert_eq!(unsafe{libc::kill(native_pid,0)},0,"the original fixture native process remains alive");
+    assert!(world.hosts.native_runs(native_pid),"the original fixture native process remains alive");
     assert_eq!(world.step(),Some(AccountMoveStep::Done));assert_eq!(world.node(),destination);
     assert_eq!(world.domain.state().unwrap().task_account(&TASK.into()),AccountId::default_account());
     assert_eq!(world.starts(),starts,"same physical process, not just the same UUID");assert!(world.domain.owns_sdk_host(&destination));
 }
 
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn manual_replacement_of_an_existing_legacy_sdk_node_is_refused_before_stop_or_workspace_effects(){
     let world=World::new().await;let original=world.node();let starts=world.starts();
@@ -346,6 +344,6 @@ async fn manual_replacement_of_an_existing_legacy_sdk_node_is_refused_before_sto
     let error=crate::domain_orchestrator_tools::launch(&*world.domain,&world.home,body,|_|None).await.unwrap_err();
     assert_eq!(error.code,"active_account_immutable");assert_eq!(world.domain.state().unwrap().revision,revision);
     assert_eq!(world.node(),original);assert!(world.domain.owns_sdk_host(&original));assert_eq!(world.starts(),starts);
-    assert_eq!(unsafe{libc::kill(pid,0)},0,"forbidden replacement never stops the original native process");
+    assert!(world.hosts.native_runs(pid),"forbidden replacement never stops the original native process");
     assert!(world.journal().is_empty());
 }

@@ -124,6 +124,8 @@ pub struct Trouble(pub String);
 /// session had already, the folder and the command line and environment it got.
 #[derive(Clone, Debug)]
 pub struct NativeStart {
+    /// The process id of the host that started it, which the native Claude runs under.
+    pub process: u32,
     pub session: String,
     pub resume: Option<String>,
     pub history: usize,
@@ -140,7 +142,7 @@ impl NativeStart {
 
     /// The start as the fake native Claude records it.
     pub fn record(&self) -> Value {
-        json!({"session": self.session, "resume": self.resume, "history": self.history, "cwd": self.cwd, "config": self.environment.get("CLAUDE_CONFIG_DIR")})
+        json!({"pid": self.process, "session": self.session, "resume": self.resume, "history": self.history, "cwd": self.cwd, "config": self.environment.get("CLAUDE_CONFIG_DIR")})
     }
 }
 
@@ -229,6 +231,8 @@ pub struct Conversation {
     native: bool,
     /// The native Claude exited: nothing reads what the host is offered.
     native_ended: bool,
+    /// The native Claude hangs on a prompt: it writes nothing at all from then on.
+    hung: bool,
     /// How the native Claude this host started takes its prompts, fixed when it started.
     turns: Option<Turns>,
 }
@@ -590,6 +594,7 @@ impl ClaudeModel {
             return;
         }
         lock(&self.0.starts).push(NativeStart {
+            process: host.process_id,
             resume: host.resumes.then(|| session.clone()),
             session,
             history,
@@ -757,6 +762,16 @@ impl ClaudeModel {
     fn answer(&self, host: &Host, state: &mut State, input: String, prompt: &str) {
         let session = host.session.to_lowercase();
         self.transcribe(host, &input, prompt);
+        if state.hung {
+            return;
+        }
+        if !host.resumes && prompt.ends_with("refused-by-claude") {
+            return self.lifecycle(host, state, &input, "refused");
+        }
+        if !host.resumes && prompt.ends_with("hung-silent") {
+            state.hung = true;
+            return;
+        }
         if prompt.ends_with("complete-unstarted") {
             for lifecycle in ["queued", "completed"] {
                 self.lifecycle(host, state, &input, lifecycle);

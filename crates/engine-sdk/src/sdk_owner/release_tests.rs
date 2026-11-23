@@ -6,7 +6,6 @@ use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use crate::contexts::ContextsOf as _;
 use alondra_engine_admission::AdmissionOf as _;
-#[cfg(feature = "real-hosts")]
 use super::codex_tests::{git, request_move, resumed_threads, until_moved};
 use crate::sdk_owner::fixtures::codex::{configured, launch, transcript};
 use super::*;
@@ -241,7 +240,7 @@ async fn cancelling_a_closed_node_ends_the_task_without_starting_anything() {
     assert_eq!(slice.domain.node_groups(), Vec::<i32>::new());
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_closed_node_moves_to_another_provider_like_a_resting_one() {
     use crate::domain_store::provider_transition::Phase;
@@ -431,7 +430,7 @@ async fn a_paused_node_adopted_on_a_host_of_the_release_before_gives_up_that_hos
     restarted.stop_sdk_owners();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // Codex: its thread resumes through `thread/resume`, as Claude's session through `--resume`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_closed_codex_node_resumes_the_same_thread() {
@@ -440,12 +439,12 @@ async fn a_closed_codex_node_resumes_the_same_thread() {
     enable(&slice);
     let mut driver = launch(&slice);
     slice.settle(&mut driver);
-    let native = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    let host = slice.hosts.watch(driver.worker.host_group().unwrap());
     assert!(transcript(&trace).iter().any(|message| message["method"] == "thread/start"), "the node opened its thread");
     slice.domain.add_sdk_owner(Owner::spawn(driver));
     look_after_the_wait(&slice.domain);
     until_released(&slice.domain, &[TASK]).await;
-    assert_eq!(survivors(&native), Vec::<String>::new(), "neither its host nor its app-server is left");
+    assert!(!host.runs(), "neither its host nor its app-server is left");
 
     tell(&slice, TASK, "Now the changelog.").await;
     let mut changed = slice.domain.subscribe();
@@ -456,7 +455,7 @@ async fn a_closed_codex_node_resumes_the_same_thread() {
     assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // Codex reports its own work as a child agent or as a command with a process: neither closes.
 #[test]
 fn a_codex_node_with_a_child_agent_keeps_its_host() {
@@ -777,7 +776,7 @@ async fn the_new_session_that_took_over_a_large_conversation_goes_on_with_the_ne
     assert!(slice.domain.state().unwrap().tasks[&task].pending_selection.is_none());
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 20 November: the task's records came to 64,085 tokens with the message that continued it, 85 over
 // what the handoff could take, and the new session was refused: its conversation resumed and wrote
 // 178,677 tokens to the cache again. The handoff of a new session is a few thousand tokens however
@@ -785,7 +784,7 @@ async fn the_new_session_that_took_over_a_large_conversation_goes_on_with_the_ne
 #[tokio::test(flavor = "multi_thread")]
 async fn a_task_with_records_of_64000_tokens_still_goes_on_in_a_new_session() {
     let records = "The request, repeated. ".repeat(3 * 64_000 / 23);
-    let mut slice = Slice::with_request_body(ProcessHosts::default(), "domain.sqlite", &records);
+    let mut slice = Slice::with_request_body(crate::engine_tests::SliceHosts::default(), "domain.sqlite", &records);
     let resumed = resumed_after(&mut slice, 250_403, HOURS_AGO, true).await;
     slice.domain.stop_sdk_owners();
     let last = resumed.starts.last().unwrap();
