@@ -61,6 +61,8 @@ to its fix group and issue.
 |---|---|---|---|
 | S1 | **FIXED** [F-GH-2](#f-gh-2--an-already-answered-delete-unsaved-changes-card-deletes-the-recreated-worktree-of-a-reopened-task-on-every-closer-pass) · An already-answered "delete unsaved changes?" card deletes the recreated worktree of a reopened task, on every closer pass | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S1 | **FIXED** [F-GH-4](#f-gh-4--closing-a-task-with-a-merged-pr-deletes-the-branch-of-a-remote-less-repo-another-repo-with-commits-that-exist-only-there-pr-503) · Closing a task with a merged PR deletes the branch of a remote-less repo (another repo) with commits that exist only there (PR #503) | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
+| S1 | **FIXED** [F-GH-10](#f-gh-10--a-delete-answer-about-a-launch-folder-the-domain-never-recorded-is-applied-again-on-every-closer-pass) · A «delete» answer about a launch folder the domain never recorded is applied again on every closer pass | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #548 review |
+| S1 | **FIXED** [F-GH-11](#f-gh-11--the-startup-sweep-deletes-a-folder-another-finished-task-kept-with-leave-and-commits-not-pushed) · The startup sweep deletes a folder another finished task kept with «Leave», and commits not pushed | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #548 review |
 | S1 | [F-STORE-7](#f-store-7--a-request-cleared-and-then-taken-back-by-its-task-leaves-its-cleared-row-and-the-daemon-no-longer-loads-its-state) · A request cleared and then taken back by its task leaves its «cleared» row, and the daemon no longer loads its state | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S1 | [F-ORCH-5](#f-orch-5--a-non-domain-error-in-the-schedule-runner-stops-the-whole-daemon-with-an-unreadable-optionstoml-it-enters-a-restart-loop) · A non-domain error in the schedule runner stops the whole daemon; with an unreadable `options.toml` it enters a restart loop | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S1 | [F-STORE-4](#f-store-4--a-released-task-whose-closed-task-nodesjson-entry-is-lost-is-left-without-a-node-forever-nothing-relaunches-it-or-says-so) · A released task whose `closed-task-nodes.json` entry is lost is left without a node forever: nothing relaunches it or says so | low | [G2](#g2--a-released-task-always-has-a-way-back) · #519 · fixed in #552 |
@@ -3085,6 +3087,11 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   (`:146-180`).
 - **Terminals**: an answered card is never withdrawn, and compaction keeps Alondra's cards (`compaction.rs:7`), so its
   effect is reapplied forever. See F-GH-2.
+- **Final behaviour** (F-GH-2, F-GH-10, F-GH-11): `apply_answers` applies a «delete» answer once and records the path
+  `Removed`, also a launch folder the task never recorded (`ReleaseTaskWorktree` with `Removed` on an ended task inserts
+  that record); a recorded end stops every later pass. `sweep` never touches a path whose record in the cancelled task
+  ended (any end), one that any task's record says the user keeps (`KeptByUser`, `UsersOwn`), or one with commits no
+  remote has (`Worktrees::unsaved`): those stay as they are, with no card; uncommitted files still go to the card.
 
 ### M-GH-11 · Task close: domain wrap-up + closer bookkeeping
 - **Domain** (`task_wrap_ups`): `asked_at`, `cleaned_at`, `close_cancelled`, `node_end: Closed|Gone|KeptByUser|UsersOwn`
@@ -3348,6 +3355,30 @@ task. Tests: `answered_card_tests::after_the_merge_a_turn_that_ends_idle_without
 - **Deterministic test and ablation**: `FakeGithub.reads`: accepted PR; GitHub says it is Closed; 10 unrelated domain commits
   -> today `reads` grows by 10. Expected: 1. Ablation: record the observation or keep `waited`.
 - **Expected fix and files**: record what was read (`observe_status`) in those two cases, as it already does for Merged.
+
+#### F-GH-10 · A «delete» answer about a launch folder the domain never recorded is applied again on every closer pass
+**Class**: CONFIRMED · **Severity**: S1 · **Probability**: low · **Overlap**: F-GH-2 (same card, the path without a record).
+**Status**: FIXED (review of PR #548). After deleting, `apply_answers` records the path `Removed` whether or not the task had a record of it: `ReleaseTaskWorktree { end: Removed }` on an ended task now inserts a `Removed` record (`origin: Task`) for a path it never recorded, and any other end is still `not_found` (`crates/domain-rules/src/rules.rs`, `crates/engine-worktrees/src/cancelled_worktrees.rs`). Tests: `a_delete_answer_about_a_folder_the_domain_never_recorded_is_applied_once` (`//crates/engine-sdk:engine_sdk_engine_test`), `an_ended_task_records_as_removed_a_launch_folder_it_never_recorded` (`//crates/domain-rules:domain_rules_test`). Ablation: with `apply_answers` releasing only recorded paths (as on `main`), the folder made there after the answer is deleted again and the engine test fails; restored, it passes.
+- **Evidence**: the folder the sweep or a cancellation lists can be only the task's launch folder (`task_worktrees`), with
+  no record in `task.worktrees`. `apply_answers` lets `recorded == None` through and, after `discard_worktree`, recorded the
+  end only `if recorded.is_some()` (`cancelled_worktrees.rs`, on `main` at `8d46b4783`). Nothing marks the answer applied,
+  so every closer pass (every 30 s or on every commit) deletes whatever is at that path again.
+- **Minimal sequence**: cancelled task with an unrecorded launch folder P holding a file; the startup card; «Delete»; P
+  deleted; a worktree is made again at P with a new file; next closer pass: P deleted again.
+- **Deterministic test**: engine with the `Worktrees` double; `make_worktree` recreates P; three closer passes and a sweep.
+
+#### F-GH-11 · The startup sweep deletes a folder another finished task kept with «Leave», and commits not pushed
+**Class**: CONFIRMED · **Severity**: S1 · **Probability**: low · **Overlap**: F-GH-3 (that fix read only the cancelled task's own record).
+**Status**: FIXED (review of PR #548). `sweep` skips a path that any task's record ended `KeptByUser` or `UsersOwn`, a path whose own record ended at all, and a path whose worktree holds commits no remote has (`settle_path` with `keep_unpushed`, through `Worktrees::unsaved`); such a folder is left as it is, with no card (`crates/engine-worktrees/src/cancelled_worktrees.rs`). The cancellation itself (`release_cancelled`) is unchanged. Tests: `the_startup_sweep_never_deletes_a_folder_a_finished_task_kept_with_commits_not_pushed`, `the_startup_sweep_leaves_a_cancelled_worktree_whose_commits_no_remote_has` (`//crates/engine-sdk:engine_sdk_engine_test`). Ablation: with the sweep as on `main` both fail (the folder is deleted); restored, both pass.
+- **Evidence**: `release_cancelled` hands an unrecorded launch folder to the task working in it (`heir`) but records the end
+  only for recorded paths, so the cancelled task T1 keeps a `task_worktrees` row P with no record. T2 then finishes, its
+  close stops on commits not pushed and the user answers «Leave it open»: T2's record of P ends `KeptByUser`. At the next
+  daemon start, T1's `sweep` filtered P only by T1's records (none), `in_use` ignores ended records, no discard card asked
+  about P, and `settle_path` counts only uncommitted files (0), so P was deleted.
+- **Impact**: the folder the user said to leave disappears with its ignored files; commits on a detached head or another
+  branch are left unreachable.
+- **Deterministic test**: engine with the `Worktrees` double: T1 cancelled with launch folder P, T2 recorded in P,
+  `local_commit(P)`, three failed closes, «Leave», then `sweep`.
 
 ### Hypotheses
 

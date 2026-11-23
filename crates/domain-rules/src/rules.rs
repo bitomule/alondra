@@ -5881,6 +5881,12 @@ impl DomainState {
                 system(actor)?;
                 let t = self.task(task_id)?;
                 match t.worktrees.get(path) {
+                    None if *end == WorktreeEnd::Removed && t.state.terminal() => {
+                        self.tasks.get_mut(task_id).unwrap().worktrees.insert(path.clone(), TaskWorktree {
+                            origin: WorktreeOrigin::Task, branch: None, discard: false, end: Some(WorktreeEnd::Removed),
+                        });
+                        return Ok(());
+                    }
                     None => return fail("not_found", &format!("{path} is not a worktree of task {}", task_id.0)),
                     Some(known) if known.end == Some(*end) => return Ok(()),
                     Some(known) if *end == WorktreeEnd::Removed && matches!(known.end, Some(WorktreeEnd::KeptByUser | WorktreeEnd::UsersOwn)) => {}

@@ -21,6 +21,7 @@ use alondra_engine_ports::worktrees::TaskWorktree;
 enum Settled {
     Gone(WorktreeEnd),
     Unsaved(usize),
+    Unpushed(String),
 }
 
 /// A task with an open pull request keeps its local branch.
@@ -28,8 +29,9 @@ fn keeps_branch(state: &DomainState, task: &Task) -> bool {
     state.open_prs(task).next().is_some()
 }
 
-/// Deletes the worktree at `path` unless it holds unsaved files, which it only counts.
-async fn settle_path(domain: &dyn Runtime, task: &Task, path: &str) -> Result<Settled> {
+/// Deletes the worktree at `path` unless it holds unsaved files, which it only counts, or, with
+/// `keep_unpushed`, commits no remote has.
+async fn settle_path(domain: &dyn Runtime, task: &Task, path: &str, keep_unpushed: bool) -> Result<Settled> {
     crate::task_worktrees::ready(domain, path).await?;
     if let Some(why) = domain.ports().worktrees().unreachable_link(Path::new(path)) {
         return Err(crate::task_worktrees::Unreachable(why).into());
@@ -37,6 +39,9 @@ async fn settle_path(domain: &dyn Runtime, task: &Task, path: &str) -> Result<Se
     let unsaved = domain.ports().worktrees().uncommitted_files_of_alondras_worktree(Path::new(path)).await.map_err(|why| anyhow!(why))?.unwrap_or(0);
     if unsaved > 0 {
         return Ok(Settled::Unsaved(unsaved));
+    }
+    if keep_unpushed && let Some(what) = domain.ports().worktrees().unsaved(Path::new(path)).await.map_err(|why| anyhow!(why))? {
+        return Ok(Settled::Unpushed(what));
     }
     let keeps_branch = keeps_branch(&*domain.state(), task);
     match domain.ports().worktrees().discard_worktree(Path::new(path), keeps_branch).await.map_err(|why| anyhow!(why))? {
@@ -79,11 +84,15 @@ pub async fn release_cancelled(domain: &dyn Runtime, task: &Task) -> Result<()> 
         } else if crate::task_worktrees::heir(domain, task, &path)?.is_some() {
             WorktreeEnd::HandedOver
         } else {
-            match settle_path(domain, task, &path).await? {
+            match settle_path(domain, task, &path, false).await? {
                 Settled::Gone(end) => end,
                 Settled::Unsaved(files) => {
                     held.files += files;
                     held.paths.push(path.clone());
+                    WorktreeEnd::KeptByUser
+                }
+                Settled::Unpushed(what) => {
+                    log!("leaving the worktree {path} of the cancelled task {} as it is: {what}", task.id);
                     WorktreeEnd::KeptByUser
                 }
             }
@@ -163,7 +172,8 @@ fn still_asked(state: &DomainState) -> HashSet<String> {
 
 /// Deletes the worktrees the user chose to delete, each once: only while its task is still
 /// cancelled, the newest card about it is the one that said delete, and its record still says
-/// the user kept it. Deleting records it as removed, so no later pass applies the answer again.
+/// the user kept it, or there is none. Deleting records it as removed, also a launch folder the
+/// task never recorded, so no later pass applies the answer again.
 /// Keep needs nothing: the answered card is what stops anyone from asking again.
 /// A worktree already gone is nothing to do.
 pub async fn apply_answers(domain: &dyn Runtime) -> Result<()> {
@@ -187,18 +197,28 @@ pub async fn apply_answers(domain: &dyn Runtime) -> Result<()> {
                 continue;
             }
         }
-        if recorded.is_some() {
-            domain.execute_system_command(Command::ReleaseTaskWorktree { task_id: task_id.clone(), path, end: WorktreeEnd::Removed }).map_err(|error| anyhow!("{error}"))?;
-        }
+        domain.execute_system_command(Command::ReleaseTaskWorktree { task_id: task_id.clone(), path, end: WorktreeEnd::Removed }).map_err(|error| anyhow!("{error}"))?;
     }
     Ok(())
 }
 
+/// The folders some task's record says the user keeps: never swept, whichever task left them.
+fn kept_by_user(state: &DomainState) -> HashSet<&str> {
+    state.tasks.values()
+        .flat_map(|task| task.worktrees.iter())
+        .filter(|(_, worktree)| matches!(worktree.end, Some(WorktreeEnd::KeptByUser | WorktreeEnd::UsersOwn)))
+        .map(|(path, _)| path.as_str())
+        .collect()
+}
+
 /// The worktrees cancelled tasks left behind before this rule: the clean ones go, and one card
-/// lists the tasks whose worktrees hold unsaved files that no earlier card asked about.
+/// lists the tasks whose worktrees hold unsaved files that no earlier card asked about. A folder
+/// whose record ended, that any task's record says the user keeps, or with commits no remote has
+/// is left as it is.
 pub async fn sweep(domain: &dyn Runtime) -> Result<()> {
     let state = domain.state();
     let asked = asked_paths(&state);
+    let kept = kept_by_user(&state);
     let stored: std::collections::BTreeMap<TaskId, String> = domain.store().lock_or_exit("the domain store").task_worktrees()?.into_iter().collect();
     let mut unsaved = vec![];
     for task in state.tasks.values().filter(|task| task.state == TaskState::Cancelled) {
@@ -206,7 +226,7 @@ pub async fn sweep(domain: &dyn Runtime) -> Result<()> {
             continue;
         }
         let mut paths: Vec<&String> = stored.get(&task.id).into_iter().chain(task.worktrees.keys())
-            .filter(|path| !matches!(task.worktrees.get(*path).and_then(|worktree| worktree.end), Some(WorktreeEnd::KeptByUser | WorktreeEnd::UsersOwn | WorktreeEnd::HandedOver)))
+            .filter(|path| task.worktrees.get(*path).is_none_or(|worktree| worktree.end.is_none()) && !kept.contains(path.as_str()))
             .collect();
         paths.sort();
         paths.dedup();
@@ -215,11 +235,12 @@ pub async fn sweep(domain: &dyn Runtime) -> Result<()> {
             if asked.contains(path.as_str()) {
                 continue;
             }
-            match settle_path(domain, task, path).await {
+            match settle_path(domain, task, path, true).await {
                 Ok(Settled::Unsaved(files)) => {
                     held.files += files;
                     held.paths.push(path.clone());
                 }
+                Ok(Settled::Unpushed(what)) => log!("leaving the worktree {path} of the cancelled task {} as it is: {what}", task.id),
                 Ok(Settled::Gone(_)) => {}
                 Err(error) => log!("could not settle the worktree {path} of the cancelled task {}: {error:#}", task.id),
             }
