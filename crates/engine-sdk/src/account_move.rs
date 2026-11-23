@@ -314,7 +314,7 @@ pub async fn run(domain: Arc<dyn Runtime>) {
     }
 }
 
-#[cfg(all(test, feature = "real-hosts"))]
+#[cfg(all(test, feature = "whole-engine"))]
 #[path = "account_move/tests.rs"]
 mod tests;
 

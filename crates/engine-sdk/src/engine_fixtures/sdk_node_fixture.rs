@@ -18,6 +18,7 @@ use alondra_domain_rules::{API_RETRIES, Actor, AgentId, ApiRetry, Command, Comma
 use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use super::owner::Hosts;
 
 
 pub struct Home(pub crate::test_support::Directory);
@@ -52,15 +53,15 @@ pub fn settle(driver: &mut alondra_engine_sdk::sdk_owner::Driver) {
     }
 }
 
-/// A task of the Agent SDK whose turn runs, on the pinned host with the fake native Claude. Its
-/// owner is driven here step by step, so nothing reaches Claude unless a step hands it over.
-pub struct SdkNode {
+/// A task of the Agent SDK whose turn runs, on the hosts `H` plays. Its owner is driven here step
+/// by step, so nothing reaches Claude unless a step hands it over.
+pub struct SdkNode<H: Hosts = crate::engine_tests::SliceHosts> {
     pub driver: alondra_engine_sdk::sdk_owner::Driver,
     pub domain: Arc<DomainRuntime>,
-    pub capture: PathBuf,
     pub backend: alondra_daemon_engine::sdk_backend::SdkBackend,
+    /// Before `home`: the hosts write in the HOME they get, so they end before it is removed.
+    pub hosts: H,
     pub home: crate::test_support::Directory,
-    pub _state: alondra_daemon_engine::host_fixtures::HostRoot,
 }
 
 impl SdkNode {
@@ -83,11 +84,12 @@ impl SdkNode {
     pub fn told(prompt: &str) -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
-        let state = alondra_daemon_engine::host_fixtures::HostRoot::new();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
-        let (backend, capture) = alondra_daemon_engine::host_fixtures::fixture_backend(&home, &state);
+        let mut hosts = crate::engine_tests::SliceHosts::default();
+        let backend = hosts.backend(&home);
         let domain = Arc::new(super::open(&home).unwrap());
+        hosts.serve(&domain);
         domain.enable_sdk(backend.clone());
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateRequest {
             request_id: "r".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });
@@ -103,7 +105,7 @@ impl SdkNode {
         domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
         domain.admission().ignore_mac();
         domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
-        Self { driver, domain, capture, backend, home, _state: state }
+        Self { driver, domain, backend, hosts, home }
     }
 
     /// One more node of the same host root whose first turn the fake Claude holds open.
@@ -173,7 +175,7 @@ impl SdkNode {
 
     /// The prompts Claude got, besides the wake Alondra sends after a turn that ended empty.
     pub fn prompts(&self) -> Vec<String> {
-        super::owner::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
+        super::owner::not_wakes(self.hosts.prompts().into_iter())
     }
 
     pub fn pending_inputs(&self) -> usize {
@@ -227,13 +229,13 @@ impl SdkNode {
 
     /// Each native Claude the hosts started, with the session it runs and the one it resumed.
     pub fn starts(&self) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(format!("{}.starts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+        self.hosts.starts()
     }
 
     /// The node's host dies while it is paused and no owner of the daemon is left to replace it.
     pub fn lose_host(&mut self) {
         std::fs::DirBuilder::new().mode(0o700).create(self.home.join("plugin")).unwrap();
-        super::owner::kill_host(&self.driver);
+        self.hosts.kill(self.driver.worker.host_group().unwrap());
         self.domain.sdk_owners().driven_by_hand.lock().unwrap().remove(self.driver.agent());
         self.driver.let_go();
         assert!(!self.domain.owns_sdk_host(&AgentId(self.agent())));
@@ -258,7 +260,7 @@ impl SdkNode {
     }
 }
 
-impl Drop for SdkNode {
+impl<H: Hosts> Drop for SdkNode<H> {
     fn drop(&mut self) {
         let _ = self.driver.stop();
     }
