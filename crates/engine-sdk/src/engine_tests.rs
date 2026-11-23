@@ -1,6 +1,6 @@
 //! The tests of the engine's and the gate's modules that start nodes through the SDK, so they run
 //! with this crate: each file is named after the module it tests.
-#[cfg(all(test, feature = "real-hosts"))]
+#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
 mod accounts_tests;
 #[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
 mod orchestrator_tools_tests;

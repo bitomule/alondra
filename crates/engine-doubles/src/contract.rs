@@ -499,6 +499,7 @@ fn assert_gone(host: &HostStop) {
     assert!(host.gone().unwrap(), "a host that ended is gone");
     assert_eq!(host.process().unwrap(), None);
     assert_eq!(host.tree().unwrap(), vec![], "nothing is under a host that ended");
+    assert_eq!(host.native().unwrap(), None, "a host that ended runs no native agent");
 }
 
 /// A host's life in its folder as the engine relies on it: launched once with the bootstrap built

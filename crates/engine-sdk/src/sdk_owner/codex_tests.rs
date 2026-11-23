@@ -1,15 +1,13 @@
 use crate::domain_runtime::DomainRuntime;
-use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
-use alondra_store_sqlite::AsSqlite as _;
-use alondra_daemon_engine_model::LaunchOptionsFile as _;
-use crate::sdk_owner::SdkOwners as _;
+#[cfg(not(feature = "real-hosts"))]
 use crate::live::LiveOf as _;
+#[cfg(not(feature = "real-hosts"))]
 use crate::provider_transition::TransitionsOf as _;
 use super::*;
-use alondra_engine_admission::AdmissionOf as _;
 use crate::sdk_owner::fixtures::codex::*;
 use crate::sdk_owner::fixtures::codex::launch;
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn reopening_codex_with_a_retained_mapping_but_a_missing_rollout_starts_a_clean_thread() {
     let slice = Slice::new();
@@ -63,6 +61,7 @@ fn reopening_codex_with_a_retained_mapping_but_a_missing_rollout_starts_a_clean_
 }
 
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_codex_node_uses_the_real_owner_store_and_commits_final_public_context_before_ack() {
     let slice = Slice::new();
@@ -103,6 +102,7 @@ fn a_codex_node_uses_the_real_owner_store_and_commits_final_public_context_befor
     driver.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_codex_app_server_survives_owner_and_log_reader_loss_and_adopts_without_reoffering() {
     let slice = Slice::new();
@@ -125,6 +125,7 @@ fn a_codex_app_server_survives_owner_and_log_reader_loss_and_adopts_without_reof
     assert!(processes.iter().all(|process| !alondra_process_group::alive(process).unwrap()));
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 #[ignore = "opt-in: explicit pinned Codex CLI, isolated HOME and loopback model double"]
 fn an_actual_codex_cli_runs_through_the_real_owner_store_without_real_credentials_or_external_inference() {
@@ -149,6 +150,7 @@ fn an_actual_codex_cli_runs_through_the_real_owner_store_without_real_credential
     driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_accepted_native_request_stays_pending_until_its_exact_native_user_item_is_observed() {
     let slice = Slice::new();
@@ -167,6 +169,7 @@ fn an_accepted_native_request_stays_pending_until_its_exact_native_user_item_is_
     driver.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_archived_codex_receipt_reconciles_after_a_successor_that_only_attached() {
     let slice = Slice::new();
@@ -181,6 +184,7 @@ fn an_archived_codex_receipt_reconciles_after_a_successor_that_only_attached() {
     resumed.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 fn transition_target(slice:&Slice,model:&str,effort:&str)->(alondra_core::model_selection::TaskSelection,alondra_core::model_selection::ModelSelection,String){
     let state=slice.domain.state().unwrap();
     let mut catalog=state.model_catalogs.iter().find(|catalog|catalog.account.provider==Provider::Codex).unwrap().clone();
@@ -194,9 +198,11 @@ fn transition_target(slice:&Slice,model:&str,effort:&str)->(alondra_core::model_
     let target=alondra_core::model_selection::ModelSelection{model:intent.requested.clone().unwrap(),reasoning_effort:Some(effort.into()),catalog_revision:"fixture-catalog".into()};
     (intent,target,state.task_selection_stamp(&task).unwrap())
 }
+#[cfg(not(feature = "real-hosts"))]
 fn native_transition_request(slice:&Slice,intent:alondra_core::model_selection::TaskSelection,target:alondra_core::model_selection::ModelSelection,stamp:&str)->serde_json::Value{
     crate::provider_transition::request(&*slice.domain,&user(),&TASK.into(),AccountKey::new(Provider::Codex,AccountId::default_account()),target,intent,"User selected this native model",stamp,||Ok(())).unwrap()
 }
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn codex_transition_rechecks_authority_and_stale_selection_without_persisting_a_partial_intent(){
     let slice=Slice::new();configured(&slice,"complete");slice.domain.enable_sdk(slice.backend.clone());
@@ -209,6 +215,7 @@ fn codex_transition_rechecks_authority_and_stale_selection_without_persisting_a_
     assert_eq!(slice.observer().query_row("SELECT count(*) FROM provider_transition_steps",[],|row|row.get::<_,i64>(0)).unwrap(),0);
     driver.stop().unwrap();
 }
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_positive_native_model_control_rejection_is_aborted_and_can_be_retried_without_a_new_session() {
     use crate::domain_store::provider_transition::Phase;
@@ -234,6 +241,7 @@ async fn a_positive_native_model_control_rejection_is_aborted_and_can_be_retried
     assert_eq!(transcript(&trace).iter().filter(|message|message["method"]=="initialize").count(),1);slice.domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn codex_transition_model_is_pending_until_the_exact_native_configuration_receipt(){
     let slice=Slice::new();let trace=configured(&slice,"complete");
@@ -257,6 +265,7 @@ async fn codex_transition_model_is_pending_until_the_exact_native_configuration_
     let native=transcript(&trace);assert_eq!(native.iter().filter(|message|message["method"]=="initialize").count(),1);let next=native.iter().find(|message|message["method"]=="turn/start" && message["params"]["input"][0]["text"]=="Use the configured model for this next input").unwrap();assert_eq!(next["params"]["model"],"fixture-second");assert!(native.iter().filter(|message|message["method"]=="turn/start").all(|message|message["params"]["threadId"]==next["params"]["threadId"]));slice.domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn codex_active_account_provider_and_unverified_effort_changes_have_no_native_or_durable_effects(){
     let slice=Slice::new();let trace=configured(&slice,"complete");slice.domain.enable_sdk(slice.backend.clone());let mut driver=launch(&slice);slice.settle(&mut driver);
@@ -272,6 +281,7 @@ fn codex_active_account_provider_and_unverified_effort_changes_have_no_native_or
 }
 
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn codex_native_token_samples_reach_usage_only_through_the_owner_transaction(){
     let slice=Slice::new();configured(&slice,"complete");
@@ -281,6 +291,7 @@ fn codex_native_token_samples_reach_usage_only_through_the_owner_transaction(){
     let wakes=i64::from(alondra_domain::EMPTY_TURN_WAKES);assert_eq!(rows,vec![("codex/fixture-model".into(),20*wakes,10*wakes,0,0,None,false)],"the first unknown baseline is skipped and only the deltas measured after it, one per wake, are attributed, with no invented price");driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn codex_admission_rechecks_billing_and_credential_generation_after_selection(){
     use std::io::Write as _;
@@ -301,6 +312,7 @@ fn codex_admission_rechecks_billing_and_credential_generation_after_selection(){
     assert!(!trace.exists(),"no native process or inference was admitted");assert!(Slice::lifecycle(&*slice.domain).execution().is_none());
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn codex_transition_cancellation_before_source_drain_aborts_without_a_new_native_host(){
     use crate::domain_store::provider_transition::Phase;
@@ -314,6 +326,7 @@ async fn codex_transition_cancellation_before_source_drain_aborts_without_a_new_
 }
 
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn replacing_a_pending_native_plan_keeps_the_owner_and_its_approved_decision_across_adoption() {
     let slice = Slice::new();
@@ -359,6 +372,7 @@ fn replacing_a_pending_native_plan_keeps_the_owner_and_its_approved_decision_acr
 }
 
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_legacy_codex_host_finishes_native_work_and_an_approved_plan_before_renewing() {
     let slice = Slice::new();
@@ -471,6 +485,7 @@ fn a_legacy_codex_host_finishes_native_work_and_an_approved_plan_before_renewing
     renewed.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_codex_plan_approved_after_its_turn_ended_commits_the_new_turn_under_the_same_owner() {
     let slice = Slice::new();
@@ -535,6 +550,7 @@ fn a_codex_plan_approved_after_its_turn_ended_commits_the_new_turn_under_the_sam
     driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn requesting_plan_mode_keeps_one_durable_next_turn_input_across_native_replays() {
     let slice=Slice::new();configured(&slice,"complete");slice.domain.enable_sdk(slice.backend.clone());
@@ -551,6 +567,7 @@ fn requesting_plan_mode_keeps_one_durable_next_turn_input_across_native_replays(
     assert!(slice.domain.request_plan_mode(bearer,&"another-task".into(),"ab14").is_err());driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn codex_managed_child_keeps_work_after_parent_turn_and_queues_one_durable_continuation(){
     let slice=Slice::new();let trace=configured(&slice,"child");let mut driver=launch(&slice);
@@ -567,6 +584,7 @@ fn codex_managed_child_keeps_work_after_parent_turn_and_queues_one_durable_conti
 
 // Codex ends a turn with a Code Mode script still waiting on a tool and advances the script only in
 // a later turn: the node rests instead of owning that tool for good.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_turn_that_ends_while_its_script_waits_on_a_tool_leaves_the_node_resting(){
     let slice=Slice::new();configured(&slice,"paused_cell");let mut driver=launch(&slice);
@@ -579,6 +597,7 @@ fn a_turn_that_ends_while_its_script_waits_on_a_tool_leaves_the_node_resting(){
     driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn repeated_same_email_reauthentication_keeps_the_same_native_session_but_identity_replacement_refuses_new_input(){
     use alondra_core::accounts::AccountState;
@@ -607,6 +626,7 @@ fn repeated_same_email_reauthentication_keeps_the_same_native_session_but_identi
 }
 
 
+#[cfg(not(feature = "real-hosts"))]
 fn disabled_codex_waiting_for_native_capacity() -> (Slice, Driver, PathBuf, alondra_foundation::ExecutionStamp, InteractionId) {
     use alondra_core::accounts::{AccountState, ProviderAccount};
     let slice = Slice::new();
@@ -638,12 +658,14 @@ fn disabled_codex_waiting_for_native_capacity() -> (Slice, Driver, PathBuf, alon
     (slice, driver, sidecar, execution, held.card)
 }
 
+#[cfg(not(feature = "real-hosts"))]
 fn assert_no_native_inference_from_account_probe(slice: &Slice, sidecar: &Path) {
     assert!(!alondra_engine_doubles::accounts::of(slice.domain.ports()).codex_probes().is_empty(), "the account was probed");
     let calls = transcript(&PathBuf::from(format!("{}.calls", sidecar.display())));
     assert!(calls.iter().all(|request| !matches!(request["method"].as_str(), Some("turn/start" | "thread/start" | "thread/resume"))), "a recovery probe is native metadata, never an inference or session transfer");
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_disabled_existing_codex_node_recovers_from_real_native_capacity_without_becoming_new_work_eligible() {
     use alondra_core::accounts::AccountState;
@@ -669,6 +691,7 @@ fn a_disabled_existing_codex_node_recovers_from_real_native_capacity_without_bec
     driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_existing_codex_probe_records_a_real_workspace_replacement_without_publishing_quota_models_or_resuming() {
     use alondra_core::accounts::AccountState;
@@ -691,6 +714,7 @@ fn an_existing_codex_probe_records_a_real_workspace_replacement_without_publishi
     driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_existing_codex_probe_never_turns_new_api_key_billing_into_paid_authorization() {
     use alondra_core::accounts::{AccountBilling, AccountState};
@@ -714,6 +738,7 @@ fn an_existing_codex_probe_never_turns_new_api_key_billing_into_paid_authorizati
 
 // A Codex turn that ends well proves the provider takes work again: the limit marker it left
 // earlier, without a reset, no longer holds the account.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_codex_turn_that_ends_well_clears_an_earlier_limit_marker(){
     let slice=Slice::new();configured(&slice,"complete");let mut driver=launch(&slice);slice.settle(&mut driver);
@@ -728,6 +753,7 @@ fn a_codex_turn_that_ends_well_clears_an_earlier_limit_marker(){
     driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn same_cached_managed_session_still_reports_quota_and_authentication_after_same_identity_reauthentication(){
     use alondra_core::accounts::AccountState;
@@ -748,6 +774,7 @@ fn same_cached_managed_session_still_reports_quota_and_authentication_after_same
     }
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn initial_native_policy_rejection_keeps_original_mission_for_explicit_same_account_retry(){
     let slice=Slice::new();let trace=configured(&slice,"complete");let account=slice._home.join("codex-native.account.json");
@@ -776,6 +803,7 @@ pub fn turns_started(domain: &DomainRuntime) -> usize {
 /// A Codex node is mid-turn when the Mac goes down, host and daemon with it. `meanwhile` changes
 /// what the daemon that comes back finds; that daemon takes the node over and its owner runs on its
 /// own, as in production, until the cut turn goes on in a second one or the task gets a card.
+#[cfg(not(feature = "real-hosts"))]
 async fn codex_node_after_a_restart(meanwhile: impl FnOnce(&Slice)) -> (Slice, Arc<DomainRuntime>, Owner, PathBuf) {
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
@@ -797,11 +825,13 @@ pub fn resumed_threads(trace: &Path) -> Vec<serde_json::Value> {
 }
 
 /// How many times the fake app-servers received `method`, counted on complete lines of their trace.
+#[cfg(feature = "real-hosts")]
 fn traced(trace: &Path, method: &str) -> usize {
     std::fs::read_to_string(trace).unwrap_or_default().lines()
         .filter(|line| serde_json::from_str::<serde_json::Value>(line).is_ok_and(|message| message["method"] == method)).count()
 }
 
+#[cfg(feature = "real-hosts")]
 fn until_traced(trace: &Path, method: &str, times: usize) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while traced(trace, method) < times {
@@ -810,6 +840,7 @@ fn until_traced(trace: &Path, method: &str, times: usize) {
     }
 }
 
+#[cfg(feature = "real-hosts")]
 pub fn native_process(driver: &mut Driver) -> alondra_process_group::Member {
     match driver.worker.native_liveness().unwrap() {
         Some(alondra_provider_codex::NativeLiveness::Alive(native)) => native,
@@ -817,6 +848,7 @@ pub fn native_process(driver: &mut Driver) -> alondra_process_group::Member {
     }
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_unopened_codex_replacement_remains_unopened_after_reconciling_a_control() {
     let slice = Slice::new();
@@ -835,6 +867,7 @@ fn an_unopened_codex_replacement_remains_unopened_after_reconciling_a_control() 
     adopted.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn adopting_a_legacy_codex_host_with_a_dead_native_replaces_it_before_reconciling_a_control() {
     let slice = Slice::new();
@@ -861,6 +894,7 @@ fn adopting_a_legacy_codex_host_with_a_dead_native_replaces_it_before_reconcilin
     adopted.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 pub fn kill_native(native: &alondra_process_group::Member) {
     let mut exits = alondra_process_group::Exits::new().unwrap();
     exits.watch(native).unwrap();
@@ -873,6 +907,7 @@ pub fn kill_native(native: &alondra_process_group::Member) {
 // lost transport, which the domain does not record, and the owner stopped on «provider observation
 // refused: RequiresDomainCommand». The owner takes the notice as the end of the Codex before it
 // commits anything, and a host that resumes the same thread takes its place.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_codex_transport_failure_ends_the_host_and_the_same_thread_goes_on_in_a_new_one() {
     let slice = Slice::new();
@@ -891,6 +926,7 @@ fn a_codex_transport_failure_ends_the_host_and_the_same_thread_goes_on_in_a_new_
     resumed.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken_for_an_unopened_host() {
     let slice = Slice::new();
@@ -932,6 +968,7 @@ fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken
     adopted.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 fn assert_codex_resumed_once(trace: &Path, original_input: &str) {
     let resumed = resumed_threads(trace);
     assert_eq!(resumed.len(), 1, "exactly one replacement app-server: {resumed:?}");
@@ -940,6 +977,7 @@ fn assert_codex_resumed_once(trace: &Path, original_input: &str) {
     assert_eq!(submitted, 1, "the input the old app-server consumed is not submitted again");
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_app_server_killed_mid_turn_resumes_the_same_thread_without_a_second_writer() {
     let slice = Slice::new();
@@ -966,6 +1004,7 @@ async fn a_codex_app_server_killed_mid_turn_resumes_the_same_thread_without_a_se
 
 // Stop the host before killing its app-server: it cannot process the exit or close its socket.
 // This reproduces a legacy host left alive without its native process, including after adoption.
+#[cfg(feature = "real-hosts")]
 async fn idle_codex_without_app_server_receives_its_later_message(adopted: bool) {
     let slice = Slice::new();
     let trace = configured(&slice, "complete");
@@ -998,20 +1037,24 @@ async fn idle_codex_without_app_server_receives_its_later_message(adopted: bool)
     owner.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_live_codex_host_without_an_app_server_is_replaced_before_delivering_a_later_message() {
     idle_codex_without_app_server_receives_its_later_message(false).await;
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_adopted_codex_host_without_an_app_server_is_replaced_before_delivering_a_later_message() {
     idle_codex_without_app_server_receives_its_later_message(true).await;
 }
 
+#[cfg(feature = "real-hosts")]
 struct HostReaped {
     queue: std::os::fd::OwnedFd,
     pid: libc::pid_t,
 }
+#[cfg(feature = "real-hosts")]
 impl HostReaped {
     fn watch(pid: libc::pid_t) -> Self {
         use std::os::fd::{AsRawFd, FromRawFd};
@@ -1045,6 +1088,7 @@ impl HostReaped {
     }
 }
 
+#[cfg(feature = "real-hosts")]
 async fn killed_codex_host_is_replaced(signal: libc::c_int, adopted: bool) {
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
@@ -1071,16 +1115,19 @@ async fn killed_codex_host_is_replaced(signal: libc::c_int, adopted: bool) {
     owner.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sigterm_killed_codex_host_is_reaped_and_its_session_relaunched() {
     killed_codex_host_is_replaced(libc::SIGTERM, false).await;
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sigkill_killed_codex_host_is_reaped_and_its_session_relaunched() {
     killed_codex_host_is_replaced(libc::SIGKILL, false).await;
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sigkill_killed_adopted_codex_host_is_detected_and_its_session_relaunched() {
     killed_codex_host_is_replaced(libc::SIGKILL, true).await;
@@ -1090,6 +1137,7 @@ async fn a_sigkill_killed_adopted_codex_host_is_detected_and_its_session_relaunc
 // Production, 0.3.9: after the release every Codex node stood still for good. Each saved native
 // thread was refused for having been started under the previous release's node instructions, its
 // host never said why, and its owner never looked again.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_node_cut_by_a_restart_goes_on_in_its_thread_under_the_new_release_instructions() {
     let (_slice, restarted, mut owner, trace) = codex_node_after_a_restart(|slice| {
@@ -1108,6 +1156,7 @@ async fn a_codex_node_cut_by_a_restart_goes_on_in_its_thread_under_the_new_relea
 
 // A new host whose Codex fails to start once is replaced by another that resumes the same thread,
 // and the node goes on with no card.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_host_that_could_not_start_its_session_is_relaunched_and_the_node_goes_on() {
     let (_slice, restarted, mut owner, trace) = codex_node_after_a_restart(|slice| {
@@ -1125,6 +1174,7 @@ async fn a_codex_host_that_could_not_start_its_session_is_relaunched_and_the_nod
 // relaunches and each put a host-lost card in front of the user. A session that cannot open is a
 // technical end: its host is relaunched again and again, waiting longer each time, and nobody is
 // asked.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_session_that_never_starts_is_relaunched_past_the_old_limit_without_a_card() {
     let slice = Slice::new();
@@ -1152,33 +1202,39 @@ async fn a_codex_session_that_never_starts_is_relaunched_past_the_old_limit_with
     drop(slice);
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn relaunches_wait_longer_each_time_up_to_five_minutes_and_then_keep_that_pace() {
     let waits: Vec<u64> = (0..8).map(|earlier| relaunch_wait(earlier).as_secs()).collect();
     assert_eq!(waits, [2, 10, 30, 120, 300, 300, 300, 300]);
 }
 
+#[cfg(feature = "real-hosts")]
 fn private_folder(path: &Path) {
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new().mode(0o700).create(path).unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 fn private_file(path: &Path, bytes: &[u8]) {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path).unwrap().write_all(bytes).unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 fn archive(folder: &Path, name: &str) -> PathBuf {
     PathBuf::from(format!("{}.ended-{name}", folder.display()))
 }
 
+#[cfg(feature = "real-hosts")]
 fn host_runs(folder: &Path) -> bool {
     matches!(alondra_agent_runtime::owned_host::claim(folder).unwrap(), alondra_agent_runtime::owned_host::Retained::Held)
 }
 
 /// A Codex node is mid-turn when the Mac goes down; `meanwhile` changes its host's folder before
 /// the daemon that comes back takes it over, until the cut turn goes on or the task gets a card.
+#[cfg(feature = "real-hosts")]
 async fn codex_node_restarted_with_its_folder(meanwhile: impl FnOnce(&Path)) -> (Slice, Arc<DomainRuntime>, Owner, PathBuf, PathBuf) {
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
@@ -1197,6 +1253,7 @@ async fn codex_node_restarted_with_its_folder(meanwhile: impl FnOnce(&Path)) -> 
 }
 
 /// Its host is stopped before any assertion, so a failure leaves no host running.
+#[cfg(feature = "real-hosts")]
 fn assert_went_on_in_its_thread(restarted: &DomainRuntime, mut owner: Owner, trace: &Path) {
     let card = open_card(restarted, "").map(|card| card.card.title);
     let turns = turns_started(restarted);
@@ -1212,6 +1269,7 @@ fn assert_went_on_in_its_thread(restarted: &DomainRuntime, mut owner: Owner, tra
 // folder and its new host did not start, so the new folder never got the account identity. Every
 // later relaunch read the identity from that folder only, and its host refused to resume: «The
 // original Codex account identity is unavailable. Create a new node».
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_node_whose_relaunch_left_its_folder_without_its_identity_resumes_with_the_kept_one() {
     let (_slice, restarted, owner, trace, _) = codex_node_restarted_with_its_folder(|folder| {
@@ -1225,6 +1283,7 @@ async fn a_codex_node_whose_relaunch_left_its_folder_without_its_identity_resume
 
 // The same node, stranded before Alondra kept identities apart: the folder of its first host,
 // which a relaunch retired, still holds it, and one of a host that never started holds none.
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_node_stranded_without_its_identity_recovers_it_from_its_ended_hosts() {
     let (_slice, restarted, owner, trace, folder) = codex_node_restarted_with_its_folder(|folder| {
@@ -1241,6 +1300,7 @@ async fn a_codex_node_stranded_without_its_identity_recovers_it_from_its_ended_h
 // 2026-11-06, 0.3.21, t-security-audit-cloud: a takeover launched a host and then failed to write
 // the account identity in its folder. The host it launched went on with no owner until another
 // takeover adopted it as if it were a live one.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_codex_takeover_that_fails_after_launching_its_host_leaves_no_host_running() {
     let slice = Slice::new();
@@ -1264,6 +1324,7 @@ fn a_codex_takeover_that_fails_after_launching_its_host_leaves_no_host_running()
 
 // A host the domain already counts as ended still runs: its task ended, so no takeover will ever
 // claim it, and without the sweep at the daemon's start it would run for good with no owner.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_host_left_running_for_a_task_that_ended_is_ended_when_the_daemon_starts() {
     let slice = Slice::new();
@@ -1288,6 +1349,7 @@ fn a_host_left_running_for_a_task_that_ended_is_ended_when_the_daemon_starts() {
 }
 
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn stopping_a_codex_host_after_native_death_drains_unread_acceptance_and_final_evidence() {
     use std::io::{Read as _, Write as _};
@@ -1341,6 +1403,7 @@ fn stopping_a_codex_host_after_native_death_drains_unread_acceptance_and_final_e
 // timeout to open its app-server and thread. The host answers that input only once its thread is
 // open, so the owner gave the connection up while the host was still opening, and the node lost
 // its host. The owner waits for that answer as long as the host lives, as for any event of it.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_codex_thread_that_opens_after_the_io_timeout_takes_the_first_input() {
     use std::io::{Read as _, Write as _};
@@ -1378,11 +1441,13 @@ fn a_codex_thread_that_opens_after_the_io_timeout_takes_the_first_input() {
     driver.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 fn signal_codex_process(pid: libc::pid_t, signal: libc::c_int) {
     // SAFETY: these tests signal only a kernel-identified process they launched in their fixture.
     assert_eq!(unsafe { libc::kill(pid, signal) }, 0, "{}", std::io::Error::last_os_error());
 }
 
+#[cfg(feature = "real-hosts")]
 fn stop_codex_host(pid: libc::pid_t) {
     signal_codex_process(pid, libc::SIGSTOP);
     let mut status = 0;
@@ -1397,6 +1462,7 @@ pub fn git(worktree:&Path,arguments:&[&str])->String{
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 /// What makes the task itself, which a move leaves as it was.
+#[cfg(not(feature = "real-hosts"))]
 fn identity(slice:&Slice)->(String,alondra_domain_rules::RequestId,alondra_domain_rules::TaskPriority,BTreeSet<TaskId>,Option<String>){
     let state=slice.domain.state().unwrap();let task=&state.tasks[&TaskId::from(TASK)];
     (task.title.clone(),task.request_id.clone(),task.priority,task.dependencies.clone(),slice.domain.task_worktree(&task.id).unwrap())
@@ -1431,6 +1497,7 @@ fn where_the_task_is(slice:&Slice)->String{
 }
 /// Advances the move after every owner commit, as the daemon's transition loop does, until it is
 /// done. A step that fails or aborts the move fails the test with the steps it reached.
+#[cfg(not(feature = "real-hosts"))]
 async fn advance_until_moved(slice:&Slice,domain:&Arc<DomainRuntime>,task:&TaskId,changed:&mut tokio::sync::watch::Receiver<u64>){
     use crate::domain_store::provider_transition::Phase;
     let done=||move_steps(slice).iter().any(|step|step=="done");
@@ -1446,6 +1513,7 @@ async fn advance_until_moved(slice:&Slice,domain:&Arc<DomainRuntime>,task:&TaskI
     }
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_codex_task_moves_to_claude_as_itself_in_its_worktree_with_one_writer_at_a_time(){
     use crate::domain_store::provider_transition::Phase;
@@ -1481,6 +1549,7 @@ async fn a_codex_task_moves_to_claude_as_itself_in_its_worktree_with_one_writer_
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_move_survives_a_daemon_restart_after_every_step_without_a_second_node(){
     use crate::domain_store::provider_transition::Phase;
@@ -1503,6 +1572,7 @@ async fn a_move_survives_a_daemon_restart_after_every_step_without_a_second_node
     }
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
     use crate::domain_store::provider_transition::Phase;
@@ -1532,9 +1602,9 @@ async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
 // before the host's receipt reached it, so the handoff stayed uncertain. A move to another provider
 // ended that host, which is never archived: nothing read the receipt its folder kept, and the new
 // node's admission was refused for an unresolved dispatch, again on every try.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_move_requested_while_the_resumed_host_takes_its_message_admits_the_new_node(){
-    use crate::domain_store::provider_transition::Phase;
     for handoff in ["claimed","offered","uncertain"]{
         let slice=Slice::new();let task:TaskId=TASK.into();
         working_on_codex(&slice);
@@ -1557,6 +1627,7 @@ async fn a_move_requested_while_the_resumed_host_takes_its_message_admits_the_ne
 // recorded, after the end of the host before it was already committed. Its move to another provider
 // took that end as the source's and kept the claim: the new node's admission was refused for an
 // unresolved dispatch, again on every try. The move ends the dead host and settles its claim first.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_move_from_a_dead_host_that_left_a_claimed_message_settles_it_and_admits_the_new_node(){
     use crate::domain_store::provider_transition::Phase;
@@ -1583,6 +1654,7 @@ async fn a_move_from_a_dead_host_that_left_a_claimed_message_settles_it_and_admi
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_test_that_leaves_a_codex_host_running_fails_and_the_host_ends_with_it() {
     let slice = Slice::new();
@@ -1598,6 +1670,7 @@ fn a_test_that_leaves_a_codex_host_running_fails_and_the_host_ends_with_it() {
 }
 
 /// The test process `a_test_process_killed_mid_test_leaves_no_codex_host_and_no_folder` kills.
+#[cfg(feature = "real-hosts")]
 #[test]
 #[ignore = "started by a_test_process_killed_mid_test_leaves_no_codex_host_and_no_folder"]
 fn a_test_process_holding_a_codex_host() {
@@ -1610,6 +1683,7 @@ fn a_test_process_holding_a_codex_host() {
     }
 }
 
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_test_process_killed_mid_test_leaves_no_codex_host_and_no_folder() {
     use std::io::Read;
@@ -1632,6 +1706,7 @@ fn a_test_process_killed_mid_test_leaves_no_codex_host_and_no_folder() {
 // receiving the inputs queued after it: each a turn of a few seconds that the limit ended again,
 // holding a working slot while tasks that could run on Claude waited. Also t-usage-limit-hold-on-refused-turn:
 // the refused end leaves no card about a lost host.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_usage_limit_whose_turn_end_the_domain_refuses_still_holds_the_task_and_its_queued_inputs() {
     let slice = Slice::new();
@@ -1668,6 +1743,7 @@ pub async fn settled_move(slice:&Slice)->String{
 }
 /// Waits, passing as the daemon does, until a node of the task runs on the account it moved to: a
 /// move whose node rested by then defers its start to a later pass.
+#[cfg(not(feature = "real-hosts"))]
 async fn started_on_the_new_account(slice:&Slice){
     let mut changed=slice.domain.subscribe();
     tokio::time::timeout(std::time::Duration::from_secs(60),async{
@@ -1679,17 +1755,21 @@ async fn started_on_the_new_account(slice:&Slice){
 }
 /// The context the move handed to the task's next node, as its journal recorded it: what that node
 /// starts from, whether it starts at once or on a later pass.
+#[cfg(not(feature = "real-hosts"))]
 fn handed_context(slice:&Slice)->String{
     let observer=slice.observer();
     let facts:String=observer.query_row("SELECT facts FROM provider_transition_steps WHERE task_id=?1 AND phase='context_ready' ORDER BY sequence DESC LIMIT 1",[TASK],|row|row.get(0)).unwrap();
     serde_json::from_str::<serde_json::Value>(&facts).unwrap()["context"].as_str().expect("the handed context").to_owned()
 }
+#[cfg(not(feature = "real-hosts"))]
 pub fn paused_by_the_user(slice:&Slice)->bool{
     Slice::lifecycle(&*slice.domain).cards().iter().any(|(_,reason)|*reason==alondra_domain::WaitReason::Pause)
 }
+#[cfg(not(feature = "real-hosts"))]
 pub fn admissions(slice:&Slice)->usize{
     slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count()
 }
+#[cfg(feature = "real-hosts")]
 fn source_host(slice:&Slice)->PathBuf{
     let instance=Slice::lifecycle(&*slice.domain).execution().unwrap().instance().as_str().to_owned();
     slice.backend.for_provider(Provider::Codex,slice.domain.home()).unwrap().state_root.join(instance)
@@ -1699,6 +1779,7 @@ fn source_host(slice:&Slice)->PathBuf{
 // 2026-11-15: Codex ran out until Wednesday and its limit
 // held the task. The user moved it to Claude and the move finished, but the task kept waiting for
 // Codex's reset and no node started on Claude.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_task_held_by_the_codex_limit_starts_on_the_account_it_moved_to(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -1722,6 +1803,7 @@ async fn a_task_held_by_the_codex_limit_starts_on_the_account_it_moved_to(){
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_resting_task_moves_at_once(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -1744,6 +1826,7 @@ async fn a_resting_task_moves_at_once(){
 
 /// An earlier task this one built on ended, and Alondra compacted its long final result to the
 /// excerpt every task that builds on it reads.
+#[cfg(not(feature = "real-hosts"))]
 fn built_on_a_compacted_result(slice:&Slice)->String{
     let earlier:TaskId="journal-robustness".into();
     slice.run(&Actor::Orchestrator{generation:0},"earlier-task",Command::CreateTask{priority: Default::default(),
@@ -1769,6 +1852,7 @@ fn built_on_a_compacted_result(slice:&Slice)->String{
 
 // Found in use: every task that built on an ended task with a long result refused to move,
 // «Critical task context is incomplete», naming that other task's settled result.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_task_built_on_an_ended_task_whose_result_was_compacted_moves(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -1786,6 +1870,7 @@ async fn a_task_built_on_an_ended_task_whose_result_was_compacted_moves(){
 }
 
 /// An earlier task this one builds on, ended with a final result of about `size` characters.
+#[cfg(not(feature = "real-hosts"))]
 fn built_on_an_ended_task(slice:&Slice,earlier:&str,size:usize){
     let earlier:TaskId=earlier.into();
     slice.run(&Actor::Orchestrator{generation:0},&format!("{earlier}-task"),Command::CreateTask{priority: Default::default(),
@@ -1809,6 +1894,7 @@ fn built_on_an_ended_task(slice:&Slice,earlier:&str,size:usize){
 // an 18,000-character brief, refused to move: «Critical task context is incomplete», naming that
 // last input. Its text was stored whole; the context only had a fixed 32,000-character budget, the
 // work it built on took most of it, and a source that did not fit read as a missing one.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_task_built_on_four_tasks_and_told_a_long_brief_moves_with_every_input_whole(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -1832,6 +1918,7 @@ async fn a_task_built_on_four_tasks_and_told_a_long_brief_moves_with_every_input
 
 // Found in use: a task told many things while it worked refused to move once its inputs passed the
 // context limit, «Critical task context is incomplete», naming inputs and work it still had.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_task_told_more_than_its_context_held_moves_with_every_input(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -1854,6 +1941,7 @@ async fn a_task_told_more_than_its_context_held_moves_with_every_input(){
 // Found by the whole-machine model: a delivery moved while the user reviewed it read as starting
 // for ever, and once the user sent it back nothing started it on the account it moved to.
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_task_whose_host_died_moves(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -1865,6 +1953,7 @@ async fn a_task_whose_host_died_moves(){
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test]
 async fn a_task_whose_adopted_host_has_no_process_moves_or_is_refused(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -1886,6 +1975,7 @@ async fn a_task_whose_adopted_host_has_no_process_moves_or_is_refused(){
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test]
 async fn a_move_that_cannot_prove_its_source_ended_is_refused_with_its_reason(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -1908,6 +1998,7 @@ async fn a_move_that_cannot_prove_its_source_ended_is_refused_with_its_reason(){
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_stored_uncertain_move_is_aborted_on_the_first_pass(){
     use crate::domain_store::provider_transition::Phase;
@@ -1925,6 +2016,7 @@ async fn a_stored_uncertain_move_is_aborted_on_the_first_pass(){
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_task_created_with_a_codex_launch_plan_starts_on_codex() {
     use alondra_core::accounts::AccountsConfig;
@@ -1953,6 +2045,7 @@ async fn a_task_created_with_a_codex_launch_plan_starts_on_codex() {
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queue_without_retrying() {
     use alondra_core::accounts::AccountsConfig;
@@ -2084,6 +2177,7 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test]
 async fn a_paused_codex_session_loses_its_app_server_and_delivers_resume_and_message_to_its_replacement() {
     let slice = Slice::new();
@@ -2119,6 +2213,7 @@ async fn a_paused_codex_session_loses_its_app_server_and_delivers_resume_and_mes
     replacement.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_paused_task_moves_at_once_and_starts_on_the_new_account_when_resumed(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -2151,6 +2246,7 @@ async fn a_paused_task_moves_at_once_and_starts_on_the_new_account_when_resumed(
 /// Claude's catalog gives no window for its models: the move prepares a context sized against
 /// 64,000 tokens, and the node on the new account starts from it with the message that resumes
 /// the task, never refused against the 16,000 tokens the earlier conversation alone may add.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_moved_task_starts_with_a_long_message_when_the_destination_window_is_unknown(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -2178,6 +2274,7 @@ async fn a_moved_task_starts_with_a_long_message_when_the_destination_window_is_
 /// leaves no room in the destination's window for the message that resumes it, is tried once: the
 /// move waits at `start_refused` and one card asks the user. Trying again from the card tries
 /// once more; cancelling closes the task.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_moved_task_refused_on_its_new_account_waits_for_the_user_instead_of_starting_again_and_again(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -2224,6 +2321,7 @@ async fn a_moved_task_refused_on_its_new_account_waits_for_the_user_instead_of_s
     slice.domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_delivery_moved_while_reviewed_waits_for_the_user_and_starts_on_the_new_account_once_sent_back(){
     let slice=Slice::new();let task:TaskId=TASK.into();

@@ -2,6 +2,7 @@ load("//tools/bazel:crates.bzl", "adapter_out_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 
 _DEPS = [
     "//crates/codex-protocol:codex_protocol",
@@ -32,6 +33,29 @@ low_opt_rust_test(
     compile_data = ["//crates/agent-protocol:fixtures/hello.json", "//crates/domain-store-schema:schema.sql"] + glob(["fixtures/native/*.jsonl"]),
     env = {"HOME": "."},
 )
+# The Codex host, its session and the fake native app-server played in a test's own process, on the
+# transport the Claude host model speaks too: the doubled hosts of engine-doubles serve with it.
+# Tests only.
+rust_library(
+    name = "codex_host_model",
+    testonly = True,
+    srcs = glob(["model/**/*.rs"]) + ["//crates/provider-claude:model/host_transport.rs"],
+    crate_name = "alondra_codex_host_model",
+    crate_root = "model/fake_codex_host.rs",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//crates/engine-sdk:__pkg__"],
+    deps = [
+        "//crates/codex-protocol:codex_protocol",
+        "//crates/core:alondra_core",
+        "//crates/engine-doubles:engine_doubles",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2-0.10.9",
+        "@crates//:tokio",
+    ],
+)
+
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
 repo_tree()

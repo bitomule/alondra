@@ -75,6 +75,11 @@ pub trait StopHandle: Send + Sync {
     fn gone(&self) -> io::Result<bool>;
     fn tree(&self) -> io::Result<Vec<Member>>;
     fn footprint(&self) -> io::Result<Option<u64>>;
+    /// The native agent the host started: the live member of the host's group whose parent the
+    /// host is.
+    fn native(&self) -> io::Result<Option<Member>>;
+    /// Whether `member`, a process of this host, is still the live process it was.
+    fn alive(&self, member: &Member) -> io::Result<bool>;
 }
 
 #[derive(Clone)]
@@ -116,6 +121,14 @@ impl HostStop {
     /// The bytes the host's process group holds; `None` where `process_group` is.
     pub fn footprint(&self) -> io::Result<Option<u64>> {
         self.0.footprint()
+    }
+    /// The native agent the host started, while it lives.
+    pub fn native(&self) -> io::Result<Option<Member>> {
+        self.0.native()
+    }
+    /// Whether `member`, a process of this host, is still the live process it was.
+    pub fn alive(&self, member: &Member) -> io::Result<bool> {
+        self.0.alive(member)
     }
 }
 

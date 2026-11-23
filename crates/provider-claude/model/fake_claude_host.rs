@@ -11,22 +11,21 @@
 //! The model reaches its hosts through `Process`: the doubled hosts of `engine-doubles` (`Serve`),
 //! or a process a test started for each host.
 
-use alondra_agent_protocol::{
-    Action, Attach, Attached, Body, Challenge, Command, Decision, DecisionKind, Fence, Frame, FramedReader, FramedWriter, Hello, PROTOCOL_VERSION, command_digest,
-    host_proof, verify_owner_proof,
-};
+use alondra_agent_protocol as protocol;
+use host_transport::{Bootstrap, Doubled, HostState, Identity, lock};
+pub use host_transport::Process;
+use protocol::{Action, Command, Decision, DecisionKind};
 use alondra_engine_doubles::agent_host::{Serve, Served, Stop};
 use alondra_engine_ports::agent_host::{ProbeOutput, ProbeRun};
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
-use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
+
+mod host_transport;
 
 /// What the Claude host announces in its hello: every action the protocol carries.
 const CAPABILITIES: &[&str] = &[
@@ -51,9 +50,6 @@ static SMALL_USAGE: std::sync::LazyLock<Value> =
     std::sync::LazyLock::new(|| json!({"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}));
 /// What the SDK answers Claude for a request no answer reached.
 const CANCELLED: &str = "Permission request cancelled";
-
-/// The exit of a process SIGKILL ended.
-const KILLED: i32 = 9;
 
 /// The errors the SDK ends an assistant message with when the API refused it.
 pub fn assistant_errors() -> Vec<String> {
@@ -203,43 +199,13 @@ impl Drop for StartupProbeGate {
     }
 }
 
-/// The process a host runs as: whether it still runs, and how it ends.
-pub trait Process: Send + Sync {
-    fn alive(&self) -> bool;
-    /// The process ends: by itself once its work is closed, or killed with whatever it started.
-    fn end(&self, closed: bool);
-}
-
 /// One host the daemon started: its process, its identity, and the conversation it holds.
-pub struct Host {
-    pub task: String,
-    pub account: String,
-    pub session: String,
-    /// The node's capability, which the daemon gave its Claude in the environment.
-    pub capability: String,
-    /// The session this host resumes, when it continues one.
-    pub resumes: bool,
-    /// The number the host's process goes by.
-    pub process_id: u32,
-    /// No daemon attached to this host yet, counted in the model's hosts starting.
-    unattached: AtomicBool,
-    starting: Arc<AtomicU64>,
-    process: Box<dyn Process>,
-    bootstrap: Bootstrap,
-    secret: [u8; 32],
-    state: Mutex<HostState>,
-}
+pub type Host = host_transport::Host<Conversation>;
+type State = HostState<Conversation>;
 
+/// What a host's Claude holds: its turn, its queue and the decisions it waits on.
 #[derive(Default)]
-struct HostState {
-    lane: Option<FramedWriter<UnixStream>>,
-    /// The host's end of every connection, closed when the host ends.
-    connections: Vec<UnixStream>,
-    /// Every event this host sent, by cursor, until the daemon acknowledges it.
-    journal: VecDeque<(u64, Frame)>,
-    cursor: u64,
-    acknowledged: u64,
-    receipts: BTreeMap<String, Frame>,
+pub struct Conversation {
     /// The inputs the running turn took, in order.
     turn: Option<Vec<String>>,
     /// Inputs offered while a turn ran, by native id with their prompt, which Claude reads in the
@@ -247,11 +213,8 @@ struct HostState {
     queued: VecDeque<(String, String)>,
     /// The prompt of every input the host was offered, by native id.
     prompts: BTreeMap<String, String>,
-    /// The host closed: it ends once the daemon acknowledged its last event.
-    closing: bool,
     /// Claude's session runs nothing.
     busy: bool,
-    ended: bool,
     /// What the first request of this host's session wrote to the prompt cache, once it answered.
     first_written: Option<u64>,
     /// What the daemon answered each permission Claude asked, by request: `allow` or `deny`.
@@ -307,68 +270,6 @@ enum OwnTurn {
     Running(Vec<String>),
 }
 
-#[derive(Deserialize)]
-struct Bootstrap {
-    host_instance_id: String,
-    control_secret: String,
-    fence: Fence,
-    execution: alondra_agent_protocol::Execution,
-    manifest: Manifest,
-    native: Native,
-    #[serde(default)]
-    worker: Option<Worker>,
-    #[serde(default)]
-    journal_base: Option<u64>,
-}
-
-#[derive(Deserialize)]
-struct Manifest {
-    host_release: String,
-    host_sha256: String,
-    executable_sha256: String,
-    sdk_version: String,
-}
-
-#[derive(Deserialize)]
-struct Native {
-    session_id: String,
-    #[serde(default)]
-    cwd: PathBuf,
-    #[serde(default)]
-    env: BTreeMap<String, String>,
-    #[serde(default)]
-    resume: Option<Value>,
-}
-
-#[derive(Default, Deserialize)]
-struct Worker {
-    #[serde(default)]
-    plugins: Vec<PathBuf>,
-    #[serde(default)]
-    settings: serde_json::Map<String, Value>,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    effort: Option<String>,
-    #[serde(default)]
-    disallowed_tools: Vec<String>,
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn decode_secret(hex: &str) -> Option<[u8; 32]> {
-    if hex.len() != 64 {
-        return None;
-    }
-    let mut secret = [0u8; 32];
-    for (index, byte) in secret.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok()?;
-    }
-    Some(secret)
-}
-
 /// Which account a run of Claude is for: the account folder its configuration names, or the default
 /// account's own when it names none.
 fn account_of(home: &Path, environment: &BTreeMap<String, String>) -> String {
@@ -382,10 +283,6 @@ fn account_of(home: &Path, environment: &BTreeMap<String, String>) -> String {
 }
 
 impl Bootstrap {
-    fn resumes(&self) -> bool {
-        self.native.resume.as_ref().is_some_and(|resume| !resume.is_null() && *resume != Value::Bool(false))
-    }
-
     /// The command line the SDK starts the native Claude of a task with, for what a test reads of it.
     fn arguments(&self) -> Vec<String> {
         let session = self.native.session_id.to_lowercase();
@@ -528,7 +425,7 @@ impl ClaudeModel {
 
     /// The usage an answer of `host` reports, its request having sent `sent` new tokens; none for
     /// a task whose conversation is not sized.
-    fn usage(&self, host: &Host, state: &mut HostState, sent: u64) -> Option<Value> {
+    fn usage(&self, host: &Host, state: &mut State, sent: u64) -> Option<Value> {
         let mut world = lock(&self.0.world);
         if !world.sized.contains(&host.task) {
             return None;
@@ -604,10 +501,7 @@ impl ClaudeModel {
 
     /// Whether the daemon is attached to every host that runs and has acknowledged what each said.
     pub fn committed(&self) -> bool {
-        self.0.starting.load(Ordering::SeqCst) == 0 && lock(&self.0.hosts).iter().all(|host| {
-            let state = lock(&host.state);
-            state.ended || !host.process.alive() || state.lane.is_some() && state.acknowledged >= state.cursor
-        })
+        self.0.starting.load(Ordering::SeqCst) == 0 && lock(&self.0.hosts).iter().all(|host| host.settled())
     }
 
     /// Claude loses what it kept of `session`: a host that resumes it starts with no history.
@@ -655,30 +549,19 @@ impl ClaudeModel {
     /// A host starts with `bootstrap`, as the process `process` numbered `process_id`; `serve`
     /// serves each of its connections.
     pub fn start(&self, bootstrap: &[u8], process_id: u32, process: Box<dyn Process>) -> io::Result<Arc<Host>> {
-        let invalid = |why: String| io::Error::new(io::ErrorKind::InvalidData, why);
-        let bootstrap: Bootstrap = serde_json::from_slice(bootstrap).map_err(|e| invalid(e.to_string()))?;
-        let secret = decode_secret(&bootstrap.control_secret).ok_or_else(|| invalid("the control secret is not 32 bytes of hex".into()))?;
-        let alondra_agent_protocol::Execution::Task(execution) = &bootstrap.execution else {
-            return Err(invalid("the model plays no orchestrator host".into()));
+        let (bootstrap, secret) = Bootstrap::read(bootstrap)?;
+        let Some(task) = bootstrap.task() else {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "the model plays no orchestrator host"));
         };
-        let task = execution.task_id.to_string();
-        let session = bootstrap.native.session_id.to_lowercase();
-        let resumes = bootstrap.resumes();
-        self.0.starting.fetch_add(1, Ordering::SeqCst);
-        let host = Arc::new(Host {
+        let identity = Identity {
             account: account_of(&self.0.home, &bootstrap.native.env),
             capability: bootstrap.native.env.get("ALONDRA_DOMAIN_CAPABILITY").cloned().unwrap_or_default(),
             session: bootstrap.native.session_id.clone(),
-            resumes,
+            resumes: bootstrap.resumes(),
             process_id,
-            unattached: AtomicBool::new(true),
-            starting: self.0.starting.clone(),
-            process,
             task,
-            secret,
-            state: Mutex::new(HostState { cursor: bootstrap.journal_base.unwrap_or_default(), acknowledged: bootstrap.journal_base.unwrap_or_default(), ..HostState::default() }),
-            bootstrap,
-        });
+        };
+        let host = Arc::new(Host::new(identity, (bootstrap, secret), CAPABILITIES, process, self.0.starting.clone(), Conversation::default()));
         {
             let mut hosts = lock(&self.0.hosts);
             if self.0.closed.load(Ordering::SeqCst) {
@@ -694,7 +577,7 @@ impl ClaudeModel {
 
     /// The host starts its native Claude: on the session's transcript so far when it resumes it. A
     /// session Claude lost cannot be resumed: Claude exits at once and says why.
-    fn open_native(&self, host: &Host, state: &mut HostState) {
+    fn open_native(&self, host: &Host, state: &mut State) {
         state.native = true;
         state.turns = Some(lock(&self.0.world).turns);
         let session = host.session.to_lowercase();
@@ -719,7 +602,7 @@ impl ClaudeModel {
     /// Serves one daemon's connection to `host`: the attach, what it had not acknowledged, then
     /// every frame it sends, until it goes. It returns once the connection closes.
     pub fn serve(&self, host: &Arc<Host>, stream: UnixStream) {
-        serve(self, host, stream);
+        host_transport::serve(self, host, stream);
     }
 
     /// Runs `work` on a thread of its own, on the model's clock.
@@ -827,7 +710,7 @@ impl ClaudeModel {
         let payload = json!({"tool": "Bash", "input": {"command": command}, "request": {}, "cwd": cwd});
         self.event(&host, &mut state, json!({"type": "decision_requested", "request_id": request, "tool_use_id": tool_use, "kind": "permission", "payload": payload}));
         let Value::Object(payload) = payload else { return Ok(()) };
-        let asked = Asked { kind: DecisionKind::Permission, tool: Some("Bash".into()), tool_use_id: Some(tool_use), payload, epoch: state.cursor,
+        let asked = Asked { kind: DecisionKind::Permission, tool: Some("Bash".into()), tool_use_id: Some(tool_use), payload, epoch: state.wire.cursor,
             taken: state.turn.clone().unwrap_or_default(), then: Then::GoOn };
         state.asked.insert(request.to_owned(), asked);
         Ok(())
@@ -839,7 +722,7 @@ impl ClaudeModel {
     }
 
     /// An input reaches the host, and Claude takes it as `Turns` says.
-    fn offered(&self, host: &Host, state: &mut HostState, input: String, prompt: String) {
+    fn offered(&self, host: &Host, state: &mut State, input: String, prompt: String) {
         let turns = state.turns.unwrap_or_else(|| lock(&self.0.world).turns);
         if turns == Turns::Ignored {
             return;
@@ -855,7 +738,7 @@ impl ClaudeModel {
 
     /// The input opens a turn when none runs, and waits in Claude's queue when one does. A turn the
     /// API refuses ends at once.
-    fn queue(&self, host: &Host, state: &mut HostState, input: String, prompt: String) {
+    fn queue(&self, host: &Host, state: &mut State, input: String, prompt: String) {
         let queued = self.uuid();
         self.emit(host, state, "status", json!({"type": "command_lifecycle", "state": "queued", "uuid": queued, "command_uuid": input, "session_id": host.session}));
         self.transcribe_sized(host, &prompt);
@@ -871,7 +754,7 @@ impl ClaudeModel {
     /// it has no script for. The prompts the fake native Claude has a script for go as they go
     /// there. The prompt goes into the session's transcript in Claude's profile, which the daemon
     /// reads before it resumes the session.
-    fn answer(&self, host: &Host, state: &mut HostState, input: String, prompt: &str) {
+    fn answer(&self, host: &Host, state: &mut State, input: String, prompt: &str) {
         let session = host.session.to_lowercase();
         self.transcribe(host, &input, prompt);
         if prompt.ends_with("complete-unstarted") {
@@ -990,7 +873,7 @@ impl ClaudeModel {
         }
     }
 
-    fn lifecycle(&self, host: &Host, state: &mut HostState, input: &str, lifecycle: &str) {
+    fn lifecycle(&self, host: &Host, state: &mut State, input: &str, lifecycle: &str) {
         let uuid = self.uuid();
         self.emit(host, state, "status", json!({"type": "command_lifecycle", "command_uuid": input, "state": lifecycle, "session_id": host.session.to_lowercase(), "uuid": uuid}));
     }
@@ -1002,7 +885,7 @@ impl ClaudeModel {
     }
 
     /// Claude answers in the turn that took `taken` with `block`, and the turn goes on.
-    fn consume(&self, host: &Host, state: &mut HostState, input: &str, taken: &[String], block: Value) {
+    fn consume(&self, host: &Host, state: &mut State, input: &str, taken: &[String], block: Value) {
         let consumed = self.uuid();
         self.emit(host, state, "message", json!({"type": "assistant", "session_id": host.session.to_lowercase(), "uuid": consumed, "parent_tool_use_id": null,
             "message": {"id": format!("msg_{consumed}"), "type": "message", "role": "assistant", "model": "fixture", "content": [block],
@@ -1011,7 +894,7 @@ impl ClaudeModel {
     }
 
     /// The turn that took `taken` ends as failed with `subtype`, and every input it took completes.
-    fn failed(&self, host: &Host, state: &mut HostState, input: &str, taken: &[String], subtype: &str, error: &str) {
+    fn failed(&self, host: &Host, state: &mut State, input: &str, taken: &[String], subtype: &str, error: &str) {
         let result = self.uuid();
         let turns = u8::from(subtype != "error_during_execution");
         self.emit(host, state, "result", json!({"type": "result", "subtype": subtype, "is_error": true, "session_id": host.session.to_lowercase(), "uuid": result,
@@ -1024,7 +907,7 @@ impl ClaudeModel {
 
     /// The usage limit ends the turn, and then the turn Claude opens by itself when its subagent
     /// hands its report back.
-    fn limited_twice(&self, host: &Host, state: &mut HostState, taken: Vec<String>) {
+    fn limited_twice(&self, host: &Host, state: &mut State, taken: Vec<String>) {
         state.turn = Some(taken);
         self.finish_turn(host, state, Some(scripted_refusal(429)));
         let session = host.session.to_lowercase();
@@ -1058,7 +941,7 @@ impl ClaudeModel {
 
     /// Claude's own turn starts as `taken` arrives, which waits queued behind it, and asks to leave
     /// plan mode with a long plan.
-    fn own_turn_started(&self, host: &Host, state: &mut HostState, taken: Vec<String>) {
+    fn own_turn_started(&self, host: &Host, state: &mut State, taken: Vec<String>) {
         let input = taken.last().cloned().unwrap_or_default();
         self.lifecycle(host, state, &input, "queued");
         let init = self.uuid();
@@ -1067,7 +950,7 @@ impl ClaudeModel {
         self.own_plan(host, state, long_plan());
     }
 
-    fn own_plan(&self, host: &Host, state: &mut HostState, plan: String) {
+    fn own_plan(&self, host: &Host, state: &mut State, plan: String) {
         state.decisions += 1;
         let (request_id, tool_use_id) = (format!("decision-{}", state.decisions), format!("toolu_fixture_{}", state.decisions));
         let file = format!("{}.plan.md", self.capture().display());
@@ -1082,13 +965,13 @@ impl ClaudeModel {
         let payload = json!({"tool": "ExitPlanMode", "input": {"plan": plan, "planFilePath": file}, "request": {"toolUseID": tool_use_id, "requestId": request_id}, "cwd": cwd});
         self.event(host, state, json!({"type": "decision_requested", "request_id": request_id, "kind": DecisionKind::Plan, "payload": payload, "tool_use_id": tool_use_id}));
         let Value::Object(payload) = payload else { return };
-        let asked = Asked { kind: DecisionKind::Plan, tool: Some("ExitPlanMode".into()), tool_use_id: Some(tool_use_id), payload, epoch: state.cursor, taken: Vec::new(), then: Then::OwnPlan(plan) };
+        let asked = Asked { kind: DecisionKind::Plan, tool: Some("ExitPlanMode".into()), tool_use_id: Some(tool_use_id), payload, epoch: state.wire.cursor, taken: Vec::new(), then: Then::OwnPlan(plan) };
         state.asked.insert(request_id, asked);
     }
 
     /// Claude's own turn ends, and Claude takes the inputs that waited behind it in a turn that
     /// ends at once.
-    fn own_turn_ended(&self, host: &Host, state: &mut HostState) {
+    fn own_turn_ended(&self, host: &Host, state: &mut State) {
         let OwnTurn::Running(taken) = std::mem::take(&mut state.own_turn) else { return };
         let (result, unnamed) = (self.uuid(), self.uuid());
         self.emit(host, state, "result", json!({"type": "result", "subtype": "success", "is_error": false, "session_id": host.session.to_lowercase(), "uuid": result,
@@ -1101,12 +984,12 @@ impl ClaudeModel {
     }
 
     /// The turn that took `taken` ends with a result for `input`, and every input it took completes.
-    fn conclude(&self, host: &Host, state: &mut HostState, input: &str, taken: &[String]) {
+    fn conclude(&self, host: &Host, state: &mut State, input: &str, taken: &[String]) {
         self.conclude_with(host, state, input, taken, json!({}));
     }
 
     /// The turn ends as `conclude` ends it, its result saying what each model used.
-    fn conclude_with(&self, host: &Host, state: &mut HostState, input: &str, taken: &[String], model_usage: Value) {
+    fn conclude_with(&self, host: &Host, state: &mut State, input: &str, taken: &[String], model_usage: Value) {
         let session = host.session.to_lowercase();
         let result = self.uuid();
         self.emit(host, state, "result", json!({"type": "result", "subtype": "success", "is_error": false, "session_id": session, "uuid": result,
@@ -1121,7 +1004,7 @@ impl ClaudeModel {
     /// Claude calls a tool its rules do not allow, or an MCP server asks for input, as the fake
     /// native Claude does for `decide:<scenario> <argument>`; the host asks the daemon and the
     /// turn waits for the answer.
-    fn decide(&self, host: &Host, state: &mut HostState, taken: Vec<String>, said: &str) {
+    fn decide(&self, host: &Host, state: &mut State, taken: Vec<String>, said: &str) {
         let (scenario, argument) = said.split_once(' ').unwrap_or((said, ""));
         let (scenario, cwd) = match scenario.strip_prefix("bash@") {
             Some(folder) => ("bash", folder.to_owned()),
@@ -1185,7 +1068,7 @@ impl ClaudeModel {
         }
         self.event(host, state, observation);
         let Value::Object(payload) = payload else { return };
-        let asked = Asked { kind, tool, tool_use_id, payload, epoch: state.cursor, taken: taken.clone(), then: Then::Conclude };
+        let asked = Asked { kind, tool, tool_use_id, payload, epoch: state.wire.cursor, taken: taken.clone(), then: Then::Conclude };
         state.asked.insert(request_id, asked);
         state.turn = Some(taken);
     }
@@ -1197,7 +1080,7 @@ impl ClaudeModel {
 
     /// The daemon's answer reaches the request Claude waits on under exactly this identity, as the
     /// host applies it; the SDK hands Claude its response and Claude goes on with its turn.
-    fn respond(&self, host: &Host, state: &mut HostState, respond: Responded) -> Result<(), &'static str> {
+    fn respond(&self, host: &Host, state: &mut State, respond: Responded) -> Result<(), &'static str> {
         let Responded { request_id, epoch, kind, tool_use_id, decision, asked } = respond;
         let waiting = state.asked.get(&request_id).ok_or("Claude is not waiting for this request")?;
         let tool_decision = matches!(decision, Decision::Allow { .. } | Decision::Deny { .. });
@@ -1248,7 +1131,7 @@ impl ClaudeModel {
 
     /// Claude withdraws every decision it waits on: the SDK answers each as cancelled and the host
     /// settles it so.
-    fn withdraw(&self, host: &Host, state: &mut HostState, answered: bool) {
+    fn withdraw(&self, host: &Host, state: &mut State, answered: bool) {
         for (request_id, asked) in std::mem::take(&mut state.asked) {
             if answered {
                 self.decided(&asked, &request_id, true, sdk_response(&asked, None));
@@ -1280,7 +1163,7 @@ impl ClaudeModel {
 
     /// Claude takes the next input waiting as a turn, and the next while the API refuses each.
     /// It answers each turn it starts at once; the turn ends when the test says.
-    fn next_turn(&self, host: &Host, state: &mut HostState) {
+    fn next_turn(&self, host: &Host, state: &mut State) {
         while state.turn.is_none() {
             let Some((input, _)) = state.queued.pop_front() else {
                 if std::mem::replace(&mut state.busy, false) {
@@ -1315,7 +1198,7 @@ impl ClaudeModel {
 
     /// The last messages of a turn: Claude's answer and the result, or the API's error and the
     /// failed result the SDK ends it with.
-    fn finish_turn(&self, host: &Host, state: &mut HostState, error: Option<ApiError>) {
+    fn finish_turn(&self, host: &Host, state: &mut State, error: Option<ApiError>) {
         let Some(taken) = state.turn.take() else { return };
         let last = taken.last().cloned().unwrap_or_default();
         let (answer, result) = (self.uuid(), self.uuid());
@@ -1363,55 +1246,33 @@ impl ClaudeModel {
     }
 
     /// Journals an SDK observation as the host frames it and sends it on the lane, if one is open.
-    fn emit(&self, host: &Host, state: &mut HostState, kind: &str, payload: Value) {
+    fn emit(&self, host: &Host, state: &mut State, kind: &str, payload: Value) {
         let (failures, native) = (failures(&payload), native_ids(&payload));
         let observation = json!({"type": "sdk", "kind": kind, "native": native, "payload": payload, "failures": failures});
         self.event(host, state, observation);
     }
 
-    fn event(&self, host: &Host, state: &mut HostState, observation: Value) {
-        state.cursor += 1;
-        let frame = json!({"protocol_version": PROTOCOL_VERSION, "body": {"type": "event", "fence": host.bootstrap.fence, "execution": host.bootstrap.execution,
-            "cursor": state.cursor, "observation": observation}});
-        match serde_json::from_value::<Frame>(frame) {
-            Ok(frame) => {
-                state.journal.push_back((state.cursor, frame.clone()));
-                send(state, &frame);
-                self.tick();
-            }
-            Err(error) => self.troubled(format!("the host wrote an event that is not a frame: {error}")),
+    fn event(&self, host: &Host, state: &mut State, observation: Value) {
+        match state.wire.event(&host.bootstrap, observation) {
+            Ok(()) => self.tick(),
+            Err(why) => self.troubled(why),
         }
     }
 
-    /// Answers a command as the host does: a copy of one it answered gets the same receipt.
-    fn command(&self, host: &Host, state: &mut HostState, command: Command) {
+    /// Answers a command as the host does.
+    fn command(&self, host: &Host, state: &mut State, command: Command) {
         let id = command.command_id.to_string();
-        if let Some(receipt) = state.receipts.get(&id).cloned() {
-            send(state, &receipt);
-            return;
-        }
-        let digest = match command_digest(&command) {
-            Ok(digest) => digest,
-            Err(error) => return self.troubled(format!("a command the daemon sent has no digest: {error}")),
-        };
-        let receipt = |outcome: Value| -> Option<Frame> {
-            let receipt = json!({"protocol_version": PROTOCOL_VERSION, "body": {"type": "receipt", "fence": host.bootstrap.fence, "execution": host.bootstrap.execution,
-                "command_id": id, "command_sha256": digest, "outcome": outcome}});
-            serde_json::from_value(receipt).map_err(|error| self.troubled(format!("the host wrote a receipt that is not a frame: {error}"))).ok()
-        };
-        let applied = json!({"status": "accepted", "phase": "applied"});
-        let answered = |state: &mut HostState, outcome: Result<(), (&str, &str)>| {
+        let answered = |state: &mut State, outcome: Result<(), (&str, &str)>| {
             let outcome = match outcome {
-                Ok(()) => applied.clone(),
+                Ok(()) => json!({"status": "accepted", "phase": "applied"}),
                 Err((code, message)) => json!({"status": "rejected", "code": code, "message": message}),
             };
-            if let Some(receipt) = receipt(outcome) {
-                state.receipts.insert(id.clone(), receipt.clone());
-                send(state, &receipt);
-                self.tick();
+            match state.wire.receipt(&host.bootstrap, &command, outcome) {
+                Ok(()) => self.tick(),
+                Err(why) => self.troubled(why),
             }
         };
-        match command.action {
+        match command.action.clone() {
             Action::Respond { request_id, epoch, kind, tool_use_id, decision, asked } => {
                 let outcome = self.respond(host, state, Responded { request_id: request_id.0, epoch, kind, tool_use_id, decision, asked });
                 return answered(state, outcome.map_err(|message| ("stale_request", message)));
@@ -1440,7 +1301,7 @@ impl ClaudeModel {
             _ => answered(state, Ok(())),
         }
         let starts = matches!(command.action, Action::Start { .. });
-        match command.action {
+        match command.action.clone() {
             Action::Start { input_id, prompt, .. } | Action::Offer { input_id, prompt } => {
                 if !state.native && (starts || host.bootstrap.journal_base.is_some()) {
                     self.open_native(host, state);
@@ -1464,7 +1325,7 @@ impl ClaudeModel {
                 if !matches!(command.action, Action::Interrupt) {
                     state.queued.clear();
                     self.event(host, state, json!({"type": "process_exited", "exit_code": 0, "signal": null}));
-                    state.closing = true;
+                    state.wire.closing = true;
                 }
             }
             _ => {}
@@ -1611,149 +1472,31 @@ fn sdk_response(asked: &Asked, decision: Option<Decision>) -> Value {
     response
 }
 
-fn send(state: &mut HostState, frame: &Frame) {
-    if let Some(lane) = state.lane.as_mut()
-        && lane.write(frame).is_err()
-    {
-        state.lane = None;
-    }
-}
-
-impl Host {
-    /// The first daemon attached to this host, or it ended before one did.
-    fn attached(&self) {
-        if self.unattached.swap(false, Ordering::SeqCst) {
-            self.starting.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-
-    pub fn alive(&self) -> bool {
-        !lock(&self.state).ended && self.process.alive()
-    }
-
-    /// The host's process ends, its connections with it: by itself once it closed, or killed.
-    pub fn end(&self, closed: bool) {
-        let mut state = lock(&self.state);
-        if std::mem::replace(&mut state.ended, true) {
-            return;
-        }
-        self.attached();
-        state.lane = None;
-        let connections = std::mem::take(&mut state.connections);
-        drop(state);
-        self.process.end(closed);
-        for connection in connections {
-            let _ = connection.shutdown(std::net::Shutdown::Both);
-        }
-    }
-
-    fn handshake(&self, reader: &mut FramedReader<UnixStream>, writer: &mut FramedWriter<UnixStream>) -> Result<(), String> {
-        let b = &self.bootstrap;
-        let wire = |error: alondra_agent_protocol::Error| error.to_string();
-        writer
-            .write(&Frame::new(Body::Hello(Hello {
-                protocol_versions: vec![PROTOCOL_VERSION],
-                capabilities: CAPABILITIES.iter().map(|c| (*c).to_owned()).collect(),
-                fence: b.fence.clone(),
-                host_release: b.manifest.host_release.clone(),
-                host_sha256: b.manifest.host_sha256.clone(),
-                sdk_version: b.manifest.sdk_version.clone(),
-            })))
-            .map_err(wire)?;
-        writer
-            .write(&Frame::new(Body::Challenge(Challenge {
-                fence: b.fence.clone(),
-                execution: b.execution.clone(),
-                host_instance_id: b.host_instance_id.clone(),
-                nonce: "a".repeat(64),
-                executable_sha256: b.manifest.executable_sha256.clone(),
-            })))
-            .map_err(wire)?;
-        let attach: Attach = match reader.read().map_err(wire)?.map(|frame| frame.body) {
-            Some(Body::Attach(attach)) => attach,
-            None => return Err(String::new()),
-            other => return Err(format!("expected the daemon's attach, found {other:?}")),
-        };
-        verify_owner_proof(&self.secret, &attach).map_err(|e| format!("the daemon's proof: {e}"))?;
-        let proof = host_proof(&self.secret, &attach).map_err(|e| e.to_string())?;
-        writer
-            .write(&Frame::new(Body::Attached(Attached {
-                fence: attach.fence,
-                execution: attach.execution,
-                host_instance_id: attach.host_instance_id,
-                owner_generation: attach.owner_generation,
-                proof,
-            })))
-            .map_err(wire)
-    }
-}
-
-fn serve(model: &ClaudeModel, host: &Arc<Host>, stream: UnixStream) {
-    let Ok(clone) = stream.try_clone() else { return };
-    let (mut reader, mut writer) = (FramedReader::new(stream), FramedWriter::new(clone));
-    match host.handshake(&mut reader, &mut writer) {
-        Ok(()) => host.attached(),
-        Err(why) if why.is_empty() => return,
-        Err(why) => return model.troubled(format!("the attach of the host of {}: {why}", host.task)),
-    }
-    {
-        let mut state = lock(&host.state);
-        let unacknowledged: Vec<Frame> = state.journal.iter().filter(|(cursor, _)| *cursor > state.acknowledged).map(|(_, frame)| frame.clone()).collect();
-        state.lane = Some(writer);
-        for frame in &unacknowledged {
-            send(&mut state, frame);
-        }
-    }
-    model.tick();
-    while let Ok(Some(frame)) = reader.read() {
-        model.tick();
-        let mut state = lock(&host.state);
-        if state.ended {
-            return;
-        }
-        match frame.body {
-            Body::Acknowledge(acknowledge) => {
-                state.acknowledged = state.acknowledged.max(acknowledge.cursor);
-                let acknowledged = state.acknowledged;
-                state.journal.retain(|(cursor, _)| *cursor > acknowledged);
-                if state.closing && state.acknowledged >= state.cursor {
-                    drop(state);
-                    host.end(true);
-                    return;
-                }
-            }
-            Body::Command(command) => model.command(host, &mut state, command),
-            other => model.troubled(format!("the daemon sent the host of {} a frame it never sends: {other:?}", host.task)),
-        }
-    }
-    lock(&host.state).lane = None;
-    model.tick();
-}
-
-/// A doubled host of `engine-doubles` as the process of a host of the model.
-struct Doubled(Served);
-impl Process for Doubled {
-    fn alive(&self) -> bool {
-        self.0.alive()
-    }
-    fn end(&self, closed: bool) {
-        self.0.end(ExitStatus::from_raw(if closed { 0 } else { KILLED }));
-    }
-}
-
 /// The model plays every doubled host: the first connection to one starts its Claude from the
 /// bootstrap it was launched with, and each connection is served on a thread of its own.
+impl host_transport::Model for ClaudeModel {
+    type Play = Conversation;
+
+    fn tick(&self) {
+        ClaudeModel::tick(self);
+    }
+
+    fn troubled(&self, why: String) {
+        ClaudeModel::troubled(self, why);
+    }
+
+    fn command(&self, host: &Host, state: &mut State, command: Command) {
+        ClaudeModel::command(self, host, state, command);
+    }
+}
+
 impl Serve for ClaudeModel {
     fn connect(&self, served: &Served, stream: UnixStream) {
         let host = match self.host(served.process_id()) {
             Some(host) => host,
             None => match self.start(served.bootstrap(), served.process_id(), Box::new(Doubled(served.clone()))) {
                 Ok(host) => {
-                    let (watched, ended) = (served.clone(), host.clone());
-                    std::thread::spawn(move || {
-                        watched.wait();
-                        ended.end(false);
-                    });
+                    host_transport::ends_with(served, &host);
                     host
                 }
                 Err(error) => {
@@ -1762,12 +1505,8 @@ impl Serve for ClaudeModel {
                 }
             },
         };
-        if let Ok(connection) = stream.try_clone() {
-            let mut state = lock(&host.state);
-            if state.ended {
-                return;
-            }
-            state.connections.push(connection);
+        if !host.hold(&stream) {
+            return;
         }
         let model = self.clone();
         self.spawn(move || model.serve(&host, stream));

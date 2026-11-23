@@ -1,10 +1,14 @@
 //! Launches through the SDK with no process behind them: the domain's hosts are the doubles of
-//! `engine-doubles`, and the Claude host model of `provider-claude` plays each one and every probe.
-//! It reads what each native Claude was started with and the prompts it took as the fake native
-//! Claude records them, so a test reads the same thing whichever hosts it runs on.
+//! `engine-doubles`; the Claude host model of `provider-claude` plays each Claude host and every
+//! probe, and the Codex host model of `provider-codex` each Codex host. It reads what each native
+//! Claude was started with and the prompts it took as the fake native Claude records them, and the
+//! Codex model writes the native requests where the fake native Codex writes them, so a test reads
+//! the same thing whichever hosts it runs on.
 use crate::domain_runtime::DomainRuntime;
 use crate::sdk_owner::SdkOwners as _;
 use alondra_claude_host_model::{ClaudeModel, NativeStart, Turns};
+use alondra_codex_host_model::CodexModel;
+use alondra_engine_doubles::agent_host::{Serve, Served, Stop};
 use alondra_daemon_engine_model::{LaunchOptions, LaunchOptionsFile as _};
 use alondra_domain_rules::InteractionId;
 use alondra_engine_doubles::agent_host::InProcessHosts;
@@ -39,6 +43,7 @@ pub fn open(home: &Path) -> anyhow::Result<DomainRuntime> {
 pub struct SdkLaunches {
     domain: Arc<DomainRuntime>,
     pub model: ClaudeModel,
+    codex: CodexModel,
     pub hosts: Arc<InProcessHosts>,
     state_root: PathBuf,
     _state: crate::test_support::Directory,
@@ -60,14 +65,15 @@ impl SdkLaunches {
         let hosts = alondra_engine_doubles::agent_host::wire(domain.ports());
         let model = ClaudeModel::new(home, Arc::default());
         model.set_turns(turns);
-        hosts.set_serve(model.clone());
+        let codex = CodexModel::default();
+        hosts.set_serve(Models { claude: model.clone(), codex: codex.clone() });
         let probe = model.clone();
         hosts.set_probe(move |run| probe.probe(run));
         let state = crate::test_support::Directory::for_unix_socket();
         let backend = model_backend(home, &state);
         let state_root = backend.state_root.clone();
         domain.enable_sdk(backend);
-        Self { domain: Arc::clone(domain), model, hosts, state_root, _state: state }
+        Self { domain: Arc::clone(domain), model, codex, hosts, state_root, _state: state }
     }
 
     fn last(&self) -> NativeStart {
@@ -133,6 +139,25 @@ impl Drop for SdkLaunches {
     fn drop(&mut self) {
         self.domain.stop_sdk_owners();
         self.model.close();
+        self.codex.close();
+        untroubled(&self.codex);
+    }
+}
+
+/// The models that play the doubled hosts: each host goes to the Claude or the Codex model, by
+/// the SDK its bootstrap says it runs.
+struct Models {
+    claude: ClaudeModel,
+    codex: CodexModel,
+}
+
+impl Serve for Models {
+    fn connect(&self, served: &Served, stream: std::os::unix::net::UnixStream) {
+        if alondra_codex_host_model::plays(served.bootstrap()) { self.codex.connect(served, stream) } else { self.claude.connect(served, stream) }
+    }
+
+    fn stop(&self, served: &Served, stop: Stop) {
+        if alondra_codex_host_model::plays(served.bootstrap()) { self.codex.stop(served, stop) } else { self.claude.stop(served, stop) }
     }
 }
 
@@ -142,6 +167,7 @@ impl Drop for SdkLaunches {
 pub struct ModelHosts {
     pub hosts: Arc<InProcessHosts>,
     model: std::sync::OnceLock<ClaudeModel>,
+    pub codex: CodexModel,
     state: crate::test_support::Directory,
     /// Beside this path Claude writes the plans it asks about, as the fake native Claude does
     /// beside its capture.
@@ -153,7 +179,7 @@ impl Default for ModelHosts {
     fn default() -> Self {
         let state = crate::test_support::Directory::for_unix_socket();
         let capture = state.join("capture");
-        Self { hosts: Arc::default(), model: std::sync::OnceLock::new(), state, capture }
+        Self { hosts: Arc::default(), model: std::sync::OnceLock::new(), codex: CodexModel::default(), state, capture }
     }
 }
 
@@ -170,7 +196,7 @@ impl crate::engine_fixtures::owner::Hosts for ModelHosts {
         let model = ClaudeModel::new(home, Arc::default());
         model.set_turns(Turns::Answered);
         model.set_capture(&self.capture);
-        self.hosts.set_serve(model.clone());
+        self.hosts.set_serve(Models { claude: model.clone(), codex: self.codex.clone() });
         let probe = model.clone();
         self.hosts.set_probe(move |run| probe.probe(run));
         assert!(self.model.set(model).is_ok(), "one backend per slice");
@@ -202,12 +228,14 @@ impl crate::engine_fixtures::owner::Hosts for ModelHosts {
     }
 
     fn kill(&self, group: i32) {
-        self.model().kill_process(u32::try_from(group).expect("a host's number is positive"));
+        let host = u32::try_from(group).expect("a host's number is positive");
+        self.model().kill_process(host);
+        self.codex.kill_process(host);
     }
 
     fn watch(&self, group: i32) -> crate::engine_fixtures::owner::HostWatch {
-        let (model, host) = (self.model().clone(), u32::try_from(group).expect("a host's number is positive"));
-        crate::engine_fixtures::owner::HostWatch::new(move || model.runs(host))
+        let (model, codex, host) = (self.model().clone(), self.codex.clone(), u32::try_from(group).expect("a host's number is positive"));
+        crate::engine_fixtures::owner::HostWatch::new(move || model.runs(host) || codex.runs(host))
     }
 
     fn forget(&self, session: &str) {
@@ -233,6 +261,10 @@ impl crate::engine_fixtures::owner::Hosts for ModelHosts {
     fn own_turn(&self) {
         self.model().own_turn();
     }
+
+    fn codex_executables(&self, home: &Path) -> (PathBuf, PathBuf) {
+        (model_file(&home.join("model-host"), "codex-host.cjs"), model_file(home, "codex-native"))
+    }
 }
 
 #[cfg(feature = "whole-engine")]
@@ -241,6 +273,8 @@ impl Drop for ModelHosts {
         if let Some(model) = self.model.get() {
             model.close();
         }
+        self.codex.close();
+        untroubled(&self.codex);
     }
 }
 
@@ -264,14 +298,7 @@ fn rests_on(task: &str, card: &InteractionId) -> bool {
 /// check their digests, and the model plays what they would.
 fn model_backend(home: &Path, state: &Path) -> crate::sdk_backend::SdkBackend {
     let folder = home.join("model-host");
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder).unwrap();
-    let file = |name: &str| {
-        let path = folder.join(name);
-        std::fs::write(&path, format!("the model plays {name}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::canonicalize(path).unwrap()
-    };
-    let (node, host, native) = (file("node"), file("host.cjs"), file("claude"));
+    let (node, host, native) = (model_file(&folder, "node"), model_file(&folder, "host.cjs"), model_file(&folder, "claude"));
     let environment = crate::test_support::fixture_environment(home);
     crate::sdk_backend::SdkBackend {
         node_sha256: crate::sdk_backend::digest(&node).unwrap(),
@@ -289,5 +316,22 @@ fn model_backend(home: &Path, state: &Path) -> crate::sdk_backend::SdkBackend {
         release: crate::sdk_backend::this_release(),
         provider: alondra_core::accounts::Provider::Claude,
         origin: None,
+    }
+}
+
+/// A file in `folder` that stands for `name`, which no process runs: the model plays it.
+fn model_file(folder: &Path, name: &str) -> PathBuf {
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(folder).unwrap();
+    let path = folder.join(name);
+    std::fs::write(&path, format!("the model plays {name}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::canonicalize(path).unwrap()
+}
+
+/// A test whose Codex host was asked something the model does not play fails, unless it fails
+/// already.
+fn untroubled(codex: &CodexModel) {
+    if let Some(trouble) = codex.trouble().filter(|_| !std::thread::panicking()) {
+        panic!("the Codex host model: {trouble}");
     }
 }

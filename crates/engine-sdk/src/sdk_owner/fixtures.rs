@@ -191,6 +191,10 @@ pub trait Hosts: Default {
     fn recover(&self);
     /// Claude opens a turn of its own where the last turn was scripted with `own-turn-later`.
     fn own_turn(&self);
+    /// The Codex host and the native Codex app-server a Codex backend under `home` launches. The
+    /// native writes every request it gets to the transcript its environment names, and reads its
+    /// account answers from the sidecar beside it, as the repository's fake native Codex does.
+    fn codex_executables(&self, home: &Path) -> (PathBuf, PathBuf);
 }
 
 /// A host a test watches: whether anything of it still runs, and a wait until nothing does.
@@ -299,6 +303,13 @@ impl Hosts for ProcessHosts {
 
     fn own_turn(&self) {
         std::fs::write(format!("{}.own-turn", self.capture.display()), "").unwrap();
+    }
+
+    fn codex_executables(&self, home: &Path) -> (PathBuf, PathBuf) {
+        let native = home.join("codex-native");
+        std::fs::copy(runfile("FIXTURE_CODEX_NATIVE"), &native).unwrap();
+        std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
+        (runfile("FIXTURE_CODEX_HOST"), native)
     }
 }
 

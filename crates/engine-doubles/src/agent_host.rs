@@ -86,6 +86,8 @@ struct Life {
     claimed: bool,
     footprint: u64,
     held: Vec<UnixStream>,
+    /// The host started its native agent, which runs while this holds.
+    native: bool,
 }
 impl Host {
     fn life(&self) -> MutexGuard<'_, Life> {
@@ -125,6 +127,14 @@ impl Host {
     fn member(&self) -> Member {
         Member { pid: self.group(), started: (u64::from(self.process), 0), zombie: false }
     }
+    /// The native agent the host starts, as its process: a member of the host's group.
+    fn native(&self) -> Member {
+        Member { pid: self.group(), started: (u64::from(self.process), 1), zombie: false }
+    }
+    fn native_runs(&self) -> bool {
+        let life = self.life();
+        life.exit.is_none() && life.native
+    }
     fn group(&self) -> i32 {
         i32::try_from(self.process).expect("a doubled process id fits a process group number")
     }
@@ -153,6 +163,10 @@ impl Served {
     /// Waits until the host ends, however it ends, and returns how.
     pub fn wait(&self) -> ExitStatus {
         self.0.wait()
+    }
+    /// The host started its native agent, or that agent exited.
+    pub fn set_native(&self, runs: bool) {
+        self.0.life().native = runs;
     }
     /// Keeps the host's end of a connection open until the host ends.
     pub fn hold(&self, stream: UnixStream) {
@@ -545,6 +559,12 @@ impl StopHandle for Stopper {
     }
     fn tree(&self) -> io::Result<Vec<Member>> {
         Ok(Vec::new())
+    }
+    fn native(&self) -> io::Result<Option<Member>> {
+        Ok(self.running().filter(|host| host.native_runs()).map(|host| host.native()))
+    }
+    fn alive(&self, member: &Member) -> io::Result<bool> {
+        Ok(self.host().is_some_and(|host| host.native() == *member && host.native_runs()))
     }
     fn footprint(&self) -> io::Result<Option<u64>> {
         Ok(self.process_group().and(self.host()).map(|host| { let life = host.life(); if life.exit.is_none() { life.footprint } else { 0 } }))
