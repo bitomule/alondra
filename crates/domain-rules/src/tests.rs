@@ -147,7 +147,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
+        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
     };
     (request, task)
 }
@@ -1214,6 +1214,7 @@ fn lifetime_pr_survives_cancel_reopen_and_register_is_noop() {
         },
     )
     .unwrap();
+    exec(&mut s, Actor::System, Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None }).unwrap();
     exec(
         &mut s,
         agent(),
@@ -3385,7 +3386,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::SettleSuggestion { interaction_id: ids.interaction.into(), decision: SuggestionDecision::Discard { reason: "Covered".into() } }, false),
         (Command::SettlePlanReview { review_id: ids.interaction.into(), task_id: ids.task.into(), outcome: PlanReviewOutcome::Unchanged { reason: "Same plan".into() } }, false),
         (Command::SettleStall { case_id: ids.interaction.into(), task_id: ids.task.into(), outcome: StallOutcome::Instruct { text: "Present it".into() } }, false),
-        (Command::ReleaseTask { task_id: ids.task.into(), reason: "node closed by the user".into() }, false),
+        (Command::ReleaseTask { task_id: ids.task.into(), reason: "node closed by the user".into(), relaunch: Relaunch::AskUser, cwd: None }, false),
         (Command::ConfirmCleanup { task_id: ids.task.into(), discard: Vec::new() }, false),
         (Command::RecordNodeEnd { task_id: ids.task.into(), end: NodeEnd::Closed, agent_id: None }, false),
         (Command::WaitForTasks { task_id: ids.task.into(), tasks: BTreeSet::from([ids.task.into()]) }, false),
@@ -3816,7 +3817,7 @@ fn releasing_a_task_whose_node_the_user_closed_puts_it_back_to_not_started_with_
     let mut s = fixture();
     exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
-    let release = Command::ReleaseTask { task_id: "t".into(), reason: "node closed by the user".into() };
+    let release = Command::ReleaseTask { task_id: "t".into(), reason: "node closed by the user".into(), relaunch: Relaunch::AskUser, cwd: None };
     reject_unchanged(&mut s, user(), release.clone(), "forbidden");
     reject_unchanged(&mut s, agent(), release.clone(), "forbidden");
     exec(&mut s, Actor::System, release.clone()).unwrap();
@@ -3830,11 +3831,34 @@ fn releasing_a_task_whose_node_the_user_closed_puts_it_back_to_not_started_with_
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Running, "a new node takes the freed task up again");
 }
 
+/// F-STORE-4: who starts a released task's next node, and where, is written by the commit that
+/// releases it, never by a later write a crash or a full disk can lose. A node that takes the task
+/// again, or its end, clears it.
+#[test]
+fn a_released_task_keeps_who_starts_its_next_node_in_the_commit_that_releases_it() {
+    let mut s = fixture();
+    exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
+    let out = exec(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "node closed by the user".into(),
+        relaunch: Relaunch::AskUser, cwd: Some("/work/app".into()) }).unwrap();
+    assert!(out.changed);
+    assert_eq!(s.tasks[&"t".into()].released, Some(ClosedNode { name: "Instance A".into(), cwd: Some("/work/app".into()), relaunch: Relaunch::AskUser }));
+    register_b(&mut s);
+    exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].released, None, "a new node took it");
+
+    exec(&mut s, agent_b(), Command::StartTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Gone, agent_id: Some("b".into()) }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].released, Some(ClosedNode { name: "Instance B".into(), cwd: None, relaunch: Relaunch::ByItself }),
+        "a node that ends while its task still has work releases it for Alondra to relaunch");
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].released, None, "an ended task waits for no node");
+}
+
 #[test]
 fn a_finished_task_is_not_released() {
     let mut s = fixture();
     exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
-    reject_unchanged(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "node closed by the user".into() }, "task_not_active");
+    reject_unchanged(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "node closed by the user".into(), relaunch: Relaunch::AskUser, cwd: None }, "task_not_active");
 }
 
 fn merge_observed(s: &mut DomainState) -> CommandOutcome {
@@ -4121,17 +4145,17 @@ fn a_task_whose_node_session_closed_is_reopened_only_once_the_node_end_is_record
     let t = &s.tasks[&"t".into()];
     assert_eq!((t.state, t.started, t.agent_id.clone()), (TaskState::NotStarted, false, None));
 }
-/// The user kept the node open when Alondra came to close it: reopened, the task keeps working
-/// with it.
+/// The user kept the node open when Alondra came to close it: reopened, the task waits for a new
+/// node like one whose node closed.
 #[test]
-fn a_task_reopened_with_its_node_kept_by_the_user_keeps_working_with_it() {
+fn a_task_reopened_with_its_node_kept_by_the_user_waits_for_a_new_node() {
     let mut s = fixture();
     exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
     exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::KeptByUser, agent_id: Some("a".into()) }).unwrap();
     exec(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }).unwrap();
     let t = &s.tasks[&"t".into()];
-    assert_eq!((t.state, t.started, t.agent_id.clone()), (TaskState::Running, true, Some("a".into())));
+    assert_eq!((t.state, t.started, t.agent_id.clone()), (TaskState::NotStarted, false, None));
 }
 #[test]
 fn the_orchestrator_cannot_give_a_node_a_second_task() {
@@ -5324,7 +5348,7 @@ fn native_account_is_chosen_at_first_admission_and_cannot_change_after_release()
         let other=if provider==Provider::Claude{Provider::Codex}else{Provider::Claude};
         reject_unchanged(&mut state,Actor::System,admit(other,Some(work.clone()),"other-provider"),"active_account_immutable");
         reject_unchanged(&mut state,Actor::System,admit(provider,None,"other-account"),"active_account_immutable");
-        exec(&mut state,Actor::System,Command::ReleaseTask{task_id:"t".into(),reason:"The physical old host has ended".into()}).unwrap();
+        exec(&mut state,Actor::System,Command::ReleaseTask{task_id:"t".into(),reason:"The physical old host has ended".into(),relaunch:Relaunch::ByItself,cwd:None}).unwrap();
         assert!(state.lifecycle_of(&"t".into()).unwrap().execution().is_none());
         reject_unchanged(&mut state,Actor::System,admit(other,Some(work.clone()),"after-release-provider"),"active_account_immutable");
         reject_unchanged(&mut state,Actor::System,admit(provider,None,"after-release-account"),"active_account_immutable");

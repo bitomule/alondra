@@ -372,6 +372,8 @@ impl DomainState {
                 out.push(Reaction::Retry(t.id.clone()));
             } else if !relaunch && f.closed && matches!(f.start, Start::Launched | Start::Ready) {
                 out.push(Reaction::Ask(t.id.clone(), StartProblem::NodeClosed));
+            } else if f.start == Start::Launched && self.holder(t, f).is_err() {
+                out.push(Reaction::Ask(t.id.clone(), StartProblem::NodeClosed));
             }
         }
         out

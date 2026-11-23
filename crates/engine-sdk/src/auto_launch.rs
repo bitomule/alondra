@@ -111,7 +111,7 @@ pub async fn pass(domain: &dyn Runtime, home: &Path) -> Result<()> {
     let mut ready: Vec<&Task> = state.tasks.values().filter(|task| candidate(&state, task)).collect();
     ready.sort_by_key(|task| (task.priority, planned.get(&task.id).copied().unwrap_or(now), &task.id));
     for task in ready {
-        let relaunching = match domain.engine().closed_task(&task.id).map(|node| node.relaunch) {
+        let relaunching = match task.released.as_ref().map(|node| node.relaunch) {
             Some(Relaunch::AskUser) => continue,
             Some(Relaunch::ByItself) => true,
             None => false,

@@ -53,7 +53,7 @@ fn apply(s: &mut DomainState, step: &Move, n: usize) {
             });
         }
         Move::Relaunch => {
-            let _ = exec(s, Actor::System, Command::ReleaseTask { task_id: SDK.into(), reason: "The host ended".into() });
+            let _ = exec(s, Actor::System, Command::ReleaseTask { task_id: SDK.into(), reason: "The host ended".into(), relaunch: Relaunch::ByItself, cwd: None });
             let _ = exec(s, Actor::System, Command::AdmitExecution {
                 provider: alondra_core::accounts::Provider::Claude, task_id: SDK.into(), agent_id: NODE.into(), conversation: format!("conversation-{SDK}"),
                 instance: format!("relaunch-{n}"), host: "sdk-host".into(), model: None, account: None, leaves_limit: None,
@@ -351,7 +351,7 @@ fn an_answer_to_a_card_of_a_replaced_node_reaches_the_new_node() {
         run(&mut s, step, n).unwrap_or_else(|error| panic!("{step:?} was refused: {error}"));
     }
     exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: "next".into(), name: "next".into(), at: 0 }).unwrap();
-    exec(&mut s, Actor::System, Command::ReleaseTask { task_id: SDK.into(), reason: "The host ended".into() }).unwrap();
+    exec(&mut s, Actor::System, Command::ReleaseTask { task_id: SDK.into(), reason: "The host ended".into(), relaunch: Relaunch::ByItself, cwd: None }).unwrap();
     exec(&mut s, Actor::System, Command::AdmitExecution {
         provider: alondra_core::accounts::Provider::Claude, task_id: SDK.into(), agent_id: "next".into(), conversation: format!("conversation-{SDK}"),
         instance: "next-instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None,

@@ -150,7 +150,7 @@ fn cancelling_a_task_with_a_node_is_cancelled_only_with_the_node_end_receipt() {
     assert_aggregate_rules(&s);
 
     assert_eq!(exec(&mut s, Actor::System, Command::RecordTaskCleanup { task_id: "t".into() }).unwrap_err().code, "conflict", "the node's end is the receipt");
-    assert_eq!(exec(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "closed".into() }).unwrap_err().code, "task_not_active");
+    assert_eq!(exec(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "closed".into(), relaunch: Relaunch::ByItself, cwd: None }).unwrap_err().code, "task_not_active");
 
     must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
     assert_eq!(lifecycle(&s, "t"), (TaskState::Cancelled, true, Some("a".into()), None));
@@ -256,7 +256,7 @@ fn a_node_that_closes_on_an_open_task_releases_its_execution_and_a_new_node_is_a
     assert_eq!(lifecycle(&s, "t"), (TaskState::NotStarted, false, Some("b".into()), None));
     must(&mut s, node("b"), Command::StartTask { task_id: "t".into() });
     assert_eq!(lifecycle(&s, "t"), (TaskState::Running, true, Some("b".into()), None));
-    must(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "the user closed it".into() });
+    must(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "the user closed it".into(), relaunch: Relaunch::AskUser, cwd: None });
     assert_eq!(lifecycle(&s, "t"), (TaskState::NotStarted, false, None, None));
     assert_aggregate_rules(&s);
 }
@@ -291,7 +291,7 @@ fn a_task_without_a_journal_is_refused_and_moves_nowhere() {
         id: "old".into(), request_id: "r".into(), agent_id: Some("a".into()), title: "Old".into(), state: TaskState::Running, revision: 0,
         started: true, review_prs: false, created_revision: 0, pending_user_inputs: Default::default(), final_presentation: None, pr_id: None, later_prs: vec![], opened_prs: Default::default(), dependencies: BTreeSet::new(), stack: None,
         documents: BTreeMap::new(), archived: false, model: None, waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(),
-        verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
+        verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
     };
     s.tasks.insert(unjournaled.id.clone(), unjournaled);
     assert_eq!(s.validate_journal().unwrap_err().code, "lifecycle_journal", "a loaded state with a task and no journal is refused");

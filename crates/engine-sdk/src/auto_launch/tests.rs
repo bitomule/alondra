@@ -195,7 +195,10 @@ async fn a_task_whose_node_the_user_closed_is_not_started_again_by_itself() {
     let f = world();
     done_task(&f, "f0");
     create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    f.domain.live().remember_closed_task("f1", crate::live::ClosedNode { name: "app/f1".into(), cwd: None, relaunch: crate::live::Relaunch::AskUser });
+    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "closed".into(), name: "app/f1".into(), at: 0 });
+    command(&f.domain, user(), Command::AssignTask { task_id: "f1".into(), agent_id: "closed".into(), model: None });
+    command(&f.domain, Actor::System, Command::ReleaseTask { task_id: "f1".into(), reason: "node closed by the user".into(),
+        relaunch: crate::live::Relaunch::AskUser, cwd: None });
     pass(&*f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 0);
     assert_eq!(auto(&f, "f1"), None);
@@ -299,7 +302,7 @@ async fn a_task_of_a_scheduled_request_needs_its_plan_and_takes_the_schedules_mo
         id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
         revision: 0, started: false, review_prs: false, created_revision: 0, pending_user_inputs: Default::default(), final_presentation: None, pr_id: None, later_prs: vec![], opened_prs: Default::default(), dependencies: Default::default(), stack: None,
         documents: Default::default(), archived: false, model: None, waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(),
-        verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, move_refused: None, allowed: Default::default(), project: None,
+        verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, move_refused: None, allowed: Default::default(), project: None,
     };
     command(&f.domain, Actor::System, Command::RecordScheduleRunSent { run_id: "run".into(), request, task, finished_at: 101,
         launch: alondra_domain_rules::ScheduleLaunchIntent { name: "scheduled/weekly-run".into(), cwd: f.project.to_str().unwrap().into(),
@@ -634,8 +637,97 @@ async fn a_node_alondra_closed_is_relaunched_by_itself_and_a_failed_relaunch_is_
         changed.changed().await.unwrap();
     }
     assert!(f.sdk.starts().iter().any(|start| start["resume"].as_str() == Some(original.as_str())), "it resumes the same session: {:?}", f.sdk.starts());
-    assert!(f.domain.live().closed_task("f1").is_none(), "the task no longer waits for a relaunch");
+    assert!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].released.is_none(), "the task no longer waits for a relaunch");
     assert!(problem(&f, "f1").is_none());
+}
+
+/// F-STORE-4: Alondra took a task's node away for a reason of its own, and what the relaunch needed
+/// was written apart from the release, to a file that a full disk or a crash between both writes
+/// lost (here its next copy cannot be written). After a restart the task was left with no node, no
+/// card and nothing to start it. The release itself says who starts the next node, so the daemon
+/// that comes back starts it by itself.
+#[tokio::test]
+async fn a_node_alondra_closed_is_relaunched_by_itself_by_the_daemon_that_restarts_after_it() {
+    let mut f = world_using_sdk(SdkLaunches::enable);
+    create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
+    pass(&*f.domain, &f.home).await.unwrap();
+    f.sdk.until_answered("f1").await;
+    let node = agent_of(&f, "f1").expect("its original SDK node");
+    let original = f.sdk.starts()[0]["session"].as_str().unwrap().to_owned();
+    f.domain.stop_sdk_host(&node).unwrap();
+    let (backend, runtime) = f.domain.sdk().unwrap();
+    crate::sdk_owner::end_unowned_host(runtime, backend, "f1".into()).unwrap();
+    std::fs::create_dir_all(f.home.join("closed-task-nodes.next")).unwrap();
+    crate::node_exit::take_out(&*f.domain, &node.0, crate::node_exit::REPLACE_ABORTED, Some(f.project.to_str().unwrap().into()),
+        crate::live::Relaunch::ByItself).unwrap();
+    let state = f.domain.state().unwrap();
+    let cases: Vec<_> = state.interactions.values()
+        .filter(|card| card.scope == (alondra_domain_rules::Scope::Task { task_id: "f1".into() }) && alondra_domain_rules::is_stall_case(card) && state.open(card))
+        .map(|card| card.id.clone()).collect();
+    for case in cases {
+        command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SettleStall {
+            case_id: case, task_id: "f1".into(), outcome: alondra_domain_rules::StallOutcome::Instruct { text: "Go on with your task".into() },
+        });
+    }
+
+    f.domain.stop_sdk_owners();
+    f.domain = Arc::new(crate::engine_fixtures::open(&f.home).unwrap());
+    alondra_engine_admission::measure_machine(&*f.domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
+        memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
+        disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() }, alondra_engine_ports::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
+    f.sdk = SdkLaunches::enable(&f.domain, &f.home);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::NotStarted);
+    pass(&*f.domain, &f.home).await.unwrap();
+    {
+        let state = f.domain.state().unwrap();
+        let t = &state.tasks[&TaskId::from("f1")];
+        let retries = f.domain.store.lock().unwrap().start_retries().unwrap();
+        let launched = f.domain.store.lock().unwrap().task_was_launched(&TaskId::from("f1")).unwrap();
+        eprintln!("DEBUG task {:?} agent {:?} released {:?} started {} auto {:?} retries {:?} launched {:?} problem {:?} held {} candidate {}",
+            t.state, t.agent_id, t.released, t.started, auto(&f, "f1"), retries,
+            launched, problem(&f, "f1").map(|p| p.body),
+            f.domain.gate().held_by_user(&TaskId::from("f1")), crate::auto_launch::candidate(&state, t));
+        eprintln!("DEBUG starts {:?}", f.sdk.starts().len());
+    }
+    let relaunched = agent_of(&f, "f1").expect("the restarted daemon relaunches it by itself");
+    assert_ne!(relaunched, node);
+    assert!(problem(&f, "f1").is_none(), "nobody is asked to relaunch it");
+    let mut changed = f.domain.subscribe();
+    while f.domain.state().unwrap().lifecycle_of(&TaskId::from("f1")).unwrap().resource() != Some(alondra_domain::ResourceEvidence::Available) {
+        changed.changed().await.unwrap();
+    }
+    assert!(f.sdk.starts().iter().any(|start| start["resume"].as_str() == Some(original.as_str())), "it resumes the same session: {:?}", f.sdk.starts());
+}
+
+/// F-LIFE-2 and H-LIFE-4: the user kept a task's SDK node open when Alondra closed the task, then
+/// reopened the task. It used to get an execution on that node that no host runs, so every fact of
+/// the node was refused and no loop of the daemon ever started it: it said «Delivering» for good.
+/// Reopened with no node, the gate starts a new SDK execution that resumes the saved session.
+#[tokio::test]
+async fn a_task_reopened_with_its_node_kept_by_the_user_gets_a_new_execution_that_resumes_its_session() {
+    let f = world_using_sdk(SdkLaunches::enable);
+    f.domain.admission().ignore_mac();
+    create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
+    pass(&*f.domain, &f.home).await.unwrap();
+    f.sdk.until_answered("f1").await;
+    let kept = agent_of(&f, "f1").expect("its first node");
+    let original = f.sdk.starts()[0]["session"].as_str().unwrap().to_owned();
+
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "f1".into(), reason: None });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "f1".into(), end: NodeEnd::KeptByUser, agent_id: Some(kept.clone()) });
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::ReopenTask { task_id: "f1".into() });
+    for _ in 0..2 {
+        pass(&*f.domain, &f.home).await.unwrap();
+        crate::admission::pass_at(&*f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
+    }
+    let state = f.domain.state().unwrap();
+    let execution = state.lifecycle_of(&TaskId::from("f1")).unwrap().execution().cloned().expect("the reopened task runs an execution");
+    assert_ne!(execution.host().as_str(), "claude-bg", "never an execution that no host runs");
+    f.sdk.until_turns_ended("f1", 2).await;
+    assert_eq!(f.domain.state().unwrap().lifecycle_of(&TaskId::from("f1")).unwrap().execution().map(|execution| execution.generation()), Some(2),
+        "the gate started a new SDK execution for it");
+    let resumed = f.sdk.starts().iter().skip(1).any(|start| start["resume"].as_str() == Some(original.as_str()));
+    assert!(resumed, "the new execution resumes the saved session: {:?}", f.sdk.starts());
 }
 
 #[tokio::test]

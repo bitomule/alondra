@@ -9,7 +9,7 @@ use alondra_core::model_selection::{SelectionDecision, TaskSelection};
 use alondra_domain_rules::{AgentId, DomainError, DomainState, StartFacts, Task, TaskId};
 use alondra_engine_ports::hosts::Launched;
 use alondra_engine_ports::node_close::{Answer, CloseOutcome, Sessions};
-use alondra_engine_ports::sdk::{ClosedNode, LastRequest, SdkEngine, SessionStart, StartKind, Work};
+use alondra_engine_ports::sdk::{LastRequest, SdkEngine, SessionStart, StartKind, Work};
 use alondra_engine_ports::{Registry, Runtime};
 use alondra_provider_contract::OrderedObservation;
 use std::collections::BTreeMap;
@@ -138,25 +138,8 @@ impl SdkEngine for Engine {
         whole_engine("start_facts")
     }
 
-    fn closed_task(&self, _: &dyn Runtime, _: &TaskId) -> Option<ClosedNode> {
-        whole_engine("closed_task")
-    }
-
-    fn remember_closed_task(&self, _: &dyn Runtime, _: &TaskId, _: ClosedNode) {
-        whole_engine("remember_closed_task")
-    }
-
-    /// A launch forgets the node that closed on its task; the double remembers none.
-    fn forget_closed_task(&self, _: &dyn Runtime, _: &TaskId) {
-        self.note("forget_closed_task");
-    }
-
     fn node(&self, _: &dyn Runtime, _: &str) -> Option<alondra_core::Node> {
         whole_engine("node")
-    }
-
-    fn node_cwd(&self, _: &dyn Runtime, _: &str) -> Option<String> {
-        whole_engine("node_cwd")
     }
 
     fn node_removed(&self, _: &dyn Runtime, _: &str) {

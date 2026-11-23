@@ -2180,7 +2180,7 @@ fn the_texts_the_retention_lets_go_of_leave_the_state_the_store_keeps() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
-    execute(&mut store, &Actor::System, "release", Command::ReleaseTask { task_id: "task-1".into(), reason: "The SDK host takes it".into() });
+    execute(&mut store, &Actor::System, "release", Command::ReleaseTask { task_id: "task-1".into(), reason: "The SDK host takes it".into(), relaunch: alondra_domain_rules::Relaunch::ByItself, cwd: None });
     let admit = envelope(&mut store, "admit", Command::AdmitExecution {
         provider: alondra_core::accounts::Provider::Claude, task_id: "task-1".into(), agent_id: "agent-1".into(),
         conversation: "conversation-1".into(), instance: "resource-1".into(), host: "fixture-service".into(),

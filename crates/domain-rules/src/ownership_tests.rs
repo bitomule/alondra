@@ -128,7 +128,7 @@ impl World {
             id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
             revision: 0, started: false, review_prs: false, created_revision: 0, pending_user_inputs: Default::default(), final_presentation: None, pr_id: None, later_prs: vec![], opened_prs: Default::default(), dependencies: BTreeSet::new(), stack: None,
             documents: BTreeMap::new(), archived: false, model: None, waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(),
-            verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
+            verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
         };
         let options = alondra_core::options::OptionsFile::default().resolve(Some("BlurCamera"), &BTreeMap::new()).unwrap();
         w.must(Actor::System, Command::RecordScheduleRunSent {
@@ -267,7 +267,7 @@ impl World {
                         let agent = self.s.tasks[&task].agent_id.clone();
                         self.must(Actor::System, Command::RecordNodeEnd { task_id: task.clone(), end: NodeEnd::Gone, agent_id: agent });
                     } else {
-                        self.must(Actor::System, Command::ReleaseTask { task_id: task.clone(), reason: "node closed by the user".into() });
+                        self.must(Actor::System, Command::ReleaseTask { task_id: task.clone(), reason: "node closed by the user".into(), relaunch: Relaunch::AskUser, cwd: None });
                     }
                     let fact = self.fact(&task);
                     fact.closed = true;
@@ -519,6 +519,23 @@ fn a_task_a_scheduled_run_asks_for_without_a_plan_is_refused_and_with_one_reache
     assert_eq!(w.s.holder(task, &w.facts[&task.id]), Ok(Holder::Gate(GateCause::Room)));
     let planless_facts = StartFacts::default();
     assert_eq!(w.s.holder(task, &planless_facts).unwrap_err().why, "has no launch plan", "the invariant names a task without one");
+}
+
+/// F-STORE-4: a task released by an older daemon that kept its closed node in a file a crash or a
+/// full disk lost was in nobody's hands for good. `holder` names it, and the reaction the daemon
+/// runs on every pass puts it to the user instead of leaving it there.
+#[test]
+fn a_released_task_with_no_record_of_its_closed_node_is_put_to_the_user() {
+    let mut w = World::new();
+    w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![] });
+    w.apply(&Step::Admit(0));
+    let task: TaskId = "t1".into();
+    assert!(w.s.tasks[&task].agent_id.is_some());
+    w.apply(&Step::UserClosesNode(0));
+    w.s.tasks.get_mut(&task).unwrap().released = None;
+    w.fact(&task).closed = false;
+    assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]).unwrap_err().why, "its node is gone and nobody was asked");
+    assert_eq!(w.s.react(&w.facts), [Reaction::Ask(task, StartProblem::NodeClosed)]);
 }
 
 /// A start that keeps failing is tried again by itself, then goes to the user, who can try again.

@@ -402,7 +402,7 @@ fn task_title(domain: &dyn Runtime, task: &TaskId) -> String {
 /// Only a replacement that did not finish is told: one that did shows in tasks_in_progress and the
 /// task, and one that left the task without a node is followed by the node Alondra starts by itself.
 fn tell_replace_failed(domain: &dyn Runtime, task: &TaskId, error: &DomainError) {
-    if domain.live().closed_task(&task.0).is_some_and(|node| node.relaunch == crate::live::Relaunch::ByItself) {
+    if domain.state().tasks.get(task).and_then(|task| task.released.as_ref()).is_some_and(|node| node.relaunch == crate::live::Relaunch::ByItself) {
         log!("the replacement of {task}'s node did not finish ({}); Alondra starts a new node by itself", error.message);
         return;
     }
@@ -806,8 +806,8 @@ fn node_folder(domain: &dyn Runtime, session: &str) -> Option<String> {
         .or_else(|| domain.live().mods.session(session).and_then(|reported| reported.cwd))
 }
 
-/// A new node for a task whose node the user closed, launched with the task's mission in the
-/// folder the closed node worked in, else the project its request was asked for.
+/// A new node for a task whose node closed, launched with the task's mission in the folder the
+/// closed node worked in, else the project its request was asked for.
 pub async fn relaunch(domain: &dyn Runtime, home: &Path, task_id: &TaskId) -> Result<Value, DomainError> {
     relaunch_from(domain, home, task_id, Origin::Orchestrator).await
 }
@@ -817,8 +817,13 @@ pub async fn relaunch_from(domain: &dyn Runtime, home: &Path, task_id: &TaskId, 
     let current = state(domain)?;
     let waiting = current.tasks.get(task_id)
         .filter(|task| task.state == alondra_domain_rules::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
-    let (Some(task), Some(closed)) = (waiting, domain.live().closed_task(&task_id.0)) else {
+    let Some(task) = waiting else {
         return Err(DomainError::new("conflict", "This task is not waiting for a relaunch"));
+    };
+    let closed = match &task.released {
+        Some(node) => node.clone(),
+        None if domain.store().lock_or_exit("the domain store").task_was_launched(task_id).map_err(plan_storage)? => crate::live::ClosedNode { name: format!("node/{}", task_id.0), cwd: None, relaunch: crate::live::Relaunch::AskUser },
+        None => return Err(DomainError::new("conflict", "This task is not waiting for a relaunch")),
     };
     let asked = request_choices(domain, &task.request_id).ok().flatten();
     let root = crate::options::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));

@@ -105,7 +105,6 @@ impl Cache {
                 Changed::Keys(keys) => for key in keys {
                     match key {
                         LiveChangeKey::Node(id) => { changed.insert(AgentId(id)); },
-                        LiveChangeKey::Task(id) => owners(&TaskId(id), &previous.state, read.state(), &mut changed),
                     }
                 },
             }

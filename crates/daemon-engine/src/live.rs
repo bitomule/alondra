@@ -9,13 +9,13 @@ use std::collections::HashMap;
 use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
 
 const CLOSED_FILE: &str = "closed-sessions.json";
+/// Where older daemons kept the nodes of released tasks, which the domain keeps with each release now.
 const CLOSED_TASKS_FILE: &str = "closed-task-nodes.json";
 const ABORTED_REPLACES_FILE: &str = "aborted-replaces.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LiveChangeKey {
     Node(String),
-    Task(String),
 }
 
 pub use alondra_engine_ports::sdk::{ClosedNode, Relaunch};
@@ -73,9 +73,6 @@ pub struct Live {
     closed: Mutex<std::collections::BTreeSet<String>>,
     closed_file: Option<std::path::PathBuf>,
     /// A holder that panics leaves it whole, so it is recovered: as `closed`.
-    closed_tasks: Mutex<std::collections::BTreeMap<String, ClosedNode>>,
-    closed_tasks_file: Option<std::path::PathBuf>,
-    /// A holder that panics leaves it whole, so it is recovered: as `closed`.
     aborted_replaces: Mutex<std::collections::BTreeMap<String, String>>,
     aborted_replaces_file: Option<std::path::PathBuf>,
 }
@@ -99,7 +96,6 @@ impl Live {
     fn with_changes<T>(&self, read: impl FnOnce(&alondra_foundation::changes::Changes<LiveChangeKey>) -> T) -> T {
         let _view = self.view.lock_or_exit("the live sessions");
         let _closed = self.tracked(&self.closed, "the closed sessions");
-        let _tasks = self.tracked(&self.closed_tasks, "the closed sessions");
         let _aborted = self.tracked(&self.aborted_replaces, "the closed sessions");
         let _interrupts = self.tracked(&self.close_interrupts, "the close interrupts");
         read(&self.changes)
@@ -108,15 +104,14 @@ impl Live {
     pub fn persisted_in(home: &std::path::Path) -> Self {
         let file = home.join(CLOSED_FILE);
         let closed = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
-        let closed_tasks_file = home.join(CLOSED_TASKS_FILE);
-        let closed_tasks = std::fs::read(&closed_tasks_file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        if let Err(error) = std::fs::remove_file(home.join(CLOSED_TASKS_FILE)) && error.kind() != std::io::ErrorKind::NotFound {
+            log!("could not remove {CLOSED_TASKS_FILE}, which nothing reads any more: {error}");
+        }
         let aborted_replaces_file = home.join(ABORTED_REPLACES_FILE);
         let aborted_replaces = std::fs::read(&aborted_replaces_file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         Self {
             aborted_replaces: Mutex::new(aborted_replaces),
             aborted_replaces_file: Some(aborted_replaces_file),
-            closed_tasks: Mutex::new(closed_tasks),
-            closed_tasks_file: Some(closed_tasks_file),
             usage_pause: crate::usage_pause::UsagePause::default(),
             outputs: Default::default(),
             closed: Mutex::new(closed),
@@ -135,19 +130,6 @@ impl Live {
             save(file, &*closed);
         }
         drop(closed);
-        self.changed.publish();
-    }
-
-    /// The task the user's closed node worked on waits for a relaunch, which needs this.
-    pub fn remember_closed_task(&self, task_id: &str, node: ClosedNode) {
-        let mut tasks = self.tracked(&self.closed_tasks, "the closed sessions");
-        let changed = tasks.get(task_id) != Some(&node);
-        tasks.insert(task_id.to_owned(), node);
-        if changed { self.changes.record(LiveChangeKey::Task(task_id.to_owned())); }
-        if let Some(file) = &self.closed_tasks_file {
-            save(file, &*tasks);
-        }
-        drop(tasks);
         self.changed.publish();
     }
 
@@ -171,31 +153,6 @@ impl Live {
             save(file, &*aborted);
         }
         Some(why)
-    }
-
-    pub fn closed_task(&self, task_id: &str) -> Option<ClosedNode> {
-        self.tracked(&self.closed_tasks, "the closed sessions").get(task_id).cloned()
-    }
-
-    pub fn forget_closed_task(&self, task_id: &str) {
-        let mut tasks = self.tracked(&self.closed_tasks, "the closed sessions");
-        if tasks.remove(task_id).is_none() { return; }
-        self.changes.record(LiveChangeKey::Task(task_id.to_owned()));
-        if let Some(file) = &self.closed_tasks_file {
-            save(file, &*tasks);
-        }
-        drop(tasks);
-        self.changed.publish();
-    }
-
-    pub fn closed_task_ids(&self) -> Vec<String> {
-        self.tracked(&self.closed_tasks, "the closed sessions").keys().cloned().collect()
-    }
-
-    /// The tasks whose closed node waits for the user to relaunch them.
-    pub fn user_closed_task_ids(&self) -> Vec<String> {
-        self.tracked(&self.closed_tasks, "the closed sessions").iter()
-            .filter(|(_, node)| node.relaunch == Relaunch::AskUser).map(|(task, _)| task.clone()).collect()
     }
 
     pub fn closed_sessions(&self) -> Vec<String> {
@@ -485,31 +442,6 @@ mod change_tests {
     }
 
     #[test]
-    fn closed_tasks_record_replacements_and_removals_without_losing_their_keys() {
-        let live = Live::default();
-        let cursor = live.change_cursor();
-        let mut node = ClosedNode { name: "Node".into(), cwd: None, relaunch: Relaunch::AskUser };
-        live.mark_closed("node");
-        live.remember_closed_task("task", node.clone());
-        let cursor = keys(&live, &cursor, [LiveChangeKey::Node("node".into()), LiveChangeKey::Task("task".into())]);
-        assert_eq!(live.closed_sessions(), ["node"]);
-        assert_eq!(live.user_closed_task_ids(), ["task"]);
-        live.mark_closed("node");
-        live.remember_closed_task("task", node.clone());
-        keys(&live, &cursor, []);
-        node.relaunch = Relaunch::ByItself;
-        live.remember_closed_task("task", node);
-        let cursor = keys(&live, &cursor, [LiveChangeKey::Task("task".into())]);
-        assert!(live.user_closed_task_ids().is_empty());
-        assert!(live.closed_task("task").is_some());
-        live.forget_closed_task("task");
-        let cursor = keys(&live, &cursor, [LiveChangeKey::Task("task".into())]);
-        assert!(live.closed_task("task").is_none());
-        live.forget_closed_task("task");
-        keys(&live, &cursor, []);
-    }
-
-    #[test]
     fn close_bookkeeping_records_actual_updates_and_deletions() {
         let live = Live::default();
         let cursor = live.change_cursor();
@@ -551,24 +483,20 @@ mod change_tests {
             assert!(source.is_poisoned());
         }
 
-        for source in 0..4 {
+        for source in 0..3 {
             for read_first in [false, true] {
                 let live = Live::default();
                 let cursor = live.change_cursor();
                 match source {
                     0 => interrupted(&live.closed, |closed| { closed.insert("node".into()); }),
-                    1 => interrupted(&live.closed_tasks, |tasks| {
-                        tasks.insert("task".into(), ClosedNode { name: "Node".into(), cwd: None, relaunch: Relaunch::AskUser });
-                    }),
-                    2 => interrupted(&live.aborted_replaces, |aborted| { aborted.insert("node".into(), "Still running".into()); }),
-                    3 => interrupted(&live.close_interrupts, |interrupts| { interrupts.insert("node".into(), 1); }),
+                    1 => interrupted(&live.aborted_replaces, |aborted| { aborted.insert("node".into(), "Still running".into()); }),
+                    2 => interrupted(&live.close_interrupts, |interrupts| { interrupts.insert("node".into(), 1); }),
                     _ => unreachable!(),
                 }
                 let read = || match source {
                     0 => assert!(live.is_closed("node")),
-                    1 => assert_eq!(live.closed_task("task").unwrap().name, "Node"),
-                    2 => assert_eq!(live.take_aborted_replace("node").as_deref(), Some("Still running")),
-                    3 => assert_eq!(live.close_interrupted_at("node"), Some(1)),
+                    1 => assert_eq!(live.take_aborted_replace("node").as_deref(), Some("Still running")),
+                    2 => assert_eq!(live.close_interrupted_at("node"), Some(1)),
                     _ => unreachable!(),
                 };
                 if read_first { read(); }
@@ -578,7 +506,6 @@ mod change_tests {
                 let recovered = live.change_cursor();
                 keys(&live, &recovered, []);
                 assert!(!live.closed.is_poisoned());
-                assert!(!live.closed_tasks.is_poisoned());
                 assert!(!live.aborted_replaces.is_poisoned());
                 assert!(!live.close_interrupts.is_poisoned());
             }

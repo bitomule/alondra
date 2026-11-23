@@ -772,7 +772,7 @@ async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_cl
     close_sdk_node(&f, &old);
     let state = f.domain.state().unwrap();
     assert_eq!((state.tasks[&"t".into()].state, state.tasks[&"t".into()].agent_id.clone()), (TaskState::NotStarted, None));
-    assert_eq!(f.domain.live().closed_task_ids(), ["t"]);
+    assert_eq!(released_tasks(&f), ["t"]);
 
     let answer = relaunch(&*f.domain, &f.home, &"t".into()).await.unwrap();
     let agent = agent_of(&answer);
@@ -783,7 +783,7 @@ async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_cl
     let state = f.domain.state().unwrap();
     assert_eq!(state.agents[&agent].name, "Instance B", "it keeps the closed node's name");
     assert_eq!(state.tasks[&"t".into()].agent_id, Some(agent));
-    assert!(f.domain.live().closed_task_ids().is_empty(), "the task no longer waits for a relaunch");
+    assert!(released_tasks(&f).is_empty(), "the task no longer waits for a relaunch");
     let again = relaunch(&*f.domain, &f.home, &"t".into()).await.unwrap_err();
     assert_eq!(again.code, "conflict");
 }
@@ -1236,7 +1236,7 @@ async fn replacing_a_tasks_node_stops_it_keeps_its_folder_and_gives_the_task_to_
     assert_eq!(state.agents[&agent].name, "Instance B", "it keeps the old node's name");
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(agent));
     assert!(!alondra_domain_rules::ReadIndex::build(&state).holds_slot(&old), "the old node is disconnected");
-    assert!(f.domain.live().closed_task_ids().is_empty());
+    assert!(released_tasks(&f).is_empty());
 }
 
 #[tokio::test]
@@ -1341,8 +1341,8 @@ async fn a_node_that_ends_after_its_replacement_stopped_short_frees_its_task_to_
     crate::node_exit::user_closed(&*f.domain, "agent-b").unwrap();
     assert_eq!(f.task_node(), None, "the task is free");
     assert_eq!(release_reasons(&f), [crate::node_exit::REPLACE_ABORTED]);
-    assert_eq!(f.domain.live().closed_task("t").map(|node| node.relaunch), Some(crate::live::Relaunch::ByItself));
-    assert!(f.domain.live().user_closed_task_ids().is_empty(), "nobody is asked to relaunch it");
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].released.as_ref().map(|node| node.relaunch), Some(crate::live::Relaunch::ByItself),
+        "nobody is asked to relaunch it");
     assert!(told_orchestrator(&f, "replace-aborted-").is_empty(), "the orchestrator is not asked to launch it");
     assert!(f.sdk().starts().is_empty());
 }
@@ -2761,4 +2761,8 @@ async fn preparing_terminal_choices_preserves_a_deleted_launch_directory_without
     let store = f.domain.store.lock().unwrap();
     assert!(store.launch_queue().unwrap().is_empty());
     assert!(store.start_retries().unwrap().is_empty());
+}
+
+fn released_tasks(f: &Fixture) -> Vec<String> {
+    f.domain.state().unwrap().tasks.values().filter(|task| task.released.is_some()).map(|task| task.id.0.clone()).collect()
 }

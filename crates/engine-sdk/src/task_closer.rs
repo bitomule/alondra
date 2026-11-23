@@ -258,12 +258,10 @@ fn card(state: &DomainState, id: &str) -> Card {
 }
 
 /// Records what became of the node. A task that went back to work while its node was removed is
-/// released like one whose node the user closed, but Alondra starts its next node by itself: what
-/// a relaunch needs is kept, and the changes asked for reach the node that replaces it.
+/// released like one whose node the user closed, but Alondra starts its next node by itself: the
+/// domain keeps what a relaunch needs with the release, and the changes asked for reach the node
+/// that replaces it.
 fn record_end(domain: &dyn Runtime, task_id: &TaskId, end: NodeEnd, agent: Option<&AgentId>) -> Result<()> {
-    let before = Some(domain.state());
-    let back_to_work = matches!(end, NodeEnd::Closed | NodeEnd::Gone)
-        && before.as_ref().and_then(|state| state.tasks.get(task_id)).is_some_and(|task| !task.over() && task.wrap_up.asked_at.is_none());
     if let Err(error) = execute_system(domain, Command::RecordNodeEnd { task_id: task_id.clone(), end, agent_id: agent.cloned() }) {
         if let Some(agent) = agent {
             let current = domain.state();
@@ -274,12 +272,9 @@ fn record_end(domain: &dyn Runtime, task_id: &TaskId, end: NodeEnd, agent: Optio
         }
         return Err(anyhow::anyhow!("recording the node end: {error:?}"));
     }
-    let (Some(state), true) = (before, back_to_work) else { return Ok(()) };
-    let (Some(_), Some(agent)) = (state.tasks.get(task_id), agent) else { return Ok(()) };
-    let name = state.agents.get(agent).map_or_else(|| agent.0.clone(), |known| known.name.clone());
-    domain.engine().remember_closed_task(task_id, alondra_engine_ports::sdk::ClosedNode { name,
-        cwd: domain.engine().node_cwd(&agent.0), relaunch: alondra_engine_ports::sdk::Relaunch::ByItself });
-    log!("the node of {task_id} was closed while the user asked for changes on it; Alondra starts a new one");
+    if domain.state().tasks.get(task_id).is_some_and(|task| task.released.is_some()) {
+        log!("the node of {task_id} was closed while the user asked for changes on it; Alondra starts a new one");
+    }
     Ok(())
 }
 

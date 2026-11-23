@@ -9,7 +9,7 @@ use alondra_engine_ports::Runtime;
 use alondra_engine_ports::admission::AdmissionEngine;
 use alondra_engine_ports::node_close::{CloseOutcome, Sessions};
 use alondra_engine_ports::orchestrator::{Exhausted, OrchestratorEngine};
-use alondra_engine_ports::sdk::{ClosedNode, LastRequest, SdkEngine, SessionStart, StartKind};
+use alondra_engine_ports::sdk::{LastRequest, SdkEngine, SessionStart, StartKind};
 use alondra_provider_contract::OrderedObservation;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -106,24 +106,8 @@ impl<'a> Engine<'a> {
         self.port.start_facts(self.runtime, state)
     }
 
-    pub fn closed_task(&self, task: &TaskId) -> Option<ClosedNode> {
-        self.port.closed_task(self.runtime, task)
-    }
-
-    pub fn remember_closed_task(&self, task: &TaskId, node: ClosedNode) {
-        self.port.remember_closed_task(self.runtime, task, node);
-    }
-
-    pub fn forget_closed_task(&self, task: &TaskId) {
-        self.port.forget_closed_task(self.runtime, task);
-    }
-
     pub fn node(&self, session: &str) -> Option<Node> {
         self.port.node(self.runtime, session)
-    }
-
-    pub fn node_cwd(&self, session: &str) -> Option<String> {
-        self.port.node_cwd(self.runtime, session)
     }
 
     pub fn node_removed(&self, session: &str) {

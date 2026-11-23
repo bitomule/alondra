@@ -142,7 +142,7 @@ impl Rig {
                 self.forget_wrap_up(&id);
             }
             Task::None => {
-                command(&self.domain, Actor::System, Command::ReleaseTask { task_id: id.clone().into(), reason: "node closed by the user".into() });
+                command(&self.domain, Actor::System, Command::ReleaseTask { task_id: id.clone().into(), reason: "node closed by the user".into(), relaunch: alondra_domain_rules::Relaunch::AskUser, cwd: None });
             }
             Task::Open => {}
         }

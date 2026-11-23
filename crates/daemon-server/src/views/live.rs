@@ -481,7 +481,7 @@ fn waiting_to_start<'a>(client: &crate::client_routes::Client, state: &'a Domain
     state.tasks.values()
         .inspect(|_| client.view_observation.add(Metric::WaitingTaskRows, 1))
         .filter(|task| task.state == TaskState::NotStarted && !task.archived && task.agent_id.is_none())
-        .filter(|task| client.domain.live().closed_task(&task.id.0).is_none_or(|node| node.relaunch == crate::client_routes::Relaunch::ByItself))
+        .filter(|task| task.released.as_ref().is_none_or(|node| node.relaunch == crate::client_routes::Relaunch::ByItself))
         .collect()
 }
 
@@ -634,7 +634,8 @@ async fn gather_inner(
     let live = LiveSnapshot {
         observed_at: quota_clock(state, keys, now),
         closed_nodes: client.domain.live().closed_sessions(),
-        closed_tasks: client.domain.live().user_closed_task_ids(),
+        closed_tasks: state.tasks.values().filter(|task| task.released.as_ref().is_some_and(|node| node.relaunch == crate::client_routes::Relaunch::AskUser))
+            .map(|task| task.id.0.clone()).collect(),
         nodes: Vec::new(),
         pull_requests,
         orchestrator,
@@ -1408,11 +1409,10 @@ mod cache_tests {
         assert_eq!(gather(&client, &read, Lang::En, &task, true, false).await, history);
         assert_eq!(keyed(&client), 3, "and reuses it while nothing changes");
 
-        let changes: [(&str, Box<dyn Fn() + '_>); 6] = [
+        let changes: [(&str, Box<dyn Fn() + '_>); 5] = [
             ("a store write outside commands", Box::new(|| domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((1, 2_000_000_000_000))).unwrap())),
             ("a hook", Box::new(|| domain.live().observe(&serde_json::json!({"session_id": "node", "hook_event_name": "Stop", "last_assistant_message": "Done"})))),
             ("a node report", Box::new(|| report(&domain, serde_json::json!({"session_id": "node", "event": "turn.complete", "answer": "Done"}), 1_000))),
-            ("a closed node's task", Box::new(|| domain.live().remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed".into(), cwd: None, relaunch: crate::client_routes::Relaunch::AskUser }))),
             ("pull request details", Box::new(|| client.details.record("pr", Default::default()))),
             ("the live sampler", Box::new(|| client.feeds.shared_changed())),
         ];
@@ -1726,17 +1726,21 @@ mod cache_tests {
         use alondra_view_model::LiveStartWait;
         use crate::domain_store::model_metrics::{Decision, DecisionKind};
         let (_home, domain, client) = wait_fixture();
+        execute(&domain, Actor::System, "closed-node", Command::RegisterAgent { agent_id: "closed-node".into(), name: "Closed node".into(), at: 0 });
+        execute(&domain, Actor::User { user_id: "u".into() }, "closed-assign", Command::AssignTask { task_id: "closed".into(), agent_id: "closed-node".into(), model: None });
+        execute(&domain, Actor::System, "closed-release", Command::ReleaseTask { task_id: "closed".into(), reason: "node closed by the user".into(),
+            relaunch: crate::client_routes::Relaunch::AskUser, cwd: None });
         let read = domain.read();
         let state = read.state();
         let now = 1_700_000_000_000;
         let initial = gather_at(&client, &read, Lang::En, &[], false, false, now).await;
-        assert_eq!(initial.start_waits.keys().map(String::as_str).collect::<Vec<_>>(), ["closed", "launch", "relaunch", "retry", "room", "send"]);
+        assert_eq!(initial.start_waits.keys().map(String::as_str).collect::<Vec<_>>(), ["launch", "relaunch", "retry", "room", "send"],
+            "a task whose node the user closed waits for the user, not for a start");
         for (id, kind) in [("launch", DecisionKind::Launch), ("relaunch", DecisionKind::Relaunch), ("send", DecisionKind::Send)] {
             domain.record_model_decision(&Decision { task_id: id.into(), request_id: "request".into(), agent_id: None,
                 at: now, kind, model: None, effort: None, approach: None, chosen_by: ModelChooser::Orchestrator,
                 reason: None, title: id.into(), provider: None, tags: None }).unwrap();
         }
-        domain.live().remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed node".into(), cwd: None, relaunch: crate::client_routes::Relaunch::AskUser });
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((2, now + 60_000))).unwrap();
         domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
         let changed = gather_at(&client, &read, Lang::En, &[], false, false, now).await;
@@ -1749,14 +1753,12 @@ mod cache_tests {
         assert!(trace.iter().all(|read| !read.failed));
         let launched = trace.iter().filter(|read| read.getter == "launched_tasks").collect::<Vec<_>>();
         assert_eq!(launched.iter().map(|read| (read.statement_attempts, read.rows)).collect::<Vec<_>>(), [(1, 2)],
-            "one statement for every waiting task, the live-closed one left out of it");
+            "one statement for every waiting task, the one whose node the user closed left out of it");
         let later = gather_at(&client, &read, Lang::Es, &[], false, false, now + 2 * 86_400_000).await;
         assert_eq!(later.start_waits["retry"], LiveStartWait::Room,
             "a retry whose time has passed waits for room at the gate, never «Reintento a las» an hour gone by");
-        domain.live().forget_closed_task("closed");
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), None).unwrap();
         let restored = gather_at(&client, &read, Lang::En, &[], false, false, now).await;
-        assert_eq!(restored.start_waits["closed"], LiveStartWait::Room);
         assert_eq!(restored.start_waits["retry"], LiveStartWait::Room);
     }
 

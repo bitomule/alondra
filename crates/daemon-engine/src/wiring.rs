@@ -10,7 +10,7 @@ use alondra_engine_ports::admission::{AdmissionEngine, NodeReport};
 use alondra_engine_ports::api::ApiWatch;
 use alondra_engine_ports::hosts::Launched;
 use alondra_engine_ports::orchestrator::{AccountWait, Exhausted, OrchestratorEngine};
-use alondra_engine_ports::sdk::{ClosedNode, LastRequest, SdkEngine, SessionStart, StartKind, Work};
+use alondra_engine_ports::sdk::{LastRequest, SdkEngine, SessionStart, StartKind, Work};
 use alondra_engine_ports::node_close::{Answer, CloseOutcome, Sessions};
 use alondra_engine_ports::{Registry, Runtime};
 use alondra_core::Millis;
@@ -261,24 +261,8 @@ impl SdkEngine for Engine {
         crate::start_failures::facts(runtime, state)
     }
 
-    fn closed_task(&self, runtime: &dyn Runtime, task: &TaskId) -> Option<ClosedNode> {
-        runtime.live().closed_task(&task.0)
-    }
-
-    fn remember_closed_task(&self, runtime: &dyn Runtime, task: &TaskId, node: ClosedNode) {
-        runtime.live().remember_closed_task(&task.0, node);
-    }
-
-    fn forget_closed_task(&self, runtime: &dyn Runtime, task: &TaskId) {
-        runtime.live().forget_closed_task(&task.0);
-    }
-
     fn node(&self, runtime: &dyn Runtime, session: &str) -> Option<alondra_core::Node> {
         runtime.live().node(session)
-    }
-
-    fn node_cwd(&self, runtime: &dyn Runtime, session: &str) -> Option<String> {
-        runtime.live().mods.session(session).and_then(|reported| reported.cwd)
     }
 
     fn node_removed(&self, runtime: &dyn Runtime, session: &str) {
