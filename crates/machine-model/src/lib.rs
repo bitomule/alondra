@@ -71,6 +71,8 @@ struct Seen {
     closing_taken: Vec<String>,
     /// A card a node opened for the user after its cleanup was confirmed.
     closing_cards: Vec<String>,
+    /// An answer given again to a card already answered that changed the state.
+    stale_answers: Vec<String>,
 }
 
 struct Machine {
@@ -106,6 +108,8 @@ struct Machine {
     last_rest: Millis,
     seen: Seen,
     trace: Vec<String>,
+    /// The last card the user answered for each task, and the option they chose.
+    answered: BTreeMap<TaskId, (InteractionId, String)>,
 }
 
 /// A message of the delivery outbox for a node.
@@ -176,6 +180,7 @@ impl Machine {
             granted: BTreeSet::new(), wakes: BTreeMap::new(), rearms: BTreeMap::new(), agents: 0, commands: 0, refused: BTreeMap::new(),
             cursors: BTreeMap::new(), messages: Vec::new(), owing: BTreeMap::new(), taken: BTreeMap::new(),
             deferred: BTreeMap::new(), refused_starts: BTreeMap::new(), unadmitted: BTreeMap::new(), rests: 0, last_rest: 0, seen: Seen::default(), trace: Vec::new(),
+            answered: BTreeMap::new(),
         };
         let user = Actor::User { user_id: "u".into() };
         let orchestrator = Actor::Orchestrator { generation: 0 };
@@ -1076,7 +1081,23 @@ impl Machine {
         match act {
             UserAct::Answer => {
                 let Some((card, option_id)) = self.card_to_answer(task) else { return };
-                let _ = self.run(user, Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id, inputs: BTreeMap::new() });
+                if self.run(user, Command::AnswerQuestion { attachments: vec![], interaction_id: card.clone(), option_id: option_id.clone(), inputs: BTreeMap::new() }).is_ok() {
+                    self.answered.insert(task.clone(), (card, option_id));
+                }
+            }
+            UserAct::AnswerAgain => {
+                let Some((card, chosen)) = self.answered.get(task).cloned() else { return };
+                let options: Vec<String> = match self.state().interactions.get(&card).map(|card| &card.payload) {
+                    Some(InteractionPayload::Question { options, .. } | InteractionPayload::ActionRequest { options, .. }) => options.iter().map(|option| option.id.clone()).collect(),
+                    _ => return,
+                };
+                let option_id = options.into_iter().find(|option| *option != chosen).unwrap_or(chosen);
+                let before = self.state();
+                if self.run(user, Command::AnswerQuestion { attachments: vec![], interaction_id: card.clone(), option_id: option_id.clone(), inputs: BTreeMap::new() }).is_ok()
+                    && *self.state() != *before
+                {
+                    self.seen.stale_answers.push(format!("{task}: {card} answered {option_id} after its answer"));
+                }
             }
             UserAct::Tell => {
                 if self.run(Actor::System, Command::TellNode { task_id: task.clone(), text: "Also check the docs".into(), from_user: true, answers: None }).is_ok() {

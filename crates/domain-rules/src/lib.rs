@@ -35,6 +35,7 @@ mod projection;
 mod refusal;
 pub mod reads;
 mod read_index;
+pub mod invariants;
 mod rules;
 mod schedule;
 mod situation;
@@ -47,6 +48,8 @@ mod card_contract_tests;
 mod card_tests;
 #[cfg(test)]
 mod card_protocol_tests;
+#[cfg(test)]
+mod invariants_tests;
 #[cfg(test)]
 mod checklist_tests;
 #[cfg(test)]

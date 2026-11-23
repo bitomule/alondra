@@ -137,6 +137,8 @@ struct Verdicts {
     rearms: Option<String>,
     closing: Option<String>,
     unhanded: Option<String>,
+    invariants: Option<String>,
+    stale_answers: Option<String>,
 }
 
 fn with_trace(machine: &Machine, why: String) -> String {
@@ -196,6 +198,7 @@ fn each_step(machine: &Machine, verdicts: &mut Verdicts, when: &str) {
     keep(&mut verdicts.counts, counts_differ(&state, &index));
     keep(&mut verdicts.unlisted, unlisted_wait(&state, &index));
     keep(&mut verdicts.owed_answers, unowed_answer(machine, &state));
+    keep(&mut verdicts.invariants, Some(alondra_domain_rules::invariants::violations(&state).join("; ")).filter(|broken| !broken.is_empty()));
 }
 
 /// Runs `history` once, through its rest, and judges it by every property.
@@ -225,6 +228,9 @@ fn judge(history: &History) -> Verdicts {
     let seen = &machine.seen;
     if !seen.unchanged.is_empty() {
         verdicts.unchanged = failed(format!("acknowledged with nothing changed: {:?}", seen.unchanged));
+    }
+    if !seen.stale_answers.is_empty() {
+        verdicts.stale_answers = failed(seen.stale_answers.join("; "));
     }
     if !seen.close_left_running.is_empty() {
         verdicts.close = failed(seen.close_left_running.join("; "));
@@ -283,23 +289,25 @@ enum Histories {
     Plain,
     WithCleanups,
     WithADependency,
+    WithAnswersAgain,
 }
 
 impl Histories {
     fn config(self) -> ProptestConfig {
         let (cases, seed) = match self {
-            Self::Plain | Self::WithCleanups => (256, 14),
+            Self::Plain | Self::WithCleanups | Self::WithAnswersAgain => (256, 14),
             Self::WithADependency => (128, 15),
         };
         ProptestConfig { cases, failure_persistence: None, rng_seed: proptest::test_runner::RngSeed::Fixed(seed), ..ProptestConfig::default() }
     }
 
     fn judged_beforehand(self) {
-        static JUDGED: [std::sync::Once; 3] = [const { std::sync::Once::new() }; 3];
+        static JUDGED: [std::sync::Once; 4] = [const { std::sync::Once::new() }; 4];
         JUDGED[self as usize].call_once(|| match self {
             Self::Plain => judge_all(history(), self.config()),
             Self::WithCleanups => judge_all(world::history_with_cleanups(), self.config()),
             Self::WithADependency => judge_all(history_with_a_dependency(), self.config()),
+            Self::WithAnswersAgain => judge_all(world::history_with_answers_again(), self.config()),
         });
     }
 }
@@ -404,6 +412,24 @@ proptest! {
     fn an_acknowledged_command_changed_the_state_or_was_a_repeat(history in history()) {
         Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.unchanged)?;
+    }
+
+    #[test]
+    fn every_step_keeps_the_domain_invariants(history in history()) {
+        Histories::Plain.judged_beforehand();
+        holds(&history, |verdicts| &verdicts.invariants)?;
+    }
+
+    #[test]
+    fn every_step_keeps_the_domain_invariants_when_answers_come_again(history in world::history_with_answers_again()) {
+        Histories::WithAnswersAgain.judged_beforehand();
+        holds(&history, |verdicts| &verdicts.invariants)?;
+    }
+
+    #[test]
+    fn an_answer_given_again_never_changes_the_state(history in world::history_with_answers_again()) {
+        Histories::WithAnswersAgain.judged_beforehand();
+        holds(&history, |verdicts| &verdicts.stale_answers)?;
     }
 
     #[test]

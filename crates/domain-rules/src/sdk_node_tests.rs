@@ -82,6 +82,20 @@ fn a_task_reopened_with_its_sdk_node_kept_by_the_user_waits_for_a_new_execution_
     assert_aggregate_rules(&s);
 }
 
+/// A cancelled task has nothing left to go on with: the card that asked how it goes on after its
+/// host ended closes with the cancel, instead of asking the user about a task that no longer runs.
+#[test]
+fn cancelling_a_task_closes_the_card_that_asks_how_it_goes_on_after_its_host_ended() {
+    let mut s = three_tasks();
+    for (n, act) in [Act::HostEnded, Act::Task(Step::TakeInput), Act::Task(Step::Cancel(2)), Act::Task(Step::NodeEnded(2))].iter().enumerate() {
+        perform(&mut s, act, n);
+    }
+    assert_eq!(s.tasks[&TaskId::from(SDK)].state, TaskState::Cancelled);
+    let cards: Vec<(InteractionId, bool)> = s.interactions.values().filter(|i| i.id.0.starts_with(SESSION_ENDED_PREFIX)).map(|i| (i.id.clone(), i.withdrawn)).collect();
+    assert!(!cards.is_empty(), "the host's end asked how the task goes on");
+    assert!(cards.iter().all(|(_, withdrawn)| *withdrawn), "a card still asks about the cancelled task: {cards:?}");
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum Act {
     Task(Step),

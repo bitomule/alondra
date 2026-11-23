@@ -2310,7 +2310,8 @@ impl DomainState {
         }
         self.invalidate(task_id);
         let closing_cards: Vec<InteractionId> = self.interactions.values().filter(|i| {
-            i.system_card == Some(SystemCard::CloseProblem) && i.scope == (Scope::Task { task_id: task_id.clone() })
+            matches!(i.system_card, Some(SystemCard::CloseProblem | SystemCard::SessionEnded | SystemCard::HostLost | SystemCard::HandoffDoubt))
+                && i.scope == (Scope::Task { task_id: task_id.clone() })
                 && !i.withdrawn && matches!(&i.payload, InteractionPayload::Question { answer: None, .. })
         }).map(|i| i.id.clone()).collect();
         for card in &closing_cards {
@@ -3087,6 +3088,7 @@ impl DomainState {
         let (next, outcome) = self.prepare_transition(actor, envelope)?;
         #[cfg(test)]
         super::read_index::assert_index_matches(&next);
+        super::invariants::assert_hold(self, actor, envelope, &next);
         Ok((next, outcome))
     }
 
@@ -3095,7 +3097,7 @@ impl DomainState {
         self.prepare_transition(actor, envelope).map(|(_, outcome)| outcome)
     }
 
-    fn prepare_transition(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<(Self, CommandOutcome)> {
+    pub(super) fn prepare_transition(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<(Self, CommandOutcome)> {
         self.admit(actor, envelope)?;
         let mut next = self.clone();
         let mut effects = vec![];
