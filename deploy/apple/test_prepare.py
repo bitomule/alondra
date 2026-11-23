@@ -18,6 +18,9 @@ from prepare import (GateError, IOS, EXT, LIVE_ACTIVITY, MAC, PROFILES, TEAM, on
                      validate_store_metadata, normalize_bundle, bom_problems, pkg_problems, verify_pkg_contents,
                      stripped_components)
 
+# The exec guard allows only the absolute programs the target declares, so resolve them from the system directories.
+os.environ["PATH"] = "/usr/bin:/bin:/usr/sbin"
+
 
 class DistributionInputTests(unittest.TestCase):
     def test_store_metadata_rejects_observed_asc_failures_in_app_and_extension(self):

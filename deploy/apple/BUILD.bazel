@@ -5,7 +5,6 @@ sh_test(
     size = "small",
     srcs = ["test_prepare.py"],
     data = ["prepare.py", "//tools:shared.bzl"],
-    env_inherit = ["PATH"],
 )
 
 sh_test(
@@ -15,7 +14,6 @@ sh_test(
     srcs = ["increment_version_test.sh"],
     args = ["$(rootpath //:Makefile)", "$(rootpath //tools:shared.bzl)"],
     data = ["//:Makefile", "//tools:shared.bzl"],
-    env_inherit = ["PATH"],
 )
 
 sh_test(
