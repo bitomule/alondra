@@ -71,7 +71,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
             }
             assertAppSnapshot(
                 of: hosting as NSView,
-                as: .image(perceptualPrecision: 0.98, size: size),
+                as: .image(perceptualPrecision: screenColorPerceptualPrecision, size: size),
                 named: spanish ? "\(variant.name)_es" : variant.name, file: file, testName: testName, line: line
             )
         }
@@ -398,7 +398,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         image.addRepresentation(rep)
         window.endSheet(sheet)
         window.close()
-        assertAppSnapshot(of: image, as: .image(perceptualPrecision: 0.98), named: spanish ? "light_es" : "light",
+        assertAppSnapshot(of: image, as: .image(perceptualPrecision: screenColorPerceptualPrecision), named: spanish ? "light_es" : "light",
                           file: file, testName: testName, line: line)
     }
 
