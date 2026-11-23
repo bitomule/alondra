@@ -12,7 +12,17 @@ import { CODEX_VERSION } from './codex-session.js';
 import { parsePayload, PROTOCOL_VERSION } from './frame.js';
 import { ownerProof } from './ownership.js';
 
-export async function failedAdoptedHost(t, artifactName = 'codex.cjs', cleanupProof = false, normal = false, acknowledge = false, progress = false) {
+// A command's deadline is generous: only the host's own inactivity timers are the subject here, and a
+// slow machine must never make the owner's commands late.
+const COMMAND_DEADLINE_MS = 3_600_000;
+
+/**
+ * Drives an adopted Codex host whose native ends. `artifactName` is the production bundle, whose
+ * inactivity timers run on the real clock, or a fixture that mocks `setTimeout` and serves an
+ * explicit clock on its `clock` socket (`mockClock`): its deadlines pass only when the test ticks.
+ */
+export async function failedAdoptedHost(t, artifactName = 'codex.cjs', { cleanupProof = false, normal = false, acknowledge = false, progress = false, expire = false } = {}) {
+  const mockClock = progress || expire || artifactName === 'codex-ack-progress-fixture.mjs';
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'acf-'));
   const artifact = realpathSync(resolve('agent-host', artifactName));
   const executable = realpathSync(process.env.JS_BINARY__NODE_BINARY);
@@ -25,7 +35,7 @@ export async function failedAdoptedHost(t, artifactName = 'codex.cjs', cleanupPr
     host_instance_id: 'native-exit-fixture', control_secret: randomBytes(32).toString('hex'), fence, execution,
     manifest: { mode: 'node_bundle', artifact_path: artifact, host_release: 'native-exit-fixture', host_sha256: hash(artifact), executable_sha256: hash(executable), sdk_version: CODEX_VERSION },
     native: { session_id: '00000000-0000-4000-8000-000000000010', executable: realpathSync(resolve('agent-host/fake-codex.py')), cwd: root,
-      env: { HOME: root, PATH: '/usr/bin:/bin', ALONDRA_HOME: root, ALONDRA_DOMAIN_CAPABILITY: 'fixture-capability', ALONDRA_DOMAIN_PROTOCOL: '2', ALONDRA_SESSION_ID: 'fixture-node', ALONDRA_PROVIDER: 'codex', ALONDRA_FAKE_MODE: 'idle_with_descendant', ...(progress ? { ALONDRA_FAKE_DESCENDANT_QUIET: '1' } : {}), ALONDRA_FAKE_DESCENDANT: descendantFile, ALONDRA_FAKE_ACCOUNT_FILE: join(root, 'account.json') } },
+      env: { HOME: root, PATH: '/usr/bin:/bin', ALONDRA_HOME: root, ALONDRA_DOMAIN_CAPABILITY: 'fixture-capability', ALONDRA_DOMAIN_PROTOCOL: '2', ALONDRA_SESSION_ID: 'fixture-node', ALONDRA_PROVIDER: 'codex', ALONDRA_FAKE_MODE: 'idle_with_descendant', ...(mockClock ? { ALONDRA_FAKE_DESCENDANT_QUIET: '1' } : {}), ALONDRA_FAKE_DESCENDANT: descendantFile, ALONDRA_FAKE_ACCOUNT_FILE: join(root, 'account.json') } },
   };
   writeFileSync(config.ownership_path, JSON.stringify(config), { mode: 0o600 });
   writeFileSync(join(root, 'account.json'), JSON.stringify(normal ? {} : { exitMcp: true }));
@@ -67,7 +77,7 @@ export async function failedAdoptedHost(t, artifactName = 'codex.cjs', cleanupPr
     return { send, next };
   }
   const first = await own(1);
-  await first.send({ type: 'command', fence, execution, command_id: 'start-fixture', deadline_ms: Date.now() + 60000, action: { type: 'start', cwd: root, input_id: '00000000-0000-4000-8000-000000000002', prompt: 'Rest with a command still alive' } });
+  await first.send({ type: 'command', fence, execution, command_id: 'start-fixture', deadline_ms: Date.now() + COMMAND_DEADLINE_MS, action: { type: 'start', cwd: root, input_id: '00000000-0000-4000-8000-000000000002', prompt: 'Rest with a command still alive' } });
   await first.next((frame) => frame.body.type === 'event' && frame.body.observation.type === 'sdk' && frame.body.observation.payload.method === 'turn/completed');
   descendant = JSON.parse(readFileSync(descendantFile, 'utf8'));
   socket.destroy();
@@ -79,11 +89,29 @@ export async function failedAdoptedHost(t, artifactName = 'codex.cjs', cleanupPr
   const watching = createInterface({ input: watcher.stdout });
   assert.deepEqual(await Promise.race([once(watching, 'line'), watched.then(() => { throw new Error('Exit watcher ended before subscribing'); })]), ['ready']);
   watching.close();
-  await adopted.send({ type: 'command', fence, execution, command_id: 'exit-fixture', deadline_ms: Date.now() + 60000, action: { type: normal ? 'force_stop' : 'mcp_status' } });
+  await adopted.send({ type: 'command', fence, execution, command_id: 'exit-fixture', deadline_ms: Date.now() + COMMAND_DEADLINE_MS, action: { type: normal ? 'force_stop' : 'mcp_status' } });
   let terminal;
+  // The host's explicit clock: its reply says how many inactivity renewals it has seen, and it comes only
+  // after the host has acted on the tick.
+  const connectClock = async () => {
+    clock = createConnection(join(root, 'clock'));
+    const replies = createInterface({ input: clock })[Symbol.asyncIterator]();
+    return async (tick, afterAck = 0) => {
+      await new Promise((resolve, reject) => clock.write(JSON.stringify({ tick, afterAck }) + '\n', (error) => error ? reject(error) : resolve()));
+      const reply = await replies.next();
+      assert.equal(reply.done, false, 'the renewed host remains available for the explicit clock barrier');
+      return JSON.parse(reply.value);
+    };
+  };
+  if (expire) {
+    // The owner never acknowledges: the host ends only once its whole inactivity window has passed.
+    await adopted.next((frame) => frame.body.type === 'event' && frame.body.observation.type === 'process_exited');
+    assert.equal(child.exitCode, null, 'the host waits for its owner until the inactivity window passes');
+    await (await connectClock())(5000);
+  }
   if (acknowledge) {
     terminal = await adopted.next((frame) => frame.body.type === 'event' && frame.body.observation.type === 'process_exited');
-    await adopted.send({ type: 'command', fence, execution, command_id: 'before-terminal-ack', deadline_ms: Date.now() + 60000, action: { type: 'mcp_status' } });
+    await adopted.send({ type: 'command', fence, execution, command_id: 'before-terminal-ack', deadline_ms: Date.now() + COMMAND_DEADLINE_MS, action: { type: 'mcp_status' } });
     const refused = await adopted.next((frame) => frame.body.type === 'receipt' && frame.body.command_id === 'before-terminal-ack' && frame.body.outcome.status === 'rejected');
     assert.equal(refused.body.outcome.code, 'host_reconciliation_required', 'the ended host accepts no more native effects');
     assert.equal(child.exitCode, null, 'the owner can acknowledge terminal evidence before host shutdown');
@@ -91,21 +119,14 @@ export async function failedAdoptedHost(t, artifactName = 'codex.cjs', cleanupPr
     assert.equal(socket.destroyed, false);
     const ack = (cursor) => adopted.send({ type: 'acknowledge', fence, execution, host_instance_id: config.host_instance_id, owner_generation: 2, cursor });
     if (progress) {
-      clock = createConnection(join(root, 'clock'));
-      const replies = createInterface({ input: clock })[Symbol.asyncIterator]();
-      const advance = async (tick, afterAck = 0) => {
-        await new Promise((resolve, reject) => clock.write(JSON.stringify({ tick, afterAck }) + '\n', (error) => error ? reject(error) : resolve()));
-        const reply = await replies.next();
-        assert.equal(reply.done, false, 'the renewed host remains available for the explicit clock barrier');
-        return JSON.parse(reply.value);
-      };
+      const advance = await connectClock();
       assert(terminal.body.cursor > 3);
       assert.equal((await advance(3750)).renewals, 0);
       const first = terminal.body.cursor - 3;
       await ack(first);
       assert.equal((await advance(3750, first)).renewals, 1, 'advancing ACK renews the inactivity deadlines past their original expiry');
       await ack(first);
-      await adopted.send({ type: 'command', fence, execution, command_id: 'duplicate-ack-barrier', deadline_ms: Date.now() + 60000, action: { type: 'mcp_status' } });
+      await adopted.send({ type: 'command', fence, execution, command_id: 'duplicate-ack-barrier', deadline_ms: Date.now() + COMMAND_DEADLINE_MS, action: { type: 'mcp_status' } });
       await adopted.next((frame) => frame.body.type === 'receipt' && frame.body.command_id === 'duplicate-ack-barrier' && frame.body.outcome.status === 'rejected');
       assert.equal((await advance(0, first)).renewals, 1, 'a duplicate ACK does not renew either deadline');
       await ack(first + 1);

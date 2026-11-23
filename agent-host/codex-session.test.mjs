@@ -63,13 +63,13 @@ test('a Codex node inherits its own host wait report path', async (t) => {
 
 test('an adopted persistent Codex host ends its native command group and retains exit evidence', failedAdoptedHost);
 
-test('a normally force-stopped adopted Codex host ends without its owner acknowledging exit', (t) => failedAdoptedHost(t, 'codex.cjs', false, true));
+test('a normally force-stopped adopted Codex host ends without its owner acknowledging exit', (t) => failedAdoptedHost(t, 'codex-ack-progress-fixture.mjs', { normal: true, expire: true }));
 
-test('a normally ended adopted Codex host keeps its owner lane through terminal ACK', (t) => failedAdoptedHost(t, 'codex.cjs', false, true, true));
+test('a normally ended adopted Codex host keeps its owner lane through terminal ACK', (t) => failedAdoptedHost(t, 'codex-ack-progress-fixture.mjs', { normal: true, acknowledge: true }));
 
-test('advancing terminal ACKs renew shutdown inactivity while duplicates do not', (t) => failedAdoptedHost(t, 'codex-ack-progress-fixture.mjs', false, true, true, true));
+test('advancing terminal ACKs renew shutdown inactivity while duplicates do not', (t) => failedAdoptedHost(t, 'codex-ack-progress-fixture.mjs', { normal: true, acknowledge: true, progress: true }));
 
-test('failed-session cleanup keeps ownership through blocked output and a journal-close error', (t) => failedAdoptedHost(t, 'codex-failed-cleanup-fixture.mjs', true));
+test('failed-session cleanup keeps ownership through blocked output and a journal-close error', (t) => failedAdoptedHost(t, 'codex-failed-cleanup-fixture.mjs', { cleanupProof: true }));
 
 test('native evidence already written before exit drains before the exit observation', async (t) => {
   const f = fixture(t, { nativeFailure: true, env: { ALONDRA_FAKE_MODE: 'hold', ALONDRA_FAKE_FINAL_TEXT: 'Final native evidence' } });
@@ -360,7 +360,7 @@ test('a same-process API key requires an exact paid grant and cannot resume as a
   f.session.close();await f.session.finished;const second=[];let observed;const refused=new Promise((resolve)=>{observed=resolve;});const later=new CodexSession({...f.config,resume:true,observe(event){second.push(event);if(method('alondra/inputRefused')(event)||method('alondra/inputAccepted')(event))observed();return second.length;}});
   const rejected=assert.rejects(later.offer('00000000-0000-4000-8000-000000000096','Unverified key identity must not resume'),/native_api_key_resume_unverifiable/);
   try {await refused;await rejected;
-  assert(second.some((event)=>method('alondra/inputRefused')(event)&&event.payload.params.code==='native_api_key_resume_unverifiable'));assert(!f.messages().some((request)=>request.method==='thread/resume'));}finally{later.close();await later.finished;}
+  assert(second.some((event)=>method('alondra/inputRefused')(event)&&event.payload.params.code==='native_api_key_resume_unverifiable'));assert(!f.messages().some((request)=>request.method==='thread/resume'));}finally{rejected.catch(()=>{});later.close();await later.finished;}
 });
 test('no-auth and external authentication do not inherit subscription permission',async(t)=>{
   for(const account of [{accountRead:{account:null,requiresOpenaiAuth:false},authStatus:{authMethod:null,requiresOpenaiAuth:false}}, {...managedAccount(),authStatus:{authMethod:'chatgptAuthTokens',authToken:null,requiresOpenaiAuth:true}}]){
@@ -515,8 +515,9 @@ for (const [silentOn, step] of [['initialize', 'initialize'], ['thread/start', '
       session = new CodexSession({ ...f.config, env: { ...f.config.env, ALONDRA_FAKE_SILENT_ON: silentOn }, resume: true, processGeneration: 'silent', openingTimeoutMs: 200 });
     }
     const firstEvent = f.events.length;
+    let refused;
     try {
-      const refused = assert.rejects(session.offer('00000000-0000-4000-8000-000000000081', 'Continue'), (error) => error instanceof InputNotOffered && error.code === 'native_initialization_timeout');
+      refused = assert.rejects(session.offer('00000000-0000-4000-8000-000000000081', 'Continue'), (error) => error instanceof InputNotOffered && error.code === 'native_initialization_timeout');
       await nativeRequestWritten(f.home, session, silentOn);
       t.mock.timers.tick(200);
       await refused;
@@ -525,7 +526,11 @@ for (const [silentOn, step] of [['initialize', 'initialize'], ['thread/start', '
       const failed = f.events.slice(firstEvent).find(method('alondra/transportFailed'));
       assert.deepEqual(failed.payload.params, { code: 'native_initialization_timeout', step });
       assert.equal(f.messages().filter((message) => message.method === 'turn/start').length, 0);
-    } finally { session.close(); await session.finished; }
+    } finally {
+      // A step that throws before the refusal is awaited must not leave its rejection unhandled after the test.
+      refused?.catch(() => {});
+      session.close(); await session.finished;
+    }
   });
 }
 
