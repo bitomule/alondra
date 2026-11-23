@@ -1,4 +1,4 @@
-load("//tools/bazel:crates.bzl", "adapter_private_crate")
+load("//tools/layers:crates.bzl", "adapter_private_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 
