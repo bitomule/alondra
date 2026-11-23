@@ -752,6 +752,20 @@ pub mod testing {
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
 
+    /// A repository under `root` with no remote, and the worktree Alondra makes for the task whose
+    /// slug is `slug`, with no commit of its own yet.
+    pub fn remoteless_task_worktree(root: &Path, slug: &str) -> PathBuf {
+        std::fs::create_dir_all(root).unwrap();
+        git(root, &["init", "-q", "repo"]);
+        let repo = root.join("repo");
+        git(&repo, &["config", "user.email", "test@example.invalid"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let dir = repo.join(".claude/worktrees").join(slug);
+        git(&repo, &["worktree", "add", "-q", "-b", &format!("worktree-{slug}"), dir.to_str().unwrap()]);
+        dir
+    }
+
     /// A repository under `root` with a remote, and the worktree Alondra makes for the task whose
     /// slug is `slug`, its branch pushed: what a task leaves once its PR is up.
     pub fn task_worktree(root: &Path, slug: &str) -> PathBuf {

@@ -2,7 +2,7 @@
 //! One with unsaved files is never touched without the user's word: a card asks whether to delete
 //! them, and Alondra keeps no copy. Cancelled tasks already closed are settled once, when the
 //! daemon starts, with a single card for all of them.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use alondra_domain_rules::discard_worktrees::{CancelledWorktree, DISCARD_WORKTREES_PREFIX, DiscardWorktrees};
@@ -92,10 +92,16 @@ pub async fn release_cancelled(domain: &dyn Runtime, task: &Task) -> Result<()> 
             ends.push((path, end));
         }
     }
-    let asked = asked_paths(&*domain.state());
+    let state = domain.state();
+    let asked = still_asked(&state);
     held.paths.retain(|path| !asked.contains(path));
     if !held.paths.is_empty() {
-        let id = format!("{DISCARD_WORKTREES_PREFIX}{}", task.id);
+        let first = format!("{DISCARD_WORKTREES_PREFIX}{}", task.id);
+        let id = match state.interactions.contains_key(&InteractionId(first.clone())) {
+            true => format!("{first}-{}", state.revision),
+            false => first,
+        };
+        drop(state);
         raise_card(domain, &id, Scope::Orchestrator { request_id: Some(task.request_id.clone()) }, vec![held])?;
     }
     for (path, end) in ends {
@@ -115,25 +121,74 @@ fn asked_paths(state: &DomainState) -> HashSet<String> {
     covering_cards(state).flat_map(|(_, listed)| listed.tasks.into_iter().flat_map(|entry| entry.paths)).collect()
 }
 
-/// Deletes the worktrees the user chose to delete on each answered card: all of them, or only
-/// the ones ticked. Keep needs nothing: the answered card is what stops anyone from asking again.
+/// For each worktree of each task, the newest card that asked about it, and whether its answer
+/// deletes it: `None` while it waits for the user. An older card is a decision about an earlier
+/// cancellation of the task, never about the work of a later one.
+fn decisions(state: &DomainState) -> HashMap<(TaskId, String), Option<bool>> {
+    newest_decisions(state).into_iter().map(|(key, (_, deletes))| (key, deletes)).collect()
+}
+
+fn newest_decisions(state: &DomainState) -> HashMap<(TaskId, String), (u64, Option<bool>)> {
+    let mut newest: HashMap<(TaskId, String), (u64, Option<bool>)> = HashMap::new();
+    for (card, listed) in covering_cards(state) {
+        let answer = match &card.payload {
+            InteractionPayload::Question { answer: Some(answer), .. } => Some(listed.deleted_by(&answer.option_id, answer.form_values())),
+            _ => None,
+        };
+        for entry in &listed.tasks {
+            let deletes = answer.as_ref().map(|deleted| deleted.iter().any(|chosen| chosen.task_id == entry.task_id));
+            for path in &entry.paths {
+                let key = (TaskId(entry.task_id.clone()), path.clone());
+                if newest.get(&key).is_none_or(|(order, _)| *order < card.order) {
+                    newest.insert(key, (card.order, deletes));
+                }
+            }
+        }
+    }
+    newest
+}
+
+/// The worktrees a card still decides, whichever task it listed them under: the newest card about
+/// each one waits for the user, or kept it. One the newest card deleted was settled, so cancelling
+/// a task that works there again asks anew.
+fn still_asked(state: &DomainState) -> HashSet<String> {
+    let mut newest: HashMap<String, (u64, Option<bool>)> = HashMap::new();
+    for ((_, path), (order, deletes)) in newest_decisions(state) {
+        if newest.get(&path).is_none_or(|(seen, _)| *seen < order) {
+            newest.insert(path, (order, deletes));
+        }
+    }
+    newest.into_iter().filter(|(_, (_, deletes))| *deletes != Some(true)).map(|(path, _)| path).collect()
+}
+
+/// Deletes the worktrees the user chose to delete, each once: only while its task is still
+/// cancelled, the newest card about it is the one that said delete, and its record still says
+/// the user kept it. Deleting records it as removed, so no later pass applies the answer again.
+/// Keep needs nothing: the answered card is what stops anyone from asking again.
 /// A worktree already gone is nothing to do.
 pub async fn apply_answers(domain: &dyn Runtime) -> Result<()> {
     let state = domain.state();
-    for (card, listed) in covering_cards(&state) {
-        let InteractionPayload::Question { answer: Some(answer), .. } = &card.payload else { continue };
-        for entry in listed.deleted_by(&answer.option_id, answer.form_values()) {
-            let task_id = TaskId(entry.task_id.clone());
-            let keeps_branch = state.tasks.get(&task_id).is_some_and(|task| keeps_branch(&state, task));
-            for path in entry.paths.iter().filter(|path| !crate::task_worktrees::in_use(domain, &state, &task_id, path)) {
-                if crate::task_worktrees::ready(domain, path).await.is_err() || crate::task_worktrees::may_handle(domain, path).is_err() { continue; }
-                match domain.ports().worktrees().discard_worktree(Path::new(path), keeps_branch).await {
-                    Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {path} of {task_id}, as the user asked, freed {}",
-                        alondra_core::machine_incident::bytes_text(freed, Lang::En)),
-                    Ok(_) => {}
-                    Err(why) => log!("could not delete the worktree {path} of {task_id}, as the user asked: {why}"),
-                }
+    let mut chosen: Vec<(TaskId, String)> = decisions(&state).into_iter().filter(|(_, deletes)| *deletes == Some(true)).map(|(key, _)| key).collect();
+    chosen.sort();
+    for (task_id, path) in chosen {
+        let Some(task) = state.tasks.get(&task_id).filter(|task| task.state == TaskState::Cancelled) else { continue };
+        let recorded = task.worktrees.get(&path).map(|worktree| worktree.end);
+        if !matches!(recorded, None | Some(Some(WorktreeEnd::KeptByUser))) || crate::task_worktrees::in_use(domain, &state, &task_id, &path) {
+            continue;
+        }
+        if crate::task_worktrees::ready(domain, &path).await.is_err() || crate::task_worktrees::may_handle(domain, &path).is_err() { continue; }
+        match domain.ports().worktrees().discard_worktree(Path::new(&path), keeps_branch(&state, task)).await {
+            Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {path} of {task_id}, as the user asked, freed {}",
+                alondra_core::machine_incident::bytes_text(freed, Lang::En)),
+            Ok(TaskWorktree::Absent) => {}
+            Ok(_) => continue,
+            Err(why) => {
+                log!("could not delete the worktree {path} of {task_id}, as the user asked: {why}");
+                continue;
             }
+        }
+        if recorded.is_some() {
+            domain.execute_system_command(Command::ReleaseTaskWorktree { task_id: task_id.clone(), path, end: WorktreeEnd::Removed }).map_err(|error| anyhow!("{error}"))?;
         }
     }
     Ok(())
@@ -150,8 +205,8 @@ pub async fn sweep(domain: &dyn Runtime) -> Result<()> {
         if matches!(task.wrap_up.node, Some(NodeEnd::KeptByUser | NodeEnd::UsersOwn)) {
             continue;
         }
-        let mut paths: Vec<&String> = stored.get(&task.id).into_iter()
-            .chain(task.worktrees.iter().filter(|(_, worktree)| !matches!(worktree.end, Some(WorktreeEnd::KeptByUser | WorktreeEnd::UsersOwn | WorktreeEnd::HandedOver))).map(|(path, _)| path))
+        let mut paths: Vec<&String> = stored.get(&task.id).into_iter().chain(task.worktrees.keys())
+            .filter(|path| !matches!(task.worktrees.get(*path).and_then(|worktree| worktree.end), Some(WorktreeEnd::KeptByUser | WorktreeEnd::UsersOwn | WorktreeEnd::HandedOver)))
             .collect();
         paths.sort();
         paths.dedup();

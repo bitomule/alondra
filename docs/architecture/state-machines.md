@@ -7,6 +7,16 @@ cancellations and concurrency, and the plan that fixes them. This is the single 
 it: whoever changes one of these machines updates its section here in the same pull request.
 
 - **Audited at**: commit `1567967b9` of `main` (2026-11-22).
+- **Re-checked**: PRs #505, #507 and #536 against commit `3fc0370ea` (2026-11-22): M-LIFE-1, M-LIFE-10,
+  M-LIFE-14, M-CARDS-10, M-CARDS-13 (new), M-ENGINE-4, M-ENGINE-5, M-ENGINE-10, M-ENGINE-25, M-PROV-8 and the
+  timers table updated; F-LIFE-1, F-LIFE-2, F-CARDS-1, F-ENGINE-12 and H-CARDS-5 re-checked (still hold); new
+  findings F-STORE-7 (fixed since by G3, #520) and F-CARDS-7. Text this re-check added or refreshed says "at `3fc0370ea`" and its line numbers
+  refer to that commit; every other line number still refers to the audited commit.
+- **Re-checked**: PRs #516, #537, #540 and #541 against commit `68770a298` (2026-11-22): M-LIFE-5, M-LIFE-14,
+  M-ENGINE-5, M-ENGINE-8, M-ENGINE-28 (new), M-GH-5, M-ORCH-1, M-ORCH-5, M-ORCH-6 (removed), M-ORCH-7, M-ORCH-13
+  (new), M-PROV-4, M-PROV-9 and the timers table updated; F-ENGINE-1, F-ENGINE-5, F-STORE-3, F-STORE-4, F-GH-5,
+  F-CARDS-1, F-ORCH-1, F-ORCH-2, F-ORCH-3, F-ORCH-6, F-PROV-2 and F-PROV-3 re-checked; H-ORCH-3 no longer reachable;
+  new hypothesis H-ORCH-4; new evidence for the referred tasks. Text of this pass says "at `68770a298`".
 - **Scope**: domain (`crates/domain`, `crates/domain-rules`, `crates/core`), engine
   (`crates/engine-*`, `crates/daemon-*`, `crates/alondrad`), persistence (`crates/store-sqlite`
   and the JSON state files of the Alondra home), providers and agent hosts (`agent-host/`,
@@ -49,8 +59,8 @@ to its fix group and issue.
 
 | Sev. | Finding | Probability | Group |
 |---|---|---|---|
-| S1 | [F-GH-2](#f-gh-2--an-already-answered-delete-unsaved-changes-card-deletes-the-recreated-worktree-of-a-reopened-task-on-every-closer-pass) · An already-answered "delete unsaved changes?" card deletes the recreated worktree of a reopened task, on every closer pass | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
-| S1 | [F-GH-4](#f-gh-4--closing-a-task-with-a-merged-pr-deletes-the-branch-of-a-remote-less-repo-another-repo-with-commits-that-exist-only-there-pr-503) · Closing a task with a merged PR deletes the branch of a remote-less repo (another repo) with commits that exist only there (PR #503) | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
+| S1 | **FIXED** [F-GH-2](#f-gh-2--an-already-answered-delete-unsaved-changes-card-deletes-the-recreated-worktree-of-a-reopened-task-on-every-closer-pass) · An already-answered "delete unsaved changes?" card deletes the recreated worktree of a reopened task, on every closer pass | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
+| S1 | **FIXED** [F-GH-4](#f-gh-4--closing-a-task-with-a-merged-pr-deletes-the-branch-of-a-remote-less-repo-another-repo-with-commits-that-exist-only-there-pr-503) · Closing a task with a merged PR deletes the branch of a remote-less repo (another repo) with commits that exist only there (PR #503) | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S1 | [F-STORE-7](#f-store-7--a-request-cleared-and-then-taken-back-by-its-task-leaves-its-cleared-row-and-the-daemon-no-longer-loads-its-state) · A request cleared and then taken back by its task leaves its «cleared» row, and the daemon no longer loads its state | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S1 | [F-ORCH-5](#f-orch-5--a-non-domain-error-in-the-schedule-runner-stops-the-whole-daemon-with-an-unreadable-optionstoml-it-enters-a-restart-loop) · A non-domain error in the schedule runner stops the whole daemon; with an unreadable `options.toml` it enters a restart loop | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S1 | [F-STORE-4](#f-store-4--a-released-task-whose-closed-task-nodesjson-entry-is-lost-is-left-without-a-node-forever-nothing-relaunches-it-or-says-so) · A released task whose `closed-task-nodes.json` entry is lost is left without a node forever: nothing relaunches it or says so | low | [G2](#g2--a-released-task-always-has-a-way-back) · #519 · fixed in #552 |
@@ -72,7 +82,7 @@ to its fix group and issue.
 | S2 | [F-ENGINE-7](#f-engine-7--the-stretches-of-build-volumes-do-not-survive-a-restart-working-nodes-then-reserve-at-most-1-gb-there) · The stretches of build volumes do not survive a restart: working nodes then reserve at most 1 GB there | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 |
 | S2 | [F-ENGINE-9](#f-engine-9--a-volume-that-is-not-a-build-volume-can-stay-learned-forever-and-hold-every-start-and-the-turns) · A volume that is not a build volume can stay learned forever and hold every start and the turns | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 |
 | S2 | [F-GH-1](#f-gh-1--the-watcher-closes-on-github-the-pr-of-a-task-the-user-just-reopened-or-that-another-task-just-took) · The watcher closes on GitHub the PR of a task the user just reopened (or that another task just took) | low-medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
-| S2 | [F-GH-3](#f-gh-3--the-startup-sweep-of-cancelled-tasks-deletes-a-worktree-that-task-handed-to-another-if-the-other-is-already-closing-or-the-user-kept-it) · The startup sweep of cancelled tasks deletes a worktree that task handed to another, if the other is already closing or the user kept it | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
+| S2 | **FIXED** [F-GH-3](#f-gh-3--the-startup-sweep-of-cancelled-tasks-deletes-a-worktree-that-task-handed-to-another-if-the-other-is-already-closing-or-the-user-kept-it) · The startup sweep of cancelled tasks deletes a worktree that task handed to another, if the other is already closing or the user kept it | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S2 | [F-GH-5](#f-gh-5--post-merge-work-declared-and-the-node-idle-the-task-stays-working-forever-its-host-is-never-released-and-it-holds-a-slot) · Post-merge work declared and the node idle: the task stays "Working" forever, its host is never released and it holds a slot | medium-low | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
 | S2 | [F-GH-7](#f-gh-7--a-merge-that-github-blocks-for-a-required-review-goes-back-to-the-node-and-invalidates-the-users-acceptance-in-a-loop) · A merge that GitHub blocks for a required review goes back to the node and invalidates the user's acceptance, in a loop | medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S2 | [F-GH-8](#f-gh-8--the-github-api-limit-still-raises-technical-cards-one-per-pr-in-the-watcher-and-another-per-pr-in-the-merger) · The GitHub API limit still raises technical cards: one per PR in the watcher and another per PR in the merger | low | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
@@ -89,6 +99,7 @@ to its fix group and issue.
 | S2 | [F-STORE-1](#f-store-1--a-second-process-applies-restart-recovery-to-the-live-database) · A second process applies restart recovery to the live database | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-STORE-2](#f-store-2--alondrad---preflight-does-not-exercise-the-json-files-the-real-startup-requires) · `alondrad --preflight` does not exercise the JSON files the real startup requires | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S3 | [F-CARDS-6](#f-cards-6--createtask-and-setdependencies-accept-an-already-cancelled-dependency-the-task-is-born-waiting-for-something-that-will-not-come-issue-323) · `CreateTask` and `SetDependencies` accept an already cancelled dependency: the task is born waiting for something that will not come (issue #323) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
+| S3 | [F-CARDS-7](#f-cards-7--clear-completed-takes-a-closed-request-whose-last-task-is-still-ending-which-the-tasks-list-now-shows-as-active-536) · «Clear completed» takes a closed request whose last task is still ending, which the Tasks list now shows as active (#536) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
 | S3 | [F-CLIENTS-A5](#f-clients-a5--if-preparing-an-answer-fails-the-queue-iphone-and-the-sidebar-mac-leave-the-card-sending-forever) · If preparing an answer fails, the queue (iPhone) and the sidebar (Mac) leave the card "sending" forever | low | [G10](#g10--apple-apps-optimistic-actions-and-per-mac-state) · #527 |
 | S3 | [F-CLIENTS-R2](#f-clients-r2--direct-http-route-a-refusal-from-the-mac-is-read-as-cut-midway) · Direct HTTP route: a refusal from the Mac is read as "cut midway" | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
 | S3 | [F-CLIENTS-R3](#f-clients-r3--the-tui-accepts-an-old-home-that-arrives-late-and-overwrites-the-new-one) · The TUI accepts an old home that arrives late and overwrites the new one | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
@@ -97,8 +108,8 @@ to its fix group and issue.
 | S3 | [F-ENGINE-2](#f-engine-2--auto_launch-admissions-that-never-launch-hold-a-slot-for-up-to-3-min) · `auto_launch` admissions that never launch hold a slot for up to 3 min | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 |
 | S3 | [F-ENGINE-4](#f-engine-4--a-turn-with-a-granted-slot-loses-its-place-in-the-queue-after-a-restart) · A turn with a granted slot loses its place in the queue after a restart | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 |
 | S3 | [F-ENGINE-5](#f-engine-5--task-statesmd-describes-a-timer-that-no-longer-exists-and-omits-the-ones-that-do) · `task-states.md` describes a timer that no longer exists and omits the ones that do | not | [G12](#g12--the-architecture-docs-match-the-code) · #529 |
-| S3 | [F-ENGINE-8](#f-engine-8--own_worktree-does-not-delete-the-worktree-of-a-task-that-ended-while-starting-the-domain-command-rejects-it-before-reaching-that-branch) · `own_worktree` does not delete the worktree of a task that ended while starting: the domain command rejects it before reaching that branch | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
-| S3 | [F-GH-6](#f-gh-6--an-attachment-of-a-user-message-to-an-open-task-is-deleted-after-30-days-even-though-the-task-is-still-open) · An attachment of a user message to an open task is deleted after 30 days even though the task is still open | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
+| S3 | **FIXED** [F-ENGINE-8](#f-engine-8--own_worktree-does-not-delete-the-worktree-of-a-task-that-ended-while-starting-the-domain-command-rejects-it-before-reaching-that-branch) · `own_worktree` does not delete the worktree of a task that ended while starting: the domain command rejects it before reaching that branch | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
+| S3 | **FIXED** [F-GH-6](#f-gh-6--an-attachment-of-a-user-message-to-an-open-task-is-deleted-after-30-days-even-though-the-task-is-still-open) · An attachment of a user message to an open task is deleted after 30 days even though the task is still open | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S3 | [F-GH-9](#f-gh-9--the-merger-rereads-github-on-every-domain-commit-for-a-pr-closed-outside-or-with-a-new-head-until-the-watcher-sees-it) · The merger rereads GitHub on every domain commit for a PR closed outside or with a new head, until the watcher sees it | medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S3 | [F-ORCH-6](#f-orch-6--the-orchestrators-progress-marks-have-done-nothing-since-277) · The orchestrator's progress marks have done nothing since #277 | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S3 | [F-ORCH-7](#f-orch-7--an-accepted-cancellation-http-200-can-be-lost-orchestratorjson-is-written-without-a-lock-from-two-threads) · An accepted cancellation (HTTP 200) can be lost: `orchestrator.json` is written without a lock from two threads | very | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
@@ -126,6 +137,8 @@ ablation: revert the fix, see the new test fail, restore it, see it pass. The pe
 sections in the catalog give the exact test, the expected failure today and what to revert.
 
 ### G1 · Never delete what a live task or the user still owns
+
+**Status**: FIXED (PR #548). Each finding below carries its test and ablation.
 
 Issue: #518 · Severity: S1 · Findings: F-GH-2, F-GH-4, F-GH-3, F-GH-6, F-ENGINE-8 and the
 `files/` retention decision · Depends on: none.
@@ -211,8 +224,10 @@ fix; the ablation output is in the pull request.
   answering its card never cancels the live task. `orchestrator.json` has one writer. A second process
   never applies restart recovery to the live database. `--preflight` reads every JSON file startup
   requires. A manual retry of an expired orchestrator message is refused with a clear message. The
-  orchestrator's progress marks either drive its watchdog again or are removed.
-- **Files**: `crates/engine-sdk/src/domain_schedule_runner.rs`, `crates/alondrad/src/lib.rs`,
+  orchestrator's progress marks either drive its watchdog again or are removed. Every field of the domain state the
+  store keeps in a side table is written both ways: a request that stops being cleared loses its `cleared_requests`
+  row in the same commit, so a reload reads what was committed.
+- **Files**: `crates/store-sqlite/src/repository.rs` (request side tables), `crates/engine-sdk/src/domain_schedule_runner.rs`, `crates/alondrad/src/lib.rs`,
   `crates/engine-sdk/src/domain_orchestrator.rs` and the orchestrator inbox steps, the store's
   startup recovery, `crates/daemon-support/src/auth.rs` (preflight reads), the delivery CLI.
 - **Tests**: `run_cycle` with a pending run and an invalid `options.toml` returns `Ok` and leaves the
@@ -287,7 +302,7 @@ F-ENGINE-6, F-ENGINE-7, F-ENGINE-9, F-ENGINE-10 · Depends on: none · Related: 
 ### G5 · Every request and task has someone who moves it next
 
 Issue: #522 · Severity: S2 · Findings: F-CARDS-1, F-CARDS-6, F-ORCH-2, F-ORCH-8, F-LIFE-1,
-F-GH-5 · Depends on: none · Related: issues #353, #323, #350, #352.
+F-GH-5, F-CARDS-7 (added on 2026-11-22 by the user's decision, after the re-check of #536) · Depends on: none · Related: issues #353, #323, #350, #352.
 
 - **Expected behaviour**: a request whose tasks all ended is reminded to the orchestrator at most
   twice, then Alondra closes it with its own «Done» card (user decision). `CreateTask` and
@@ -295,7 +310,7 @@ F-GH-5 · Depends on: none · Related: issues #353, #323, #350, #352.
   reminders do not feed themselves: only rests caused by other work remind, and after K reminders the
   task shows a factual state (default decision). `create_task` carries its priority before
   auto-launch can wake. A task that waits for other tasks shows «waiting for tasks», never «queued»,
-  because the aggregate records the dependency wait (default decision). After a merge, a turn that
+  because the aggregate records the dependency wait (default decision). «Clear completed» takes only what the list shows as completed: never a closed request one of whose tasks is still ending (F-CARDS-7). After a merge, a turn that
   ends idle without declaring post-merge work again ends that work (documented rule).
 - **Files**: `crates/domain-rules/src/rules.rs` (request closing, dependencies, post-merge),
   `crates/domain-rules/src/situation.rs`, `crates/domain/src/lifecycle.rs`, the orchestrator inbox
@@ -421,11 +436,14 @@ parallel fix is planned here.
 |---|---|---|
 | F-PROV-2 · reconciling an order the host never had, past its deadline, destroys the socket | the Codex recovery work (phase 2), point 8 | Yes: the exact path and the false «host lost» card |
 | F-PROV-4 · a continued host refuses `start` without a typed code | the Codex recovery work (phase 2), point 7 | No |
-| F-PROV-3 · Claude's checkpoint carries a dead host's open decisions and calls; at 64 a new decision is dropped | issue #328 and the stalled-node recovery work (phase 3) | Yes: the sets `forget_ended_host` keeps and the silent drop at the cap |
+| F-PROV-3 · Claude's checkpoint carries a dead host's open decisions and calls; at 64 a new decision is dropped | issue #328 and the stalled-node recovery work (phase 3) | Yes: the sets `forget_ended_host` keeps and the silent drop at the cap. Since #537 the `pr_commands` set is gone (read and dropped from older checkpoints); `pr_close_commands` and `asked` remain |
 | H-LIFE-1 · a repeated `TurnStarted` after its `TurnEnded` reopens the turn | the stalled-node recovery work | Yes: the sequence and the guard that swallows the end |
-| F-ENGINE-5 (part) · `opening_deadline` decides a host replacement outside the obligation policy | the stalled-node recovery work | Yes |
+| F-ENGINE-5 (part) · `opening_deadline` decides a host replacement outside the obligation policy | the stalled-node recovery work | Yes. Since #541 (at `68770a298`) it is a constant of its own, `OPENING_TIMEOUT` = 120 s (`engine-sdk/src/sdk_owner.rs:53`), no longer `io_timeout_seconds`, and past it the owner first reads what the host already wrote (`:2298-2306`). Still outside `obligation_policy` |
+| M-ORCH-6, H-ORCH-3 · the orchestrator's `Answer` deadline | the stalled-node recovery work (phase 4, `AnswerSkipped`) | Yes: #516 already removed that deadline (at `68770a298`); what the orchestrator owes is settled only after a turn of it ends handled (M-ORCH-5), so while it cannot end one (F-ORCH-3) nothing settles a node's question or a stopped node's case |
 | H-PROV-2 · an input "offered" to Codex is only queued in the host | the provider adapters work (phase 3), point 10 | No |
-| H-GH-1, H-GH-2 · identity of moved pull requests | the stable pull request identity work | See the hypotheses in the GH area |
+| H-GH-1, H-GH-2 · identity of moved pull requests | the stable pull request identity work | See the hypotheses in the GH area. #537 touches neither (`RegisterPr` and `ObservePrState` are unchanged at `68770a298`) |
+| H-GH-6 · a branch PR noted for a task and registered meanwhile by another live task blocks that task's final delivery for good | the stable pull request identity work | Yes, new at `68770a298` (see the hypothesis in the GH area) |
+| #537 · a PR enters a task only through `register_pr` or GitHub's open PR of one of its worktree branches at a final delivery | the stable pull request identity work | Yes: a PR the node opens from a checkout that is not one of its task's worktrees and does not register is never known to Alondra, and nothing asks about it any more (`AskToRegisterPr` is inert, `domain-rules/src/rules.rs:4855-4858` at `68770a298`); before, the output of `gh pr create` noted it or asked the node. A design choice of #537, listed so the identity work weighs it |
 | F-STORE-2 (part) · `--preflight` does not exercise the JSON state files startup needs | the tests-by-layer work (host model), point 30 (binary smoke test) | Yes: the list of files startup refuses on |
 
 F-ENGINE-12 (two owners take the same host) is fixed here, in group G8, but it changes
@@ -499,6 +517,14 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 - **Composite state**: `State × Execution (M-LIFE-2) × plan_reviews × post_merge × doubts/settled × empty_turns/woken`. The fields outside `state` (`plan_reviews`, `post_merge`, `doubts`, `settled`, `cancelled_through_generation`) survive `Reopen`.
 - **Events** (`Event`, `lifecycle.rs:513-712`): Admit, Runtime{stamp,cursor,fact}, Ask, Answer, Decide, MoveCard, KeepQuestion, PlanApproved, HostReleased, HostRetaken, BlockDelivery, DeliveryUnblocked, Present, Accept, MergeObserved, HandBack, WaitForDependencies, Tell, DependenciesResolved, Pause, Resume, EndPause, RecoveryEnded, Finish, DrainObserved, PostMergeDeclared, PostMergeEnded, RetireReleasedExecution, ExecutionReleased, ExecutionLeftForReview, Reopen, HoldForPlanReview, PlanReviewSettled, DoubtHandoff, ResendUntaken, ResendDoubtful, SettleHandoff, Discard, AwaitEnded, Unfinished, RequestControl, Compact.
 - **Events produced by `domain-rules`** (mapping `event()`, `domain-rules/src/lifecycle.rs:616-803`): all except `Ask`, `PlanApproved`, `BlockDelivery`, `DeliveryUnblocked`, `MergeObserved`, `Accept{merge:Some}`, `WaitForDependencies`, `DependenciesResolved`, `RetireReleasedExecution`, and the facts `ConnectionLost`, `ResourceReleased`, `Notification`, `EffectAccepted`, `EffectObserved` (checked with `rg`: 0 occurrences in `domain-rules/src/{lifecycle.rs,rules.rs,rules/}`). These are aggregate branches that only its own tests exercise.
+- **`Compact` since #507** (at `3fc0370ea`): no command writes a new `Compacted` record any more
+  (`Command::CompactConversation`, its guard and the idle-compaction loop were removed). The record and its event stay
+  so older journals replay: `LifecycleRecord::Compacted` (`domain-rules/src/lifecycle.rs:474-476`) still maps to
+  `Event::Compact` (`:770`) and introduces the input `/compact` (`:851`); the aggregate branch is unchanged
+  (`domain/src/lifecycle/commands.rs:546-566`: only `Waiting` or `Delivered`, resource `Available`, resting, no
+  `Pause` card). A `Compacted` committed by an older release whose input was still pending keeps its staged dispatch
+  (`store-sqlite/src/repository.rs:1077`), so that one input still reaches the host after the upgrade: an ordinary
+  turn, no invalid state.
 - **Allowed transitions (essential)**:
 
 | From | Event [guard] | To / effect |
@@ -560,6 +586,7 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 - **Total**: for every non-terminal state it returns `Some`: `Waiting` carries non-empty `Decisions` and `waits_on` covers the three `Owner`s; `Delivered` falls to `gate`; `Executing` falls to `by_activity` (which covers every `Activity`). `Completed/Cancelled` → `None`. Checked, no gaps.
 - **Adjustments outside the aggregate**: `DomainState::obligation_with` (`ownership.rs:329-342`) changes the obligation to `Answer` (returned delivery waiting for the orchestrator) or `Replan` (cancelled dependency / rejected plan): the aggregate never produces `Owed::Replan`.
 - **Deadlines**: `obligation_policy.rs` (`HAND_INPUT` 5 min, `WAKE` 2 min, `ANSWER` 10 min), applied by `obligation_watch` (out of scope: ENGINE).
+- **Since #516** (at `68770a298`): `ANSWER` is gone; only `HandInput` and `Wake` have a deadline and are enforced (`domain-rules/src/obligation_policy.rs:10-27`). `Owed::Answer` and `Owed::Replan` stay as obligations (the task still reads as waiting for the orchestrator) but no clock acts on them: what the orchestrator owes is settled by the end of its handled turns (M-ORCH-5).
 
 ### M-LIFE-6 · Task row `tasks.state` and flags
 - **Kind**: implicit, derived with validation. **Defined in**: `domain-rules/src/model.rs:123-145` (`TaskState` with 9 values), `Task` (`started`, `agent_id`, `final_presentation`, `ending`, `wrap_up`, `pending_user_inputs`, `waiting_for_tasks`, `dependencies`, …).
@@ -570,7 +597,7 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 
 ### M-LIFE-7 · `Situation` and `Tally`
 - **Kind**: derived. **Defined in**: `domain-rules/src/situation.rs:7-226`; computed by `ReadIndex::build` per task (`read_index.rs:614`) with `StartProblems::situation` → `situation_with`.
-- **Reads**: `task.state` (terminals), the inbox listing, `task_activity` (closed node), `node_closing`, `obligation_of` (M-LIFE-5), cards and `awaits` of the aggregate, `answered_wait`, `task_handed_back`, `finishing_intent`. `Tally` decides block and counters (`situation.rs:68-82`, `read_index.rs:99`, `views/src/lib.rs:85-93`, `views/src/tasks.rs:530-540`).
+- **Reads**: `task.state` (terminals), the inbox listing, `task_activity` (closed node), `node_closing`, `obligation_of` (M-LIFE-5), cards and `awaits` of the aggregate, `answered_wait`, `task_handed_back`, `finishing_intent`. `Tally` decides block and counters (`situation.rs:68-82`, `read_index.rs:99`, `views/src/lib.rs:85-93`, `views/src/tasks.rs:530-540`; `:545-555` at `3fc0370ea`). Which tasks enter those blocks at all is M-CARDS-13 (since #536 every task that has not ended does).
 - **Real precedence**: terminal row → inbox `needs_you` → closed node (`Waiting(Slot)`) → delivered and node closing → turn/work → user pause or `Await::Instruction` → user cards → delivered phase → cancellation in progress → wait for an obligation.
 
 ### M-LIFE-8 · `LiveState` / `TaskActivity` / node state in `/runtime`
@@ -586,6 +613,14 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 ### M-LIFE-10 · Node closing / wrap-up
 - **Kind**: implicit. **Defined in**: `Task.wrap_up` (`asked_at`, `cleaned_at`, `node: Option<NodeEnd>`, `post_merge_work`, `close_cancelled`) + `node_closing()` (`rules.rs:2540-2546`: terminal, `wrap_up.node` or confirmed cleanup) + `in_cleanup`, `wraps_up`.
 - Governs rule 8 of the doc (nothing asks, nobody resumes it). `RecordNodeEnd` drains everything at once if the task ends (`rules.rs:5409-5414`), or releases the execution if not.
+- **Re-checked after #505** (at `3fc0370ea`): the domain side is unchanged (`node_closing` `rules.rs:2552-2554`,
+  `RecordNodeEnd` `:5376-5432`). What changed is when the engine asks for it: the SDK owner's stop now waits for
+  the input or control it is handing to the host to get its receipt before the host is told to end (M-ENGINE-10).
+  A close therefore no longer leaves, by itself, the uncertain receipt that made the store refuse the end of an
+  ended task (`UnresolvedDispatch`, `store/src/lib.rs:1548-1554` with `dispatch_holds_execution` `:1657-1660`). An
+  uncertain receipt can still come from a host that dies on its own mid-handoff, from a handoff that times out
+  (`io_timeout`), or from a second live owner of the same node (F-ENGINE-12, branch 2); then the closer's retry
+  and its card after `MAX_FAILURES` apply as before.
 
 ### M-LIFE-11 · Held plan review
 - **Kind**: implicit, in the aggregate. **Defined in**: `plan_reviews: BTreeMap<InteractionId, u64>` + `plan_revision` (`lifecycle.rs:1178-1183`).
@@ -602,12 +637,14 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 
 ### M-LIFE-14 · `crates/machine-model` (model test; not a machine)
 - Models, with the real domain: deliveries, questions to the user and to the orchestrator, permissions, background work, PR, empty turns, host death and stop, late and repeated facts (deduplicated by the model's own cursor, `lib.rs:423-447`), restarts, slots, memory, disk, usage, account move, priority, cleanup.
-- **Does not model** (0 occurrences in `lib.rs`): interrupt and `ForceStop`, `ReopenTask`, `HostReleased/Retaken`, `InputDropped`, `InputHeld`, `Unprompted` turns, compaction, held plan review (`SettlePlanReview`), `WaitForTasks`, Codex, `RecordClaudeHold`, `DecisionAborted`, work after the merge (`DeclarePostMergeWork`), merge authorization. Nor tasks created with unstarted dependencies except `history_with_a_dependency`, which checks neither block nor counter (see F-LIFE-1). `KNOWN_GAPS` is empty (`tests.rs:14`), and the doc says "no known gaps" while admitting that it reimplements the gate and the host owner.
+- **Does not model** (0 occurrences in `lib.rs`): interrupt and `ForceStop`, `ReopenTask`, `HostReleased/Retaken`, `InputDropped`, `InputHeld`, `Unprompted` turns, compaction (since #507 only the replay of an older `Compacted` record can produce it, see M-LIFE-1), held plan review (`SettlePlanReview`), `WaitForTasks`, Codex, `RecordClaudeHold`, `DecisionAborted`, work after the merge (`DeclarePostMergeWork`), merge authorization. Nor tasks created with unstarted dependencies except `history_with_a_dependency`, which checks neither block nor counter (see F-LIFE-1). `KNOWN_GAPS` is empty (`tests.rs:14`), and the doc says "no known gaps" while admitting that it reimplements the gate and the host owner.
+- **Since #516** (at `68770a298`): the model's orchestrator ends a handled turn every ten minutes of its clock unless the usage limit holds it, and reads every reminder (`orchestrator_inbox::owed(&state, &|_| true)`, `machine-model/src/lib.rs` `turn_ended`). It never models an orchestrator that cannot end a turn handled (failing launches, an ambiguous batch), so the gap of F-ORCH-3 is outside what it checks.
 
 ### Findings
 
 #### F-LIFE-1 · An unstarted task that waits for other tasks shows as "Queued" (slot wait), not "Waiting for tasks"
 **Class**: CONFIRMED · **Severity**: S2 (wrong visible state and counters; nothing is lost) · **Probability**: high (every task created with `dependencies`, e.g. stacked phases, goes through this while its dependency has not landed) · **Overlap**: no task in the plans of related work and no open issue covers it (#323 is about the outcome of dependents when one is cancelled, not their visible state). `git log` of `situation.rs`: no related changes since #297. The evidence is new.
+**Status**: still holds at `3fc0370ea`. #536 only changes which tasks the Tasks list shows (every task that has not ended is in the active list, M-CARDS-13); the block each one goes to still comes from `Tally` of its `Situation`, which #536 does not touch. Refreshed refs at `3fc0370ea`: `LifecycleRecord` `domain-rules/src/lifecycle.rs:295-496`, `event()` `:617-803`, `plan_lifecycle` `:1277-1284`, `state_within_phase` `:2625-2626`, `waits_are_over` `rules.rs:1986-2002`, blocks `views/src/tasks.rs:545-555`.
 - **Invalid state/transition and broken invariant**: rule 1 of `task-states.md` ("`Situation` … nothing else decides a label, a block, a count") and the definition of `Tally::Waiting` ("It waits for something else: other tasks", `situation.rs:63-66`). There are two sources of truth for "waits for tasks": the row (`TaskState::WaitingDependency`, `dependencies`) and the aggregate. The aggregate does not know it before the first turn, so `Situation` says something different from the row.
 - **Evidence**:
   1. `LifecycleRecord` has no variant for `WaitForDependencies`/`DependenciesResolved` (`domain-rules/src/lifecycle.rs:294-494`); `event()` cannot produce them (`:616-803`). `Progress::Dependency` (`domain/src/lifecycle.rs:1116-1121`) is unreachable in production.
@@ -624,6 +661,7 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 
 #### F-LIFE-2 · Reopening a task whose SDK node the user left open creates a `claude --bg` execution nobody runs
 **Class**: CONFIRMED in the domain (the part of the engine that leaves the task idle is H-LIFE-4) · **Severity**: S2 (the task stays "Delivering message" with no host accepting its facts; cancelling it is the way out) · **Probability**: low (needs "Leave it open" on the closing card and then `ReopenTask`) · **Overlap**: none in the plans of related work or in issues. `git log -S` of that line: no changes since #297. The evidence is new.
+**Status**: still holds at `3fc0370ea`. #536's `reopen_requests_with_open_tasks` does not reach it: `ReopenTask` still requires the request to be open (`reopen_guard`, `guards.rs:432-438`), so the request is never closed at that point. Refreshed refs at `3fc0370ea`: `ReopenTask` `rules.rs:5308-5328` (kept node and synthetic execution `:5324-5327`), host stamp `claude-bg` `domain-rules/src/lifecycle.rs:624-629`, `current_sdk` `:2724-2732`.
 - **Invalid state/transition and broken invariant**: "No node runs on `claude --bg` any more" (`engine-sdk/src/bg_handover.rs:1-3`): the domain still admits new `claude --bg` executions, and does so on a node that runs through the SDK, so the task's current execution and the node's real host diverge.
 - **Evidence**:
   1. The closer records `NodeEnd::KeptByUser` when the user chooses to leave the node (`engine-sdk/src/task_closer.rs:325`); neither that path nor `cleanup.rs:229` closes the session, so `agents[a].phase` stays `ThroughSdk` (alive).
@@ -645,7 +683,7 @@ What is claimed: the domain journal stores neither provider cursor nor stamp (`e
 Missing to confirm: that a restart can re-deliver already-applied facts to the domain, that is, whether the `RecordRuntimeFacts` commit and the advance of the normalization checkpoint (`provider_normalization_checkpoints`) are atomic (STORE/ENGINE). The model (`machine-model/src/lib.rs:423-447`) deduplicates with its own cursor, which `restart` does not clear (`:383-395`), so it does not exercise this. Proposed test: a scenario with host doubles that re-emit the batch after a simulated restart between commit and checkpoint; or a domain test applying `TurnStarted{X}`, `TurnEnded{X}`, `TurnStarted{X}` and checking the task does not read `Working`. Overlap: scope of the stalled-node recovery work (phase 2, `StreamEndedMidTurn`/contradictions): new evidence for them, not a fix of its own.
 
 #### H-LIFE-2 · `finish_settled_deliveries` can refuse the command that settles a delivery with an open orchestrator case
-What is claimed: it runs in the post-processing of **every** command (`rules.rs:2951`) and its error aborts the command. Its filter (`lifecycle.rs:2569-2578`) looks at `DomainState` predicates (`unanswered` excludes system cards and `blockers` excludes the orchestrator's, `rules.rs:2301-2355`), but the aggregate's `finish()` refuses `Complete` if any card other than `Recovery` is left (`commands.rs:1045-1053`). An orchestrator `Unheard` card (stopped-node case, created by `Unfinished` in `Delivered`, `commands.rs:899-923`) passes the filter and makes `finish` fail.
+What is claimed: it runs in the post-processing of **every** command (`rules.rs:2951`; `:2962` at `3fc0370ea`, unchanged by #536, which adds `reopen_requests_with_open_tasks` later in the same sequence) and its error aborts the command. Its filter (`lifecycle.rs:2569-2578`) looks at `DomainState` predicates (`unanswered` excludes system cards and `blockers` excludes the orchestrator's, `rules.rs:2301-2355`), but the aggregate's `finish()` refuses `Complete` if any card other than `Recovery` is left (`commands.rs:1045-1053`). An orchestrator `Unheard` card (stopped-node case, created by `Unfinished` in `Delivered`, `commands.rs:899-923`) passes the filter and makes `finish` fail.
 Missing to confirm: a real sequence in which the delivery is settled (accepted or merged) with that case open and no node (`!wraps_up`): e.g. open case → the session dies (`RecordNodeEnd{Gone}`, which releases the execution and keeps the `Delivered` cards, `commands.rs:1187-1192`) → the user accepts. If reached, `AcceptDelivery` (or the merge observation, or a command of another task that makes this one "completable") is refused with `lifecycle refused` until the orchestrator settles the case. Proposed test: a domain test with that sequence; assert the command that settles the delivery is accepted and the task ends or the case is withdrawn. Overlap: ORCH (`Answer` deadline) and phase 4 of the stalled-node recovery work.
 
 #### H-LIFE-3 · The node list (`/runtime`) says "Busy" while the task says it waits
@@ -767,6 +805,33 @@ Execution model common to all machines in this area (stated once):
 - **States**: being defined (open without tasks, `is_defining`), with live tasks, with all tasks ended and open (only the orchestrator moves it), closed with answer (Done/answer card), closed withdrawn (no card), folded into another task, cleared (`cleared`).
 - **Transitions**: `CreateRequest`/`CreateCardReply` (user), `TitleRequest`, `CloseRequest` (`rules.rs:3511`; `close_request` `:1342-1366`: Done card if it has tasks and the user asked for it, answer card if not), `close_delivered_plans` (automatic close only if all tasks are Done and marked every item of every plan, `:1368-1410`), `close_finished_messages` (messages, no card), `withdraw_cancelled_requests` (the user cancelled all unstarted tasks: closed withdrawn, no card), `AdoptOpenPr` (reopens the request, `rules.rs:5272-5277`), `ClearCompleted`. Effect `RequestTasksOver` (`:2961-2969`) **only once**, in the commit in which the last task ends.
 - **Orchestrator inbox**: `orchestrator_inbox::steps` and `unresolved` only chase requests **without tasks** (`orchestrator_inbox.rs:61-71,132-142`); those with all their tasks ended depend on the single message → F-CARDS-1.
+- **Re-checked after #536** (at `3fc0370ea`):
+  - **New transition**: `reopen_requests_with_open_tasks` (`rules.rs:1307-1318`) runs in the post-processing of
+    **every** command (`:2971`, after `forget_what_ended_tasks_allowed` and before `close_finished_messages`). Any
+    request that is `closed` or `cleared` while one of its tasks is not `over()` gets `closed = false`,
+    `withdrawn = false`, `answer = None`, `cleared = false`. It is the same reset `AdoptOpenPr` already did
+    (`:5290-5293`).
+  - **Invariant it states**: a request is closed or cleared only while none of its tasks is open, "open" meaning
+    `!over()` (`over()` = terminal or `ending.is_some()`, `domain-rules/src/lifecycle.rs:1184-1186`). A task that is
+    `Closing` (lifecycle `Finishing`) is over, so a closed or cleared request may still hold one: that is how
+    `CloseRequest` (guard `!t.over()`, `rules.rs:3530-3536`) and `RequestTasksOver` (emitted when the last task becomes
+    over, `:2974-2981`) already work, and `ClearCompleted` clears such a request on purpose
+    (`closed_with_tasks_still_ending`, `guards.rs:517-523`).
+  - **Who can make it fire**: only `ReopenTask` and `AdoptOpenPr` turn an over task into an open one (no event leaves
+    `Finishing` except to a terminal state: entered at `domain/src/lifecycle/commands.rs:1103`, left only at `:1016`). `ReopenTask` requires an
+    open request (`guards.rs:432-438`) and `AdoptOpenPr` resets the request itself, so in a database this release
+    wrote the rule changes nothing; it repairs states an earlier release left (a closed or cleared request over an
+    open task), on the first command after load.
+  - **Persistence**: `closed`, `withdrawn` and `answer` live in the `requests` row and are written by the upsert; at
+    `3fc0370ea` the reset of `cleared` was **not** written (the side table only got inserts), so a later full reload
+    read the request as cleared and open and refused the whole database → F-STORE-7, fixed since by G3 (#520): the
+    save now deletes the `cleared_requests` row.
+  - **Done card**: the reset leaves the request's «Done» card where it was; when the request closes again a second
+    one is written next to it (H-CARDS-5).
+  - Refreshed refs at `3fc0370ea`: `CloseRequest` `rules.rs:3523`; `close_request` `:1354-1376`;
+    `close_delivered_plans` `:1380-1426`; `close_finished_messages` `:1321-1326`; `RequestTasksOver` `:2974-2981`;
+    `withdraw_cancelled_requests` `:2283-2300`; `AdoptOpenPr` `:5270-5306`; `ClearCompleted` `:5735-5742`; `validate`
+    refuses a cleared request that is open at `:5932-5934`.
 
 ### M-CARDS-11 · Task creation, dependencies and waits
 - **Kind**: implicit. **Defined in**: `Task.dependencies` (objective, "landed"), `delivered_dependencies` (reviewer waits for the delivery), `waiting_for_tasks` + `ended_task_waits` (wait declared by a node, ends with any final state), `stack` (`StackDependency`), `blocks` (reviewer). Acyclic graph (`dependency_graph`, `rules.rs:1865-1898`; `blocks_graph` `:1900-1934`). Derived state `WaitingDependency` (`lifecycle.rs:2613-2650` `state_within_phase`).
@@ -777,10 +842,31 @@ Execution model common to all machines in this area (stated once):
 ### M-CARDS-12 · Stacks (`stack`, `stack_readiness`)
 - **Kind**: implicit. **Defined in**: `StackDependency{upstream_task, presentation_id, pr_id, head}` + `StackReadiness{ready}` published by the upstream node (`PublishStackReadiness`, `rules.rs:5181-5211`); `stack_ready`/`stack_ready_for_merge` block start and merge. `invalidate` turns `ready` off. A cancelled upstream: `cancelled_dependency` treats it as a cancelled dependency. No finding of its own (the identity of moved PRs belongs to the stable pull request identity work).
 
+### M-CARDS-13 · Section of the Tasks list for a request and each task (`Bucket`, derived; added after #536)
+- **Kind**: derived, recomputed on every render; nothing stored. **Defined in** (at `3fc0370ea`): `enum Bucket { Active,
+  Finished, Cleared }` (`views/src/tasks.rs:115-119`), `bucket` (`:121-131`), `task_bucket` (`:136-144`),
+  `bucket_of` (`:146-148`), `request_buckets` (`:150-171`), `Forest::new` (`:204-212`), `listed_active` (`:594-598`),
+  header text `request_state` (`:348-366`).
+- **Request**: `Active` if any of its tasks is not terminal (`Done`/`Cancelled`); else `Cleared` if `cleared` or every
+  task is archived; else `Finished` if `closed` or it has tasks; else `Active`. A request that is a message, or
+  answered without tasks, has no bucket until it has tasks. A task whose request does not exist gets one anyway:
+  `Active` if any of its tasks is open, else `Finished` (`:165-169`).
+- **Task**: `Active` whenever it is not terminal, whatever its request says or whether it has one; otherwise `Cleared`
+  if archived or its request is `Cleared`, else `Finished`.
+- **Invariant** (`task-states.md`, "Every task that has not ended is in exactly one block of the Tasks list"; test
+  `every_open_task_is_in_exactly_one_block_whatever_its_request_says`, `views/src/tests.rs:10664`): an open task is
+  never folded or hidden. Before #536 a closed, cleared or missing request put it in Completed or nowhere.
+- **Two notions of "open"**: the list uses `!state.terminal()`, the domain (`CloseRequest`, `ClearCompleted`,
+  `reopen_requests_with_open_tasks`) uses `!over()`. They differ only for a `Closing` task: closed or cleared
+  requests may hold one, and the list now shows that request and task as active until the task ends. Visible effect:
+  F-CARDS-7.
+
 ### Findings
 
 #### F-CARDS-1 · A request whose tasks ended depends on a single message to the orchestrator: if that batch does not close it, it stays open forever with no result card (issue #353)
 **Class**: CONFIRMED (that nothing claims it again). Whether the batch fails to close it depends on the model or on a cut, which is probabilistic. · **Severity**: S2 · **Probability**: medium (one omission by the model is enough; issue #353 observed it) · **Overlap**: issue #353 (NEW evidence: exact paths showing why there is no second chance). Related to F-ORCH-1 and F-STORE-3 (ways of losing the single message). `git log` of `orchestrator_inbox.rs`: no later fix.
+**Status**: still holds at `3fc0370ea`. #536 adds `reopen_requests_with_open_tasks` in the same post-processing (`rules.rs:2971`), but it only reopens requests that hold an open task; the request of this finding has every task over, so nothing changes for it. Refreshed refs at `3fc0370ea`: `RequestTasksOver` `rules.rs:2974-2981`, `close_delivered_plans` `:1380-1426`, `close_finished_messages` `:1321-1326`.
+Still holds at `68770a298`: #516 rewrote the orchestrator inbox, but `steps` and `unresolved` still skip every request that has a task (`orchestrator_inbox.rs:70-73`, `:152-153`), so a request whose tasks all ended is still neither reminded nor raised. #516 only makes the orchestrator's close of it carry the outcome `tasks_ended` (`check_close_outcome`, `domain-rules/src/rules.rs:1357-1387`).
 - **Invalid state/transition and broken invariant**: a user request open, with all its tasks ended, no Done/answer card and no owner. Breaks "Inbox is the channel" (every request ends with a result card) and the rule that every state has an owner.
 - **Evidence**:
   1. `RequestTasksOver` is only emitted in the commit in which the request **becomes** one with all tasks ended: `rules.rs:2961-2969` filters with `!ended_before.contains(id)`. The test `request_over_tests.rs:61` (`…hands_its_open_request_to_the_orchestrator_once`) fixes that "once".
@@ -870,6 +956,19 @@ Execution model common to all machines in this area (stated once):
 - **Deterministic test and ablation**: pure domain, `tests.rs`: cancel A; `CreateTask{dependencies:{A}}` and `SetDependencies{A}` must be rejected (`invalid_input`, field `dependencies`) like `SetRelations`. Today they pass. Ablation: remove the guard.
 - **Expected fix and files**: the same guard as `SetRelations` in `CreateTask` and `SetDependencies`; and for #323, a replacement command that re-points the dependents of the cancelled task to its replacement in the same commit. Files: `rules.rs`.
 
+#### F-CARDS-7 · Clear completed takes a closed request whose last task is still ending, which the Tasks list now shows as active (#536)
+**Class**: CONFIRMED (at `3fc0370ea`) · **Severity**: S3 (nothing is lost; a request and its task vanish from the list without ever being shown as completed) · **Probability**: medium (the orchestrator closes a request as soon as its last task starts ending, and the node's cleanup takes minutes; any «Clear completed» in that window, offered whenever the Completed section has anything else) · **Overlap**: none in the referred tasks or the open issues. Introduced by #536, which moved such a request from Completed to the active list without changing what the clear takes.
+- **Invalid state/transition and broken invariant**: a request with `cleared = true` listed in the active part of the Tasks list, and a «Clear completed» that takes something the Completed section does not show. `clear_guard` says it takes "what the user saw" as completed (`guards.rs:495-497`); since #536 the list shows a closed request with a `Closing` task as active (M-CARDS-13).
+- **Evidence** (at `3fc0370ea`):
+  1. The last task T of request R starts ending (`Finishing`, row `Closing`, `domain-rules/src/lifecycle.rs:1328`; `over()` is true, `:1184-1186`). `RequestTasksOver` goes out in that commit (`rules.rs:2974-2981`) and the orchestrator's `CloseRequest` passes, since its guard only refuses tasks that are not over (`:3530-3536`). R is closed while T still ends.
+  2. `clear_guard` takes R: `closed_with_tasks_still_ending` (`guards.rs:517-523`) is true for a closed, uncleared, non-message request whose tasks are all over and one of them not terminal; `ClearCompleted` sets `cleared` (`rules.rs:5735-5742`). The action is offered on the Completed section whenever it lists anything (`views/src/tasks.rs:744-746`, `projection.rs:125-126`).
+  3. The list: `bucket(R)` is `Active` because T is not terminal (`views/src/tasks.rs:121-123`), and `task_bucket(T)` is `Active` (`:136-138`); R's header reads «Active» (`request_state`, `:348-366`). Before the clear R was already in the active list, not in Completed.
+  4. When T reaches `Done`, `bucket(R)` becomes `Cleared` (`:124-125`) and `task_bucket(T)` too (`:139-140`): R and T leave every section without ever appearing in Completed.
+- **Minimal sequence**: 1) requests R (task T) and R2 (task T2, `Done`, so Completed has an entry); 2) T is accepted and starts its cleanup (`Finishing`); 3) the orchestrator closes R; 4) the user presses «Clear completed»: R2 and R are cleared; 5) the list still shows R and T as active; 6) T ends: R and T disappear.
+- **Impact**: the user cannot find the outcome of R in Completed; the clear acted on a row they saw as active.
+- **Deterministic test and ablation**: a pure domain test in `crates/domain-rules/src/tests.rs` (fixture with R closed and T `Closing`, plus a `Done` task in another request): `ClearCompleted { seen }` must leave R uncleared. Today R is cleared. A views test in `crates/views/src/tests.rs` next to `every_open_task_is_in_exactly_one_block_whatever_its_request_says` (`:10664`): after T is `Done`, R is in the Completed section. No clock. Ablation: restore `|| self.closed_with_tasks_still_ending(r)` and see both fail.
+- **Expected fix and files**: drop `closed_with_tasks_still_ending` from `clear_guard`: the request reaches Completed when its last task ends and the next clear takes it, which is what the list shows since #536. It also removes the usual way a request becomes cleared while it still holds a task (one entry of F-STORE-7). Files: `crates/domain-rules/src/guards.rs`, tests.
+
 ### Hypotheses
 
 #### H-CARDS-1 · The plan slot withdraws a card held by a hook
@@ -886,6 +985,7 @@ R8 only deduplicates notices (`repeated_notice`, `rules.rs:1073-1084`) and R5 on
 
 #### H-CARDS-5 · Second Done card after reopening a request
 `AdoptOpenPr` reopens the request and deletes its answer (`rules.rs:5276-5281`) but leaves its Done card; when it closes again, `write_system_card` appends `-` to the id and writes another (`rules.rs:1575-1577`). Cosmetic; missing: how the apps display it.
+**Re-checked after #536** (at `3fc0370ea`): still a hypothesis, with a second writer of the same reset. `reopen_requests_with_open_tasks` (`rules.rs:1307-1318`, run after every command at `:2971`) clears `closed` and `answer` of any closed request that holds an open task, and also leaves the Done card (nothing withdraws a `RequestDone` card when its request reopens; `tell_it_is_done` only skips when the orchestrator itself wrote an information card, `orchestrator_told` `:1448-1455`). The paths that reach it in a database this release wrote are still only `AdoptOpenPr` (`:5290-5293`); `ReopenTask` needs an open request (M-CARDS-10). Refreshed refs: `write_system_card` `:1584-1589`. Missing, as before: how the inbox and the apps show two Done cards of one request.
 
 ## Engine: admission, host ownership, machine watch and transports (`ENGINE`)
 
@@ -1032,6 +1132,11 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
   - `adopt_all` ends the hosts of finished tasks and takes the rest in parallel;
   - the drivers hold `in_hand` (`Driver::new`, `:1703-1706`) until `add_sdk_owner`, so the window between
     `take_all` and `add_sdk_owner` is covered.
+- **Re-checked after #505** (at `3fc0370ea`; refs: `Driver` `sdk_owner.rs:222-297`, `Owner` `:2578-2598`, `Owners`
+  `:2843-2877`, `Driver::new` `:1767`, `add_sdk_owner` `:3007-3016`, `take_sdk_owner` `:3074-3079`): each `Owner`
+  now shares one `Handoffs` gate with the driver of every host it runs (`Handoffs`, `:300-354`; field `:294`, copied
+  into the `Owner` at `:2618`, carried to the next driver by `replace_ended_host`, `:2438-2442`). The gate is per
+  `Owner`, not per agent: two live `Owner`s of the same agent (F-ENGINE-12, branch 2) have two gates.
 
 ### M-ENGINE-5 · `Owner` thread loop (explicit in code)
 - **Kind**: explicit. **Defined in**: `sdk_owner.rs:2535-2668`.
@@ -1042,6 +1147,39 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
   - `opening_deadline` = `io_timeout_seconds` (120 s by default, `sdk_backend.rs:145`): after that time a host
     that did not open its session is replaced (`:1967-1976`, `:2219`);
   - `RELAUNCH_WAITS` and `SILENT_HOSTS` = 3, which ends in `lost()`.
+- **Opening deadline since #541** (at `68770a298`): the deadline is `OPENING_TIMEOUT` = 120 s, a constant of its own
+  (`sdk_owner.rs:53`; `Driver::new` no longer takes `io_timeout_seconds`, `:1769-1771`). It is armed when an input is
+  offered to an unopened session (`:1938`) or on adopting one with a pending input (`:1055`), cleared once the
+  session opened (`opening_overdue`, `:2046-2054`). Past it, `step_once` first reads what the host already wrote
+  (`readable(Duration::ZERO)` → `observe`, `:2298-2303`) and only gives the host up when nothing is waiting
+  (`:2304-2305`). So a host whose session opened just before the deadline, with the frame not yet read, is no longer
+  replaced. Each look reads one batch and checks again, so a host that kept writing frames that do not open the
+  session would postpone its replacement while it writes; the host emits no periodic frame
+  (`agent-host/persistent-main.ts:27-33` only watches its lock), so that stays bounded by what the native process
+  writes. A read error counts as nothing waiting (`unwrap_or(false)`).
+- **Handoff gate (since #505, at `3fc0370ea`)**: `Owner::spawn` `sdk_owner.rs:2601-2747` (loop `:2619-2744`),
+  `Owner::end` `:2808-2824`.
+  - **State**: `HandoffState { stopping, handing, stop_waits }` under a mutex with a condvar (`:305-317`).
+    `stopping` only goes from false to true and never back: an `Owner` that started stopping hands nothing more.
+  - **Handing**: `dispatch` (`:1882-1951`) and `control` (`:1820-1878`) call `begin()` first (`:1883-1887`,
+    `:1821-1825`). With `stopping` set they put the permit back at the front of the queue, claim nothing and return
+    `Ok`; the loop then sees `told()` (set before the gate is closed) and leaves. Otherwise `handing = true` until the
+    `Handing` guard drops at the end of the call, a panic's unwinding included (`:319-326`). The whole claim →
+    record → `submit` → receipt sequence, and `session_refresh::refresh`, run inside it.
+  - **Stopping**: `Owner::end` sets `stopped`, marks the stop as Alondra's, wakes the seals, then `Handoffs::stop`
+    (`:340-349`) sets `stopping` and waits while `handing`; only after that does it ask the host to end (`request` or
+    `request_after_interrupt`, `:2813-2818`) and join the thread. Every external stop goes through it: `stop_sdk_host`,
+    `close_sdk_host`, `halt_sdk_host` (`:3024-3034`), `stop_sdk_owners` (`:2949-2959`) and `Drop for Owner`
+    (`:2827-2833`). `crash()` does not (it stops nothing on purpose, `:2761-2768`).
+  - **Bound of the wait**: one handoff, that is the provider's write and receipt deadline (`io_timeout`, at most 300 s,
+    `provider-claude/src/adapter.rs:627-628`, `:672-676`), plus the store writes and the refresh file I/O inside the
+    gate. No caller holds the store or `Owners.held` while it waits (the list is released before stopping,
+    `take_sdk_owner`; the closer and `close_hosts_of_ended_nodes` call it from a blocking task or a thread of their
+    own, `task_closer.rs:526`, `sdk_owner.rs:1369-1373`), and the old `join` already waited for everything the
+    thread does, so the gate adds no lock cycle.
+  - **Not gated**: the owner thread's own stops (`driver.stop()` at the end of the loop, `:2732`, and inside
+    `replace_ended_host`, `:2437`), which run on the same thread after the handoff ended; and a second live `Owner` of
+    the same agent (F-ENGINE-12).
 
 ### M-ENGINE-6 · Account move (explicit, disabled)
 - **Kind**: explicit. **Defined in**: `AccountMoveStep` `Planned → HostStopped → Admitted → Done | Undone`
@@ -1075,18 +1213,32 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
   safe: it only delays.
 - `effective()` (`:96-101`) turns `HandInput`/`HandDecision` into `Room(Gate)` when the gate says
   `waits_for_slot`.
+- **Since #516** (at `68770a298`; `Seen` `daemon-engine/src/obligation_watch.rs:45`, `Action` `:57-62`, `observe`
+  `:115`, `enforce` `:148`, `pass` `:206-220`, `apply` `:223-242`): the clock acts only on `HandInput` (`Requeue`) and
+  `Wake`; `Action::Answer`, `settle_answers`, the `OrchestratorAnswers` port and the usage-hold aging
+  (`World::orchestrator_held`, `last_pass`) are gone. `Owed::Answer` still shows in the per-task state and in the
+  log line of overdue steps, but nothing acts on it.
 
 ### M-ENGINE-9 · Global usage pause (implicit, in memory, legacy)
 - **Kind**: implicit. **Defined in**: `usage_pause.rs:41-53` (`Record`).
 - **States**: `exhausted`, `announced`, `resumed_at`, `strikes`, `by_margin` and `settled_cards`.
 - **Persistence and restart**: rebuilt with `usage_probe`. The gate's `Reason::Usage` pauses are only created for
-  `--bg` nodes (`:428-445`); SDK nodes wait on `ClaudeHeld` cards of the domain, which belong to another audit.
+  `--bg` nodes (`:428-445`); SDK nodes wait on `ClaudeHeld` cards of the domain, which belong to another audit (described as M-ENGINE-28 since #540).
 
 ### M-ENGINE-10 · Closing a task's SDK node (implicit)
 - **Kind**: implicit. **Defined in**: the `TaskClosing` row (`attempts`, `next_attempt`, `rm_started_at`,
   `attempted_cleaned_at`, `since`) plus `due()` (`task_closer.rs:113-123`) and `close_sdk_node` (`:458-530`).
 - **Deadlines outside the policy**: `Timing.wait` (cleanup wait), `RETRY` = 5 min and `MAX_FAILURES` = 3, which
   ends in a card.
+- **Re-checked after #505** (at `3fc0370ea`; `due()` `task_closer.rs:117`, `close_sdk_node` `:462-533`, `RETRY`
+  `:32`, `MAX_FAILURES` `:34`): the states and the row are unchanged. The step "stop the host" (`close_sdk_host`,
+  `:526`, through `Owner::close` → `Owner::end`) now waits for the input or control the owner is handing to the host
+  to get its receipt before the host is asked to end (M-ENGINE-5, handoff gate). Before #505 the host could close
+  without reading the command, the receipt stayed uncertain, `RecordNodeEnd` was refused with `UnresolvedDispatch`
+  and the close failed until a retry (counted towards `MAX_FAILURES`). The step can now last up to one handoff
+  (`io_timeout`) longer; it runs inside `blocking`, so it holds no store lock. What the gate does not cover: an
+  unowned host (`end_unowned_host`, `:517-524`, no handoff in flight by construction) and a second live owner of the
+  same node (F-ENGINE-12).
 
 ### Timers that act on state outside `obligation_policy`
 
@@ -1102,6 +1254,15 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
 | `UNKNOWN_RESET_WAIT_MS` 30 min | `usage_pause.rs:31,485` | An exhausted window with no reset time stops blocking |
 | `TERMINATE_AFTER`/`KILL_AFTER` | `pauses.rs:20-21` | Signals to processes of paused `--bg` nodes |
 | `Timing.wait`, `RETRY` | `task_closer.rs:30-55` | Forced close after the cleanup wait |
+| `io_timeout` of one handoff (since #505) | `sdk_owner.rs:340-349`, `:2812` at `3fc0370ea`; `provider-claude/src/adapter.rs:672-676` | How long a stop of an SDK owner waits for the input or control it is handing to the host before asking the host to end |
+
+At `68770a298`: `opening_deadline` is `OPENING_TIMEOUT` = 120 s, a constant of its own (`sdk_owner.rs:53`, armed at
+`:1938` and `:1055`, checked at `:2298`), no longer `io_timeout_seconds` (#541). The orchestrator's `ANSWER` deadline
+(10 min to remind, 20 to settle), which `obligation_policy` held and so this table never listed, was removed by #516.
+
+At `3fc0370ea` the `sdk_owner.rs` rows above read: `opening_deadline` `:1934`, `:2042`; `RELAUNCH_WAITS`,
+`SILENT_HOSTS` `:53-56`; `UNOWNED_TAKE_EVERY` `:1336`. #507 removed the idle compaction loop, which acted about two
+minutes before a resting task's prompt cache expired and was not listed here (M-ENGINE-25).
 
 Second-pass coverage A (M-ENGINE-11..17): `crates/engine-admission/src/machine_watch.rs` (code, 1-1068, and the tests
 that fix the design), `crates/engine-admission/src/disk_peaks.rs`, `crates/engine-kernel/src/launches.rs`,
@@ -1323,7 +1484,7 @@ Second-pass coverage B (M-ENGINE-18..27): `crates/engine-live/src/{node_reports,
 (without the `mod tests`), `crates/engine-kernel/src/domain_runtime.rs` (production code, lines 1-1238) and
 `domain_runtime/{seals,problems,capabilities,batch_operations,rejections,inbox,observers}.rs`,
 `crates/daemon-engine/src/domain_transport.rs` (production code, lines 1-1018). To follow each guard, these were also
-read, only in the cited span: `daemon-engine/src/{domain_holds,domain_messages,idle_compaction,gate,wiring}.rs`,
+read, only in the cited span: `daemon-engine/src/{domain_holds,domain_messages,idle_compaction,gate,wiring}.rs` (`idle_compaction.rs` was removed by #507),
 `engine-sdk/src/sdk_owner.rs` (capability revocation and seal consumption), `store/src/lib.rs` (permit issue on
 commit), `cli/src/args.rs` (`hook`), `plugin/hooks/{hooks.json,register.ts}`.
 
@@ -1468,7 +1629,8 @@ F-ENGINE-12).
 - **Steps**: `step_created`/`step_updated`/`steps_listed`; `Deleted` deletes; the whole list replaces.
 - Display only. No findings.
 
-### M-ENGINE-25 · Context measure and idle compaction (`Contexts` + `idle_compaction`, explicit)
+### M-ENGINE-25 · Context measure (`Contexts`, explicit; its idle compaction was removed by #507)
+At the audited commit (kept for history; the current state is the last bullet):
 - **Kind**: explicit. **Defined in**: `engine-live/src/contexts.rs:57-247`; `daemon-engine/src/idle_compaction.rs:46-120`.
 - **Source of truth**: memory (`measured`) + `context-readings.json` (`last`: tokens, request time, cache,
   `compactable`). Saved whole and atomically; entries older than 7 days relative to the newest request are pruned.
@@ -1480,6 +1642,26 @@ F-ENGINE-12).
   recorded **before** the command runs (`idle_compaction.rs:82-91`): a refusal or a failure loses that compaction
   (documented decision: "at most once per rest").
 - **Persistence and restart**: `last` survives; `measured` does not.
+- **Re-checked after #507** (at `3fc0370ea`): the idle compaction is gone (`daemon-engine/src/idle_compaction.rs`,
+  `Command::CompactConversation`, `compact_guard`, `Contexts::readings`/`spend` and `LastRequest::compactable` were
+  removed). What is left is a measure, with no transition that acts on its own:
+  - **Defined in**: `engine-live/src/contexts.rs:56-222`; `LastRequest { tokens, requested_at, cache_ms }`
+    (`engine-ports/src/sdk.rs`).
+  - **Source of truth**: memory (`measured`) + `context-readings.json` (`last`), saved whole and atomically
+    (`contexts.rs:100-108`); entries 7 days older than the newest request are pruned. A file written by an older
+    release still loads: the extra `compactable` field is ignored, and an unreadable file loads as empty
+    (`:86-91`).
+  - **States of a task's last request**: unknown → measured (`observed` with `Answered`, a request time and a cache,
+    `:161-173`) → deleted (`ContextEvent::Compacted`, a compaction the provider reports, `:176-179`; or `launched`
+    with a `StartKind` other than `Resumed`, `:114-133`). `forget` (host ended) now only drops `measured` and keeps
+    `last` (`:190-194`); before, it also marked it as not compactable.
+  - **Who reads `last`**: `session_refresh::refresh` (`engine-sdk/src/sdk_owner/session_refresh.rs:122-193`,
+    called inside the dispatch's handoff gate): a Claude conversation of at least 100 000 tokens whose cache expired
+    and that has a pending input starts a new session through a `Refresh` provider transition instead of resuming
+    (`starts_anew`, `:28-31`). Without a stored reading it derives one from the session's transcript.
+  - **Upgrade**: a `Compacted` record committed before #507 keeps its staged `/compact` input, which still reaches
+    the host once (M-LIFE-1).
+  - No invalid state found.
 
 ### M-ENGINE-26 · Hook transport and connection of the `claude --bg` mod (`domain_transport.rs`, composite, inherited)
 - **Kind**: composite. **Defined in**: `daemon-engine/src/domain_transport.rs:42-532`.
@@ -1508,6 +1690,50 @@ F-ENGINE-12).
   (`clear_ended_waits`, in `published`, under the store lock) | ignored on read if its `pid` no longer exists.
 - Display only (`read_wait_file` says so: "never an input to admission or lifecycle decisions").
 
+### M-ENGINE-28 · Holds of an SDK task on its provider and their probe (`ClaudeHold`, explicit; added after #540)
+At `68770a298`; this machine was outside the audited scope (M-ENGINE-9 pointed at it) and is described here because
+#540 changed it.
+- **Defined in**: `ClaudeHold { SignedOut, Outage, Usage }` (`domain-rules/src/claude_access.rs:42`, owners `:58-64`:
+  the user for a sign-in, `Capacity(ClaudeApi)` / `Capacity(Usage)` otherwise); the hold's card
+  (`SystemCard::ClaudeSignedOut | ClaudeOutage { quiet, detail, said } | ClaudeUsage { resets_at }`,
+  `system_card.rs:23-36`); the task's pause in the lifecycle (`Paused { card, owner }`); the schedule
+  `daemon-engine/src/claude_access.rs:20-88` (`Schedule::due`, `run`). Failures come from the provider's turn end
+  (`TurnOutcome::ApiFailed(ApiFailure { error, status, resets_at, detail, said })`, `provider-contract/src/lib.rs`)
+  through `hold_after_failure` (`domain-rules/src/lifecycle.rs:1544-1550`).
+- **States per task**: not held → held (last hold record of its journal is `Paused` on a hold card, its lifecycle
+  still waits on that `Pause` card, and the card's credential cause is current: `claude_held`, `claude_access.rs:210-226`)
+  → probing (the schedule or `claude_answered` resumed it: last hold record is `Resumed`, no `TurnEnded` since;
+  `last_hold`, `:140-152`) → not held when its next turn ends, or held again.
+- **Transitions**: `hold_on_claude` (`:313-354`) opens a hold card and the pause; an existing pause on the same hold
+  stays, an outage gives way to a sign-in or a limit (`PauseEnded` of the old card), any other pause stands.
+  `probe_claude` (`:359-367`, command `ProbeClaudeAccess`) resumes the oldest held task of a wait and withdraws its
+  card; `claude_answered` (`:373-387`) resumes every task the same wait held once the model answers; the user's answer
+  to the card resumes that task (`settle_claude_card`, `:391-411`).
+- **Probe schedule** (memory only, lost on restart, where the first probe then waits a whole interval again): one
+  wait per (provider, hold, account); an outage is probed every `OUTAGE_PROBE` = 2 min, a limit at its reset or every
+  `QUIET_RETRY` = 10 min (`api_failure.rs:13-16`); a sign-in never. A probe command refused (for example by a revision
+  conflict) is only logged and waits for the next interval.
+- **What #540 changed**:
+  - An outage card of a Claude task is **quiet** until Alondra's retry failed too: `quiet = provider is Claude && !retried_on_outage(task)`
+    (`:347`, `retried_on_outage` `:171-175`: the task's last hold record is `Resumed` on an outage card and its turn
+    has not ended since). `shown_claude_cards` leaves quiet cards out (`:274-288`), so `grouped_away` hides them from
+    the inbox (`:291-293`); `claude_waiting` still counts them. The probe still runs for a quiet card, because
+    `claude_held` does not look at `quiet`. Codex keeps a loud card on the first failure.
+  - The card keeps Claude Code's finer code and words (`detail`, `said`, at most 300 characters) and says "check this
+    Mac's internet" when `detail` is `connection_failed` (`api_failure.rs:146-148`).
+  - Claude's normalizer no longer ends a turn as failed when Claude Code wrote an API error and then the model
+    answered in the same root turn (a response lost while the Mac slept): any later root assistant message without
+    `error` clears it (`provider-claude/src/normalizer.rs:829-855`), and `ModelAnswered` is then emitted.
+- **Persistence and restart**: the cards (with `quiet`, `detail`, `said`, stored as JSON in `system_card`) and the
+  pauses live in SQLite; an outage card stored before #540 reads as a loud one with no detail (the enum is tagged by
+  `kind`, the new fields default). The schedule's timing is lost.
+- **Checked, no invalid state found**: a quiet card that is never probed would be a task waiting on a hidden card,
+  but the probe set (`claude_held`) and the hidden set (`shown_claude_cards`) use the same credential test
+  (`current_hold_credentials`), and a card with a stale credential is not hidden (it is not `grouped_away`).
+  Assumed, not checked (it depends on Claude Code): that Claude Code never writes a root assistant message without
+  `error` after a real, final API error of the same turn; if it did, that outage would read as a completed turn and
+  open no hold.
+
 ### Findings
 
 #### F-ENGINE-1 · The slot of an admitted start expires after 3 min even if the node does not exist yet: the gate admits above the limit
@@ -1520,6 +1746,9 @@ No related changes in the `git log` of `admission.rs`. No task in the related-co
 `snapshot_locked` or `IN_FLIGHT`. Issues #374 (daemon response under load) and #334 (load test with a saturated
 machine) create exactly the conditions in which a launch exceeds 3 min, but do not cover the slot. New evidence for
 both.
+**Status**: still holds at `68770a298`. #516 and #541 touch deadlines, but neither touches the gate: `IN_FLIGHT` and
+`engine-admission` are unchanged, and #541's `OPENING_TIMEOUT` starts only once a host was handed an input, after
+`AdmitExecution`.
 - **Invalid state/transition and broken invariant**:
   - "A reservation has no timer: it holds while its node waits and its host lives"
     (`docs/architecture/admission.md:107-108`);
@@ -1644,6 +1873,12 @@ it is new that the deadline is not in the policy. the stalled-node recovery work
 `take_working_unowned`, and phase-4 removes the `ANSWER` deadline: the table in M-ENGINE timers changes with them,
 and the "no timers" rule of those phases is the criterion to decide the rest. Issue #327 (Mermaid diagrams in the
 architecture docs) touches `task-states.md`: fix the list of deadlines in the same change.
+**Status**: still holds at `68770a298`, and #516 widened it. #516 removed the `ANSWER` deadline from
+`obligation_policy` (before the stalled-node recovery work's phase 4 did) but did not touch `task-states.md`, which
+still says three deadlines are acted on, `HandInput`, `Wake` and `Answer` (`task-states.md:73-75`), and still gives
+`Answer` a 10-minute deadline in its table (`:81`) and `STRANDED_AFTER` (`:186`). #541 changed `opening_deadline` into
+the constant `OPENING_TIMEOUT` (120 s, `engine-sdk/src/sdk_owner.rs:53`); it is still outside the policy, so the
+list of exceptions is unchanged.
 - **Evidence**:
   - `docs/architecture/task-states.md:179-182` still describes `STRANDED_AFTER` (5 min, in `admission`). It was
     removed in `9abc65444` (#179, "Replace the stranded-task clock with an event") and there is no match in
@@ -1667,6 +1902,24 @@ the stalled-node recovery work (phase 3) removes `take_working_unowned` and `UNO
 path (this one already checks `unowned()`); it covers neither `take_again` nor `adopt_for_transition`.
 the Bazel layers work (phase 5f) moves `sdk_owner/worker.rs`, not these functions. No open issue covers it. New evidence. The
 `git log` of `sdk_owner.rs` and `provider_transition.rs` has no fixes for this.
+**Status**: still holds at `3fc0370ea`. #505 changed only the `Owner`'s stop, not how hosts are taken, so the
+exclusion gaps below are unchanged. New evidence from #505: the handoff gate belongs to each `Owner`
+(M-ENGINE-4), so in branch 2 a close stops the first live `Owner` (`take_sdk_owner`, `sdk_owner.rs:3074-3079`),
+whose `Owner::end` waits only for its own handoffs and then asks the shared host to end (`:2812-2818`) while the
+second `Owner` may be handing it an input. That is the uncertain receipt #505 removed for the single-owner case,
+and the task's end can again be refused with `UnresolvedDispatch` until a retry (not followed further than
+`Owner::end`). Refreshed refs at `3fc0370ea` (old →
+new): `:130` → `:131`; `stale()` `:2488-2491` → `:2565-2568`, its uses `:1763`, `:1805`, `:1833`, `:1842`, `:1853` →
+`:1830`, `:1872`, `:1905`, `:1914`, `:1928`; `TakeoverTurn` in `take_again` `:1409` → `:1471`; `retake_with_policy`
+`:1384-1385` → `:1446-1447`; `halt` `:1479-1480` → `:1541-1542`; `adopt_for_transition` `:763` → `:825`;
+`owns_sdk_host` `:2886-2891` → `:2968-2973`; `add_sdk_owner` `:2925-2934` → `:3007-3016`; `take` `:852-853` →
+`:914-915`; reservation `:876-885` → `:938-947`; `adapter_state` `:899` → `:961`; `not_taken` → `lost()`
+`:1155-1157` → `:1217-1219`; `host_ended` in `lost` `:1208-1211` → `:1270-1273`; paused `:1212-1215` →
+`:1274-1277`; `RecordHostLost` `:1217-1224` → `:1279-1286`; `Found::Live` `:915-918` → `:977-980`; `adopt_owner`
+`:939` → `:1001`; `:966-991` → `:1028-1053`; `add_sdk_owner(A)` in `take_again` `:1465-1466` → `:1527-1528`;
+`ask_to_release_host` `:2936-2940` → `:3018-3022`; `end_holders` `:939-947` → `:1001-1009`; `seals.take`
+`:885-887` → `:947-949`; `after_owner_reserved` `:2954-2960` → `:3036-3042`; the domain rule of `RecordHostLost`
+`rules.rs:5540-5545` → `:5552-5557`.
 - **Invalid state/transition and broken invariant**: "Another takeover of the task waits for this one to end"
   (`sdk_owner.rs:130`); at most one unfinished `Owner` per agent; the host-lost card only appears if no host carries
   the task.
@@ -1845,6 +2098,7 @@ restart (every published release restarts the daemon). · **Overlap**: none know
 
 #### F-ENGINE-8 · `own_worktree` does not delete the worktree of a task that ended while starting: the domain command rejects it before reaching that branch
 **Class**: CONFIRMED. The deterministic part is `own_worktree` on an already finished task. The precondition is that
+**Status**: FIXED in group G1 (PR #548). `own_worktree` reads whether the task ended after trying to record the worktree, and an ended task's worktree is released at once with `task_not_active` instead of `storage_unavailable` (`crates/engine-kernel/src/launches.rs`). Test: `a_worktree_made_for_a_task_cancelled_while_it_started_goes_at_once` (`//crates/engine-sdk:engine_sdk_engine_test`). Ablation: with `own_worktree` as on `main` it fails with `storage_unavailable` and the worktree stays; restored, it passes.
 the task ends (for example the user cancels it) during `isolate` or `reopen`, which can take a while (git worktree,
 fetch). · **Severity**: S3: an orphan worktree on disk until the next daemon start, and a misleading error
 (`storage_unavailable`). · **Probability**: low. · **Overlap**: none. New evidence.
@@ -2144,6 +2398,13 @@ deliver). **Overlap**: H-ENGINE-1 / F-ENGINE-12. What is here is a new consequen
   to (`TellNode`, `AnswerQuestion` with `RETAKE`/`ALWAYS`/`resume`, `SetModel`…) are only emitted by the daemon or
   the user.
 - **Lock order**: no path takes `store` and then `authority`.
+- **The close of #505 waits forever for a handoff** (checked at `3fc0370ea`): it does not. `Owner::end` waits only
+  while one `dispatch` or `control` call runs (`sdk_owner.rs:340-349`); the provider bounds that call's write and
+  receipt by `io_timeout` (`provider-claude/src/adapter.rs:672-676`, at most 300 s), no stopper holds the store or
+  `Owners.held` while it waits, and the owner thread never stops its own `Owner` (the stops a gate pass or a commit
+  reaches run on threads of their own: `close_hosts_of_ended_nodes`, `sdk_owner.rs:1369-1373`, and `halt`,
+  `:1552-1560`). A permit refused by a
+  closed gate is put back unclaimed, so no claim is left open by it.
 
 Minor notes without finding status:
 - A storage failure (not a domain one) in `commit`/`execute_bearer_once` does not call
@@ -2427,6 +2688,10 @@ that task: its test could include a `domain-capabilities.json` of another format
 **Overlap**: orchestrator area (TTL of its inbox); new evidence on the interaction with `alondra delivery`.
 the stalled-node recovery work (phase 4) changes the `ANSWER` deadline of the orchestrator inbox, not the 24 h expiry of the
 outbox. No open issue.
+**Status**: still holds at `68770a298`. #516 removed the `ANSWER` deadline itself but left the 24 h expiry and the
+retry path as they were (its change to `daemon-server/src/domain_delivery.rs` is in a test). One more effect: a
+reminder of #516 whose message is discarded this way never counts as read (`orchestrator_notice_read` requires
+`handed`, `store-sqlite/src/lib.rs:1554-1557`), so the next settle sends a numbered new one instead of acting on it.
 - **Invalid state/transition and broken invariant**: `uncertain → retryable` (explicit user decision) → `discarded`
   in ≤10 s without notice.
 - **Evidence**: `alondra delivery retry` requires `--checked --confirm-duplicate-risk` (`cli/src/delivery.rs:33-42`)
@@ -2503,7 +2768,8 @@ The `git log` of `live.rs` shows only crate moves.
      With that, `DomainState::react` produces neither `Retry` nor `Ask(NodeClosed)`
      (`domain-rules/src/ownership.rs:358-380`): no card.
   5. No deadline rescues it: `obligation_watch` only enforces `HandInput`, `Wake` and `Answer`
-     (`domain-rules/src/obligation_policy.rs:15-27`), and a queued task owes none of them.
+     (`domain-rules/src/obligation_policy.rs:15-27`), and a queued task owes none of them. Re-checked at `68770a298`:
+     since #516 it enforces only `HandInput` and `Wake` (`obligation_policy.rs:24-26`); the step still holds.
   6. SDK retakes (`to_take`/`unowned`) require `agent_id` (`engine-sdk/src/sdk_owner.rs:1520-1521`).
   - Only manual exit: the user cancels the task, or asks the orchestrator to launch it. Its `launch_task`
     (`launch_guarded`, `domain_orchestrator_tools.rs:415-470`) does not look at the entry. Nothing suggests either.
@@ -2674,6 +2940,17 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   registered and the task is not terminal; `RecordOpenedPr` removes it and registers/observes it; `RegisterPr` removes
   it. Read on every watcher round (`read_opened`) and on delivery (`catch_up_task`). A PR with no known merge methods
   stays waiting (the log says so; delivery waits).
+- **Since #537** (at `68770a298`): the only writer of `NotePrOpened` is `catch_up_task` at a final delivery, which
+  notes GitHub's open PR of each open worktree branch of the task (`engine-github/src/domain_github.rs:80-90`);
+  `NotePrChanges` (a successful `gh pr close`) re-notes the task's open registered PRs for a fresh read
+  (`domain-rules/src/rules.rs:4800-4805`). The providers no longer read `gh pr create` or its output
+  (`ObservedFact::PullRequestOpened`/`PullRequestNotNamed` and `runs_gh_pr_create` are gone), and
+  `AskToRegisterPr` is kept only so older journals read and does nothing (`:4855-4858`). A one-time upgrade
+  (`store-sqlite/src/repository.rs:1640-1652`, marker table `pr_notes_from_github`) drops every note that is not a
+  registered PR of its task, freeing deliveries a phantom PR held. States and guards are otherwise unchanged:
+  `NotePrOpened` only for an unknown PR of a non-terminal task (`:4806-4814`); `RecordOpenedPr` removes the note
+  and registers or observes the PR, refused with `pr_owned_by_other_task` when another task registered it meanwhile
+  (`:4815-4854`, owner check `:4823`, see H-GH-6); a final delivery is refused with `pr_being_read` while any note is left (`:4919-4921`).
 
 ### M-GH-6 · Stacked PRs (`Task.stack`, table `task_stacks`, `stack_readiness`)
 - **Kind**: composite. `Task.stack {upstream_task, presentation_id, pr_id, head}` + `StackReadiness{ready}` published by
@@ -2794,6 +3071,7 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
 
 #### F-GH-2 · An already-answered "delete unsaved changes?" card deletes the recreated worktree of a reopened task, on every closer pass
 **Class**: CONFIRMED · **Severity**: S1 · **Probability**: low · **Overlap**: none.
+**Status**: FIXED in group G1 (PR #548). `apply_answers` decides each worktree by the newest card that listed it, applies a «delete» answer only while the task is still `Cancelled` and the path's record is still `KeptByUser` (or the path has no record), and records `Removed`; a cancellation after a reopening asks again under a new card id; `in_use` counts the task itself while it has not ended (`crates/engine-worktrees/src/cancelled_worktrees.rs`, `task_worktrees.rs`). Test: `an_answered_delete_card_never_touches_the_worktree_of_the_task_reopened_after_it` (`//crates/engine-sdk:engine_sdk_engine_test`), which also cancels the reopened task again. Ablation: with the module and `in_use` as on `main` the test fails; restored, it passes.
 - **Invalid state/transition and broken invariant**: a live task whose worktree Alondra deletes without checking for unsaved
   work. It breaks "a worktree with unsaved work is not touched without the user's word" (`cancelled_worktrees.rs:1-4`):
   the user's word was about another life of the task.
@@ -2828,6 +3106,7 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
 
 #### F-GH-3 · The startup sweep of cancelled tasks deletes a worktree that task handed to another, if the other is already closing or the user kept it
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: low · **Overlap**: none.
+**Status**: FIXED in group G1 (PR #548). The startup sweep filters the launch folder of `task_worktrees` by the end of its record like any other path, and `in_use` counts as owner any other task that holds the path open, also while it is ending (`cancelled_worktrees.rs`, `task_worktrees.rs`). Test: `the_startup_sweep_leaves_the_worktree_a_cancelled_task_handed_to_a_task_still_closing` (`//crates/engine-sdk:engine_sdk_engine_test`); `a_folder_an_open_continuation_launches_in_is_never_swept_even_when_it_looks_empty` now expects the folder to stay while the cancelled continuation still holds it and to go once its close settles it. A card already pending about a folder still covers it whichever task listed it, so two tasks sharing one folder get one card. Ablation: with the sweep and `in_use` as on `main` the worktree is deleted; restored, it stays.
 - **Invalid state/transition and broken invariant**: a worktree with record `HandedOver` in T1 (cancelled) and open in T2
   (closing), or `KeptByUser` in T2, deleted by T1's sweep. It breaks "HandedOver: ends with that other task"
   (`model.rs:343-344`) and the user's "keep" decision.
@@ -2854,6 +3133,7 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
 
 #### F-GH-4 · Closing a task with a merged PR deletes the branch of a remote-less repo (another repo) with commits that exist only there (PR #503)
 **Class**: CONFIRMED · **Severity**: S1 · **Probability**: low · **Overlap**: issue #375 (deliver results of repos without a remote) makes this path more frequent; the evidence is new.
+**Status**: FIXED on `main` by #532 (commit `ee9bf0dc8`), merged while this phase was being built: the branch goes only when the default branch holds it or, once the task's pull request merged, its tip is on the branch's own copy on a remote, read with `git fetch` then (`branch_is_expendable`, `crates/system/src/worktree.rs`), so a repository without a remote keeps it. Group G1 (PR #548) adopts that fix and adds what it lacked: the `Worktrees` contract case `finished_branches` (repository without a remote), passed by the Mac's git and by the double, and the double now follows the same rule (it still deleted the branch on a merged pull request alone). Engine test: `closing_a_task_whose_pr_merged_in_another_repository_keeps_the_branch_of_its_repository_without_a_remote` (`//crates/engine-sdk:engine_sdk_engine_test`). Ablation: with the double deleting on a merged pull request alone, the contract and the engine test fail; restored, both pass.
 - **Invalid state/transition and broken invariant**: commits with no copy anywhere deleted with `git branch -D`. It breaks
   "the branch is deleted when nothing is left to save" (`worktree.rs:668-670`).
 - **Evidence**:
@@ -2883,7 +3163,7 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   "Who owes the next step") and the product rule that a task only waits for capacity or for the user.
 - **Evidence**:
   1. Only a fact ends post-merge work (domain-rules `lifecycle.rs:2449-2472`; `task_closer.rs:4-6`).
-  2. The node's turn ends idle and there is no deadline for this in `obligation_policy` (only HandInput, Wake, Answer).
+  2. The node's turn ends idle and there is no deadline for this in `obligation_policy` (only HandInput, Wake, Answer; since #516 only HandInput and Wake, `obligation_policy.rs:13-27` at `68770a298`: the step still holds).
   3. `can_release_host` is false while post-merge is owed (`domain/src/lifecycle.rs:1407`): `idle_release` does not close
      the host, so the "host end -> resumed session or card" (`observations.rs:681-701`) never arrives either.
   4. The closer only restarts its row (`hold_while_working_after_merge`, `task_closer.rs:637-645`), without a message.
@@ -2905,6 +3185,7 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
 
 #### F-GH-6 · An attachment of a user message to an open task is deleted after 30 days even though the task is still open
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: low · **Overlap**: STORE (M-STORE-13) does not cover the files folder; new.
+**Status**: FIXED in group G1 (PR #548), with the user's decision on `files/`. Retention indexes the lifecycle journal and pending inputs of open tasks and the bodies of open requests, so a message's upload stays while its task is open; only Alondra's own folders (`tasks`, `results`, `uploads`, `images`, `domain-v2`, `documents`) are ever deleted from, and anything else is listed and never removed (`crates/daemon-support/src/files_retention.rs`). Tests: `an_upload_a_message_of_an_open_task_names_stays_after_thirty_days`, `a_file_outside_alondras_folders_is_listed_and_never_deleted`. Ablation: both fail with the old rules; restored, both pass.
 - **Invalid state/transition and broken invariant**: `files/uploads/<id>` deleted while a live entry of the task names it.
 - **Evidence**:
   1. The message carries the absolute path of the attachment in its text (`daemon-engine/src/domain_messages.rs:65-76`,
@@ -3008,6 +3289,23 @@ in the queue.
 `conversation-<session>.md` from there (`session_refresh.rs:197-208`). After a reopen, the resumed session may ask for a deleted
 file. S3. Missing: confirm that a reopened task's new session still looks for that file.
 
+#### H-GH-6 · A branch PR noted for a task and registered meanwhile by another live task blocks that task's final delivery for good
+Added at `68770a298` while re-checking #537 (the mechanism predates it; #537 made the branch read the only way a PR is
+noted). Owner: the stable pull request identity work (referred table); no fix group here.
+What is claimed: task A presents a final delivery; `catch_up_task` reads GitHub's open PR P of one of A's worktree
+branches and, since nobody registered P, notes it (`NotePrOpened`, `engine-github/src/domain_github.rs:84-90`;
+`domain-rules/src/rules.rs:4806-4814`). If task B registers P before A's note is read, every later
+`RecordOpenedPr { A, P }` is refused with `pr_owned_by_other_task` (`rules.rs:4823`); the refusal rolls back the
+removal of the note, so A keeps P in `opened_prs`. `read_opened` retries it every watcher round and only logs
+(`domain_github.rs:59-66`), and A's every presentation is refused with `pr_being_read` ("send the same result again in
+a moment", `rules.rs:4919-4921`). A's node cannot clear it either: its `register_pr` of P is refused the same way while
+B is live (`:4729-4735`), and `RecordOpenedPr` has no terminal-owner branch, so the note outlives B too unless A's node
+registers P after B ended (which moves it). Severity if confirmed: S2 (A cannot deliver; cancelling is the way out).
+Missing to confirm: a real flow in which two live tasks work on the same branch, so that B registers the PR of A's
+worktree branch between A's note and its read (a handed-over worktree leaves A's open worktrees, `open_worktrees`).
+Proposed test: pure domain, two tasks, `NotePrOpened{A,P}`, `RegisterPr{B,P}`, `RecordOpenedPr{A,P}` refused, then A's
+`PresentResult{is_final}` refused with `pr_being_read`; expected: the note dropped when another live task owns the PR.
+
 ## Orchestrator and schedules (`ORCH`)
 
 Scope: `crates/engine-orchestrator` (executor, recovery, watchdog, inbox, providers),
@@ -3016,7 +3314,8 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
 (`daemon-engine/src/obligation_watch.rs` + `orchestrator_inbox::overdue`), and schedules
 (`domain-rules/src/schedule.rs`, `engine-sdk/src/domain_schedule_runner.rs`, `domain_schedule_api.rs`, tables
 `schedules`, `schedule_runs`, `schedule_failed_launches`, `auto_launches`, `schedule_paid_accounts`). Audited at commit
-`1567967b9`, by reading only.
+`1567967b9`, by reading only. Re-checked for #516 at `68770a298`: the `Answer` deadline and `orchestrator_inbox::overdue`
+no longer exist (M-ORCH-5, M-ORCH-6); `orchestrator_inbox.rs` was read whole at that commit.
 
 ### M-ORCH-1 · Orchestrator execution (`orchestrator.json`, `Runtime`)
 - **Kind**: implicit, composite. **Defined in**: `domain_orchestrator.rs:37-71` (`Runtime`), `:82-95` (`Failure`),
@@ -3050,6 +3349,11 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
   - Ambiguous -> acknowledge -> Idle with `pending_resolutions` (`:313-337`); -> retry -> Idle, messages `retryable`
     (`:340-362`).
   - Daemon start: `startup_recovery` -> `repair_incomplete` (`recovery.rs:4-345`); see F-ORCH-1.
+  - Since #516 (at `68770a298`, `handled` `domain_orchestrator.rs:676-718`): after `finish_batch`,
+    `settle_orchestrator_batch(Handed)`, the announcements and `rested`, it reads whether a message already waits
+    (`:705`) **before** adding its own notices (`hand_replans`, `:706`; `go_on_after_the_task_limit`, `:707`,
+    M-ORCH-13), and settles the inbox (`:711`) only when nothing waited. An idle `tick` settles too, but only with no
+    pending message or resolution, no usage pause, a selectable account and `last_error` None (`:470-497`).
 - **Rejected**: `acknowledge/retry` of another run -> `bail!` -> HTTP 409 (`:1001-1017`); `decide` requires `last_error`
   except for `Cancel`.
 - **Terminals**: none; it is a cycle.
@@ -3102,8 +3406,34 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
   (`domain_orchestrator.rs:488-493`).
 - **Persistence and restart**: idempotent: the letter id is derived; `carry_out` refuses to create an existing letter
   (`:443-447`).
+- **Since #516** (at `68770a298`; `orchestrator_inbox.rs` whole, 1-512 without tests): one rule settles everything the
+  orchestrator owes, read from state, with no clock (module doc `:1-23`).
+  - **Items** (`steps` `:65-81`, `owed` `:86-112`): per open request without a task and without an orchestrator question
+    to the user about it (`asked_about`, `:183-190`): a message closes (`Step::Close`), a user's request goes
+    `UnsplitNotice-n` → `UnsplitProblem-n` (`unsplit`, `:232-273`); per live task: a node's suggestion
+    (`unsettled`, `:298-311`), a stopped node's case (`stalled`, `:319-335`), a node's question (`unanswered`,
+    `:356-369`) and a held plan review not asked about (`unreviewed`, `:373-381`); and the retired problems of older
+    releases are withdrawn (`:67-69`, `:139-142`).
+  - **States per item**: no reminder → reminder `n` sent (an inbox card to the orchestrator, id `<prefix><subject>-<n>`,
+    `inbox_card` `:228-230`) → reminder read (`reminded`, `:205-215`: a card whose id has the numbered form and whose
+    message is `handed` in the outbox, `orchestrator_notice_read`, `store-sqlite/src/lib.rs:1554-1557`) → Alondra's
+    outcome: `Raise` of the user's problem for a request, `Discard` of a suggestion, `SettleStall(Instruct |
+    Unsettled)` of a case (`Instruct` while the task has attempts left and is not delivered), `Withdraw` of a question,
+    `ReleaseUnreviewed` (`SettlePlanReview(Unchanged)`) for each held task. A reminder never read (its message
+    discarded at 24 h, its batch stopped, discarded or given up) does not count: the next settle sends reminder `n+1`.
+    Reminders an older daemon wrote under an id with no number never count.
+  - **When it runs**: only at the end of a handled turn with nothing waiting (M-ORCH-1, `domain_orchestrator.rs:705-711`)
+    and in an idle `tick` with nothing pending, no usage pause, an account to select and `last_error` None
+    (`:491-497`). Never from a clock: `settle_overdue` now only steps what Alondra owes the nodes (`:428-430`).
+  - **Domain side**: `SettleSuggestion` accepts a discard from System (`domain-rules/src/rules.rs:897-906`,
+    responder `alondra`); `SettleStall(Unsettled)` of a task with an open PR and an unanswered user message now
+    delivers the PR with `UNSETTLED_UNANSWERED` instead of being refused (`rules/stall.rs:182-187`).
+  - **Consequence**: with no handled turn, nothing the orchestrator owes moves (see F-ORCH-3 and F-ORCH-1).
 
-### M-ORCH-6 · `Answer` deadline (what the orchestrator owes a task)
+### M-ORCH-6 · `Answer` deadline (what the orchestrator owes a task) — removed by #516
+Removed at `68770a298`: `ANSWER`, `Action::Answer`, `settle_answers`, the `OrchestratorAnswers` port and
+`orchestrator_inbox::overdue` no longer exist; what follows describes the audited commit. What replaced it is the
+state rule of M-ORCH-5.
 - **Kind**: implicit. The clock is `obligation_watch.rs:46-55,119-152` (in memory); the actions are
   `orchestrator_inbox::overdue` (`:76-96`), `stalled` (`:263-283`), `unanswered` (`:303-317`), `unreviewed` (`:321-329`).
 - **Sequence per case**: overdue the first time -> a `Tell` reminder (a letter to the orchestrator) and the clock restarts
@@ -3119,6 +3449,24 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
   `domain-rules/src/ownership.rs:337-355`.
 - A task that waits for a cancelled one, or whose launch plan was refused: at every "rest" (`rests`) of the orchestrator a
   letter `dependency-cancelled-<t>--<d>-<rest>` / `plan-refused-<card>-<rest>` is created. No deadline, no cap. See F-ORCH-2.
+- **Since #516** (at `68770a298`; `replans` `orchestrator_inbox.rs:118-126`, `hand_replans` `:130-136`,
+  `plan_refused` `:338-352`, `dependency_cancelled` `:386-415`): unchanged, one letter per rest. What changed is that a
+  re-plan letter no longer keeps the rest of the inbox from being settled: `handled` reads what was waiting before it
+  hands them (`domain_orchestrator.rs:705-706`). The loop of F-ORCH-2 is still there.
+
+### M-ORCH-13 · New Tasks per turn of the orchestrator (`TURN_TASK_LIMIT`, added by #516)
+- **Kind**: implicit, counted from the store. **Defined in** (at `68770a298`): `TURN_TASK_LIMIT` = 10 and the code
+  `turn_task_limit` (`domain-rules/src/orchestrator_batch.rs:12-13`); `tasks_created_in` and `within_task_limit`
+  (`store-sqlite/src/batch_effects.rs:75-104`), checked before each batch command (`:68`);
+  `go_on_after_the_task_limit` (`engine-orchestrator/src/domain_orchestrator.rs:722-735`).
+- **States per batch**: under the limit → at the limit (10 tasks whose `created_revision` is the revision of a
+  committed `create_task` or `settle_suggestion` effect of that run). At the limit, a `CreateTask` or a
+  `SettleSuggestion { NewTask }` is refused with `turn_task_limit` before any effect, unless the same command id and
+  epoch were already committed (a replay of an interrupted turn, answered with its receipt). The check and the commit
+  run under the same store lock, so two creates cannot both pass at 9.
+- **After the turn**: if it created 10, Alondra tells the orchestrator to go on (`turn-task-limit-<run>`), a message
+  that starts the next turn at once; that notice is added after `handled` read what was waiting, so it does not hold
+  back the settle of the same `handled` (see H-ORCH-4).
 
 ### M-ORCH-8 · Retention of announcements (rule 10)
 - **Kind**: implicit. `announce_request_tasks` runs only from `handled` (`domain_orchestrator.rs:681`); notices of the
@@ -3163,6 +3511,12 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
 #### F-ORCH-1 · A daemon restart in the middle of a batch stops the orchestrator until the user answers a card
 **Status**: FIXED in `2fc1e9349` (G3, #520). A batch cut by the daemon's own stop (`note_shutdown` on SIGTERM, a new release or a handover writes `cut_by_shutdown`) resumes without a card through `startup_recovery`; a batch cut without that mark keeps the conservative card. Tests: `engine-orchestrator` `recovery_decisions::a_batch_cut_by_the_daemons_stop_*` and `…::a_batch_cut_without_the_daemons_stop_still_asks_before_anything_runs_again`.
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: medium: batches are frequent (every request, reminder or case) and the daemon restarts on every version · **Overlap**: the provider adapters work (phase 6) moves the orchestrator onto the adapters (it may touch this recovery): the evidence is NEW. Not in open issues. `git log` of the file shows no fix after d3dcbf2c9, which introduced `cold_batch`.
+**Status**: still holds at `68770a298`: #516 does not touch recovery. Its impact changed: the last sentence of
+"Impact" below ("`Answer` deadlines do keep running") is no longer true. With the `Answer` deadline gone (M-ORCH-6),
+while the orchestrator stays Ambiguous (`tick` leaves at `active_run.is_some()`, `domain_orchestrator.rs:466-468`)
+nothing settles what it owes the nodes either: their questions, suggestions, stopped-node cases and held plan reviews
+wait for the user's answer to the batch card. That answer has a visible owner, so no separate finding; it is the
+counterpart of H-ORCH-3, which no longer happens.
 - **Invalid state/transition and broken invariant**: the orchestrator stays Ambiguous (`active_run` + `last_error`,
   `failure=Interrupted`) with a `problem-orchestrator-<run>` card for the user, caused by a technical fact of Alondra's
   own (its restart), and processes no request until that answer. It breaks the product rule that stalls are fixed by
@@ -3207,6 +3561,10 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
 
 #### F-ORCH-2 · Replanning reminders feed themselves: one batch per reminder, without end
 **Class**: CONFIRMED · **Severity**: S2 (duplicated work) · **Probability**: low-medium: it depends on the model not complying or its action being rejected (for example a plan that `update_launch_plan` keeps rejecting) · **Overlap**: the note in `docs/architecture/task-states.md` ("Waiting for a cancelled task advances only when the orchestrator is idle and nothing fails; a task will give it an owner and a deadline") addresses the opposite problem; this loop is NEW evidence.
+**Status**: still holds at `68770a298`. #516 kept `replans` per rest number (`orchestrator_inbox.rs:118-126`,
+`:340`, `:395`) and `hand_replans` after every turn (`domain_orchestrator.rs:706`, `:771`): every rest still creates
+a new letter, which is a pending message that starts another turn. #516 only stopped those letters from blocking the
+settle of everything else (`:705`). Refreshed refs: `rested` `:763-766`; the idle `tick` hands them too (`:465`, `:493`).
 - **Invalid state/transition and broken invariant**: a life loop without progress. Every batch that ends "rests"
   (`rests+1`), and every rest creates a new reminder, which is a message to the orchestrator, which triggers another batch.
   If the orchestrator does not decide (or its decision is rejected), model batches are launched without limit.
@@ -3238,6 +3596,18 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
 #### F-ORCH-3 · After 24 h of launch failures, requests are left untreated and the watchdog restarts in vain every 5 min
 **Status**: FIXED in `2fc1e9349` (G3, #520). With no message left to retry, `tick` clears the launch failure and settles; the watchdog is suspended while a start's backoff waits. Tests: `tests::a_request_whose_message_expired_during_failed_starts_goes_back_to_the_orchestrator`, `watchdog::tests::the_watchdog_waits_out_a_failed_starts_backoff`.
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: low (24 consecutive hours of launch failures) · **Overlap**: none known.
+**Status**: still holds at `68770a298`, and #516 widened its impact (new evidence, same root cause and fix group G3).
+In the "failed with no exit" state `tick` discards the expired messages (`domain_orchestrator.rs:479-483`), finds
+nothing pending, hands the re-plans and skips `settle` because `last_error` is set (`:491-497`); no batch runs, so
+`handled` never settles either (`:705-711`). Before #516 the `Answer` deadline of `obligation_watch` still settled
+what the orchestrator owed the nodes after 10 + 10 minutes, busy or failing. Since #516 nothing does: the policy
+enforces only `HandInput` and `Wake` (`domain-rules/src/obligation_policy.rs:24-26`). So a node's question to the
+orchestrator is never reminded nor withdrawn (its node stands still), a stopped node's case is never settled, a
+suggestion never discarded and a held plan review never released, for as long as the state lasts; the only way out is
+the user cancelling each task. The same holds during the 24 hours of failures before it, only bounded by the
+provider coming back. Test addition: in the test below, also create a node's question to the orchestrator before the
+messages expire, and assert that after `tick` it is reminded (an `UnansweredNotice` card) or withdrawn; today neither
+happens. The model test cannot show it: its orchestrator always ends a handled turn (M-LIFE-14).
 - **Invalid state/transition and broken invariant**: "Failed with no exit" (M-ORCH-1): `active_run=None`,
   `last_error=Some`, `failure=Launch`, no pending messages. No transition leaves it except a new message from another
   source; open requests without a task receive no reminder or card, and the orchestrator status command shows `failed`
@@ -3337,6 +3707,8 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
 #### F-ORCH-6 · The orchestrator's progress marks have done nothing since #277
 **Status**: FIXED in `2fc1e9349` (G3, #520). The six call sites count progress with `note_orchestrator_progress`; the read is `#[must_use]`. Test: `engine-kernel` `batch_operations::tests::admitting_and_finishing_a_tool_operation_each_count_as_orchestrator_progress`.
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: low · **Overlap**: none.
+**Status**: still holds at `68770a298`: `handled` still calls the read `self.domain.orchestrator_progress()` as a
+statement (`domain_orchestrator.rs:701`); #516 moved the lines around it, not the call.
 - **Invalid state/transition and broken invariant**: the watchdog measures progress with a counter that batch claim, host
   start, `handled`, recovery and the start and end of each tool operation no longer increment.
 - **Evidence**: #277 (4f5e920d5) renamed the incrementer to `note_orchestrator_progress` and reused `orchestrator_progress()`
@@ -3399,6 +3771,28 @@ With the orchestrator Ambiguous (for example because of F-ORCH-1), the clock doe
 after 20 min Alondra settles cases and withdraws questions that the orchestrator could not even see. This is the design
 ("busy or failing"), but combined with F-ORCH-1 it turns a restart into automatic decisions. It overlaps phase 4 of
 the stalled-node recovery work (`AnswerSkipped`). Missing: an end-to-end run of F-ORCH-1 followed by the deadline.
+**Status**: no longer reachable since #516 (commit `e10b2839e`): there is no `Answer` deadline any more
+(`domain-rules/src/obligation_policy.rs:13-27` at `68770a298`; `obligation_watch` has no `Action::Answer`), and Alondra
+settles what the orchestrator owes only after a turn of it ends handled, from reminders a handled batch was handed
+(M-ORCH-5). The opposite now holds: while the orchestrator is blocked, nothing settles (F-ORCH-1 status, F-ORCH-3
+status).
+
+#### H-ORCH-4 · A turn cut by the task limit lets Alondra settle what that turn was reminded of
+Added at `68770a298` (#516).
+What is claimed: a turn is handed a reminder (for example `question-unanswered-<q>-1`) together with work that needs
+more than 10 new Tasks. At the eleventh create the store refuses with `turn_task_limit`, whose text tells the
+orchestrator to end the turn (`store-sqlite/src/batch_effects.rs:89-104`). If it obeys before it gets to the reminded
+item, the batch ends `Handled`: its messages become `handed`, so the reminder counts as read
+(`store-sqlite/src/lib.rs:1554-1557`; `orchestrator_inbox.rs:205-215`). `handled` read `waiting` before adding the
+"go on" notice (`domain_orchestrator.rs:705-707`), so with nothing else pending it settles at once (`:711`): the
+question is withdrawn and its node told to decide alone, the suggestion discarded, the stopped node's case settled by
+Alondra, the held plans released unchanged, although the orchestrator was stopped mid-turn by Alondra's own limit and
+its next turn, started by the notice, would have handled them. Severity if confirmed: S2 (decisions taken by Alondra
+that the orchestrator was about to take; a discarded suggestion is lost). Missing to confirm: whether the model, told
+to end the turn, ends it before settling the other items of the batch (model behaviour, not code); the code path above
+has no guard against it. Proposed test: engine-orchestrator with the orchestrator double: a batch with a reminder and a
+scripted turn that creates 11 tasks and then ends; assert the reminded question is not withdrawn by that `handled`
+(for example, a turn that hit the limit does not count as having read its reminders). Ablation: drop that rule.
 
 ## Agent hosts and providers (`PROV`)
 
@@ -3493,6 +3887,7 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Rejected**: Rejected to anything else (`"Rejected receipt is terminal"`), Offered/Applied to Rejected (`"Possible handoff cannot become rejected"`), phase going back; all by typed error.
 - **Admitted forever**: if the effect throws something that is not `InputNotOffered` or `ControlNotApplied/native_code_cells_active`, the host writes no final receipt, destroys the socket and leaves the order Admitted (`:303-305`, `:151`). Resending the same bytes returns that admitted receipt, which Rust reads as `Uncertain` (`wire.rs:304`), never as permission to retry.
 - **Rejections before registering**: capacity (256 orders) or an expired deadline (`awake.passed`) throw before `persist` (`:182`): no trace is left and the socket is destroyed (F-PROV-2).
+- **Awake clock since #541** (at `68770a298`, `agent-host/awake-clock.ts:1-43`): `awake.passed` measures a deadline in time the Mac was awake. A sleep is the wall clock running ahead of the awake clock by at least 1 s between two looks; the awake clock is now the time the busiest CPU counted (`awakeMs`: for each CPU `user + nice + sys + idle + irq`, the largest one), which stops while the Mac sleeps. Before, it was `process.hrtime`, which on macOS goes on through a sleep: an order written before a sleep was refused at wake by the rejection above, and the owner failed with "Disconnected". Assumed, not checked here: that every CPU's counters advance with wall time while the Mac is awake (if one lagged, the clock would see a false sleep, which only makes a deadline more lenient).
 - **Idempotency**: same `command_id` and same digest returns the retained receipt; a different digest is a conflict and the socket is destroyed (`:172-174`). Rust never chains orders: `submit` waits for the final receipt before returning (`wire.rs:226-256`), so the assumption in `settle()` ("the owner sends nothing after an order before saving its result") holds while there is a single owner.
 - **Persistence and restart**: the host stays alive, so `commands`/`settled` remain. When the daemon restarts, it reconciles `claimed` rows by resending exact bytes (`sdk_owner.rs:971-982`). For an ended host, its outbox is read as `EndedJournal` (`provider-codex/src/ended.rs`, same in Claude) and yields `Offered/Refused/AdmittedOnly/Absent`.
 
@@ -3535,7 +3930,7 @@ Read only superficially, with no finding to report; this is pending coverage, no
 | Claimed | row `claimed` plus exact bytes (`record_command`) |
 | Rejected before offer | receipt `rejected` or capability not announced: `Handoff::RefusedBeforeOffer` |
 | Offered | receipt `offered`: Claude put it in the SDK `Input` queue; Codex in its `queue` (for a worker with an open thread, **only queued**, `codex-session.ts:416-422`) |
-| Uncertain | `submit` failed after it could have written: `Handoff::Uncertain` (`sdk_owner.rs:1884`) |
+| Uncertain | `submit` failed after it could have written: `Handoff::Uncertain` (`sdk_owner.rs:1884`; `:1959` at `3fc0370ea`). Since #505 an external stop of the owner no longer produces it: `Owner::end` waits for the handoff's receipt before the host is asked to end (`:2812`, M-ENGINE-5) |
 | Starting (Codex) | event `alondra/inputStarting` (`input_starts`) |
 | Held | `InputHeld` (Codex `inputAccepted`) |
 | Taken | `TurnStarted`/`InputConsumed` |
@@ -3551,6 +3946,7 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Special transitions**: first cursor of a continued host: `forget_ended_host` clears `turn`, `work`, `woken`, `taken`, `finished`, `listed`, `running` (`:94-103`, `:242-244`), but **not** `asked`, `isolated`, `pr_commands`, `pr_close_commands`, `mcp_calls`, `limit_resets_at` (F-PROV-3). Last events of an ended host (`host_ended`): native exit and iterator end produce no facts (`:249-253`).
 - **Rejected**: an `Unsupported`/`InvalidObservation` error from the fold restores the previous checkpoint and leaves the observation **without facts and without a record** (`:283-289`); issue #328 is open. An error of another kind propagates and the owner discards the observation with a reason (`sdk_owner.rs:2454-2459`).
 - **Invariants**: accepting facts from another run is impossible by construction. The event must match task, node, conversation, instance, generation, host and fence (`:224-235`), the store requires the run to be the current one (`lib.rs:1100`), and the previous checkpoint must be at `cursor-1`.
+- **Since #537 and #540** (at `68770a298`): `pr_commands` is gone. An older checkpoint's set is read into `_pr_create_commands` and never written again (`normalizer.rs:58-61`), so a `gh pr create` result emits nothing; only a successful `gh pr close` still yields `PullRequestsChanged` (`note_pr_commands`, `pull_request_facts`, `:1014-1038`). `LogicalTurn` keeps `error_detail` and `error_said` next to `error` (`:122-151`); a root assistant message without `error` after one with it clears all three and emits `ModelAnswered` if not yet emitted (`:829-855`), so the turn ends `Completed` instead of `ApiFailed` (M-ENGINE-28). Turns that end at a new `init` or at `idle` build their failure the same way (`api_failure`, `:891-894`).
 
 ### M-PROV-10 · Codex normalizer checkpoint
 - **Kind**: explicit, per run. **Defined in**: `crates/provider-codex/src/normalizer.rs:18-63`, `:120-188`.
@@ -3604,6 +4000,11 @@ Read only superficially, with no finding to report; this is pending coverage, no
 
 #### F-PROV-2 · The reconciliation resend of an order the host never had, past its deadline, is rejected by destroying the socket: adoption fails and a live host is taken for lost
 **Class**: CONFIRMED (path read end to end) · **Severity**: S2 · **Probability**: low. It needs a `claimed` row with recorded bytes that the host did not admit (the daemon dies between the commit of `record_command`/`record_control` and the socket write) and an adoption more than `io_timeout` (120 s awake) after the order was prepared (daemon stopped or slow update while the host stays alive, which is by design) · **Overlap**: the Codex recovery work (phase 2), point 8 ("Rejections of a host order come with a typed code (`rejected` plus `code`), not as `sdk_action_uncertain`"). That point is about the rejection of actions; this path (admission rejection before registering, during a reconciliation) is **new** evidence for that task, with its consequence on adoption. #481 already touched the deadline for Mac sleep, not reconciliation.
+**Status**: still holds at `68770a298`. #541 changed only how the host measures awake time (M-PROV-4): it removes the
+sleep trigger of the same socket-destroying rejection (an order written before a sleep, refused at wake), not this
+one. A reconciliation more than `io_timeout` of awake time after the order was prepared is still refused before
+`persist` with no receipt, and `take_host_into` still propagates it (`engine-sdk/src/sdk_owner.rs:1038`, `:1043` at
+`68770a298`).
 - **Invalid state/transition and broken invariant**: M-PROV-4, "Unknown" plus resend: the host answers neither `rejected` nor a receipt, it cuts the lane. A reconciliation is by construction later than the order's deadline, and for an order the journal does not have, the right answer is positive: "it was never offered".
 - **Evidence**:
   1. `command()` looks for the `command_id` in `commands`/`settled` (`agent-host/persistent-core.ts:172`); if absent, it checks capacity and deadline **before** registering and throws `"Command admission refused"` (`:182`).
@@ -3624,6 +4025,7 @@ Read only superficially, with no finding to report; this is pending coverage, no
 
 #### F-PROV-3 · The Claude checkpoint carries open decisions and calls over from the host that died; when full, a new decision is silently dropped
 **Class**: CONFIRMED (mechanism) · **Severity**: S3 as reached today; S1 if the cap is reached (Claude waits for a permission nobody will see) · **Probability**: very low for the cap (64 dead hosts without an orderly close, each with an open decision, in the same run generation) · **Overlap**: issue #328 ("Log fold errors in the Claude normalizer with cursor and error") covers only logging of the swallowed error. the stalled-node recovery work (phase 3) (`DecisionGone`) looks at the decision from the domain, which is already cleaned. New evidence for both.
+**Status**: still holds at `68770a298` for `asked` (`forget_ended_host` `normalizer.rs:96-104`, cap `MAX_ASKED` `:20`, `:362`), `isolated`, `mcp_calls` and `pr_close_commands`. Evidence step 4 changed with #537: the `pr_commands` set and `PullRequestOpened` no longer exist (an older checkpoint's set is read and dropped, `:58-61`), so the cap now only drops later `gh pr close` commands (`MAX_PR_COMMANDS`, `:1012`, `:1019`), whose loss only skips a fresh read of the task's registered PRs.
 - **Invalid state/transition and broken invariant**: M-PROV-9 with entries in `asked` (and in `mcp_calls`, `pr_commands`, `pr_close_commands`, `isolated`) from a Claude process that no longer exists.
 - **Evidence**:
   1. `forget_ended_host` clears turn, work and entries, not `asked` nor the call sets (`crates/provider-claude/src/normalizer.rs:94-103`).

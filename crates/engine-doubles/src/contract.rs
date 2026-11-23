@@ -268,6 +268,30 @@ pub fn saved_work(worktrees: &dyn Worktrees, saving: &Saving) {
     assert!(!(saving.branch_exists)(&repo, "worktree-u"), "a branch whose commits a remote has goes with its worktree");
 }
 
+/// How a contract test makes a task's worktree in a repository with no remote, commits in it, and
+/// reads whether a branch is still there.
+pub struct Finishing<'a> {
+    pub remoteless_worktree: &'a dyn Fn(&Path, &str) -> PathBuf,
+    pub local_commit: &'a dyn Fn(&Path),
+    pub branch_exists: &'a dyn Fn(&Path, &str) -> bool,
+}
+
+/// In a repository with no remote, a finished task's branch with commits of its own stays even when
+/// a pull request of the task merged, and one with no commit of its own goes.
+pub fn finished_branches(worktrees: &dyn Worktrees, finishing: &Finishing) {
+    let scratch = Directory::new();
+    let dir = (finishing.remoteless_worktree)(&scratch, "t");
+    (finishing.local_commit)(&dir);
+    assert!(matches!(ready(worktrees.release_finished_worktree(&dir, None, false, true)).unwrap(), TaskWorktree::Removed { .. }),
+        "with no remote to push to, nothing in the worktree is unsaved");
+    assert!((finishing.branch_exists)(&scratch.join("repo"), "worktree-t"), "its commits exist only in its branch, whatever a merged pull request says");
+
+    let other = Directory::new();
+    let empty = (finishing.remoteless_worktree)(&other, "u");
+    assert!(matches!(ready(worktrees.release_finished_worktree(&empty, None, false, true)).unwrap(), TaskWorktree::Removed { .. }));
+    assert!(!(finishing.branch_exists)(&other.join("repo"), "worktree-u"), "a branch the default branch holds goes");
+}
+
 /// An added Claude account's folder is private and links what the user set up; removing it keeps
 /// what it linked. A named Codex account gets a private folder of its own, the native one none.
 /// Two accounts share sessions only through the same `projects/`. A repository nothing trusts is

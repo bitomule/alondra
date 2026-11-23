@@ -294,6 +294,11 @@ mod tests {
             push: &|dir| assert!(git(dir, &["push", "-q", "-u", "origin", "HEAD"]).status.success()),
             branch_exists: &|repo, branch| git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).status.success(),
         });
+        alondra_engine_doubles::contract::finished_branches(&GitWorktrees { claude_home: PathBuf::new }, &alondra_engine_doubles::contract::Finishing {
+            remoteless_worktree: &worktree::testing::remoteless_task_worktree,
+            local_commit: &|dir| assert!(git(dir, &["commit", "-q", "--allow-empty", "-m", "fix"]).status.success()),
+            branch_exists: &|repo, branch| git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).status.success(),
+        });
     }
 
     /// Every `git status` in `dir` takes `delay`: git asks a file-system monitor hook that sleeps
