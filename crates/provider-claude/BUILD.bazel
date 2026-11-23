@@ -156,7 +156,7 @@ rust_inputs_test(
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
-exports_files(["src/archive_tests.rs"], visibility = ["//crates/provider-codex:__pkg__"])
+exports_files(["src/archive_tests.rs", "model/host_transport.rs"], visibility = ["//crates/provider-codex:__pkg__"])
 
 # The crate's production sources: the crash report's log catalog reads them, and fails on a test
 # file among them.

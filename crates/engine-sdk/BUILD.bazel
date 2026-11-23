@@ -126,7 +126,7 @@ low_opt_rust_test(
     edition = "2024",
     env = {"HOME": "."},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/provider-claude:claude_host_model"] + TEST_HOOKS_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/provider-claude:claude_host_model", "//crates/provider-codex:codex_host_model"] + TEST_HOOKS_DEPS,
 )
 
 # The tests that open the whole engine on the doubled hosts: the engine's own tests that live here,
@@ -145,7 +145,7 @@ low_opt_rust_test(
     edition = "2024",
     env = {"HOME": ".", "TEST_EXECS": "/usr/bin/git"},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/provider-claude:claude_host_model"] + TEST_HOOKS_DEPS + WHOLE_ENGINE_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/provider-claude:claude_host_model", "//crates/provider-codex:codex_host_model"] + TEST_HOOKS_DEPS + WHOLE_ENGINE_DEPS,
 )
 
 # The tests that still need a real Agent SDK or Codex host, or a fake native Claude or Codex: the

@@ -3464,7 +3464,6 @@ fn a_live_host_of_a_release_older_than_the_oldest_adoptable_is_replaced_as_befor
     assert_replaced(&slice, &restarted, replaced, &session, &processes);
 }
 
-#[cfg(feature = "real-hosts")]
 #[path = "codex_tests.rs"]
 mod codex_tests;
 

@@ -1,31 +1,53 @@
 //! The accounts' tests (`accounts`) that start nodes through the SDK.
 use alondra_engine_kernel::sdk_backend::SdkOf as _;
-use alondra_core::clock;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use alondra_core::accounts::{AccountBilling, AccountChange, AccountId, AccountKey, AccountState, AccountStatus, AccountsConfig, Policy, Provider};
-use alondra_core::claude_account;
-use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
-use alondra_core::usage::Share;
-use alondra_view_model::Lang;
-use axum::http::StatusCode;
-use serde::Deserialize;
+use alondra_core::accounts::{AccountBilling, AccountChange, AccountId, AccountKey, AccountState, AccountsConfig, Policy, Provider};
+use alondra_domain_rules::Actor;
 use serde_json::json;
-use alondra_daemon_engine::reply::Reply;
 use crate::domain_runtime::DomainRuntime;
 use alondra_daemon_engine::accounts::*;
 use alondra_daemon_engine::accounts::fixtures::*;
-use crate::test_support::Directory;
-use alondra_core::accounts::{Distribution, ProviderAccount};
 use std::os::unix::fs::PermissionsExt as _;
 
 fn fixture() -> Fixture {
-    fixture_with(
-        std::sync::Arc::new(alondra_agent_runtime::owned_host::ProcessHosts::new(Default::default())),
-        std::sync::Arc::new(alondra_engine_doubles::accounts::Accounts::default()),
-    )
+    fixture_with(hosts(), std::sync::Arc::new(alondra_engine_doubles::accounts::Accounts::default()))
+}
+
+/// Doubled hosts whose Claude Code answers its sign-in commands as the fixture's fake `claude` does.
+fn hosts() -> Arc<dyn alondra_engine_ports::agent_host::AgentHost> {
+    use alondra_engine_ports::agent_host::ProbeOutput;
+    let hosts = alondra_engine_doubles::agent_host::InProcessHosts::default();
+    hosts.set_probe(|run| {
+        let args: Vec<String> = run.command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        let env: BTreeMap<String, String> = run.command.get_envs().filter_map(|(key, value)| Some((key.to_string_lossy().into_owned(), value?.to_string_lossy().into_owned()))).collect();
+        let home = PathBuf::from(env.get("HOME").cloned().unwrap_or_default());
+        let folder = env.get("CLAUDE_CONFIG_DIR").map_or_else(|| home.join(".claude"), PathBuf::from);
+        let answer = |success: bool, stdout: String| Ok(ProbeOutput { success, stdout: stdout.into_bytes(), stderr: Vec::new() });
+        match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+            ["auth", "status", ..] if env.contains_key("ANTHROPIC_API_KEY") => answer(true, json!({"loggedIn": true, "authMethod": "api_key"}).to_string()),
+            ["auth", "status", ..] => match std::fs::read_to_string(folder.join("signed-in")) {
+                Ok(email) => answer(true, json!({"loggedIn": true, "email": email, "subscriptionType": "max"}).to_string()),
+                Err(_) => answer(false, json!({"loggedIn": false}).to_string()),
+            },
+            ["auth", "logout", ..] if home.join("refuse-logout").exists() => answer(false, String::new()),
+            ["auth", "logout", ..] => {
+                use std::io::Write as _;
+                std::fs::OpenOptions::new().create(true).append(true).open(home.join("logouts"))?.write_all(format!("{}\n", folder.display()).as_bytes())?;
+                let _ = std::fs::remove_file(folder.join("signed-in"));
+                answer(true, String::new())
+            }
+            _ => answer(false, String::new()),
+        }
+    });
+    Arc::new(hosts)
+}
+
+/// A native Codex whose digest the Codex backend checks: no test here runs it.
+fn codex_native(path: &Path) {
+    std::fs::write(path, "a native Codex no test here runs\n").unwrap();
 }
 
 /// A Settings button writes `options.toml`, then the domain records the change, and it survives a
@@ -69,9 +91,9 @@ fn a_settings_change_writes_the_file_and_the_domain_and_survives_a_restart() {
 fn the_actual_codex_metadata_check_keeps_external_auth_unavailable_and_api_keys_out_of_automatic_work() {
     super::wired();
     let f = fixture(); let domain = Arc::new(crate::engine_fixtures::open(&f.home).unwrap());
-    let _hosts = crate::sdk_owner::fixtures::SdkLaunches::enable(&domain, &f.home);
+    let _hosts = super::SdkLaunches::enable(&domain, &f.home);
     let native = f._scratch.join("codex-native");
-    std::fs::copy(std::env::var("FIXTURE_CODEX_NATIVE").unwrap(), &native).unwrap();
+    codex_native(&native);
     std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut backend = domain.sdk().unwrap().0.clone(); backend.provider = Provider::Codex; backend.origin = None;
     backend.native = native.clone(); backend.native_sha256 = crate::sdk_backend::digest(&native).unwrap();
@@ -120,9 +142,9 @@ async fn a_stale_startup_account_check_retries_and_releases_account_selection() 
     use alondra_core::model_selection::{ModelProfile, TaskSelection};
     let f = fixture();
     let domain = Arc::new(crate::engine_fixtures::open(&f.home).unwrap());
-    let _hosts = crate::sdk_owner::fixtures::SdkLaunches::enable(&domain, &f.home);
+    let _hosts = super::SdkLaunches::enable(&domain, &f.home);
     let native = f._scratch.join("codex-native");
-    std::fs::copy(std::env::var("FIXTURE_CODEX_NATIVE").unwrap(), &native).unwrap();
+    codex_native(&native);
     let options = alondra_core::options::path_in(&f.home);
     let edited = options.clone();
     alondra_engine_doubles::accounts::of(domain.ports()).during_next_codex_probe(move || {

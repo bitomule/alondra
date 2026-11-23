@@ -23,10 +23,7 @@ pub fn configured(slice: &Slice, mode: &str) -> PathBuf {
     let skill = slice.plugin.join("skills/alondra");
     std::fs::create_dir_all(&skill).unwrap();
     std::fs::write(skill.join("SKILL.md"), "You are an Alondra task node. Follow the task request and report the public result through Alondra.").unwrap();
-    let native = slice._home.join("codex-native");
-    std::fs::copy(runfile("FIXTURE_CODEX_NATIVE"), &native).unwrap();
-    std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let host = runfile("FIXTURE_CODEX_HOST");
+    let (host, native) = slice.hosts.codex_executables(&slice._home);
     let trace = slice._home.join("codex-transcript");
     let mut backend = slice.backend.clone();
     backend.provider = Provider::Codex;

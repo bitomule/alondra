@@ -530,6 +530,18 @@ impl StopHandle for Stopper {
             },
         }
     }
+    fn native(&self) -> io::Result<Option<alondra_process_group::Member>> {
+        let Some(host) = self.process()? else { return Ok(None) };
+        for member in alondra_process_group::members(host.pid)? {
+            if !member.zombie && alondra_process_group::parent(member.pid)? == Some(host) {
+                return Ok(Some(member));
+            }
+        }
+        Ok(None)
+    }
+    fn alive(&self, member: &alondra_process_group::Member) -> io::Result<bool> {
+        alondra_process_group::alive(member)
+    }
     /// Interrupts an unresponsive host under the same lease that protects it from PID reuse.
     /// Its exit monitor sweeps its descendants before reaping it.
     fn kill(&self) -> io::Result<()> {
