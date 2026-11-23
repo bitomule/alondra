@@ -32,7 +32,7 @@ fn refused(s: &mut DomainState, a: Actor, c: Command) -> DomainError {
 }
 fn task(s: &mut DomainState, id: &str, agent: &str) {
     ok(s, Actor::System, Command::RegisterAgent { agent_id: agent.into(), name: format!("Instance {agent}"), at: 0 });
-    ok(s, orchestrator(), Command::CreateTask { plan_items: None, continues: None,
+    ok(s, orchestrator(), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: Some(agent.into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::LaunchPlan::new("node", "/tmp")),
@@ -205,7 +205,7 @@ fn approved_plan() -> DomainState {
     });
     ok(&mut s, user(), Command::DecideProposedPlan { presentation_id: "report".into(), targets: text("Report"), choice: PlanChoice::Implement });
     ok(&mut s, orchestrator(), Command::TitleRequest { request_id: "implement-report".into(), title: "Index the library".into() });
-    ok(&mut s, orchestrator(), Command::CreateTask { plan_items: None, continues: None,
+    ok(&mut s, orchestrator(), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "build".into(), request_id: "implement-report".into(), title: "Build the index".into(), agent_id: None,
         review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(crate::LaunchPlan::new("node", "/tmp")),
     });

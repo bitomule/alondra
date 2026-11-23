@@ -951,6 +951,7 @@ fn batch_cut_while_working(f: &Fixture, unconfirmed: bool) -> Run {
         attempts: claims.iter().map(|claim| (claim.attempt_id, claim.version)).collect(),
         started_at: 1,
         spawned: true,
+        replans_only: false,
     };
     save(&f.executor.home, &Runtime { active_run: Some(run.clone()), ..Default::default() }).unwrap();
     run

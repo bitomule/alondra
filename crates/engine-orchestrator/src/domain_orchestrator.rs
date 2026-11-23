@@ -2139,7 +2139,7 @@ mod tests {
     fn the_hosts_start_holds_the_record_from_its_read_to_its_write_so_a_cancel_cannot_land_in_between() {
         let f = fixture();
         save(&f.executor.home, &Runtime {
-            active_run: Some(Run { id: "running".into(), message_ids: vec![], attempts: vec![], started_at: 1, spawned: false }),
+            active_run: Some(Run { id: "running".into(), message_ids: vec![], attempts: vec![], started_at: 1, spawned: false, replans_only: false }),
             ..Runtime::default()
         }).unwrap();
         let domain = Arc::clone(&f.executor.domain);

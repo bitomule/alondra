@@ -1640,7 +1640,7 @@ async fn the_startup_sweep_leaves_the_worktree_a_cancelled_task_handed_to_a_task
     command(&rig.domain, user(), "request-t-a", Command::CreateRequest {
         request_id: "r-t-a".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
     });
-    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "create-t-a", Command::CreateTask {
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "create-t-a", Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: "t-a".into(), request_id: "r-t-a".into(), title: "Task t-a".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
     });
@@ -1670,7 +1670,7 @@ async fn a_worktree_made_for_a_task_cancelled_while_it_started_goes_at_once() {
     command(&rig.domain, user(), "request-t-s", Command::CreateRequest {
         request_id: "r-t-s".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
     });
-    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "create-t-s", Command::CreateTask {
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "create-t-s", Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: "t-s".into(), request_id: "r-t-s".into(), title: "Task t-s".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
     });
