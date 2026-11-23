@@ -43,24 +43,8 @@ async fn until_released(domain: &DomainRuntime, tasks: &[&str]) {
 #[cfg(not(feature = "real-hosts"))]
 async fn until_working(slice: &Slice, count: usize) {
     let mut changed = slice.domain.subscribe();
-    while crate::admission::working_tasks(&*slice.domain, &slice.domain.read().state()).len() != count {
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(100), changed.changed()).await;
-    }
-}
-
-/// Until the gate holds no slot back from any of `tasks`: a node counts as working a little before
-/// the gate stops counting it as waiting, so working is not yet the end of the wait.
-#[cfg(not(feature = "real-hosts"))]
-async fn until_nobody_waits(slice: &Slice, tasks: &[&str]) {
-    let (mut state_changed, mut gate_changed) = (slice.domain.subscribe(), slice.domain.gate().subscribe());
-    let waiting = || tasks.iter().any(|task| slice.domain.gate().waits_for_slot(&slice.domain.read().state(), &(*task).into()));
-    while waiting() {
-        tokio::select! {
-            changed = state_changed.changed() => changed.unwrap(),
-            changed = gate_changed.changed() => changed.unwrap(),
-            () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
-        }
-    }
+    let reached = changed.wait_for(|_| crate::admission::working_tasks(&*slice.domain, &slice.domain.read().state()).len() == count);
+    tokio::time::timeout(std::time::Duration::from_secs(60), reached).await.expect("the nodes never resumed").unwrap();
 }
 
 /// The gate's look, which gives the turns that wait a slot and takes over the tasks with no host.
@@ -561,7 +545,6 @@ async fn resumes_over_the_node_limit_wait_for_capacity_with_no_process_and_no_ca
     limit(3);
     gate_look(&slice).await;
     until_working(&slice, 3).await;
-    until_nobody_waits(&slice, &tasks).await;
     assert_eq!(tasks.iter().filter(|task| waits(task)).count(), 0, "a free slot resumes them, with the spacing of starts still at a minute");
     slice.domain.stop_sdk_owners();
 }
