@@ -289,7 +289,7 @@ fn a_crash_between_commit_and_publication_reconciles_without_a_second_card() {
     driver.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 fn measured<T>(domain: &DomainRuntime, step: impl FnOnce() -> T) -> (T, Work) {
     use std::sync::atomic::Ordering;
     let (store, (writes, _), builds) = (alondra_store::measure::counts(), alondra_store_sqlite::statement_counts(), domain.index_builds.load(Ordering::SeqCst));
@@ -305,7 +305,7 @@ fn measured<T>(domain: &DomainRuntime, step: impl FnOnce() -> T) -> (T, Work) {
     })
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn the_slice_counts_its_aggregate_loads_decodes_and_index_builds() {
     let slice = Slice::new();
@@ -1113,7 +1113,7 @@ fn a_compacted_journal_proves_to_the_next_daemon_that_an_answer_was_handed() {
     resumed.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 19 Oct: Claude's sign-in expired and nothing told the user. Through the SDK, the native
 // Claude's 401 ends the turn with `authentication_failed`: the task waits on its card asking the
 // user to sign in, committed and published before the host is acknowledged. Once the user signs
@@ -1136,7 +1136,7 @@ fn a_signed_out_turn_waits_on_the_sign_in_card_until_claude_answers_again() {
     assert_eq!(stored, 1, "its card, committed");
     assert!(!acknowledged.lock().unwrap().is_empty(), "the host's observations were acknowledged after their commit");
 
-    std::fs::write(format!("{}.recovered", slice.hosts.capture.display()), "").unwrap();
+    slice.hosts.recover();
     let state = slice.domain.state().unwrap();
     let signed_in = Command::AnswerQuestion { interaction_id: card, option_id: SIGNED_IN.into(), inputs: BTreeMap::new(), attachments: vec![] };
     slice.domain.execute_with(&user(), &envelope(&state, "client-signed-in", signed_in), None, None, || Ok(())).unwrap();
@@ -1152,7 +1152,7 @@ fn a_signed_out_turn_waits_on_the_sign_in_card_until_claude_answers_again() {
     driver.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // The API kept failing past Claude Code's retries: the task waits with no announcement, and the
 // daemon's scheduled probe, run as the daemon runs it, sends exactly that task on once Claude
 // answers again.
@@ -1164,7 +1164,7 @@ fn an_overloaded_api_holds_the_task_until_the_scheduled_probe_finds_claude_answe
     let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
     assert_eq!(held, [(TASK.to_owned(), ClaudeHold::Outage)]);
     assert_eq!(Slice::read_cards(&*slice.domain), [], "no card that tells the task to go on");
-    std::fs::write(format!("{}.recovered", slice.hosts.capture.display()), "").unwrap();
+    slice.hosts.recover();
     crate::claude_access::probe(&*slice.domain, ClaudeHold::Outage, None);
     assert_eq!(driver.pending_permits(), 1, "the probe's dispatch reached the owner");
     driver.step(&|| false).unwrap();
@@ -1176,7 +1176,7 @@ fn an_overloaded_api_holds_the_task_until_the_scheduled_probe_finds_claude_answe
     driver.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 25 Oct, t-codex-support-design: the usage limit held the task, a subagent handed its report
 // back and Claude's own turn hit the limit again. The domain refused that second wait, so the end
 // of the turn went unrecorded and the owner stopped. Both ends are recorded and the task waits for
@@ -1197,7 +1197,7 @@ fn a_turn_claude_opens_by_itself_on_the_usage_limit_that_holds_its_task_keeps_th
     driver.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 25-26 Oct: the usage limit came back at 01:00 and the daemon woke only the nodes its hooks saw
 // stop. Usage coming back probes Claude with a task of the Agent SDK the limit holds too, whatever
 // its card says of the reset, and Claude answering it lets the task go on.
@@ -1208,7 +1208,7 @@ fn usage_coming_back_lets_a_task_of_the_agent_sdk_the_limit_held_go_on() {
     slice.settle(&mut driver);
     let held: Vec<(String, ClaudeHold)> = slice.domain.read().state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
     assert_eq!(held, [(TASK.to_owned(), ClaudeHold::Usage)]);
-    std::fs::write(format!("{}.recovered", slice.hosts.capture.display()), "").unwrap();
+    slice.hosts.recover();
     crate::usage_pause::wake_nodes(&*slice.domain);
     assert_eq!(driver.pending_permits(), 1, "the probe's dispatch reached the owner");
     driver.step(&|| false).unwrap();
@@ -1585,7 +1585,7 @@ fn the_tasks_claude_loads_the_users_profile_and_alondras_plugin_settings_and_cap
 }
 
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // R1: the Mac shuts down after the first turn's case: host, Claude and daemon are gone. The daemon
 // that comes back finds no process holding the host's lock, launches a fresh host for the same
 // execution with the next owner generation, and the orchestrator's instruction resumes the same native session with its
@@ -1814,14 +1814,14 @@ fn an_owner_whose_step_fails_stops_its_host_and_resumes_the_session_in_a_new_one
     resumed.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 /// A node cut by a restart whose resumed session works on in a long turn, with a message handed to
 /// it that it has not read yet: the state of t-corrupt-journal-detail-codex on 2026-10-27 at 17:42.
 fn resumed_with_an_unread_message(slice: &Slice) -> (Arc<DomainRuntime>, Driver) {
     let mut driver = slice.launch_with("consume-and-hold");
     slice.until_working(&mut driver);
     slice.kill_host_and_daemon(driver);
-    std::fs::write(format!("{}.hold", slice.hosts.capture.display()), "").unwrap();
+    slice.hosts.hold();
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
     resumed.step(&|| false).unwrap();
@@ -1840,7 +1840,7 @@ fn resumed_with_an_unread_message(slice: &Slice) -> (Arc<DomainRuntime>, Driver)
     (restarted, resumed)
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 /// Nobody is asked about the message: it goes again, flagged, to the session the new host resumes.
 fn assert_message_goes_again_by_itself(domain: &DomainRuntime) {
     assert!(open_card(domain, HANDOFF_DOUBT_PREFIX).is_none(), "no card asks whether to send the message again");
@@ -1851,7 +1851,7 @@ fn assert_message_goes_again_by_itself(domain: &DomainRuntime) {
         if text.starts_with("Your session was cut off when its host stopped") && text.ends_with("Keep the journal's old rows"))), "the message is sent again");
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 2026-10-27, t-corrupt-journal-detail-codex: after a restart its session worked on for 8 minutes,
 // then its owner stopped on an error of Alondra's own. The resumed session had not finished a turn,
 // so its end was taken for a session that keeps closing, and the user got «closed before confirming
@@ -1868,7 +1868,7 @@ fn a_message_cut_when_the_owner_of_a_resumed_session_fails_goes_again_without_as
     next.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // The same message when the daemon stops (a restart, an update) while the resumed session works.
 #[test]
 fn a_message_cut_when_the_daemon_stops_a_resumed_session_goes_again_without_asking() {
@@ -2134,7 +2134,7 @@ fn refused_turn_end_reactions_keep_the_same_host_and_record_its_next_turn() {
 }
 
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // A subagent hands its report back after the turn ended: Claude starts a turn by itself while the
 // task rests. Its owner reads it as it comes: the case that asked the orchestrator how the task
 // goes on is withdrawn and the node works, with nothing sent to it.
@@ -2146,7 +2146,7 @@ async fn a_turn_claude_starts_while_its_task_rests_is_read_as_it_comes() {
     let card = open_card(&slice.domain, STALLED_PREFIX).expect("the turn ended on its case").id;
     let owner = Owner::spawn(driver);
     let mut changed = slice.domain.subscribe();
-    std::fs::write(format!("{}.own-turn", slice.hosts.capture.display()), "").unwrap();
+    slice.hosts.own_turn();
     let reader = Arc::clone(&slice.domain);
     changed.wait_for(|_| reader.read().state().interactions[&card].withdrawn).await.unwrap();
     assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Working, "the node works");
@@ -2312,7 +2312,7 @@ fn an_answer_the_ended_host_never_took_goes_to_the_resumed_session_unasked() {
     resumed.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // The daemon dies and the host's state folder goes with it, as when a sandbox or a test fixture is
 // removed: no owner can adopt that host any more, so it ends its whole group, Claude included.
 // Every turn whose result is not a success ends as failed, with its code. Claude ended this one
@@ -2329,7 +2329,7 @@ fn a_turn_claude_ends_as_failed_asks_how_to_go_on_and_names_its_error() {
     driver.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 /// Moves the owner until it fails: the provider refused the same input twice.
 fn until_the_owner_fails(driver: &mut Driver) {
     for _ in 0..5000 {
@@ -2340,7 +2340,7 @@ fn until_the_owner_fails(driver: &mut Driver) {
     panic!("the owner never failed");
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // Claude answered the prompt with a result that never delivered it. The same words go again at
 // once with no card, and when Claude refuses that one too the owner gives its host up, so a host
 // that resumes the same session takes the message.
@@ -2356,7 +2356,7 @@ fn a_prompt_claude_never_delivers_goes_again_without_a_card_and_a_second_time_ch
     let _ = driver.stop();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // A prompt Claude completes without starting fails its turn, as Claude does with one its
 // transcript already holds: it is sent again at once and, refused again, goes to a resuming host.
 #[test]
@@ -2849,7 +2849,7 @@ fn tell(slice: &Slice, driver: &Driver, text: &str) {
         .unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // The node of 2026-10-21: its turn ended, a subagent's report started a turn of Claude's own, and
 // while what the user told it waited behind that turn Claude asked to leave plan mode with 41
 // points. Alondra refuses the plan for its length and Claude gets why as the tool's result; it
@@ -3711,16 +3711,6 @@ fn a_failed_reopening_workspace_cannot_replace_the_original_admissions_native_di
 }
 
 #[cfg(feature = "real-hosts")]
-/// Swaps the slice's native Claude for one that never gets a prompt, so its session never opens,
-/// and returns where the working one waits to be put back.
-fn hold_prompts(slice: &Slice) -> PathBuf {
-    let fake = slice._home.join("native-fake");
-    std::fs::copy(&slice.backend.native, &fake).unwrap();
-    std::fs::write(&slice.backend.native, HOLDING_NATIVE).unwrap();
-    fake
-}
-
-#[cfg(feature = "real-hosts")]
 /// A takeover adopted a live host that never took the input it was handed, and its owner went
 /// without a word. The next look does not adopt that host again, which would change nothing: it
 /// ends it, and a fresh host takes the same input, which reaches Claude once.
@@ -3732,7 +3722,7 @@ async fn a_takeover_its_host_never_answered_hands_the_same_input_to_a_fresh_host
     slice.settle(&mut driver);
     instruct(&*slice.domain, "Add the tests first");
     slice.kill_host_and_daemon(driver);
-    let fake = hold_prompts(&slice);
+    slice.hosts.hold_prompts(&slice.backend.native);
     let mut held = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     slice.run(&Actor::System, "taken-over", Command::RecordRuntimeFacts {
         task_id: TASK.into(), generation: lifecycle(&*slice.domain).generation(), facts: vec![RuntimeObservation::TakenOver] });
@@ -3743,7 +3733,7 @@ async fn a_takeover_its_host_never_answered_hands_the_same_input_to_a_fresh_host
     held.let_go();
     drop(held);
     assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Starting, "the input waits for a host to take it");
-    std::fs::copy(&fake, &slice.backend.native).unwrap();
+    slice.hosts.release_prompts(&slice.backend.native);
 
     crate::sdk_owner::take_working_unowned(&*slice.domain, &slice.domain.state().unwrap(), alondra_core::now_millis());
     slice.domain.join_retakes();
@@ -3757,7 +3747,6 @@ async fn a_takeover_its_host_never_answered_hands_the_same_input_to_a_fresh_host
     slice.domain.stop_sdk_owners();
 }
 
-#[cfg(feature = "real-hosts")]
 /// Tells the node `text` as the user does, through the daemon `domain`.
 fn tell_through(domain: &DomainRuntime, slice: &Slice, driver: &Driver, text: &str) {
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();
@@ -3773,7 +3762,6 @@ fn signal_host(driver: &Driver, signal: &str) {
     assert!(std::process::Command::new("/bin/kill").args([signal, "--", &format!("-{group}")]).status().unwrap().success());
 }
 
-#[cfg(feature = "real-hosts")]
 /// The mission and then the user's message reached Claude, each once, and nobody was asked.
 fn mission_then_message(slice: &Slice, domain: &DomainRuntime) {
     let prompts = slice.prompts();
@@ -3787,18 +3775,18 @@ fn mission_then_message(slice: &Slice, domain: &DomainRuntime) {
     }
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // The daemon went down with a task whose Claude never opened its session. The host that takes it
 // over gets its mission again and opens the session with it, and the message the user sent
 // meanwhile follows.
 #[test]
 fn a_session_that_never_opened_gets_its_mission_and_the_queued_message_from_the_host_that_takes_over() {
     let slice = Slice::new();
-    let fake = hold_prompts(&slice);
+    slice.hosts.hold_prompts(&slice.backend.native);
     let driver = slice.launch();
     assert_eq!(lifecycle(&*slice.domain).resource(), Some(alondra_domain::ResourceEvidence::Reserved));
     slice.kill_host_and_daemon(driver);
-    std::fs::copy(&fake, &slice.backend.native).unwrap();
+    slice.hosts.release_prompts(&slice.backend.native);
     let restarted = slice.restart();
     let mut resumed = slice.take_over(&restarted);
     tell_through(&restarted, &slice, &resumed, "Also update the changelog");
@@ -3807,13 +3795,13 @@ fn a_session_that_never_opened_gets_its_mission_and_the_queued_message_from_the_
     resumed.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // A host took the mission but its Claude never opens the session. Once the deadline passes,
 // another host takes its place and gets it again; the user's message waits and follows.
 #[test]
 fn a_host_whose_claude_never_opens_the_session_is_replaced_once_its_deadline_passes() {
     let slice = Slice::new();
-    let fake = hold_prompts(&slice);
+    slice.hosts.hold_prompts(&slice.backend.native);
     let driver = slice.launch();
     slice.kill_host_and_daemon(driver);
     let restarted = slice.restart();
@@ -3833,7 +3821,7 @@ fn a_host_whose_claude_never_opens_the_session_is_replaced_once_its_deadline_pas
     assert!(resumed.step_at(&|| false, late).is_err(), "past the deadline, with nothing of its host left to read, the host is stuck");
     assert!(resumed.host_to_replace());
     let mut recovered = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    std::fs::copy(&fake, &slice.backend.native).unwrap();
+    slice.hosts.release_prompts(&slice.backend.native);
     slice.settle(&mut recovered);
     mission_then_message(&slice, &restarted);
     recovered.stop().unwrap();
@@ -3871,7 +3859,7 @@ fn a_session_its_host_opened_before_the_owner_looked_again_is_not_given_up() {
 fn a_takeover_whose_first_input_is_uncertain_relaunches_by_itself_without_a_card() {
     let mut slice = Slice::new();
     slice.backend.io_timeout_seconds = 8;
-    let fake = hold_prompts(&slice);
+    slice.hosts.hold_prompts(&slice.backend.native);
     let driver = slice.launch();
     slice.kill_host_and_daemon(driver);
     let restarted = slice.restart();
@@ -3886,21 +3874,21 @@ fn a_takeover_whose_first_input_is_uncertain_relaunches_by_itself_without_a_card
     assert!(resumed.host_to_replace(), "a session that never opened is relaunched however many hosts ended before");
     signal_host(&resumed, "-CONT");
     let mut recovered = resumed.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    std::fs::copy(&fake, &slice.backend.native).unwrap();
+    slice.hosts.release_prompts(&slice.backend.native);
     slice.settle(&mut recovered);
     mission_then_message(&slice, &restarted);
     recovered.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // An uncertain mission is retried automatically even when its session never opened.
 #[test]
 fn an_uncertain_mission_whose_session_never_opened_reaches_claude_without_a_card() {
     let slice = Slice::new();
-    let fake = hold_prompts(&slice);
+    slice.hosts.hold_prompts(&slice.backend.native);
     let driver = slice.launch();
     slice.kill_host_and_daemon(driver);
-    std::fs::copy(&fake, &slice.backend.native).unwrap();
+    slice.hosts.release_prompts(&slice.backend.native);
     let restarted = slice.restart();
     end_unowned_host(restarted.clone(), &slice.backend, TASK.into()).unwrap();
     assert!(open_card(&restarted, HANDOFF_DOUBT_PREFIX).is_none());
@@ -3914,7 +3902,7 @@ fn an_uncertain_mission_whose_session_never_opened_reaches_claude_without_a_card
     resumed.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 2026-11-03, t-deps-done-still-waiting: every host the daemon put in place took an input and lost
 // it, because its Claude never started. Offering the input reset the count of replacements, so the
 // task was resumed without end. After SILENT_HOSTS hosts in a row whose Claude never ran, the

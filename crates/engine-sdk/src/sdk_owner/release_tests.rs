@@ -59,6 +59,7 @@ async fn tell(slice: &Slice, task: &str, text: &str) {
     gate_look(slice).await;
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// A node that ended its turn and rests, under an owner that runs by itself.
 fn resting_node(slice: &Slice) -> (String, HostWatch) {
     enable(slice);
@@ -267,7 +268,7 @@ async fn a_closed_node_moves_to_another_provider_like_a_resting_one() {
     slice.domain.stop_sdk_owners();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_model_chosen_for_a_closed_node_reaches_it_and_stays_when_it_closes_again() {
     let slice = Slice::new();
@@ -288,7 +289,8 @@ async fn a_model_chosen_for_a_closed_node_reaches_it_and_stays_when_it_closes_ag
     until_last_prompt_ends_with(&slice.domain, &slice.hosts, "Go on.").await;
     slice.domain.stop_sdk_owners();
     let capture: serde_json::Value = slice.hosts.native_capture();
-    assert!(capture["args"].as_array().unwrap().iter().any(|arg| arg == "--model=sonnet"), "the host that resumes opens with the model chosen: {capture}");
+    let args: Vec<&str> = capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
+    assert!(args.contains(&"--model=sonnet") || args.windows(2).any(|pair| pair == ["--model", "sonnet"]), "the host that resumes opens with the model chosen: {capture}");
 }
 
 // The input committed after the owner decided, while its host ended: the release is refused, and
@@ -513,7 +515,7 @@ async fn resumes_over_the_node_limit_wait_for_capacity_with_no_process_and_no_ca
     }
     look_after_the_wait(&slice.domain);
     until_released(&slice.domain, &tasks).await;
-    std::fs::write(format!("{}.hold", slice.hosts.capture.display()), "").unwrap();
+    slice.hosts.hold();
     let limit = |slots| slice.domain.admission().tune(crate::admission::Tuning { spacing: 60_000, limit: Some(crate::admission::Limit::Fixed(slots)) });
     let working = || crate::admission::working_tasks(&*slice.domain, &slice.domain.read().state());
     limit(1);
@@ -714,7 +716,7 @@ async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_cor
 
 const HOURS_AGO: alondra_core::Millis = 4 * 60 * 60_000;
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 19 November: four nodes came back from a usage limit hours later, each resumed its conversation,
 // and the first request of each wrote it whole to the prompt cache again: 2.1 million tokens at
 // twice the price of their input. A large conversation whose cache expired goes on in a new session
@@ -855,7 +857,7 @@ async fn a_large_conversation_whose_live_host_is_told_something_before_its_cache
     assert_eq!(resumed.starts.len(), 1, "the same host and session go on: {:?}", resumed.starts);
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 20 November: a task paused before readings were kept was resumed hours later with no reading of
 // its conversation, went on in the same session, and its first input wrote 155,628 tokens to the
 // prompt cache. Without a stored reading, the size and the cache's expiry come from the last answer
@@ -872,7 +874,7 @@ async fn a_large_conversation_with_no_stored_reading_whose_transcript_shows_its_
     assert!(resumed.prompt.contains(&file.display().to_string()) && resumed.prompt.ends_with("Now the changelog."), "{}", resumed.prompt);
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_conversation_with_no_stored_reading_whose_transcript_shows_its_cache_holds_resumes() {
     let mut slice = Slice::new();

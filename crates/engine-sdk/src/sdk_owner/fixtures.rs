@@ -180,6 +180,17 @@ pub trait Hosts: Default {
     fn watch(&self, group: i32) -> HostWatch;
     /// Claude loses what it kept of `session`, apart from the transcript in its profile.
     fn forget(&self, session: &str);
+    /// Claude keeps working on each host's first prompt from now on, and leaves the rest unread.
+    fn hold(&self);
+    /// The native Claudes the hosts start from now on, from the executable `native`, never get a
+    /// prompt, so their sessions never open.
+    fn hold_prompts(&self, native: &Path);
+    /// The native Claudes the hosts start from now on get their prompts again.
+    fn release_prompts(&self, native: &Path);
+    /// The API answers again the prompts scripted to be refused.
+    fn recover(&self);
+    /// Claude opens a turn of its own where the last turn was scripted with `own-turn-later`.
+    fn own_turn(&self);
 }
 
 /// A host a test watches: whether anything of it still runs, and a wait until nothing does.
@@ -267,6 +278,27 @@ impl Hosts for ProcessHosts {
 
     fn forget(&self, session: &str) {
         std::fs::remove_file(format!("{}.transcript-{session}", self.capture.display())).unwrap();
+    }
+
+    fn hold(&self) {
+        std::fs::write(format!("{}.hold", self.capture.display()), "").unwrap();
+    }
+
+    fn hold_prompts(&self, native: &Path) {
+        std::fs::copy(native, native.with_file_name("native-fake")).unwrap();
+        std::fs::write(native, HOLDING_NATIVE).unwrap();
+    }
+
+    fn release_prompts(&self, native: &Path) {
+        std::fs::copy(native.with_file_name("native-fake"), native).unwrap();
+    }
+
+    fn recover(&self) {
+        std::fs::write(format!("{}.recovered", self.capture.display()), "").unwrap();
+    }
+
+    fn own_turn(&self) {
+        std::fs::write(format!("{}.own-turn", self.capture.display()), "").unwrap();
     }
 }
 

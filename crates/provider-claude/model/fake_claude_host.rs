@@ -44,6 +44,11 @@ const OFFERED_MODELS: &[&str] = &["fixture-model"];
 const ALONDRA_TOOL: &str = "mcp__plugin_alondra_alondra__ask";
 const ALONDRA_SERVER: &str = "plugin:alondra:alondra";
 const FIXTURE_PLAN: &str = "# Fixture plan\n\n- [ ] Change the fixture\n- [ ] Test the fixture";
+/// What Claude Code says when the usage limit refuses a turn.
+const LIMIT_TEXT: &str = "You've hit your limit";
+/// What a small request costs, as the fake native Claude reports it.
+static SMALL_USAGE: std::sync::LazyLock<Value> =
+    std::sync::LazyLock::new(|| json!({"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}));
 /// What the SDK answers Claude for a request no answer reached.
 const CANCELLED: &str = "Permission request cancelled";
 
@@ -107,6 +112,12 @@ struct World {
     conversations: BTreeMap<String, u64>,
     sized: BTreeSet<String>,
     turns: Turns,
+    /// The API answers again the prompts scripted to be refused (`signed-out`, `overloaded`,
+    /// `rate-limited`), as the fake native Claude does once the test drops `.recovered`.
+    recovered: bool,
+    /// Claude keeps working on the first prompt of each host and leaves the rest unread in that
+    /// turn, as the fake native Claude does once the test drops `.hold`.
+    hold: bool,
 }
 
 /// What went wrong between the daemon and the hosts, or something a host was asked it does not do.
@@ -171,6 +182,8 @@ struct Shared {
     prompts: Mutex<Vec<String>>,
     /// The prompts each native session took, across the hosts that ran it.
     sessions: Mutex<BTreeMap<String, usize>>,
+    /// The sessions Claude lost what it kept of, apart from the transcript in its profile.
+    forgotten: Mutex<BTreeSet<String>>,
     /// What each native Claude got for each decision it asked for, as the fake native Claude
     /// records it.
     decisions: Mutex<Vec<Value>>,
@@ -247,6 +260,14 @@ struct HostState {
     asked: BTreeMap<String, Asked>,
     /// How many decisions this host's Claude asked for: each names its request and tool use.
     decisions: u64,
+    own_turn: OwnTurn,
+    /// The native Claude runs: the host starts it on `start`, or on its first `offer` when an
+    /// earlier host of the execution ended.
+    native: bool,
+    /// The native Claude exited: nothing reads what the host is offered.
+    native_ended: bool,
+    /// How the native Claude this host started takes its prompts, fixed when it started.
+    turns: Option<Turns>,
 }
 
 /// A decision Claude asked for and waits on: what the host announced, under the cursor that
@@ -258,9 +279,32 @@ struct Asked {
     payload: serde_json::Map<String, Value>,
     epoch: u64,
     taken: Vec<String>,
-    /// Claude ends the turn once it has the answer, as the fake native Claude does; a turn the test
-    /// plays goes on until the test ends it.
-    concludes: bool,
+    then: Then,
+}
+
+/// What Claude does once a decision it waits on is answered.
+#[derive(Clone, PartialEq, Eq)]
+enum Then {
+    /// The turn the test plays goes on until the test ends it.
+    GoOn,
+    /// Claude ends the turn, as the fake native Claude does.
+    Conclude,
+    /// Claude's own turn asked to leave plan mode with this plan: a long one refused is asked again
+    /// shorter, and otherwise the turn ends and Claude takes the input that waited behind it.
+    OwnPlan(String),
+}
+
+/// A turn Claude opens by itself, as when a background subagent hands its report back.
+#[derive(Default, PartialEq, Eq)]
+enum OwnTurn {
+    #[default]
+    None,
+    /// The turn starts when the test says (`ClaudeModel::own_turn`).
+    Later,
+    /// The turn starts as the next prompt arrives, which waits queued behind it.
+    Next,
+    /// The turn runs, with these inputs waiting behind it.
+    Running(Vec<String>),
 }
 
 #[derive(Deserialize)]
@@ -274,7 +318,7 @@ struct Bootstrap {
     #[serde(default)]
     worker: Option<Worker>,
     #[serde(default)]
-    journal_base: u64,
+    journal_base: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -388,6 +432,7 @@ impl ClaudeModel {
             starts: Mutex::default(),
             prompts: Mutex::default(),
             sessions: Mutex::default(),
+            forgotten: Mutex::default(),
             decisions: Mutex::default(),
             controls: Mutex::default(),
             capture: Mutex::default(),
@@ -433,6 +478,16 @@ impl ClaudeModel {
         let limited = outage.as_ref().is_some_and(|(error, _)| error.error == "rate_limit");
         world.limit_resets_at = limited.then(|| world.limit_resets_at.unwrap_or_else(|| alondra_core::now_millis() + 3_600_000));
         world.outage = outage;
+    }
+
+    /// Claude keeps working on each host's first prompt from now on, and leaves the rest unread.
+    pub fn hold(&self) {
+        lock(&self.0.world).hold = true;
+    }
+
+    /// The API answers again the prompts scripted to be refused.
+    pub fn recover(&self) {
+        lock(&self.0.world).recovered = true;
     }
 
     pub fn set_signed_in(&self, account: &str, signed_in: bool) {
@@ -558,6 +613,7 @@ impl ClaudeModel {
     /// Claude loses what it kept of `session`: a host that resumes it starts with no history.
     pub fn forget(&self, session: &str) {
         lock(&self.0.sessions).remove(&session.to_lowercase());
+        lock(&self.0.forgotten).insert(session.to_lowercase());
     }
 
     /// The process of `task`'s host dies, with whatever it started.
@@ -608,15 +664,6 @@ impl ClaudeModel {
         let task = execution.task_id.to_string();
         let session = bootstrap.native.session_id.to_lowercase();
         let resumes = bootstrap.resumes();
-        let history = lock(&self.0.sessions).get(&session).copied().unwrap_or_default();
-        lock(&self.0.starts).push(NativeStart {
-            session: session.clone(),
-            resume: resumes.then(|| session.clone()),
-            history,
-            cwd: bootstrap.native.cwd.clone(),
-            arguments: bootstrap.arguments(),
-            environment: bootstrap.native.env.clone(),
-        });
         self.0.starting.fetch_add(1, Ordering::SeqCst);
         let host = Arc::new(Host {
             account: account_of(&self.0.home, &bootstrap.native.env),
@@ -629,7 +676,7 @@ impl ClaudeModel {
             process,
             task,
             secret,
-            state: Mutex::new(HostState { cursor: bootstrap.journal_base, acknowledged: bootstrap.journal_base, ..HostState::default() }),
+            state: Mutex::new(HostState { cursor: bootstrap.journal_base.unwrap_or_default(), acknowledged: bootstrap.journal_base.unwrap_or_default(), ..HostState::default() }),
             bootstrap,
         });
         {
@@ -643,6 +690,30 @@ impl ClaudeModel {
         }
         self.tick();
         Ok(host)
+    }
+
+    /// The host starts its native Claude: on the session's transcript so far when it resumes it. A
+    /// session Claude lost cannot be resumed: Claude exits at once and says why.
+    fn open_native(&self, host: &Host, state: &mut HostState) {
+        state.native = true;
+        state.turns = Some(lock(&self.0.world).turns);
+        let session = host.session.to_lowercase();
+        let history = lock(&self.0.sessions).get(&session).copied().unwrap_or_default();
+        if host.resumes && lock(&self.0.forgotten).contains(&session) {
+            state.native_ended = true;
+            let said = format!("RuntimeError: No conversation found with session ID: {session}\n");
+            self.event(host, state, json!({"type": "sdk", "kind": "diagnostic", "native": {}, "payload": {"source": "stderr", "text": said, "truncated_at_bytes": 16_384}, "failures": []}));
+            self.event(host, state, json!({"type": "process_exited", "exit_code": 1, "signal": null}));
+            return;
+        }
+        lock(&self.0.starts).push(NativeStart {
+            resume: host.resumes.then(|| session.clone()),
+            session,
+            history,
+            cwd: host.bootstrap.native.cwd.clone(),
+            arguments: host.bootstrap.arguments(),
+            environment: host.bootstrap.native.env.clone(),
+        });
     }
 
     /// Serves one daemon's connection to `host`: the attach, what it had not acknowledged, then
@@ -757,7 +828,7 @@ impl ClaudeModel {
         self.event(&host, &mut state, json!({"type": "decision_requested", "request_id": request, "tool_use_id": tool_use, "kind": "permission", "payload": payload}));
         let Value::Object(payload) = payload else { return Ok(()) };
         let asked = Asked { kind: DecisionKind::Permission, tool: Some("Bash".into()), tool_use_id: Some(tool_use), payload, epoch: state.cursor,
-            taken: state.turn.clone().unwrap_or_default(), concludes: false };
+            taken: state.turn.clone().unwrap_or_default(), then: Then::GoOn };
         state.asked.insert(request.to_owned(), asked);
         Ok(())
     }
@@ -769,7 +840,7 @@ impl ClaudeModel {
 
     /// An input reaches the host, and Claude takes it as `Turns` says.
     fn offered(&self, host: &Host, state: &mut HostState, input: String, prompt: String) {
-        let turns = lock(&self.0.world).turns;
+        let turns = state.turns.unwrap_or_else(|| lock(&self.0.world).turns);
         if turns == Turns::Ignored {
             return;
         }
@@ -797,51 +868,249 @@ impl ClaudeModel {
 
     /// Claude queues and starts the input, announcing its session when no turn holds it, and ends
     /// the turn with a result for every input it took, as the fake native Claude does with a prompt
-    /// it has no script for. `consume-and-hold` is taken up and the turn kept open, as the fake
-    /// does. The prompt goes into the session's transcript in Claude's profile, which the daemon
+    /// it has no script for. The prompts the fake native Claude has a script for go as they go
+    /// there. The prompt goes into the session's transcript in Claude's profile, which the daemon
     /// reads before it resumes the session.
     fn answer(&self, host: &Host, state: &mut HostState, input: String, prompt: &str) {
         let session = host.session.to_lowercase();
         self.transcribe(host, &input, prompt);
+        if prompt.ends_with("complete-unstarted") {
+            for lifecycle in ["queued", "completed"] {
+                self.lifecycle(host, state, &input, lifecycle);
+            }
+            return;
+        }
         let mut taken = state.turn.take().unwrap_or_default();
         taken.push(input.clone());
+        let wake = prompt.starts_with("Your turn ended without a result") && taken.len() == 1;
+        if state.own_turn == OwnTurn::Next && !wake {
+            return self.own_turn_started(host, state, taken);
+        }
         for lifecycle in ["queued", "started"] {
-            let uuid = self.uuid();
-            self.emit(host, state, "status", json!({"type": "command_lifecycle", "command_uuid": input, "state": lifecycle, "session_id": session, "uuid": uuid}));
+            self.lifecycle(host, state, &input, lifecycle);
         }
         if taken.len() == 1 {
             let (title, init) = (self.uuid(), self.uuid());
             self.emit(host, state, "status", json!({"type": "system", "subtype": "session_title_changed", "title": "fixture", "session_id": session, "uuid": title}));
-            self.emit(host, state, "initialized", json!({"type": "system", "subtype": "init", "session_id": session, "uuid": init, "claude_code_version": "2.1.300-fixture",
-                "model": "fixture", "cwd": host.bootstrap.native.cwd, "tools": ["Bash"], "mcp_servers": [], "permissionMode": "default", "slash_commands": [],
-                "output_style": "default", "skills": [], "plugins": [], "apiKeySource": "none"}));
+            self.emit(host, state, "initialized", self.init(host, &init, "default"));
+            for subtype in ["dev_intent", "future_subtype"] {
+                let uuid = self.uuid();
+                self.emit(host, state, "status", json!({"type": "system", "subtype": subtype, "session_id": session, "uuid": uuid}));
+            }
+        }
+        if wake {
+            return self.conclude(host, state, &input, &taken);
         }
         if taken.len() == 1 && let Some(said) = decision_scenario(prompt) {
             return self.decide(host, state, taken, said);
         }
-        if prompt == "consume-and-hold" {
-            let consumed = self.uuid();
-            self.emit(host, state, "message", json!({"type": "assistant", "session_id": session, "uuid": consumed, "parent_tool_use_id": null,
-                "message": {"id": format!("msg_{consumed}"), "type": "message", "role": "assistant", "model": "fixture", "content": [{"type": "text", "text": "Fixture consumed input"}],
-                    "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}},
-                "user_message_uuid": input, "user_message_uuids": taken}));
+        if let Some(refusal) = refusal(prompt) {
+            if lock(&self.0.world).recovered {
+                self.consume(host, state, &input, &taken, json!({"type": "text", "text": "Fixture answer"}));
+                return self.conclude(host, state, &input, &taken);
+            }
             state.turn = Some(taken);
-            return;
+            return self.finish_turn(host, state, Some(refusal));
         }
-        if taken.len() > 1 {
-            let notification = self.uuid();
-            self.emit(host, state, "task", json!({"type": "system", "subtype": "task_notification", "task_id": "fixture-background", "status": "completed",
-                "output_file": "fixture-output", "summary": "Fixture work completed", "uuid": notification, "session_id": session}));
+        let resumed = host.resumes;
+        let consumed = json!({"type": "text", "text": "Fixture consumed input"});
+        match prompt {
+            "consume-and-hold" => {
+                self.consume(host, state, &input, &taken, consumed);
+                state.turn = Some(taken);
+            }
+            "failed-delivery" => self.failed(host, state, &input, &taken, "error_during_execution", "Fixture delivery failed before consumption"),
+            _ if prompt.ends_with("max-turns") => {
+                self.consume(host, state, &input, &taken, consumed);
+                self.failed(host, state, &input, &taken, "error_max_turns", "Fixture turn reached its limit");
+            }
+            _ if prompt.ends_with("rate-limited-twice") => self.limited_twice(host, state, taken),
+            _ if !resumed && (prompt.ends_with("unread") || prompt.ends_with("stall-before-starting")) => state.turn = Some(taken),
+            _ if !resumed && prompt.ends_with("running-then-silent") => {
+                let running = self.uuid();
+                self.emit(host, state, "status", json!({"type": "system", "subtype": "session_state_changed", "state": "running", "session_id": session, "uuid": running}));
+                self.lifecycle(host, state, &input, "started");
+                state.turn = Some(taken);
+            }
+            "consume-and-native-lifecycle" => {
+                self.consume(host, state, &input, &taken, consumed);
+                for lifecycle in ["queued", "started", "completed"] {
+                    self.lifecycle(host, state, "30000000-0000-4000-8000-000000000001", lifecycle);
+                }
+                state.turn = Some(taken);
+            }
+            _ if lock(&self.0.world).hold => {
+                if taken.len() == 1 {
+                    self.consume(host, state, &input, &taken, consumed);
+                }
+                state.turn = Some(taken);
+            }
+            "large-context" | "large-context-unsized" => {
+                let usage = json!({"input_tokens": 3, "output_tokens": 400, "cache_creation_input_tokens": 2000, "cache_read_input_tokens": 248_000,
+                    "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 2000}});
+                let answer = self.uuid();
+                self.emit(host, state, "message", json!({"type": "assistant", "session_id": session, "uuid": answer, "parent_tool_use_id": null,
+                    "message": {"id": format!("msg_{answer}"), "type": "message", "role": "assistant", "model": "fixture", "content": [{"type": "text", "text": "Fixture answer"}],
+                        "stop_reason": null, "stop_sequence": null, "usage": usage},
+                    "user_message_uuid": input, "user_message_uuids": taken}));
+                let sized = if prompt == "large-context" {
+                    json!({"fixture": {"inputTokens": 3, "outputTokens": 400, "contextWindow": 1_000_000}})
+                } else {
+                    json!({"fixture-subagent": {"inputTokens": 1, "outputTokens": 1, "contextWindow": 200_000}})
+                };
+                self.conclude_with(host, state, &input, &taken, sized);
+            }
+            "huge-tool-result" => {
+                self.consume(host, state, &input, &taken, json!({"type": "tool_use", "id": "toolu_fixture_huge", "name": "Bash", "input": {"command": "cat huge.log"}}));
+                let (uuid, output) = (self.uuid(), "x".repeat(5 * 1024 * 1024));
+                self.emit(host, state, "message", json!({"type": "user", "session_id": session, "uuid": uuid, "parent_tool_use_id": null,
+                    "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_fixture_huge", "content": output}]},
+                    "tool_use_result": {"stdout": output, "stderr": "", "interrupted": false}}));
+                self.conclude(host, state, &input, &taken);
+            }
+            _ if prompt.starts_with("bulky:") => {
+                for _ in 0..prompt["bulky:".len()..].parse::<usize>().unwrap_or_default() {
+                    self.consume(host, state, &input, &taken, json!({"type": "text", "text": "x".repeat(900_000)}));
+                }
+                self.conclude(host, state, &input, &taken);
+            }
+            "own-turn-later" | "own-turn-plan" => {
+                self.consume(host, state, &input, &taken, consumed);
+                self.conclude(host, state, &input, &taken);
+                state.own_turn = if prompt == "own-turn-later" { OwnTurn::Later } else { OwnTurn::Next };
+            }
+            _ => {
+                if taken.len() > 1 {
+                    let notification = self.uuid();
+                    self.emit(host, state, "task", json!({"type": "system", "subtype": "task_notification", "task_id": "fixture-background", "status": "completed",
+                        "output_file": "fixture-output", "summary": "Fixture work completed", "uuid": notification, "session_id": session}));
+                }
+                self.conclude(host, state, &input, &taken);
+            }
         }
+    }
+
+    fn lifecycle(&self, host: &Host, state: &mut HostState, input: &str, lifecycle: &str) {
+        let uuid = self.uuid();
+        self.emit(host, state, "status", json!({"type": "command_lifecycle", "command_uuid": input, "state": lifecycle, "session_id": host.session.to_lowercase(), "uuid": uuid}));
+    }
+
+    fn init(&self, host: &Host, uuid: &str, permission_mode: &str) -> Value {
+        json!({"type": "system", "subtype": "init", "session_id": host.session.to_lowercase(), "uuid": uuid, "claude_code_version": "2.1.300-fixture",
+            "model": "fixture", "cwd": host.bootstrap.native.cwd, "tools": ["Bash"], "mcp_servers": [], "permissionMode": permission_mode, "slash_commands": [],
+            "output_style": "default", "skills": [], "plugins": [], "apiKeySource": "none"})
+    }
+
+    /// Claude answers in the turn that took `taken` with `block`, and the turn goes on.
+    fn consume(&self, host: &Host, state: &mut HostState, input: &str, taken: &[String], block: Value) {
+        let consumed = self.uuid();
+        self.emit(host, state, "message", json!({"type": "assistant", "session_id": host.session.to_lowercase(), "uuid": consumed, "parent_tool_use_id": null,
+            "message": {"id": format!("msg_{consumed}"), "type": "message", "role": "assistant", "model": "fixture", "content": [block],
+                "stop_reason": null, "stop_sequence": null, "usage": SMALL_USAGE.clone()},
+            "user_message_uuid": input, "user_message_uuids": taken}));
+    }
+
+    /// The turn that took `taken` ends as failed with `subtype`, and every input it took completes.
+    fn failed(&self, host: &Host, state: &mut HostState, input: &str, taken: &[String], subtype: &str, error: &str) {
+        let result = self.uuid();
+        let turns = u8::from(subtype != "error_during_execution");
+        self.emit(host, state, "result", json!({"type": "result", "subtype": subtype, "is_error": true, "session_id": host.session.to_lowercase(), "uuid": result,
+            "duration_ms": 0, "duration_api_ms": 0, "num_turns": turns, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
+            "user_message_uuid": input, "errors": [error]}));
+        for input in taken {
+            self.lifecycle(host, state, input, "completed");
+        }
+    }
+
+    /// The usage limit ends the turn, and then the turn Claude opens by itself when its subagent
+    /// hands its report back.
+    fn limited_twice(&self, host: &Host, state: &mut HostState, taken: Vec<String>) {
+        state.turn = Some(taken);
+        self.finish_turn(host, state, Some(scripted_refusal(429)));
+        let session = host.session.to_lowercase();
+        let (init, answer, result) = (self.uuid(), self.uuid(), self.uuid());
+        self.emit(host, state, "initialized", self.init(host, &init, "default"));
+        self.emit(host, state, "message", json!({"type": "assistant", "session_id": session, "uuid": answer, "parent_tool_use_id": null, "error": "rate_limit",
+            "message": {"id": format!("msg_{answer}"), "type": "message", "role": "assistant", "model": "fixture", "content": [{"type": "text", "text": LIMIT_TEXT}],
+                "stop_reason": null, "stop_sequence": null, "usage": SMALL_USAGE.clone()}}));
+        self.emit(host, state, "result", json!({"type": "result", "subtype": "success", "is_error": true, "api_error_status": 429, "session_id": session, "uuid": result,
+            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
+            "result": LIMIT_TEXT, "terminal_reason": "api_error", "stop_reason": null, "origin": {"kind": "task-notification", "producer": "session-task"}}));
+    }
+
+    /// Claude opens a turn of its own on the hosts whose last turn was scripted with
+    /// `own-turn-later`, as when a subagent hands its report back while the task rests.
+    pub fn own_turn(&self) {
+        let hosts = lock(&self.0.hosts).clone();
+        for host in hosts {
+            let mut state = lock(&host.state);
+            if state.own_turn != OwnTurn::Later {
+                continue;
+            }
+            state.own_turn = OwnTurn::None;
+            let (init, answer) = (self.uuid(), self.uuid());
+            self.emit(&host, &mut state, "initialized", self.init(&host, &init, "default"));
+            self.emit(&host, &mut state, "message", json!({"type": "assistant", "session_id": host.session.to_lowercase(), "uuid": answer, "parent_tool_use_id": null,
+                "message": {"id": format!("msg_{answer}"), "type": "message", "role": "assistant", "model": "fixture", "content": [{"type": "text", "text": "The report is in"}],
+                    "stop_reason": null, "stop_sequence": null, "usage": SMALL_USAGE.clone()}}));
+        }
+    }
+
+    /// Claude's own turn starts as `taken` arrives, which waits queued behind it, and asks to leave
+    /// plan mode with a long plan.
+    fn own_turn_started(&self, host: &Host, state: &mut HostState, taken: Vec<String>) {
+        let input = taken.last().cloned().unwrap_or_default();
+        self.lifecycle(host, state, &input, "queued");
+        let init = self.uuid();
+        self.emit(host, state, "initialized", self.init(host, &init, "plan"));
+        state.own_turn = OwnTurn::Running(taken);
+        self.own_plan(host, state, long_plan());
+    }
+
+    fn own_plan(&self, host: &Host, state: &mut HostState, plan: String) {
+        state.decisions += 1;
+        let (request_id, tool_use_id) = (format!("decision-{}", state.decisions), format!("toolu_fixture_{}", state.decisions));
+        let file = format!("{}.plan.md", self.capture().display());
+        if let Err(error) = std::fs::write(&file, &plan) {
+            self.troubled(format!("the plan of {}: {error}", host.task));
+        }
+        let answer = self.uuid();
+        self.emit(host, state, "message", json!({"type": "assistant", "session_id": host.session.to_lowercase(), "uuid": answer, "parent_tool_use_id": null,
+            "message": {"id": format!("msg_{answer}"), "type": "message", "role": "assistant", "model": "fixture",
+                "content": [{"type": "tool_use", "id": tool_use_id, "name": "ExitPlanMode", "input": {}}], "stop_reason": null, "stop_sequence": null, "usage": SMALL_USAGE.clone()}}));
+        let cwd = std::fs::canonicalize(&host.bootstrap.native.cwd).unwrap_or_else(|_| host.bootstrap.native.cwd.clone()).display().to_string();
+        let payload = json!({"tool": "ExitPlanMode", "input": {"plan": plan, "planFilePath": file}, "request": {"toolUseID": tool_use_id, "requestId": request_id}, "cwd": cwd});
+        self.event(host, state, json!({"type": "decision_requested", "request_id": request_id, "kind": DecisionKind::Plan, "payload": payload, "tool_use_id": tool_use_id}));
+        let Value::Object(payload) = payload else { return };
+        let asked = Asked { kind: DecisionKind::Plan, tool: Some("ExitPlanMode".into()), tool_use_id: Some(tool_use_id), payload, epoch: state.cursor, taken: Vec::new(), then: Then::OwnPlan(plan) };
+        state.asked.insert(request_id, asked);
+    }
+
+    /// Claude's own turn ends, and Claude takes the inputs that waited behind it in a turn that
+    /// ends at once.
+    fn own_turn_ended(&self, host: &Host, state: &mut HostState) {
+        let OwnTurn::Running(taken) = std::mem::take(&mut state.own_turn) else { return };
+        let (result, unnamed) = (self.uuid(), self.uuid());
+        self.emit(host, state, "result", json!({"type": "result", "subtype": "success", "is_error": false, "session_id": host.session.to_lowercase(), "uuid": result,
+            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
+            "result": "Fixture own turn", "terminal_reason": "completed", "user_message_uuid": unnamed}));
+        let input = taken.last().cloned().unwrap_or_default();
+        self.lifecycle(host, state, &input, "started");
+        self.consume(host, state, &input, &taken, json!({"type": "text", "text": "Fixture consumed input"}));
         self.conclude(host, state, &input, &taken);
     }
 
     /// The turn that took `taken` ends with a result for `input`, and every input it took completes.
     fn conclude(&self, host: &Host, state: &mut HostState, input: &str, taken: &[String]) {
+        self.conclude_with(host, state, input, taken, json!({}));
+    }
+
+    /// The turn ends as `conclude` ends it, its result saying what each model used.
+    fn conclude_with(&self, host: &Host, state: &mut HostState, input: &str, taken: &[String], model_usage: Value) {
         let session = host.session.to_lowercase();
         let result = self.uuid();
         self.emit(host, state, "result", json!({"type": "result", "subtype": "success", "is_error": false, "session_id": session, "uuid": result,
-            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
+            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": model_usage, "permission_denials": [],
             "user_message_uuid": input, "result": "Fixture result", "terminal_reason": "completed", "user_message_uuids": taken}));
         for input in taken {
             let completed = self.uuid();
@@ -916,7 +1185,7 @@ impl ClaudeModel {
         }
         self.event(host, state, observation);
         let Value::Object(payload) = payload else { return };
-        let asked = Asked { kind, tool, tool_use_id, payload, epoch: state.cursor, taken: taken.clone(), concludes: true };
+        let asked = Asked { kind, tool, tool_use_id, payload, epoch: state.cursor, taken: taken.clone(), then: Then::Conclude };
         state.asked.insert(request_id, asked);
         state.turn = Some(taken);
     }
@@ -940,7 +1209,7 @@ impl ClaudeModel {
         let response = sdk_response(&waiting, Some(decision));
         self.decided(&waiting, &request_id, false, response.clone());
         self.event(host, state, json!({"type": "decision_settled", "request_id": request_id, "epoch": epoch, "outcome": "answered"}));
-        if !waiting.concludes {
+        if waiting.then == Then::GoOn {
             return Ok(());
         }
         if let Some(tool_use_id) = &waiting.tool_use_id {
@@ -949,6 +1218,14 @@ impl ClaudeModel {
             let uuid = self.uuid();
             self.emit(host, state, "message", json!({"type": "user", "session_id": host.session.to_lowercase(), "uuid": uuid, "parent_tool_use_id": null,
                 "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "is_error": !allowed, "content": content}]}}));
+        }
+        if let Then::OwnPlan(plan) = &waiting.then {
+            if response["behavior"] != "allow" && plan == &long_plan() {
+                self.own_plan(host, state, FIXTURE_PLAN.to_owned());
+            } else {
+                self.own_turn_ended(host, state);
+            }
+            return Ok(());
         }
         if state.turn.as_ref() == Some(&waiting.taken) && state.asked.is_empty() {
             state.turn = None;
@@ -1087,7 +1364,8 @@ impl ClaudeModel {
 
     /// Journals an SDK observation as the host frames it and sends it on the lane, if one is open.
     fn emit(&self, host: &Host, state: &mut HostState, kind: &str, payload: Value) {
-        let observation = json!({"type": "sdk", "kind": kind, "native": {}, "payload": payload, "failures": []});
+        let (failures, native) = (failures(&payload), native_ids(&payload));
+        let observation = json!({"type": "sdk", "kind": kind, "native": native, "payload": payload, "failures": failures});
         self.event(host, state, observation);
     }
 
@@ -1161,8 +1439,16 @@ impl ClaudeModel {
             }
             _ => answered(state, Ok(())),
         }
+        let starts = matches!(command.action, Action::Start { .. });
         match command.action {
-            Action::Start { input_id, prompt, .. } | Action::Offer { input_id, prompt } => self.offered(host, state, input_id.to_string(), prompt),
+            Action::Start { input_id, prompt, .. } | Action::Offer { input_id, prompt } => {
+                if !state.native && (starts || host.bootstrap.journal_base.is_some()) {
+                    self.open_native(host, state);
+                }
+                if !state.native_ended {
+                    self.offered(host, state, input_id.to_string(), prompt);
+                }
+            }
             Action::Interrupt | Action::ForceStop | Action::Close => {
                 if matches!(command.action, Action::Interrupt) {
                     lock(&self.0.controls).push(json!({"subtype": "interrupt"}));
@@ -1241,6 +1527,63 @@ struct Responded {
 fn decision_scenario(prompt: &str) -> Option<&str> {
     let said = if prompt.starts_with("[From ") { prompt.split_once("] ")?.1 } else { prompt };
     said.strip_prefix("decide:")
+}
+
+/// What the host reports as failed in an SDK message, as its classifier does.
+fn failures(payload: &Value) -> Vec<Value> {
+    let mut failures = Vec::new();
+    let mut failure = |surface: &str, code: &Value| {
+        let code = code.as_str().map_or_else(|| code.to_string(), str::to_owned);
+        failures.push(json!({"surface": surface, "code": code, "details": payload}));
+    };
+    let is_error = &payload["is_error"];
+    match payload["type"].as_str() {
+        Some("result") => {
+            if !payload["startup_failure_reason"].is_null() {
+                failure("startup", &payload["startup_failure_reason"]);
+            }
+            if payload["subtype"] != "success" || *is_error != Value::Bool(false) {
+                let code = if payload["subtype"] == "success" { json!("success_is_error") } else { payload["subtype"].clone() };
+                failure("result", &code);
+            }
+            let terminal = &payload["terminal_reason"];
+            let settled = ["completed", "background_requested", "tool_deferred"].iter().any(|reason| terminal == reason);
+            if !terminal.is_null() && (*is_error != Value::Bool(false) || !settled) {
+                failure("terminal", terminal);
+            }
+        }
+        Some("assistant") if !payload["error"].is_null() => failure("assistant", &payload["error"]),
+        Some("rate_limit_event") if payload["rate_limit_info"]["status"] == "rejected" => failure("rate_limit", &json!("rejected")),
+        _ => {}
+    }
+    failures
+}
+
+/// The native ids the host lifts out of an SDK message.
+fn native_ids(payload: &Value) -> Value {
+    let pairs = [("message_id", "uuid"), ("turn_id", "turn_id"), ("tool_use_id", "tool_use_id"), ("parent_tool_use_id", "parent_tool_use_id"), ("task_id", "task_id"), ("run_id", "run_id")];
+    Value::Object(pairs.iter().filter_map(|(field, source)| payload[*source].as_str().map(|id| ((*field).to_owned(), json!(id)))).collect())
+}
+
+/// What the API answers a turn the fake native Claude refuses, `signed-out`, `overloaded` or
+/// `rate-limited`.
+fn refusal(prompt: &str) -> Option<ApiError> {
+    [("signed-out", 401), ("overloaded", 529), ("rate-limited", 429)].into_iter()
+        .find(|(script, _)| prompt.ends_with(script)).map(|(_, status)| scripted_refusal(status))
+}
+
+fn scripted_refusal(status: u16) -> ApiError {
+    let (error, said) = match status {
+        401 => ("authentication_failed", "Failed to authenticate. API Error: 401 OAuth token has expired"),
+        429 => ("rate_limit", LIMIT_TEXT),
+        _ => ("server_error", "API Error: 529 Overloaded"),
+    };
+    ApiError { error: error.into(), status: Some(status), detail: None, said: Some(said.into()) }
+}
+
+/// The plan Claude's own turn first asks to leave plan mode with: longer than Alondra takes.
+fn long_plan() -> String {
+    format!("# Own plan\n\n{}", (1..42).map(|point| format!("- [ ] Point {point}")).collect::<Vec<_>>().join("\n"))
 }
 
 /// The response the SDK hands Claude for `asked`: the decision as the host turns it into the SDK's
