@@ -852,7 +852,8 @@ impl Executor {
     }
 
     /// Whether the provider no longer keeps `conversation`, so no batch can resume it: Claude
-    /// Code holds no transcript of it, or the Codex host no record of its thread.
+    /// Code holds no transcript of it, or the Codex host no record of its thread. The orchestrator
+    /// never runs on Antigravity, so a conversation there has nothing to resume.
     fn conversation_gone(&self, conversation: &crate::orchestrator_conversation::Conversation, directory: &Path) -> bool {
         let Some((backend, _)) = self.domain.sdk() else { return false };
         match conversation.provider {
@@ -861,6 +862,7 @@ impl Executor {
                 .is_some_and(|kept| !kept),
             alondra_core::accounts::Provider::Codex => backend.for_provider(alondra_core::accounts::Provider::Codex, &self.home)
                 .is_ok_and(|backend| !backend.state_root.join("native-threads").join(&conversation.id).exists()),
+            alondra_core::accounts::Provider::Antigravity => true,
         }
     }
 
