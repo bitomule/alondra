@@ -4137,6 +4137,11 @@ writer = "crates/cli/src/service_setup/recovery.rs"
 readers = ["crates/core/src/home_lock.rs"]
 machine = "M-SERVER-D1"
 [[file]]
+name = "sending.json"
+writer = "crates/cli-report/src/report/send.rs"
+readers = ["crates/cli-report/src/report/bundle.rs", "crates/daemon-support/src/reports.rs"]
+machine = "M-CLIENTS-R14"
+[[file]]
 name = "service.toml"
 writer = "crates/cli/src/service_setup.rs"
 readers = ["crates/cli-report/src/report/mod.rs", "crates/cli/src/commands.rs", "crates/cli/src/doctor/system.rs", "crates/cli/src/service_pair.rs", "crates/core/src/home_lock.rs", "crates/core/src/service_config.rs", "crates/daemon-server/src/domain_delivery.rs", "crates/daemon-server/src/service.rs"]
@@ -6925,6 +6930,24 @@ variants = ["Unsent", "Unanswered", "Running", "Unknown", "Answered"]
 ```
 
 - `Delivery{Unsent, Unanswered, Running, Unknown, Answered}` and `CommandFailure{Rejected, Uncertain}` (`crates/client-port/src/client.rs:698-766`), plus `transport.delivery` (`client-transport/src/lib.rs:98-101`, `local.rs:316-328`). The TUI, the CLI and the MCP use it to decide whether to retry.
+
+### M-CLIENTS-R14 · Sending a crash report (`sending.json`)
+
+```toml state-machine
+id = "M-CLIENTS-R14"
+code = ["crates/cli-report/src/report/send.rs::Sending", "crates/cli-report/src/report/send.rs::send_to", "crates/cli-report/src/report/send.rs::keep", "crates/cli-report/src/report/send.rs::postpone", "crates/daemon-support/src/reports.rs::retry_pending", "crates/daemon-engine/src/report_held_card.rs::check"]
+truth = ["file:sending.json"]
+states = "crates/cli-report/src/report/send.rs::State"
+variants = ["Pending", "Sent", "Kept"]
+terminals = ["Sent", "Kept"]
+```
+
+- **Kind**: explicit (enum `State {Pending, Sent, Kept}`) plus `held: Option<Held>` (`Held::RepoChanged {current, refused}`), `attempts`, `next_at` and the gist and issue it made. Added after the audit, when the state inventory test found the file with no machine.
+- **Source of truth**: `reports/<id>/sending.json`, one per report, written only by the CLI (`send.rs`, `write_sending`: temporary file and rename) under the report's `flock` (`.sending.lock`). The daemon reads it and never writes it: it runs the CLI.
+- **Transitions**: none → `Pending` or `Sent` at the first `alondra report send` (`send_to`); `Pending` → `Sent` when GitHub takes it; `Pending` → `Pending` with `next_at = now + backoff_ms(attempts)` (one minute, doubling up to 30 min) when GitHub answers "later"; `Pending` → `Pending` held (`RepoChanged`, longest backoff) when a daemon retry finds another report repository; `Pending` → `Kept` with `alondra report keep`; a refusal (`Blocked`) leaves it `Pending` with `next_at = i64::MAX`. `Sent` and `Kept` are terminal; sending again a `Sent` report with the same package returns the same issue.
+- **Who moves it**: the daemon's `retry_pending` loop (every `EVERY`) runs `alondra report send <id> --retry` for each `Pending` report whose `next_at` passed; a held report has a card (`report_held_card.rs`) whose "Send it" or "Keep it" runs the CLI, and a repository change in the settings retries it once (`nudged`).
+- **Restart**: the file is the whole state; a daemon restart reads it again. A crash between GitHub's answer and the rename leaves the previous state, and the next try finds the gist and issue the earlier try left (`deliver` looks first), so no second issue is made.
+- **Concurrency**: the CLI's `flock` serializes the user's send and the daemon's retry of one report.
 
 ### Findings (Rust part)
 
