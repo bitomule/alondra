@@ -33,7 +33,7 @@ impl ReceiptWait {
             Self::Within(deadline) => Ok(*deadline),
             Self::WhileTheHostLives(io) => {
                 while !alondra_foundation::readable(probe, *io).map_err(disconnected)? {}
-                Instant::now().checked_add(*io).ok_or(AdapterError::Disconnected)
+                alondra_foundation::clock::instant().into_std().checked_add(*io).ok_or(AdapterError::Disconnected)
             }
         }
     }
@@ -247,7 +247,7 @@ impl Connection {
         }
         let written = match wait {
             ReceiptWait::Within(deadline) => deadline,
-            ReceiptWait::WhileTheHostLives(io) => Instant::now().checked_add(io).ok_or(AdapterError::Disconnected)?,
+            ReceiptWait::WhileTheHostLives(io) => alondra_foundation::clock::instant().into_std().checked_add(io).ok_or(AdapterError::Disconnected)?,
         };
         write(&mut self.writer, prepared.bytes(), written)?;
         let expected_command = command.command_id.clone();
@@ -504,7 +504,7 @@ impl Read for DeadlineReader {
             .deadline
             .lock()
             .map_err(|_| std::io::Error::other("deadline lock"))?;
-        read_bounded(&mut self.stream, bytes, deadline, Instant::now())
+        read_bounded(&mut self.stream, bytes, deadline, || alondra_foundation::clock::instant().into_std())
     }
 }
 fn receive(
@@ -521,7 +521,7 @@ fn receive(
         .ok_or(AdapterError::Disconnected)
 }
 fn write(writer: &mut UnixStream, bytes: &[u8], deadline: Instant) -> Result<(), AdapterError> {
-    write_bounded(writer, bytes, deadline, Instant::now).map_err(disconnected)
+    write_bounded(writer, bytes, deadline, || alondra_foundation::clock::instant().into_std()).map_err(disconnected)
 }
 fn write_bounded<W: Write + TimeoutWriter>(
     writer: &mut W,
@@ -534,7 +534,7 @@ fn write_bounded<W: Write + TimeoutWriter>(
         match writer.write(bytes) {
             Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero)),
             Ok(count) => bytes = &bytes[count..],
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted || timed_out(&error) => continue,
             Err(error) => return Err(error),
         }
     }
@@ -555,8 +555,8 @@ fn budget(deadline: Instant, now: Instant) -> std::io::Result<std::time::Duratio
         .filter(|duration| !duration.is_zero())
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::TimedOut))
 }
-fn disconnected(_: std::io::Error) -> AdapterError {
-    AdapterError::Disconnected
+fn disconnected(error: std::io::Error) -> AdapterError {
+    AdapterError::Unreachable(error.to_string())
 }
 fn invalid(message: &str) -> AdapterError {
     AdapterError::Protocol(message.into())
@@ -588,10 +588,20 @@ fn read_bounded<R: Read + TimeoutReader>(
     reader: &mut R,
     bytes: &mut [u8],
     deadline: Instant,
-    now: Instant,
+    mut now: impl FnMut() -> Instant,
 ) -> std::io::Result<usize> {
-    reader.timeout(budget(deadline, now)?)?;
-    reader.read(bytes)
+    loop {
+        reader.timeout(budget(deadline, now())?)?;
+        match reader.read(bytes) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted || timed_out(&error) => continue,
+            read => return read,
+        }
+    }
+}
+/// A socket timeout ran out in real time. The deadline is on the daemon's clock, which a virtual
+/// clock holds while the daemon works: the caller reads the clock again before it gives up.
+fn timed_out(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
 }
 #[cfg(test)]
 mod tests {
@@ -642,12 +652,8 @@ mod tests {
     impl Read for Fragmented {
         fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
             let count = bytes.len().min(1);
-            read_bounded(
-                &mut self.bytes,
-                &mut bytes[..count],
-                self.deadline,
-                self.clock.next().unwrap_or(self.deadline),
-            )
+            let (clock, deadline) = (&mut self.clock, self.deadline);
+            read_bounded(&mut self.bytes, &mut bytes[..count], deadline, || clock.next().unwrap_or(deadline))
         }
     }
     struct FixtureOwner(DataEpoch);
@@ -812,6 +818,67 @@ mod tests {
             reader.read_received(),
             Err(alondra_antigravity_protocol::Error::Poisoned)
         ));
+    }
+    struct LateSocket {
+        timeouts_left: usize,
+        bytes: Cursor<Vec<u8>>,
+    }
+    impl TimeoutReader for LateSocket {
+        fn timeout(&self, _: Duration) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Read for LateSocket {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            if self.timeouts_left > 0 {
+                self.timeouts_left -= 1;
+                return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+            }
+            self.bytes.read(bytes)
+        }
+    }
+    #[test]
+    fn a_socket_timeout_in_real_time_waits_while_the_daemon_clock_allows() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(1);
+        let mut socket = LateSocket { timeouts_left: 2, bytes: Cursor::new(b"frame".to_vec()) };
+        let mut bytes = [0; 5];
+        assert_eq!(read_bounded(&mut socket, &mut bytes, deadline, || now).unwrap(), 5);
+        assert_eq!(&bytes, b"frame");
+        let mut clock = vec![now, deadline].into_iter();
+        let mut socket = LateSocket { timeouts_left: 1, bytes: Cursor::new(b"frame".to_vec()) };
+        let error = read_bounded(&mut socket, &mut bytes, deadline, || clock.next().unwrap_or(deadline)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    }
+    struct TimedOutWriter {
+        timeouts_left: usize,
+        written: Vec<u8>,
+    }
+    impl TimeoutWriter for TimedOutWriter {
+        fn timeout(&self, _: Duration) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Write for TimedOutWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.timeouts_left > 0 {
+                self.timeouts_left -= 1;
+                return Err(std::io::Error::from(std::io::ErrorKind::TimedOut));
+            }
+            self.written.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn a_write_timeout_in_real_time_waits_while_the_daemon_clock_allows() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(1);
+        let mut writer = TimedOutWriter { timeouts_left: 2, written: Vec::new() };
+        write_bounded(&mut writer, b"command", deadline, || now).unwrap();
+        assert_eq!(writer.written, b"command");
     }
     struct PartialWriter(Vec<u8>);
     impl TimeoutWriter for PartialWriter {
