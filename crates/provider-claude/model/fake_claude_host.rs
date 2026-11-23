@@ -555,11 +555,21 @@ impl ClaudeModel {
         })
     }
 
+    /// Claude loses what it kept of `session`: a host that resumes it starts with no history.
+    pub fn forget(&self, session: &str) {
+        lock(&self.0.sessions).remove(&session.to_lowercase());
+    }
+
     /// The process of `task`'s host dies, with whatever it started.
     pub fn kill(&self, task: &str) {
         if let Some(host) = self.running(task) {
             host.end(false);
         }
+    }
+
+    /// Whether the host whose process goes by `process_id` still runs.
+    pub fn runs(&self, process_id: u32) -> bool {
+        self.host(process_id).is_some_and(|host| host.alive())
     }
 
     /// The host whose process goes by `process_id` dies, with whatever it started.

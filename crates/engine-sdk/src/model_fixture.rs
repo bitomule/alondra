@@ -87,12 +87,7 @@ impl SdkLaunches {
     /// The environment the last native Claude got, as the fake one records it: the names, and the
     /// digest of each value.
     pub fn capture(&self) -> Value {
-        use sha2::Digest as _;
-        let environment = self.last().environment;
-        let digests: serde_json::Map<String, Value> = environment.iter()
-            .map(|(key, value)| (key.clone(), Value::from(sha2::Sha256::digest(value.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect::<String>())))
-            .collect();
-        serde_json::json!({"args": self.args(), "env_keys": environment.keys().collect::<Vec<_>>(), "env_value_sha256": digests})
+        capture_of(&self.last())
     }
 
     /// Every prompt the native Claudes took, in order, besides the wake Alondra sends after a turn
@@ -202,9 +197,21 @@ impl crate::engine_fixtures::owner::Hosts for ModelHosts {
         self.model().decisions()
     }
 
-    fn kill(&self, driver: &crate::sdk_owner::Driver) {
-        let group = driver.worker.host_group().expect("the driver has a host");
+    fn native_capture(&self) -> Value {
+        capture_of(&self.model().starts().pop().expect("a native Claude started"))
+    }
+
+    fn kill(&self, group: i32) {
         self.model().kill_process(u32::try_from(group).expect("a host's number is positive"));
+    }
+
+    fn watch(&self, group: i32) -> crate::engine_fixtures::owner::HostWatch {
+        let (model, host) = (self.model().clone(), u32::try_from(group).expect("a host's number is positive"));
+        crate::engine_fixtures::owner::HostWatch::new(move || model.runs(host))
+    }
+
+    fn forget(&self, session: &str) {
+        self.model().forget(session);
     }
 }
 
@@ -215,6 +222,16 @@ impl Drop for ModelHosts {
             model.close();
         }
     }
+}
+
+/// The command line and environment `start` got, as the fake native Claude records them: the
+/// arguments, the names, and the digest of each value.
+fn capture_of(start: &NativeStart) -> Value {
+    use sha2::Digest as _;
+    let digests: serde_json::Map<String, Value> = start.environment.iter()
+        .map(|(key, value)| (key.clone(), Value::from(sha2::Sha256::digest(value.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect::<String>())))
+        .collect();
+    serde_json::json!({"args": start.arguments, "env_keys": start.environment.keys().collect::<Vec<_>>(), "env_value_sha256": digests})
 }
 
 /// Whether `card` is one an ended turn of `task` rests on: the case the orchestrator settles when
