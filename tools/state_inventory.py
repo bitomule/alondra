@@ -13,7 +13,10 @@ production code of the crates (comments, literals' text and `#[cfg(test)]` items
     and is only named by the modules its declaration lists; every table a store creates is the truth of some machine;
     no crate writes with SQL to a table another crate's store creates;
 (e) every time constant is in the timers block, saying whether it decides state or only paces;
-(f) every enum named `*State`, `*Phase` or `*Status` is part of a machine.
+(f) every enum named `*State`, `*Phase` or `*Status` is part of a machine;
+(g) a block that declares `initial` and `transitions` (`"From -> To"`) joins only its variants,
+    leaves no state that is not terminal without a way out, and reaches every state from `initial`.
+    The machine model checks that the domain makes no move its block does not declare.
 
 Rules (e) and (f) read the domain and engine crates (`ENGINE`); the others read every scanned crate.
 
@@ -231,6 +234,36 @@ def enum_variants(root, reference):
     return variants
 
 
+def check_graph(identifier, data, at, fail):
+    """(g): a block's `transitions` join its variants, every state that is not terminal has a way
+    out, and every state is reached from its `initial` one."""
+    names = set(data.get("variants", []))
+    initial = data.get("initial", [])
+    initial = [initial] if isinstance(initial, str) else initial
+    if not initial or any(state not in names for state in initial):
+        fail("transitions", identifier, f"{INVENTORY}:{at}: {identifier}: initial {initial!r} names no declared variant")
+        return
+    edges = []
+    for transition in data.get("transitions", []):
+        source, arrow, target = transition.partition(" -> ")
+        if not arrow or source not in names or target not in names:
+            fail("transitions", identifier, f"{INVENTORY}:{at}: {identifier}: {transition!r} is not `From -> To` between declared variants")
+        else:
+            edges.append((source, target))
+    exits = {source for source, _ in edges}
+    for name in sorted(names - set(data.get("terminals", [])) - exits):
+        fail("transitions", f"{identifier} {name}", f"{INVENTORY}:{at}: {identifier}: {name} is not terminal and nothing moves it on")
+    reached, frontier = set(initial), list(initial)
+    while frontier:
+        current = frontier.pop()
+        for source, target in edges:
+            if source == current and target not in reached:
+                reached.add(target)
+                frontier.append(target)
+    for name in sorted(names - reached):
+        fail("transitions", f"{identifier} {name}", f"{INVENTORY}:{at}: {identifier}: {name} cannot be reached from {', '.join(initial)}")
+
+
 def check(root, inventory=INVENTORY, exempt=EXEMPT, known=KNOWN):
     root = guard.absolute(root)
     inventory = Inventory((root / inventory).read_text())
@@ -271,6 +304,8 @@ def check(root, inventory=INVENTORY, exempt=EXEMPT, known=KNOWN):
             for terminal in data.get("terminals", []):
                 if terminal not in declared:
                     fail("states", states, f"{INVENTORY}:{at}: {identifier}: terminal {terminal} is not a declared variant")
+        if "transitions" in data or "initial" in data:
+            check_graph(identifier, data, at, fail)
 
     sources = [Source(root, path) for path in production_files(root)]
     named = {}

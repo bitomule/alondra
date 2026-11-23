@@ -139,6 +139,7 @@ struct Verdicts {
     unhanded: Option<String>,
     invariants: Option<String>,
     stale_answers: Option<String>,
+    transitions: BTreeSet<(String, String, String)>,
 }
 
 fn with_trace(machine: &Machine, why: String) -> String {
@@ -226,6 +227,7 @@ fn judge(history: &History) -> Verdicts {
         verdicts.unhanded = failed(format!("{unhanded:?} wait for the orchestrator to re-plan them and it was never handed them"));
     }
     let seen = &machine.seen;
+    verdicts.transitions = seen.moves.clone();
     if !seen.unchanged.is_empty() {
         verdicts.unchanged = failed(format!("acknowledged with nothing changed: {:?}", seen.unchanged));
     }
@@ -385,6 +387,22 @@ fn a_node_sent_back_that_opens_a_pull_request_without_delivering_never_ends_owed
     if let Err(failure) = holds(&history, |verdicts| &verdicts.ends) {
         panic!("{failure}");
     }
+}
+
+/// Every move the real domain made in every generated history is one the inventory declares for its
+/// machine: a new transition, or a new way to start, fails until its block names it.
+#[test]
+fn the_states_move_only_as_the_inventory_declares() {
+    for histories in [Histories::Plain, Histories::WithCleanups, Histories::WithADependency] {
+        histories.judged_beforehand();
+    }
+    let declared = alondra_domain_rules::transition_table::declared(include_str!("../../../docs/architecture/state-machines.md"));
+    let runs: Vec<Run> = RUNS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().cloned().collect();
+    let made: BTreeSet<(String, String, String)> = runs.iter().filter_map(|run| run.get())
+        .flat_map(|verdicts| verdicts.transitions.iter().cloned())
+        .collect();
+    let undeclared: Vec<String> = made.difference(&declared).map(|(machine, from, to)| format!("{machine}: {from} -> {to}")).collect();
+    assert!(undeclared.is_empty(), "the domain made moves docs/architecture/state-machines.md does not declare:\n{}", undeclared.join("\n"));
 }
 
 proptest! {

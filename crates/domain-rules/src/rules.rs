@@ -3089,6 +3089,8 @@ impl DomainState {
         #[cfg(test)]
         super::read_index::assert_index_matches(&next);
         super::invariants::assert_hold(self, actor, envelope, &next);
+        #[cfg(test)]
+        super::transition_table::assert_declared(self, &next, &envelope.command);
         Ok((next, outcome))
     }
 

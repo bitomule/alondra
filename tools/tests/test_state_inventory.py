@@ -35,6 +35,8 @@ truth = ["sqlite:lives"]
 states = "crates/domain/src/life.rs::LifeState"
 variants = ["Open", "Closed"]
 terminals = ["Closed"]
+initial = "Open"
+transitions = ["Open -> Closed"]
 ```
 
 ### M-STORE-12 · Files
@@ -156,6 +158,22 @@ class GuardTest(unittest.TestCase):
         self.write("crates/engine-sdk/src/hold.rs", '// see "hold.json"\nfn f() {}\n#[cfg(test)]\nmod tests { const F: &str = "hold.json"; }\n')
         self.write("crates/engine-sdk/src/hold_tests.rs", 'const F: &str = "hold.json";\n')
         self.assertEqual(self.problems(), [])
+
+    def test_a_state_with_no_way_out_is_named(self):
+        self.edit("crates/domain/src/life.rs", "    Open,", "    Open,\n    Parked,")
+        self.edit("docs/architecture/state-machines.md", 'variants = ["Open", "Closed"]', 'variants = ["Open", "Parked", "Closed"]')
+        self.edit("docs/architecture/state-machines.md", 'transitions = ["Open -> Closed"]', 'transitions = ["Open -> Closed", "Open -> Parked"]')
+        self.assertOne("M-LIFE-1: Parked is not terminal and nothing moves it on")
+
+    def test_a_state_nothing_reaches_is_named(self):
+        self.edit("crates/domain/src/life.rs", "    Open,", "    Open,\n    Parked,")
+        self.edit("docs/architecture/state-machines.md", 'variants = ["Open", "Closed"]', 'variants = ["Open", "Parked", "Closed"]')
+        self.edit("docs/architecture/state-machines.md", 'transitions = ["Open -> Closed"]', 'transitions = ["Open -> Closed", "Parked -> Closed"]')
+        self.assertOne("M-LIFE-1: Parked cannot be reached from Open")
+
+    def test_a_transition_between_undeclared_states_is_named(self):
+        self.edit("docs/architecture/state-machines.md", 'transitions = ["Open -> Closed"]', 'transitions = ["Open -> Closed", "Open -> Gone"]')
+        self.assertOne("'Open -> Gone' is not `From -> To` between declared variants")
 
     def test_code_outside_src_is_not_production(self):
         self.write("crates/engine-sdk/model/fake.rs", 'enum HostPhase { A }\nconst F: &str = "gate.json";\n')

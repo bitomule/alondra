@@ -479,6 +479,7 @@ checks:
   crate-domain-rules:
     uses: bazel/test
     paths:
+      - "docs/architecture/state-machines.md"
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
@@ -618,6 +619,7 @@ checks:
   crate-machine-model:
     uses: bazel/test
     paths:
+      - "docs/architecture/state-machines.md"
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"

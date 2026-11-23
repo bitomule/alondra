@@ -10,6 +10,7 @@ low_opt_rust_test(
     name = "machine_model_test",
     size = "medium",
     srcs = glob(["src/**/*.rs"]),
+    compile_data = ["//:docs/architecture/state-machines.md"],
     crate_name = "alondra_machine_model",
     crate_root = "src/lib.rs",
     edition = "2024",
