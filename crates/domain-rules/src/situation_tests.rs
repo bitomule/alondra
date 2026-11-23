@@ -385,3 +385,23 @@ fn an_unstarted_task_that_waits_for_another_waits_for_tasks_not_for_a_slot() {
     let owed = s.obligation_of(&second).expect("a live task owes something");
     assert_eq!((owed.party, owed.owed), (Party::Tasks, alondra_domain::Owed::Tasks));
 }
+
+#[test]
+fn a_task_named_by_several_wait_lists_is_one_open_dependency() {
+    let mut s = DomainState::new("epoch");
+    super::lifecycle_tests::must(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
+    super::lifecycle_tests::must(&mut s, user(), Command::TitleRequest { request_id: "r".into(), title: "Build it".into() });
+    for (id, after) in [("first", vec![]), ("other", vec![]), ("second", vec!["first"])] {
+        super::lifecycle_tests::must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+            task_id: id.into(), request_id: "r".into(), title: id.into(), agent_id: None, review_prs: false,
+            dependencies: after.into_iter().map(TaskId::from).collect(), stack: None, launch: Some(crate::LaunchPlan::new("node", "/tmp")),
+        });
+    }
+    let second = TaskId::from("second");
+    let task = s.tasks.get_mut(&second).unwrap();
+    task.waiting_for_tasks.extend(["first".into(), "other".into()]);
+    task.delivered_dependencies.insert("first".into());
+    let index = ReadIndex::build(&s);
+    let expected: Vec<TaskId> = vec!["first".into(), "other".into()];
+    assert_eq!(index.task(&second).unwrap().open_dependencies, expected);
+}
