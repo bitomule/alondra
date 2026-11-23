@@ -931,3 +931,76 @@ async fn decision_routes_cannot_settle_or_reoffer_a_live_provider() {
     assert!(load(&f.executor.home).unwrap().active_run.is_none());
     assert_eq!(f.starts().len(), 1);
 }
+
+/// A batch the model is working on when the daemon stops for an update: claimed with a selection,
+/// optionally with an operation whose result nobody recorded.
+fn batch_cut_while_working(f: &Fixture, unconfirmed: bool) -> Run {
+    f.tell("cut-request", "Answer while the daemon updates");
+    let epoch = f.domain().read().state().data_epoch.clone();
+    let ids: Vec<_> = f.executor.pending().unwrap().iter().map(|message| message.id).collect();
+    let selection = crate::orchestrator_provider::selection(f.domain(), &f.executor.home, now_millis()).unwrap();
+    let (claims, owner) = f.domain().store.lock().unwrap()
+        .claim_selected_orchestrator_batch(&ids, "cut", "cut-session", epoch, Some(&selection)).unwrap();
+    drop(owner);
+    if unconfirmed {
+        f.domain().store.lock().unwrap().begin_tool_operation("cut", "call", "launch", &serde_json::json!({"task":"unknown"})).unwrap();
+    }
+    let run = Run {
+        id: "cut".into(),
+        message_ids: claims.iter().map(|claim| claim.message.id).collect(),
+        attempts: claims.iter().map(|claim| (claim.attempt_id, claim.version)).collect(),
+        started_at: 1,
+        spawned: true,
+    };
+    save(&f.executor.home, &Runtime { active_run: Some(run.clone()), ..Default::default() }).unwrap();
+    run
+}
+
+fn restart(f: &Fixture) -> Executor {
+    Executor {
+        domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()),
+        home: f.executor.home.clone(),
+        claude_home: f.executor.claude_home.clone(),
+    }
+}
+
+fn batch_cards(executor: &Executor) -> Vec<String> {
+    executor.domain.read().state().interactions.keys().filter(|id| id.0.starts_with(PROBLEM_PREFIX)).map(|id| id.0.clone()).collect()
+}
+
+#[tokio::test]
+async fn a_batch_cut_by_the_daemons_stop_is_offered_again_on_the_next_start_without_a_card() {
+    let f = fixture();
+    let run = batch_cut_while_working(&f, false);
+    note_shutdown(f.domain(), &f.executor.home);
+    let restarted = restart(&f);
+    let runtime = restarted.startup_recovery().await.unwrap();
+    assert!(batch_cards(&restarted).is_empty(), "no card for Alondra's own restart");
+    assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && runtime.failure.is_none());
+    let pending: Vec<i64> = restarted.pending().unwrap().iter().map(|message| message.id).collect();
+    assert_eq!(pending, run.message_ids, "the batch with no effect goes to the next batch");
+}
+
+#[tokio::test]
+async fn a_batch_cut_by_the_daemons_stop_hands_its_unconfirmed_operation_to_the_next_batch_as_evidence() {
+    let f = fixture();
+    let run = batch_cut_while_working(&f, true);
+    note_shutdown(f.domain(), &f.executor.home);
+    let restarted = restart(&f);
+    let runtime = restarted.startup_recovery().await.unwrap();
+    assert!(batch_cards(&restarted).is_empty(), "no card for Alondra's own restart");
+    assert!(runtime.active_run.is_none() && runtime.last_error.is_none());
+    let handoff = runtime.batch_handoffs.iter().find(|handoff| handoff.run_id == run.id).expect("the next batch hears of it");
+    assert!(handoff.reason.contains("launch:started"), "{}", handoff.reason);
+    assert!(restarted.pending().unwrap().is_empty(), "the batch is not replayed");
+}
+
+#[tokio::test]
+async fn a_batch_cut_without_the_daemons_stop_still_asks_before_anything_runs_again() {
+    let f = fixture();
+    batch_cut_while_working(&f, false);
+    let restarted = restart(&f);
+    let runtime = restarted.startup_recovery().await.unwrap();
+    assert_eq!(runtime.failure, Some(Failure::Interrupted), "a crash may have lost a refusal");
+    assert_eq!(batch_cards(&restarted), ["problem-orchestrator-cut"]);
+}

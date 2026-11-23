@@ -240,6 +240,18 @@ fn ordinary_conflict(error: &StoreError) -> bool {
 
 pub use alondra_daemon_engine_model::options::options_at;
 
+/// Only the domain database failing stops the schedule worker, and the daemon with it: anything
+/// else one run hits is that run's, so it is logged and the other runs go on.
+fn survive(result: Result<()>, run: &ScheduleRunId) -> Result<()> {
+    let Err(error) = result else { return Ok(()) };
+    let storage = error.chain().any(|cause| matches!(cause.downcast_ref::<StoreError>(), Some(StoreError::Storage(_))) || cause.is::<rusqlite::Error>());
+    if storage {
+        return Err(error);
+    }
+    log!("scheduled run {run} hit a failure the next cycle retries: {error:#}");
+    Ok(())
+}
+
 fn scheduled_task_name(title: &str, at: i64) -> Result<String> {
     let seconds = at.div_euclid(1000) as libc::time_t;
     let mut date = unsafe { std::mem::zeroed::<libc::tm>() };
@@ -413,8 +425,15 @@ async fn dispatch_pending(
     if domain.gate().ask(waiting, now).is_err() {
         return Ok(());
     }
-    let root = options_at(home)?.worktrees_root;
     let task = run.task_id.clone().context("sent run has no Task")?;
+    let root = match options_at(home) {
+        Ok(options) => options.worktrees_root,
+        Err(why) => {
+            domain.gate().not_started(&key);
+            domain.store().lock_or_exit("the domain store").set_launch_refusal(&task, Some(("launch_failed", Some(&format!("Alondra's settings file can't be read: {why:#}")))), now)?;
+            return Ok(());
+        }
+    };
     let known = domain.task_worktree(&task)?;
     let retained = match &known {
         Some(path) => domain.store().lock_or_exit("the domain store").worktree_storage(path)?,
@@ -471,6 +490,7 @@ async fn dispatch_pending(
             return Err(error.into());
         }
     }
+    domain.store().lock_or_exit("the domain store").set_launch_refusal(&task, None, now)?;
     let agent = match launch_through_sdk(domain, &intent, &task, &policy, home, prepared).await {
         Ok(agent) => agent,
         Err(reason) => return fail_run(domain, run_id, reason),
@@ -489,8 +509,10 @@ async fn dispatch_pending(
 }
 
 /// A launch Alondra died in the middle of, by this daemon's SDK host or an earlier release's
-/// `claude --bg`: whether its node started is not known, so the run fails and says so, and its
-/// task waits for the user's answer like any other failed start.
+/// `claude --bg`. A task the domain already admitted a node for did start: its run is handed to
+/// that node, which the daemon adopts or relaunches like any admitted execution. Without a node
+/// whether it started is not known, so the run fails and says so, and its task waits for the
+/// user's answer like any other failed start.
 fn recover_uncertain(domain: &dyn Runtime, run_id: &ScheduleRunId) -> Result<()> {
     let state = domain.state();
     let Some((run, launch)) = state
@@ -503,6 +525,18 @@ fn recover_uncertain(domain: &dyn Runtime, run_id: &ScheduleRunId) -> Result<()>
     else {
         return Ok(());
     };
+    if let Some(agent) = run.task_id.as_ref().and_then(|task| started_node(&state, task)) {
+        return match execute_system(domain, Command::RecordScheduleLaunchHanded {
+            run_id: run_id.clone(),
+            session_id: Some(agent.0.clone()),
+            agent_id: None,
+            finished_at: alondra_core::now_millis(),
+        }) {
+            Ok(_) => Ok(()),
+            Err(error) if ordinary_conflict(&error) => Ok(()),
+            Err(error) => Err(error.into()),
+        };
+    }
     let name = launch.intent.name.as_str();
     let title = run.definition_snapshot.as_ref().map_or(name, |snapshot| snapshot.title.as_str());
     fail_run(
@@ -512,9 +546,15 @@ fn recover_uncertain(domain: &dyn Runtime, run_id: &ScheduleRunId) -> Result<()>
     )
 }
 
+/// The node an open task was admitted with: its scheduled launch started, whatever its run says.
+fn started_node<'a>(state: &'a DomainState, task: &TaskId) -> Option<&'a alondra_domain_rules::AgentId> {
+    state.tasks.get(task).filter(|task| !task.over()).and_then(|task| task.agent_id.as_ref())
+}
+
 /// The user's answer to a scheduled run that did not start. "Try again" launches its schedule
 /// once more (the retry's run id derives from the failed one, so answering twice launches once);
 /// either way the failed run's Task never started and is cancelled, so it does not wait forever.
+/// A Task that has a node did start after all: the answer leaves it and its schedule alone.
 fn answer_failed_launches(domain: &dyn Runtime, home: &Path) -> Result<()> {
     use alondra_domain_rules::{InteractionPayload, LAUNCH_RETRY_OPTION, SystemCard};
     let state = domain.state();
@@ -526,6 +566,9 @@ fn answer_failed_launches(domain: &dyn Runtime, home: &Path) -> Result<()> {
             continue;
         }
         let Some(run) = state.schedule.runs.get(&ScheduleRunId::from(failed)) else { continue };
+        if run.task_id.as_ref().is_some_and(|task| started_node(&state, task).is_some()) {
+            continue;
+        }
         let (retried, gone) = if answer.option_id == LAUNCH_RETRY_OPTION {
             match retry_launch(domain, home, &state, failed, run) {
                 Some(retried) => (retried, false),
@@ -611,7 +654,7 @@ pub async fn run_cycle(
         .map(|run| run.id.clone())
         .collect();
     for run_id in claimed {
-        finish_claim(domain, home, &run_id)?;
+        survive(finish_claim(domain, home, &run_id), &run_id)?;
     }
     let uncertain: Vec<_> = domain
         .state()
@@ -631,7 +674,7 @@ pub async fn run_cycle(
         }
     }
     for (run_id, reason) in domain.state().scheduled_launches_of_ended_tasks() {
-        fail_run(domain, &run_id, reason.into())?;
+        survive(fail_run(domain, &run_id, reason.into()), &run_id)?;
     }
     answer_failed_launches(domain, home)?;
     let paused = domain.engine().usage_paused() || domain.gate().disk_low();
@@ -663,9 +706,9 @@ pub async fn run_cycle(
                 },
             );
             match claim {
-                Ok(_) => finish_claim(domain, home, &run_id)?,
+                Ok(_) => survive(finish_claim(domain, home, &run_id), &run_id)?,
                 Err(error) if ordinary_conflict(&error) => (),
-                Err(error) => return Err(error.into()),
+                Err(error) => survive(Err(error.into()), &run_id)?,
             }
         }
     }
@@ -685,7 +728,7 @@ pub async fn run_cycle(
         return Ok(());
     }
     for run_id in pending {
-        dispatch_pending(domain, home, &run_id).await?;
+        survive(dispatch_pending(domain, home, &run_id).await, &run_id)?;
     }
     Ok(())
 }
@@ -1302,6 +1345,55 @@ mod tests {
         assert!(state.tasks[run.task_id.as_ref().unwrap()].agent_id.is_none(), "nothing is assigned the uncertain run's task");
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_launch_cut_after_its_node_was_admitted_is_handed_to_that_node_and_answering_never_cancels_it() {
+        let fixture = Fixture::new();
+        let sdk = SdkLaunches::enable_holding(&fixture.domain, &fixture.home);
+        fixture.claim("admitted");
+        finish_claim(&*fixture.domain, &fixture.home, &"admitted".into()).unwrap();
+        let state = fixture.domain.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("admitted")];
+        let (task, intent) = (run.task_id.clone().unwrap(), run.launch.as_ref().unwrap().intent.clone());
+        let policy = fixture.domain.schedule_request_tools(run.request_id.as_ref().unwrap()).unwrap().unwrap();
+        execute_system(&*fixture.domain, Command::ClaimScheduleLaunch { run_id: "admitted".into(), now: alondra_core::now_millis() }).unwrap();
+        let agent = launch_through_sdk(&*fixture.domain, &intent, &task, &policy, &fixture.home, None).await.unwrap();
+        drop(sdk);
+
+        let restarted = Fixture::open(&fixture.home);
+        let run = &restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("admitted")];
+        assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Uncertain);
+        run_cycle(&restarted, &fixture.home, false).await.unwrap();
+        let state = restarted.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("admitted")];
+        assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
+        assert_eq!(run.launch.as_ref().unwrap().session_id.as_deref(), Some(agent.as_str()));
+        assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-admitted")), "no card says it could not start");
+        assert_eq!(state.agents.len(), 1, "recovery never launches it again");
+        assert_eq!(state.tasks[&task].agent_id.as_ref().map(|agent| agent.0.as_str()), Some(agent.as_str()));
+        assert!(!state.tasks[&task].over());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn answering_a_failed_launch_card_leaves_a_task_that_got_its_node_running() {
+        let fixture = Fixture::new();
+        let _sdk = SdkLaunches::enable_holding(&fixture.domain, &fixture.home);
+        fixture.claim("late");
+        finish_claim(&*fixture.domain, &fixture.home, &"late".into()).unwrap();
+        let state = fixture.domain.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("late")];
+        let (task, intent) = (run.task_id.clone().unwrap(), run.launch.as_ref().unwrap().intent.clone());
+        let policy = fixture.domain.schedule_request_tools(run.request_id.as_ref().unwrap()).unwrap().unwrap();
+        execute_system(&*fixture.domain, Command::ClaimScheduleLaunch { run_id: "late".into(), now: alondra_core::now_millis() }).unwrap();
+        execute_system(&*fixture.domain, Command::RecordScheduleRunFailed { run_id: "late".into(), reason: "an earlier release failed it".into(), finished_at: alondra_core::now_millis() }).unwrap();
+        launch_through_sdk(&*fixture.domain, &intent, &task, &policy, &fixture.home, None).await.unwrap();
+        answer_problem(&*fixture.domain, "problem-launch-late", "retry", "answer-retry");
+        run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
+        let state = fixture.domain.state().unwrap();
+        assert!(!state.tasks[&task].over(), "the live task is not cancelled");
+        assert!(!state.schedule.runs.contains_key(&ScheduleRunId::from("retry-late")), "nothing launches it a second time");
+        assert_eq!(state.agents.len(), 1);
+    }
+
     #[tokio::test]
     async fn an_uncertain_launch_whose_task_was_closed_fails_quietly_and_never_stops_the_runner() {
         let fixture = Fixture::new();
@@ -1500,6 +1592,33 @@ mod tests {
             restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("rollback")].state,
             ScheduleRunState::Failed
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unreadable_settings_leave_a_pending_run_waiting_with_its_reason_and_the_runner_going_on() {
+        let fixture = Fixture::new();
+        let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
+        fixture.claim("settings-run");
+        finish_claim(&*fixture.domain, &fixture.home, &"settings-run".into()).unwrap();
+        let options = alondra_core::options::path_in(&fixture.home);
+        let original = std::fs::read_to_string(&options).unwrap();
+        std::fs::write(&options, "projects_root = [unterminated\n").unwrap();
+        let before = fixture.domain.state().unwrap().interactions.len();
+        for _ in 0..2 { run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap(); }
+        let state = fixture.domain.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("settings-run")];
+        assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Pending);
+        assert_eq!(state.interactions.len(), before, "no card for a file the next cycle reads again");
+        assert_eq!(fixture.launches(), 0);
+        let task = run.task_id.clone().unwrap();
+        let refusals = fixture.domain.store().lock_or_exit("the domain store").launch_refusals().unwrap();
+        assert!(refusals.iter().any(|(id, reason, detail)| *id == task && reason == "launch_failed"
+            && detail.as_deref().is_some_and(|detail| detail.starts_with("Alondra's settings file can't be read"))), "{refusals:?}");
+        std::fs::write(&options, original).unwrap();
+        run_cycle(&*fixture.domain, &fixture.home, false).await.unwrap();
+        assert_eq!(fixture.launches(), 1);
+        assert_eq!(fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("settings-run")].launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
+        assert!(fixture.domain.store().lock_or_exit("the domain store").launch_refusals().unwrap().iter().all(|(id, ..)| *id != task));
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -88,6 +88,7 @@ low_opt_rust_test(
         "//crates/daemon-engine:daemon_engine",
         "//crates/daemon-server:daemon_server",
         "//crates/daemon-support:daemon_support",
+        "//crates/domain-rules:domain_rules",
         "//crates/engine-doubles:engine_doubles",
         "//crates/engine-admission:engine_admission",
         "//crates/engine-ports:engine_ports",

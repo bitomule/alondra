@@ -8,6 +8,7 @@ use std::{
 };
 pub const RECOVERY: &str = "service-recovery.json";
 const LOCK_FILE: &str = "service-home.lock";
+const DAEMON_LOCK_FILE: &str = "daemon.lock";
 pub struct HomeLock {
     file: File,
 }
@@ -25,19 +26,15 @@ impl HomeLock {
     pub fn recovery(home: &Path) -> io::Result<Self> {
         Self::acquire(home, true)
     }
+    /// The one daemon that writes `home`'s domain database: a second daemon on the same HOME is
+    /// refused before it opens it, so restart recovery never runs over a live daemon's work.
+    pub fn daemon(home: &Path) -> io::Result<Self> {
+        let file = Self::open(home, DAEMON_LOCK_FILE)?;
+        file.try_lock().map_err(|_| io::Error::other(format!("another Alondra daemon is running on {}; stop it first", home.display())))?;
+        Ok(Self { file })
+    }
     fn acquire(home: &Path, exclusive: bool) -> io::Result<Self> {
-        fs::create_dir_all(home)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(home.join(LOCK_FILE))?;
-        if !file.metadata()?.is_file() {
-            return Err(io::Error::other("HOME lock must be a regular file"));
-        }
+        let file = Self::open(home, LOCK_FILE)?;
         let result = if exclusive {
             file.try_lock()
         } else {
@@ -47,6 +44,21 @@ impl HomeLock {
             io::Error::other("Alondra HOME is busy; stop its daemon before service recovery")
         })?;
         Ok(Self { file })
+    }
+    fn open(home: &Path, name: &str) -> io::Result<File> {
+        fs::create_dir_all(home)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(home.join(name))?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::other("HOME lock must be a regular file"));
+        }
+        Ok(file)
     }
 }
 pub fn lock_path(home: &Path) -> std::path::PathBuf {

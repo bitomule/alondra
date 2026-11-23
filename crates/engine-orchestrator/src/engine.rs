@@ -21,6 +21,10 @@ pub struct Orchestrator {
     pub stop: Mutex<Option<(crate::domain_orchestrator::Run, alondra_domain_rules::orchestrator_batch::BatchProblem)>>,
     /// Recovered after panic: each holder inserts or removes one completed-run marker.
     pub runs: Mutex<BTreeSet<String>>,
+    /// Held around each write of `orchestrator.json`, and around the whole read, change and write
+    /// of the writers that change one field (the host's start, the user's cancel): one writer at
+    /// a time. Recovered after panic: it guards no value, only the file.
+    pub record: Mutex<()>,
     pub injected: Injected,
 }
 

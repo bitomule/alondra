@@ -540,3 +540,19 @@ fn account_usage_and_explicit_user_waits_do_not_trigger_the_watchdog() {
     );
     assert!(f.cards(PROBLEM_PREFIX).is_empty() && f.cards(STUCK_PROBLEM_PREFIX).is_empty());
 }
+
+#[test]
+fn the_watchdog_waits_out_a_failed_starts_backoff() {
+    let f = crate::domain_orchestrator::testing::fixture();
+    f.run(Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+        request_id: "waiting".into(), body: "Fix the login".into(), auto_merge: false, maintenance: false, message: false,
+    });
+    save(&f.executor.home, &Runtime {
+        last_error: Some("The orchestrator host did not start".into()), failure: Some(Failure::Launch),
+        retry_at: Some(now_millis() + 3_600_000), ..Runtime::default()
+    }).unwrap();
+    let mut watchdog = Watchdog::default();
+    let start = Instant::now();
+    assert!(!f.executor.watchdog_due(&mut watchdog, start));
+    assert!(!f.executor.watchdog_due(&mut watchdog, start + STALLED_AFTER * 2), "nothing to restart while the retry waits");
+}

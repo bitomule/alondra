@@ -503,6 +503,24 @@ fn claimed_delivery_restart_is_uncertain_until_explicit_reconciliation() {
 }
 
 #[test]
+fn retrying_an_uncertain_orchestrator_message_past_its_24_hours_is_refused_and_discarding_it_works() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    execute(&mut store, &user(), "old-request", Command::CreateRequest { request_id: "old".into(), body: "Fix the login".into(), auto_merge: false, maintenance: false, message: false });
+    let message = store.pending_messages().unwrap().into_iter().find(|message| message.recipient_kind == "orchestrator").unwrap();
+    let claim = store.claim_message(message.id).unwrap().unwrap();
+    store.set_message_created_at_for_test(message.id, alondra_core::now_millis() - ORCHESTRATOR_MESSAGE_TTL_MS - 3_600_000).unwrap();
+    drop(store);
+    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let epoch = restarted.load().unwrap().data_epoch.0.clone();
+    let retried = restarted.resolve_uncertain_authenticated(claim.attempt_id, 2, &epoch, true, ("phone-a", "retry", &[17u8; 32]));
+    assert!(matches!(&retried, Err(StoreError::Domain(error)) if error.code == "delivery_expired" && error.message.contains("discard it")), "{retried:?}");
+    assert_eq!(restarted.delivery_evidence_page(0).unwrap()[0].current_state, "uncertain", "a refused retry changes nothing");
+    let discarded = restarted.resolve_uncertain_authenticated(claim.attempt_id, 2, &epoch, false, ("phone-a", "discard", &[19u8; 32])).unwrap();
+    assert_eq!(discarded["state"], "discarded");
+}
+
+#[test]
 fn encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisions() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
@@ -1239,6 +1257,40 @@ fn closed_request_reopen_rejection_survives_sql_restart() {
     let result = reopened.execute_authenticated(&user(), &attempt, None);
     assert!(matches!(result, Err(StoreError::Domain(error)) if error.code == "not_found"));
     assert_eq!(reopened.load().unwrap(), before);
+}
+
+#[test]
+fn a_cleared_request_its_ended_task_takes_back_loads_open_after_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let (pr, head) = ("github.com/acme/widgets#7".to_owned(), "a".repeat(40));
+    execute(&mut store, &agent(), "register", Command::RegisterPr {
+        task_id: "task-1".into(), pr_id: pr.as_str().into(), host: "github.com".into(), repository: "acme/widgets".into(), number: 7,
+        head: head.clone(), base: "main".into(), allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
+    });
+    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
+    execute(&mut store, &user(), "close", Command::CloseRequest { covered_by: vec![], outcome: None, request_id: "request-1".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None });
+    let seen = store.load().unwrap().revision;
+    execute(&mut store, &user(), "clear", Command::ClearCompleted { seen });
+    assert!(store.load().unwrap().requests[&"request-1".into()].cleared);
+    execute(&mut store, &Actor::System, "closed-on-github", Command::ObservePrState {
+        pr_id: pr.as_str().into(), head: head.clone(), base: "main".into(), state: alondra_domain_rules::PrState::Closed, merged_head: None,
+    });
+    execute(&mut store, &Actor::System, "node-end", Command::RecordNodeEnd { task_id: "task-1".into(), end: NodeEnd::Closed, agent_id: Some("agent-1".into()) });
+    execute(&mut store, &Actor::System, "adopt", Command::AdoptOpenPr {
+        task_id: "task-1".into(), pr_id: pr.as_str().into(), branch: "feature".into(),
+        status: alondra_domain_rules::OpenPrStatus {
+            state: alondra_domain_rules::PrState::Open, head, base: "main".into(),
+            mergeable: alondra_domain_rules::PrMergeable::Clean, checks: alondra_domain_rules::PrChecks::Passed,
+        },
+    });
+    let adopted = store.load().unwrap().requests[&"request-1".into()].clone();
+    assert!(!adopted.closed && !adopted.cleared, "{adopted:?}");
+    drop(store);
+    let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    assert_eq!(reopened.requests[&"request-1".into()], adopted);
+    assert_eq!(count(&DomainStore::open(&fixture.path()).unwrap(), "cleared_requests"), 0);
 }
 
 fn document_package(store: &mut DomainStore, pr: bool) -> Vec<DeliveryTarget> {
