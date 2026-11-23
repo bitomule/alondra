@@ -98,6 +98,7 @@ impl DomainState {
                 self.confirm(pr_id, read, read_started_at, key, locator, current_repository);
                 self.confirm_unverified_at_the_same_address(pr_id, read, current_repository);
                 self.join_same_pr(pr_id, effects)?;
+                self.one_record_per_address(pr_id, read_started_at, effects);
             }
             PrAddressVerdict::NamesAnotherPr if !stale && pr.identity.is_unverified() && matches!(read, PrRead::Address { .. }) => {
                 let pr = self.pull_requests.get_mut(pr_id).unwrap();
@@ -179,6 +180,27 @@ impl DomainState {
             {
                 other.identity = identity.clone();
             }
+        }
+    }
+
+    /// Two tracked records of different pull requests never stand at one address: the one whose
+    /// address was read last keeps it, and the other no longer knows where it lives, so it acts
+    /// nowhere and is looked for by its locator.
+    fn one_record_per_address(&mut self, pr_id: &PrId, at: Millis, effects: &mut Vec<DomainEffect>) {
+        let pr = &self.pull_requests[self.surviving_pr(pr_id)];
+        let (host, repository, number) = (pr.host.clone(), pr.repository.clone(), pr.number);
+        let mut here: Vec<&PullRequest> = self.pull_requests.values()
+            .filter(|p| p.is_tracked() && !p.identity.is_unresolvable() && p.lives_at(&host, &repository, number))
+            .collect();
+        here.sort_by_key(|p| (std::cmp::Reverse(p.address_read_at), p.id.clone()));
+        let displaced: Vec<PrId> = here.iter().skip(1).map(|p| p.id.clone()).collect();
+        for id in displaced {
+            let pr = self.pull_requests.get_mut(&id).unwrap();
+            if let Some(locator) = pr.identity.locator().cloned() {
+                effects.push(DomainEffect::Relocate { pr_id: id.clone(), locator });
+                pr.relocation_asked_at = Some(at);
+            }
+            pr.identity = PrIdentity::Unresolvable { key: pr.identity.key().cloned(), reason: UnresolvableReason::AddressReused, since: at };
         }
     }
 

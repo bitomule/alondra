@@ -708,7 +708,7 @@ impl<'a> Builder<'a> {
                 }
                 None => {}
             }
-            for pr in prs {
+            for pr in prs.into_iter().filter(|pr| self.state.pull_requests.get(*pr).is_none_or(PullRequest::is_tracked)) {
                 index.cards_by_pr.entry(pr.clone()).or_default().push(i.id.clone());
             }
             for revision in revisions {
@@ -1038,10 +1038,10 @@ pub(super) fn assert_index_matches(state: &DomainState) {
         let tasks: Vec<TaskId> = state.tasks.values().filter(|t| &t.request_id == request).map(|t| t.id.clone()).collect();
         assert_eq!(index.tasks_of_request(request), tasks.as_slice());
     }
-    for pr in state.pull_requests.keys() {
+    for (pr, record) in &state.pull_requests {
         let about = cards(&|i| {
-            matches!(&i.subject, Some(InteractionSubject::PullRequest { pr_id }) if pr_id == pr)
-                || matches!(&i.payload, InteractionPayload::Delivery { targets, .. }
+            record.is_tracked() && matches!(&i.subject, Some(InteractionSubject::PullRequest { pr_id }) if pr_id == pr)
+                || record.is_tracked() && matches!(&i.payload, InteractionPayload::Delivery { targets, .. }
                     if targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id, .. } if pr_id == pr)))
         });
         assert_eq!(index.cards_of_pr(pr), about.as_slice(), "the cards of {pr}");

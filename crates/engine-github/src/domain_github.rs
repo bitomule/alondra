@@ -115,6 +115,7 @@ pub async fn reconcile(
     deliver_held(domain, observer).await?;
     read_opened(domain, observer, None).await?;
     let state = domain.state()?;
+    failures.forget_untracked(domain, &state);
     for pr in watched(&state) {
         let facts = match observer.observe(&pr.host, &pr.repository, pr.number).await {
             Ok(facts) => facts,
@@ -216,6 +217,15 @@ struct CloseFailure {
 }
 
 impl ObservationFailures {
+    /// A record that joined another or that the user removed is never read again: what its reads
+    /// and closes failed is forgotten, with the problems they raised.
+    fn forget_untracked(&mut self, domain: &DomainRuntime, state: &DomainState) {
+        for pr in state.pull_requests.values().filter(|pr| !pr.is_tracked()) {
+            self.recovered(domain, pr);
+            self.closed(domain, pr);
+        }
+    }
+
     fn recovered(&mut self, domain: &DomainRuntime, pr: &PullRequest) {
         let reported = self.0.remove(&pr.id).is_some_and(|count| count >= OBSERVATION_FAILURES_BEFORE_PROBLEM);
         if reported {

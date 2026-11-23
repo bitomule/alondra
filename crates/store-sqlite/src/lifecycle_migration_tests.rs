@@ -281,7 +281,7 @@ fn a_database_with_one_pr_per_task_keeps_its_prs_and_takes_more() {
     let table: String = store.conn.query_row("SELECT sql FROM sqlite_schema WHERE name='pull_requests'", [], |row| row.get(0)).unwrap();
     assert!(!table.contains("task_id TEXT NOT NULL UNIQUE"), "{table}");
     let triggers: i64 = store.conn.query_row("SELECT count(*) FROM sqlite_schema WHERE type='trigger' AND tbl_name='pull_requests'", [], |row| row.get(0)).unwrap();
-    assert_eq!(triggers, 2, "its triggers came back with it");
+    assert_eq!(triggers, 5, "its triggers came back with it");
     let dangling: i64 = store.conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| row.get(0)).unwrap();
     assert_eq!(dangling, 0);
 

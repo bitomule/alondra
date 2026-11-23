@@ -8,7 +8,7 @@ use alondra_core::metrics::fold::{Decision, DecisionKind, TaskFacts, fold_task};
 use alondra_core::metrics::steps::StepCounts;
 use alondra_core::metrics::{Role, Usage};
 use anyhow::Result;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::BTreeMap;
 
 pub(super) const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
@@ -111,7 +111,7 @@ impl DomainStore {
     /// address GitHub answers for each.
     pub fn prs_without_size(&self, now: Millis, limit: usize) -> Result<Vec<(String, String)>> {
         let mut statement = self.conn.prepare(
-            "SELECT m.task_id,'https://'||p.host||'/'||p.repository||'/pull/'||p.number FROM task_metrics m JOIN pull_requests p ON p.task_id=m.task_id
+            "SELECT m.task_id,'https://'||p.host||'/'||p.repository||'/pull/'||p.number FROM task_metrics m JOIN pull_requests p ON p.task_id=m.task_id AND p.tracking='tracked'
              WHERE m.pr_merged=1 AND m.pr_lines IS NULL AND m.finished_at>=?1 ORDER BY m.finished_at DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(params![now - SAMPLES_MS, limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))?;
@@ -241,16 +241,42 @@ struct Sampled {
     steps: [i64; 4],
 }
 
+/// The project a task's metrics count under: the one its request was launched in, or else the
+/// repository its pull request lives in now, also when the task's own record joined another.
+fn project(c: &Connection, task: &str) -> rusqlite::Result<Option<String>> {
+    let repository: Option<String> = c.query_row(
+        "WITH RECURSIVE chain(origin,repository,tracking,superseded_by,depth) AS(
+           SELECT id,repository,tracking,superseded_by,0 FROM pull_requests WHERE task_id=?1 AND tracking<>'detached'
+           UNION ALL SELECT chain.origin,p.repository,p.tracking,p.superseded_by,chain.depth+1 FROM chain JOIN pull_requests p ON p.id=chain.superseded_by WHERE chain.depth<64)
+         SELECT repository FROM chain WHERE tracking='tracked' ORDER BY origin IS (SELECT pr_id FROM tasks WHERE id=?1) DESC,depth,origin LIMIT 1",
+        [task],
+        |row| row.get(0),
+    ).optional()?;
+    c.query_row(
+        "SELECT COALESCE(lower(trim(l.project)),lower(replace(?2,rtrim(?2,replace(?2,'/','')),''))) FROM tasks t LEFT JOIN request_launch l ON l.request_id=t.request_id WHERE t.id=?1",
+        params![task, repository],
+        |row| row.get(0),
+    )
+}
+
+/// A pull request moved, so the folded rows of the tasks it stands for count under its new name.
+pub(super) fn refresh_project(c: &Connection, task: &str) -> rusqlite::Result<()> {
+    if c.query_row("SELECT EXISTS(SELECT 1 FROM task_metrics WHERE task_id=?1)", [task], |row| row.get(0))? {
+        c.execute("UPDATE task_metrics SET project=?2 WHERE task_id=?1", params![task, project(c, task)?])?;
+    }
+    Ok(())
+}
+
 /// Folds one ended task; false when its history does not end it.
 fn fold(tx: &Transaction<'_>, task: &str) -> rusqlite::Result<bool> {
     let (facts, revision) = facts(tx, task)?;
     let Some(m) = fold_task(&facts) else { return Ok(false) };
-    let (project, role, pr_merged): (Option<String>, Option<String>, bool) = tx.query_row(
-        "SELECT COALESCE(lower(trim(l.project)),lower(replace(p.repository,rtrim(p.repository,replace(p.repository,'/','')),''))),
-          (SELECT role FROM task_launch_plans WHERE task_id=t.id),COALESCE((SELECT min(state='merged') FROM pull_requests WHERE task_id=t.id),0)
-         FROM tasks t LEFT JOIN request_launch l ON l.request_id=t.request_id LEFT JOIN pull_requests p ON p.task_id=t.id WHERE t.id=?1",
+    let project = project(tx, task)?;
+    let (role, pr_merged): (Option<String>, bool) = tx.query_row(
+        "SELECT (SELECT role FROM task_launch_plans WHERE task_id=t.id),COALESCE((SELECT min(state='merged') FROM pull_requests WHERE task_id=t.id AND tracking='tracked'),0)
+         FROM tasks t WHERE t.id=?1",
         [task],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let sampled: Option<Sampled> = tx.query_row(
         "SELECT (SELECT count(*) FROM (SELECT session_id FROM usage_sessions WHERE task_id=?1 UNION SELECT session_id FROM session_steps WHERE task_id=?1)),

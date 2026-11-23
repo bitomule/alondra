@@ -57,6 +57,7 @@ pub fn of_this_mac(host: &dyn Host, vocabulary: &HashSet<String>) -> Private {
         add_all("the title of a task", "SELECT title FROM tasks");
         add_all("the title of a request", "SELECT title FROM requests");
         add_all("the name of a repository", "SELECT repository FROM pull_requests");
+        add_all("the name of a repository", "SELECT repository FROM pull_request_aliases");
         add_all("the name of a branch", "SELECT head FROM pull_requests");
         add_all("the name of a branch", "SELECT branch FROM task_worktree_records");
         add_all("a folder of a task", "SELECT path FROM task_worktree_records");

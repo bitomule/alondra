@@ -154,6 +154,27 @@ fn two_records_of_one_pr_join_into_one_card_without_remote_effects() {
     assert_eq!(*targets, [DeliveryTarget::PullRequest { pr_id: id(OLD, 42), head: HEAD.into() }]);
 }
 
+#[test]
+fn a_record_never_shares_its_address_with_another_pr() {
+    let mut s = at_work();
+    let (lumo, site) = (id(OLD, 42), id(SITE, 42));
+    register(&mut s, OLD, 42, HEAD).unwrap();
+    must(&mut s, Actor::System, observe(&lumo, OLD, 1_000, confirmed("key-a", OLD)));
+    register(&mut s, SITE, 42, SITE_HEAD).unwrap();
+
+    let renamed = must(&mut s, Actor::System, observe(&site, SITE, 2_000, confirmed("key-b", OLD)));
+    assert_eq!(s.pull_requests[&site].repository, OLD, "the repository renamed into the old name took the address");
+    assert_eq!(s.pull_requests[&lumo].identity,
+        PrIdentity::Unresolvable { key: Some(ProviderPrKey("key-a".into())), reason: UnresolvableReason::AddressReused, since: 2_000 });
+    assert_eq!(renamed.effects.iter().filter(|e| matches!(e, DomainEffect::Relocate { .. })).cloned().collect::<Vec<_>>(),
+        [DomainEffect::Relocate { pr_id: lumo.clone(), locator: ProviderLocator("locator-key-a".into()) }]);
+
+    must(&mut s, Actor::System, Command::ObservePrAddress { pr_id: lumo.clone(), read: PrRead::Locator, read_started_at: 3_000, verdict: confirmed("key-a", NEW) });
+    assert!(s.pull_requests[&lumo].identity.is_verified(), "its locator found it where it moved");
+    assert_eq!(s.pull_requests[&lumo].repository, NEW);
+    assert_eq!(tracked(&s).len(), 2, "two pull requests, two records");
+}
+
 fn authorization(id: &str, pr: &PrId, head: &str, at: Revision, attempt: MergeAttemptState) -> MergeAuthorization {
     MergeAuthorization { id: id.into(), task_id: TASK.into(), pr_id: pr.clone(), presentation_id: "final".into(), head: head.into(),
         method: MergeMethod::Squash, user_id: "u".into(), valid: true, attempt, claimed_by: None, at_revision: at, despite_pending_message: false }

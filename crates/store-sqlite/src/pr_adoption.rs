@@ -7,11 +7,6 @@ pub(super) const SCHEMA: &str = "DROP TABLE IF EXISTS pr_adoptions;
 CREATE TABLE IF NOT EXISTS pull_request_tasks(task_id TEXT NOT NULL REFERENCES tasks(id),pr_id TEXT NOT NULL REFERENCES pull_requests(id),PRIMARY KEY(task_id,pr_id));
 CREATE INDEX IF NOT EXISTS pull_request_tasks_pr ON pull_request_tasks(pr_id,task_id);";
 
-const OWNERSHIP: &str = "CREATE TRIGGER immutable_pr_ownership BEFORE UPDATE ON pull_requests
-WHEN NEW.id<>OLD.id OR NEW.host<>OLD.host OR NEW.repository<>OLD.repository OR NEW.number<>OLD.number
-OR (NEW.task_id<>OLD.task_id AND (SELECT state FROM tasks WHERE id=OLD.task_id) NOT IN('done','cancelled'))
-BEGIN SELECT RAISE(ABORT,'PR identity and live ownership are immutable'); END;";
-
 pub(super) fn upgrade(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute_batch(SCHEMA)?;
     tx.execute_batch("INSERT OR IGNORE INTO pull_request_tasks(task_id,pr_id) SELECT task_id,id FROM pull_requests;")?;
@@ -29,8 +24,7 @@ pub(super) fn upgrade(tx: &Transaction<'_>) -> rusqlite::Result<()> {
         tx.execute_batch(&format!("INSERT INTO {name} SELECT * FROM pr_adoption_copy; DROP TABLE pr_adoption_copy;"))?;
         for (_, sql) in attached.iter().filter(|(kind, _)| kind == "trigger") { tx.execute_batch(sql)?; }
     }
-    tx.execute_batch("DROP TRIGGER IF EXISTS immutable_pr_ownership;")?;
-    tx.execute_batch(OWNERSHIP)
+    Ok(())
 }
 
 pub(super) fn save(c: &Connection, before: &DomainState, after: &DomainState) -> Result<()> {
@@ -68,7 +62,7 @@ mod tests {
         c.execute_batch("DROP TABLE pull_request_tasks;
             INSERT INTO requests(id,body,closed) VALUES('r','Work',0);
             INSERT INTO tasks(id,request_id,title,state,revision,started,review_prs,archived) VALUES('old','r','Old','cancelled',1,0,0,0),('new','r','New','running',1,0,0,0);
-            INSERT INTO pull_requests VALUES('pr','old','github.com','owner/repo',7,'head','main','open',NULL,'[\"squash\"]');
+            INSERT INTO pull_requests(id,task_id,host,repository,number,head,base,state,allowed_methods) VALUES('pr','old','github.com','owner/repo',7,'head','main','open','[\"squash\"]');
             UPDATE tasks SET pr_id='pr' WHERE id='old';
             INSERT INTO interactions(id,scope_kind,task_id,author_kind,recipient_kind,body,blocking,kind,revision,ordering,is_final,card)
                 VALUES('delivery','task','old','system','user','Ready',0,'delivery',1,1,1,'{\"kind\":\"review\",\"need\":\"Review\"}');
@@ -76,6 +70,7 @@ mod tests {
         c.pragma_update(None, "foreign_keys", true).unwrap();
         let tx = c.transaction().unwrap();
         upgrade(&tx).unwrap();
+        crate::repository::upgrade_pr_identity(&tx).unwrap();
         tx.execute_batch("UPDATE tasks SET pr_id=NULL WHERE id='old';
             UPDATE pull_requests SET task_id='new' WHERE id='pr';
             INSERT INTO pull_request_tasks VALUES('new','pr');

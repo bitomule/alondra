@@ -51,7 +51,7 @@ pub fn due(state: &DomainState) -> Vec<Due> {
             let feedback_target = FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: head.clone() };
             let auto = acceptance.is_none() && feedback.iter().all(|feedback| !feedback.target.affects(&feedback_target))
                 && state.requests.get(&task.request_id).is_some_and(|r| r.auto_merge);
-            let Some(pr) = state.pull_requests.get(pr_id).filter(|pr| pr.state == PrState::Open && &pr.head == head) else { continue };
+            let Some(pr) = state.pull_requests.get(pr_id).filter(|pr| pr.is_tracked() && pr.state == PrState::Open && &pr.head == head) else { continue };
             let authorization = state.merge_authorizations.values().find(|a| {
                 a.valid && a.presentation_id == p.id && &a.pr_id == pr_id && &a.head == head
                     && matches!(a.attempt, MergeAttemptState::Unclaimed | MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
