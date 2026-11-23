@@ -1,6 +1,6 @@
 //! Merging a pull request with `gh`, and what GitHub's rules and checks say about merging it.
 use crate::cli::GhCli;
-use alondra_domain_rules::{MergeMethod, PullRequest};
+use alondra_domain_rules::{MergeMethod, ProviderPrKey, PullRequest};
 use alondra_engine_ports::github::{Checks, GhFailure, HttpAnswer, MergeState, Pending, PrMerger, Status, pr_url};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,7 +39,9 @@ impl PrMerger for GhCli {
                 .ok_or_else(|| GhFailure::Unreadable("GitHub did not provide the repository's default branch".into()))
         })
     }
-    fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()> {
+    /// Like every change below, `gh` cannot check which pull request it changes: the key is the
+    /// one `status` read at this address just before, in the same round.
+    fn retarget<'a>(&'a self, pr: &'a PullRequest, _expected: &'a ProviderPrKey, base: &'a str) -> Pending<'a, ()> {
         Box::pin(async move {
             let url = pr_url(&pr.host, &pr.repository, pr.number);
             self.run(&["pr", "edit", &url, "--base", base], None, Duration::from_secs(30)).await.map(|_| ())
@@ -48,18 +50,18 @@ impl PrMerger for GhCli {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> {
         Box::pin(async move {
             let url = pr_url(&pr.host, &pr.repository, pr.number);
-            let out = self.run(&["pr", "view", &url, "--json", "state,headRefOid,headRefName,baseRefName,statusCheckRollup,mergeStateStatus,mergeable"], None,
+            let out = self.run(&["pr", "view", &url, "--json", "state,headRefOid,headRefName,baseRefName,statusCheckRollup,mergeStateStatus,mergeable,fullDatabaseId,id,url"], None,
                 Duration::from_secs(30)).await?;
             let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
             let facts = crate::cli::parse(&value).map_err(GhFailure::Unreadable)?;
             Ok(Status { state: facts.state, head: facts.head, head_ref: value["headRefName"].as_str().unwrap_or_default().to_owned(), base: facts.base, checks: rollup(&value), passed: passed(&value),
-                merge_state: merge_state(&value) })
+                merge_state: merge_state(&value), identity: facts.identity })
         })
     }
-    fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+    fn merge<'a>(&'a self, pr: &'a PullRequest, _expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
         Box::pin(self.gh_merge(pr, head, method, false))
     }
-    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, _expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
         Box::pin(self.gh_merge(pr, head, method, true))
     }
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
@@ -73,7 +75,7 @@ impl PrMerger for GhCli {
             }
         })
     }
-    fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> {
+    fn ready<'a>(&'a self, pr: &'a PullRequest, _expected: &'a ProviderPrKey) -> Pending<'a, ()> {
         Box::pin(async move {
             let url = pr_url(&pr.host, &pr.repository, pr.number);
             self.run(&["pr", "ready", &url], None, Duration::from_secs(60)).await.map(|_| ())

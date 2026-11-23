@@ -19,9 +19,11 @@ use std::collections::BTreeMap;
 pub(crate) trait Github: Send + Sync + 'static {
     fn search_issues<'a>(&'a self, owners: &'a [String]) -> Answer<'a, Result<Value, String>>;
     fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> Answer<'a, Result<Value, String>>;
-    /// Closes the PR on GitHub without merging it.
-    /// Closes the PR on GitHub with `comment`, the way Alondra closes every PR it closes.
-    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Answer<'a, Result<(), String>>;
+    /// Closes the PR on GitHub with `comment`, the way Alondra closes every PR it closes, only
+    /// while the address still has the pull request `expected`: another one there closes nothing
+    /// and answers `IdentityMismatch`.
+    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str)
+        -> Answer<'a, Result<(), crate::domain_github::GhFailure>>;
     /// Whether GitHub has the PR open, closed or merged now.
     fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_rules::PrState, String>>;
     fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>>;
@@ -39,10 +41,9 @@ impl Github for Gh {
         Box::pin(async move { crate::prs::Gh::issue_view(&alondra_github_gh::GhCli::new(), repo, number).await })
     }
 
-    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Answer<'a, Result<(), String>> {
-        Box::pin(async move {
-            crate::domain_github::PrObserver::close(&alondra_github_gh::GhCli::new(), host, repository, number, comment).await
-        })
+    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str)
+        -> Answer<'a, Result<(), crate::domain_github::GhFailure>> {
+        Box::pin(async move { alondra_github_gh::GhCli::new().close_checked(host, repository, number, expected, comment).await })
     }
 
     fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_rules::PrState, String>> {

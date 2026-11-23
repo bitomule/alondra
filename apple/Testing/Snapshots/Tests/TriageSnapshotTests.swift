@@ -444,6 +444,11 @@ final class TriageSnapshotTests: XCTestCase {
         true: #"{"protocol":1,"outcome":"rejected","code":"pr_superseded","message":"Esta tarjeta era otra copia del mismo PR; usa la que queda","result":{"kind":"refused","title":"Esta tarjeta era otra copia del mismo PR; usa la que queda"}}"#,
     ]
 
+    private static let notCheckedYetReply = [
+        false: #"{"protocol":1,"outcome":"rejected","message":"Alondra is still checking on GitHub which pull request this is. Nothing was changed; try again in a minute.","result":{"kind":"refused","title":"Alondra is still checking on GitHub which pull request this is. Nothing was changed; try again in a minute."}}"#,
+        true: #"{"protocol":1,"outcome":"rejected","message":"Alondra aún está comprobando en GitHub qué PR es. No se cambió nada; vuelve a intentarlo en un minuto.","result":{"kind":"refused","title":"Alondra aún está comprobando en GitHub qué PR es. No se cambió nada; vuelve a intentarlo en un minuto."}}"#,
+    ]
+
     /// A pull request Alondra cannot check says why and offers only to take it out of Alondra.
     func test_aPullRequestAlondraCannotCheckOffersOnlyRemoval() throws {
         for spanish in [false, true] {
@@ -468,6 +473,20 @@ final class TriageSnapshotTests: XCTestCase {
             guard case .failure(let why) = OutcomeStyle(reply) else { return XCTFail("a refusal fails") }
             let store = try pullRequest(spanish: spanish) { actions, card in
                 actions.action = try XCTUnwrap(card.more.first { $0.id?.hasPrefix("close_unmerged:") == true })
+                actions.error = why
+            }
+            assertScreen([.light, .dark], language: language(spanish), inWindow: true) { Harness(store: store) }
+        }
+    }
+
+    /// Merging a pull request GitHub has not yet confirmed at its address does nothing and says
+    /// to try again in a minute.
+    func test_aPullRequestNotCheckedYetIsRefusedUntilGitHubAnswers() throws {
+        for spanish in [false, true] {
+            let reply = try ContractCodec.decode(ActionResponse.self, from: Data(try XCTUnwrap(Self.notCheckedYetReply[spanish]).utf8))
+            guard case .failure(let why) = OutcomeStyle(reply) else { return XCTFail("a refusal fails") }
+            let store = try pullRequest(spanish: spanish) { actions, card in
+                actions.action = try XCTUnwrap(card.actions.first { $0.id?.hasPrefix("merge:") == true })
                 actions.error = why
             }
             assertScreen([.light, .dark], language: language(spanish), inWindow: true) { Harness(store: store) }

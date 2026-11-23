@@ -207,13 +207,18 @@ impl Fixture {
         Ok((status, response.json().await?))
     }
 
+    /// A node's command goes without a revision, as its MCP sends it: the daemon's own read of
+    /// GitHub before it may record something first.
     async fn producer(&mut self, orchestrator: bool, command: Value) -> Value {
-        let envelope = self.envelope(command);
+        let mut envelope = self.envelope(command);
         let bearer = if orchestrator {
             &self.orchestrator
         } else {
             &self.agent
         };
+        if !orchestrator {
+            envelope["expected_revision"] = json!(0);
+        }
         let (status, body) = self.post(bearer, &envelope).await;
         assert_eq!(status, StatusCode::OK, "command={} body={body}", envelope["command"]["kind"]);
         body
@@ -462,10 +467,10 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
     let (status, rejected) = fixture.post(&fixture.agent, &stale).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{rejected}");
     assert_eq!(rejected["code"], "forbidden");
-    assert_eq!(
-        fixture.domain.state().unwrap().revision,
-        revision.as_u64().unwrap()
-    );
+    let refused = fixture.domain.state().unwrap();
+    assert!(refused.pull_requests[&"github.com/example/project#7".into()].identity.is_verified(),
+        "the read of GitHub before the refusal confirmed which pull request it is");
+    assert_eq!(refused.revision, revision.as_u64().unwrap() + 1, "and the refused delivery recorded nothing");
     fixture
         .producer(
             false,

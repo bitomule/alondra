@@ -60,8 +60,8 @@ impl PrObserver for Authored {
         self.calls.lock().unwrap().push(format!("pr view {number} status"));
         self.world.observe(host, repository, number)
     }
-    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
-        self.world.close(host, repository, number, comment)
+    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str) -> Closed<'a> {
+        self.world.close(host, repository, number, expected, comment)
     }
 }
 

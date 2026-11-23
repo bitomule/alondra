@@ -105,8 +105,9 @@ pub enum Step {
     Request { text: String, task: String, title: String },
     /// A further task of the request, optionally stacked on a pull request of an earlier one.
     Task { id: String, title: String, #[serde(default)] stack_on: Option<StackOn> },
-    /// The node of `task` registers a pull request it opened.
-    RegisterPr { task: String, number: u64 },
+    /// The node of `task` registers a pull request it opened, by the scenario's repository or by
+    /// `repository` when it names it at another address.
+    RegisterPr { task: String, number: u64, #[serde(default)] repository: Option<String> },
     /// The node of `task` presents the pull requests as its result, and `text` when it says what it
     /// delivers in words. With `refused`, the daemon must turn the delivery down with that code, and
     /// nothing is presented.
@@ -217,6 +218,12 @@ pub enum GithubChange {
     MarkReady { number: u64 },
     MergeExternally { number: u64 },
     CloseExternally { number: u64 },
+    /// The repository moves to `to`: its pull requests keep their numbers, and the old name
+    /// redirects to the new one.
+    MoveRepository { to: String },
+    /// Someone creates the repository `repository`, the old name of a moved one, and opens a pull
+    /// request `number` there: the old name no longer redirects.
+    ReuseName { repository: String, number: u64, head: String, base: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -242,6 +249,8 @@ pub enum Expect {
     /// The calls Alondra made to GitHub that change something, in order, as `gh` is typed.
     GhCalls { calls: Vec<String> },
     PrMergedInto { pr: u64, branch: String },
+    /// Pull request `pr` of `repository` is `state` (`open`, `closed` or `merged`) on GitHub.
+    PrStateIn { repository: String, pr: u64, state: alondra_domain_rules::PrState },
     /// The searches of open PRs and reads of their branches the daemon made, in order.
     SweepReads { reads: Vec<String> },
     TaskState { task: String, state: alondra_domain_rules::TaskState },

@@ -38,6 +38,9 @@ pub enum Refusal {
     PrDetached,
     /// Alondra cannot check which pull request this is, so it does nothing on the provider.
     PrUncheckable,
+    /// No read has confirmed yet which pull request this is at its address: nothing acts on it
+    /// until one does.
+    PrNotCheckedYet,
     /// A newer result replaced the one the user looked at.
     NewerResult,
     PendingUserMessage,

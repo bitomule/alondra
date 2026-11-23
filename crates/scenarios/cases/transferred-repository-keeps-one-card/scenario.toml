@@ -1,0 +1,119 @@
+name = "a delivered pull request whose repository moves keeps one card, and cancelling its task closes only it, not the pull request that later took the old name"
+max_virtual = "2h"
+
+[world]
+repository = "ana/lumo"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "csv-export"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The CSV export is ready"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "github"
+event = "move_repository"
+to = "lumo-org/lumo"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+repository = "lumo-org/lumo"
+
+[[step]]
+do = "advance"
+by = "2m"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "one-card-at-the-new-address"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "lumo-org/lumo · csv-export"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "ana/lumo · "
+present = false
+
+[[step.expect]]
+check = "gh_calls"
+calls = []
+
+[[step]]
+do = "github"
+event = "reuse_name"
+repository = "ana/lumo"
+number = 7
+head = "unrelated"
+base = "main"
+
+[[step]]
+do = "press_task"
+task = "t1"
+action = "cancel"
+
+[[step]]
+do = "advance"
+by = "2m"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "closed-at-the-new-address-only"
+screens = ["home"]
+
+[[step.expect]]
+check = "gh_calls"
+calls = ["close 7"]
+
+[[step.expect]]
+check = "pr_state_in"
+repository = "lumo-org/lumo"
+pr = 7
+state = "closed"
+
+[[step.expect]]
+check = "pr_state_in"
+repository = "ana/lumo"
+pr = 7
+state = "open"

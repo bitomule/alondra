@@ -27,4 +27,5 @@ pub mod domain_github;
 pub mod domain_merges;
 pub mod github_world;
 pub mod open_pr_sweep;
+pub mod pr_identity;
 pub mod pr_images;

@@ -67,10 +67,10 @@ CHROME ?= /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 
 # The PR card flow (merge method, merging, refused, changed) and the usage sheet drawn by the TUI, in es and en.
 tui-shots:
-	bazelisk test //crates/alondra:alondra_test --test_arg=--ignored --test_arg=tui_shots --test_env=RUST_MIN_STACK=268435456 \
+	bazelisk test //crates/cli-tui:cli_tui_test --test_arg=--ignored --test_arg=tui_shots --test_env=RUST_MIN_STACK=268435456 \
 		--nocache_test_results --zip_undeclared_test_outputs=false --test_output=errors
 	@mkdir -p $(TUI_SHOTS)
-	@for page in .bazel-links/bazel-testlogs/crates/alondra/alondra_test/test.outputs/*.html; do \
+	@for page in .bazel-links/bazel-testlogs/crates/cli-tui/cli_tui_test/test.outputs/*.html; do \
 		"$(CHROME)" --headless=new --disable-gpu --hide-scrollbars --window-size=1110,664 \
 			--screenshot="$(TUI_SHOTS)/$$(basename $$page .html).png" "file://$(CURDIR)/$$page" >/dev/null 2>&1; \
 	done

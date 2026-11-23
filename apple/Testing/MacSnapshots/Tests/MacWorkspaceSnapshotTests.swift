@@ -334,6 +334,20 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 720), spanish: true) { MacServiceDetail(presentation: store) }
     }
 
+    func test_card_aPullRequestNotCheckedYetIsRefused() throws {
+        let store = try presentation(detail: "card-pr-mac") {
+            $0.returnReasons["hf-weekly-2026-09-30"] = "Alondra is still checking on GitHub which pull request this is. Nothing was changed; try again in a minute."
+        }
+        assertWindow(size: CGSize(width: 900, height: 720)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_aPullRequestNotCheckedYetIsRefused_spanish() throws {
+        let store = try presentation(detail: "card-pr-es-mac", spanish: true) {
+            $0.returnReasons["hf-weekly-2026-09-30"] = "Alondra aún está comprobando en GitHub qué PR es. No se cambió nada; vuelve a intentarlo en un minuto."
+        }
+        assertWindow(size: CGSize(width: 900, height: 720), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     func test_card_aReplyWaitingForAPausedNodeSaysSo() throws {
         let store = try presentation(detail: "card-reply-waiting-mac")
         assertWindow(size: CGSize(width: 900, height: 720)) { MacServiceDetail(presentation: store) }

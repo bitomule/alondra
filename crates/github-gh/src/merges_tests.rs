@@ -76,7 +76,7 @@ esac
         number: 7, head: HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None,
         allowed_methods: vec![MergeMethod::Squash], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None, };
     assert_eq!(gh.bypassable_checks(&pr, "main").await, Ok(vec!["CI".to_owned()]));
-    gh.merge_bypassing(&pr, HEAD, MergeMethod::Squash).await.unwrap();
+    gh.merge_bypassing(&pr, &alondra_domain_rules::ProviderPrKey("7".into()), HEAD, MergeMethod::Squash).await.unwrap();
     let calls = std::fs::read_to_string(&log).unwrap();
     assert!(calls.contains("repos/owner/repo/rulesets/26") && calls.contains("repos/owner/repo/rulesets/27"), "{calls}");
     assert!(calls.contains(&format!("pr merge https://github.com/owner/repo/pull/7 --squash --match-head-commit {HEAD} --admin")), "{calls}");
@@ -95,7 +95,7 @@ async fn gh_merges_with_the_method_only_at_the_presented_head_and_reads_status_a
         allowed_methods: vec![MergeMethod::Squash], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None, };
     let status = gh.status(&pr).await.unwrap();
     assert_eq!((status.state, status.head.as_str(), status.checks), (PrState::Open, HEAD, Checks::Failed(vec!["lint".into()])));
-    gh.merge(&pr, HEAD, MergeMethod::Squash).await.unwrap();
+    gh.merge(&pr, &alondra_domain_rules::ProviderPrKey("7".into()), HEAD, MergeMethod::Squash).await.unwrap();
     assert!(gh.in_queue(&pr).await.unwrap());
     let calls = std::fs::read_to_string(&log).unwrap();
     assert!(calls.contains(&format!("pr merge https://github.com/owner/repo/pull/7 --squash --match-head-commit {HEAD}")), "{calls}");
@@ -118,7 +118,7 @@ async fn gh_reads_the_structured_default_branch_before_retargeting_a_pr() {
         allowed_methods: vec![MergeMethod::Squash], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None, };
     let base = gh.default_branch(&pr).await.unwrap();
     assert_eq!(base, "develop");
-    gh.retarget(&pr, &base).await.unwrap();
+    gh.retarget(&pr, &alondra_domain_rules::ProviderPrKey("7".into()), &base).await.unwrap();
     assert_eq!(std::fs::read_to_string(&log).unwrap(),
         "repo view https://github.com/acme/widgets --json defaultBranchRef\npr edit https://github.com/acme/widgets/pull/7 --base develop\n");
     for invalid in ["{}", r#"{"defaultBranchRef":{"name":""}}"#, r#"{"defaultBranchRef":null}"#, "not json"] {

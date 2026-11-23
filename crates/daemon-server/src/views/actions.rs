@@ -1341,8 +1341,18 @@ async fn close_on_github(state: &alondra_domain_rules::DomainState, github: &dyn
     };
     let number = pr.number;
     let mut was_open = pr.state == alondra_domain_rules::PrState::Open;
-    if was_open && let Err(detail) = github.close_pr(&pr.host, &pr.repository, number, &alondra_domain_rules::cancelled_pr_comment(&task.title)).await {
+    let expected = match (&pr.identity, was_open) {
+        (alondra_domain_rules::PrIdentity::Verified { key, .. }, _) => Some(key),
+        (_, true) => return Err(refused_value(&Refusal::PrNotCheckedYet, lang)),
+        (_, false) => None,
+    };
+    if was_open && let Some(expected) = expected
+        && let Err(detail) = github.close_pr(&pr.host, &pr.repository, number, expected, &alondra_domain_rules::cancelled_pr_comment(&task.title)).await
+    {
         log!("could not close PR #{number} on GitHub: {detail}");
+        if matches!(detail, crate::domain_github::GhFailure::IdentityMismatch(_)) {
+            return Err(refused_value(&Refusal::PrNotCheckedYet, lang));
+        }
         match github.pr_state(&pr.host, &pr.repository, number).await {
             Ok(alondra_domain_rules::PrState::Merged) => return Err(refused_value(&Refusal::PrAlreadyMerged { number }, lang)),
             Ok(alondra_domain_rules::PrState::Closed) => was_open = false,
@@ -3424,7 +3434,7 @@ for line in sys.stdin:
     impl crate::client_routes::Github for HeldPrClose {
         fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
         fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
-        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a str) -> crate::node_close::Answer<'a, Result<(), String>> {
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a alondra_domain_rules::ProviderPrKey, _: &'a str) -> crate::node_close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.release.acquire().await.unwrap().forget();
@@ -3583,6 +3593,18 @@ for line in sys.stdin:
             .any(|message| message.recipient_kind == "agent" && message.interaction_id.as_deref() == Some("old")));
     }
 
+    /// A read of GitHub confirmed which pull request each registered one is, at its own address:
+    /// what the watcher's first round leaves before anyone acts on a card.
+    fn checked_on_github(domain: &crate::domain_runtime::DomainRuntime) {
+        let state = domain.state().unwrap();
+        for pr in state.pull_requests.values().filter(|pr| pr.is_tracked() && pr.identity.is_unverified()) {
+            apply_seed_command(domain, Actor::System, &format!("checked-{}", pr.id), Command::ObservePrAddress { pr_id: pr.id.clone(),
+                read: alondra_domain_rules::PrRead::Address { repository: pr.repository.clone() }, read_started_at: 1_000,
+                verdict: alondra_domain_rules::PrAddressVerdict::Confirmed { key: crate::domain_merges::fake_key(pr.number),
+                    locator: alondra_domain_rules::ProviderLocator(format!("PR_{}", pr.number)), current_repository: pr.repository.clone() } });
+        }
+    }
+
     fn presented_pr(domain: &crate::domain_runtime::DomainRuntime) {
         use alondra_domain_rules::DeliveryTarget;
         let user = Actor::User { user_id: "user".into() };
@@ -3608,6 +3630,7 @@ for line in sys.stdin:
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
             is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
+        checked_on_github(domain);
     }
 
     fn waits_for_the_user(domain: &crate::domain_runtime::DomainRuntime) -> bool {
@@ -3744,7 +3767,7 @@ for line in sys.stdin:
         fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> {
             Box::pin(async { Err("not used".into()) })
         }
-        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64, comment: &'a str) -> crate::node_close::Answer<'a, Result<(), String>> {
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64, _: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str) -> crate::node_close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
             Box::pin(async move {
                 if let Some(error) = self.1 { return Err(error.into()); }
                 if let Some(during) = &self.2 { during(); }
@@ -3879,6 +3902,7 @@ for line in sys.stdin:
             targets: vec![alondra_domain_rules::DeliveryTarget::PullRequest { pr_id: site.clone(), head: "fedcba9876543210".into() }],
             is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
+        checked_on_github(domain);
         (alondra_domain_rules::hosted_pr_id("github.com", "me/app", 7), site)
     }
 
@@ -4068,6 +4092,48 @@ for line in sys.stdin:
         assert!(state.tasks[&"task".into()].cancelled(), "a delivery of only that PR ends as when the PR closes unmerged");
         assert_eq!(map_domain_action(&state, &detach, &request_for(&state, &detach, "es"), &[], Lang::Es).unwrap_err(), Refusal::PrDetached);
         assert!(github.0.lock().unwrap().is_empty(), "nothing reached GitHub");
+    }
+
+    /// GitHub as a close from a card finds it: the address now answers with another pull request.
+    struct AnotherPrThere(std::sync::Mutex<Vec<u64>>);
+    impl crate::client_routes::Github for AnotherPrThere {
+        fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
+        fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64, _: &'a alondra_domain_rules::ProviderPrKey, _: &'a str)
+            -> crate::node_close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
+            self.0.lock().unwrap().push(number);
+            Box::pin(async { Err(crate::domain_github::GhFailure::IdentityMismatch("another pull request".into())) })
+        }
+        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
+            Box::pin(async { Ok(alondra_domain_rules::PrState::Open) })
+        }
+        fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> crate::node_close::Answer<'a, Result<crate::pr_viewed::Marks, String>> { Box::pin(async { Err("not used".into()) }) }
+        fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> crate::node_close::Answer<'a, Result<(), String>> { Box::pin(async { Err("not used".into()) }) }
+    }
+
+    /// "Close without merging" acts only on a pull request a read confirmed: one nobody has read
+    /// yet is refused without reaching GitHub, and one whose address answers with another pull
+    /// request is left open, saying Alondra is still checking it.
+    #[tokio::test]
+    async fn close_without_merging_needs_the_pull_request_a_read_confirmed() {
+        let pr = alondra_domain_rules::hosted_pr_id("github.com", "me/app", 7);
+        let unread = state_after(task_with_prs(&[(&pr, "me/app", 7)]));
+        let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_rules::PrState::Open));
+        for (lang, said) in [(Lang::En, "Alondra is still checking on GitHub which pull request this is. Nothing was changed; try again in a minute."),
+            (Lang::Es, "Alondra aún está comprobando en GitHub qué PR es. No se cambió nada; vuelve a intentarlo en un minuto.")] {
+            let refused = close_on_github(&unread, &github, pr.0.as_str(), lang).await.unwrap_err();
+            assert_eq!((refused["outcome"].as_str(), refused["message"].as_str()), (Some("rejected"), Some(said)), "{refused}");
+        }
+        assert!(github.0.lock().unwrap().is_empty(), "nothing reached GitHub");
+
+        let mut commands = task_with_prs(&[(&pr, "me/app", 7)]);
+        commands.push(observed(&pr, "me/app", alondra_domain_rules::PrAddressVerdict::Confirmed { key: alondra_domain_rules::ProviderPrKey("key-a".into()),
+            locator: alondra_domain_rules::ProviderLocator("locator-a".into()), current_repository: "me/app".into() }));
+        let read = state_after(commands);
+        let elsewhere = AnotherPrThere(Default::default());
+        let refused = close_on_github(&read, &elsewhere, pr.0.as_str(), Lang::En).await.unwrap_err();
+        assert_eq!(refused["message"], "Alondra is still checking on GitHub which pull request this is. Nothing was changed; try again in a minute.");
+        assert_eq!(*elsewhere.0.lock().unwrap(), [7], "asked once, and GitHub closed nothing");
     }
 
     #[tokio::test]
