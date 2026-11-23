@@ -340,3 +340,33 @@ screens = ["task:t2"]
     let slowly = crate::runner::run_with_slow_host_exits(&scenario(text), std::time::Duration::from_millis(400)).expect("the scenario runs");
     assert_eq!(at_once.checkpoints, slowly.checkpoints);
 }
+
+/// 15 November: on a loaded Mac a release run failed «starting the SDK host» for a host that did
+/// start, only later than the daemon's I/O timeout in real time. A host that opens its socket later
+/// than that timeout still starts its node, and the scenario reads the same as with a host that
+/// listens at once.
+#[test]
+fn a_host_slow_to_start_still_starts_its_node() {
+    let text = r#"
+name = "a node whose host starts late"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report"
+task = "t1"
+title = "Add the export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "checkpoint"
+name = "started"
+screens = ["task:t1"]
+"#;
+    let at_once = run(&scenario(text), None).expect("the scenario runs");
+    let late = crate::runner::run_with_slow_host_starts(&scenario(text), std::time::Duration::from_millis(1_500), 1).expect("a host that starts late starts its node");
+    assert_eq!(at_once.checkpoints, late.checkpoints);
+}

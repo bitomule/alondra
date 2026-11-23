@@ -734,3 +734,41 @@ fn a_live_host_no_owner_can_adopt_is_ended_with_its_group_by_the_lock_it_holds()
         "nothing of its group is left"
     );
 }
+/// A host that never opens its socket is given up once the daemon's clock passes the I/O
+/// timeout, and not before: that timeout is the net under a host that hangs. On a virtual clock it
+/// passes only when the clock is moved, however long the host takes in real time.
+#[test]
+fn a_host_that_never_opens_its_socket_is_given_up_when_the_daemons_clock_passes_the_timeout() {
+    use alondra_foundation::clock;
+    const TIMEOUT: Duration = Duration::from_secs(30);
+    let runtime = clock::VirtualRuntime::new(1_700_000_000_000).unwrap();
+    let directory = support::directory();
+    runtime.block_on(async {
+        let mut environment = support::environment(&directory);
+        environment.insert("ALONDRA_FIXTURE_MODE".into(), "silent".into());
+        let mut host = OwnedHost::launch(support::owner(&directory, 0), artifact(), &directory, &environment, |_, _| Ok(b"private-fixture-bootstrap".to_vec())).unwrap();
+        struct Stopped(alondra_agent_runtime::owned_host::HostStop);
+        impl Drop for Stopped {
+            fn drop(&mut self) {
+                let _ = self.0.request();
+            }
+        }
+        let _stopped = Stopped(host.stopper());
+        let deadline = clock::instant().into_std() + TIMEOUT;
+        let (ended, waited) = std::sync::mpsc::channel();
+        let waiting = clock::spawn_thread(move || {
+            let _ = ended.send(host.wait_for_socket(deadline).map(drop));
+            host
+        });
+        clock::advance(TIMEOUT - Duration::from_secs(1)).await;
+        // Several looks at the clock pass in real time while it stands short of the deadline.
+        assert!(waited.recv_timeout(Duration::from_millis(500)).is_err(), "given up before the daemon's clock passed the timeout");
+        clock::advance(Duration::from_secs(2)).await;
+        // The next look at the clock gives it up: no real wait as long as the timeout.
+        let error = waited.recv_timeout(TIMEOUT / 3).expect("given up once the daemon's clock passed the timeout").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+        let mut host = waiting.join().unwrap();
+        host.request_stop().unwrap();
+        host.wait().unwrap();
+    });
+}

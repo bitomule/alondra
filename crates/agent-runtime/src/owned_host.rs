@@ -20,6 +20,11 @@ const BOOTSTRAP_LIMIT: usize = 65_536;
 const LINE_LIMIT: usize = 4096;
 const TAIL_LIMIT: usize = 16_384;
 const CONNECT_LIMIT: usize = 8;
+/// How often, in real time, a host that is opening its socket has its exit and the daemon's clock
+/// looked at. Its socket, its exit or the end of its output ends the wait; the I/O timeout is only
+/// the net under a host that hangs, and it runs on the daemon's clock, which a virtual clock holds
+/// while the daemon works, so a slow Mac never runs it out in a test.
+const LOOK_AT_THE_CLOCK_EVERY: Duration = Duration::from_millis(100);
 const SWEEP_ROUNDS: usize = 16;
 
 /// Everything that starts a host process, handed to a [`HostLauncher`] once the lock file and the
@@ -353,14 +358,15 @@ impl<O> OwnedHost<O> {
                 ));
             }
             let remaining = deadline
-                .checked_duration_since(Instant::now())
+                .checked_duration_since(alondra_foundation::clock::instant().into_std())
+                .filter(|remaining| !remaining.is_zero())
                 .ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::TimedOut,
-                        "owned startup observation unresolved",
+                        "the host did not open its socket before the I/O timeout; host retained",
                     )
                 })?;
-            match self.wake.recv_timeout(remaining) {
+            match self.wake.recv_timeout(remaining.min(LOOK_AT_THE_CLOCK_EVERY)) {
                 Ok(Wake::Hint) if attempts.on_hint() => match self.connect(deadline) {
                     Ok(stream) => return Ok(stream),
                     Err(error)
@@ -380,9 +386,10 @@ impl<O> OwnedHost<O> {
                         "owned diagnostic pipe closed before authentication; host retained",
                     ));
                 }
-                Err(_) => {
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
+                        io::ErrorKind::UnexpectedEof,
                         "owned startup observation unresolved; host retained",
                     ));
                 }
@@ -980,7 +987,7 @@ pub(super) fn connect_deadline(path: &Path, deadline: Instant) -> io::Result<Uni
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     use rustix::net::sockopt::socket_error;
     use rustix::net::{SocketAddrUnix, connect, getpeername};
-    if Instant::now() >= deadline {
+    if alondra_foundation::clock::instant().into_std() >= deadline {
         return Err(io::ErrorKind::TimedOut.into());
     }
     let socket = connect_socket()?;
@@ -989,7 +996,7 @@ pub(super) fn connect_deadline(path: &Path, deadline: Instant) -> io::Result<Uni
         Ok(()) => {}
         Err(rustix::io::Errno::INPROGRESS | rustix::io::Errno::ALREADY) => loop {
             let remaining = deadline
-                .checked_duration_since(Instant::now())
+                .checked_duration_since(alondra_foundation::clock::instant().into_std())
                 .filter(|remaining| !remaining.is_zero())
                 .ok_or(io::ErrorKind::TimedOut)?;
             let timeout = Timespec::try_from(remaining).map_err(|_| io::ErrorKind::InvalidInput)?;
@@ -1006,7 +1013,7 @@ pub(super) fn connect_deadline(path: &Path, deadline: Instant) -> io::Result<Uni
         },
         Err(error) => return Err(error.into()),
     }
-    if Instant::now() >= deadline {
+    if alondra_foundation::clock::instant().into_std() >= deadline {
         return Err(io::ErrorKind::TimedOut.into());
     }
     getpeername(&socket)?.ok_or(io::ErrorKind::NotConnected)?;

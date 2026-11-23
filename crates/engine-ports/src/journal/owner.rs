@@ -149,7 +149,7 @@ impl DiscardReason {
             ObservationRefusal::Unrecordable(_) | ObservationRefusal::Provider(Error::RequiresDomainCommand) => Self::Unrecordable,
             ObservationRefusal::Provider(Error::ObservationCapacity) => Self::Capacity,
             ObservationRefusal::Provider(Error::Adapter(adapter)) => Self::AdapterRefused(match adapter {
-                AdapterError::Disconnected => return None,
+                AdapterError::Disconnected | AdapterError::Unreachable(_) => return None,
                 AdapterError::InvalidObservation => AdapterRefusal::InvalidObservation,
                 AdapterError::Unsupported => AdapterRefusal::Unsupported,
                 AdapterError::UnknownInput => AdapterRefusal::UnknownInput,

@@ -23,10 +23,24 @@ use std::sync::{Arc, Mutex};
 
 /// The edge itself, shared by the daemon (as its launcher) and the runner.
 #[derive(Clone)]
-pub struct ClaudeEdge(ClaudeModel, Arc<Mutex<Option<std::time::Duration>>>);
+pub struct ClaudeEdge(ClaudeModel, Arc<Mutex<Slowness>>);
+
+/// How slow the hosts started from now on are, in real time: what a loaded Mac does to them.
+#[derive(Clone, Copy, Default)]
+struct Slowness {
+    exit: Option<std::time::Duration>,
+    start: Option<std::time::Duration>,
+    io_timeout_seconds: Option<u64>,
+}
+
+/// The I/O timeout of the hosts of a scenario's daemon, unless a test gives a shorter one.
+const IO_TIMEOUT_SECONDS: u64 = 30;
 
 /// The variable that tells a host's relay how many milliseconds it takes to exit once told to stop.
 pub const SLOW_EXIT: &str = "SCENARIO_HOST_SLOW_EXIT_MS";
+
+/// The variable that tells a host's relay how many milliseconds it takes to open its socket.
+pub const SLOW_START: &str = "SCENARIO_HOST_SLOW_START_MS";
 
 impl std::ops::Deref for ClaudeEdge {
     type Target = ClaudeModel;
@@ -43,7 +57,23 @@ impl ClaudeEdge {
     /// Every host started from now on takes `by` to exit once the daemon tells it to stop, as a
     /// Claude Code that finishes writing before it goes; without it, a host exits at once.
     pub fn set_slow_exit(&self, by: std::time::Duration) {
-        *self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(by);
+        self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).exit = Some(by);
+    }
+
+    /// Every host started from now on takes `by` to open its socket, as a host a loaded Mac starts
+    /// late; without it, a host listens at once.
+    pub fn set_slow_start(&self, by: std::time::Duration) {
+        self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).start = Some(by);
+    }
+
+    /// The daemon's I/O timeout for its hosts: shorter than a slow start when a test says so, so the
+    /// start outlasts it in real time.
+    pub fn set_io_timeout(&self, seconds: u64) {
+        self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).io_timeout_seconds = Some(seconds);
+    }
+
+    pub fn io_timeout_seconds(&self) -> u64 {
+        self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).io_timeout_seconds.unwrap_or(IO_TIMEOUT_SECONDS)
     }
 
     pub fn trouble(&self) -> Option<Trouble> {
@@ -111,8 +141,12 @@ impl HostLauncher for ClaudeEdge {
         // daemon that comes back finds it held, and finds it at the other end of the socket.
         let relay = relay().map_err(std::io::Error::other)?;
         let mut relay = Process::new(relay);
-        if let Some(by) = *self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        let slowness = *self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(by) = slowness.exit {
             relay.env(SLOW_EXIT, by.as_millis().to_string());
+        }
+        if let Some(by) = slowness.start {
+            relay.env(SLOW_START, by.as_millis().to_string());
         }
         let child = relay
             .arg(&bootstrap.socket_path)

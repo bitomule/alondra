@@ -380,12 +380,22 @@ impl PreparedCommand {
 #[derive(Debug)]
 pub enum AdapterError {
     Disconnected,
+    /// The host could not be reached, and why: a launch, a connection or a handshake that failed.
+    Unreachable(String),
     InvalidObservation,
     Unsupported,
     /// The observation names an input Alondra never handed over: the native process's own.
     UnknownInput,
     Storage(String),
     Protocol(String),
+}
+impl std::fmt::Display for AdapterError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreachable(cause) => write!(formatter, "the host could not be reached: {cause}"),
+            other => write!(formatter, "{other:?}"),
+        }
+    }
 }
 /// Production implementations keep their endpoint and launch/ownership credentials private.
 pub trait Adapter {
