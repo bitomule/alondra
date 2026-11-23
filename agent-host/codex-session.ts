@@ -731,8 +731,10 @@ export class CodexSession implements HostSession {
     if (this.closing || this.closed) return;
     this.closing = true;
     this.queue = [];
-    this.child.stdin.destroy();
+    // The signal goes before the end of input: a native that ends at the end of its input would
+    // otherwise exit cleanly before the signal lands, and the stop would read as a normal exit.
     this.child.kill('SIGTERM');
+    this.child.stdin.destroy();
     this.stopDeadline = setTimeout(() => { if (!this.closed) this.child.kill('SIGKILL'); }, 1000);
     this.stopDeadline.unref();
   }

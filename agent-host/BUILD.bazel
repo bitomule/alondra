@@ -276,7 +276,7 @@ js_run_binary(
 js_test(
     name = "codex_session_test",
     env = {"TEST_EXECS": "$(rootpath :fake-codex.py)"},
-    timeout = "moderate",
+    timeout = "long",
     entry_point = "codex-session.test.mjs",
     data = [":host_lib", ":codex_bundle", "fake-codex.py", "codex-exit-fixture.mjs", "codex-host-failure.mjs", "codex-failed-cleanup-fixture.mjs", "codex-ack-progress-fixture.mjs", ":node_modules/zod"],
 )

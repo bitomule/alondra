@@ -12,6 +12,12 @@ struct IrohProcessTests {
     private static let macSigning = try! P256.Signing.PrivateKey(rawRepresentation: Data(repeating: 1, count: 32))
     private static let macAgreement = try! P256.KeyAgreement.PrivateKey(rawRepresentation: Data(repeating: 2, count: 32))
 
+    /// On a Mac whose route goes through Wi-Fi, iroh asks Core WLAN for the Wi-Fi interface: without
+    /// that framework the class is missing, iroh's network watch panics and the endpoint never opens.
+    @Test func theWiFiClassIrohAsksForOnTheMacIsThere() {
+        #expect(NSClassFromString("CWWiFiClient") != nil)
+    }
+
     @Test func aPairedDeviceGetsSealedAnswersAndARepeatedActionRunsOnce() async throws {
         let server = try IrohFixtureServer()
         defer { server.stop() }
