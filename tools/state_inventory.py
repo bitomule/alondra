@@ -112,10 +112,10 @@ def literals(text, code):
 
 
 def production_files(root):
-    """Production Rust files of every scanned crate, the way the clock guard finds them."""
+    """Production Rust files under `src/` of every scanned crate, the way the clock guard finds them."""
     for crate in sorted(p for p in (root / "crates").iterdir() if p.is_dir() and p.name not in NOT_SCANNED):
         base = guard.absolute(crate)
-        files = sorted(guard.absolute(path) for path in base.rglob("*.rs") if "fixtures" not in path.parts)
+        files = sorted(guard.absolute(path) for path in (base / "src").rglob("*.rs") if "fixtures" not in path.parts)
         test_only = {path for path in files if guard.is_test_file(path.relative_to(base))}
         changed = True
         while changed:

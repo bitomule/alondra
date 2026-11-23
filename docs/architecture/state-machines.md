@@ -1707,6 +1707,11 @@ and port moves (#298, #300, #363, #366, #406, #434, #445, #447, #478, #496), wit
 
 ```toml timers
 [[timer]]
+name = "LOOK_AT_THE_CLOCK_EVERY"
+where = "crates/agent-runtime/src/owned_host.rs"
+decides = "pace"
+triggers = "how often an opening host's exit and the daemon's clock are looked at; the I/O timeout decides"
+[[timer]]
 name = "NO_CHECKS_GRACE"
 where = "crates/core/src/automerge.rs"
 decides = "state"
@@ -2238,6 +2243,12 @@ decides = "pace"
 name = "SWEEP_PAUSE"
 where = "crates/engine-orchestrator/src/domain_orchestrator.rs"
 decides = "pace"
+[[timer]]
+name = "CLAUDE_CACHE_MS"
+where = "crates/engine-orchestrator/src/orchestrator_conversation.rs"
+decides = "state"
+machine = "M-ORCH-1"
+triggers = "once the prompt cache lapsed, the orchestrator's next batch starts a new conversation instead of resuming"
 [[timer]]
 name = "STALLED_AFTER"
 where = "crates/engine-orchestrator/src/domain_orchestrator/watchdog.rs"

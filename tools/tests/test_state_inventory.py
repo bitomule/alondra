@@ -157,6 +157,10 @@ class GuardTest(unittest.TestCase):
         self.write("crates/engine-sdk/src/hold_tests.rs", 'const F: &str = "hold.json";\n')
         self.assertEqual(self.problems(), [])
 
+    def test_code_outside_src_is_not_production(self):
+        self.write("crates/engine-sdk/model/fake.rs", 'enum HostPhase { A }\nconst F: &str = "gate.json";\n')
+        self.assertEqual(self.problems(), [])
+
     def test_a_table_that_is_the_truth_of_no_machine_is_named(self):
         self.write("crates/store-sqlite/src/schema.sql", SCHEMA + "CREATE TABLE IF NOT EXISTS holds(id TEXT);\n")
         self.assertOne("table holds is the truth of no machine")
