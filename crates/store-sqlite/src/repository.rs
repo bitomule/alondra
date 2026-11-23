@@ -278,6 +278,9 @@ pub(super) fn was_schedule_launch_failed(c: &Connection, request_id: &RequestId)
 #[cfg(test)]
 #[path = "repository/schedule_tests.rs"]
 mod schedule_tests;
+#[path = "repository/pr_identity.rs"]
+mod pr_identity;
+pub(crate) use pr_identity::upgrade as upgrade_pr_identity;
 
 fn save_attachments(
     c: &Connection,
@@ -450,9 +453,13 @@ fn save_task_stack(c: &Connection, t: &Task, before: Option<&Task>) -> Result<()
     Ok(())
 }
 fn save_pull_request(c: &Connection, p: &PullRequest, before: Option<&PullRequest>) -> Result<()> {
-    let mut row = object(p)?;
-    row.remove("review");
-    upsert(c, "pull_requests", &["id"], row)?;
+    if before.is_some() {
+        pr_identity::save_aliases(c, p, before)?;
+    }
+    upsert(c, "pull_requests", &["id"], pr_identity::row(p)?)?;
+    if before.is_none() {
+        pr_identity::save_aliases(c, p, before)?;
+    }
     exec(c, "INSERT OR IGNORE INTO pull_request_tasks(task_id,pr_id) VALUES(?1,?2)", params![p.task_id.0, p.id.0])?;
     if p.review.is_some() && before.is_none_or(|b| b.review.is_none()) {
         put(c, "pull_request_reviews", &["pr_id"], json!({"pr_id":p.id}))?;
@@ -469,6 +476,9 @@ fn save_pr_decisions(c: &Connection, p: &PullRequest, before: Option<&PullReques
         let mut row = object(d)?;
         row.extend(object(&json!({"pr_id":p.id,"task_id":p.task_id,"ordinal":index}))?);
         upsert(c, "pr_decisions", &["pr_id", "ordinal"], row)?;
+    }
+    if earlier.is_some_and(|e| e.decisions.len() > r.decisions.len()) {
+        exec(c, "DELETE FROM pr_decisions WHERE pr_id=?1 AND ordinal>=?2", params![p.id.0, r.decisions.len() as i64])?;
     }
     Ok(())
 }
@@ -621,7 +631,11 @@ fn save_interaction_relations(
         InteractionPayload::Delivery {
             targets, feedback, ..
         } => {
-            if before.is_none() {
+            let moved = before.is_some_and(|b| matches!(&b.payload, InteractionPayload::Delivery { targets: earlier, .. } if earlier != targets));
+            if moved {
+                exec(c, "DELETE FROM delivery_targets WHERE interaction_id=?1", params![i.id.0])?;
+            }
+            if before.is_none() || moved {
                 for (index, target) in targets.iter().enumerate() {
                     let mut row = object(
                         &json!({"interaction_id":i.id,"ordinal":index,"task_id":task,"text":null,"document_id":null,"revision_id":null,"pr_id":null,"head":null}),
@@ -751,7 +765,8 @@ fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<(
             continue;
         };
         ensure!(
-            next.decisions.len() >= review.decisions.len(),
+            next.decisions.len() >= review.decisions.len()
+                || (pr.is_tracked() && pr_identity::handed_over(after, id, &review.decisions)),
             "domain persistence cannot remove pull request decisions"
         );
     }
@@ -936,10 +951,12 @@ pub(super) fn save_changes(
             }
         }
     }
-    let pull_requests: Vec<_> = changed(&before.pull_requests, &after.pull_requests).collect();
+    let mut pull_requests: Vec<_> = changed(&before.pull_requests, &after.pull_requests).collect();
+    pull_requests.sort_by_key(|(p, _)| pr_identity::holds_an_index(p));
     for (p, prior) in &pull_requests {
         save_pull_request(c, p, *prior)?;
     }
+    pr_identity::refresh_projects(c, after, &pull_requests)?;
     // A card the lifecycle requires exists before the event that requires it, and is answered or
     // withdrawn only after the event that no longer requires it: new cards go before the journal,
     // changes to existing ones after it.
@@ -1238,7 +1255,9 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
             .documents
             .insert(decode(row["document_id"].clone())?, s(&row["role"])?.into());
     }
+    let mut aliases = pr_identity::aliases(c)?;
     for mut row in rows(c, "pull_requests", &[], &["allowed_methods"])? {
+        pr_identity::decode_row(&mut row, &mut aliases)?;
         row["review"] = Value::Null;
         let x: PullRequest = decode(row)?;
         state.pull_requests.insert(x.id.clone(), x);

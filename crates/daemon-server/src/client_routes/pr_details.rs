@@ -236,7 +236,7 @@ impl PrDetails {
 
     /// Brings from GitHub the images of each open pull request's description not brought yet.
     pub(crate) async fn bring_images(&self, state: &DomainState, github: &dyn GitHubImages, home: &std::path::Path) {
-        for pr in state.pull_requests.values().filter(|pr| pr.state == PrState::Open) {
+        for pr in state.pull_requests.values().filter(|pr| pr.is_tracked() && pr.state == PrState::Open) {
             self.bring(pr, github, home).await;
         }
     }
@@ -313,14 +313,14 @@ impl PrDetails {
     fn keep_only(&self, state: &DomainState) {
         let mut cache = self.cache.lock_or_recover("the pull request details");
         let before = cache.entries.len();
-        cache.entries.retain(|id, _| state.pull_requests.keys().any(|pr| &pr.0 == id));
+        cache.entries.retain(|id, _| state.pull_requests.iter().any(|(pr, record)| &pr.0 == id && record.is_tracked()));
         if cache.entries.len() != before { cache.changes += 1; }
     }
 
     pub(crate) async fn refresh(&self, state: &DomainState, source: &dyn PrView) {
         let _refresh = self.refresh.lock().await;
         self.keep_only(state);
-        let pending = Mutex::new(state.pull_requests.values().filter(|pr| pr.state == PrState::Open));
+        let pending = Mutex::new(state.pull_requests.values().filter(|pr| pr.is_tracked() && pr.state == PrState::Open));
         let read = || async {
             loop {
                 let Some(pr) = pending.lock_or_recover("the pull request refresh").next() else { break };

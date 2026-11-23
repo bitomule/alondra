@@ -434,7 +434,7 @@ fn lifetime_pr_sql_constraints_reject_a_repeated_pr_reparent_delete_and_bad_targ
             )
             .is_err()
     );
-    assert!(store.conn.execute("INSERT INTO pull_requests SELECT 'pr-2',task_id,host,repository,number,head,base,state,merged_head,allowed_methods FROM pull_requests WHERE id='pr-1'",[]).is_err());
+    assert!(store.conn.execute("INSERT INTO pull_requests(id,task_id,host,repository,number,head,base,state,merged_head,allowed_methods) SELECT 'pr-2',task_id,host,repository,number,head,base,state,merged_head,allowed_methods FROM pull_requests WHERE id='pr-1'",[]).is_err());
     assert!(
         store
             .conn

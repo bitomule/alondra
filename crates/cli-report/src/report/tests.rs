@@ -604,6 +604,7 @@ fn domain_fixture(home: &Path, user_version: i64, with_closings: bool) {
          CREATE TABLE lifecycle_executions(task_id TEXT, generation INTEGER, node_id TEXT, instance_id TEXT, conversation_id TEXT, host_id TEXT, backend TEXT);
          CREATE TABLE lifecycle_events(task_id TEXT, revision INTEGER, command_id TEXT, event TEXT);
          CREATE TABLE pull_requests(id TEXT PRIMARY KEY, task_id TEXT, host TEXT, repository TEXT, number INTEGER, head TEXT, base TEXT, state TEXT);
+         CREATE TABLE pull_request_aliases(pr_id TEXT, repository TEXT);
          CREATE TABLE task_models(task_id TEXT PRIMARY KEY, model TEXT, chosen_by TEXT);
          CREATE TABLE api_failures(agent_id TEXT PRIMARY KEY, failures INTEGER, first_at INTEGER, last_at INTEGER, card TEXT);
          CREATE TABLE task_worktree_records(task_id TEXT, path TEXT, origin TEXT, branch TEXT, discard INTEGER, end TEXT);
@@ -623,6 +624,7 @@ fn domain_fixture(home: &Path, user_version: i64, with_closings: bool) {
          INSERT INTO interactions VALUES ('q-1', 'task', 't-fix-acme-invoice-rounding', 'question', 'Use the staging database?', 1, 'user', NULL, NULL, NULL, 0, 1, '{{\"kind\":\"ask\",\"need\":\"x\"}}');
          INSERT INTO lifecycle_executions VALUES ('t-fix-acme-invoice-rounding', 1, '{node}', 'sdk-0abdea5e130f80de', 'conv-1', 'sdk-host', 'sdk');
          INSERT INTO pull_requests VALUES ('pr-1', 't-fix-acme-invoice-rounding', 'github.com', 'acme/billing', 42, 'feature/acme-sso', 'main', 'open');
+         INSERT INTO pull_request_aliases VALUES ('pr-1', 'orbit-labs/ledger');
          INSERT INTO task_models VALUES ('t-fix-acme-invoice-rounding', 'opus', 'orchestrator');
          INSERT INTO task_worktree_records VALUES ('t-fix-acme-invoice-rounding', '/Users/ana.lopez/Code/acme-billing', 'task', 'feature/acme-sso', 0, NULL);",
         at = NOW - 3_600_000
@@ -800,7 +802,7 @@ fn the_final_check_finds_every_shape_and_every_value_of_this_mac() {
     let mac = FakeMac::new(&home);
     let catalog = Catalog::built();
     let private = private::of_this_mac(&mac, &catalog.vocabulary);
-    for leak in ["Fix the Acme invoice rounding", "acme/billing", "feature/acme-sso", "Ana's MacBook Pro", "analopez-acme", "claude-acme-key", "ana.lopez"] {
+    for leak in ["Fix the Acme invoice rounding", "acme/billing", "orbit-labs/ledger", "feature/acme-sso", "Ana's MacBook Pro", "analopez-acme", "claude-acme-key", "ana.lopez"] {
         let hits = canary::scan("daemon.log", &format!("fine\nsomething {leak} here\n"), Some(&private));
         assert_eq!(hits.len(), 1, "{leak}: {hits:?}");
         assert_eq!(hits[0].line, 2);
