@@ -153,6 +153,7 @@ pub async fn pass(domain: &dyn Runtime, home: &Path) -> Result<()> {
         if domain.gate().ask(waiting, now).is_err() {
             continue;
         }
+        let admitted = Admitted { domain, task: &task.id, started: false };
         if !domain.store().lock_or_exit("the domain store").claim_auto_launch(&task.id, now, retry)? {
             continue;
         }
@@ -169,9 +170,32 @@ pub async fn pass(domain: &dyn Runtime, home: &Path) -> Result<()> {
                 continue;
             }
         };
+        admitted.started(launched.is_ok());
         settle(domain, &task.id, plan.as_ref().map(|plan| plan.cwd.as_str()), launched, now)?;
     }
     Ok(())
+}
+
+/// A start the gate let through: unless its launch went ahead, its slot goes back to the gate
+/// however the pass leaves it.
+struct Admitted<'a> {
+    domain: &'a dyn Runtime,
+    task: &'a TaskId,
+    started: bool,
+}
+
+impl Admitted<'_> {
+    fn started(mut self, started: bool) {
+        self.started = started;
+    }
+}
+
+impl Drop for Admitted<'_> {
+    fn drop(&mut self) {
+        if !self.started {
+            self.domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(self.task.clone()));
+        }
+    }
 }
 
 /// What an automatic launch leaves behind: a refusal that clears by itself waits for a later pass,

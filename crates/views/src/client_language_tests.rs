@@ -14,7 +14,7 @@ fn system_fixture(kind: SystemCardKind) -> DomainState {
         K::PaceResume => (SystemCard::PaceResume { day: "2026-11-07".into() }, String::new()),
         K::Machine => (SystemCard::Machine, alondra_core::machine_incident::MachineCard {
             cause: alondra_core::machine_incident::MachineCause::Disk, disk_free: 1_000_000_000, nodes: vec![], reason: None,
-            resource: None, minutes: None, disk: None, still: false, purgeable: 0,
+            resource: None, minutes: None, still: false, purgeable: 0,
         }.to_body()),
         K::LocalNetwork => (SystemCard::LocalNetwork, alondra_domain_rules::local_network_card::LocalNetworkCard { launcher: true, still: false }.to_body()),
         K::ReportHeld => (SystemCard::ReportHeld { report: "r-20261120-1a2b3c4d".into() }, alondra_domain_rules::report_held_card::ReportHeldCard {

@@ -8,9 +8,7 @@
 //! A new node starts only with room for its build on top of what the nodes at work may still take
 //! (`disk_peaks`), above the low line, so the builds never take the disk under it. Under the floor
 //! (`under_floor`), lower than the low line, the estimates fell short: the nodes' next turns wait.
-use std::collections::BTreeSet;
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::OnceLock;
 
 /// Where a Mac keeps its writable data; `/` on any other system.
@@ -62,31 +60,24 @@ impl Space {
     pub fn room_for(&self, needed: u64, was_short: bool) -> Result<(), Room> {
         let (usable, free) = if was_short { (needed + RECOVERY_MARGIN_BYTES, recovered_lines().free) } else { (needed, low_lines().free) };
         if self.usable() < usable || self.free < free {
-            return Err(Room { free: self.shown_free(), needed, volume: None });
+            return Err(Room { free: self.shown_free(), needed });
         }
         Ok(())
     }
 }
 
-/// The disk short of room for one more build: the free space the user is told, what is needed,
-/// and the volume when it is not the Mac's own.
+/// The Mac's disk short of room for one more build: the free space the user is told and what is
+/// needed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Room {
     pub free: u64,
     pub needed: u64,
-    pub volume: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Lines {
     pub usable: u64,
     pub free: u64,
-}
-
-#[derive(Debug)]
-pub struct Mounts {
-    pub all: BTreeSet<PathBuf>,
-    pub candidates: Vec<PathBuf>,
 }
 
 /// Below these lines Alondra starts no node and puts a card in front of the user.
@@ -110,22 +101,16 @@ pub fn io_no_space(error: &std::io::Error) -> bool {
 }
 
 
-/// The disks of the Mac, as the engine reads them.
+/// The Mac's disk, as the engine reads it.
 pub trait Disk: Send + Sync {
     /// The space of the volume `path` is on.
     fn space(&self, path: &Path) -> Option<Space>;
-    /// What the volume of `path` itself holds, `df`'s Used.
-    fn held(&self, path: &Path) -> Option<u64>;
-    /// The top of the volume `path` is on.
-    fn mount_point(&self, path: &Path) -> Option<PathBuf>;
-    fn same_volume(&self, a: &Path, b: &Path) -> bool;
-    /// Every mounted volume, with those builds may write to apart.
-    fn mounted_volumes(&self) -> io::Result<Mounts>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
 
     #[test]
     fn a_full_disk_or_quota_is_told_from_other_failures() {
@@ -177,9 +162,9 @@ mod tests {
     #[test]
     fn a_disk_short_of_room_for_a_build_needs_margin_to_have_it_again() {
         let needed = 13 * GB;
-        assert_eq!(disk(12.0, 0.0).room_for(needed, false), Err(Room { free: 12 * GB, needed, volume: None }));
+        assert_eq!(disk(12.0, 0.0).room_for(needed, false), Err(Room { free: 12 * GB, needed }));
         assert_eq!(disk(4.0, 10.0).room_for(needed, false), Ok(()), "purgeable space counts");
-        assert_eq!(disk(1.0, 30.0).room_for(needed, false), Err(Room { free: GB, needed, volume: None }), "little free right now: told what a write can use");
+        assert_eq!(disk(1.0, 30.0).room_for(needed, false), Err(Room { free: GB, needed }), "little free right now: told what a write can use");
         assert!(disk(14.0, 0.0).room_for(needed, true).is_err(), "under the 2 GB margin once short");
         assert_eq!(disk(15.0, 0.0).room_for(needed, true), Ok(()));
     }

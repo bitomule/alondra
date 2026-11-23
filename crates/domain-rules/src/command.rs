@@ -225,6 +225,15 @@ pub enum Command {
         task_id: TaskId,
         priority: TaskPriority,
     },
+    /// The user paused a task that waits in the queue to start: nothing starts it until they resume
+    /// it, and it keeps its place. Ending the task ends the pause.
+    PauseQueuedTask {
+        task_id: TaskId,
+        at: Millis,
+    },
+    ResumeQueuedTask {
+        task_id: TaskId,
+    },
     /// What the final delivery of a task that blocks others concluded about them.
     RecordVerdict {
         task_id: TaskId,

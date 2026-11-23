@@ -39,8 +39,8 @@ pub enum Hold {
     Slots { working: usize, limit: u32 },
     Memory { why: NoRoom, free: Option<u32> },
     Spacing { until: Millis },
-    /// No room on the disk for one more build: the Mac's own, or the volume named.
-    Disk { free: u64, needed: u64, volume: Option<String> },
+    /// No room on the Mac's disk for one more build.
+    Disk { free: u64, needed: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,8 +118,9 @@ pub struct Pauses {
     /// Sessions admitted back while unreachable: told to carry on once they connect again.
     #[serde(default)]
     pub owed: BTreeMap<String, String>,
-    /// Queued launches the user paused, with what the queue held for them.
-    #[serde(default)]
+    /// Queued launches the user paused, with what the queue held for them, as an older daemon
+    /// saved them: still read once and handed to the domain, never written.
+    #[serde(default, skip_serializing)]
     pub held: BTreeMap<TaskId, Held>,
     /// Paused nodes the user resumed, by session, and when: they wait in the gate's queue like a
     /// start, whatever their pause waited for, and stay paused until the gate admits them.

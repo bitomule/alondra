@@ -35,6 +35,7 @@ impl DomainState {
         if matches!(actor, Actor::User { .. }) || explained {
             self.tasks.get_mut(task).unwrap().pending_user_inputs.clear();
         }
+        self.tasks.get_mut(task).unwrap().paused_in_queue = None;
         let Some(pr) = self.open_pr_of(task).cloned() else {
             return self.cancel(task, effects, lifecycles);
         };

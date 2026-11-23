@@ -3831,7 +3831,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;
@@ -3998,6 +3998,29 @@ impl DomainState {
                 for id in std::iter::once(task_id).chain(&reviewers) {
                     self.tasks.get_mut(id).unwrap().priority = *priority;
                 }
+            }
+            Command::PauseQueuedTask { task_id, at } => {
+                if !matches!(actor, Actor::System) {
+                    self.manager(actor)?;
+                }
+                self.active(task_id)?;
+                let t = self.task(task_id)?;
+                if t.agent_id.is_some() {
+                    return fail("conflict", "This task already has a node: pause its node instead");
+                }
+                if t.paused_in_queue.is_some() {
+                    return fail("unchanged", "This task is already paused");
+                }
+                self.tasks.get_mut(task_id).unwrap().paused_in_queue = Some(*at);
+            }
+            Command::ResumeQueuedTask { task_id } => {
+                if !matches!(actor, Actor::System) {
+                    self.manager(actor)?;
+                }
+                if self.task(task_id)?.paused_in_queue.is_none() {
+                    return fail("conflict", "This node or task is not paused");
+                }
+                self.tasks.get_mut(task_id).unwrap().paused_in_queue = None;
             }
             Command::RecordVerdict { task_id, presentation_id, verdict } => {
                 let t = self.assigned(actor, task_id)?;

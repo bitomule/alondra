@@ -97,24 +97,21 @@ pub(super) fn gate_queued<'a>(task: &alondra_domain_rules::Task, context: &'a Re
     context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)
 }
 
-/// The free space, what one more build needs and the volume when it is not the Mac's own disk,
-/// when the gate holds the task's start or its node's return for room on the disk: the task then
-/// reads `WaitingCapacity(Disk)`, whatever its lifecycle says.
-pub(super) fn held_for_disk<'a>(task: &alondra_domain_rules::Task, context: &'a RenderContext<'_>) -> Option<(u64, u64, Option<&'a str>)> {
+/// The free space and what one more build needs, when the gate holds the task's start or its
+/// node's return for room on the disk: the task then reads `WaitingCapacity(Disk)`, whatever its
+/// lifecycle says.
+pub(super) fn held_for_disk(task: &alondra_domain_rules::Task, context: &RenderContext<'_>) -> Option<(u64, u64)> {
     match &gate_queued(task, context)?.hold {
-        super::LiveHold::Disk { free, needed, volume } => Some((*free, *needed, volume.as_deref())),
+        super::LiveHold::Disk { free, needed } => Some((*free, *needed)),
         _ => None,
     }
 }
 
-/// «Disk · 3.5 GB free of 13.0 GB needed», «… on BuildCache» for a volume other than the Mac's own.
-pub(super) fn disk_room_fact(free: u64, needed: u64, volume: Option<&str>, lang: super::Lang) -> String {
+/// «Disk · 3.5 GB free of 13.0 GB needed».
+pub(super) fn disk_room_fact(free: u64, needed: u64, lang: super::Lang) -> String {
     use alondra_core::machine_incident::bytes_text;
     let (free, needed) = (bytes_text(free, lang), bytes_text(needed, lang));
-    match volume {
-        Some(volume) => super::text::tf!(lang, "Disk · {free} free of {needed} needed on {volume}", "Disco · {free} libres de {needed} necesarios en {volume}"),
-        None => super::text::tf!(lang, "Disk · {free} free of {needed} needed", "Disco · {free} libres de {needed} necesarios"),
-    }
+    super::text::tf!(lang, "Disk · {free} free of {needed} needed", "Disco · {free} libres de {needed} necesarios")
 }
 
 /// What the task of a node that runs through the Agent SDK does, from its lifecycle; `None` for a

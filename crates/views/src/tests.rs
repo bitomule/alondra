@@ -61,7 +61,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
+            waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -3422,7 +3422,7 @@ fn a_machine_card_offers_its_fix_and_no_reply_to_the_orchestrator_on_any_client(
     use alondra_domain_rules::CardKind;
     use alondra_core::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, MachineCard, MachineCause};
     let mut state = fixture();
-    let disk = MachineCard { cause: MachineCause::Disk, disk_free: 3_000_000_000, nodes: vec![], reason: None, resource: None, minutes: None, disk: None, still: false, purgeable: 0 };
+    let disk = MachineCard { cause: MachineCause::Disk, disk_free: 3_000_000_000, nodes: vec![], reason: None, resource: None, minutes: None, still: false, purgeable: 0 };
     let (need, why) = disk.text(Lang::En);
     state.interactions.insert("machine-1000".into(), Interaction { system_card: Some(alondra_domain_rules::SystemCard::Machine),
         attachments: vec![], id: "machine-1000".into(), scope: Scope::Orchestrator { request_id: None },
@@ -6862,7 +6862,7 @@ fn a_queued_task_says_its_place_and_why_in_its_task() {
 /// its row and on its screen, whether it never started or its node waits to come back.
 #[test]
 fn a_task_held_for_the_disk_waits_for_capacity_with_the_free_space_and_what_is_needed() {
-    let held = LiveQueued { node: None, pausable: true, task_id: "t-1".into(), position: 1, of: 2, hold: LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000, volume: None } };
+    let held = LiveQueued { node: None, pausable: true, task_id: "t-1".into(), position: 1, of: 2, hold: LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000 } };
     let mut unstarted = fixture();
     unstarted.interactions.clear();
     let task = unstarted.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
@@ -6881,9 +6881,10 @@ fn a_task_held_for_the_disk_waits_for_capacity_with_the_free_space_and_what_is_n
             }
         }
     }
-    let on_cache = LiveQueued { hold: LiveHold::Disk { free: 659_000_000, needed: 9_000_000_000, volume: Some("BuildCache".into()) }, ..held.clone() };
     let earlier: LiveHold = serde_json::from_str(r#"{"kind":"disk"}"#).unwrap();
-    assert_eq!(earlier, LiveHold::Disk { free: 0, needed: 0, volume: None }, "a view of an earlier daemon still reads");
+    assert_eq!(earlier, LiveHold::Disk { free: 0, needed: 0 }, "a view of an earlier daemon still reads");
+    let named: LiveHold = serde_json::from_str(r#"{"kind":"disk","free":659000000,"needed":9000000000,"volume":"BuildCache"}"#).unwrap();
+    assert_eq!(named, LiveHold::Disk { free: 659_000_000, needed: 9_000_000_000 }, "a hold that named another volume still reads");
 }
 
 #[test]
@@ -8853,7 +8854,7 @@ fn a_waiting_task_says_its_real_place_and_current_reason_whatever_was_refused_be
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
     for (hold, en, es) in [
-        (LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000, volume: None }, "Disk · 3.5 GB free of 13.0 GB needed", "Disco · 3,5 GB libres de 13,0 GB necesarios"),
+        (LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000 }, "Disk · 3.5 GB free of 13.0 GB needed", "Disco · 3,5 GB libres de 13,0 GB necesarios"),
         (LiveHold::Slots { working: 5, limit: 5 }, "5 of 5 slots taken", "5 de 5 huecos ocupados"),
         (LiveHold::Memory { free: Some(12) }, "short of memory", "justo de memoria"),
         (LiveHold::Cpu { load: 52, cpus: 11 }, "very busy", "muy cargado"),

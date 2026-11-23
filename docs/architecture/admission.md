@@ -6,14 +6,13 @@ Alondra's nodes. Other programs affect the system totals; the daemon does not cl
 
 After a restart, starts and resumes wait for valid budgets of memory and the system disk. Memory
 needs a positive total and available bytes no greater than that total; zero available bytes hold admission.
-A percentage, pressure level, swap counter or healthy external disk cannot stand in for those
-budgets. A first healthy measurement is enough, without a fixed delay at startup. Optional percentage,
+A percentage, pressure level or swap counter cannot stand in for those budgets. A first healthy measurement is enough, without a fixed delay at startup. Optional percentage,
 pressure and swap readings need not be present.
 
 Invalid readings retain the last valid budgets and cannot establish recovery or include newer node
 footprints in an older memory budget. Disk readings require a positive total and free plus purgeable
-space no greater than that total. The system disk remains part of admission even when another
-volume is the fullest one. Fast sandboxes bypass memory explicitly for their fake nodes; their
+space no greater than that total. Alondra watches only the Mac's own disk, its system and data
+volume: no other volume holds a start or a turn, opens an incident or is remembered. Fast sandboxes bypass memory explicitly for their fake nodes; their
 slot and spacing checks still apply.
 
 Independent pressure, low free percentages and swap activity can tighten admission even when the
@@ -21,26 +20,20 @@ byte budget is missing. Such readings cannot clear a restriction or count toward
 Unknown, incoherent or reset swap counters retain a known swapping floor until a fresh minute of
 valid counters establishes recovery.
 
-Learned build volumes retain their last valid space budget and recovery margin when a probe fails.
-Reservations against each budget remain after work ends, until a valid space reading accounts for
-its writes. Every successful admission records its estimated writes, including work that finishes
-between samples. Repeated queries of one admission add no charge. A new admission cannot erase
-earlier writes or reuse older consumption credit, even for the same task. Forecasts exclude the
-task at the front of the queue and turns held for disk; earlier grants remain counted.
+The disk retains its last valid space budget and recovery margin when a probe fails. Reservations
+against it remain after work ends, until a valid space reading accounts for their writes. Every
+successful admission records its estimated writes, including work that finishes between samples.
+Repeated queries of one admission add no charge. A new admission cannot erase earlier writes or
+reuse older consumption credit, even for the same task. Forecasts exclude the task at the front of
+the queue and turns held for disk; earlier grants remain counted. The gate reads what the nodes
+reserve and decides under one lock, so a sample cannot clear the work it counts halfway.
 
-An error reading the mount table cannot confirm an unmount, and cached space cannot establish
-incident recovery. A complete table suspends the restriction of an absent volume without forgetting
-its learned peaks. The aggregate budget and incident retain the mount that caused them, so confirmed
-absence retires that volume's hold even if the system probe fails. The system disk's own recovery
-margin and other volumes' restrictions remain independent. Positive mount evidence supersedes an
-older confirmed absence, even if the next mount-table read fails. A remounted volume waits for a
-valid reading of its own filesystem; space from the directory's parent filesystem cannot replace it.
-Launch preflight also waits for that budget, including a launch admitted before the volume appeared.
-This applies to every learned build volume, even when the project's directory is on the system disk.
-Its immediate space probe cannot publish a new budget or discard reservations; the watcher measures
-the volume's identity and publishes its own coherent budget before preflight can proceed.
-Disk preflight refusals invalidate the unused admission, so retries evaluate and reserve against
-the current budgets instead of reusing a grant made while the volume was absent.
+The disk incident moves only with new samples: the watch looks again on every change of the domain,
+and a second look at a sample already taken neither counts toward recovery nor starts it over.
+
+A launch also reads, once, the space of the folder its task's worktree goes in, which may be a
+worktree folder the user set on another volume: a folder low on space refuses that launch, and the
+refusal gives the unused admission back. That volume is never watched afterwards.
 Waiting for a first reading does not invent a measured shortage or an additional recovery margin.
 
 | Check | Holds when | Source |
@@ -97,16 +90,22 @@ answer has not reached it yet holds no slot while it waits for one (`TaskLifecyc
 gate gives the slot when one frees, by priority and then age, in the same queue as starts and
 resumes, and wakes the owner; a task with no owner in this daemon is taken over. The slot counts from
 then until what waited reaches the node; something that waits after it queues again. The age lives
-in `admission.json`.
+in `admission.json`, also for a turn given a slot whose owner had not taken it when the daemon
+restarted: it waits again from when it first waited.
 
 A turn only needs a slot. Neither memory nor the spacing of starts holds it: its process exists or
 costs little to resume, and the user's answers do not go out one a minute. The first start of the
 queue, when it is ahead of a turn, keeps a slot if only the spacing holds it. A start memory or the
 disk holds keeps none, so what cannot use a slot never holds back what can.
 
-Checking and reserving happen under the gate's lock on a state read under it. A reservation has no
-timer: it holds while its node waits and its host lives, and then the node counts by its own state. A
-resume the gate let through carries its slot over to the turn it starts.
+Checking and reserving happen under the gate's lock on a state read under it. A start the gate let
+through holds its slot until its node exists, however long its launch takes, and gives it back as
+soon as its launch ends without one; from then on the node counts by its own state. A resume the
+gate let through carries its slot over to the turn it starts.
+
+A queued task the user pauses is a fact of the domain (`Task::paused_in_queue`): its launch keeps
+its row in the queue and its age, nothing starts it until the user resumes it, and ending the task
+ends the pause. A pause an older daemon kept in `admission.json` is handed to the domain once.
 
 These go on without asking:
 

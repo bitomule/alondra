@@ -14,7 +14,6 @@ pub use alondra_engine_kernel::start_failures::{ended, failed, plan_changed, pro
 
 /// What the daemon knows of how every open task gets going.
 pub fn facts(domain: &dyn Runtime, state: &DomainState) -> Result<BTreeMap<TaskId, StartFacts>> {
-    let held = domain.gate().pauses().held;
     let store = domain.store().lock_or_exit("the domain store");
     let planned = store.planned_tasks()?;
     let autos = store.auto_launches()?;
@@ -47,7 +46,7 @@ pub fn facts(domain: &dyn Runtime, state: &DomainState) -> Result<BTreeMap<TaskI
             planned: scheduled || planned.contains_key(&task.id),
             start,
             node,
-            held: held.contains_key(&task.id),
+            held: task.paused_in_queue.is_some(),
             closed: closed == Some(Relaunch::AskUser),
         });
     }

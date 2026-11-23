@@ -198,6 +198,9 @@ pub struct Task {
     /// Where its node stands in the queue of nodes waiting to work.
     #[serde(default, skip_serializing_if = "TaskPriority::is_normal")]
     pub priority: TaskPriority,
+    /// Since when the user holds it in the queue before it starts: nothing starts it meanwhile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_in_queue: Option<alondra_core::model::Millis>,
     /// How the task is ending while its state is Closing: read from its lifecycle, which holds
     /// Done or Cancelled back until every receipt of the ending is in.
     #[serde(default, skip_serializing_if = "Option::is_none")]

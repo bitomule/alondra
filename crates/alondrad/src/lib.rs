@@ -330,8 +330,6 @@ async fn prepare_workers(
         domain.admission().tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(admission::UNPACED)) });
         domain.admission().ignore_mac();
         domain.machine_watch().ignore_peaks();
-    } else {
-        domain.machine_watch().discover_volumes();
     }
     if config.ignore_mac_load {
         domain.admission().ignore_mac();

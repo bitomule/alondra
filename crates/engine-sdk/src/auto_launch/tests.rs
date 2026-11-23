@@ -237,6 +237,20 @@ async fn a_task_of_a_closed_request_or_archived_is_not_started() {
     assert!(!candidate(&state, &state.tasks[&TaskId::from("f1")].clone()), "it is archived");
 }
 
+/// The gate lets an automatic start through, and it gives way to a launch already under way: the
+/// slot goes back at once instead of counting for three minutes with no node.
+#[tokio::test]
+async fn an_automatic_start_that_gives_way_gives_its_slot_back() {
+    let f = world();
+    done_task(&f, "f0");
+    create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
+    assert!(f.domain.live().begin_launch("f1"), "a manual launch is under way");
+    pass(&*f.domain, &f.home).await.unwrap();
+    f.domain.live().end_launch("f1");
+    assert_eq!(launches(&f), 0);
+    assert_eq!(f.domain.admission().snapshot(&*f.domain, alondra_core::now_millis()).unwrap().working, 0, "a start that did not launch holds no slot");
+}
+
 #[tokio::test]
 async fn a_manual_and_an_automatic_launch_never_both_start_a_task() {
     let f = world();
@@ -302,7 +316,7 @@ async fn a_task_of_a_scheduled_request_needs_its_plan_and_takes_the_schedules_mo
         id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
         revision: 0, started: false, review_prs: false, created_revision: 0, pending_user_inputs: Default::default(), final_presentation: None, pr_id: None, later_prs: vec![], opened_prs: Default::default(), dependencies: Default::default(), stack: None,
         documents: Default::default(), archived: false, model: None, waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(),
-        verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, move_refused: None, allowed: Default::default(), project: None,
+        verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, move_refused: None, allowed: Default::default(), project: None,
     };
     command(&f.domain, Actor::System, Command::RecordScheduleRunSent { run_id: "run".into(), request, task, finished_at: 101,
         launch: alondra_domain_rules::ScheduleLaunchIntent { name: "scheduled/weekly-run".into(), cwd: f.project.to_str().unwrap().into(),
@@ -915,8 +929,8 @@ async fn pausing_a_task_waiting_for_its_automatic_start_takes_it_out_of_the_queu
 
     crate::admission::release_queued(&*f.domain, &"q2".into()).unwrap();
     assert!(paused_ids(&f).is_empty());
-    crate::admission::pass(&*f.domain, &f.home).await.unwrap();
-    assert_eq!(launches(&f), 2, "the slot q1 left is free: the gate starts it");
+    pass(&*f.domain, &f.home).await.unwrap();
+    assert_eq!(launches(&f), 2, "the slot q1 left is free: its automatic start takes it");
     assert!(agent_of(&f, "q2").is_some());
     assert!(paused_ids(&f).is_empty());
     pass(&*f.domain, &f.home).await.unwrap();
@@ -937,7 +951,8 @@ async fn pausing_a_launch_the_orchestrator_queued_takes_it_out_of_the_queue_unti
     assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap().len(), 1);
 
     crate::admission::hold_queued(&*f.domain, &"o2".into(), alondra_core::now_millis()).unwrap();
-    assert!(f.domain.store.lock().unwrap().launch_queue().unwrap().is_empty());
+    assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap().len(), 1, "its launch keeps its place in the queue");
+    assert!(f.domain.state().unwrap().tasks[&TaskId::from("o2")].paused_in_queue.is_some(), "the pause is a fact of the domain");
     assert_eq!(paused_ids(&f), ["o2"]);
 
     crate::admission::pass(&*f.domain, &f.home).await.unwrap();
