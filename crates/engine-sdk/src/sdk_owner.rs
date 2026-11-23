@@ -297,6 +297,8 @@ pub struct Driver {
     handoffs: Arc<Handoffs>,
     /// Runs once a dispatch has recorded its command, just before the command goes to the host.
     pub(crate) before_handoff: Option<Box<dyn FnOnce(&Handoffs) + Send>>,
+    /// Runs once the owner reads as ended after it closed the host of a resting node, just before its driver is dropped.
+    pub(crate) before_release_ends: Option<Box<dyn FnOnce() + Send>>,
 }
 
 /// What an owner's thread and whoever stops its host agree on. The thread hands an input or a
@@ -1798,7 +1800,7 @@ impl Driver {
 
     fn new(domain: Arc<dyn Runtime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
         let pause = Mutex::new(PauseSubscription::new(&*domain, &agent));
-        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None }
+        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None, before_release_ends: None }
     }
 
     /// The runtime of the daemon that owns this host.
@@ -2712,7 +2714,11 @@ impl Owner {
                 if driver.releases {
                     match driver.release_host() {
                         Ok(()) => {
+                            driver.let_go();
                             ending.store(true, Ordering::SeqCst);
+                            if let Some(hook) = driver.before_release_ends.take() {
+                                hook();
+                            }
                             log!("{} rests with nothing in its host: the host closed and its session waits for its next input", driver.task);
                             let capability = driver.ended_capability();
                             drop(driver);
