@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, watch, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, watch, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -599,14 +599,20 @@ test('a session/set_config_option agy refuses fails the opening session', { time
   assert.equal(f.messages().some((message) => message.method === 'session/prompt'), false);
 });
 
+// A silent agy writes nothing after the message, so no write may be lost. macOS watches a folder
+// through FSEvents, which starts after watch() returns and drops a write made meanwhile; a file is
+// watched with kqueue, registered at the loop's next poll, so the check after it sees what came first.
 async function recorded(f, name) {
   let check; let failed;
-  const changed = watch(f.record, () => check());
+  const file = join(f.record, 'messages.jsonl');
+  appendFileSync(file, '');
+  const changed = watch(file, () => check());
   try {
     await new Promise((resolve, reject) => {
       failed = reject;
       check = () => { try { if (f.messages().some((message) => message.method === name)) resolve(); } catch (error) { reject(error); } };
       check();
+      setImmediate(check);
     });
   } finally { changed.close(); }
   return failed;
