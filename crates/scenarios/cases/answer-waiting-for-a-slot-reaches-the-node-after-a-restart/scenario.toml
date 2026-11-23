@@ -1,0 +1,93 @@
+name = "the user's answer to a node's permission card that waits for a slot reaches the node after the daemon restarts and takes over its host"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Remove the old secrets from the shared folder"
+task = "t1"
+title = "Remove the old secrets"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "worktree"
+task = "t1"
+files = ["src/a.rs"]
+outside_link = "shared"
+
+[[step]]
+do = "permission"
+task = "t1"
+request = "through-link"
+command = "rm shared/secret"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "permission-asked"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "through-link"
+answer = "none"
+
+[[step]]
+do = "node_limit"
+count = 0
+
+[[step]]
+do = "answer"
+card = "decision-t1"
+option = "allow"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "answer-waits-for-a-slot"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "through-link"
+answer = "none"
+
+[[step]]
+do = "restart"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "node_limit"
+count = 3
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "answer-reached-the-node"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "through-link"
+answer = "allow"

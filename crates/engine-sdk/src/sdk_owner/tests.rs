@@ -4190,6 +4190,35 @@ fn an_answered_permission_goes_on_when_a_slot_frees_with_nobody_asking() {
     driver.stop().unwrap();
 }
 
+/// 22 November: the user approved a plan while the gate had no slot, and the daemon moved to a new
+/// release before one freed. The daemon that adopted the live host dropped the answer the
+/// adoption's commit issued, so the slot it then gave went to a turn with nothing to send, and the
+/// approval reached Claude only when something else touched the task, hours later.
+#[cfg(not(feature = "real-hosts"))]
+#[test]
+fn an_answer_held_for_a_slot_reaches_claude_after_a_restart_adopts_the_live_host() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:plan");
+    slice.domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
+    slots(&slice.domain, 0);
+    slice.answer(&card, Hold::APPROVE, None).unwrap();
+    for _ in 0..3 {
+        driver.step(&|| true).unwrap();
+    }
+    assert!(slice.decisions().is_empty(), "the approval waits for a slot");
+    let agent = driver.agent().clone();
+    drop(driver);
+    let restarted = slice.restart();
+    restarted.sdk_owners().driven_by_hand.lock().unwrap().insert(agent);
+    let mut adopted = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    assert_eq!(adopted.pending_controls(), 1, "the adopting owner holds the approval it has to send");
+    slots(&restarted, 1);
+    gate_pass(&restarted, slice.worktree.as_path());
+    slice.rest(&mut adopted);
+    assert_eq!(only_response(&slice)["behavior"], "allow");
+    adopted.stop().unwrap();
+}
+
 /// With a free slot, the pass that sees the answer gives it the slot: its owner need not ask first.
 #[cfg(not(feature = "real-hosts"))]
 #[test]

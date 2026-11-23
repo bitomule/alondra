@@ -1034,6 +1034,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
         if let Some(checkpoint)=codex_checkpoint{driver.domain.engine().restore_codex_scope(&driver.task,&driver.agent,&checkpoint);}
         driver.log_host("was adopted");
         driver.receive_permits(reserved.permits);
+        driver.controls.extend(reserved.control_permits);
         for command in adoption.commands {
             let handoff = driver.worker.reconcile(&command.command).map_err(adapter("reconciling a dispatch"))?;
             let intent = command.intent_id;
