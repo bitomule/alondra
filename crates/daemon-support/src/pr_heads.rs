@@ -58,7 +58,7 @@ mod tests {
         state.pull_requests.insert(PrId("pr-763".into()), PullRequest {
             id: PrId("pr-763".into()), task_id: "t".into(), host: "github.com".into(), repository: "o/r".into(),
             number: 763, head: HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None,
-            allowed_methods: vec![MergeMethod::Squash], review: None,
+            allowed_methods: vec![MergeMethod::Squash], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
         });
         state
     }

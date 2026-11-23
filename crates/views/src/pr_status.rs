@@ -118,7 +118,7 @@ mod tests {
             state,
             merged_head: None,
             allowed_methods: vec![],
-            review: None,
+            review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
         }
     }
 

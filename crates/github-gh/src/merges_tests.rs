@@ -74,7 +74,7 @@ esac
     let gh = GhCli::at(program);
     let pr = PullRequest { id: "pr".into(), task_id: "t".into(), host: "github".into(), repository: "owner/repo".into(),
         number: 7, head: HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None,
-        allowed_methods: vec![MergeMethod::Squash], review: None };
+        allowed_methods: vec![MergeMethod::Squash], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None, };
     assert_eq!(gh.bypassable_checks(&pr, "main").await, Ok(vec!["CI".to_owned()]));
     gh.merge_bypassing(&pr, HEAD, MergeMethod::Squash).await.unwrap();
     let calls = std::fs::read_to_string(&log).unwrap();
@@ -92,7 +92,7 @@ async fn gh_merges_with_the_method_only_at_the_presented_head_and_reads_status_a
     let gh = GhCli::at(program);
     let pr = PullRequest { id: "pr".into(), task_id: "t".into(), host: "github".into(), repository: "owner/repo".into(),
         number: 7, head: HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None,
-        allowed_methods: vec![MergeMethod::Squash], review: None };
+        allowed_methods: vec![MergeMethod::Squash], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None, };
     let status = gh.status(&pr).await.unwrap();
     assert_eq!((status.state, status.head.as_str(), status.checks), (PrState::Open, HEAD, Checks::Failed(vec!["lint".into()])));
     gh.merge(&pr, HEAD, MergeMethod::Squash).await.unwrap();
@@ -115,7 +115,7 @@ async fn gh_reads_the_structured_default_branch_before_retargeting_a_pr() {
     let gh = GhCli::at(program);
     let pr = PullRequest { id: "pr".into(), task_id: "t".into(), host: "github.com".into(), repository: "acme/widgets".into(),
         number: 7, head: HEAD.into(), base: "feature".into(), state: PrState::Open, merged_head: None,
-        allowed_methods: vec![MergeMethod::Squash], review: None };
+        allowed_methods: vec![MergeMethod::Squash], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None, };
     let base = gh.default_branch(&pr).await.unwrap();
     assert_eq!(base, "develop");
     gh.retarget(&pr, &base).await.unwrap();

@@ -1,4 +1,4 @@
-use super::{SystemCard, Checklist, ChecklistMark, Journals, LifecycleCache, Landed, NodeMcp, ScheduleState, TaskEnding};
+use super::{obligation_policy::Millis, PrIdentity, PrMissing, PrTracking, SystemCard, Checklist, ChecklistMark, Journals, LifecycleCache, Landed, NodeMcp, ScheduleState, TaskEnding};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -646,8 +646,47 @@ pub struct PullRequest {
     pub merged_head: Option<String>,
     pub allowed_methods: Vec<MergeMethod>,
     pub review: Option<PullRequestReview>,
+    /// Earlier addresses the provider confirmed are this same pull request; never `repository`.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub aliases: BTreeSet<String>,
+    /// When the read that set `repository` started: an older read never moves it back.
+    #[serde(default, skip_serializing_if = "unread")]
+    pub address_read_at: Millis,
+    #[serde(default, skip_serializing_if = "PrIdentity::is_unverified")]
+    pub identity: PrIdentity,
+    #[serde(default, skip_serializing_if = "PrTracking::is_tracked")]
+    pub tracking: PrTracking,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<PrMissing>,
+    /// When the read that asked the adapter to find it by its locator started, until a later read
+    /// confirms it: a repeated read asks once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relocation_asked_at: Option<Millis>,
+}
+fn unread(at: &Millis) -> bool {
+    *at == 0
 }
 impl PullRequest {
+    /// A pull request just registered at its address, before the provider says which one it is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn registered(id: PrId, task_id: TaskId, host: String, repository: String, number: u64, head: String, base: String,
+        state: PrState, merged_head: Option<String>, allowed_methods: Vec<MergeMethod>) -> Self {
+        PullRequest {
+            id, task_id, host, repository, number, head, base, state, merged_head, allowed_methods, review: None,
+            aliases: BTreeSet::new(), address_read_at: 0, identity: PrIdentity::Unverified, tracking: PrTracking::Tracked, missing: None, relocation_asked_at: None,
+        }
+    }
+    pub fn is_tracked(&self) -> bool {
+        self.tracking.is_tracked()
+    }
+    /// Its current address names it: what a new read or a node's register may reuse it by.
+    pub fn lives_at(&self, host: &str, repository: &str, number: u64) -> bool {
+        self.host == host && self.number == number && self.repository == repository
+    }
+    /// Its current address or one the provider confirmed was it.
+    pub fn answers_to(&self, host: &str, repository: &str, number: u64) -> bool {
+        self.lives_at(host, repository, number) || (self.host == host && self.number == number && self.aliases.contains(repository))
+    }
     /// The PR in the ids of cards about it: its own id while it is a plain one, its task's
     /// once the id carries its host and repository, which a card id cannot hold.
     pub fn slug(&self) -> &str {

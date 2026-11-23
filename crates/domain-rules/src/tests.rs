@@ -3260,10 +3260,12 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordClaudeHold { .. } => 134,
         Command::NotePrChanges { .. } => 135,
         Command::RecordHostReleased { .. } => 136,
+        Command::ObservePrAddress { .. } => 137,
+        Command::DetachPr { .. } => 138,
         Command::RecordHostRetaken { .. } => 130,
     }
 }
-const COMMAND_KINDS: usize = 137;
+const COMMAND_KINDS: usize = 139;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3393,6 +3395,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::SetRelations { task_id: ids.task.into(), delivered_dependencies: BTreeSet::new(), blocks: BTreeSet::new() }, false),
         (Command::RecordVerdict { task_id: ids.task.into(), presentation_id: ids.interaction.into(), verdict: Verdict::Approved { summary: "ok".into(), open_issues: false, serious_findings: 0 } }, false),
         (Command::ObservePrMergeMethods { pr_id: ids.pr.into(), allowed_methods: vec![MergeMethod::Squash] }, false),
+        (Command::ObservePrAddress { pr_id: ids.pr.into(), read: PrRead::Locator, read_started_at: 1, verdict: PrAddressVerdict::NotFound }, false),
+        (Command::DetachPr { pr_id: ids.pr.into(), at: 1 }, false),
         (Command::SetPriority { task_id: ids.task.into(), priority: TaskPriority::High }, false),
         (Command::DeclarePostMergeWork { task_id: ids.task.into(), reason: Some("release.sh".into()), waits_for: vec![] }, false),
         (Command::RecordTaskCleanup { task_id: ids.task.into() }, false),

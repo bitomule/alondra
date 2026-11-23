@@ -419,7 +419,7 @@ fn a_question_about_a_pr_is_its_own_card_and_no_card_holds_another() {
             state: PrState::Open,
             merged_head: None,
             allowed_methods: vec![],
-            review: None,
+            review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
         },
     );
     state.interactions.insert(
@@ -495,7 +495,7 @@ fn pr_fixture() -> DomainState {
             state: PrState::Open,
             merged_head: None,
             allowed_methods: vec![],
-            review: None,
+            review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
         },
     );
     state.interactions.insert(
@@ -1805,7 +1805,7 @@ fn pull_request_detail_uses_live_title_body_and_branch_names() {
         id: "pr-1".into(), task_id: "t-1".into(), host: "github.com".into(),
         repository: "owner/repo".into(), number: 154, head: "0123456789abcdef".into(),
         base: "main".into(), state: PrState::Open, merged_head: None,
-        allowed_methods: vec![], review: None,
+        allowed_methods: vec![], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
     });
     let mut live = LiveSnapshot::default();
     live.pull_requests.push(LivePullRequest {
@@ -9740,7 +9740,7 @@ fn outcome_state() -> DomainState {
         state.pull_requests.insert(id.clone(), PullRequest {
             id: id.clone(), task_id: task.into(), host: "github.com".into(), repository: "owner/alondra".into(), number,
             head: "head1".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()),
-            allowed_methods: vec![MergeMethod::Squash], review: None,
+            allowed_methods: vec![MergeMethod::Squash], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
         });
         state.tasks.get_mut(&task.into()).unwrap().pr_id = Some(id);
     }

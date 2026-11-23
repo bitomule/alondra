@@ -14,6 +14,7 @@ impl DomainState {
     /// The same rules, reading what holds a delivery back from `holds`.
     pub(in crate) fn guard_given(&self, actor: &Actor, envelope: &CommandEnvelope, holds: &dyn Holds) -> Result<()> {
         self.admit(actor, envelope)?;
+        self.refuse_untracked_prs(&envelope.command)?;
         match &envelope.command {
             Command::SnoozeCard { interaction_id, until, now } => self.snooze_guard(actor, interaction_id, *until, *now, holds),
             Command::UnsnoozeCard { interaction_id } => self.unsnooze_guard(actor, interaction_id),

@@ -1193,7 +1193,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
             .merge_authorizations
             .get(authorization_id)
             .map(|authorization| authorization.task_id.clone()),
-        Command::ObservePrState { pr_id, .. } | Command::ObservePrMergeMethods { pr_id, .. } => {
+        Command::ObservePrState { pr_id, .. } | Command::ObservePrMergeMethods { pr_id, .. }
+        | Command::ObservePrAddress { pr_id, .. } | Command::DetachPr { pr_id, .. } => {
             state.pull_requests.get(pr_id).map(|pr| pr.task_id.clone())
         }
         Command::ResurfaceDueCards { .. }

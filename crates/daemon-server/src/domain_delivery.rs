@@ -907,7 +907,7 @@ mod tests {
         state.pull_requests.insert("pr-1".into(), alondra_domain_rules::PullRequest {
             id: "pr-1".into(), task_id: "task-a".into(), host: "github.com".into(), repository: "example/parser".into(),
             number: 1, head: "abc".into(), base: "main".into(), state: PrState::Open,
-            merged_head: None, allowed_methods: vec![], review: None,
+            merged_head: None, allowed_methods: vec![], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
         });
         state.tasks.insert("task-a".into(), Task {
             id: "task-a".into(), request_id: "request-a".into(), agent_id: None,

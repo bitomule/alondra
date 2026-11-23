@@ -95,7 +95,7 @@ mod tests {
         PullRequest {
             id: "github.com/me/app#7".into(), task_id: "task-1".into(), host: "github.com".into(), repository: "me/app".into(),
             number: 7, head: HEAD.into(), base: "main".into(), state: alondra_domain_rules::PrState::Open,
-            merged_head: None, allowed_methods: vec![], review: None,
+            merged_head: None, allowed_methods: vec![], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
         }
     }
 
