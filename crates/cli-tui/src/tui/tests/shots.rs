@@ -177,12 +177,30 @@ fn tui_shots() {
         }
         let html = page(&mut crash_report_refused(lang));
         std::fs::write(out.join(format!("12-crash-report-refused-{name}.html")), html).unwrap();
+        let html = page(&mut merge_waits_for_review(lang));
+        std::fs::write(out.join(format!("13-merge-waits-for-review-{name}.html")), html).unwrap();
         let html = page(&mut task_on_another_model(lang));
         std::fs::write(out.join(format!("9-task-model-{name}.html")), html).unwrap();
         let unknown = alondra_views::unknown_outcome(alondra_views::action_outcome::UnknownReason::Interrupted, view_lang);
         let html = page(&mut answered(lang, unknown));
         std::fs::write(out.join(format!("8-outcome-unknown-{name}.html")), html).unwrap();
     }
+}
+
+/// The PR card while GitHub requires a review before the PR can merge: no merge is offered and the card says why.
+fn merge_waits_for_review(lang: crate::i18n::Lang) -> App {
+    let mut app = app_with_the_pr_card(lang);
+    let mut card = view_fixture("card-pr.json");
+    card["key"] = format!("card:{CARD}").into();
+    if lang == crate::i18n::Lang::Es {
+        in_spanish(&mut card["sections"]);
+    }
+    let waits = if lang == crate::i18n::Lang::Es { "La PR #12 aún no se puede mergear: falta una revisión en GitHub." } else { "PR #12 can't merge yet: it needs a review on GitHub." };
+    let item = &mut card["sections"][0]["items"][0];
+    item["actions"] = serde_json::json!([]);
+    item["context"].as_array_mut().unwrap().push(serde_json::json!({"icon": "warning", "text": waits}));
+    app.on_msg(Msg::ViewCard { key: format!("card:{CARD}"), result: Ok(serde_json::from_value(card).unwrap()) });
+    app
 }
 
 fn task_on_another_model(lang: crate::i18n::Lang) -> App {

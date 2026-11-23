@@ -2601,3 +2601,15 @@ fn card_title_contract_tui_uses_fields_without_text_comparison() {
     assert_eq!(lines[0], "Release design");
     assert!(lines.iter().any(|line| line.starts_with("Ready for review")), "{lines:#?}");
 }
+
+#[test]
+fn a_card_says_in_the_terminal_why_its_merge_waits() {
+    let mut card = view_fixture("card-pr.json");
+    let item = &mut card["sections"][0]["items"][0];
+    item["actions"] = serde_json::json!([]);
+    item["context"].as_array_mut().unwrap().push(serde_json::json!({"icon": "warning", "text": "PR #12 can't merge yet: it needs a review on GitHub."}));
+    let view = serde_json::from_value(card).unwrap();
+    let card = crate::tui::view_render::typed_card(&view).unwrap();
+    let lines = text_of(&crate::tui::view_render::card_lines(card, 100));
+    assert!(lines.iter().any(|line| line == "PR #12 can't merge yet: it needs a review on GitHub."), "{lines:#?}");
+}
