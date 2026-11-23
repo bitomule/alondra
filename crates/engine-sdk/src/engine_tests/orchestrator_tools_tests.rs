@@ -1692,6 +1692,9 @@ async fn a_launch_of_the_task_that_implements_an_approved_plan_carries_the_whole
         agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
 
+    let refused = launch(&*f.domain, &f.home, launch_body(&f, json!({"task": "build", "model": "sonnet"})), |_| None).await.unwrap_err();
+    assert_eq!(refused.code, "dependency_not_done", "a task that waits for another is not launched by hand: {refused}");
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies { task_id: "build".into(), dependencies: Default::default(), stack: None, reason: None });
     launch(&*f.domain, &f.home, launch_body(&f, json!({"task": "build", "model": "sonnet"})), |_| None).await.unwrap();
     let prompt = f.prompt().await;
     assert!(prompt.contains("## The plan the user approved") && prompt.contains("do not plan again"), "{prompt}");
@@ -1799,6 +1802,8 @@ async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_na
     partial_plan(&f, "index", json!({"model": "claude/sonnet"})).unwrap();
     assert_eq!(f.domain.state().unwrap().checklists[&TaskId::from("index")], checklist);
     assert_eq!(get_launch_plan(&*f.domain, &"index".into()).unwrap()["launch"]["mission"], original.mission.unwrap());
+    assert_eq!(launch(&*f.domain, &f.home, launch_body(&f, json!({"task": "index"})), |_| None).await.unwrap_err().code, "dependency_not_done");
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies { task_id: "index".into(), dependencies: Default::default(), stack: None, reason: None });
     launch(&*f.domain, &f.home, launch_body(&f, json!({"task": "index"})), |_| None).await.unwrap();
     let prompt = f.prompt().await;
     assert!(prompt.contains("## The plan the user approved") && prompt.contains("do not plan again"), "{prompt}");

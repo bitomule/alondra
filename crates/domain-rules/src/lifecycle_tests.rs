@@ -2747,3 +2747,55 @@ fn a_legacy_tool_call_cannot_claim_it_read_a_new_user_message() {
     assert_eq!(result.unwrap_err().code, "pending_user_message");
     assert_eq!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().len(), 1);
 }
+
+/// An unstarted task created after another waits for it in its own lifecycle: the wait is
+/// recorded when the task is created, ends when the other lands, comes back when that one is
+/// reopened, follows a change of its dependencies, and ends with the task when it is cancelled.
+#[test]
+fn an_unstarted_task_records_its_wait_for_another_until_it_lands() {
+    let mut s = world();
+    task(&mut s, "first", Some("a"));
+    must(&mut s, orchestrator(), Command::CreateTask { priority: Default::default(),
+        task_id: "second".into(), request_id: "r".into(), title: "Task second".into(), agent_id: None, review_prs: false,
+        dependencies: BTreeSet::from(["first".into()]), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
+        plan_items: None, continues: None,
+    });
+    let second = TaskId::from("second");
+    let owed = |s: &DomainState| s.obligation_of(&second).map(|owed| (owed.party, owed.owed));
+    let last = |s: &DomainState| kinds(s, "second").last().cloned();
+    let slot = Some((alondra_domain::Party::Capacity(alondra_domain::Capacity::Gate), alondra_domain::Owed::Room(alondra_domain::Capacity::Gate)));
+    let tasks = Some((alondra_domain::Party::Tasks, alondra_domain::Owed::Tasks));
+    assert_eq!(kinds(&s, "second"), ["planned", "waits_for_tasks"], "created waiting");
+    assert_eq!(owed(&s), tasks);
+    assert_eq!(s.tasks[&second].state, TaskState::WaitingDependency);
+    let refused = exec(&mut s, orchestrator(), Command::AssignTask { task_id: "second".into(), agent_id: "b".into(), model: None }).unwrap_err();
+    assert_eq!(refused.code, "dependency_not_done", "no node takes it while it waits: {refused}");
+
+    must(&mut s, node("a"), Command::StartTask { task_id: "first".into() });
+    deliver(&mut s, "first", "a", "d1");
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "d1".into(), targets: vec![DeliveryTarget::Text { text: "Done".into() }] });
+    must(&mut s, node("a"), Command::ConfirmCleanup { task_id: "first".into(), discard: Vec::new() });
+    assert_eq!(last(&s).as_deref(), Some("waits_for_tasks"), "accepted is not landed");
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "first".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
+    assert_eq!(s.tasks[&"first".into()].state, TaskState::Done);
+    assert_eq!(last(&s).as_deref(), Some("tasks_landed"), "the wait ends in the command that lands what it waited for");
+    assert_eq!(owed(&s), slot);
+    assert_eq!(s.tasks[&second].state, TaskState::NotStarted);
+    assert_aggregate_rules(&s);
+
+    must(&mut s, user(), Command::ReopenTask { task_id: "first".into() });
+    assert_eq!(last(&s).as_deref(), Some("waits_for_tasks"), "a reopened dependency has not landed any more");
+    assert_eq!(owed(&s), tasks);
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "second".into(), dependencies: BTreeSet::new(), stack: None, reason: None });
+    assert_eq!(last(&s).as_deref(), Some("tasks_landed"), "it no longer waits for what is no longer a dependency");
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "second".into(), dependencies: BTreeSet::from(["first".into()]), stack: None, reason: None });
+    assert_eq!(last(&s).as_deref(), Some("waits_for_tasks"));
+    assert_aggregate_rules(&s);
+
+    must(&mut s, user(), Command::CancelTask { task_id: "second".into(), reason: None });
+    must(&mut s, Actor::System, Command::RecordTaskCleanup { task_id: "second".into() });
+    assert_eq!(s.tasks[&second].state, TaskState::Cancelled);
+    assert_eq!(owed(&s), None);
+    assert!(kinds(&s, "second").ends_with(&["waits_for_tasks".to_owned(), "finished".to_owned(), "drained".to_owned()]), "{:?}", kinds(&s, "second"));
+    assert_aggregate_rules(&s);
+}

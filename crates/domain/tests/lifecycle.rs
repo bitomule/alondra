@@ -553,12 +553,8 @@ fn empty_or_self_dependencies_and_empty_identities_are_rejected() {
         },
     );
     assert!(task.execution().is_none());
-    apply(
-        &mut task,
-        Event::DependenciesResolved {
-            input: input("ready"),
-        },
-    );
+    assert_eq!(try_admit(&mut task), Err(Refusal::AwaitsTasks));
+    apply(&mut task, Event::DependenciesLanded);
     admit(&mut task, "instance");
 }
 
@@ -2283,11 +2279,86 @@ fn a_held_task_is_not_admitted_and_the_end_of_its_wait_does_not_release_it() {
     apply(&mut task, Event::WaitForDependencies { dependencies: vec![TaskId::from("phase-b")] });
     hold(&mut task, "decision-512");
     assert_eq!(task.plan_reviews(), [(&InteractionId::from("decision-512"), 0)]);
-    apply(&mut task, Event::DependenciesResolved { input: input("dependencies") });
+    assert_eq!(task.obligation().map(|owed| (owed.party, owed.owed)), Some((Party::Alondra, Owed::Answer)), "the review is owed before the wait");
+    apply(&mut task, Event::DependenciesLanded);
     assert_eq!(try_admit(&mut task), Err(Refusal::PlanReviewPending));
     settle(&mut task, "decision-512", PlanReviewOutcome::PlanChanged).unwrap();
     assert_eq!(task.plan_revision(), 1, "the new plan is the one it starts with");
     try_admit(&mut task).unwrap();
+}
+
+fn owed(task: &TaskLifecycle) -> Option<(Party, Owed)> {
+    task.obligation().map(|owed| (owed.party, owed.owed))
+}
+
+/// A task no node took waits for the tasks it depends on in its own state: it owes them, takes no
+/// node, keeps what it is told, follows a change of what it waits for, and starts as it would
+/// have once they land.
+#[test]
+fn an_unstarted_task_waits_for_its_tasks_in_its_own_state_until_they_land() {
+    let mut task = TaskLifecycle::planned(TaskId::from("phase-b"), input("initial")).unwrap();
+    assert_eq!(owed(&task), Some((Party::Capacity(Capacity::Gate), Owed::Room(Capacity::Gate))));
+    apply(&mut task, Event::WaitForDependencies { dependencies: vec![TaskId::from("phase-a")] });
+    assert_eq!(task.phase(), TaskPhase::Unstarted);
+    assert!(task.unadmitted());
+    assert_eq!(task.dependencies(), vec![&TaskId::from("phase-a")]);
+    assert_eq!(owed(&task), Some((Party::Tasks, Owed::Tasks)));
+    assert_eq!(try_admit(&mut task), Err(Refusal::AwaitsTasks));
+    apply(&mut task, Event::Tell { input: input("told"), answers: None });
+    assert_eq!(
+        task.apply(task.revision(), Event::WaitForDependencies { dependencies: vec![TaskId::from("phase-a")] }),
+        Err(Refusal::DuplicateObligation),
+        "the same wait is not recorded twice"
+    );
+    apply(&mut task, Event::WaitForDependencies { dependencies: vec![TaskId::from("phase-a"), TaskId::from("review")] });
+    assert_eq!(task.dependencies(), vec![&TaskId::from("phase-a"), &TaskId::from("review")]);
+    apply(&mut task, Event::DependenciesLanded);
+    assert_eq!(task.phase(), TaskPhase::Unstarted);
+    assert!(task.dependencies().is_empty());
+    assert_eq!(task.pending_inputs(), vec![&input("initial"), &input("told")]);
+    assert_eq!(owed(&task), Some((Party::Capacity(Capacity::Gate), Owed::Room(Capacity::Gate))));
+    assert_eq!(task.apply(task.revision(), Event::DependenciesLanded), Err(Refusal::InvalidState), "nothing is left to land");
+    try_admit(&mut task).unwrap();
+}
+
+/// A reopened task waits the same way, and starts again at the stage it was reopened at.
+#[test]
+fn a_reopened_task_waits_for_its_tasks_and_starts_again_where_it_was() {
+    let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    apply(&mut task, Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None });
+    apply(&mut task, Event::DrainObserved { obligation: DrainObligation::Cleanup(operation("cleanup")) });
+    apply(&mut task, Event::Reopen { input: input("again") });
+    apply(&mut task, Event::WaitForDependencies { dependencies: vec![TaskId::from("upstream")] });
+    assert_eq!(task.phase(), TaskPhase::InProgress);
+    assert_eq!(task.stage(), Some(WorkStage::Implement));
+    assert_eq!(owed(&task), Some((Party::Tasks, Owed::Tasks)));
+    apply(&mut task, Event::DependenciesLanded);
+    assert_eq!(task.stage(), Some(WorkStage::Implement));
+    assert_eq!(task.pending_inputs(), vec![&input("again")]);
+    try_admit(&mut task).unwrap();
+}
+
+/// Cancelling a waiting task ends it like any unstarted one, and a card asked meanwhile keeps the
+/// wait: it ends with the card answered and the tasks landed, in either order.
+#[test]
+fn a_waiting_task_is_cancelled_or_asked_without_losing_its_wait() {
+    let mut cancelled = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    apply(&mut cancelled, Event::WaitForDependencies { dependencies: vec![TaskId::from("upstream")] });
+    apply(&mut cancelled, Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None });
+    assert!(cancelled.dependencies().is_empty());
+    apply(&mut cancelled, Event::DrainObserved { obligation: DrainObligation::Cleanup(operation("cleanup")) });
+    assert_eq!(cancelled.phase(), TaskPhase::Cancelled);
+
+    let mut asked = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    apply(&mut asked, Event::WaitForDependencies { dependencies: vec![TaskId::from("upstream")] });
+    apply(&mut asked, Event::Ask { card: "question".into() });
+    assert!(asked.unadmitted());
+    assert_eq!(asked.dependencies(), vec![&TaskId::from("upstream")]);
+    apply(&mut asked, Event::Answer { card: "question".into(), input: input("answer") });
+    assert_eq!(owed(&asked), Some((Party::Tasks, Owed::Tasks)));
+    apply(&mut asked, Event::DependenciesLanded);
+    assert_eq!(asked.pending_inputs(), vec![&input("initial"), &input("answer")]);
+    try_admit(&mut asked).unwrap();
 }
 
 #[test]
@@ -2331,7 +2402,7 @@ proptest! {
         ..ProptestConfig::default()
     })]
     #[test]
-    fn no_history_admits_a_held_task_and_only_its_own_settlement_releases_it(actions in prop::collection::vec(0u8..12, 1..80)) {
+    fn no_history_admits_a_held_task_and_only_its_own_settlement_releases_it(actions in prop::collection::vec(0u8..13, 1..80)) {
         let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
         let reviews = ["first", "second"];
         for action in actions {
@@ -2347,6 +2418,7 @@ proptest! {
                 8 => Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None },
                 9 => match task.drain().next().cloned() { Some(obligation) => Event::DrainObserved { obligation }, None => continue },
                 10 => Event::Reopen { input: input("again") },
+                11 => Event::DependenciesLanded,
                 _ => Event::Pause { card: "pause".into(), owner: Owner::User },
             };
             let before = format!("{task:?}");
@@ -3015,7 +3087,7 @@ proptest! {
     /// What lets a replay look up only the inputs each event names: an input becomes pending only
     /// through an event that names it, and `is_pending` answers what `pending_inputs` lists.
     #[test]
-    fn an_input_becomes_pending_only_through_the_event_that_names_it(actions in prop::collection::vec((0u8..29, 0u8..6), 1..200)) {
+    fn an_input_becomes_pending_only_through_the_event_that_names_it(actions in prop::collection::vec((0u8..30, 0u8..6), 1..200)) {
         let pool: Vec<InputId> = ["initial", "a", "b", "c", "d", "e"].iter().map(|name| input(name)).collect();
         let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
         for (action, pick) in actions {
@@ -3048,6 +3120,7 @@ proptest! {
                 25 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: Some(named) }),
                 26 => Some(Event::ResendDoubtful { input: first, resend: named }),
                 27 => Some(Event::ExecutionLeftForReview),
+                28 => Some(Event::DependenciesLanded),
                 _ => Some(Event::Compact { input: named }),
             };
             let Some(event) = event else { continue };

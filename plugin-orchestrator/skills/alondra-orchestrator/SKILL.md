@@ -211,7 +211,8 @@ user follows tasks, not nodes.
   starts it by itself when the node limit has room, by priority then by age, and a task with
   `dependencies` once everything it depends on is done, with their final results and pull
   requests added to its mission. Do not launch tasks yourself or keep count of working nodes: the
-  gate does. A start that fails is tried again by itself a few times and then goes to the user as
+  gate does. `launch` refuses a task that still waits for its `dependencies`
+  (`dependency_not_done`): to start it without them, change them with `set_dependencies`. A start that fails is tried again by itself a few times and then goes to the user as
   a card (try again or cancel), as do a folder Claude Code does not trust and a node the user
   closed: you are told, but you do not need to act on it.
   `set_launch_plan` replaces the plan of a task that has not started.

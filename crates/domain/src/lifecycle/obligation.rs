@@ -62,6 +62,11 @@ impl TaskLifecycle {
             } else {
                 (Party::Alondra, Owed::Answer)
             }),
+            State::AwaitingTasks { .. } => Some(if self.plan_reviews.is_empty() {
+                (Party::Tasks, Owed::Tasks)
+            } else {
+                (Party::Alondra, Owed::Answer)
+            }),
             State::InProgress(Progress::Executing { execution, .. }) => {
                 Some(answer_on_its_way(&execution.0).unwrap_or_else(|| by_activity(&execution.0)))
             }

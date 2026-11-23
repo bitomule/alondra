@@ -3110,6 +3110,7 @@ impl DomainState {
         next.adopt_declared_post_merge(&mut lifecycles)?;
         next.finish_settled_deliveries(&mut lifecycles)?;
         next.withdraw_cancelled_requests(self, actor);
+        next.record_start_waits(&mut lifecycles)?;
         next.derive_states();
         if next.cancel_orphan_reviewers(&mut effects, &mut lifecycles)? {
             next.derive_states();

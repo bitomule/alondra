@@ -333,9 +333,8 @@ impl DomainState {
 
     /// What the task's lifecycle says it is owed, except that a task the orchestrator has to
     /// re-plan (it waits for a cancelled task, or its launch plan was refused) owes the
-    /// orchestrator's decision, and an unstarted task whose dependencies have not landed owes
-    /// those tasks: the lifecycle knows none of them before a first execution, and without it
-    /// the wait would read as a wait for a slot.
+    /// orchestrator's decision: the lifecycle knows neither, and without it the task would read
+    /// as waiting for those tasks or for a slot.
     pub fn obligation_of(&self, task: &TaskId) -> Option<alondra_domain::Obligation> {
         self.obligation_with(task, |t| self.replanned_for(t).is_some() || self.open_plan_refusal(&t.id).is_some())
     }
@@ -352,13 +351,7 @@ impl DomainState {
         }
         let replans = self.tasks.get(task).is_some_and(|t| !t.over() && !t.archived && !t.started && t.agent_id.is_none()
             && matches!(t.state, TaskState::NotStarted | TaskState::WaitingDependency) && needs_replan(t));
-        if replans {
-            return Some(alondra_domain::Obligation { party: alondra_domain::Party::Alondra, owed: alondra_domain::Owed::Replan, ..obligation });
-        }
-        let waits_for_tasks = obligation.owed == alondra_domain::Owed::Room(alondra_domain::Capacity::Gate)
-            && lifecycle.phase() == alondra_domain::TaskPhase::Unstarted
-            && self.tasks.get(task).is_some_and(|t| t.state == TaskState::WaitingDependency && t.agent_id.is_none() && !t.started);
-        Some(if waits_for_tasks { alondra_domain::Obligation { party: alondra_domain::Party::Tasks, owed: alondra_domain::Owed::Tasks, ..obligation } } else { obligation })
+        Some(if replans { alondra_domain::Obligation { party: alondra_domain::Party::Alondra, owed: alondra_domain::Owed::Replan, ..obligation } } else { obligation })
     }
 
     /// What must happen now so that every open task stays in someone's hands.
