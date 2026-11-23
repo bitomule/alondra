@@ -1,0 +1,54 @@
+name = "the orchestrator cannot ask the user for something a node's task needs: the node asks it, and the user gets one card"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Check the new build on the phone"
+task = "t1"
+title = "Check the new build"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "orchestrator_action"
+task = "t1"
+card = "install-for-the-node"
+title = "Install build 42 for the node"
+refused = "forbidden"
+
+[[step]]
+do = "ask"
+task = "t1"
+id = "install"
+title = "Say when build 42 is installed"
+body = "Install build 42 on the phone and say when it is ready."
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "one-card"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Say when build 42 is installed"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Install build 42 for the node"
+present = false

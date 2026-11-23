@@ -535,6 +535,22 @@ impl Context<'_> {
         Err(Self::failed(index, format!("the domain refused {command:?}: {last}")))
     }
 
+    /// Runs `command` once: the domain accepts it, or refuses it with the code `refused` names.
+    fn refusable(&mut self, index: usize, actor: Actor, refused: Option<&str>, command: Command) -> Result<(), ScenarioError> {
+        let Some(wanted) = refused else { return self.command(index, actor, command) };
+        self.commands += 1;
+        let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            command_id: format!("scenario-{}", self.commands).into(), expected_revision: state.revision, command,
+        };
+        match self.daemon().domain.execute(&actor, &envelope, None, || Ok(())) {
+            Err(alondra_engine_ports::journal::StoreError::Domain(error)) if error.code == wanted => Ok(()),
+            Err(error) => Err(Self::failed(index, format!("the domain refused it with {error}; the case expects {wanted}"))),
+            Ok(_) => Err(Self::failed(index, format!("the domain accepted it; the case expects it refused with {wanted}"))),
+        }
+    }
+
     async fn step(&mut self, index: usize, step: &Step) -> Result<(), ScenarioError> {
         let orchestrator = || Actor::Orchestrator { generation: 0 };
         match step {
@@ -628,6 +644,16 @@ impl Context<'_> {
                 self.command(index, orchestrator(), Command::PublishInformation {
                     attachments: Vec::new(), interaction_id: card.clone().into(), scope: Scope::Orchestrator { request_id: None },
                     recipient: Recipient::User, body: body.clone(), card: CardSpec::new(CardKind::Know, title),
+                })?;
+                self.settle().await?;
+            }
+            Step::OrchestratorAction { task, card, title, refused } => {
+                let mut spec = CardSpec::new(CardKind::Do, title).why("The task needs it");
+                spec.verify = Some("The task's node checks it".into());
+                self.refusable(index, orchestrator(), refused.as_deref(), Command::RequestAction {
+                    attachments: Vec::new(), interaction_id: card.clone().into(), scope: Scope::Task { task_id: task.clone().into() },
+                    recipient: Recipient::User, body: title.clone(), blocking: false,
+                    options: vec![alondra_domain_rules::QuestionOption { id: "done".into(), label: "Done".into(), description: None }], card: spec,
                 })?;
                 self.settle().await?;
             }

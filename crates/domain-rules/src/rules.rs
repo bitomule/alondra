@@ -819,6 +819,10 @@ impl DomainState {
         NewCard { card, system: card.system.as_ref(), payload: &payload, author: &author, to, blocking, held }
             .check()
             .map_err(DomainError::of_breach)?;
+        if let (Author::Orchestrator { .. }, Scope::Task { .. }, Recipient::User, Source::Question | Source::Action) = (&author, scope, to, source) {
+            return refuse("forbidden", "scope", "A task's node asks the user what its task needs, never the orchestrator for it: answer the node's \
+                question telling it to ask the user, or send it what to ask. A question about a request goes with scope orchestrator and its request_id");
+        }
         if card.kind == CardKind::Propose {
             self.suggestion(&author, scope, to, options)?;
         }

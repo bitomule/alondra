@@ -1381,7 +1381,11 @@ fn open_cards_lists_what_the_reader_may_replace() {
     ok(&mut s, agent(), ask("q2", "t", false, decide("Pick a color")));
     ok(&mut s, user(), answer("q2"));
     ok(&mut s, agent_b(), ask("other", "t2", false, decide("Pick a name")));
-    ok(&mut s, orchestrator(), ask("o1", "t", false, decide("Pick an icon")));
+    let mut about_the_request = ask("o1", "t", false, decide("Pick an icon"));
+    if let Command::AskQuestion { scope, .. } = &mut about_the_request {
+        *scope = Scope::Orchestrator { request_id: Some("r".into()) };
+    }
+    ok(&mut s, orchestrator(), about_the_request);
     let ids = |actor: Actor, task: Option<&str>| -> Vec<String> {
         s.open_cards(&actor, task.map(TaskId::from).as_ref()).iter().map(|i| i.id.0.clone()).collect()
     };
@@ -1722,4 +1726,33 @@ fn card_title_contract_reads_old_cards_without_changing_content() {
     assert_eq!(card.title, None);
     assert_eq!(card.effective_title(), "Old subject");
     assert_eq!(card.content.unwrap().body, body);
+}
+
+/// The orchestrator asked the user to install a build for a node's task and told the node to wait;
+/// the node, left without an answer, asked the user the same thing, and the user got two cards
+/// about one install. A task's node asks the user what its task needs: the orchestrator asks only
+/// about a request.
+#[test]
+fn the_orchestrator_asks_the_user_nothing_about_a_task_for_its_node() {
+    let mut s = fixture();
+    let mut install = CardSpec::new(CardKind::Do, "Install the build").why("The node needs it installed");
+    install.verify = Some("The node reads the installed version".into());
+    let action = |scope: Scope| Command::RequestAction {
+        attachments: vec![], interaction_id: "install".into(), scope, recipient: Recipient::User,
+        body: "Install build 42".into(), blocking: false, options: vec![option("done", "Installed")], card: install.clone(),
+    };
+    let question = |scope: Scope| Command::AskQuestion {
+        attachments: vec![], interaction_id: "pick".into(), scope, recipient: Recipient::User,
+        body: "Which build".into(), blocking: false, options: two(), card: decide("Pick the build"),
+    };
+    let input = |scope: Scope| Command::AskQuestion {
+        attachments: vec![], interaction_id: "key".into(), scope, recipient: Recipient::User,
+        body: "The key".into(), blocking: false, options: vec![], card: CardSpec::new(CardKind::Provide, "Give the key").why("The build signs with it"),
+    };
+    for command in [action(scope("t")), question(scope("t")), input(scope("t"))] {
+        assert_eq!(refused(&mut s, orchestrator(), command), ("forbidden".into(), Some("scope".into())));
+    }
+    ok(&mut s, agent(), action(scope("t")));
+    let about_the_request = || Scope::Orchestrator { request_id: Some("r".into()) };
+    ok(&mut s, orchestrator(), question(about_the_request()));
 }
