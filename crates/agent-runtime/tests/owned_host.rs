@@ -29,11 +29,16 @@ struct Running<'a> {
 }
 impl<'a> Running<'a> {
     fn new(directory: &'a support::Directory) -> Self {
+        Self::starting_after(directory, 0)
+    }
+    fn starting_after(directory: &'a support::Directory, stall_ms: u64) -> Self {
+        let mut environment = support::environment(directory);
+        environment.insert("ALONDRA_FIXTURE_STARTUP_STALL_MS".into(), stall_ms.to_string());
         let host = OwnedHost::launch(
             support::owner(directory, 0),
             artifact(),
             directory,
-            &support::environment(directory),
+            &environment,
             |_, _| Ok(b"private-fixture-bootstrap".to_vec()),
         )
         .unwrap();
@@ -47,7 +52,7 @@ impl<'a> Running<'a> {
                 .host
                 .as_mut()
                 .unwrap()
-                .wait_for_socket(Instant::now() + Duration::from_secs(10))
+                .wait_for_socket(support::patiently())
                 .unwrap(),
         );
         value
@@ -370,13 +375,20 @@ impl Reaped {
     fn wait(self) {
         use std::os::fd::AsRawFd;
         let mut event: libc::kevent = unsafe { std::mem::zeroed() };
-        let timeout = libc::timespec { tv_sec: 10, tv_nsec: 0 };
         // NOTE_REAP synchronizes with the runtime's wait, rather than racing its exit monitor.
-        assert_eq!(unsafe { libc::kevent(self.queue.as_raw_fd(), std::ptr::null(), 0, &mut event, 1, &timeout) }, 1, "the runtime did not reap its child");
+        assert_eq!(unsafe { libc::kevent(self.queue.as_raw_fd(), std::ptr::null(), 0, &mut event, 1, std::ptr::null()) }, 1, "the runtime did not reap its child");
         assert_eq!(event.flags & libc::EV_ERROR, 0);
         assert_ne!(event.fflags & libc::NOTE_REAP, 0);
         assert_eq!(rustix::process::waitid(rustix::process::WaitId::Pid(self.pid), rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT | rustix::process::WaitIdOptions::NOHANG).unwrap_err(), rustix::io::Errno::CHILD);
     }
+}
+#[test]
+fn a_host_that_starts_slowly_is_waited_for_until_it_listens() {
+    let directory = support::directory();
+    let mut running = Running::starting_after(&directory, 1500);
+    assert_eq!(message(&directory.join("s"), b"identity\n").unwrap().trim().split(':').count(), 2);
+    running.host.as_mut().unwrap().request_stop().unwrap();
+    running.host.as_mut().unwrap().wait().unwrap();
 }
 #[test]
 fn a_dropped_host_is_reaped_and_its_group_ends_after_sigterm_or_sigkill() {
@@ -410,7 +422,7 @@ fn a_live_host_dropped_then_adopted_is_reaped_when_its_new_owner_stops_it() {
     let process = original.process().unwrap().unwrap();
     drop(host);
     let (mut adopted, _) = AdoptedHost::adopt(support::owner(&directory, 1), &directory, |_, _, material| Ok(material.to_vec())).unwrap();
-    drop(adopted.connect(Instant::now() + Duration::from_secs(10)).unwrap());
+    drop(adopted.connect(support::patiently()).unwrap());
     let current = adopted.stopper();
     assert_eq!(current.process().unwrap(), Some(process));
     assert_eq!(message(&directory.join("s"), b"identity\n").unwrap(), format!("{0}:{0}\n", process.pid));
@@ -467,7 +479,7 @@ fn an_adopted_host_is_dead_while_its_stopped_parent_still_holds_it_unreaped() {
     BufReader::new(daemon.child.stdout.take().unwrap()).read_line(&mut ready).unwrap();
     assert_eq!(ready.trim().split(':').count(), 3);
     let (mut adopted, _) = AdoptedHost::adopt(support::owner(&directory, 1), &directory, |_, _, material| Ok(material.to_vec())).unwrap();
-    drop(adopted.connect(Instant::now() + Duration::from_secs(10)).unwrap());
+    drop(adopted.connect(support::patiently()).unwrap());
     let stopper = adopted.stopper();
     let host = stopper.process().unwrap().unwrap();
     let parent = rustix::process::Pid::from_child(&daemon.child);
@@ -516,7 +528,7 @@ fn forced_adopted_cleanup_ends_descendants_with_a_live_or_exited_host() {
         let mut running = Running { host: None, directory: &directory, descendant: false };
         let descendant = spawn_descendant(&mut running);
         let (mut adopted, _) = AdoptedHost::adopt(support::owner(&directory, 1), &directory, |_, _, material| Ok(material.to_vec())).unwrap();
-        drop(adopted.connect(Instant::now() + Duration::from_secs(10)).unwrap());
+        drop(adopted.connect(support::patiently()).unwrap());
         let stopper = adopted.stopper();
         let host = stopper.process().unwrap().unwrap();
         let parent = rustix::process::Pid::from_child(&daemon.child);
@@ -614,7 +626,7 @@ fn actual_host_survives_only_its_owned_fake_daemon_group_death() {
     .unwrap();
     assert_eq!(retained, bootstrap);
     let mut stream = adopted
-        .connect(Instant::now() + Duration::from_secs(10))
+        .connect(support::patiently())
         .unwrap();
     stream.write_all(b"identity\n").unwrap();
     let mut adopted_identity = String::new();
@@ -643,7 +655,7 @@ fn only_a_lock_no_process_holds_makes_an_ended_host_and_retiring_it_frees_its_fo
         Ok(b"retained-bootstrap".to_vec())
     })
     .unwrap();
-    drop(host.wait_for_socket(Instant::now() + Duration::from_secs(10)).unwrap());
+    drop(host.wait_for_socket(support::patiently()).unwrap());
     assert!(matches!(claim(&state).unwrap(), Retained::Held), "the live host holds its lock");
     message(&state.join("s"), b"exit\n").unwrap();
     assert!(host.wait().unwrap().success());

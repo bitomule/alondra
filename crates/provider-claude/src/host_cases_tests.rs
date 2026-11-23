@@ -152,7 +152,7 @@ fn launch(prompt: &str, worker: Option<WorkerProfile>) -> Launched {
         profile_id: "case-profile".into(),
         account_id: "case-account".into(),
         host_release: "case-host".into(),
-        io_timeout: Duration::from_secs(30),
+        io_timeout: Duration::from_secs(300),
         confinement: None,
         hosts: under.hosts.clone(),
         worker,

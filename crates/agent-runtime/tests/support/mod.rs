@@ -15,6 +15,11 @@ pub fn directory() -> Directory {
     std::fs::set_permissions(&*directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     directory
 }
+/// A deadline no loaded machine reaches: the test waits for the event it needs, and Bazel's limit
+/// ends one that never comes.
+pub fn patiently() -> std::time::Instant {
+    std::time::Instant::now() + std::time::Duration::from_secs(3600)
+}
 pub fn owner(directory: &Directory, previous: u64) -> OwnerGrant {
     let database = directory.join("domain.db");
     let fresh = !database.exists();
