@@ -220,6 +220,8 @@ struct Context<'a> {
     scenario: &'a Scenario,
     accepted: Option<&'a Path>,
     config: alondra_core::config::Config,
+    /// Holds the daemon's port for the whole scenario, restarts included.
+    reserved: std::net::TcpListener,
     /// The provider of the Claude nodes, when the case runs any.
     claude: Option<ClaudeEdge>,
     mac: CalmMac,
@@ -257,7 +259,8 @@ async fn execute(
     let budget = parse_duration(&scenario.max_virtual)?;
     let home = tempfile::Builder::new().prefix("sc-").tempdir_in(short_root()?).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
     let invalid = |error: &dyn std::fmt::Display| ScenarioError::Invalid(error.to_string());
-    let port = std::net::TcpListener::bind("127.0.0.1:0").and_then(|listener| listener.local_addr()).map_err(|e| invalid(&e))?.port();
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| invalid(&e))?;
+    let port = reserved.local_addr().map_err(|e| invalid(&e))?.port();
     let mut config = alondra_core::config::Config::resolve(
         home.path().canonicalize().map_err(|e| invalid(&e))?.join("home"),
         &alondra_core::config::FileConfig::default(),
@@ -307,7 +310,7 @@ async fn execute(
     let user_home = user_home_of(&config.home);
     make_checkout(&user_home, &scenario.world.repository).map_err(|e| invalid(&e))?;
     github.set_repository(&scenario.world.repository);
-    let seams = seams_of(&github, &pushes, &mac, launcher, backend, &leaks, user_home);
+    let seams = seams_of(&github, &pushes, &mac, launcher, backend, &leaks, user_home, reserved.try_clone().map_err(|e| invalid(&e))?);
     alondrad::scenario_phone::prepare(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let domain = crate::engine::open(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let daemon = assemble::start_over(&config, domain, seams).await.map_err(|e| invalid(&format!("{e:#}")))?;
@@ -319,6 +322,7 @@ async fn execute(
         scenario,
         accepted,
         config,
+        reserved,
         claude,
         mac,
         daemon: Some(daemon),
@@ -374,7 +378,7 @@ fn make_checkout(user_home: &Path, repository: &str) -> Result<(), String> {
     std::fs::write(git.join("config"), format!("[remote \"origin\"]\n\turl = https://github.com/{repository}.git\n")).map_err(|e| e.to_string())
 }
 
-fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, launcher: Launcher, backend: Backend, leaks: &Arc<Mutex<Vec<String>>>, user_home: std::path::PathBuf) -> Seams {
+fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, launcher: Launcher, backend: Backend, leaks: &Arc<Mutex<Vec<String>>>, user_home: std::path::PathBuf, listener: std::net::TcpListener) -> Seams {
     Seams {
         github: GithubSeams::of(github.clone()),
         push: Pushes::new(pushes.clone()),
@@ -388,6 +392,7 @@ fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, l
         world: assemble::World::Isolated,
         own_cli: Some(crate::reports_cli::SCENARIO_CLI.into()),
         user_home,
+        listener: Some(listener),
     }
 }
 
@@ -1150,7 +1155,7 @@ impl Context<'_> {
             Some((launcher, backend)) => (launcher, Backend::Given(Some(backend))),
             None => (Launcher::new(RefusingLauncher(self.leaks.clone())), Backend::Given(None)),
         };
-        let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend, &self.leaks, user_home_of(&self.config.home));
+        let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend, &self.leaks, user_home_of(&self.config.home), self.reserved.try_clone().map_err(|e| Self::failed(index, e))?);
         let domain = crate::engine::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
         let daemon = assemble::start_over(&self.config, domain, seams).await.map_err(|e| Self::failed(index, format!("{e:#}")))?;
         self.daemon = Some(daemon);

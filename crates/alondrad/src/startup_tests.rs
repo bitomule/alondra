@@ -65,7 +65,8 @@ async fn the_port_answers_while_hosts_are_still_being_taken_over() {
     std::fs::create_dir_all(&home).unwrap();
     let domain = Arc::new(crate::engine::open(&home).unwrap());
     let state = domain_bootstrap::DomainDaemon::over_shared(&home, domain.clone()).unwrap();
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reserved.local_addr().unwrap().port();
     let mut config = Config::defaults();
     config.home = home.to_path_buf();
     config.listen = "127.0.0.1".parse().unwrap();
@@ -76,7 +77,8 @@ async fn the_port_answers_while_hosts_are_still_being_taken_over() {
         let _ = held.await;
         PreparedWorkers(recovering)
     };
-    let daemon = tokio::spawn(async move { assemble::assemble_with(&config, state, domain, recovery, None, &assemble::Seams::production()).await.map(|_| ()) });
+    let seams = assemble::Seams { listener: Some(reserved), ..assemble::Seams::production() };
+    let daemon = tokio::spawn(async move { assemble::assemble_with(&config, state, domain, recovery, None, &seams).await.map(|_| ()) });
     let connecting = async {
         loop {
             match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
