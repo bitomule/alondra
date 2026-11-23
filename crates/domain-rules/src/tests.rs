@@ -3263,11 +3263,11 @@ fn variant_index(c: &Command) -> usize {
         Command::ObservePrAddress { .. } => 137,
         Command::DetachPr { .. } => 138,
         Command::RecordHostRetaken { .. } => 130,
-        Command::PauseQueuedTask { .. } => 137,
-        Command::ResumeQueuedTask { .. } => 138,
+        Command::PauseQueuedTask { .. } => 139,
+        Command::ResumeQueuedTask { .. } => 140,
     }
 }
-const COMMAND_KINDS: usize = 139;
+const COMMAND_KINDS: usize = 141;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {

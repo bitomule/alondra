@@ -75,12 +75,12 @@ to its fix group and issue.
 | S2 | [F-CLIENTS-A4](#f-clients-a4--after-switching-mac-the-live-activity-keeps-showing-the-previous-macs-frozen-numbers-as-just-measured-and-covers-the-sealed-reports-the-relay-brings-from-it) · After switching Mac, the Live Activity keeps showing the previous Mac's frozen numbers as "just measured" and covers the sealed reports the relay brings from it | medium | [G10](#g10--apple-apps-optimistic-actions-and-per-mac-state) · #527 |
 | S2 | [F-CLIENTS-R1](#f-clients-r1--the-tui-automatic-restart-throws-away-answers-not-yet-confirmed) · The TUI automatic restart throws away answers not yet confirmed | medium | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
 | S2 | [F-CLIENTS-R4](#f-clients-r4--a-terminal-whose-local-device-was-removed-stays-locked-out-forever) · A terminal whose local device was removed stays locked out forever | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
-| S2 | [F-ENGINE-1](#f-engine-1--the-slot-of-an-admitted-start-expires-after-3-min-even-if-the-node-does-not-exist-yet-the-gate-admits-above-the-limit) · The slot of an admitted start expires after 3 min even if the node does not exist yet: the gate admits above the limit | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `COMMIT` |
+| S2 | [F-ENGINE-1](#f-engine-1--the-slot-of-an-admitted-start-expires-after-3-min-even-if-the-node-does-not-exist-yet-the-gate-admits-above-the-limit) · The slot of an admitted start expires after 3 min even if the node does not exist yet: the gate admits above the limit | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
 | S2 | [F-ENGINE-12](#f-engine-12--a-retake-in-progress-and-the-adoption-of-a-model-transition-take-the-same-host-at-once-a-false-host-lost-card-or-two-live-owners-for-one-agent-formerly-h-engine-1) · A retake in progress and the adoption of a model transition take the same host at once: a false "host lost" card, or two live `Owner`s for one agent | low | [G8](#g8--one-owner-per-host-and-provider-facts-in-order) · #525 |
-| S2 | [F-ENGINE-3](#f-engine-3--the-pause-of-a-queued-task-lives-in-admissionjson-apart-from-launch_queue-it-can-be-lost-duplicated-or-stay-forever) · The pause of a queued task lives in `admission.json`, apart from `launch_queue`: it can be lost, duplicated or stay forever | — | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `COMMIT` |
-| S2 | [F-ENGINE-6](#f-engine-6--the-watch-advances-the-disk-incident-on-every-look-not-on-every-sample-with-watched-volumes-any-domain-change-restarts-the-recovery-and-without-them-one-sample-counts-twice) · The watch advances the disk incident on every look, not on every sample: with watched volumes any domain change restarts the recovery (and without them one sample counts twice) | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `COMMIT` |
-| S2 | [F-ENGINE-7](#f-engine-7--the-stretches-of-build-volumes-do-not-survive-a-restart-working-nodes-then-reserve-at-most-1-gb-there) · The stretches of build volumes do not survive a restart: working nodes then reserve at most 1 GB there | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · no longer applies (`COMMIT`) |
-| S2 | [F-ENGINE-9](#f-engine-9--a-volume-that-is-not-a-build-volume-can-stay-learned-forever-and-hold-every-start-and-the-turns) · A volume that is not a build volume can stay learned forever and hold every start and the turns | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · no longer applies (`COMMIT`) |
+| S2 | [F-ENGINE-3](#f-engine-3--the-pause-of-a-queued-task-lives-in-admissionjson-apart-from-launch_queue-it-can-be-lost-duplicated-or-stay-forever) · The pause of a queued task lives in `admission.json`, apart from `launch_queue`: it can be lost, duplicated or stay forever | — | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
+| S2 | [F-ENGINE-6](#f-engine-6--the-watch-advances-the-disk-incident-on-every-look-not-on-every-sample-with-watched-volumes-any-domain-change-restarts-the-recovery-and-without-them-one-sample-counts-twice) · The watch advances the disk incident on every look, not on every sample: with watched volumes any domain change restarts the recovery (and without them one sample counts twice) | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
+| S2 | [F-ENGINE-7](#f-engine-7--the-stretches-of-build-volumes-do-not-survive-a-restart-working-nodes-then-reserve-at-most-1-gb-there) · The stretches of build volumes do not survive a restart: working nodes then reserve at most 1 GB there | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · no longer applies (`e7b898c30`) |
+| S2 | [F-ENGINE-9](#f-engine-9--a-volume-that-is-not-a-build-volume-can-stay-learned-forever-and-hold-every-start-and-the-turns) · A volume that is not a build volume can stay learned forever and hold every start and the turns | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · no longer applies (`e7b898c30`) |
 | S2 | [F-GH-1](#f-gh-1--the-watcher-closes-on-github-the-pr-of-a-task-the-user-just-reopened-or-that-another-task-just-took) · The watcher closes on GitHub the PR of a task the user just reopened (or that another task just took) | low-medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S2 | **FIXED** [F-GH-3](#f-gh-3--the-startup-sweep-of-cancelled-tasks-deletes-a-worktree-that-task-handed-to-another-if-the-other-is-already-closing-or-the-user-kept-it) · The startup sweep of cancelled tasks deletes a worktree that task handed to another, if the other is already closing or the user kept it | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S2 | [F-GH-5](#f-gh-5--post-merge-work-declared-and-the-node-idle-the-task-stays-working-forever-its-host-is-never-released-and-it-holds-a-slot) · Post-merge work declared and the node idle: the task stays "Working" forever, its host is never released and it holds a slot | medium-low | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
@@ -103,10 +103,10 @@ to its fix group and issue.
 | S3 | [F-CLIENTS-A5](#f-clients-a5--if-preparing-an-answer-fails-the-queue-iphone-and-the-sidebar-mac-leave-the-card-sending-forever) · If preparing an answer fails, the queue (iPhone) and the sidebar (Mac) leave the card "sending" forever | low | [G10](#g10--apple-apps-optimistic-actions-and-per-mac-state) · #527 |
 | S3 | [F-CLIENTS-R2](#f-clients-r2--direct-http-route-a-refusal-from-the-mac-is-read-as-cut-midway) · Direct HTTP route: a refusal from the Mac is read as "cut midway" | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
 | S3 | [F-CLIENTS-R3](#f-clients-r3--the-tui-accepts-an-old-home-that-arrives-late-and-overwrites-the-new-one) · The TUI accepts an old home that arrives late and overwrites the new one | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
-| S3 | [F-ENGINE-10](#f-engine-10--disk_room_for-decides-the-next-one-goes-alone-with-a-disk_working-that-pace-can-empty-mid-call) · `disk_room_for` decides "the next one goes alone" with a `disk_working` that `pace` can empty mid-call | very | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `COMMIT` |
+| S3 | [F-ENGINE-10](#f-engine-10--disk_room_for-decides-the-next-one-goes-alone-with-a-disk_working-that-pace-can-empty-mid-call) · `disk_room_for` decides "the next one goes alone" with a `disk_working` that `pace` can empty mid-call | very | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
 | S3 | [F-ENGINE-11](#f-engine-11--two-states-of-the-hook-transport-are-unreachable-and-their-documentation-describes-behaviour-that-does-not-exist) · Two states of the hook transport are unreachable and their documentation describes behaviour that does not exist | always | [G12](#g12--the-architecture-docs-match-the-code) · #529 |
-| S3 | [F-ENGINE-2](#f-engine-2--auto_launch-admissions-that-never-launch-hold-a-slot-for-up-to-3-min) · `auto_launch` admissions that never launch hold a slot for up to 3 min | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `COMMIT` |
-| S3 | [F-ENGINE-4](#f-engine-4--a-turn-with-a-granted-slot-loses-its-place-in-the-queue-after-a-restart) · A turn with a granted slot loses its place in the queue after a restart | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `COMMIT` |
+| S3 | [F-ENGINE-2](#f-engine-2--auto_launch-admissions-that-never-launch-hold-a-slot-for-up-to-3-min) · `auto_launch` admissions that never launch hold a slot for up to 3 min | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
+| S3 | [F-ENGINE-4](#f-engine-4--a-turn-with-a-granted-slot-loses-its-place-in-the-queue-after-a-restart) · A turn with a granted slot loses its place in the queue after a restart | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
 | S3 | [F-ENGINE-5](#f-engine-5--task-statesmd-describes-a-timer-that-no-longer-exists-and-omits-the-ones-that-do) · `task-states.md` describes a timer that no longer exists and omits the ones that do | not | [G12](#g12--the-architecture-docs-match-the-code) · #529 |
 | S3 | **FIXED** [F-ENGINE-8](#f-engine-8--own_worktree-does-not-delete-the-worktree-of-a-task-that-ended-while-starting-the-domain-command-rejects-it-before-reaching-that-branch) · `own_worktree` does not delete the worktree of a task that ended while starting: the domain command rejects it before reaching that branch | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S3 | **FIXED** [F-GH-6](#f-gh-6--an-attachment-of-a-user-message-to-an-open-task-is-deleted-after-30-days-even-though-the-task-is-still-open) · An attachment of a user message to an open task is deleted after 30 days even though the task is still open | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
@@ -298,7 +298,7 @@ F-ENGINE-6, F-ENGINE-7, F-ENGINE-9, F-ENGINE-10 · Depends on: none · Related: 
 - **Tests**: gate tests with a virtual clock (admit, advance past 3 minutes without a node, ask again:
   today it admits above the limit); machine-watch tests feeding samples and looks separately; a
   restart test of the queue position.
-- **Status**: fixed in `COMMIT`. On 2026-11-23 the user decided that Alondra watches only the Mac's
+- **Status**: fixed in `e7b898c30`. On 2026-11-23 the user decided that Alondra watches only the Mac's
   own disk (its system and data volume, the one that can stop nodes) and that learning build
   volumes goes whole, with no rule to forget them: F-ENGINE-7 and F-ENGINE-9 no longer apply, and
   F-ENGINE-6 and F-ENGINE-10 are fixed on that disk alone. Final behaviour:
@@ -1061,7 +1061,7 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
 | From | Event [guard] | To | Effect |
 |---|---|---|---|
 | Waiting | `ask`/`pass` [head of queue, no hold] | Admitted | `last_admission`, disk `reserve_admission`; for `Resume`, `resume_locked` (`:840-852`) |
-| Admitted | [`now-at ≥ IN_FLIGHT` and, for a start, its launch no longer under way] | gone | `holds_slot` (F-ENGINE-1, fixed in `COMMIT`) |
+| Admitted | [`now-at ≥ IN_FLIGHT` and, for a start, its launch no longer under way] | gone | `holds_slot` (F-ENGINE-1, fixed in `e7b898c30`) |
 | Turn waiting | `grant_turns` | Granted | (`:884-897`) |
 | Granted | `take_granted` | Taken | (`:863-868`) |
 | Taken | [domain stops waiting] | out | `settle_turns` (`:919-928`) |
@@ -1118,7 +1118,7 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
   - `Back`: the row again.
 - **Source of truth**: two stores with no common transaction (F-ENGINE-3).
 - **Terminals**: none. Nothing deletes `held` when the task ends.
-- **Since `COMMIT`**: one domain fact, `Task::paused_in_queue`, written by `PauseQueuedTask` and
+- **Since `e7b898c30`**: one domain fact, `Task::paused_in_queue`, written by `PauseQueuedTask` and
   `ResumeQueuedTask`; the launch keeps its `launch_queue` row, `queued_launches` and `still_waits`
   skip a paused task, and closing the task clears the fact. `Pauses.held` is only read from an
   older daemon's file and handed to the domain once.
@@ -1379,7 +1379,7 @@ and port moves (#298, #300, #363, #366, #406, #434, #445, #447, #478, #496), wit
 
 ### M-ENGINE-13 · Disk stretches per volume and estimates per project (implicit)
 
-Since `COMMIT` only the Mac's own disk has stretches: the build-volume ledgers below are removed
+Since `e7b898c30` only the Mac's own disk has stretches: the build-volume ledgers below are removed
 (see M-ENGINE-15).
 
 - **Kind**: implicit. **Defined in**: `Ledger{usable, stretches: TaskId → Stretch{project, used, peak, whole}}`
@@ -1431,11 +1431,11 @@ Since `COMMIT` only the Mac's own disk has stretches: the build-volume ledgers b
 - **Guards**: needed = reserved + estimate of the next one (0 if it goes alone, `alone`) + low line (5 GB). With 2 GB
   of hysteresis once short (`engine-ports/src/disk.rs:62-68`).
 - **Concurrency**: `disk_room_for` takes the lock three times (`:712-718`), and `pace` can empty `disk_working`
-  between the first and the third. See F-ENGINE-10. Since `COMMIT` it takes it once.
+  between the first and the third. See F-ENGINE-10. Since `e7b898c30` it takes it once.
 
 ### M-ENGINE-15 · Lifecycle of an observed volume (implicit, composite)
 
-**Removed in `COMMIT`** by the user's decision of 2026-11-23: Alondra watches only the Mac's own
+**Removed in `e7b898c30`** by the user's decision of 2026-11-23: Alondra watches only the Mac's own
 disk. `volumes`, `build_volumes`, the candidates, their stretches, grants and budgets, and the
 incident's volume are gone; the fields an older daemon saved in `machine-incident.json` are ignored.
 What follows describes the machine as it was audited.
@@ -1782,7 +1782,7 @@ No related changes in the `git log` of `admission.rs`. No task in the related-co
 `snapshot_locked` or `IN_FLIGHT`. Issues #374 (daemon response under load) and #334 (load test with a saturated
 machine) create exactly the conditions in which a launch exceeds 3 min, but do not cover the slot. New evidence for
 both.
-**Status**: FIXED in `COMMIT` (G4, #521). `holds_slot` keeps an admitted start's slot past `IN_FLIGHT` while its task's launch is under way; `IN_FLIGHT` alone still decides the memory reserve. Test: `engine-admission` `admission::tests::a_start_whose_launch_outlasts_three_minutes_keeps_its_slot_until_the_launch_ends`, failing with the fix removed (it admitted t2 above the limit) and passing with the fix.
+**Status**: FIXED in `e7b898c30` (G4, #521). `holds_slot` keeps an admitted start's slot past `IN_FLIGHT` while its task's launch is under way; `IN_FLIGHT` alone still decides the memory reserve. Test: `engine-admission` `admission::tests::a_start_whose_launch_outlasts_three_minutes_keeps_its_slot_until_the_launch_ends`, failing with the fix removed (it admitted t2 above the limit) and passing with the fix.
 - **Invalid state/transition and broken invariant**:
   - "A reservation has no timer: it holds while its node waits and its host lives"
     (`docs/architecture/admission.md:107-108`);
@@ -1823,7 +1823,7 @@ both.
 a plan that disappears. · **Overlap**: issue #352 ("Close the create_task / auto-launch race for priority") touches
 the same step of `auto_launch::pass`, but is about order by priority, not the slot that stays held. If #352 rewrites
 that loop, the `Admitted` guard should go in there. New evidence. No task in the related-coverage notes covers it.
-**Status**: FIXED in `COMMIT` (G4, #521). An `Admitted` guard in `auto_launch::pass` calls `not_started` on every exit after an Ok `ask` that does not launch. Test: `engine-sdk` `auto_launch::tests::an_automatic_start_that_gives_way_gives_its_slot_back` (an automatic start that gives way to a launch already under way), failing with the guard removed (1 slot held with no node) and passing with it.
+**Status**: FIXED in `e7b898c30` (G4, #521). An `Admitted` guard in `auto_launch::pass` calls `not_started` on every exit after an Ok `ask` that does not launch. Test: `engine-sdk` `auto_launch::tests::an_automatic_start_that_gives_way_gives_its_slot_back` (an automatic start that gives way to a launch already under way), failing with the guard removed (1 slot held with no node) and passing with it.
 - **Invalid state/transition and broken invariant**: "A start the gate let through that did not start … holds no
   slot" (`admission.rs:536-539`, `not_started`).
 - **Evidence**: in `auto_launch.rs:152-168`, after `gate().ask(...)` = Ok:
@@ -1851,7 +1851,7 @@ that loop, the `Admitted` guard should go in there. New evidence. No task in the
 the write of `admission.json` has to fail, for example with a full disk, a situation Alondra does live. ·
 **Overlap**: none in the related-coverage notes or the open-issues list. New evidence. It is the same class of state
 split between JSON and SQLite as F-STORE-4 (`closed-task-nodes.json`) and M-STORE-12.
-**Status**: FIXED in `COMMIT` (G4, #521), with the default decision: the pause is the domain fact `Task::paused_in_queue` (`PauseQueuedTask`, `ResumeQueuedTask`). The launch keeps its `launch_queue` row, so nothing moves between two stores; closing the task clears the fact; `queued_launches`, `still_waits`, the slot count, `live()` and `start_failures::facts` read it. A pause an older daemon kept in `admission.json` is re-queued and handed to the domain once. Tests: `domain-rules` `queue_pause_tests::cancelling_a_task_paused_in_the_queue_ends_its_pause` (fails without the clear in `close_task`), `…::a_task_is_paused_in_the_queue_once_and_only_before_it_has_a_node`, `engine-admission` `admission::tests::a_queue_pause_an_older_daemon_kept_in_the_gates_file_becomes_the_domains`, and the updated `auto_launch` pause tests.
+**Status**: FIXED in `e7b898c30` (G4, #521), with the default decision: the pause is the domain fact `Task::paused_in_queue` (`PauseQueuedTask`, `ResumeQueuedTask`). The launch keeps its `launch_queue` row, so nothing moves between two stores; closing the task clears the fact; `queued_launches`, `still_waits`, the slot count, `live()` and `start_failures::facts` read it. A pause an older daemon kept in `admission.json` is re-queued and handed to the domain once. Tests: `domain-rules` `queue_pause_tests::cancelling_a_task_paused_in_the_queue_ends_its_pause` (fails without the clear in `close_task`), `…::a_task_is_paused_in_the_queue_once_and_only_before_it_has_a_node`, `engine-admission` `admission::tests::a_queue_pause_an_older_daemon_kept_in_the_gates_file_becomes_the_domains`, and the updated `auto_launch` pause tests.
 - **Invalid state/transition and broken invariant**: a task is in the queue **or** paused, never in both and never
   in neither; nothing stays paused for a finished task.
 - **Evidence**:
@@ -1885,7 +1885,7 @@ split between JSON and SQLite as F-STORE-4 (`closed-task-nodes.json`) and M-STOR
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: medium on every restart with turns granted and not yet
 taken, for example while their host is being retaken. · **Overlap**: none in the related-coverage notes or the
 open-issues list.
-**Status**: FIXED in `COMMIT` (G4, #521). `grant` keeps the turn's age in `Saved::granted` until its owner takes the slot; `settle_turns` gives it back to a turn that waits again after a restart. Test: `engine-admission` `admission::tests::a_turn_given_a_slot_keeps_its_place_in_the_queue_across_a_restart`, failing with the fix removed (it waited since the restart) and passing with the fix.
+**Status**: FIXED in `e7b898c30` (G4, #521). `grant` keeps the turn's age in `Saved::granted` until its owner takes the slot; `settle_turns` gives it back to a turn that waits again after a restart. Test: `engine-admission` `admission::tests::a_turn_given_a_slot_keeps_its_place_in_the_queue_across_a_restart`, failing with the fix removed (it waited since the restart) and passing with the fix.
 - **Invalid state/transition and broken invariant**: "The age lives in `admission.json`" (`admission.md:99-100`);
   order by priority and age.
 - **Evidence**:
@@ -2042,7 +2042,7 @@ disk incident (the tests cite real incidents of 7, 27 and 30 October and 9 Novem
 (the tests' build cache volume). With working nodes the domain changes every few seconds; turns continue during the
 incident because they only need a slot. · **Overlap**: none in the related-coverage notes or the open-issues list.
 New evidence. No fixes in `git log`.
-**Status**: FIXED in `COMMIT` (G4, #521). With the user's decision of 2026-11-23 no other volume is watched, so the variant with volumes is gone; `pace` returns whether the sample was new and `step_with_disk_measurement` moves `healthy` only on a new one. Test: `engine-admission` `machine_watch::tests::a_second_look_at_the_same_sample_moves_no_recovery`, failing with the fix removed (the second look closed the incident) and passing with the fix.
+**Status**: FIXED in `e7b898c30` (G4, #521). With the user's decision of 2026-11-23 no other volume is watched, so the variant with volumes is gone; `pace` returns whether the sample was new and `step_with_disk_measurement` moves `healthy` only on a new one. Test: `engine-admission` `machine_watch::tests::a_second_look_at_the_same_sample_moves_no_recovery`, failing with the fix removed (the second look closed the incident) and passing with the fix.
 - **Invalid state/transition and broken invariant**:
   - "Measurements in a row past the recovery line that end an incident: one alone may be a blip"
     (`machine_watch.rs:31-32`);
@@ -2099,7 +2099,7 @@ New evidence. No fixes in `git log`.
 **Class**: CONFIRMED · **Severity**: S2: the gate admits too much on a build volume and builds fail for lack of
 space. Recoverable. · **Probability**: medium to low. It needs a learned volume, several nodes mid-build and a daemon
 restart (every published release restarts the daemon). · **Overlap**: none known. New evidence.
-**Status**: NO LONGER APPLIES since `COMMIT` (G4, #521). The user decided on 2026-11-23 that Alondra watches only the Mac's own disk: build volumes, their stretches and their reservations are removed, so there is nothing left to lose on a restart. The Mac disk's stretches are saved as before (`what_each_project_takes_and_what_a_node_at_work_took_are_kept_across_a_restart`).
+**Status**: NO LONGER APPLIES since `e7b898c30` (G4, #521). The user decided on 2026-11-23 that Alondra watches only the Mac's own disk: build volumes, their stretches and their reservations are removed, so there is nothing left to lose on a restart. The Mac disk's stretches are saved as before (`what_each_project_takes_and_what_a_node_at_work_took_are_kept_across_a_restart`).
 - **Invalid state/transition and broken invariant**:
   - "what they reserve covers what they may still take" (`disk_peaks.rs:7-9`);
   - "The stretches running and the latest reading are kept across a restart, so a node at work goes on from what it
@@ -2174,7 +2174,7 @@ fetch). · **Severity**: S3: an orphan worktree on disk until the next daemon st
 is solved by unmounting or freeing that disk. · **Probability**: low. It takes copying to a local external disk, while
 k nodes work, at least k GB (the split is equal), and that disk being nearly full. · **Overlap**: none. The test at
 `:1668` documents only the case "filled without working nodes".
-**Status**: NO LONGER APPLIES since `COMMIT` (G4, #521). The user decided on 2026-11-23 that Alondra learns no build volume: `measure_volumes`, `build_volumes`, `volumes`, the candidates and the `Disk` port's mount table are removed, and the fields an older daemon saved are ignored. No volume other than the Mac's own disk can hold a start or a turn.
+**Status**: NO LONGER APPLIES since `e7b898c30` (G4, #521). The user decided on 2026-11-23 that Alondra learns no build volume: `measure_volumes`, `build_volumes`, `volumes`, the candidates and the `Disk` port's mount table are removed, and the fields an older daemon saved are ignored. No volume other than the Mac's own disk can hold a start or a turn.
 - **Invalid state/transition and broken invariant**: a volume no build writes to, in the Learned state of
   M-ENGINE-15, with no exit transition.
 - **Evidence**:
@@ -2208,7 +2208,7 @@ k nodes work, at least k GB (the split is equal), and that disk being nearly ful
 **Class**: CONFIRMED, by interleaving between threads. There is no seam to reproduce it without a barrier. ·
 **Severity**: S3. A start is admitted without counting its own estimate; the floor (`hold_for_disk`) remains as a
 backstop. · **Probability**: very low. The window is microseconds, once per sample. · **Overlap**: none.
-**Status**: FIXED in `COMMIT` (G4, #521) as a structural fix, which the finding allowed: `disk_room_for` and `disk_detail_for` read the reservations (`Record::reserved`) and decide `alone` under one lock, so a sample can no longer clear `disk_working` between the steps. There is no interleaving left for a test to reproduce; `the_head_alone_needs_only_the_line_of_the_disk` and `the_head_excludes_forecasts_but_not_earlier_grants` pin the result.
+**Status**: FIXED in `e7b898c30` (G4, #521) as a structural fix, which the finding allowed: `disk_room_for` and `disk_detail_for` read the reservations (`Record::reserved`) and decide `alone` under one lock, so a sample can no longer clear `disk_working` between the steps. There is no interleaving left for a test to reproduce; `the_head_alone_needs_only_the_line_of_the_disk` and `the_head_excludes_forecasts_but_not_earlier_grants` pin the result.
 - **Invalid state/transition and broken invariant**: "The gate's head needs only a disk's line when nothing else
   reserves that disk" (`machine_watch.rs:708-709`).
 - **Evidence**:
