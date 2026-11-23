@@ -172,8 +172,34 @@ pub trait Hosts: Default {
     fn controls(&self) -> Vec<serde_json::Value>;
     /// What the native Claudes got for each decision they asked for, in order.
     fn decisions(&self) -> Vec<serde_json::Value>;
-    /// The driver's host dies with every process it started, and is gone once this returns.
-    fn kill(&self, driver: &Driver);
+    /// The command line and environment the last native Claude got, as the fake one records them.
+    fn native_capture(&self) -> serde_json::Value;
+    /// The host of `group` dies with every process it started, and is gone once this returns.
+    fn kill(&self, group: i32);
+    /// Watches the host of `group` as it is now, with every process it started.
+    fn watch(&self, group: i32) -> HostWatch;
+    /// Claude loses what it kept of `session`, apart from the transcript in its profile.
+    fn forget(&self, session: &str);
+}
+
+/// A host a test watches: whether anything of it still runs, and a wait until nothing does.
+#[derive(Clone)]
+pub struct HostWatch(Arc<dyn Fn() -> bool + Send + Sync>);
+
+impl HostWatch {
+    pub fn new(runs: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(runs))
+    }
+
+    pub fn runs(&self) -> bool {
+        (self.0)()
+    }
+
+    pub fn wait_ended(&self) {
+        while self.runs() {
+            alondra_core::clock::blocking_sleep(std::time::Duration::from_millis(2));
+        }
+    }
 }
 
 /// The pinned Node host with the official SDK and the fake native Claude, which records what it gets
@@ -226,14 +252,30 @@ impl Hosts for ProcessHosts {
         self.recorded("decisions")
     }
 
-    fn kill(&self, driver: &Driver) {
-        kill_host(driver);
+    fn native_capture(&self) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(&self.capture).unwrap()).unwrap()
+    }
+
+    fn kill(&self, group: i32) {
+        kill_group(group);
+    }
+
+    fn watch(&self, group: i32) -> HostWatch {
+        let processes = alondra_process_group::members(group).unwrap();
+        HostWatch::new(move || processes.iter().any(|process| alondra_process_group::alive(process).unwrap()))
+    }
+
+    fn forget(&self, session: &str) {
+        std::fs::remove_file(format!("{}.transcript-{session}", self.capture.display())).unwrap();
     }
 }
 
 /// Kills the driver's whole host group and waits until each of its processes exited.
 pub fn kill_host(driver: &Driver) {
-    let group = driver.worker.host_group().unwrap();
+    kill_group(driver.worker.host_group().unwrap());
+}
+
+fn kill_group(group: i32) {
     let mut exits = alondra_process_group::Exits::new().unwrap();
     for member in alondra_process_group::members(group).unwrap() {
         exits.watch(&member).unwrap();
@@ -549,13 +591,13 @@ pub fn owner_generation(database: &Path) -> i64 {
 /// The owner of the task's host goes without stopping it, as the owner of 0.3.0 did when a step
 /// failed, and the host's owner socket goes too: the host lives on, holds its lock, and no owner
 /// can ever reach it again.
-pub fn strand_host(slice: &Slice<ProcessHosts>, driver: Driver) -> (String, Vec<alondra_process_group::Member>) {
+pub fn strand_host(slice: &Slice<ProcessHosts>, driver: Driver) -> (String, HostWatch) {
     let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
-    let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    let processes = slice.hosts.watch(driver.worker.host_group().unwrap());
     let folder = slice.backend.state_root.join(&driver.agent().0);
     drop(driver);
     std::fs::remove_file(folder.join("s")).unwrap();
-    assert!(processes.iter().all(|process| alondra_process_group::alive(process).unwrap()), "the host still runs");
+    assert!(processes.runs(), "the host still runs");
     (session, processes)
 }
 
@@ -643,13 +685,13 @@ pub fn sha256(text: &str) -> String {
 impl<H: Hosts> Slice<H> {
     /// The driver's host dies with every process it started.
     pub fn kill_host(&self, driver: &Driver) {
-        self.hosts.kill(driver);
+        self.hosts.kill(driver.worker.host_group().unwrap());
     }
 
     /// The Mac goes down: the driver's host dies, its native Claude included, and the daemon with
     /// them.
     pub fn kill_host_and_daemon(&self, driver: Driver) {
-        self.hosts.kill(&driver);
+        self.hosts.kill(driver.worker.host_group().unwrap());
         drop(driver);
     }
 
@@ -696,6 +738,23 @@ pub fn answer(domain: &DomainRuntime, card: &InteractionId, option: &str) {
     assert!(domain.execute_with(&user(), &envelope(&state, &format!("client-{option}"), answer), None, None, || Ok(())).unwrap().changed);
 }
 
+/// Claude signed in on its own account, with a model the moved task can run.
+pub fn claude_ready<H: Hosts>(slice: &Slice<H>) {
+    let state=slice.domain.state().unwrap();
+    let mut accounts=state.accounts.clone();
+    accounts.retain(|account|!(account.provider==Provider::Claude && account.id.is_default()));
+    accounts.push(alondra_core::accounts::AccountStatus{provider:Provider::Claude,id:AccountId::default_account(),name:"Claude fixture".into(),state:alondra_core::accounts::AccountState::SignedIn,native_identity:None,email:None,plan:None,billing:Default::default(),sign_ins:0,profile:None});
+    slice.run(&system(),"claude-fixture-account",Command::RecordAccounts{accounts,reserve:state.account_reserve});
+    claude_window(slice,Some(200_000),1);
+}
+/// The context window Claude's catalog gives its model, as measured at `measured_at`.
+pub fn claude_window<H: Hosts>(slice: &Slice<H>, window: Option<u64>, measured_at: alondra_core::Millis) {
+    use alondra_core::model_selection::{AccountModelCatalog,CatalogModel};
+    slice.run(&system(),&format!("claude-fixture-catalog-{measured_at}"),Command::RecordModelCatalog{catalog:AccountModelCatalog{
+        account:AccountKey::native(Provider::Claude),revision:format!("claude-catalog-{measured_at}"),measured_at,native_default:Some("claude-fixture".into()),
+        models:vec![CatalogModel{model:"claude-fixture".into(),display_name:"Claude fixture".into(),reasoning_efforts:vec!["high".into()],default_reasoning_effort:Some("high".into()),context_window:window,input_modalities:vec!["text".into()],is_default:true,hidden:false}],
+    }});
+}
 pub fn system() -> Actor {
     Actor::System
 }
