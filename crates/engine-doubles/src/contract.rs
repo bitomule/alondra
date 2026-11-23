@@ -19,22 +19,13 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// A missing path has no volume; a real folder is on one, with sane space.
+/// A missing path has no space; a real folder has sane space.
 pub fn disk(disk: &dyn Disk) {
     let scratch = Directory::new();
     std::fs::create_dir_all(&scratch).unwrap();
-    let missing = scratch.join("missing");
-    assert_eq!(disk.space(&missing), None, "a missing path has no space");
-    assert_eq!(disk.mount_point(&missing), None, "a missing path has no volume");
-    assert_eq!(disk.held(&missing), None);
+    assert_eq!(disk.space(&scratch.join("missing")), None, "a missing path has no space");
     let space = disk.space(&scratch).expect("a real folder is on a volume");
     assert!(space.total > 0 && space.free <= space.total && space.usable() >= space.free, "{space:?}");
-    let mount = disk.mount_point(&scratch).expect("a real folder has a mount point");
-    assert!(scratch.canonicalize().unwrap().starts_with(&mount), "{} is not under {}", scratch.display(), mount.display());
-    assert!(disk.same_volume(&scratch, &mount));
-    assert!(!disk.same_volume(&scratch, &missing), "a missing path shares no volume");
-    let mounts = disk.mounted_volumes().unwrap();
-    assert!(mounts.candidates.iter().all(|candidate| mounts.all.contains(candidate)), "{mounts:?}");
 }
 
 /// A sample of the Mac holds gauges that fit together: memory within what it has, the own disk's

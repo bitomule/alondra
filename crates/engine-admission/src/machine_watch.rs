@@ -12,7 +12,7 @@ use alondra_view_model::Lang;
 use alondra_domain_rules::TaskId;
 use alondra_core::{Machine, MemoryPressure, Millis, now_millis};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// One machine incident is open at a time, so its card has one cause.
@@ -56,12 +56,7 @@ pub(crate) struct Incident {
 #[derive(Default, Serialize, Deserialize)]
 struct Record {
     incident: Option<Incident>,
-    #[serde(default)]
-    incident_volume: Option<PathBuf>,
     declared: BTreeMap<String, Declared>,
-    /// Mount points of the volumes nodes were launched on, other than the Mac's own disk.
-    #[serde(default)]
-    volumes: BTreeSet<PathBuf>,
     /// Measured again for a minute after every start, so never saved.
     #[serde(skip)]
     mac: MacState,
@@ -85,116 +80,36 @@ struct Record {
     /// The disk was short of room for the next build when last asked.
     #[serde(skip)]
     short: bool,
-    #[serde(skip)]
-    boot_short: bool,
     /// A sandbox's fake nodes build nothing: they take nothing from the disk and reserve nothing.
     #[serde(skip)]
     peaks_ignored: bool,
+    /// The latest valid reading of the Mac's own disk.
     #[serde(skip)]
     disk: Option<alondra_engine_ports::disk::Space>,
-    #[serde(skip)]
-    disk_volume: Option<PathBuf>,
-    #[serde(skip)]
-    boot_disk: Option<alondra_engine_ports::disk::Space>,
     #[serde(skip)]
     swap: crate::swap_disk::SwapDisk,
     #[serde(skip)]
     swap_short: bool,
-    /// What a node of each project takes at its peak on each other volume builds were seen to
-    /// write to, by mount point; such a volume is watched like one nodes were launched on.
-    #[serde(default)]
-    build_volumes: BTreeMap<PathBuf, crate::disk_peaks::Estimates>,
-    /// The other volumes builds may write to, measured until they are seen to.
-    #[serde(skip)]
-    candidate_peaks: BTreeMap<PathBuf, crate::disk_peaks::Estimates>,
-    #[serde(skip)]
-    volume_stretches: BTreeMap<PathBuf, crate::disk_peaks::Ledger>,
-    /// The latest space of every other volume builds may write to.
-    #[serde(skip)]
-    volume_spaces: BTreeMap<PathBuf, alondra_engine_ports::disk::Space>,
-    /// Only a complete mount table can suspend a restriction without a space reading.
-    #[serde(skip)]
-    volume_mounts: Option<BTreeSet<PathBuf>>,
-    #[serde(skip)]
-    volume_readings_fresh: bool,
-    /// Work not yet covered by a newer disk budget, including tasks that have since ended.
-    #[serde(skip)]
-    volume_working: BTreeMap<PathBuf, BTreeMap<crate::admission::Key, Option<String>>>,
-    #[serde(skip)]
-    volume_grants: BTreeMap<PathBuf, BTreeMap<crate::admission::Key, u64>>,
-    /// The volumes builds write to that were short of room for the next build when last asked.
-    #[serde(skip)]
-    volumes_short: BTreeSet<PathBuf>,
-    #[serde(skip)]
-    candidates: Candidates,
-}
-
-/// Where the other volumes builds may write to come from: none until the daemon looks at the
-/// Mac's mounted volumes, so tests and sandboxes never measure the Mac's real ones.
-#[derive(Clone, Debug, Default)]
-enum Candidates {
-    #[default]
-    None,
-    Mounted,
-    Given(Vec<(PathBuf, alondra_engine_ports::disk::Space, u64)>),
-    #[cfg(test)]
-    Probed { mounts: Option<Vec<PathBuf>>, spaces: Vec<(PathBuf, alondra_engine_ports::disk::Space, u64)> },
-}
-
-struct VolumeMeasurements {
-    mounts: BTreeSet<PathBuf>,
-    spaces: Vec<(PathBuf, alondra_engine_ports::disk::Space, u64)>,
 }
 
 impl Record {
-    /// The first volume builds write to short of room for the next node, of `project`, on top of
-    /// what the `working` tasks may still take there.
-    fn volume_short(&mut self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, head: Option<&crate::admission::Key>) -> Option<alondra_engine_ports::disk::Room> {
+    /// What the `working` tasks, the work seen since the last reading and the admissions granted
+    /// since then may still take from the disk, leaving out the gate's `head`.
+    fn reserved(&mut self, working: &BTreeMap<TaskId, Option<String>>, head: Option<&crate::admission::Key>) -> u64 {
         if self.peaks_ignored {
-            return None;
+            return 0;
         }
-        let mut first = None;
-        for (mount, estimates) in &self.build_volumes {
-            if self.volume_mounts.as_ref().is_some_and(|mounts| !mounts.contains(mount)) { continue; }
-            let unobserved = self.volume_working.entry(mount.clone()).or_default();
-            for (task, project) in working {
-                unobserved.entry(crate::admission::Key::Task(task.clone())).or_insert_with(|| project.clone());
-            }
-            let stretches = self.volume_stretches.get(mount);
-            let grants = self.volume_grants.get(mount);
-            let granted = grants.map_or(0, |grants| grants.values().copied().fold(0u64, u64::saturating_add));
-            let reserved = unobserved.iter().filter(|(key, _)| Some(*key) != head && grants.is_none_or(|grants| !grants.contains_key(*key))).map(|(key, project)| {
-                let estimate = estimates.estimate_beside(project.as_deref());
-                match key {
-                    crate::admission::Key::Task(task) => stretches.map_or(estimate, |stretches| stretches.reserved(task, estimate)),
-                    _ => estimate,
-                }
-            }).fold(granted, u64::saturating_add);
-            let alone = head.is_some() && grants.is_none_or(BTreeMap::is_empty) && unobserved.keys().all(|key| Some(key) == head);
-            let next = if alone { 0 } else { estimates.estimate_beside(project) };
-            let needed = reserved.saturating_add(next).saturating_add(alondra_engine_ports::disk::low_lines().usable);
-            let room = self.volume_spaces.get(mount).map(|space| space.room_for(needed, self.volumes_short.contains(mount)));
-            match room {
-                Some(Ok(())) => {
-                    self.volumes_short.remove(mount);
-                }
-                room => {
-                    let room = match room {
-                        Some(Err(room)) => {
-                            self.volumes_short.insert(mount.clone());
-                            room
-                        }
-                        None => alondra_engine_ports::disk::Room { free: 0, needed, volume: None },
-                        Some(Ok(())) => unreachable!(),
-                    };
-                    let name = mount.file_name().map_or_else(|| mount.display().to_string(), |name| name.to_string_lossy().into_owned());
-                    if first.is_none() {
-                        first = Some(alondra_engine_ports::disk::Room { volume: Some(name), ..room });
-                    }
-                }
-            }
+        for (task, project) in working {
+            self.disk_working.entry(crate::admission::Key::Task(task.clone())).or_insert_with(|| project.clone());
         }
-        first
+        let granted = self.disk_grants.values().copied().fold(0u64, u64::saturating_add);
+        self.disk_working.iter().filter(|(key, _)| Some(*key) != head && !self.disk_grants.contains_key(*key)).map(|(key, project)| {
+            let estimate = self.peaks.estimate(project.as_deref());
+            match key {
+                crate::admission::Key::Task(task) => self.stretches.reserved(task, estimate),
+                _ => estimate,
+            }
+        }).fold(granted, u64::saturating_add)
     }
 }
 
@@ -231,7 +146,7 @@ fn valid_disk(space: alondra_engine_ports::disk::Space) -> bool {
     space.total > 0 && space.free.checked_add(space.purgeable).is_some_and(|usable| usable <= space.total)
 }
 
-fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[Waiter]) -> MachineCard {
+fn card_for(cause: MachineCause, machine: &Machine, waiting: &[Waiter]) -> MachineCard {
     let space = disk_space(machine);
     let short_now = cause == MachineCause::Disk && space.short_now();
     MachineCard {
@@ -242,41 +157,19 @@ fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting:
         reason: (cause == MachineCause::Declared).then(|| waiting.first().map(|waiter| waiter.reason.clone())).flatten(),
         resource: (cause == MachineCause::Declared).then(|| waiting.first().and_then(|waiter| waiter.resource)).flatten(),
         minutes: None,
-        disk: disk.filter(|_| cause == MachineCause::Disk).map(str::to_owned),
         still: false,
-    }
-}
-
-/// The machine with the disk gauge of its fullest volume: the Mac's own, or one a node works on,
-/// named when it is not the Mac's own.
-/// The fullest is the one with the least usable space, or, when one is low only because macOS has
-/// not purged yet, that one.
-#[cfg(test)]
-pub(crate) fn tightest(machine: Machine, volumes: &[(String, alondra_engine_ports::disk::Space)]) -> (Machine, Option<String>) {
-    tightest_on(machine, volumes)
-}
-
-fn tightest_on<T: Clone>(machine: Machine, volumes: &[(T, alondra_engine_ports::disk::Space)]) -> (Machine, Option<T>) {
-    let fullness = |space: &alondra_engine_ports::disk::Space| (!space.low(false), space.usable());
-    match volumes.iter().min_by_key(|(_, space)| fullness(space)) {
-        Some((name, space)) if fullness(space) < fullness(&disk_space(&machine)) || machine.disk_total == 0 =>
-            (Machine { disk_available: space.free, disk_purgeable: space.purgeable, disk_total: space.total, ..machine }, Some(name.clone())),
-        _ => (machine, None),
     }
 }
 
 /// One sample of the incident: the gauges, the nodes waiting, and whether the user just said they
 /// fixed it. Pure, so every turn of it is tested without a clock.
 pub(crate) fn step(previous: Option<Incident>, machine: &Machine, waiting: &[Waiter], fixed: bool, now: Millis) -> (Option<Incident>, Vec<Action>) {
-    step_on(previous, machine, None, waiting, fixed, now)
+    step_with_disk_measurement(previous, machine, waiting, fixed, now, valid_disk(disk_space(machine)), true)
 }
 
-/// `step` with the name of the volume the disk gauge measured, when it is not the Mac's own.
-pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], fixed: bool, now: Millis) -> (Option<Incident>, Vec<Action>) {
-    step_with_disk_measurement(previous, machine, disk, waiting, fixed, now, valid_disk(disk_space(machine)))
-}
-
-fn step_with_disk_measurement(previous: Option<Incident>, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], fixed: bool, now: Millis, measured_disk: bool) -> (Option<Incident>, Vec<Action>) {
+/// A look again at a sample already taken (`fresh` false) moves no recovery: only a new
+/// measurement counts toward the healthy samples that end an incident.
+fn step_with_disk_measurement(previous: Option<Incident>, machine: &Machine, waiting: &[Waiter], fixed: bool, now: Millis, measured_disk: bool, fresh: bool) -> (Option<Incident>, Vec<Action>) {
     let mut previous = previous;
     if let Some(incident) = previous.as_mut().filter(|incident| incident.cause == MachineCause::Disk && !measured_disk) {
         incident.healthy = 0;
@@ -285,10 +178,12 @@ fn step_with_disk_measurement(previous: Option<Incident>, machine: &Machine, dis
     let measured = failing(machine, previous.as_ref().map(|incident| incident.cause));
     let Some(mut incident) = previous else {
         let Some(cause) = measured else { return (None, vec![]) };
-        return open(cause, machine, disk, waiting, now);
+        return open(cause, machine, waiting, now);
     };
     let fine = measured.is_none();
-    incident.healthy = if fine { incident.healthy + 1 } else { 0 };
+    if fresh {
+        incident.healthy = if fine { incident.healthy + 1 } else { 0 };
+    }
     let declared_only = incident.cause == MachineCause::Declared;
     if declared_only || (fine && (fixed || incident.healthy >= HEALTHY_SAMPLES)) {
         let mut actions: Vec<Action> = incident.card.into_iter().map(Action::Withdraw).collect();
@@ -301,7 +196,7 @@ fn step_with_disk_measurement(previous: Option<Incident>, machine: &Machine, dis
     let first_stop = incident.nodes_shown == 0 && !waiting.is_empty();
     let mut actions = vec![];
     if first_stop || cause != incident.cause || fixed {
-        let card = MachineCard { still: fixed, ..card_for(cause, machine, disk, waiting) };
+        let card = MachineCard { still: fixed, ..card_for(cause, machine, waiting) };
         actions.extend(incident.card.take().map(Action::Withdraw));
         incident.cards += 1;
         let id = format!("{MACHINE_PREFIX}{}-{}", incident.since, incident.cards);
@@ -315,17 +210,11 @@ fn step_with_disk_measurement(previous: Option<Incident>, machine: &Machine, dis
 
 /// A problem the Mac's gauges measure opens an incident with its card. A wait a node declared
 /// with no measured cause, such as a build queue, opens none: it is the node's state.
-fn open(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], now: Millis) -> (Option<Incident>, Vec<Action>) {
-    let card = card_for(cause, machine, disk, waiting);
+fn open(cause: MachineCause, machine: &Machine, waiting: &[Waiter], now: Millis) -> (Option<Incident>, Vec<Action>) {
+    let card = card_for(cause, machine, waiting);
     let id = format!("{MACHINE_PREFIX}{now}");
     let incident = Incident { since: now, cause, card: Some(id.clone()), cards: 1, nodes_shown: waiting.len(), healthy: 0 };
     (Some(incident), vec![Action::Log { id, card }])
-}
-
-/// The volume the machine's own disk gauge measures.
-fn own_disk() -> &'static Path {
-    let data = Path::new(alondra_daemon_engine_machine::machine::BOOT_DATA);
-    if data.exists() { data } else { Path::new("/") }
 }
 
 pub struct MachineWatch {
@@ -430,7 +319,7 @@ impl MachineWatch {
         record.sampled_at = machine.at;
         record.swap.sample(machine.compressor, now);
         let disk = disk_space(machine);
-        if valid_disk(disk) { record.boot_disk = Some(disk); }
+        if valid_disk(disk) { record.disk = Some(disk); }
         let before = record.mac.room(0, now);
         if record.mac.step(machine, now) {
             record.mac.observed_nodes = record.mac.nodes.clone();
@@ -486,148 +375,14 @@ impl MachineWatch {
     pub fn measure_disk(&self, space: alondra_engine_ports::disk::Space) {
         if valid_disk(space) {
             let mut record = self.record();
-            record.boot_disk = Some(space);
             record.disk = Some(space);
-            record.disk_volume = None;
             record.disk_working.clear();
             record.disk_grants.clear();
         }
     }
 
-    #[cfg(test)]
-    fn measure_fullest_disk(&self, space: alondra_engine_ports::disk::Space) {
-        self.measure_fullest_disk_on(space, None);
-    }
-
-    fn measure_fullest_disk_on(&self, space: alondra_engine_ports::disk::Space, volume: Option<PathBuf>) {
-        if valid_disk(space) {
-            let mut record = self.record();
-            record.disk = Some(space);
-            record.disk_volume = volume;
-        }
-    }
-
-    fn suspend_unmounted(&self) -> Option<Incident> {
-        let mut record = self.record();
-        let absent = |volume: &Option<PathBuf>, mounts: &Option<BTreeSet<PathBuf>>| {
-            volume.as_ref().is_some_and(|volume| mounts.as_ref().is_some_and(|mounts| !mounts.contains(volume)))
-        };
-        if absent(&record.disk_volume, &record.volume_mounts) {
-            record.disk = None;
-            record.disk_volume = None;
-            record.short = false;
-        }
-        if record.incident.as_ref().is_some_and(|incident| incident.cause == MachineCause::Disk)
-            && absent(&record.incident_volume, &record.volume_mounts) {
-            let incident = record.incident.take();
-            record.incident_volume = None;
-            self.save(&record);
-            incident
-        } else {
-            None
-        }
-    }
-
     pub fn ignore_peaks(&self) {
         self.record().peaks_ignored = true;
-    }
-
-    /// Measures from now on the Mac's other mounted volumes builds may write to.
-    pub fn discover_volumes(&self) {
-        self.record().candidates = Candidates::Mounted;
-    }
-
-    /// Volumes alone on their disk: what they hold grows by what their free space falls.
-    pub fn give_volumes(&self, volumes: Vec<(PathBuf, alondra_engine_ports::disk::Space)>) {
-        let volumes = volumes.into_iter().map(|(mount, space)| (mount, space, space.total.saturating_sub(space.usable()))).collect();
-        self.record().candidates = Candidates::Given(volumes);
-    }
-
-    pub fn give_volumes_holding(&self, volumes: Vec<(PathBuf, alondra_engine_ports::disk::Space, u64)>) {
-        self.record().candidates = Candidates::Given(volumes);
-    }
-
-    /// Every other volume builds may write to, its space and what it holds.
-    fn candidate_spaces(&self) -> Option<VolumeMeasurements> {
-        let (candidates, watched) = {
-            let record = self.record();
-            (record.candidates.clone(), record.volumes.iter().chain(record.build_volumes.keys()).cloned().collect::<BTreeSet<_>>())
-        };
-        match candidates {
-            Candidates::None => None,
-            Candidates::Mounted => {
-                let mounts = self.disk.mounted_volumes().ok()?;
-                let wanted: BTreeSet<_> = mounts.candidates.into_iter().chain(watched).collect();
-                let spaces = wanted.into_iter().filter(|mount| mounts.all.contains(mount))
-                    .filter(|mount| !self.disk.same_volume(mount, own_disk()))
-                    .filter_map(|mount| {
-                        if self.disk.mount_point(&mount).as_ref() != Some(&mount) { return None; }
-                        let space = self.disk.space(&mount)?;
-                        let held = self.disk.held(&mount).unwrap_or_else(|| space.total.saturating_sub(space.usable()));
-                        if self.disk.mount_point(&mount).as_ref() != Some(&mount) { return None; }
-                        Some((mount, space, held))
-                    }).collect();
-                Some(VolumeMeasurements { mounts: mounts.all, spaces })
-            }
-            Candidates::Given(spaces) => Some(VolumeMeasurements { mounts: spaces.iter().map(|(mount, _, _)| mount.clone()).collect(), spaces }),
-            #[cfg(test)]
-            Candidates::Probed { mounts, spaces } => Some(VolumeMeasurements { mounts: mounts?.into_iter().collect(), spaces }),
-        }
-    }
-
-    /// Takes a sample of every other volume builds may write to with the tasks at work, by what the
-    /// volume itself holds: an APFS volume shares its free space with the others of its container,
-    /// such as the Mac's own disk, so what they write never counts as taken from it. One a
-    /// stretch took `disk_peaks::LEARNED_BYTES` from becomes a volume builds write to: watched, its
-    /// card raised when it runs low, and its room reserved like the Mac's own disk's. Returns
-    /// whether a stretch ended or the confirmed set of mounts changed.
-    pub fn measure_volumes(&self, working: &BTreeMap<TaskId, Option<String>>, now: Millis) -> bool {
-        if self.record().peaks_ignored {
-            return false;
-        }
-        let Some(VolumeMeasurements { mounts, spaces }) = self.candidate_spaces() else {
-            self.record().volume_readings_fresh = false;
-            return false;
-        };
-        let spaces: Vec<_> = spaces.into_iter().filter(|(mount, space, _)| mounts.contains(mount) && valid_disk(*space)).collect();
-        let mut record = self.record();
-        let changed = record.volume_mounts.as_ref() != Some(&mounts);
-        record.volume_spaces.retain(|mount, _| mounts.contains(mount));
-        record.volume_stretches.retain(|mount, _| mounts.contains(mount));
-        record.volume_working.retain(|mount, _| mounts.contains(mount));
-        record.volume_grants.retain(|mount, _| mounts.contains(mount));
-        record.volume_readings_fresh = record.volumes.iter().chain(record.build_volumes.keys())
-            .filter(|mount| mounts.contains(*mount)).all(|mount| spaces.iter().any(|(measured, _, _)| measured == mount));
-        record.volume_mounts = Some(mounts);
-        let mut ended = false;
-        let mut learned = vec![];
-        for (mount, space, held) in &spaces {
-            record.volume_working.remove(mount);
-            record.volume_grants.remove(mount);
-            if *held > space.total { continue; }
-            let Record { build_volumes, candidate_peaks, volume_stretches, .. } = &mut *record;
-            let known = build_volumes.contains_key(mount);
-            let estimates = match build_volumes.get_mut(mount) {
-                Some(estimates) => estimates,
-                None => candidate_peaks.entry(mount.clone()).or_default(),
-            };
-            let stretches = volume_stretches.entry(mount.clone()).or_default();
-            ended |= stretches.sample(estimates, space.total.saturating_sub(*held), working, now);
-            if !known && estimates.most().max(stretches.most()) >= crate::disk_peaks::LEARNED_BYTES {
-                learned.push(mount.clone());
-            }
-        }
-        record.volume_spaces.extend(spaces.into_iter().map(|(mount, space, _)| (mount, space)));
-        for mount in &learned {
-            log!("builds write to {}: Alondra watches it and reserves the room they take there", mount.display());
-            let estimates = record.candidate_peaks.remove(mount).unwrap_or_default();
-            record.build_volumes.insert(mount.clone(), estimates);
-            record.volumes.insert(mount.clone());
-        }
-        if ended || !learned.is_empty() {
-            self.save(&record);
-        }
-        ended || changed
     }
 
     /// Takes a sample of the usable space of the Mac's own disk with the tasks at work, by
@@ -664,99 +419,56 @@ impl MachineWatch {
         let cost = record.peaks.estimate(project.as_deref());
         let grant = record.disk_grants.entry(key.clone()).or_default();
         *grant = grant.saturating_add(cost);
-        record.disk_working.entry(key.clone()).or_insert_with(|| project.clone());
-        let mounts: Vec<_> = record.build_volumes.iter()
-            .filter(|(mount, _)| record.volume_mounts.as_ref().is_none_or(|mounts| mounts.contains(*mount)))
-            .map(|(mount, estimates)| (mount.clone(), estimates.estimate_beside(project.as_deref()))).collect();
-        for (mount, cost) in mounts {
-            let grant = record.volume_grants.entry(mount.clone()).or_default().entry(key.clone()).or_default();
-            *grant = grant.saturating_add(cost);
-            record.volume_working.entry(mount).or_default().entry(key.clone()).or_insert_with(|| project.clone());
-        }
+        record.disk_working.entry(key).or_insert(project);
     }
 
     pub fn disk_reserved(&self, working: &BTreeMap<TaskId, Option<String>>) -> u64 {
-        self.disk_reserved_for(working, None)
+        self.record().reserved(working, None)
     }
 
-    fn disk_reserved_for(&self, working: &BTreeMap<TaskId, Option<String>>, head: Option<&crate::admission::Key>) -> u64 {
-        let record = self.record();
-        if record.peaks_ignored {
-            return 0;
-        }
-        let mut unobserved = record.disk_working.clone();
-        for (task, project) in working {
-            unobserved.entry(crate::admission::Key::Task(task.clone())).or_insert_with(|| project.clone());
-        }
-        let granted = record.disk_grants.values().copied().fold(0u64, u64::saturating_add);
-        unobserved.iter().filter(|(key, _)| Some(*key) != head && !record.disk_grants.contains_key(*key)).map(|(key, project)| {
-            let estimate = record.peaks.estimate(project.as_deref());
-            match key {
-                crate::admission::Key::Task(task) => record.stretches.reserved(task, estimate),
-                _ => estimate,
-            }
-        }).fold(granted, u64::saturating_add)
-    }
-
-    /// The disk short of room for the next node, of `project`, on top of what the `working` tasks
-    /// may still take: the Mac's own disk, or else a volume builds write to, named. Also while the
-    /// disk's card is open, when no node starts. Once short, a disk needs margin to have room again.
+    /// The Mac's disk short of room for the next node, of `project`, on top of what the `working`
+    /// tasks may still take. Also while the disk's incident is open, when no node starts. Once
+    /// short, the disk needs margin to have room again.
     pub fn disk_room(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, now: Millis) -> Option<alondra_engine_ports::disk::Room> {
         self.disk_room_for(working, project, None, now)
     }
 
-    /// The gate's `head` needs only a disk's line when nothing else reserves that disk, no other node
-    /// at work nor an admission since its last reading, so one node can always work over the line.
+    /// The gate's `head` needs only the disk's line when nothing else reserves the disk, no other
+    /// node at work nor an admission since its last reading, so one node can always work over the
+    /// line. Read and decided under one lock, so a sample cannot clear the work it counts midway.
     pub(crate) fn disk_room_for(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, head: Option<&crate::admission::Key>, now: Millis) -> Option<alondra_engine_ports::disk::Room> {
-        {
-            let mut record = self.record();
-            for (task, project) in working {
-                record.disk_working.entry(crate::admission::Key::Task(task.clone())).or_insert_with(|| project.clone());
-            }
-        }
-        let reserved = self.disk_reserved_for(working, head);
         let mut record = self.record();
+        let reserved = record.reserved(working, head);
         let alone = head.is_some() && record.disk_grants.is_empty() && record.disk_working.keys().all(|key| Some(key) == head);
         let estimate = if record.peaks_ignored || alone { 0 } else { record.peaks.estimate(project) };
         let needed = reserved.saturating_add(estimate).saturating_add(alondra_engine_ports::disk::low_lines().usable);
-        let volume_short = record.volume_short(working, project, head);
-        if record.boot_disk.is_none() {
-            return Some(alondra_engine_ports::disk::Room { free: 0, needed, volume: None });
-        }
-        let boot_short = record.boot_disk.and_then(|space| space.room_for(needed, record.boot_short).err());
-        record.boot_short = boot_short.is_some();
-        let short = record.disk.and_then(|space| space.room_for(needed, record.short).err());
+        let Some(disk) = record.disk else {
+            return Some(alondra_engine_ports::disk::Room { free: 0, needed });
+        };
+        let short = disk.room_for(needed, record.short).err();
         record.short = short.is_some();
         let swap_short = if record.peaks_ignored { None } else {
-            record.swap.reserve(now).zip(record.boot_disk).and_then(|(swap_reserve, space)| {
+            record.swap.reserve(now).and_then(|swap_reserve| {
                 // Swap needs immediately writable space, even when macOS reports purgeable room.
                 let needed = needed.saturating_add(swap_reserve);
                 let margin = if record.swap_short { alondra_engine_ports::disk::recovered_lines().usable - alondra_engine_ports::disk::low_lines().usable } else { 0 };
-                (space.free < needed.saturating_add(margin)).then_some(alondra_engine_ports::disk::Room {
-                    free: space.free, needed, volume: None,
-                })
+                (disk.free < needed.saturating_add(margin)).then_some(alondra_engine_ports::disk::Room { free: disk.free, needed })
             })
         };
         record.swap_short = swap_short.is_some();
-        let short = swap_short.or(boot_short).or(short);
-        let short = short.or(volume_short);
         let carded = record.incident.as_ref().is_some_and(|incident| incident.cause == MachineCause::Disk);
-        short.or_else(|| carded.then(|| alondra_engine_ports::disk::Room {
-            free: record.disk.map_or(0, |space| space.shown_free()),
-            needed,
-            volume: None,
-        }))
+        swap_short.or(short).or_else(|| carded.then(|| alondra_engine_ports::disk::Room { free: disk.shown_free(), needed }))
     }
 
-    /// Swap and boot-container budget beside the queue hold, for the throttled log.
+    /// Swap and disk budget beside the queue hold, for the throttled log.
     pub(crate) fn disk_detail(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, now: Millis) -> Option<String> {
         self.disk_detail_for(working, project, None, now)
     }
 
     pub(crate) fn disk_detail_for(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, head: Option<&crate::admission::Key>, now: Millis) -> Option<String> {
-        let reserved = self.disk_reserved_for(working, head);
-        let record = self.record();
-        let space = record.boot_disk?;
+        let mut record = self.record();
+        let reserved = record.reserved(working, head);
+        let space = record.disk?;
         let swap = record.swap.line(now).unwrap_or_else(|| "swap unavailable".into());
         let builds = reserved.saturating_add(if record.peaks_ignored { 0 } else { record.peaks.estimate(project) });
         let remaining = i128::from(space.free) - i128::from(builds);
@@ -764,56 +476,21 @@ impl MachineWatch {
             space.free as f64 / 1_000_000_000.0, builds as f64 / 1_000_000_000.0, remaining as f64 / 1_000_000_000.0))
     }
 
-    /// Whether the fullest disk fell under its floor.
+    /// Whether the disk fell under its floor.
     pub fn under_floor(&self) -> bool {
         self.record().disk.is_some_and(|space| space.under_floor())
     }
 
     fn short(&self) -> bool {
         let record = self.record();
-        record.short || record.boot_short || record.swap_short
+        record.short || record.swap_short
     }
 
-    /// Why no node may start in `cwd` now, if the disk is nearly full there or on the Mac. The
-    /// folder's volume is watched from now on. Any learned build volume without its own byte budget
-    /// waits for the watcher even if admission was granted before the volume appeared.
+    /// Why no node may start in `cwd` now: the Mac's disk has its incident open, or the disk the
+    /// task's folder is on is low right now. That folder's disk is read once, at the launch; only
+    /// the Mac's own disk is watched.
     pub(crate) fn refuse_launch(&self, cwd: &Path) -> Option<String> {
-        let mount = self.disk.mount_point(cwd).filter(|mount| !self.disk.same_volume(mount, own_disk()));
-        self.refuse_launch_on(mount, self.space_where_it_works(cwd))
-    }
-
-    pub fn give_launch_space(&self, path: PathBuf, space: alondra_engine_ports::disk::Space) {
-        self.launch_space.lock_or_recover("the launch volume measurements").insert(path, space);
-    }
-
-    fn space_where_it_works(&self, cwd: &Path) -> Option<alondra_engine_ports::disk::Space> {
-        if let Some(space) = self.launch_space.lock_or_recover("the launch volume measurements").get(cwd).copied() {
-            return Some(space);
-        }
-        if self.launches_on_measured_disk.load(std::sync::atomic::Ordering::Relaxed)
-            && let Some(measured) = self.record().boot_disk {
-            return Some(measured);
-        }
-        self.disk.space(cwd)
-    }
-
-    fn refuse_launch_on(&self, mount: Option<PathBuf>, space: Option<alondra_engine_ports::disk::Space>) -> Option<String> {
-        if let Some(mount) = mount {
-            self.watch_mount(mount);
-        }
-        let unbudgeted = {
-            let record = self.record();
-            if record.peaks_ignored { None } else {
-                record.build_volumes.keys().find(|mount| {
-                    record.volume_mounts.as_ref().is_none_or(|mounts| mounts.contains(*mount))
-                        && !record.volume_spaces.get(*mount).is_some_and(|space| valid_disk(*space))
-                }).cloned()
-            }
-        };
-        if let Some(mount) = unbudgeted {
-            self.changed.notify_one();
-            return Some(format!("Waiting for a disk space measurement on {}: Alondra starts no node until that volume has a valid reading", mount.display()));
-        }
+        let space = self.space_where_it_works(cwd);
         let low_here = space.is_some_and(|space| space.low(false));
         if !self.disk_low() && !low_here {
             return None;
@@ -825,31 +502,19 @@ impl MachineWatch {
         Some(format!("The disk is nearly full{free}: Alondra starts no node until there is space again, and {} has a card about it", alondra_core::config::user_name()))
     }
 
-    fn watch_mount(&self, mount: PathBuf) {
-        let mut record = self.record();
-        let watched = record.volumes.insert(mount.clone());
-        let newly_present = record.volume_mounts.as_mut().is_some_and(|mounts| mounts.insert(mount));
-        record.volume_readings_fresh = false;
-        if watched {
-            self.save(&record);
-        }
-        drop(record);
-        if watched || newly_present {
-            self.changed.notify_one();
-        }
+    pub fn give_launch_space(&self, path: PathBuf, space: alondra_engine_ports::disk::Space) {
+        self.launch_space.lock_or_recover("the launch volume measurements").insert(path, space);
     }
 
-    /// The free space of every watched volume still mounted, by name.
-    fn volumes(&self) -> Vec<(PathBuf, alondra_engine_ports::disk::Space)> {
-        let (volumes, measured, mounted) = {
-            let record = self.record();
-            (record.volumes.clone(), record.volume_spaces.clone(), record.volume_mounts.clone())
-        };
-        volumes.iter().filter_map(|mount| {
-            if mounted.as_ref().is_some_and(|mounted| !mounted.contains(mount)) { return None; }
-            let space = measured.get(mount).copied()?;
-            Some((mount.clone(), space))
-        }).collect()
+    fn space_where_it_works(&self, cwd: &Path) -> Option<alondra_engine_ports::disk::Space> {
+        if let Some(space) = self.launch_space.lock_or_recover("the launch volume measurements").get(cwd).copied() {
+            return Some(space);
+        }
+        if self.launches_on_measured_disk.load(std::sync::atomic::Ordering::Relaxed)
+            && let Some(measured) = self.record().disk {
+            return Some(measured);
+        }
+        self.disk.space(cwd)
     }
 
     pub fn declared(&self) -> BTreeMap<String, Declared> {
@@ -864,14 +529,9 @@ impl MachineWatch {
     }
 
     fn set_incident(&self, incident: Option<Incident>) {
-        self.set_incident_on(incident, None);
-    }
-
-    fn set_incident_on(&self, incident: Option<Incident>, volume: Option<PathBuf>) {
         let mut record = self.record();
-        if record.incident != incident || record.incident_volume != volume {
+        if record.incident != incident {
             record.incident = incident;
-            record.incident_volume = volume;
             self.save(&record);
         }
     }
@@ -946,14 +606,14 @@ async fn act(domain: &std::sync::Arc<dyn Runtime>, _alerts: &impl Alerts, action
 }
 
 /// A new sample of the Mac: kept in the samples file, and when memory gains or loses room for one
-/// more node, one line in the log and a look of the gate.
-pub fn pace(domain: &dyn Runtime, machine: &Machine) {
+/// more node, one line in the log and a look of the gate. Returns whether the sample was new.
+pub fn pace(domain: &dyn Runtime, machine: &Machine) -> bool {
     if let Some(threads) = domain.machine_watch().sample_threads.lock_or_recover("the sampling threads").as_mut() {
         threads.push(std::thread::current().id());
     }
     let watch = &domain.machine_watch();
     let now = if machine.at == 0 { now_millis() } else { machine.at };
-    let Some(before) = watch.sample(machine, now) else { return };
+    let Some(before) = watch.sample(machine, now) else { return false };
     match domain.hosts().node_footprints() {
         Ok(footprints) => watch.measure_node_memory(now_millis(), footprints),
         Err(error) => watch.nodes_unavailable(&error),
@@ -962,8 +622,7 @@ pub fn pace(domain: &dyn Runtime, machine: &Machine) {
     let working = crate::admission::working_projects(domain, &domain.state());
     let usable = disk_space(machine).usable();
     let measured_disk = valid_disk(disk_space(machine));
-    let freed = measured_disk && watch.measure_peaks(usable, &working, now);
-    if watch.measure_volumes(&working, now) || freed {
+    if measured_disk && watch.measure_peaks(usable, &working, now) {
         domain.admission().poke();
     }
     if let Some(home) = watch.home() {
@@ -973,31 +632,23 @@ pub fn pace(domain: &dyn Runtime, machine: &Machine) {
     }
     let working = working.len();
     let room = mac.room(0, now);
-    if before.is_ok() == room.is_ok() { return; }
+    if before.is_ok() == room.is_ok() { return true; }
     let free = mac.free_percent.map_or_else(|| "unknown".into(), |free| format!("{free}%"));
     match room {
         Ok(()) => log!("memory has room for one more node again ({free} free, {working} node(s) working); {}; disk free {} bytes, purgeable {} bytes", mac.memory_detail(0), machine.disk_available, machine.disk_purgeable),
         Err(why) => log!("memory has no room for one more node: {why} ({free} free, {working} node(s) working); running nodes go on; {}; disk free {} bytes, purgeable {} bytes", mac.memory_detail(0), machine.disk_available, machine.disk_purgeable),
     }
     domain.admission().poke();
+    true
 }
 
 /// One look at a sample of the machine: the incident it opens, keeps or ends, and the actions that
 /// follow. A sample that measures space on the disk takes over the executions that found it full.
 pub fn look(domain: &dyn Runtime, machine: Machine) -> Vec<Action> {
     let watch = &domain.machine_watch();
-    watch.record().volume_readings_fresh = false;
-    pace(domain, &machine);
-    let suspended = watch.suspend_unmounted();
-    let measured_volumes = {
-        let record = watch.record();
-        record.peaks_ignored || (record.volumes.is_empty() && record.build_volumes.is_empty()) || record.volume_readings_fresh
-    };
-    let measured_boot_disk = valid_disk(disk_space(&machine)) && measured_volumes;
-    let (machine, volume) = tightest_on(machine, &watch.volumes());
-    let disk = volume.as_ref().map(|mount| mount.file_name().map_or_else(|| mount.display().to_string(), |name| name.to_string_lossy().into_owned()));
-    if valid_disk(disk_space(&machine)) {
-        watch.measure_fullest_disk_on(disk_space(&machine), volume.clone());
+    let fresh = pace(domain, &machine);
+    let measured_disk = valid_disk(disk_space(&machine));
+    if measured_disk {
         if watch.short() {
             domain.admission().poke();
         }
@@ -1008,23 +659,9 @@ pub fn look(domain: &dyn Runtime, machine: Machine) -> Vec<Action> {
     let previous = watch.incident();
     let fixed = fixed(domain, previous.as_ref());
     let waiting = waiters(domain);
-    let now = now_millis();
-    let incident_volume = if failing(&machine, previous.as_ref().map(|incident| incident.cause)) == Some(MachineCause::Disk)
-        && (previous.is_none() || measured_boot_disk) {
-        volume
-    } else {
-        watch.record().incident_volume.clone()
-    };
-    let (next, mut actions) = step_with_disk_measurement(previous, &machine, disk.as_deref(), &waiting, fixed, now, measured_boot_disk);
-    let incident_volume = next.as_ref().filter(|incident| incident.cause == MachineCause::Disk).and(incident_volume);
-    if let Some(suspended) = suspended {
-        actions.extend(suspended.card.into_iter().map(Action::Withdraw));
-        if !waiting.is_empty() {
-            actions.push(Action::Release(waiting.iter().map(|waiter| waiter.session.clone()).collect()));
-        }
-    }
-    let space = measured_boot_disk && has_space(&machine, next.as_ref());
-    watch.set_incident_on(next, incident_volume);
+    let (next, actions) = step_with_disk_measurement(previous, &machine, &waiting, fixed, now_millis(), measured_disk, fresh);
+    let space = measured_disk && has_space(&machine, next.as_ref());
+    watch.set_incident(next);
     if fixed {
         domain.admission().release_declared(domain);
     }
@@ -1168,53 +805,10 @@ mod tests {
             disk_purgeable: measured.purgeable, ..Machine::default() }, SAMPLE);
         for at in [2 * SAMPLE, 3 * SAMPLE] {
             watch.sample(&Machine { at, ..Machine::default() }, at);
-            assert_eq!(watch.record().boot_disk, Some(measured));
+            assert_eq!(watch.record().disk, Some(measured));
         }
         watch.sample(&Machine { at: 4 * SAMPLE, disk_total: GB, disk_available: 2 * GB, ..Machine::default() }, 4 * SAMPLE);
-        assert_eq!(watch.record().boot_disk, Some(measured), "invalid readings cannot replace the boot budget");
-    }
-
-    #[test]
-    fn startup_admission_a_healthy_external_disk_cannot_replace_the_system_disk_budget() {
-        let (_home, domain) = world();
-        let watch = &domain.machine_watch();
-        let cache = PathBuf::from("/Volumes/BuildCache");
-        watch.record().volumes.insert(cache.clone());
-        watch.give_volumes(vec![(cache, space(30 * GB))]);
-        let base = now_millis();
-        let unknown = |at| Machine { at, disk_total: 0, disk_available: 0, ..machine(0, 60) };
-        let _ = look(&*domain, unknown(base));
-        assert_eq!(watch.record().boot_disk, None);
-        assert!(watch.disk_room(&BTreeMap::new(), None, base).is_some(), "a healthy external volume is not a system disk measurement");
-
-        let _ = look(&*domain, Machine { at: base + SAMPLE, ..machine(100 * GB, 60) });
-        assert!(watch.disk_room(&BTreeMap::new(), None, base + SAMPLE).is_none());
-        let _ = look(&*domain, Machine { at: base + 2 * SAMPLE, ..machine(0, 60) });
-        assert!(watch.disk_room(&BTreeMap::new(), None, base + 2 * SAMPLE).is_some());
-        for at in [base + 3 * SAMPLE, base + 4 * SAMPLE] {
-            let _ = look(&*domain, unknown(at));
-            assert_eq!(watch.incident().expect("unknown system disk cannot close its incident").healthy, 0);
-            assert!(watch.disk_room(&BTreeMap::new(), None, at).is_some(), "a missing system probe cannot recover a low system disk");
-        }
-    }
-
-    #[test]
-    fn swap_uses_the_boot_container_even_when_another_volume_is_tightest() {
-        let watch = MachineWatch::default();
-        watch.seed_peaks("app", &[GB; 3]);
-        for step in 0..=30 {
-            let at = 10_000 + step * SAMPLE;
-            let compressor = alondra_core::MemoryCompressor { swap_used: GB + step as u64 * 10_000_000,
-                swap_total: Some(2 * GB), ..alondra_core::MemoryCompressor::default() };
-            watch.sample(&Machine { at, compressor: Some(compressor), ..machine(20 * GB, 29) }, at);
-        }
-        watch.measure_fullest_disk(space(8 * GB));
-        let now = 10_000 + 5 * MIN;
-        assert_eq!(watch.disk_room(&BTreeMap::new(), Some("app"), now), None,
-            "the 8 GB on another volume is not swap's free space");
-        watch.record().boot_disk = Some(alondra_engine_ports::disk::Space { free: 7 * GB, purgeable: 40 * GB, total: 500 * GB });
-        assert!(watch.disk_room(&BTreeMap::new(), Some("app"), now).is_some(),
-            "purgeable space does not pay swap's immediate writes");
+        assert_eq!(watch.record().disk, Some(measured), "invalid readings cannot replace the boot budget");
     }
 
     /// The daemon restarts while a node builds: what each project took and what the node at work
@@ -1239,7 +833,7 @@ mod tests {
         reopened.measure_peaks(89 * GB, &working(&[("t4", "app")]), 100);
         assert_eq!(reopened.disk_reserved(&working(&[("t4", "app")])), GB, "and the 2 it took since");
         assert_eq!(reopened.disk_room(&working(&[("t4", "app")]), Some("app"), 100),
-            Some(alondra_engine_ports::disk::Room { free: 15 * GB, needed: GB + 12 * GB + 5 * GB, volume: None }), "t4's last GB and the next one's 12 on top of the 5 GB line");
+            Some(alondra_engine_ports::disk::Room { free: 15 * GB, needed: GB + 12 * GB + 5 * GB }), "t4's last GB and the next one's 12 on top of the 5 GB line");
         reopened.measure_peaks(89 * GB, &BTreeMap::new(), 102);
         assert_eq!(reopened.record().peaks.estimate(Some("app")), 12 * GB);
         assert_eq!(reopened.record().peaks.most(), 12 * GB, "t4's 11 GB is kept beside the three 12 GB");
@@ -1272,20 +866,6 @@ mod tests {
     }
 
     #[test]
-    fn learned_volume_probe_failure_keeps_its_restriction() {
-        let watch = MachineWatch::default();
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        watch.measure_disk(alondra_engine_ports::disk::Space { free: 400 * GB, purgeable: 0, total: 500 * GB });
-        watch.record().build_volumes.entry(mount.clone()).or_default();
-        watch.give_volumes(vec![(mount.clone(), space(GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 0);
-        let before = watch.disk_room(&BTreeMap::new(), None, 0).expect("the learned volume is short");
-        watch.record().candidates = Candidates::Probed { mounts: Some(vec![mount]), spaces: vec![] };
-        watch.measure_volumes(&BTreeMap::new(), 1);
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 1), Some(before), "a mounted volume without a reading has not recovered");
-    }
-
-    #[test]
     fn startup_admission_missing_disk_cannot_cancel_unobserved_writes() {
         let watch = MachineWatch::default();
         let disk = |free| alondra_engine_ports::disk::Space { free, purgeable: 0, total: 500 * GB };
@@ -1304,103 +884,20 @@ mod tests {
         assert_eq!(watch.disk_room(&BTreeMap::new(), None, 3 * SAMPLE), None);
     }
 
-    fn learned_watch(mount: &Path) -> MachineWatch {
+    #[test]
+    fn the_head_alone_needs_only_the_line_of_the_disk() {
         let watch = MachineWatch::default();
-        watch.measure_disk(alondra_engine_ports::disk::Space { free: 400 * GB, purgeable: 0, total: 500 * GB });
-        let mut record = watch.record();
-        record.build_volumes.entry(mount.to_owned()).or_default();
-        record.volumes.insert(mount.to_owned());
-        drop(record);
-        watch
-    }
-
-    #[test]
-    fn learned_volume_invalid_readings_preserve_budget_hysteresis_and_reserves() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
-        let working = working(&[("t1", "app")]);
-        watch.give_volumes(vec![(mount.clone(), space(GB))]);
-        watch.measure_volumes(&working, 0);
-        let before = watch.disk_room(&working, None, 0).unwrap();
-        let reserved = watch.record().volume_stretches[&mount].reserved(&TaskId::from("t1"), GB);
-        for (at, reading) in [
-            None,
-            Some(alondra_engine_ports::disk::Space { free: 30 * GB, total: 0, purgeable: 0 }),
-            Some(alondra_engine_ports::disk::Space { free: 30 * GB, total: GB, purgeable: 0 }),
-            Some(alondra_engine_ports::disk::Space { free: u64::MAX, total: u64::MAX, purgeable: 1 }),
-        ].into_iter().enumerate() {
-            watch.record().candidates = Candidates::Probed {
-                mounts: Some(vec![mount.clone()]),
-                spaces: reading.into_iter().map(|space| (mount.clone(), space, 0)).collect(),
-            };
-            watch.measure_volumes(&BTreeMap::new(), at as Millis + 1);
-            assert_eq!(watch.disk_room(&working, None, at as Millis + 1), Some(before.clone()));
-            assert_eq!(watch.record().volume_stretches[&mount].reserved(&TaskId::from("t1"), GB), reserved, "failed probes cannot end a stretch or credit consumption");
-        }
-        watch.record().candidates = Candidates::Probed { mounts: None, spaces: vec![] };
-        watch.measure_volumes(&BTreeMap::new(), 5);
-        assert_eq!(watch.disk_room(&working, None, 5), Some(before));
-        watch.give_volumes(vec![(mount.clone(), space(0))]);
-        watch.measure_volumes(&working, 6);
-        assert_eq!(watch.record().volume_spaces[&mount].free, 0, "zero available is a real shortage");
-        assert!(watch.disk_room(&working, None, 6).is_some());
-    }
-
-    #[test]
-    fn learned_volume_ended_tasks_cannot_cancel_unobserved_disk_reserves() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
-        let running = working(&[("t1", "app"), ("t2", "app"), ("t3", "app")]);
-        watch.give_volumes(vec![(mount.clone(), space(8 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 0);
-        let before = watch.disk_room(&running, None, 0).expect("the three pending writes need 9 GB");
-        assert_eq!(before.needed, 9 * GB);
-        watch.record().candidates = Candidates::Probed { mounts: Some(vec![mount.clone()]), spaces: vec![] };
-        watch.measure_volumes(&BTreeMap::new(), 1);
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 1), Some(before), "ended tasks may have consumed their reserves after the cached budget");
-        watch.give_volumes(vec![(mount, space(8 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 2);
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 2), None, "fresh bytes include completed writes and can release the reserves");
-    }
-
-    #[test]
-    fn learned_volume_failed_probe_keeps_reservations_seen_between_budgets() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
-        watch.give_volumes(vec![(mount, space(8 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 0);
-        watch.record().candidates = Candidates::Probed { mounts: None, spaces: vec![] };
-        let reserving = working(&[("t1", "app"), ("t2", "app"), ("t3", "app")]);
-        watch.measure_volumes(&reserving, 1);
-        assert_eq!(watch.disk_room(&reserving, None, 1).unwrap().needed, 9 * GB);
-        watch.measure_volumes(&BTreeMap::new(), 2);
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 2).unwrap().needed, 9 * GB, "reservations against the old budget remain after their tasks end");
-    }
-
-    #[test]
-    fn the_head_alone_needs_only_the_line_of_a_build_volume() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
-        watch.record().build_volumes.get_mut(&mount).unwrap().seed("app", &[8 * GB; 3]);
-        watch.give_volumes(vec![(mount.clone(), space(10 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 0);
+        watch.seed_peaks("app", &[8 * GB; 3]);
+        watch.measure_disk(alondra_engine_ports::disk::Space { total: 500 * GB, free: 10 * GB, purgeable: 0 });
         let head = crate::admission::Key::Task("t1".into());
         assert_eq!(watch.disk_room_for(&BTreeMap::new(), Some("app"), Some(&head), 0), None, "nothing else at work: 10 GB are over the 5 GB line");
-        assert_eq!(watch.disk_room_for(&working(&[("t2", "app")]), Some("app"), Some(&head), 0).and_then(|room| room.volume), Some("BuildCache".into()),
-            "t2 may still take 8 GB there");
+        assert!(watch.disk_room_for(&working(&[("t2", "app")]), Some("app"), Some(&head), 0).is_some(), "t2 may still take 8 GB");
     }
 
     #[test]
-    fn learned_volume_head_excludes_forecasts_but_not_earlier_grants() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
-        watch.give_volumes(vec![(mount, space(6 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 0);
+    fn the_head_excludes_forecasts_but_not_earlier_grants() {
         let head = crate::admission::Key::Task("t1".into());
         let working = BTreeMap::from([("t1".into(), None)]);
-        assert_eq!(watch.disk_room_for(&working, None, Some(&head), 0), None);
-        watch.reserve_admission(head.clone(), None);
-        assert_eq!(watch.disk_room_for(&BTreeMap::new(), None, Some(&head), 0).unwrap().needed, 7 * GB, "a new grant cannot erase the earlier grant's possible writes");
         let watch = MachineWatch::default();
         watch.measure_disk(alondra_engine_ports::disk::Space { total: 500 * GB, free: 16 * GB, purgeable: 0 });
         assert_eq!(watch.disk_room_for(&working, None, Some(&head), 0), None);
@@ -1410,341 +907,13 @@ mod tests {
     }
 
     #[test]
-    fn learned_volume_new_grants_cannot_reuse_older_consumption_credit() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
-        let working = working(&[("t1", "app")]);
-        watch.measure_peaks(100 * GB, &working, 0);
-        watch.measure_peaks(92 * GB, &working, 1);
-        watch.give_volumes_holding(vec![(mount.clone(), space(10 * GB), 27 * GB)]);
-        watch.measure_volumes(&working, 0);
-        watch.give_volumes_holding(vec![(mount.clone(), space(8 * GB), 29 * GB)]);
-        watch.measure_volumes(&working, 1);
-        assert_eq!(watch.disk_used(&"t1".into()), 8 * GB);
-        let head = crate::admission::Key::Task("t1".into());
-        for _ in 0..3 { watch.reserve_admission(head.clone(), None); }
-        assert_eq!(watch.disk_reserved(&BTreeMap::new()), 24 * GB, "each grant reserves a full build despite previous ledger credit");
-        let held = watch.disk_room_for(&BTreeMap::new(), None, Some(&head), 1).unwrap();
-        assert_eq!(held.volume.as_deref(), Some("BuildCache"));
-        assert_eq!(held.needed, 9 * GB);
-    }
-
-    #[test]
-    fn learned_volume_reserves_survive_a_system_disk_hold() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
-        watch.give_volumes(vec![(mount.clone(), space(8 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 0);
-        watch.measure_disk(alondra_engine_ports::disk::Space { free: 36 * GB, purgeable: 0, total: 500 * GB });
-        let running = working(&[("t1", "app"), ("t2", "app"), ("t3", "app")]);
-        let held = watch.disk_room(&running, None, 0).expect("system disk blocks first");
-        assert_eq!(held.volume, None);
-        watch.record().candidates = Candidates::Probed { mounts: Some(vec![mount]), spaces: vec![] };
-        watch.measure_volumes(&BTreeMap::new(), 1);
-        watch.measure_disk(alondra_engine_ports::disk::Space { free: 400 * GB, purgeable: 0, total: 500 * GB });
-        let held = watch.disk_room(&BTreeMap::new(), None, 1).expect("fresh system bytes cannot release unobserved external writes");
-        assert_eq!(held.volume.as_deref(), Some("BuildCache"));
-        assert_eq!(held.needed, 9 * GB);
-    }
-
-    #[test]
     fn fresh_disk_budgets_do_not_reserve_held_turns_against_their_return() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
+        let watch = MachineWatch::default();
         let held = working(&[("t1", "app"), ("t2", "app"), ("t3", "app")]);
-        // The ledger still observes these turns, but admission excludes their future builds.
-        watch.give_volumes(vec![(mount, space(8 * GB))]);
-        watch.measure_volumes(&held, 0);
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 0), None);
         watch.measure_disk(alondra_engine_ports::disk::Space { free: 36 * GB, purgeable: 0, total: 500 * GB });
         watch.measure_peaks(36 * GB, &held, 1);
         assert_eq!(watch.disk_reserved(&BTreeMap::new()), 0);
         assert_eq!(watch.disk_room(&BTreeMap::new(), None, 1), None, "a fresh budget counts only the next build when returning held turns are excluded");
-    }
-
-    #[test]
-    fn learned_volume_confirmed_unmount_suspends_the_hold_and_remount_needs_a_budget() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
-        watch.give_volumes(vec![(mount.clone(), space(GB))]);
-        watch.measure_volumes(&working(&[("t1", "app")]), 0);
-        assert!(watch.disk_room(&BTreeMap::new(), None, 0).is_some());
-        watch.give_volumes(vec![]);
-        watch.measure_volumes(&BTreeMap::new(), 1);
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 1), None);
-        assert!(watch.record().build_volumes.contains_key(&mount));
-        assert!(!watch.record().volume_stretches.contains_key(&mount));
-        assert!(watch.volumes().is_empty(), "an unmounted directory cannot supply its parent's disk budget");
-        watch.record().candidates = Candidates::Probed { mounts: Some(vec![mount.clone()]), spaces: vec![] };
-        watch.measure_volumes(&BTreeMap::new(), 2);
-        assert!(watch.disk_room(&BTreeMap::new(), None, 2).is_some(), "a remounted volume needs its own reading");
-        watch.give_volumes(vec![(mount.clone(), space(7 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 3);
-        assert!(watch.disk_room(&BTreeMap::new(), None, 3).is_some(), "a known shortage still needs its recovery margin");
-        watch.give_volumes(vec![(mount, space(8 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 4);
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 4), None);
-    }
-
-    #[test]
-    fn learned_volume_positive_remount_supersedes_an_older_absence() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
-        watch.give_volumes(vec![(mount.clone(), space(GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 0);
-        assert!(watch.disk_room(&BTreeMap::new(), None, 0).is_some());
-        watch.give_volumes(vec![]);
-        watch.measure_volumes(&BTreeMap::new(), 1);
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 1), None);
-        watch.record().candidates = Candidates::Probed { mounts: None, spaces: vec![] };
-        watch.measure_volumes(&BTreeMap::new(), 2);
-        watch.record().volume_readings_fresh = true;
-        watch.watch_mount(mount.clone());
-        let room = watch.disk_room(&BTreeMap::new(), None, 2).expect("positive mount evidence supersedes an older absence even when enumeration fails");
-        assert_eq!(room.volume.as_deref(), Some("BuildCache"));
-        assert!(!watch.record().volume_readings_fresh);
-        watch.give_volumes(vec![(mount.clone(), space(7 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 3);
-        assert!(watch.disk_room(&BTreeMap::new(), None, 3).is_some());
-        watch.give_volumes(vec![(mount.clone(), space(8 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 4);
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 4), None);
-        watch.record().volume_mounts = None;
-        watch.watch_mount(mount);
-        assert_eq!(watch.record().volume_mounts, None, "one positive mount does not establish a complete mount table");
-    }
-
-    #[test]
-    fn learned_volume_launch_preflight_cannot_use_admission_from_before_remount() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
-        watch.give_volumes(vec![]);
-        watch.measure_volumes(&BTreeMap::new(), 0);
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 0), None,
-            "admission before the volume reappears has no external budget to reserve");
-        assert_eq!(watch.refuse_launch_on(None, None), None,
-            "a confirmed absence does not block a launch on the system disk");
-        for reading in [None, Some(space(30 * GB)),
-            Some(alondra_engine_ports::disk::Space { total: 0, free: 30 * GB, purgeable: 0 }),
-            Some(alondra_engine_ports::disk::Space { total: GB, free: 30 * GB, purgeable: 0 }),
-            Some(alondra_engine_ports::disk::Space { total: u64::MAX, free: u64::MAX, purgeable: 1 })] {
-            assert!(watch.refuse_launch_on(Some(mount.clone()), reading).is_some(),
-                "preflight must wait for the watcher's own coherent budget, even with a recent admission");
-            assert!(watch.refuse_launch_on(None, None).is_some(),
-                "an unknown build-volume budget also blocks a launch whose cwd is on the system disk");
-        }
-        watch.give_volumes(vec![(mount.clone(), space(30 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 1);
-        assert_eq!(watch.refuse_launch_on(Some(mount), Some(space(30 * GB))), None);
-        let unlearned = MachineWatch::default();
-        assert_eq!(unlearned.refuse_launch_on(Some(PathBuf::from("/Volumes/Other")), None), None,
-            "watching a new volume does not invent build usage there");
-    }
-
-    #[test]
-    fn learned_volume_unknown_budget_waits_but_does_not_invent_a_shortage_margin() {
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let watch = learned_watch(&mount);
-        assert!(watch.disk_room(&BTreeMap::new(), None, 0).is_some(), "persisted learning without readings must wait");
-        watch.record().candidates = Candidates::Probed { mounts: Some(vec![mount.clone()]), spaces: vec![] };
-        watch.measure_volumes(&BTreeMap::new(), 1);
-        assert!(watch.disk_room(&BTreeMap::new(), None, 1).is_some());
-        watch.give_volumes(vec![(mount, space(6 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 2);
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 2), None, "the first healthy budget is enough when no shortage was measured");
-    }
-
-    #[test]
-    fn learned_volume_reopened_without_readings_keeps_admission_closed() {
-        let home = crate::test_support::Directory::new();
-        std::fs::create_dir_all(&home).unwrap();
-        let mount = home.join("BuildCache");
-        let watch = MachineWatch::persisted_in(&home, Arc::new(alondra_engine_doubles::disk::Disks::default()));
-        {
-            let mut record = watch.record();
-            record.build_volumes.entry(mount.clone()).or_default();
-            record.volumes.insert(mount.clone());
-            record.volume_mounts = Some(BTreeSet::new());
-            watch.save(&record);
-        }
-        drop(watch);
-        let reopened = MachineWatch::persisted_in(&home, Arc::new(alondra_engine_doubles::disk::Disks::default()));
-        reopened.measure_disk(alondra_engine_ports::disk::Space { free: 400 * GB, purgeable: 0, total: 500 * GB });
-        assert!(reopened.record().build_volumes.contains_key(&mount));
-        assert_eq!(reopened.record().volume_mounts, None, "a previous unmount is not a new mount-table reading");
-        reopened.record().candidates = Candidates::Probed { mounts: Some(vec![mount.clone()]), spaces: vec![] };
-        reopened.measure_volumes(&BTreeMap::new(), 0);
-        assert_eq!(reopened.disk_room(&BTreeMap::new(), None, 0).unwrap().volume.as_deref(), Some("BuildCache"));
-        reopened.give_volumes(vec![(mount, space(6 * GB))]);
-        reopened.measure_volumes(&BTreeMap::new(), 1);
-        assert_eq!(reopened.disk_room(&BTreeMap::new(), None, 1), None);
-    }
-
-    #[test]
-    fn learned_volume_unmount_retires_its_incident_without_a_new_system_probe() {
-        for (boot, other, held) in [(Some(100 * GB), false, false), (None, false, true), (Some(12 * GB), false, true), (Some(100 * GB), true, true)] {
-            let (home, domain) = world();
-            let mount = home.0.join("BuildCache");
-            let other_mount = home.0.join("OtherCache");
-            let watch = &domain.machine_watch();
-            watch.record().build_volumes.entry(mount.clone()).or_default();
-            watch.record().volumes.insert(mount.clone());
-            watch.give_volumes(vec![(mount.clone(), space(GB))]);
-            let reading = |at, free: Option<u64>| Machine { at, disk_total: if free.is_some() { 500 * GB } else { 0 }, disk_available: free.unwrap_or(0), ..machine(0, 60) };
-            let _ = look(&*domain, reading(SAMPLE, boot));
-            assert_eq!(watch.record().incident_volume.as_ref(), Some(&mount));
-            assert!(watch.disk_room(&BTreeMap::new(), None, SAMPLE).is_some());
-            if boot == Some(12 * GB) {
-                let _ = look(&*domain, reading(2 * SAMPLE, Some(14 * GB)));
-                assert!(watch.disk_room(&BTreeMap::new(), None, 2 * SAMPLE).is_some());
-            }
-            if other {
-                watch.record().build_volumes.entry(other_mount.clone()).or_default();
-                watch.record().volumes.insert(other_mount.clone());
-            }
-            watch.give_volumes(if other { vec![(other_mount, space(GB))] } else { vec![] });
-            let actions = look(&*domain, reading(3 * SAMPLE, None));
-            assert!(actions.iter().any(|action| matches!(action, Action::Withdraw(_))), "confirmed absence retires only the absent volume's incident");
-            assert_eq!(watch.disk_room(&BTreeMap::new(), None, 3 * SAMPLE).is_some(), held, "own budget and other volumes retain their independent restrictions");
-            if !other { assert!(watch.incident().is_none()); }
-            if boot == Some(12 * GB) {
-                assert!(watch.record().boot_short, "unmount cannot clear the system disk's recovery margin");
-            }
-        }
-    }
-
-    #[test]
-    fn learned_volume_incident_origin_survives_reopen_without_guessing_old_records() {
-        let mut record = Record::default();
-        record.incident = step(None, &machine(GB, 60), &[], false, 0).0;
-        record.incident_volume = Some(PathBuf::from("/Volumes/BuildCache"));
-        let saved = serde_json::to_value(&record).unwrap();
-        for has_origin in [true, false] {
-            let mut saved = saved.clone();
-            if !has_origin { saved.as_object_mut().unwrap().remove("incident_volume"); }
-            let watch = MachineWatch { record: Mutex::new(serde_json::from_value(saved).unwrap()), ..MachineWatch::default() };
-            watch.give_volumes(vec![]);
-            watch.measure_volumes(&BTreeMap::new(), 1);
-            assert_eq!(watch.suspend_unmounted().is_some(), has_origin, "only a recorded origin can identify the absent incident");
-            assert!(watch.disk_room(&BTreeMap::new(), None, 1).is_some(), "reopen still needs its first system budget");
-        }
-    }
-
-    #[test]
-    fn learned_volume_cached_space_cannot_complete_incident_recovery() {
-        let (home, domain) = world();
-        let mount = home.0.join("BuildCache");
-        let watch = &domain.machine_watch();
-        watch.record().build_volumes.entry(mount.clone()).or_default();
-        watch.record().volumes.insert(mount.clone());
-        watch.declare("waiting-node", None, "disk full", 0, 0);
-        watch.give_volumes(vec![(mount.clone(), space(GB))]);
-        let _ = look(&*domain, Machine { at: SAMPLE, ..machine(100 * GB, 60) });
-        assert_eq!(watch.incident().unwrap().healthy, 0);
-        watch.give_volumes(vec![(mount.clone(), space(30 * GB))]);
-        let _ = look(&*domain, Machine { at: 2 * SAMPLE, ..machine(100 * GB, 60) });
-        assert_eq!(watch.incident().unwrap().healthy, 1);
-        for (index, mounts) in [Some(vec![mount.clone()]), None].into_iter().enumerate() {
-            watch.record().candidates = Candidates::Probed { mounts, spaces: vec![] };
-            let actions = look(&*domain, Machine { at: (index as Millis + 3) * SAMPLE, ..machine(100 * GB, 60) });
-            assert_eq!(watch.incident().expect("failed readings cannot recover the incident").healthy, 0);
-            assert!(!actions.iter().any(|action| matches!(action, Action::Release(_))));
-            assert!(watch.disk_room(&BTreeMap::new(), None, 0).is_some());
-        }
-        watch.give_volumes(vec![(mount, space(30 * GB))]);
-        let _ = look(&*domain, Machine { at: 5 * SAMPLE, ..machine(100 * GB, 60) });
-        assert_eq!(watch.incident().unwrap().healthy, 1);
-        let actions = look(&*domain, Machine { at: 6 * SAMPLE, ..machine(100 * GB, 60) });
-        assert!(watch.incident().is_none());
-        assert!(actions.iter().any(|action| matches!(action, Action::Release(_))));
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, 0), None);
-    }
-
-    /// 30 October: /Volumes/BuildCache filled while the Mac's own disk had 19 GB. A volume builds
-    /// take space from while nodes work becomes one Alondra watches and reserves room on; one that
-    /// fills while no node works, such as a disk of photos, does not. Both stay as they were after
-    /// a restart.
-    #[test]
-    fn a_volume_builds_take_space_from_is_learned_reserved_and_kept_and_one_filled_by_hand_is_not() {
-        let home = crate::test_support::Directory::new();
-        std::fs::create_dir_all(&home).unwrap();
-        let watch = MachineWatch::persisted_in(&home, Arc::new(alondra_engine_doubles::disk::Disks::default()));
-        let (cache, photos) = (PathBuf::from("/Volumes/BuildCache"), PathBuf::from("/Volumes/Fotos"));
-        let give = |cache_free: u64, photos_free: u64| watch.give_volumes(vec![(cache.clone(), space(cache_free)), (photos.clone(), space(photos_free))]);
-        let t1 = working(&[("t1", "app")]);
-        give(30 * GB, 30 * GB);
-        watch.measure_volumes(&BTreeMap::new(), 0);
-        give(30 * GB, 10 * GB);
-        watch.measure_volumes(&BTreeMap::new(), 1);
-        watch.measure_volumes(&t1, 2);
-        give(29_500_000_000, 10 * GB);
-        watch.measure_volumes(&t1, 3);
-        assert!(watch.record().build_volumes.is_empty(), "half a GB does not make it one builds write to");
-        give(28 * GB, 10 * GB);
-        watch.measure_volumes(&t1, 4);
-        assert_eq!(watch.record().build_volumes.keys().collect::<Vec<_>>(), [&cache], "2 GB taken while t1 worked; 20 GB taken from Fotos while none did");
-        assert!(watch.record().volumes.contains(&cache), "watched from now on");
-
-        watch.measure_disk(alondra_engine_ports::disk::Space { free: 400 * GB, purgeable: 0, total: 500 * GB });
-        give(7 * GB, 10 * GB);
-        watch.measure_volumes(&t1, 5);
-        assert_eq!(watch.disk_room(&t1, Some("web"), 0), None, "t1 already took its estimate there: 1 GB for the next one fits over the 5 GB line");
-        give(5_500_000_000, 10 * GB);
-        watch.measure_volumes(&t1, 6);
-        assert_eq!(watch.disk_room(&t1, Some("web"), 0), Some(alondra_engine_ports::disk::Room { free: 5_500_000_000, needed: 6 * GB, volume: Some("BuildCache".into()) }),
-            "the Mac's own disk has room, BuildCache does not, and is named");
-        watch.measure_volumes(&BTreeMap::new(), 7);
-
-        let reopened = MachineWatch::persisted_in(&home, Arc::new(alondra_engine_doubles::disk::Disks::default()));
-        assert_eq!(reopened.record().build_volumes.keys().collect::<Vec<_>>(), [&cache]);
-        assert_eq!(reopened.record().build_volumes[&cache].most(), 24_500_000_000, "t1's peak there, the most the volume lost while it worked");
-    }
-
-    /// /Volumes/BuildCache is an APFS volume of the Mac's own container: its free space is the
-    /// container's, so a node writing to the Mac's own disk lowers it too. It is learned only by
-    /// what it holds itself.
-    #[test]
-    fn a_volume_sharing_the_macs_free_space_is_learned_by_what_it_holds() {
-        let home = crate::test_support::Directory::new();
-        std::fs::create_dir_all(&home).unwrap();
-        let watch = MachineWatch::persisted_in(&home, Arc::new(alondra_engine_doubles::disk::Disks::default()));
-        let cache = PathBuf::from("/Volumes/BuildCache");
-        let t1 = working(&[("t1", "app")]);
-        let give = |free: u64, held: u64| watch.give_volumes_holding(vec![(cache.clone(), alondra_engine_ports::disk::Space { free, purgeable: 0, total: 40 * GB }, held)]);
-        give(30 * GB, 10 * GB);
-        watch.measure_volumes(&BTreeMap::new(), 0);
-        watch.measure_volumes(&t1, 1);
-        give(20 * GB, 10 * GB);
-        watch.measure_volumes(&t1, 2);
-        assert!(watch.record().build_volumes.is_empty(), "t1 took 10 GB from the Mac's own disk, none from BuildCache");
-        give(17 * GB, 13 * GB);
-        watch.measure_volumes(&t1, 3);
-        assert_eq!(watch.record().build_volumes.keys().collect::<Vec<_>>(), [&cache], "t1 wrote 3 GB into BuildCache");
-        watch.measure_volumes(&BTreeMap::new(), 4);
-        assert_eq!(watch.record().build_volumes[&cache].most(), 3 * GB, "its peak there is what it wrote there");
-    }
-
-    /// A volume builds write to running low opens the disk's card naming it, while the Mac's own
-    /// disk is fine, and a node waiting for the machine is not told it may go on.
-    #[test]
-    fn a_volume_builds_write_to_running_low_opens_the_card_and_keeps_a_wait_for_the_machine() {
-        let (_home, domain) = world();
-        let watch = &domain.machine_watch();
-        let cache = PathBuf::from("/Volumes/BuildCache");
-        let t1 = working(&[("t1", "app")]);
-        watch.give_volumes(vec![(cache.clone(), space(30 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 0);
-        watch.measure_volumes(&t1, 1);
-        watch.give_volumes(vec![(cache.clone(), space(659_000_000))]);
-        watch.measure_volumes(&t1, 2);
-        watch.declare("agent-t1", None, "the build ran out of disk", 0, 3);
-
-        let actions = look(&*domain, machine(19 * GB, 50));
-        let incident = watch.incident().expect("the volume builds write to is nearly full");
-        assert_eq!(incident.cause, MachineCause::Disk);
-        assert_eq!(raised(&actions)[0].text(Lang::Es).0, "Libera espacio en disco: quedan 659 MB en BuildCache");
-        assert!(!actions.iter().any(|action| matches!(action, Action::Release(_))), "the node waiting for the machine is not let go: {actions:?}");
-        assert!(watch.disk_low());
     }
 
     /// A sandbox's fake nodes build nothing: the gate reserves nothing for them, whatever the
@@ -1791,21 +960,6 @@ mod tests {
     }
 
     #[test]
-    fn a_volume_nodes_work_on_running_low_opens_the_card_and_names_it_while_the_macs_own_disk_is_fine() {
-        let external = [("Externo".to_owned(), alondra_engine_ports::disk::Space { free: 3 * GB, purgeable: 0, total: 900 * GB }),
-            ("Fotos".to_owned(), alondra_engine_ports::disk::Space { free: 400 * GB, purgeable: 0, total: 900 * GB })];
-        let (measured, disk) = tightest(machine(80 * GB, 50), &external);
-        assert_eq!((measured.disk_available, disk.as_deref()), (3 * GB, Some("Externo")));
-        let (incident, actions) = step_on(None, &measured, disk.as_deref(), &[], false, 0);
-        assert_eq!(incident.unwrap().cause, MachineCause::Disk);
-        assert_eq!(raised(&actions)[0].text(Lang::Es).0, "Libera espacio en disco: solo quedan 3,0 GB en Externo");
-
-        let (measured, disk) = tightest(machine(2 * GB, 50), &external);
-        assert_eq!((measured.disk_available, disk), (2 * GB, None), "the Mac's own disk is the fuller one: not named");
-        assert_eq!(tightest(machine(80 * GB, 50), &[]).1, None);
-    }
-
-    #[test]
     fn time_machine_snapshots_macos_can_purge_open_no_card_and_stop_no_node() {
         let (incident, actions) = step(None, &purging(4_800_000_000, 16_600_000_000), &[], false, 0);
         assert_eq!((incident, actions), (None, vec![]), "15 October: 4.8 GB free and 16.6 GB of snapshots");
@@ -1822,16 +976,6 @@ mod tests {
         assert_eq!(card.text(Lang::En).0, "Free up disk space: only 1.0 GB free right now");
         let (_, actions) = step(None, &purging(GB, 3 * GB), &[], false, 0);
         assert_eq!((raised(&actions)[0].disk_free, raised(&actions)[0].purgeable), (4 * GB, 0), "little usable space: the usual card");
-    }
-
-    #[test]
-    fn the_fullest_volume_counts_purgeable_space_but_not_purgeable_space_macos_has_not_freed() {
-        let space = |free: u64, purgeable: u64| alondra_engine_ports::disk::Space { free, purgeable, total: 900 * GB };
-        let snapshots = [("Externo".to_owned(), space(3 * GB, 40 * GB))];
-        assert_eq!(tightest(machine(20 * GB, 50), &snapshots).1, None, "43 GB usable on Externo beats 20 GB on the Mac");
-        let unpurged = [("Externo".to_owned(), space(GB, 40 * GB))];
-        let (measured, disk) = tightest(machine(20 * GB, 50), &unpurged);
-        assert_eq!((measured.disk_available, measured.disk_purgeable, disk.as_deref()), (GB, 40 * GB, Some("Externo")));
     }
 
     #[test]
@@ -1877,23 +1021,6 @@ mod tests {
         assert_eq!(watch.space_where_it_works(&here), Some(measured), "a test's world reads the measurement");
     }
 
-    #[test]
-    fn a_launch_on_another_volume_watches_it_from_then_on() {
-        let disks = Arc::new(alondra_engine_doubles::disk::Disks::default());
-        disks.mount("/Volumes/Build", alondra_engine_doubles::disk::ROOMY, 0);
-        let watch = MachineWatch::reading(disks);
-        watch.refuse_launch(Path::new("/Volumes/Build/repo"));
-        let watched = watch.record.lock().unwrap().volumes.clone();
-        assert_eq!(watched.into_iter().collect::<Vec<_>>(), [PathBuf::from("/Volumes/Build")]);
-        watch.discover_volumes();
-        watch.measure_volumes(&BTreeMap::new(), 0);
-        assert_eq!(watch.volumes(), [(PathBuf::from("/Volumes/Build"), alondra_engine_doubles::disk::ROOMY)]);
-        let own = MachineWatch::default();
-        let folder = crate::test_support::Directory::new();
-        own.refuse_launch(&folder);
-        assert!(own.record.lock().unwrap().volumes.is_empty(), "the Mac's own disk already has its gauge");
-    }
-
     /// Hours of a full disk with nodes waiting and nothing new measured: the one card stays, with
     /// no reminder and no other card.
     #[test]
@@ -1922,6 +1049,26 @@ mod tests {
         assert!(incident.is_none());
         assert_eq!(actions[0], Action::Withdraw("machine-0".into()));
         assert!(actions.contains(&Action::Release(vec!["s1".into(), "s2".into()])));
+    }
+
+    /// The watch looks again on every change of the domain, between two samples of the gauges: a
+    /// second look at the same healthy sample is not a second measurement, so it neither ends the
+    /// incident early nor starts its recovery over.
+    #[test]
+    fn a_second_look_at_the_same_sample_moves_no_recovery() {
+        let (_home, domain) = world();
+        let watch = &domain.machine_watch();
+        let base = now_millis();
+        let low = |at| Machine { at, ..machine(GB, 50) };
+        let healthy = |at| Machine { at, ..machine(100 * GB, 50) };
+        let _ = look(&*domain, low(base));
+        assert!(watch.incident().is_some());
+        let _ = look(&*domain, healthy(base + SAMPLE));
+        assert_eq!(watch.incident().map(|incident| incident.healthy), Some(1));
+        let _ = look(&*domain, healthy(base + SAMPLE));
+        assert_eq!(watch.incident().map(|incident| incident.healthy), Some(1), "one healthy measurement, looked at twice");
+        let _ = look(&*domain, healthy(base + 2 * SAMPLE));
+        assert!(watch.incident().is_none(), "the second healthy measurement ends it");
     }
 
     /// 8 Oct 2026: the disk climbed past the recovery line for two samples and fell again, and a

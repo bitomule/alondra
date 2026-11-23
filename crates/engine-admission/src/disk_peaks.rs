@@ -14,10 +14,6 @@
 //! already took its space, which the free space shows, so it reserves `UNSEEN_START_BYTES` and keeps
 //! nothing.
 //!
-//! Another volume builds write to is measured the same way, by what the volume itself holds, once a
-//! stretch took at least `LEARNED_BYTES` from it; a project not measured there yet reserves what the heaviest one measured
-//! there takes.
-//!
 //! On 27 October six nodes building at once took the disk from 34 GB to nothing: each start found
 //! room for one build, none for the builds already running.
 use alondra_core::Millis;
@@ -37,8 +33,6 @@ pub(crate) const UNSEEN_START_BYTES: u64 = MEASURED_PEAK_FLOOR_BYTES;
 pub(crate) const PEAK_CEILING_BYTES: u64 = 30 * GB;
 pub(crate) const STRETCHES_KEPT: usize = 12;
 const TRUSTED_STRETCHES: usize = 3;
-/// What a stretch must take from another volume for it to count as one builds write to.
-pub const LEARNED_BYTES: u64 = GB;
 pub(crate) const PROJECTS_KEPT: usize = 64;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,12 +53,6 @@ impl Estimates {
     pub fn estimate(&self, project: Option<&str>) -> u64 {
         let heaviest = self.0.values().filter(|measured| measured.peaks.len() >= TRUSTED_STRETCHES).map(second_highest).max();
         self.estimate_or(project, heaviest.map_or(UNMEASURED_PEAK_BYTES, |peak| peak.max(MEASURED_PEAK_FLOOR_BYTES)))
-    }
-
-    /// The space a node of `project` takes at its peak on another volume builds write to.
-    pub fn estimate_beside(&self, project: Option<&str>) -> u64 {
-        let heaviest = self.0.values().map(second_highest).max().unwrap_or(0).max(MEASURED_PEAK_FLOOR_BYTES);
-        self.estimate_or(project, heaviest)
     }
 
     fn estimate_or(&self, project: Option<&str>, unmeasured: u64) -> u64 {
@@ -197,11 +185,6 @@ impl Ledger {
     /// What `task`'s stretch has taken so far.
     pub fn used(&self, task: &TaskId) -> u64 {
         self.stretches.get(task).map_or(0, |stretch| stretch.used)
-    }
-
-    /// The most a stretch running now took.
-    pub fn most(&self) -> u64 {
-        self.stretches.values().map(|stretch| stretch.peak).max().unwrap_or(0)
     }
 }
 
@@ -363,17 +346,6 @@ mod tests {
         assert_eq!(measured(&[12 * GB]).estimate(Some("app")), 12 * GB, "measured over the default");
         assert_eq!(measured(&[2 * GB, 3 * GB, 2 * GB]).estimate(Some("app")), 2 * GB);
         assert_eq!(measured(&[0, 0, 0]).estimate(Some("app")), MEASURED_PEAK_FLOOR_BYTES);
-    }
-
-    #[test]
-    fn a_project_not_measured_on_another_volume_reserves_what_the_heaviest_one_takes_there() {
-        let mut estimates = measured(&[3 * GB, 4 * GB, 4 * GB]);
-        estimates.keep("web", GB / 2, 9);
-        assert_eq!(estimates.estimate_beside(Some("docs")), 4 * GB, "never measured there");
-        assert_eq!(estimates.estimate_beside(Some("web")), 4 * GB, "measured fewer than 3 times");
-        assert_eq!(estimates.estimate_beside(Some("app")), 4 * GB);
-        assert_eq!(Estimates::default().estimate_beside(None), MEASURED_PEAK_FLOOR_BYTES);
-        assert_eq!(estimates.most(), 4 * GB);
     }
 
     #[test]

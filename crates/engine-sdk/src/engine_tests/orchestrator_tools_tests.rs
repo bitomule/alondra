@@ -2452,49 +2452,24 @@ fn partial_launch_plan_storage_rolls_back_when_the_queued_body_is_invalid() {
 }
 
 #[tokio::test]
-async fn a_disk_preflight_refusal_invalidates_admission_before_a_remounted_volume_is_budgeted() {
+async fn a_disk_preflight_refusal_starts_no_node_and_gives_its_admission_back() {
     super::wired();
-    use crate::admission::{Hold, Key, Limit, Tuning, Waiting};
+    use crate::admission::{Key, Limit, Tuning, Waiting};
     use alondra_domain_rules::TaskPriority;
-    use std::collections::BTreeMap;
-    const GB: u64 = 1_000_000_000;
     for origin in [Origin::Auto, Origin::Admitted] {
         let f = bare_world();
         let gate = &f.domain.admission();
         let watch = &f.domain.machine_watch();
-        gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
-        let mount = PathBuf::from("/Volumes/BuildCache");
-        let space = |free| alondra_engine_ports::disk::Space { total: 500 * GB, free, purgeable: 0 };
-        let working = BTreeMap::from([("builder".into(), Some("app".to_owned()))]);
-        watch.give_volumes_holding(vec![(mount.clone(), space(30 * GB), 20 * GB)]);
-        watch.measure_volumes(&BTreeMap::new(), 0);
-        watch.measure_volumes(&working, 1);
-        watch.give_volumes_holding(vec![(mount.clone(), space(27 * GB), 23 * GB)]);
-        watch.measure_volumes(&working, 2);
-        watch.measure_volumes(&BTreeMap::new(), 3);
-        watch.give_volumes(vec![]);
-        watch.measure_volumes(&BTreeMap::new(), 4);
+        gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
         let now = alondra_core::now_millis();
         let waiting = Waiting { key: Key::Task("t".into()), priority: TaskPriority::Normal, resuming: false, since: now };
-        assert_eq!(gate.ask(&*f.domain, waiting.clone(), now), Ok(()), "the learned volume is confirmed absent");
-
+        assert_eq!(gate.ask(&*f.domain, waiting.clone(), now), Ok(()));
         watch.set_disk_low(true);
         let refused = launch_from(&*f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None, origin).await.unwrap_err();
         assert_eq!(refused.code, "disk_low");
         assert!(f.task_node().is_none());
         watch.set_disk_low(false);
-        watch.give_volumes(vec![(mount.clone(), space(4 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 5);
-        assert!(matches!(gate.ask(&*f.domain, waiting.clone(), now), Err(Hold::Disk { .. })),
-            "an unused admission from before preflight cannot bypass the first insufficient volume budget");
-
-        watch.give_volumes(vec![(mount, space(10 * GB))]);
-        watch.measure_volumes(&BTreeMap::new(), 6);
-        assert_eq!(gate.ask(&*f.domain, waiting.clone(), now), Ok(()));
-        let reserved = watch.disk_room(&BTreeMap::new(), None, now).expect("the new grant reserves its build on the remounted volume");
-        assert_eq!(reserved.needed, 11 * GB);
-        assert_eq!(gate.ask(&*f.domain, waiting, now), Ok(()));
-        assert_eq!(watch.disk_room(&BTreeMap::new(), None, now), Some(reserved), "re-reading the same grant charges it once");
+        assert_eq!(gate.snapshot(&*f.domain, now).unwrap().working, 0, "the refused launch holds no slot");
     }
 }
 

@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain_runtime::DomainRuntime;
-use crate::machine_watch::step_on;
+use crate::machine_watch::step;
 use alondra_core::Machine;
 use alondra_domain_rules::{Actor, AgentId, Command, CommandEnvelope, RuntimeObservation, PROTOCOL_VERSION};
 
@@ -239,7 +239,7 @@ fn memory_swinging_for_an_hour_puts_no_card_in_front_of_the_user_and_admits_only
         let machine = Machine { at: now, memory_total: 16 << 30, memory_available: 12 << 30,
             memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() };
         mac.step(&machine, now);
-        let (next, taken) = step_on(incident, &machine, None, &[], false, now);
+        let (next, taken) = step(incident, &machine, &[], false, now);
         incident = next;
         actions.extend(taken);
         if decide(&head, 0, 6, &mac, 0, last_admission, SPACING, now).is_ok() {
@@ -282,6 +282,29 @@ fn a_task_the_user_paused_in_the_queue_is_never_let_start_until_they_resume_it()
 
     release_queued(&*domain, &"t1".into()).unwrap();
     assert_eq!(gate.ask(&*domain, t1, 40 + IN_FLIGHT), Ok(()), "resumed, it starts again");
+}
+
+/// A queued task an older daemon paused in the gate's own file, its row taken out of the queue:
+/// the row goes back with its age and the pause becomes the domain's, and the file stops holding it.
+#[test]
+fn a_queue_pause_an_older_daemon_kept_in_the_gates_file_becomes_the_domains() {
+    let (home, domain) = world();
+    create(&domain, "t1");
+    create(&domain, "t2");
+    run(&domain, Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "t2".into(), reason: None });
+    let body = serde_json::json!({"task": "t1", "name": "app/t1", "cwd": "/tmp"});
+    let held = |task: &str| (TaskId::from(task), crate::pauses::Held { body: body.clone(), origin: "orchestrator".into(), since: 7 });
+    let gate = Admission::persisted_in(&home.0);
+    gate.lock().saved.pauses.held = BTreeMap::from([held("t1"), held("t2")]);
+    assert!(gate.snapshot(&*domain, 10).is_some());
+    let state = domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("t1")].paused_in_queue, Some(7));
+    assert_eq!(state.tasks[&TaskId::from("t2")].paused_in_queue, None, "a cancelled task is not paused again");
+    let rows = domain.store.lock().unwrap().launch_queue().unwrap();
+    assert_eq!(rows.iter().map(|row| (row.task_id.0.as_str(), row.enqueued_at)).collect::<Vec<_>>(), [("t1", 7)], "its launch is back with its age");
+    assert!(gate.lock().saved.pauses.held.is_empty());
+    gate.save(&gate.lock());
+    assert!(!std::fs::read_to_string(home.0.join(FILE)).unwrap().contains("held"), "the gate's file no longer holds it");
 }
 
 /// The orchestrator's launch of `id` waits in the gate's queue, as the engine keeps it.
@@ -814,12 +837,40 @@ fn a_task_cancelled_after_the_gate_let_it_through_is_not_let_through_again_and_l
     assert_eq!(ask(&domain, "t2", now), Ok(()), "its slot goes to the next");
 }
 
+/// A launch that outlasts three minutes, a large repository's worktree on a slow disk, keeps the
+/// slot the gate gave it until the launch ends: nothing else is admitted past the limit meanwhile.
+#[test]
+fn a_start_whose_launch_outlasts_three_minutes_keeps_its_slot_until_the_launch_ends() {
+    let (_home, domain) = world();
+    domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
+    create(&domain, "t1");
+    create(&domain, "t2");
+    let now = alondra_core::now_millis();
+    assert_eq!(ask(&domain, "t1", now), Ok(()));
+    crate::wiring::engine(&*domain).script().launching.insert("t1".into());
+    assert_eq!(ask(&domain, "t2", now + IN_FLIGHT), Err(Hold::Slots { working: 1, limit: 1 }), "t1 is still launching, with no node yet");
+    crate::wiring::engine(&*domain).script().launching.remove(&TaskId::from("t1"));
+    assert_eq!(ask(&domain, "t2", now + IN_FLIGHT), Ok(()), "a launch that ended without a node leaves its slot");
+}
+
+/// A turn the gate gave a slot whose owner had not taken it yet when the daemon restarted waits
+/// again from when it first waited, ahead of the turns that began waiting after it.
+#[test]
+fn a_turn_given_a_slot_keeps_its_place_in_the_queue_across_a_restart() {
+    let waiting = BTreeSet::from([TaskId::from("t1")]);
+    let mut inner = Inner::default();
+    settle_waits(&mut inner, &waiting, 1_000);
+    grant(&mut inner, &"t1".into(), 2_000);
+    let saved: Saved = serde_json::from_slice(&serde_json::to_vec(&inner.saved).unwrap()).unwrap();
+    let mut restarted = Inner { saved, ..Inner::default() };
+    settle_waits(&mut restarted, &waiting, 3_000);
+    assert_eq!(restarted.saved.turn_waits.get(&TaskId::from("t1")), Some(&1_000), "it waits since its first wait, not since the restart");
+}
+
 fn home_with_previous_gate_file() -> crate::test_support::Directory {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let mut saved = Saved::default();
-    saved.pauses.held.insert("t-held".into(), crate::pauses::Held { body: serde_json::json!({}), origin: "orchestrator".into(), since: 1 });
-    std::fs::write(home.join(PREVIOUS_FILE), serde_json::to_vec(&saved).unwrap()).unwrap();
+    std::fs::write(home.join(PREVIOUS_FILE), r#"{"last_admission":null,"pauses":{"held":{"t-held":{"body":{},"origin":"orchestrator","since":1}}}}"#).unwrap();
     std::fs::write(home.join("fleet-gate.next"), "{").unwrap();
     home
 }
@@ -1048,7 +1099,7 @@ fn a_resume_waits_while_the_disk_has_no_room_for_one_more_build() {
     assert!(still_paused(&domain, "t1"), "the disk is under its line");
     let queued = gate.live(&*domain, base + MIN).unwrap().queued;
     assert_eq!(queued.iter().map(|queued| (queued.task_id.as_str(), &queued.hold)).collect::<Vec<_>>(),
-        [("t1", &alondra_view_model::LiveHold::Disk { free: 4 * GB, needed: 5 * GB, volume: None })], "it waits in the queue, and says why");
+        [("t1", &alondra_view_model::LiveHold::Disk { free: 4 * GB, needed: 5 * GB })], "it waits in the queue, and says why");
     assert!(gate.live(&*domain, base + MIN).unwrap().paused.is_empty(), "no longer shown as paused by the user");
 
     watch.measure_disk(alondra_engine_ports::disk::Space { free: 4 * GB, purgeable: 11 * GB, total: 500 * GB });
@@ -1272,10 +1323,10 @@ fn a_start_waits_while_the_nodes_at_work_may_still_take_the_disk_and_goes_once_o
         disk_sample(&domain, 20 * GB, now);
     }
     let now = base + 3 * SAMPLE;
-    assert_eq!(ask(&domain, "t3", now), Err(Hold::Disk { free: 20 * GB, needed: 6 * GB + 6 * GB + 6 * GB + 5 * GB, volume: None }),
+    assert_eq!(ask(&domain, "t3", now), Err(Hold::Disk { free: 20 * GB, needed: 6 * GB + 6 * GB + 6 * GB + 5 * GB }),
         "t1 and t2 may still take 6 GB each");
     disk_sample(&domain, 17 * GB, now + SAMPLE);
-    assert_eq!(ask(&domain, "t3", now + SAMPLE), Err(Hold::Disk { free: 17 * GB, needed: 4_500_000_000 * 2 + 6 * GB + 5 * GB, volume: None }),
+    assert_eq!(ask(&domain, "t3", now + SAMPLE), Err(Hold::Disk { free: 17 * GB, needed: 4_500_000_000 * 2 + 6 * GB + 5 * GB }),
         "what they took is no longer free, nor reserved");
     finish(&domain, "t1", now + 2 * SAMPLE);
     disk_sample(&domain, 20 * GB, now + 2 * SAMPLE);
@@ -1318,7 +1369,7 @@ fn a_node_the_disks_floor_held_still_waits_after_a_restart_and_goes_on_once_ther
     assert!(still_paused(&domain, "t1"), "4 GB are under the 5 GB line");
     let pacing = gate.live(&domain, now).unwrap();
     assert_eq!(pacing.queued.iter().map(|queued| (queued.task_id.as_str(), &queued.hold)).collect::<Vec<_>>(),
-        [("t1", &alondra_view_model::LiveHold::Disk { free: 4 * GB, needed: 5 * GB, volume: None })], "it waits in the queue for the disk");
+        [("t1", &alondra_view_model::LiveHold::Disk { free: 4 * GB, needed: 5 * GB })], "it waits in the queue for the disk");
     assert!(pacing.paused.is_empty(), "not shown as paused");
 
     disk_sample(&domain, 16 * GB, now + SAMPLE);

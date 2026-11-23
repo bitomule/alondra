@@ -66,8 +66,8 @@ The CLI's service login also uses a user-wide
 home even when HOME is overridden. See [account login](../crates/cli/src/account.rs).
 
 The daemon also reads macOS process and resource information: process ancestry/liveness through
-libproc/sysctl, memory pressure and swap counters, and free space/mount metadata for the startup
-disk and build volumes. It keeps admission/incident measurements under Alondra's home and raises
+libproc/sysctl, memory pressure and swap counters, and free space of the startup disk, and once at
+each launch of the folder the task's worktree goes in. It keeps admission/incident measurements under Alondra's home and raises
 its own open-file soft limit when needed. These probes do not require walking the disk's files.
 See [the process table and its signals](../crates/system/src/lib.rs),
 [what a paused node still runs](../crates/engine-admission/src/process_watch.rs),

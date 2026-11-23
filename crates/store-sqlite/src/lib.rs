@@ -182,6 +182,11 @@ const TASK_POST_MERGE_TURNS: &str = "CREATE TABLE IF NOT EXISTS task_post_merge_
 const TASK_PRIORITIES: &str = "CREATE TABLE IF NOT EXISTS task_priorities(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
  priority TEXT NOT NULL CHECK(priority IN('high','normal','low')));";
+/// Since when the user holds a task in the queue before it starts, kept beside the task; created on
+/// every open like task_relations.
+const TASK_QUEUE_PAUSES: &str = "CREATE TABLE IF NOT EXISTS task_queue_pauses(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ since INTEGER NOT NULL);";
 /// How many times a task's node stopped since the task last moved on, and how the task closed
 /// when it kept stopping; created on every open like task_relations.
 const TASK_STALLS: &str = "CREATE TABLE IF NOT EXISTS task_stalls(\
@@ -701,6 +706,7 @@ impl DomainStore {
         tx.execute_batch(TASK_POST_MERGE_WORK)?;
         tx.execute_batch(TASK_POST_MERGE_TURNS)?;
         tx.execute_batch(TASK_PRIORITIES)?;
+        tx.execute_batch(TASK_QUEUE_PAUSES)?;
         tx.execute_batch(TASK_STALLS)?;
         tx.execute_batch(TASK_OPEN_PRS)?;
         tx.execute_batch(TASK_RELEASED_NODES)?;

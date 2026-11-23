@@ -305,7 +305,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
     row.remove("pending_user_inputs");
-    strip(&mut row, &["waiting_for_tasks", "ended_task_waits", "dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "later_prs", "opened_prs", "priority", "ending", "stalls", "stall_closing", "open_pr", "released", "worktrees", "account", "provider", "selection", "pending_selection", "move_refused", "allowed", "project", "continues", "created_revision"]);
+    strip(&mut row, &["waiting_for_tasks", "ended_task_waits", "dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "later_prs", "opened_prs", "priority", "paused_in_queue", "ending", "stalls", "stall_closing", "open_pr", "released", "worktrees", "account", "provider", "selection", "pending_selection", "move_refused", "allowed", "project", "continues", "created_revision"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -883,6 +883,13 @@ pub(super) fn save_changes(
                 "INSERT INTO task_priorities(task_id,priority) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET priority=excluded.priority",
                 params![x.id.0, serde_json::to_value(x.priority)?.as_str().context("priority is a string")?],
             )?;
+        }
+        if prior.map_or(x.paused_in_queue.is_some(), |p| p.paused_in_queue != x.paused_in_queue) {
+            match x.paused_in_queue {
+                Some(since) => exec(c, "INSERT INTO task_queue_pauses(task_id,since) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET since=excluded.since",
+                    params![x.id.0, since])?,
+                None => exec(c, "DELETE FROM task_queue_pauses WHERE task_id=?1", params![x.id.0])?,
+            };
         }
         if prior.map_or(x.stalls != 0 || x.stall_closing.is_some(), |p| p.stalls != x.stalls || p.stall_closing != x.stall_closing) {
             exec(
@@ -1514,6 +1521,13 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     while let Some(row) = stored.next()? {
         let id: String = row.get(0)?;
         state.tasks.get_mut(&TaskId::from(id)).context("priority task missing")?.priority = decode(Value::String(row.get(1)?))?;
+    }
+    drop(stored);
+    let mut pauses = c.prepare("SELECT task_id, since FROM task_queue_pauses")?;
+    let mut stored = pauses.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        state.tasks.get_mut(&TaskId::from(id)).context("paused task missing")?.paused_in_queue = Some(row.get(1)?);
     }
     drop(stored);
     let mut stalls = c.prepare("SELECT task_id, stalls, closing FROM task_stalls")?;

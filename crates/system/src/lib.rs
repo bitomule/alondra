@@ -35,7 +35,7 @@ use alondra_engine_ports::accounts::{Accept, Accounts};
 use alondra_engine_ports::plugins::Plugins;
 use alondra_engine_ports::processes::{Process, Processes};
 use alondra_engine_ports::sign_in_returns::SignInReturns;
-use alondra_engine_ports::disk::{Disk, Mounts, Space};
+use alondra_engine_ports::disk::{Disk, Space};
 use alondra_engine_ports::machine::MachineProbe;
 use alondra_engine_ports::worktrees::{Git, LaunchError, Protected, Repository, TaskWorktree, WorktreeOrigin, Workplace, Worktrees};
 use std::path::{Path, PathBuf};
@@ -140,18 +140,6 @@ pub struct Disks;
 impl Disk for Disks {
     fn space(&self, path: &Path) -> Option<Space> {
         disk::space(path)
-    }
-    fn held(&self, path: &Path) -> Option<u64> {
-        disk::held(path)
-    }
-    fn mount_point(&self, path: &Path) -> Option<PathBuf> {
-        disk::mount_point(path)
-    }
-    fn same_volume(&self, a: &Path, b: &Path) -> bool {
-        disk::same_volume(a, b)
-    }
-    fn mounted_volumes(&self) -> std::io::Result<Mounts> {
-        disk::mounted_volumes()
     }
 }
 

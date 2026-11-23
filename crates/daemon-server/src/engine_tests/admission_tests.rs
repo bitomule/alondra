@@ -139,6 +139,11 @@ fn reading_start_facts_hands_pauses_an_older_daemon_saved_without_holding_the_st
 #[test]
 fn a_home_with_the_previous_gate_file_starts_with_its_pauses_under_the_new_name() {
     let home = home();
+    {
+        let domain = open(&home.0);
+        run(&domain, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+        create(&domain, "t-held");
+    }
     std::fs::write(home.0.join(PREVIOUS_FILE), json!({
         "last_admission": null,
         "pauses": {"paused": {}, "owed": {}, "resumed": {}, "held": {"t-held": {"body": {}, "origin": "orchestrator", "since": 1}}},
@@ -150,6 +155,7 @@ fn a_home_with_the_previous_gate_file_starts_with_its_pauses_under_the_new_name(
     assert!(!home.0.join(PREVIOUS_FILE).exists() && !home.0.join("fleet-gate.next").exists());
     assert!(home.0.join(FILE).exists());
     let domain = open(&home.0);
+    domain.gate().pauses();
     assert!(domain.gate().held_by_user(&"t-held".into()), "the task the user paused in the queue stays paused");
 }
 

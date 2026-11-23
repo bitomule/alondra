@@ -147,7 +147,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
+        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
     };
     (request, task)
 }
@@ -3263,9 +3263,11 @@ fn variant_index(c: &Command) -> usize {
         Command::ObservePrAddress { .. } => 137,
         Command::DetachPr { .. } => 138,
         Command::RecordHostRetaken { .. } => 130,
+        Command::PauseQueuedTask { .. } => 139,
+        Command::ResumeQueuedTask { .. } => 140,
     }
 }
-const COMMAND_KINDS: usize = 139;
+const COMMAND_KINDS: usize = 141;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3398,6 +3400,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::ObservePrAddress { pr_id: ids.pr.into(), read: PrRead::Locator, read_started_at: 1, verdict: PrAddressVerdict::NotFound }, false),
         (Command::DetachPr { pr_id: ids.pr.into(), at: 1 }, false),
         (Command::SetPriority { task_id: ids.task.into(), priority: TaskPriority::High }, false),
+        (Command::PauseQueuedTask { task_id: ids.task.into(), at: 1 }, false),
+        (Command::ResumeQueuedTask { task_id: ids.task.into() }, false),
         (Command::DeclarePostMergeWork { task_id: ids.task.into(), reason: Some("release.sh".into()), waits_for: vec![] }, false),
         (Command::RecordTaskCleanup { task_id: ids.task.into() }, false),
         (Command::AdmitExecution { provider: Default::default(), task_id: ids.task.into(), agent_id: "a".into(), conversation: "conversation".into(),
