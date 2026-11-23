@@ -58,6 +58,26 @@ class PatternTest(unittest.TestCase):
         found = guard.matches_in("rust", "x.rs", source)
         self.assertEqual([(m.line, m.pattern) for m in found], [(8, "phrase-method")])
 
+    def test_comment_markers_inside_strings_and_escapes_are_kept_and_other_comments_blanked(self):
+        source = (
+            'let a = "// kept"; // gone\n'
+            'let b = `/* kept */`; /* gone\n'
+            'still gone */ let c = 1;\n'
+            'let d = "esc \\" // kept";// gone\n'
+            'let e = "open // kept\n'
+        )
+        expected = (
+            'let a = "// kept";' + " " * 8 + '\n'
+            'let b = `/* kept */`;' + " " * 8 + '\n'
+            + " " * 14 + 'let c = 1;\n'
+            'let d = "esc \\" // kept";' + " " * 7 + '\n'
+            'let e = "open // kept\n'
+        )
+        self.assertEqual(guard.without_comments(source), expected)
+        self.assertEqual(guard.without_comments("a / b /"), "a / b /")
+        self.assertEqual(guard.without_comments('"unterminated \\'), '"unterminated \\')
+        self.assertEqual(guard.without_comments("x /* never closed"), "x " + " " * 15)
+
     def test_a_typed_decision_is_not_flagged(self):
         self.assertEqual(flagged("rust", "if output.status.code() == Some(4) { return SignedOut; }"), [])
         self.assertEqual(flagged("rust", 'if v["subtype"] == "error_during_execution" {'), [])
