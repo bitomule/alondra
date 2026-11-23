@@ -922,6 +922,24 @@ async fn http_a_final_delivery_sent_again_with_the_same_id_after_it_was_stored_m
 }
 
 #[tokio::test]
+async fn http_a_stored_final_delivery_sent_again_is_answered_without_a_new_check_however_busy_the_machine_is() {
+    let mut fixture = Fixture::start().await;
+    fixture.answering_within(ANSWER_WITHIN);
+    let envelope = fixture.slow_delivery().await;
+    assert_eq!(fixture.send_until_answered(&envelope).await.last().map(String::as_str), Some("stored"));
+    let revision = fixture.domain.state().unwrap().revision;
+    fixture.answering_within(std::time::Duration::ZERO);
+
+    let (status, body) = fixture.post(&fixture.agent, &envelope).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["replayed"], json!(true), "{body}");
+    assert_eq!(fixture.deliveries("pr-task"), 1);
+    assert_eq!(fixture.domain.state().unwrap().revision, revision);
+    fixture.finish().await;
+}
+
+#[tokio::test]
 async fn http_a_final_delivery_whose_git_never_finishes_is_refused_saying_so() {
     let mut fixture = Fixture::start().await;
     let limits = fixture.daemon.delivery_reviews().limits();

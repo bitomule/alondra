@@ -1022,7 +1022,9 @@ async fn execute_command<H: DomainHost>(
             Ok(Err(error)) => return store_error(error),
             Err(_) => return storage_error(),
         };
-        if let (Principal::Agent { .. }, Command::PresentResult { interaction_id, is_final: true, .. }) = (&principal, &envelope.command) {
+        if let (Principal::Agent { .. }, Command::PresentResult { interaction_id, is_final: true, .. }) = (&principal, &envelope.command)
+            && !final_delivery_stored(host.domain(), interaction_id)
+        {
             let interaction = interaction_id.clone();
             let fingerprint = delivery_fingerprint(&token, &envelope);
             let reviews = host.clone();
@@ -1070,6 +1072,12 @@ fn answered(outcome: Result<Value, DomainError>) -> Response {
         Ok(answer) => Json(answer).into_response(),
         Err(error) => domain_error(error),
     }
+}
+
+/// Whether the final delivery `interaction` is already stored. Sending it again checks nothing:
+/// the store answers it as already recorded, or refuses it when it holds something else.
+fn final_delivery_stored(domain: &DomainRuntime, interaction: &InteractionId) -> bool {
+    domain.state().is_ok_and(|state| state.interactions.contains_key(interaction))
 }
 
 /// Who sent a final delivery and what it holds: a call sent again only joins the delivery its
@@ -1138,14 +1146,15 @@ async fn checked_producer_command<H: DomainHost>(
     host: Arc<H>, principal: Principal, token: String, envelope: CommandEnvelope, steps: &Steps,
 ) -> Result<Value, DomainError> {
     let storage = || DomainError::new("storage_unavailable", "domain transaction could not be completed");
-    if matches!(principal, Principal::Agent { .. }) && crate::card_language::declared(&envelope.command).is_some() {
+    let stored = matches!(&envelope.command, Command::PresentResult { interaction_id, is_final: true, .. } if final_delivery_stored(host.domain(), interaction_id));
+    if matches!(principal, Principal::Agent { .. }) && !stored && crate::card_language::declared(&envelope.command).is_some() {
         let user = tokio::task::spawn_blocking(alondra_core::user_language::current).await.map_err(|_| storage())?;
         if let Some(refusal) = crate::card_language::refusal(&envelope.command, user) {
             return Err(refusal);
         }
     }
     let git_within = host.delivery_reviews().limits().git_within;
-    if let Some(client) = host.new_work_client() {
+    if let Some(client) = host.new_work_client().filter(|_| !stored) {
         if matches!(principal, Principal::Agent { .. }) {
             steps.step("reading the task's pull requests on GitHub", async {
                 client.catch_up_task(&envelope.command).await?;
@@ -1191,7 +1200,7 @@ async fn checked_producer_command<H: DomainHost>(
             return Err(refusal);
         }
     }
-    let reviewed = if matches!(principal, Principal::Agent { .. }) {
+    let reviewed = if matches!(principal, Principal::Agent { .. }) && !stored {
         let state = host.domain().state().map_err(|_| storage())?;
         let merger = host.new_work_client().map_or_else(
             || Arc::new(alondra_github_gh::GhCli::new()) as Arc<dyn crate::domain_merges::PrMerger>,
