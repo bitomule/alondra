@@ -417,7 +417,15 @@ mod tests {
 
     /// A Homebrew install: the keg with the daemon and its host, the `opt` link to it, and a
     /// folder on PATH whose `claude` prints `version`.
+    /// The test's thread runs on a virtual clock, where the 20 s `claude --version` deadline passes
+    /// only when nothing works, never because a loaded Mac was slow to start the script.
+    fn virtual_time() {
+        let runtime = Box::leak(Box::new(alondra_core::clock::VirtualRuntime::new(0).unwrap()));
+        std::mem::forget(runtime.enter());
+    }
+
     fn release(root: &Path, version: &str) -> (PathBuf, PathBuf) {
+        virtual_time();
         let keg = root.join("Cellar/alondra/0.3.0");
         std::fs::create_dir_all(keg.join("bin")).unwrap();
         std::fs::create_dir_all(keg.join("libexec/alondra/sdk")).unwrap();

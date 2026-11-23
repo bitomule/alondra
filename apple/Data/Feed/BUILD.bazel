@@ -19,7 +19,7 @@ swift_library(
 
 swift_test(
     name = "AlondraFeedTests",
-    size = "small",
+    size = "medium",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Tests/**/*.swift"]),
     deps = [

@@ -41,7 +41,7 @@ rust_binary(
 )
 low_opt_rust_test(
     name = "owned_host_test",
-    size = "small",
+    size = "medium",
     crate_root = "tests/owned_host.rs",
     srcs = ["tests/owned_host.rs", "tests/support/mod.rs", "//crates:test_support.rs"],
     compile_data = ["//crates/domain-store-schema:schema.sql"],

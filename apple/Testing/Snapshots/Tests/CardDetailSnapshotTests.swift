@@ -17,10 +17,11 @@ final class CardDetailSnapshotTests: XCTestCase {
     private func assertDetail(
         _ store: StoreOf<CardDetailFeature>,
         language: SnapshotLanguage = .english,
+        pixelPrecision: Float = 1,
         testName: String = #function,
         line: UInt = #line
     ) {
-        assertScreen(language: language, inWindow: true, testName: testName, line: line) {
+        assertScreen(language: language, inWindow: true, pixelPrecision: pixelPrecision, testName: testName, line: line) {
             ScreenFrame(height: 852) { CardDetailView(store: store) }
         }
     }
@@ -109,11 +110,13 @@ final class CardDetailSnapshotTests: XCTestCase {
     }
 
     func test_aCardFromANewerDaemonAsksToUpdateForWhatItCannotUse() throws {
-        assertDetail(ScreenStores.cardDetail(try Fixtures.newerDaemonCard()))
+        // The label of each disabled glass action is drawn a few levels differently from one run to
+        // the next: only the pixels of those labels move, by at most 6 of 255.
+        assertDetail(ScreenStores.cardDetail(try Fixtures.newerDaemonCard()), pixelPrecision: glassTextPixelPrecision)
     }
 
     func test_aCardFromANewerDaemonAsksToUpdateForWhatItCannotUse_es() throws {
-        assertDetail(ScreenStores.cardDetail(try Fixtures.newerDaemonCard(spanish: true)), language: .spanish)
+        assertDetail(ScreenStores.cardDetail(try Fixtures.newerDaemonCard(spanish: true)), language: .spanish, pixelPrecision: glassTextPixelPrecision)
     }
 
     private func formCard(spanish: Bool) throws -> StoreOf<CardDetailFeature> {
