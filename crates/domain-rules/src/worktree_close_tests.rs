@@ -213,3 +213,18 @@ fn a_node_discards_only_worktrees_of_its_task_that_still_exist() {
     let error = exec(&mut s, node(), Command::ConfirmCleanup { task_id: TASK.into(), discard: vec!["/elsewhere".into()] }).unwrap_err();
     assert_eq!(error.code, "not_found");
 }
+
+#[test]
+fn an_ended_task_records_as_removed_a_launch_folder_it_never_recorded() {
+    let mut s = working();
+    let release = |s: &mut DomainState, end| exec(s, Actor::System, Command::ReleaseTaskWorktree { task_id: TASK.into(), path: PATHS[1].into(), end });
+    assert_eq!(release(&mut s, WorktreeEnd::Removed).unwrap_err().code, "not_found", "a working task records its worktrees first");
+    apply(&mut s, &mut Disk { dirty: BTreeSet::new() }, &Step::Cancel);
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: TASK.into(), end: NodeEnd::KeptByUser, agent_id: Some(AGENT.into()) });
+    assert!(s.tasks[&TASK.into()].state.terminal());
+    assert_eq!(release(&mut s, WorktreeEnd::KeptByUser).unwrap_err().code, "not_found", "only a removal is recorded after the end");
+    release(&mut s, WorktreeEnd::Removed).unwrap();
+    release(&mut s, WorktreeEnd::Removed).unwrap();
+    let recorded = &s.tasks[&TASK.into()].worktrees[PATHS[1]];
+    assert_eq!((recorded.origin, recorded.end), (WorktreeOrigin::Task, Some(WorktreeEnd::Removed)));
+}

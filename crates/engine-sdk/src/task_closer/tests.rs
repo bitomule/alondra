@@ -1665,6 +1665,60 @@ async fn the_startup_sweep_leaves_the_worktree_a_cancelled_task_handed_to_a_task
 }
 
 #[tokio::test]
+async fn a_delete_answer_about_a_folder_the_domain_never_recorded_is_applied_once() {
+    let rig = Rig::undelivered(thirty_minutes());
+    let (root, dir) = rig.cancelled_with_worktree("t-a", &["one.txt"]);
+    assert_eq!(worktree_end(&rig, "t-a", &dir), None, "only the launch folder knows it");
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
+    rig.answer_discard("discard");
+    rig.pass(T0).await;
+    assert!(!dir.exists(), "the answer deletes it");
+
+    alondra_engine_doubles::worktrees::make_worktree(&root.join("repo"), &dir).unwrap();
+    std::fs::write(dir.join("later.txt"), "y").unwrap();
+    for minutes in [1, 2, 60] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
+    assert!(dir.join("later.txt").exists(), "a folder made there after the answer is not what the user said to delete");
+    assert_eq!(worktree_end(&rig, "t-a", &dir), Some(Some(alondra_domain_rules::WorktreeEnd::Removed)), "the answer was settled once");
+    assert_eq!(rig.discard_cards().len(), 1);
+}
+
+#[tokio::test]
+async fn the_startup_sweep_never_deletes_a_folder_a_finished_task_kept_with_commits_not_pushed() {
+    let rig = Rig::new(thirty_minutes());
+    let (root, dir) = rig.cancelled_with_worktree("t-a", &[]);
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    alondra_engine_doubles::worktrees::local_commit(&dir);
+    failed_three_times(&rig).await;
+    answer(&rig, "leave");
+    rig.pass(T0 + 11 * MINUTE).await;
+    rig.assert_done(NodeEnd::KeptByUser);
+    assert_eq!(worktree_end(&rig, "t", &dir), Some(Some(alondra_domain_rules::WorktreeEnd::KeptByUser)));
+    assert_eq!(worktree_end(&rig, "t-a", &dir), None, "the cancelled task handed over its launch folder without a record");
+
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
+    assert!(dir.join(".git").exists(), "the user said to leave it");
+    assert!(branch_exists(&root.join("repo"), "worktree-t-a"));
+    assert!(rig.discard_cards().is_empty());
+}
+
+#[tokio::test]
+async fn the_startup_sweep_leaves_a_cancelled_worktree_whose_commits_no_remote_has() {
+    let rig = Rig::undelivered(thirty_minutes());
+    let (_root, dir) = rig.cancelled_with_worktree("t-a", &[]);
+    alondra_engine_doubles::worktrees::local_commit(&dir);
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
+    assert!(dir.join(".git").exists(), "commits not pushed are never deleted unasked");
+    assert!(rig.discard_cards().is_empty(), "no files wait for an answer");
+
+    alondra_engine_doubles::worktrees::push(&dir);
+    crate::cancelled_worktrees::sweep(&*rig.domain).await.unwrap();
+    assert!(!dir.exists(), "once pushed, nothing is lost");
+}
+
+#[tokio::test]
 async fn a_worktree_made_for_a_task_cancelled_while_it_started_goes_at_once() {
     let rig = Rig::undelivered(thirty_minutes());
     command(&rig.domain, user(), "request-t-s", Command::CreateRequest {

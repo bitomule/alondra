@@ -591,7 +591,8 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
     },
-    /// A worktree of the task ended.
+    /// A worktree of the task ended. An ended task's launch folder that was never recorded can
+    /// only end `Removed`, which records it so nothing settles it again.
     ReleaseTaskWorktree {
         task_id: TaskId,
         path: String,
