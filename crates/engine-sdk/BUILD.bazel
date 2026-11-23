@@ -136,7 +136,7 @@ low_opt_rust_test(
 # would rerun these tests.
 low_opt_rust_test(
     name = "engine_sdk_engine_test",
-    size = "medium",
+    size = "large",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs", "//crates/daemon-engine:src/wiring/owner_fixtures.rs"],
     compile_data = SDK_TEST_COMPILE_DATA,
     crate_features = ["whole-engine"],
