@@ -262,6 +262,14 @@ impl crate::engine_fixtures::owner::Hosts for ModelHosts {
         self.model().own_turn();
     }
 
+    fn strand(&self, folder: &Path) {
+        self.hosts.strand(folder);
+    }
+
+    fn native_runs(&self, pid: i32) -> bool {
+        self.model().runs(u32::try_from(pid).expect("a host's number is positive"))
+    }
+
     fn codex_executables(&self, home: &Path) -> (PathBuf, PathBuf) {
         (model_file(&home.join("model-host"), "codex-host.cjs"), model_file(home, "codex-native"))
     }

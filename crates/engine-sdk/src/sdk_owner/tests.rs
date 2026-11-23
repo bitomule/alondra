@@ -530,7 +530,7 @@ async fn a_session_no_host_can_take_over_is_tried_once_per_retry_and_its_node_is
     assert!(!slice.domain.owns_sdk_host(&agent));
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 21 October: the host of a closing task was left with no owner. Its node confirmed its cleanup and
 // gave its worktree up, and still the closer took the execution over: a new host resumed the Claude
 // session in the worktree being deleted, and every notice queued for it became one more turn. A task
@@ -785,7 +785,6 @@ fn a_daemon_restart_adopts_the_live_host_and_the_same_claude_answers_the_next_tu
     assert!(!processes.runs(), "the adopted host's processes survived its stop");
 }
 
-#[cfg(feature = "real-hosts")]
 /// The stranded host is gone with its whole group, and a host that resumes the same Claude
 /// session took the execution: what the orchestrator says next reaches that session.
 fn assert_replaced(slice: &Slice, domain: &Arc<DomainRuntime>, mut driver: Driver, session: &str, stranded: &HostWatch) {
@@ -821,7 +820,7 @@ fn at_start_a_live_host_that_refuses_its_adoption_is_ended_and_replaced_by_one_t
     assert_replaced(&slice, &restarted, driver, &session, &stranded);
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // The same stranded host, met by a daemon that is running: taking the execution over, as the
 // move to the SDK or the closer of a task does, ends it and replaces it the same way.
 #[test]
@@ -1976,7 +1975,7 @@ async fn a_replacement_that_gives_up_with_a_claimed_message_leaves_no_claim_hold
     assert!(!Slice::lifecycle(&*restarted).pending_inputs().is_empty(), "the message waits for the next host");
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // The daemon's start could not take the execution over (here no new host can get its folder): the
 // task gets a card with that reason instead of being left as it is. Once that is fixed, «Try
 // again» takes it over and the same session goes on.
@@ -2008,7 +2007,7 @@ async fn an_execution_the_start_could_not_take_over_gets_a_card_and_try_again_re
     assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 16 November (t-xcrun-db-temp-files): a takeover failed and put the host-lost card, then the
 // daemon's own retake took the execution over a moment later. The card stayed open and held the
 // task paused for the user, so the input it waited for never went to the new host and the watch
@@ -2034,7 +2033,7 @@ async fn a_takeover_that_works_without_the_user_closes_the_host_lost_card_and_th
     restarted.stop_sdk_owners();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 20 November (release check of the Codex test fix, Mac loaded): while a test stopped its owners, a
 // turn of its task was resumed with no owner left and a takeover started after the stop had joined
 // the ones under way. Its host outlived the test. A takeover asked for while every owner stops
@@ -2059,7 +2058,7 @@ async fn a_takeover_asked_for_while_every_owner_stops_starts_no_host() {
     assert!(!restarted.owns_sdk_host(&agent), "no host takes the execution over while the owners stop");
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // A session whose account changed identity could not be taken over, and each «Try again» opened a
 // card with its own push. An outage tells the user once, however many times it is tried, and a
 // takeover that works ends it.
@@ -3505,7 +3504,7 @@ pub async fn until_last_prompt_ends_with(domain: &DomainRuntime, hosts: &impl su
     changed.wait_for(|_| not_wakes(hosts.prompts().into_iter()).last().is_some_and(|prompt| prompt.ends_with(text))).await.unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // 30 October: a node read «Answering you» doing nothing, and what the user wrote to it never reached
 // it. Its execution had no owner in the daemon: its host's owner was gone and nothing took it over,
 // so the message waited for an owner that never came. Writing to it now takes it over: a host that
@@ -3526,7 +3525,7 @@ async fn a_message_to_a_task_whose_execution_no_owner_holds_takes_it_over_and_re
     assert_eq!(slice.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {:?}", slice.starts());
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // The task's card says Alondra could not resume its session, with «Try again» and «Cancel». The user
 // writes to the node instead: the message was held behind that card and nothing resumed. Writing is
 // their «Try again»: the card leaves and a host that resumes the session gets what they wrote.
@@ -3767,7 +3766,7 @@ fn a_failed_reopening_workspace_cannot_replace_the_original_admissions_native_di
     replacement.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 /// A takeover adopted a live host that never took the input it was handed, and its owner went
 /// without a word. The next look does not adopt that host again, which would change nothing: it
 /// ends it, and a fresh host takes the same input, which reaches Claude once.
@@ -3786,7 +3785,7 @@ async fn a_takeover_its_host_never_answered_hands_the_same_input_to_a_fresh_host
     while held.pending_permits() > 0 {
         held.step(&|| false).unwrap();
     }
-    let ignoring = alondra_process_group::members(held.worker.host_group().unwrap()).unwrap();
+    let ignoring = slice.hosts.watch(held.worker.host_group().unwrap());
     held.let_go();
     drop(held);
     assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Starting, "the input waits for a host to take it");
@@ -3794,7 +3793,7 @@ async fn a_takeover_its_host_never_answered_hands_the_same_input_to_a_fresh_host
 
     crate::sdk_owner::take_working_unowned(&*slice.domain, &slice.domain.state().unwrap(), alondra_core::now_millis());
     slice.domain.join_retakes();
-    assert!(ignoring.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "the host that never took the input was ended");
+    assert!(!ignoring.runs(), "the host that never took the input was ended");
     until_last_prompt_ends_with(&slice.domain, &slice.hosts, "Add the tests first").await;
     let told = slice.prompts().iter().filter(|prompt| prompt.ends_with("Add the tests first")).count();
     assert_eq!(told, 1, "the input reached Claude once: {:?}", slice.prompts());

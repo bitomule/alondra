@@ -88,6 +88,8 @@ struct Life {
     held: Vec<UnixStream>,
     /// The host started its native agent, which runs while this holds.
     native: bool,
+    /// The host's socket is gone: it lives on and no owner can reach it again.
+    stranded: bool,
 }
 impl Host {
     fn life(&self) -> MutexGuard<'_, Life> {
@@ -222,6 +224,9 @@ impl Shared {
         if !host.alive() {
             return Err(io::Error::new(ended, "the doubled host ended"));
         }
+        if host.life().stranded {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "the doubled host's socket is gone"));
+        }
         let (ours, theirs) = UnixStream::pair()?;
         if let Some(folder) = self.folders().get_mut(host.folder.state_dir()) {
             folder.connections += 1;
@@ -296,6 +301,11 @@ impl InProcessHosts {
     }
 
     /// The folders where a host runs.
+    /// The socket of the host in `state_dir` goes: the host lives on and no owner can reach it
+    /// again.
+    pub fn strand(&self, state_dir: &Path) {
+        self.0.host(state_dir).expect("a host runs in the folder to strand").life().stranded = true;
+    }
     pub fn live(&self) -> Vec<PathBuf> {
         self.0.folders().iter().filter(|(_, folder)| folder.host.as_ref().is_some_and(|host| host.alive())).map(|(path, _)| path.clone()).collect()
     }
@@ -715,6 +725,20 @@ mod tests {
         stop.kill().unwrap();
         assert_eq!(host.wait().unwrap().signal(), Some(libc::SIGKILL));
         assert_eq!(hosts.stops(&state), [Stop::Request, Stop::Kill]);
+    }
+
+    #[test]
+    fn a_stranded_host_lives_on_and_no_owner_reaches_it() {
+        let fixture = Fixture::new();
+        let state = private(&fixture.0);
+        let hosts = InProcessHosts::default();
+        let host = launch(&hosts, &fixture, &state);
+        hosts.strand(&state);
+        let adopted = hosts.adopt(&state, &mut |_, _| Ok(())).unwrap();
+        assert_eq!(adopted.connect(Instant::now() + Duration::from_secs(10)).unwrap_err().kind(), io::ErrorKind::NotFound, "its socket is gone");
+        assert!(matches!(hosts.claim(&state).unwrap(), Retained::Held), "it still holds its folder");
+        host.stopper().kill().unwrap();
+        assert_eq!(hosts.live(), Vec::<PathBuf>::new());
     }
 
     #[test]

@@ -214,7 +214,7 @@ fn a_notification_turn_that_opens_in_time_gets_no_second_wake() {
     driver.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_input_the_provider_refuses_goes_again_and_a_second_refusal_goes_to_a_resuming_host() {
     let slice = Slice::new();
@@ -242,7 +242,7 @@ fn an_input_the_provider_refuses_goes_again_and_a_second_refusal_goes_to_a_resum
     queued.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_hung_process_that_wrote_nothing_is_given_up_for_a_host_that_resumes_the_session() {
     let slice = Slice::new();
@@ -289,7 +289,7 @@ fn a_replacement_the_watch_gives_up_is_replaced_with_no_card() {
     next.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_input_refused_twice_goes_back_to_the_queue() {
     let slice = Slice::new();
@@ -320,7 +320,7 @@ pub fn replaced_with_the_gate_full(slice: &Slice, mut driver: Driver) -> Driver 
     next
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 /// The task holds no slot and its input waits in the gate's queue like any other, with no card.
 pub fn assert_waits_for_a_slot(slice: &Slice, driver: &mut Driver) {
     assert_eq!(driver.pending_permits(), 1, "its input waits for the gate");
@@ -330,11 +330,10 @@ pub fn assert_waits_for_a_slot(slice: &Slice, driver: &mut Driver) {
     assert!(lifecycle(&*slice.domain).cards().is_empty(), "no card asks the user");
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 /// The gate has room again: the host that took the place of the old one gets the input, Claude
 /// starts on it, and every host resumed the session the first one opened.
 pub fn goes_on_when_the_gate_has_room(slice: &Slice, driver: &mut Driver, text: &str, times: usize) {
-    slice.let_claude_start();
     slice.domain.admission().tune(crate::admission::Tuning::default());
     tokio::runtime::Runtime::new().unwrap().block_on(crate::admission::pass(&*slice.domain, &slice._home)).unwrap();
     until_prompted(slice, driver, text, times);

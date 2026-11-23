@@ -7,7 +7,7 @@ use super::*;
 use crate::sdk_owner::fixtures::codex::*;
 use crate::sdk_owner::fixtures::codex::launch;
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn reopening_codex_with_a_retained_mapping_but_a_missing_rollout_starts_a_clean_thread() {
     let slice = Slice::new();
@@ -848,7 +848,7 @@ pub fn native_process(driver: &mut Driver) -> alondra_process_group::Member {
     }
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_unopened_codex_replacement_remains_unopened_after_reconciling_a_control() {
     let slice = Slice::new();
@@ -1209,20 +1209,17 @@ fn relaunches_wait_longer_each_time_up_to_five_minutes_and_then_keep_that_pace()
     assert_eq!(waits, [2, 10, 30, 120, 300, 300, 300, 300]);
 }
 
-#[cfg(feature = "real-hosts")]
 fn private_folder(path: &Path) {
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new().mode(0o700).create(path).unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
 fn private_file(path: &Path, bytes: &[u8]) {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path).unwrap().write_all(bytes).unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
 fn archive(folder: &Path, name: &str) -> PathBuf {
     PathBuf::from(format!("{}.ended-{name}", folder.display()))
 }
@@ -1234,7 +1231,6 @@ fn host_runs(folder: &Path) -> bool {
 
 /// A Codex node is mid-turn when the Mac goes down; `meanwhile` changes its host's folder before
 /// the daemon that comes back takes it over, until the cut turn goes on or the task gets a card.
-#[cfg(feature = "real-hosts")]
 async fn codex_node_restarted_with_its_folder(meanwhile: impl FnOnce(&Path)) -> (Slice, Arc<DomainRuntime>, Owner, PathBuf, PathBuf) {
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
@@ -1253,7 +1249,6 @@ async fn codex_node_restarted_with_its_folder(meanwhile: impl FnOnce(&Path)) -> 
 }
 
 /// Its host is stopped before any assertion, so a failure leaves no host running.
-#[cfg(feature = "real-hosts")]
 fn assert_went_on_in_its_thread(restarted: &DomainRuntime, mut owner: Owner, trace: &Path) {
     let card = open_card(restarted, "").map(|card| card.card.title);
     let turns = turns_started(restarted);
@@ -1269,7 +1264,7 @@ fn assert_went_on_in_its_thread(restarted: &DomainRuntime, mut owner: Owner, tra
 // folder and its new host did not start, so the new folder never got the account identity. Every
 // later relaunch read the identity from that folder only, and its host refused to resume: «The
 // original Codex account identity is unavailable. Create a new node».
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_node_whose_relaunch_left_its_folder_without_its_identity_resumes_with_the_kept_one() {
     let (_slice, restarted, owner, trace, _) = codex_node_restarted_with_its_folder(|folder| {
@@ -1283,7 +1278,7 @@ async fn a_codex_node_whose_relaunch_left_its_folder_without_its_identity_resume
 
 // The same node, stranded before Alondra kept identities apart: the folder of its first host,
 // which a relaunch retired, still holds it, and one of a host that never started holds none.
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_codex_node_stranded_without_its_identity_recovers_it_from_its_ended_hosts() {
     let (_slice, restarted, owner, trace, folder) = codex_node_restarted_with_its_folder(|folder| {
@@ -1769,7 +1764,6 @@ pub fn paused_by_the_user(slice:&Slice)->bool{
 pub fn admissions(slice:&Slice)->usize{
     slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count()
 }
-#[cfg(feature = "real-hosts")]
 fn source_host(slice:&Slice)->PathBuf{
     let instance=Slice::lifecycle(&*slice.domain).execution().unwrap().instance().as_str().to_owned();
     slice.backend.for_provider(Provider::Codex,slice.domain.home()).unwrap().state_root.join(instance)
@@ -1953,7 +1947,7 @@ async fn a_task_whose_host_died_moves(){
     slice.domain.stop_sdk_owners();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_task_whose_adopted_host_has_no_process_moves_or_is_refused(){
     let slice=Slice::new();let task:TaskId=TASK.into();
@@ -1961,7 +1955,7 @@ async fn a_task_whose_adopted_host_has_no_process_moves_or_is_refused(){
     slice.domain.stop_sdk_owners();
     let adopted=adopt(slice.domain.clone(),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
     let group=adopted.worker.host_group().unwrap();
-    for process in alondra_process_group::members(group).unwrap(){signal_codex_process(process.pid,libc::SIGKILL);}
+    slice.hosts.kill(group);
     drop(adopted);
     request_move(&slice);
     let outcome=settled_move(&slice).await;
@@ -1975,7 +1969,7 @@ async fn a_task_whose_adopted_host_has_no_process_moves_or_is_refused(){
     slice.domain.stop_sdk_owners();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_move_that_cannot_prove_its_source_ended_is_refused_with_its_reason(){
     let slice=Slice::new();let task:TaskId=TASK.into();
