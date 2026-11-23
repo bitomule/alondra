@@ -64,7 +64,7 @@ to its fix group and issue.
 | S1 | [F-STORE-7](#f-store-7--a-request-cleared-and-then-taken-back-by-its-task-leaves-its-cleared-row-and-the-daemon-no-longer-loads-its-state) · A request cleared and then taken back by its task leaves its «cleared» row, and the daemon no longer loads its state | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S1 | [F-ORCH-5](#f-orch-5--a-non-domain-error-in-the-schedule-runner-stops-the-whole-daemon-with-an-unreadable-optionstoml-it-enters-a-restart-loop) · A non-domain error in the schedule runner stops the whole daemon; with an unreadable `options.toml` it enters a restart loop | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S1 | [F-STORE-4](#f-store-4--a-released-task-whose-closed-task-nodesjson-entry-is-lost-is-left-without-a-node-forever-nothing-relaunches-it-or-says-so) · A released task whose `closed-task-nodes.json` entry is lost is left without a node forever: nothing relaunches it or says so | low | [G2](#g2--a-released-task-always-has-a-way-back) · #519 · fixed in #552 |
-| S2 | [F-CARDS-1](#f-cards-1--a-request-whose-tasks-ended-depends-on-a-single-message-to-the-orchestrator-if-that-batch-does-not-close-it-it-stays-open-forever-with-no-result-card-issue-353) · A request whose tasks ended depends on a single message to the orchestrator: if that batch does not close it, it stays open forever with no result card (issue #353) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
+| S2 | [F-CARDS-1](#f-cards-1--a-request-whose-tasks-ended-depends-on-a-single-message-to-the-orchestrator-if-that-batch-does-not-close-it-it-stays-open-forever-with-no-result-card-issue-353) · A request whose tasks ended depends on a single message to the orchestrator: if that batch does not close it, it stays open forever with no result card (issue #353) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
 | S2 | [F-CARDS-2](#f-cards-2--replacing-one-question-of-a-group-leaves-the-group-incomplete-forever-the-node-never-receives-the-other-answers) · Replacing one question of a group leaves the group incomplete forever: the node never receives the other answers | low | [G6](#g6--card-protocol-replacements-approvals-and-stale-deliveries) · #523 · fixed in #551 |
 | S2 | [F-CARDS-3](#f-cards-3--requesting-changes-or-just-replying-on-an-already-approved-plan-while-its-task-closes-disapproves-it-but-leaves-the-implementation-request-alive-the-plan-is-implemented-twice-or-with-the-old-version) · Requesting changes (or just replying) on an already approved plan while its task closes disapproves it but leaves the implementation request alive: the plan is implemented twice or with the old version | low-medium | [G6](#g6--card-protocol-replacements-approvals-and-stale-deliveries) · #523 · fixed in #551 |
 | S2 | [F-CARDS-4](#f-cards-4--a-new-revision-of-a-document-leaves-dead-the-final-delivery-that-carries-the-previous-one-neither-accepting-nor-requesting-changes-works-and-nobody-returns-it) · A new revision of a document leaves dead the final delivery that carries the previous one: neither accepting nor requesting changes works and nobody returns it | low | [G6](#g6--card-protocol-replacements-approvals-and-stale-deliveries) · #523 · fixed in #551 |
@@ -83,13 +83,13 @@ to its fix group and issue.
 | S2 | [F-ENGINE-9](#f-engine-9--a-volume-that-is-not-a-build-volume-can-stay-learned-forever-and-hold-every-start-and-the-turns) · A volume that is not a build volume can stay learned forever and hold every start and the turns | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · no longer applies (`e7b898c30`) |
 | S2 | [F-GH-1](#f-gh-1--the-watcher-closes-on-github-the-pr-of-a-task-the-user-just-reopened-or-that-another-task-just-took) · The watcher closes on GitHub the PR of a task the user just reopened (or that another task just took) | low-medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S2 | **FIXED** [F-GH-3](#f-gh-3--the-startup-sweep-of-cancelled-tasks-deletes-a-worktree-that-task-handed-to-another-if-the-other-is-already-closing-or-the-user-kept-it) · The startup sweep of cancelled tasks deletes a worktree that task handed to another, if the other is already closing or the user kept it | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
-| S2 | [F-GH-5](#f-gh-5--post-merge-work-declared-and-the-node-idle-the-task-stays-working-forever-its-host-is-never-released-and-it-holds-a-slot) · Post-merge work declared and the node idle: the task stays "Working" forever, its host is never released and it holds a slot | medium-low | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
+| S2 | [F-GH-5](#f-gh-5--post-merge-work-declared-and-the-node-idle-the-task-stays-working-forever-its-host-is-never-released-and-it-holds-a-slot) · Post-merge work declared and the node idle: the task stays "Working" forever, its host is never released and it holds a slot | medium-low | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
 | S2 | [F-GH-7](#f-gh-7--a-merge-that-github-blocks-for-a-required-review-goes-back-to-the-node-and-invalidates-the-users-acceptance-in-a-loop) · A merge that GitHub blocks for a required review goes back to the node and invalidates the user's acceptance, in a loop | medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S2 | [F-GH-8](#f-gh-8--the-github-api-limit-still-raises-technical-cards-one-per-pr-in-the-watcher-and-another-per-pr-in-the-merger) · The GitHub API limit still raises technical cards: one per PR in the watcher and another per PR in the merger | low | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
-| S2 | [F-LIFE-1](#f-life-1--an-unstarted-task-that-waits-for-other-tasks-shows-as-queued-slot-wait-not-waiting-for-tasks) · An unstarted task that waits for other tasks shows as "Queued" (slot wait), not "Waiting for tasks" | high | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
+| S2 | [F-LIFE-1](#f-life-1--an-unstarted-task-that-waits-for-other-tasks-shows-as-queued-slot-wait-not-waiting-for-tasks) · An unstarted task that waits for other tasks shows as "Queued" (slot wait), not "Waiting for tasks" | high | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
 | S2 | [F-LIFE-2](#f-life-2--reopening-a-task-whose-sdk-node-the-user-left-open-creates-a-claude---bg-execution-nobody-runs) · Reopening a task whose SDK node the user left open creates a `claude --bg` execution nobody runs | low | [G2](#g2--a-released-task-always-has-a-way-back) · #519 · fixed in #552 |
 | S2 | [F-ORCH-1](#f-orch-1--a-daemon-restart-in-the-middle-of-a-batch-stops-the-orchestrator-until-the-user-answers-a-card) · A daemon restart in the middle of a batch stops the orchestrator until the user answers a card | medium | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
-| S2 | [F-ORCH-2](#f-orch-2--replanning-reminders-feed-themselves-one-batch-per-reminder-without-end) · Replanning reminders feed themselves: one batch per reminder, without end | low-medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
+| S2 | [F-ORCH-2](#f-orch-2--replanning-reminders-feed-themselves-one-batch-per-reminder-without-end) · Replanning reminders feed themselves: one batch per reminder, without end | low-medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
 | S2 | [F-ORCH-3](#f-orch-3--after-24-h-of-launch-failures-requests-are-left-untreated-and-the-watchdog-restarts-in-vain-every-5-min) · After 24 h of launch failures, requests are left untreated and the watchdog restarts in vain every 5 min | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-ORCH-4](#f-orch-4--a-scheduled-launch-that-did-start-is-considered-failed-after-a-restart-and-answering-the-card-cancels-the-live-task) · A scheduled launch that did start is considered failed after a restart, and answering the card cancels the live task | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-PROV-1](#f-prov-1--a-usage-reading-measured-before-a-limit-erases-it-when-it-arrives-later-the-account-reads-as-having-margin-again) · A usage reading measured before a limit erases it when it arrives later: the account reads as having margin again | low | [G8](#g8--one-owner-per-host-and-provider-facts-in-order) · #525 |
@@ -98,7 +98,7 @@ to its fix group and issue.
 | S2 | [F-SERVER-R4](#f-server-r4--if-live-activity-pruning-fails-after-a-revocation-the-removed-mac-keeps-the-live-activity-alive-indefinitely) · If Live Activity pruning fails after a revocation, the removed Mac keeps the Live Activity alive indefinitely | low | [G11](#g11--devices-relay-and-self-update) · #528 |
 | S2 | [F-STORE-1](#f-store-1--a-second-process-applies-restart-recovery-to-the-live-database) · A second process applies restart recovery to the live database | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-STORE-2](#f-store-2--alondrad---preflight-does-not-exercise-the-json-files-the-real-startup-requires) · `alondrad --preflight` does not exercise the JSON files the real startup requires | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
-| S3 | [F-CARDS-6](#f-cards-6--createtask-and-setdependencies-accept-an-already-cancelled-dependency-the-task-is-born-waiting-for-something-that-will-not-come-issue-323) · `CreateTask` and `SetDependencies` accept an already cancelled dependency: the task is born waiting for something that will not come (issue #323) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
+| S3 | [F-CARDS-6](#f-cards-6--createtask-and-setdependencies-accept-an-already-cancelled-dependency-the-task-is-born-waiting-for-something-that-will-not-come-issue-323) · `CreateTask` and `SetDependencies` accept an already cancelled dependency: the task is born waiting for something that will not come (issue #323) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
 | S3 | [F-CARDS-7](#f-cards-7--clear-completed-takes-a-closed-request-whose-last-task-is-still-ending-which-the-tasks-list-now-shows-as-active-536) · «Clear completed» takes a closed request whose last task is still ending, which the Tasks list now shows as active (#536) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
 | S3 | [F-CLIENTS-A5](#f-clients-a5--if-preparing-an-answer-fails-the-queue-iphone-and-the-sidebar-mac-leave-the-card-sending-forever) · If preparing an answer fails, the queue (iPhone) and the sidebar (Mac) leave the card "sending" forever | low | [G10](#g10--apple-apps-optimistic-actions-and-per-mac-state) · #527 |
 | S3 | [F-CLIENTS-R2](#f-clients-r2--direct-http-route-a-refusal-from-the-mac-is-read-as-cut-midway) · Direct HTTP route: a refusal from the Mac is read as "cut midway" | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
@@ -113,7 +113,7 @@ to its fix group and issue.
 | S3 | [F-GH-9](#f-gh-9--the-merger-rereads-github-on-every-domain-commit-for-a-pr-closed-outside-or-with-a-new-head-until-the-watcher-sees-it) · The merger rereads GitHub on every domain commit for a PR closed outside or with a new head, until the watcher sees it | medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S3 | [F-ORCH-6](#f-orch-6--the-orchestrators-progress-marks-have-done-nothing-since-277) · The orchestrator's progress marks have done nothing since #277 | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S3 | [F-ORCH-7](#f-orch-7--an-accepted-cancellation-http-200-can-be-lost-orchestratorjson-is-written-without-a-lock-from-two-threads) · An accepted cancellation (HTTP 200) can be lost: `orchestrator.json` is written without a lock from two threads | very | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
-| S3 | [F-ORCH-8](#f-orch-8--create_task-carries-no-priority-and-automatic-launch-wakes-in-the-same-commit-issue-352) · `create_task` carries no priority and automatic launch wakes in the same commit (issue #352) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
+| S3 | [F-ORCH-8](#f-orch-8--create_task-carries-no-priority-and-automatic-launch-wakes-in-the-same-commit-issue-352) · `create_task` carries no priority and automatic launch wakes in the same commit (issue #352) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
 | S3 | [F-SERVER-D5](#f-server-d5--a-direct-request-from-a-revoked-or-conflicting-id-reaches-the-user-approval-fails-with-500-and-the-client-ends-up-seeing-expired) · A direct request from a revoked or conflicting id reaches the user, approval fails with 500 and the client ends up seeing «Expired» | low | [G11](#g11--devices-relay-and-self-update) · #528 |
 | S3 | [F-SERVER-D7](#f-server-d7--a-failed-brew-upgrade-blocks-self-update-of-that-version-until-another-one-is-released) · A failed `brew upgrade` blocks self-update of that version until another one is released | medium | [G11](#g11--devices-relay-and-self-update) · #528 |
 | S3 | [F-SERVER-R6](#f-server-r6--a-crash-between-take-and-the-send-leaves-live--someno-token-and-blocks-the-start-for-up-to-7-h-45) · A crash between `take` and the send leaves `live = Some(no token)` and blocks the start for up to 7 h 45 | low | [G11](#g11--devices-relay-and-self-update) · #528 |
@@ -325,6 +325,9 @@ F-ENGINE-6, F-ENGINE-7, F-ENGINE-9, F-ENGINE-10 · Depends on: none · Related: 
 Issue: #522 · Severity: S2 · Findings: F-CARDS-1, F-CARDS-6, F-ORCH-2, F-ORCH-8, F-LIFE-1,
 F-GH-5, F-CARDS-7 (added on 2026-11-22 by the user's decision, after the re-check of #536) · Depends on: none · Related: issues #353, #323, #350, #352.
 
+**Status: fixed** in #553 (phase 5 of the fix plan). Each finding below says what
+changed and which test proved it; every new test was seen failing with its fix removed.
+
 - **Expected behaviour**: a request whose tasks all ended is reminded to the orchestrator at most
   twice, then Alondra closes it with its own «Done» card (user decision). `CreateTask` and
   `SetDependencies` refuse a dependency that is already cancelled, like `SetRelations` does. Replan
@@ -488,7 +491,7 @@ with an outcome card; several Macs per client). Each can be changed in the revie
 
 | Finding | Default |
 |---|---|
-| F-LIFE-1 · where the wait for other tasks lives | In the lifecycle aggregate, as the single source (dependency records, `Progress::Dependency` reachable again). |
+| F-LIFE-1 · where the wait for other tasks lives | In the lifecycle aggregate, as the single source: `AwaitingTasks`, recorded with `WaitsForTasks`/`TasksLanded` (the user confirmed it on 2026-11-23). |
 | F-LIFE-2 · reopening a task whose SDK node the user kept open | Reopen without a node; the gate starts a new SDK execution that resumes the saved session. |
 | F-CARDS-2 · replacing one question of a group | Refused: the node replaces the whole group with another group. |
 | F-CARDS-5 · replacing the current final delivery with a card that is not a final delivery | Same effects as `withdraw`: the task goes back to in progress (while #317 keeps clarifications). |
@@ -528,17 +531,18 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 | State | Content | Notes |
 |---|---|---|
 | `Unstarted{input, remaining}` | no execution | |
+| `AwaitingTasks{tasks≠∅, start}` | no execution; `start` is `First{input, remaining}` (phase `Unstarted`) or `Again{stage, input, remaining}` (phase `InProgress`) | the wait of a task no execution runs for the tasks it may not start before; owes `Tasks` (or the plan review's `Answer`); `Admit` refuses it with `AwaitsTasks` (F-LIFE-1) |
 | `InProgress(Queued{stage,input,remaining})` | no execution | |
 | `InProgress(Executing{stage, ActiveExecution})` | execution present, `Available` or `Reserved+Launching` | `ActiveExecution::new` rejects `Resting` (`lifecycle.rs:1063-1077`) |
 | `InProgress(Waiting{stage, Decisions≠∅, Session})` | non-empty cards by kind (`Decisions`) | |
-| `InProgress(Dependency{stage, tasks≠∅, decisions, Session})` | | **unreachable in production**: no record produces `WaitForDependencies` (see F-LIFE-1, last section) |
+| `InProgress(Dependency{stage, tasks≠∅, decisions, Session})` | | with `Session::Absent`: an `AwaitingTasks` task asked a card. With an execution: **unreachable in production**, no record makes a running task wait for its dependencies |
 | `Delivered{delivery, gate, decisions, Session}` | `gate ∈ {Review, Blocked, AwaitingMerge, Accepted}` | `Blocked` and `AwaitingMerge` are **unreachable in production** (no `BlockDelivery` record, no `Accept{merge:Some}`) |
 | `Finishing{intent, remaining≠∅, Session}` | drain obligations | |
 | `Completed` / `Cancelled` | terminal | |
 
 - **Composite state**: `State × Execution (M-LIFE-2) × plan_reviews × post_merge × doubts/settled × empty_turns/woken`. The fields outside `state` (`plan_reviews`, `post_merge`, `doubts`, `settled`, `cancelled_through_generation`) survive `Reopen`.
-- **Events** (`Event`, `lifecycle.rs:513-712`): Admit, Runtime{stamp,cursor,fact}, Ask, Answer, Decide, MoveCard, KeepQuestion, PlanApproved, HostReleased, HostRetaken, BlockDelivery, DeliveryUnblocked, Present, Accept, MergeObserved, HandBack, WaitForDependencies, Tell, DependenciesResolved, Pause, Resume, EndPause, RecoveryEnded, Finish, DrainObserved, PostMergeDeclared, PostMergeEnded, RetireReleasedExecution, ExecutionReleased, ExecutionLeftForReview, Reopen, HoldForPlanReview, PlanReviewSettled, DoubtHandoff, ResendUntaken, ResendDoubtful, SettleHandoff, Discard, AwaitEnded, Unfinished, RequestControl, Compact.
-- **Events produced by `domain-rules`** (mapping `event()`, `domain-rules/src/lifecycle.rs:616-803`): all except `Ask`, `PlanApproved`, `BlockDelivery`, `DeliveryUnblocked`, `MergeObserved`, `Accept{merge:Some}`, `WaitForDependencies`, `DependenciesResolved`, `RetireReleasedExecution`, and the facts `ConnectionLost`, `ResourceReleased`, `Notification`, `EffectAccepted`, `EffectObserved` (checked with `rg`: 0 occurrences in `domain-rules/src/{lifecycle.rs,rules.rs,rules/}`). These are aggregate branches that only its own tests exercise.
+- **Events** (`Event`, `lifecycle.rs:513-712`): Admit, Runtime{stamp,cursor,fact}, Ask, Answer, Decide, MoveCard, KeepQuestion, PlanApproved, HostReleased, HostRetaken, BlockDelivery, DeliveryUnblocked, Present, Accept, MergeObserved, HandBack, WaitForDependencies, Tell, DependenciesResolved, DependenciesLanded, Pause, Resume, EndPause, RecoveryEnded, Finish, DrainObserved, PostMergeDeclared, PostMergeEnded, RetireReleasedExecution, ExecutionReleased, ExecutionLeftForReview, Reopen, HoldForPlanReview, PlanReviewSettled, DoubtHandoff, ResendUntaken, ResendDoubtful, SettleHandoff, Discard, AwaitEnded, Unfinished, RequestControl, Compact.
+- **Events produced by `domain-rules`** (mapping `event()`, `domain-rules/src/lifecycle.rs:616-803`): all except `Ask`, `PlanApproved`, `BlockDelivery`, `DeliveryUnblocked`, `MergeObserved`, `Accept{merge:Some}`, `DependenciesResolved`, `RetireReleasedExecution`, and the facts `ConnectionLost`, `ResourceReleased`, `Notification`, `EffectAccepted`, `EffectObserved` (checked with `rg`: 0 occurrences in `domain-rules/src/{lifecycle.rs,rules.rs,rules/}`). These are aggregate branches that only its own tests exercise.
 - **`Compact` since #507** (at `3fc0370ea`): no command writes a new `Compacted` record any more
   (`Command::CompactConversation`, its guard and the idle-compaction loop were removed). The record and its event stay
   so older journals replay: `LifecycleRecord::Compacted` (`domain-rules/src/lifecycle.rs:474-476`) still maps to
@@ -551,6 +555,11 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 
 | From | Event [guard] | To / effect |
 |---|---|---|
+| Unstarted, Queued | WaitForDependencies (record `WaitsForTasks`) | AwaitingTasks{tasks, start} |
+| AwaitingTasks, Dependency | WaitForDependencies [another set] | the same state with the new set |
+| AwaitingTasks | DependenciesLanded (record `TasksLanded`) | Unstarted/Queued as `start` says |
+| Dependency{Absent} | DependenciesLanded | Queued, or Waiting with its cards |
+| AwaitingTasks | Ask, Pause | Dependency{Absent} with the card |
 | Unstarted, Queued, Delivered{Absent, gate≠Blocked}, Waiting{Absent, only Unheard/Recovery} | Admit [no `plan_reviews`, no pause] | Executing{Reserved, Launching(input)} (Delivered stays `Delivered` with a session); `generation+1` |
 | any state with a current execution | Runtime [stamp == current, cursor == current+1] | depends on the fact (M-LIFE-2) |
 | Unstarted/Queued/Executing/Waiting/Dependency/Delivered | Pause [owner≠Gate, no other pause], Ask, DoubtHandoff | Waiting (or the same Delivered/Dependency with the card added) |
@@ -614,7 +623,7 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 - **Kind**: implicit, derived with validation. **Defined in**: `domain-rules/src/model.rs:123-145` (`TaskState` with 9 values), `Task` (`started`, `agent_id`, `final_presentation`, `ending`, `wrap_up`, `pending_user_inputs`, `waiting_for_tasks`, `dependencies`, …).
 - **How it is written**: (1) `materialize` after every lifecycle decision sets `agent_id`, `started`, `ending` and the phase's `TaskState` (`domain-rules/src/lifecycle.rs:1314-1336`); (2) `derive_states` / `state_within_phase` picks the attention state within the phase (`rules.rs:2614-2662`, `lifecycle.rs:2613-2650`); (3) `derive_loaded_states` keeps `WaitingDependency` on open (`rules.rs:2626-2636`).
 - **Validation**: `agrees` (`lifecycle.rs:1413-1480`) for every task "touched" in the commit (`rules.rs:3012`) and on load: node/start/ending equal to the execution; phase ↔ state compatible; required cards actionable.
-- **Copies that can diverge**: `dependencies`/`waiting_for_tasks` (row) against `Progress::Dependency` (aggregate, dead) and `Await::Tasks` (aggregate, only after a turn): the dependency wait of an unstarted task exists only in the row (F-LIFE-1). `wrap_up.post_merge_work` (row) against `post_merge` (aggregate): synchronized in `declare_post_merge`/`end_post_merge`/`adopt_declared_post_merge` (`lifecycle.rs:2441-2491`).
+- **Copies that can diverge**: `dependencies`/`waiting_for_tasks` (row) against `Progress::Dependency` (aggregate, dead) and `Await::Tasks` (aggregate, only after a turn): the dependency wait of a task no execution runs is `AwaitingTasks` in the aggregate, recorded from the row's relations by `record_start_waits` at the end of every command (F-LIFE-1, fixed). `wrap_up.post_merge_work` (row) against `post_merge` (aggregate): synchronized in `declare_post_merge`/`end_post_merge`/`adopt_declared_post_merge` (`lifecycle.rs:2441-2491`).
 - **Terminals**: `Done`/`Cancelled` only from the phase; `derive_states` does not touch terminal rows.
 
 ### M-LIFE-7 · `Situation` and `Tally`
@@ -665,6 +674,23 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 ### Findings
 
 #### F-LIFE-1 · An unstarted task that waits for other tasks shows as "Queued" (slot wait), not "Waiting for tasks"
+**Status: FIXED** in #553, in the lifecycle aggregate as its single source (the user decided on 2026-11-23
+that the wait is a state of the task's machine, not something read beside it). A task no execution runs and whose
+dependencies have not landed is `AwaitingTasks{tasks, start}`: it owes `(Party::Tasks, Owed::Tasks)` (or the plan
+review's `Answer`) and `Admit` refuses it with `AwaitsTasks`, so no node takes it. `record_start_waits`
+(`domain-rules/src/lifecycle.rs`), at the end of every command, records `WaitsForTasks{tasks}` when the set of tasks it
+may not start before (`unmet_dependency_ids`) differs from the one its lifecycle waits for, and `TasksLanded` when that
+set is empty: the task enters the wait in the command that creates it, follows `SetDependencies`/`SetRelations`, leaves
+it in the command that lands its last dependency, enters it again when a dependency is reopened, and ends it with
+`Finish` when cancelled. A reopened task waits the same way from `Queued` and starts again at its stage.
+`AssignTask` on a waiting task, and the orchestrator's `launch` of one, are refused with `dependency_not_done`. Tasks stored waiting before this record existed
+load as they were kept; `ReviewWaits`, the first command the daemon sends on start, records their wait. The read beside
+the lifecycle in `obligation_with` is gone. Tests:
+`lifecycle_tests::an_unstarted_task_records_its_wait_for_another_until_it_lands`,
+`situation_tests::an_unstarted_task_that_waits_for_another_waits_for_tasks_not_for_a_slot` (without the fix:
+`Waiting(Slot)`), `store-sqlite` `a_stored_wait_from_before_the_lifecycle_recorded_it_is_recorded_on_the_first_command`,
+and in `crates/domain/tests/lifecycle.rs` the three tests of `AwaitingTasks` plus the property tests that now
+generate `DependenciesLanded`.
 **Class**: CONFIRMED · **Severity**: S2 (wrong visible state and counters; nothing is lost) · **Probability**: high (every task created with `dependencies`, e.g. stacked phases, goes through this while its dependency has not landed) · **Overlap**: no task in the plans of related work and no open issue covers it (#323 is about the outcome of dependents when one is cancelled, not their visible state). `git log` of `situation.rs`: no related changes since #297. The evidence is new.
 **Status**: still holds at `3fc0370ea`. #536 only changes which tasks the Tasks list shows (every task that has not ended is in the active list, M-CARDS-13); the block each one goes to still comes from `Tally` of its `Situation`, which #536 does not touch. Refreshed refs at `3fc0370ea`: `LifecycleRecord` `domain-rules/src/lifecycle.rs:295-496`, `event()` `:617-803`, `plan_lifecycle` `:1277-1284`, `state_within_phase` `:2625-2626`, `waits_are_over` `rules.rs:1986-2002`, blocks `views/src/tasks.rs:545-555`.
 - **Invalid state/transition and broken invariant**: rule 1 of `task-states.md` ("`Situation` … nothing else decides a label, a block, a count") and the definition of `Tally::Waiting` ("It waits for something else: other tasks", `situation.rs:63-66`). There are two sources of truth for "waits for tasks": the row (`TaskState::WaitingDependency`, `dependencies`) and the aggregate. The aggregate does not know it before the first turn, so `Situation` says something different from the row.
@@ -826,7 +852,7 @@ Execution model common to all machines in this area (stated once):
 - **Kind**: implicit. **Defined in**: `Request{closed, withdrawn, answer, message, maintenance, cleared, origin, folded_into, reply_to}` (`model.rs:41-88`) + the request's tasks + `request_plans` + cards `system:request_tasks`/`system:request_done`/`<id>-answer`.
 - **States**: being defined (open without tasks, `is_defining`), with live tasks, with all tasks ended and open (only the orchestrator moves it), closed with answer (Done/answer card), closed withdrawn (no card), folded into another task, cleared (`cleared`).
 - **Transitions**: `CreateRequest`/`CreateCardReply` (user), `TitleRequest`, `CloseRequest` (`rules.rs:3511`; `close_request` `:1342-1366`: Done card if it has tasks and the user asked for it, answer card if not), `close_delivered_plans` (automatic close only if all tasks are Done and marked every item of every plan, `:1368-1410`), `close_finished_messages` (messages, no card), `withdraw_cancelled_requests` (the user cancelled all unstarted tasks: closed withdrawn, no card), `AdoptOpenPr` (reopens the request, `rules.rs:5272-5277`), `ClearCompleted`. Effect `RequestTasksOver` (`:2961-2969`) **only once**, in the commit in which the last task ends.
-- **Orchestrator inbox**: `orchestrator_inbox::steps` and `unresolved` only chase requests **without tasks** (`orchestrator_inbox.rs:61-71,132-142`); those with all their tasks ended depend on the single message → F-CARDS-1.
+- **Orchestrator inbox**: `orchestrator_inbox::steps` and `unresolved` chase requests **without tasks** and, since F-CARDS-1 was fixed, requests whose tasks **all ended**: reminder `tasks-ended-unsettled-<request>-<n>` at each rest of the orchestrator until `TASKS_ENDED_REMINDERS` (2) were read by batches that ended with their result, then `Step::Close` by System with the Done card of `tell_it_is_done`.
 - **Re-checked after #536** (at `3fc0370ea`):
   - **New transition**: `reopen_requests_with_open_tasks` (`rules.rs:1307-1318`) runs in the post-processing of
     **every** command (`:2971`, after `forget_what_ended_tasks_allowed` and before `close_finished_messages`). Any
@@ -857,8 +883,8 @@ Execution model common to all machines in this area (stated once):
 
 ### M-CARDS-11 · Task creation, dependencies and waits
 - **Kind**: implicit. **Defined in**: `Task.dependencies` (objective, "landed"), `delivered_dependencies` (reviewer waits for the delivery), `waiting_for_tasks` + `ended_task_waits` (wait declared by a node, ends with any final state), `stack` (`StackDependency`), `blocks` (reviewer). Acyclic graph (`dependency_graph`, `rules.rs:1865-1898`; `blocks_graph` `:1900-1934`). Derived state `WaitingDependency` (`lifecycle.rs:2613-2650` `state_within_phase`).
-- **Commands**: `CreateTask` (`rules.rs:3584-3697`, orchestrator only, with `launch`; carries no priority: F-ORCH-8), `SetDependencies` (`:3771`), `SetRelations` (`:3790`, rejects cancelled tasks), `WaitForTasks` (`:3747`), `DeclarePostMergeWork{waits_for}` (`wait_targets`, `:1778-1820`, rejects cancelled), `SetPriority` (`:3824`).
-- **Dependent of a cancelled task**: `cancelled_dependency` (`ownership.rs:320-326`) → `Owed::Replan` only if the task has not started and has no node (`ownership.rs:352-354`); the orchestrator gets a reminder at every rest (M-ORCH-7, F-ORCH-2). `waiting_for_tasks` also ends with a cancelled one (`task_wait_finished = terminal`, `rules.rs:2007-2009`) and the node gets `dependencies_done_notice` with `cancelled`. See F-CARDS-6 for the unguarded entry.
+- **Commands**: `CreateTask` (`rules.rs:3584-3697`, orchestrator only, with `launch` and `priority`, F-ORCH-8 fixed; refuses a cancelled dependency, F-CARDS-6 fixed), `SetDependencies` (`:3771`, refuses a cancelled dependency), `SetRelations` (`:3790`, rejects cancelled tasks), `WaitForTasks` (`:3747`), `DeclarePostMergeWork{waits_for}` (`wait_targets`, `:1778-1820`, rejects cancelled), `SetPriority` (`:3824`).
+- **Dependent of a cancelled task**: `cancelled_dependency` (`ownership.rs:320-326`) → `Owed::Replan` only if the task has not started and has no node (`ownership.rs:352-354`); the orchestrator gets a reminder at every rest caused by other work, at most `REPLAN_REMINDERS` (3) (M-ORCH-7, F-ORCH-2 fixed). `waiting_for_tasks` also ends with a cancelled one (`task_wait_finished = terminal`, `rules.rs:2007-2009`) and the node gets `dependencies_done_notice` with `cancelled`. A new dependency on a task already cancelled is refused (F-CARDS-6, fixed); a dependency cancelled afterwards still goes to the orchestrator.
 - **Cancellation** (`cancel`, `rules.rs:2191-2235`; `close_task`, `rules/open_pr.rs:29-52`): `invalidate`, withdraws closing/start problems, unanswered questions and cards held by the lifecycle; `Finished{Cancelling}`; `NotifyAgent`. It does not touch dependents (the orchestrator handles them).
 
 ### M-CARDS-12 · Stacks (`stack`, `stack_readiness`)
@@ -886,6 +912,14 @@ Execution model common to all machines in this area (stated once):
 ### Findings
 
 #### F-CARDS-1 · A request whose tasks ended depends on a single message to the orchestrator: if that batch does not close it, it stays open forever with no result card (issue #353)
+**Status: FIXED** in #553, as the user decided on 2026-11-22. `orchestrator_inbox::steps` treats an open request
+(not a message) whose tasks all ended like a request without tasks: `tasks_ended` sends the reminder
+`tasks-ended-unsettled-<request>-<n>` (new `InboxCard::TasksEndedNotice`, a reserved prefix) when the orchestrator rests
+with nothing waiting for it; once `TASKS_ENDED_REMINDERS` (2) reminders were read by batches that ended with their result,
+`Step::Close` closes it as System and `close_request` raises the Done card summing up each task. `unresolved` lists such a
+request until a reminder is on its way. Test:
+`orchestrator_inbox::tests::a_request_whose_tasks_ended_is_reminded_twice_then_closed_by_alondra_with_its_done_card`
+(without the fix: no reminder, and `unresolved` is empty).
 **Class**: CONFIRMED (that nothing claims it again). Whether the batch fails to close it depends on the model or on a cut, which is probabilistic. · **Severity**: S2 · **Probability**: medium (one omission by the model is enough; issue #353 observed it) · **Overlap**: issue #353 (NEW evidence: exact paths showing why there is no second chance). Related to F-ORCH-1 and F-STORE-3 (ways of losing the single message). `git log` of `orchestrator_inbox.rs`: no later fix.
 **Status**: still holds at `3fc0370ea`. #536 adds `reopen_requests_with_open_tasks` in the same post-processing (`rules.rs:2971`), but it only reopens requests that hold an open task; the request of this finding has every task over, so nothing changes for it. Refreshed refs at `3fc0370ea`: `RequestTasksOver` `rules.rs:2974-2981`, `close_delivered_plans` `:1380-1426`, `close_finished_messages` `:1321-1326`.
 Still holds at `68770a298`: #516 rewrote the orchestrator inbox, but `steps` and `unresolved` still skip every request that has a task (`orchestrator_inbox.rs:70-73`, `:152-153`), so a request whose tasks all ended is still neither reminded nor raised. #516 only makes the orchestrator's close of it carry the outcome `tasks_ended` (`check_close_outcome`, `domain-rules/src/rules.rs:1357-1387`).
@@ -966,6 +1000,10 @@ Still holds at `68770a298`: #516 rewrote the orchestrator inbox, but `steps` and
 - **Expected fix and files**: replacing the current delivery with any card goes through the same path as `Withdraw` (`invalidate` + `hand_back`), or `replaceable` only allows replacing a final delivery with another final delivery. In addition `presentation()` must reject a withdrawn delivery. Files: `rules.rs` (`insert_interaction`, `replaceable`, `presentation`).
 
 #### F-CARDS-6 · `CreateTask` and `SetDependencies` accept an already cancelled dependency: the task is born waiting for something that will not come (issue #323)
+**Status: FIXED** in #553 (the guard; the re-pointing replacement command of #323 is not part of it). Both
+commands call `no_cancelled_dependency` before changing anything and refuse with `invalid_input`, field `dependencies`,
+like `SetRelations`. Test: `attention_tests::a_task_cannot_be_made_to_wait_for_a_cancelled_one` (without the fix both
+commands are accepted).
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: medium (#350 describes it) · **Overlap**: #323 and #350 (NEW evidence: the unguarded entry and the asymmetry with `SetRelations`/`wait_targets`); F-ORCH-2 (the loop it feeds). The note in `task-states.md` ("Waiting for a cancelled task advances only when the orchestrator is idle…") describes the same gap.
 - **Invalid state/transition and broken invariant**: a new task in `WaitingDependency` on a cancelled task; it only leaves if the orchestrator re-plans it, and that reminder is the loop of F-ORCH-2.
 - **Evidence**:
@@ -3067,7 +3105,8 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   (`domain/src/lifecycle/commands.rs:384-403`) + the inherited `post_merge_checks` (only read to withdraw its card).
 - Declared with `DeclarePostMergeWork{reason}`. It ends **only** with a fact: `DeclarePostMergeWork` without a reason,
   `ConfirmCleanup`, end of session (`RecordNodeEnd Gone`, or the host ending, which gives a resumed session or a card to
-  the user, `observations.rs:681-701`), or the user's decision on the `PostMergeProblem` card. There is no deadline
+  the user, `observations.rs:681-701`), the user's decision on the `PostMergeProblem` card, or (since F-GH-5 was fixed) a
+turn that began after the last declaration ending idle after the merge (`PostMergeEnd::TurnEnded`). There is no deadline
   (`task_closer.rs:4-6`, a documented decision). While it is owed, the task is Working ("after merge") and **holds a gate
   slot** (`holds_slot`, `domain/src/lifecycle.rs:1429-1440`). See F-GH-5.
 
@@ -3198,6 +3237,15 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   `crates/system/src/worktree.rs`, callers in `task_worktrees.rs` and `task_closer.rs`.
 
 #### F-GH-5 · Post-merge work declared and the node idle: the task stays "Working" forever, its host is never released and it holds a slot
+**Status: FIXED** in #553. On `main` an idle rest after the merge woke the node and then opened a case for the
+orchestrator, but nothing ended the work: the documented rule (a turn after the merge that ends with nothing running ends
+the work unless the node declared it again) was lost with the `claude --bg` node machine in #173, which left
+`PostMergeWork.turn_since` never set and `PostMergeEnd::TurnEnded` never recorded. Now `record_runtime_facts` marks
+`turn_since` when a turn starts (`TurnStarted`, `TurnUnprompted`) and a declaration resets it; `finish_observed_turn` ends
+the work with `PostMergeEnd::TurnEnded` when the turn ended empty, `turn_since` is set, the PR merged
+(`work_after_merge`), the activity is `Resting` (no own work), no input waits, no card holds it and the work waits for no
+task. Tests: `answered_card_tests::after_the_merge_a_turn_that_ends_idle_without_declaring_its_work_again_ends_that_work`
+(without the fix the work stays owed) and `…_a_turn_that_ends_behind_work_of_its_own_leaves_that_work_owed`.
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: medium-low · **Overlap**: the stalled-node recovery work (phases 2-3: contradictions without a timer, `WakeUntaken`) and the node anomaly detection work (signal "turn that ends with no delivery or own work"). Neither names the post-merge case; the evidence is new for them.
 - **Invalid state/transition and broken invariant**: a `PostMerge` obligation with nothing that will end it. It breaks "only a
   finished or cancelled state owes nothing; every step has an owner that gives it" (`docs/architecture/task-states.md`,
@@ -3489,11 +3537,12 @@ state rule of M-ORCH-5.
 - **Kind**: implicit. **Defined in**: `orchestrator_inbox.rs:97-118`, `:286-301`, `:334-360`; the obligation in
   `domain-rules/src/ownership.rs:337-355`.
 - A task that waits for a cancelled one, or whose launch plan was refused: at every "rest" (`rests`) of the orchestrator a
-  letter `dependency-cancelled-<t>--<d>-<rest>` / `plan-refused-<card>-<rest>` is created. No deadline, no cap. See F-ORCH-2.
+  letter `dependency-cancelled-<t>--<d>-<rest>` / `plan-refused-<card>-<rest>` is created, at most `REPLAN_REMINDERS` (3)
+per subject; a batch that carried only such letters (`Run.replans_only`) is no rest. No deadline. See F-ORCH-2 (fixed).
 - **Since #516** (at `68770a298`; `replans` `orchestrator_inbox.rs:118-126`, `hand_replans` `:130-136`,
   `plan_refused` `:338-352`, `dependency_cancelled` `:386-415`): unchanged, one letter per rest. What changed is that a
   re-plan letter no longer keeps the rest of the inbox from being settled: `handled` reads what was waiting before it
-  hands them (`domain_orchestrator.rs:705-706`). The loop of F-ORCH-2 is still there.
+  hands them (`domain_orchestrator.rs:705-706`). The loop of F-ORCH-2 was closed in phase 5 (above).
 
 ### M-ORCH-13 · New Tasks per turn of the orchestrator (`TURN_TASK_LIMIT`, added by #516)
 - **Kind**: implicit, counted from the store. **Defined in** (at `68770a298`): `TURN_TASK_LIMIT` = 10 and the code
@@ -3538,8 +3587,8 @@ state rule of M-ORCH-5.
 
 ### M-ORCH-11 · Automatic launch (`auto_launches`)
 - **Kind**: implicit. `launching` -> `launched` | `blocked(reason)`; deleted to retry (`engine-sdk/src/auto_launch.rs:62-77,102-176`,
-  `store-sqlite/src/lib.rs:255,1327-1431`). It belongs mostly to admission; here only its race with `create_task` counts
-  (F-ORCH-8).
+  `store-sqlite/src/lib.rs:255,1327-1431`). It belongs mostly to admission; its race with `create_task` is gone since
+  the task carries its priority from its creation (F-ORCH-8, fixed).
 
 ### M-ORCH-12 · Legacy reducer `core::orchestrator`
 - **Kind**: explicit. `Phase { Idle, Starting, Running, Compacting, Failed }` with `validate/apply`
@@ -3601,6 +3650,14 @@ counterpart of H-ORCH-3, which no longer happens.
   Files: `domain_orchestrator/recovery.rs`, the test at `domain_orchestrator.rs:1970` (it should use `startup_recovery`).
 
 #### F-ORCH-2 · Replanning reminders feed themselves: one batch per reminder, without end
+**Status: FIXED** in #553, with the default decision. A batch whose messages were all re-plan reminders
+(`only_replan_reminders`, stored as `Run.replans_only`) does not count as a rest, so a reminder no longer starts the batch
+that hands the next one; and each subject (task and cancelled dependency, or refusal card) is handed at most
+`REPLAN_REMINDERS` (3) times. Past it the task keeps its factual state («“X” was cancelled · the orchestrator decides what
+happens to it») and no batch is spent on it until what it waits on changes. Tests:
+`orchestrator_inbox::tests::a_replan_the_orchestrator_never_decides_starts_a_bounded_number_of_batches` and
+`only_a_batch_of_nothing_but_replan_reminders_is_no_rest`; `a_wait_for_a_cancelled_task_is_handed_back_…` and the engine
+test of refused plans now stop at the third reminder.
 **Class**: CONFIRMED · **Severity**: S2 (duplicated work) · **Probability**: low-medium: it depends on the model not complying or its action being rejected (for example a plan that `update_launch_plan` keeps rejecting) · **Overlap**: the note in `docs/architecture/task-states.md` ("Waiting for a cancelled task advances only when the orchestrator is idle and nothing fails; a task will give it an owner and a deadline") addresses the opposite problem; this loop is NEW evidence.
 **Status**: still holds at `68770a298`. #516 kept `replans` per rest number (`orchestrator_inbox.rs:118-126`,
 `:340`, `:395`) and `hand_replans` after every turn (`domain_orchestrator.rs:706`, `:771`): every rest still creates
@@ -3782,6 +3839,11 @@ statement (`domain_orchestrator.rs:701`); #516 moved the lines around it, not th
   outside the file.
 
 #### F-ORCH-8 · `create_task` carries no priority and automatic launch wakes in the same commit (issue #352)
+**Status: FIXED** in #553. `Command::CreateTask` has `priority` (`TaskPriority`, `#[serde(default)]` so commands
+recorded before read back as normal), stored on the task in the creating commit; the MCP `create_task` tool takes it and
+the orchestrator skill says to pass it there; `set_priority` only changes it later. Test:
+`auto_launch::tests::a_task_created_with_a_high_priority_takes_the_next_free_slot_before_an_older_one` (without the fix
+the older normal task takes the slot).
 **Class**: CONFIRMED (confirms #352 with paths) · **Severity**: S3 · **Probability**: medium · **Overlap**: issue #352 (new path evidence, same failure). #350 (moving tasks with create_task + cancel_task): no new evidence.
 - **Evidence**:
   1. `Command::CreateTask` has no priority (`domain-rules/src/command.rs:147-163`).

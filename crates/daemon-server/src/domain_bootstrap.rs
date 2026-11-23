@@ -2382,7 +2382,7 @@ mod tests {
             auto_merge: false, maintenance: false, message: false });
         let plan = LaunchPlan { mission: Some("The saved mission\n\nAdditional context stays here.".into()),
             model: Some("sonnet".into()), reason: Some("Implementation".into()), ..LaunchPlan::new("stored-node", home.to_str().unwrap()) };
-        execute(Actor::Orchestrator { generation: domain.state().unwrap().orchestrator_generation }, Command::CreateTask {
+        execute(Actor::Orchestrator { generation: domain.state().unwrap().orchestrator_generation }, Command::CreateTask { priority: Default::default(),
             task_id: "plan-read".into(), request_id: "plan-read".into(), title: "Stored work".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(plan.clone()), plan_items: None, continues: None });
         let stored = orchestrator_get("/orchestrator/launch-plan?task_id=plan-read").await.unwrap();

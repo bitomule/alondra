@@ -462,6 +462,12 @@ pub async fn launch_guarded(domain: &dyn Runtime, home: &Path, body: LaunchBody,
     if let Some(why) = crate::plan_reviews::held(&current, &task.id) {
         return Err(DomainError::new("plan_review_pending", why));
     }
+    let waited = current.awaited_before_start(&task.id);
+    if !waited.is_empty() {
+        return Err(DomainError::new("dependency_not_done", format!(
+            "“{}” waits for {} before it starts: Alondra starts it by itself once they land. To start it without them, change its dependencies with set_dependencies",
+            task.title, waited.join(", "))));
+    }
     if origin != Origin::Admitted && domain.gate().held_by_user(&task.id) {
         return Err(conflict(format!("The user paused “{}” in the queue: only the user resumes it", task.title)));
     }

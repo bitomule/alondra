@@ -1850,7 +1850,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     seeded(&mut store);
     execute(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Reviewer".into(), at: 0 });
     execute(&mut store, &user(), "request-title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
-    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { plan_items: None, continues: None,
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-2".into(), request_id: "request-1".into(), title: "Review".into(), agent_id: Some("agent-2".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
@@ -1962,7 +1962,7 @@ fn plan() -> alondra_daemon_engine_model::LaunchPlan {
 fn planned_task(id: &str, request: &str, epoch: &alondra_domain_rules::DataEpoch, plan: alondra_daemon_engine_model::LaunchPlan) -> CommandEnvelope {
     CommandEnvelope {
         protocol_version: 2, data_epoch: epoch.clone(), command_id: format!("plan-{id}").into(), expected_revision: 0,
-        command: Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
+        command: Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
             review_prs: false, dependencies: Default::default(), stack: None, launch: Some(plan) },
     }
 }
@@ -2156,11 +2156,11 @@ fn an_approved_proposed_plan_its_request_and_the_new_task_s_scope_survive_a_rest
     assert!(message.contains("approved the plan") && message.contains("implement-report") && message.contains("dependencies on task-1"), "{message}");
     let orchestrator = Actor::Orchestrator { generation: 0 };
     execute(&mut store, &orchestrator, "title", Command::TitleRequest { request_id: "implement-report".into(), title: "Index the library".into() });
-    execute(&mut store, &orchestrator, "build", Command::CreateTask { plan_items: None, continues: None,
+    execute(&mut store, &orchestrator, "build", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "build".into(), request_id: "implement-report".into(), title: "Index the library".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("build", "/tmp/repo")),
     });
-    execute(&mut store, &orchestrator, "follow", Command::CreateTask {
+    execute(&mut store, &orchestrator, "follow", Command::CreateTask { priority: Default::default(),
         plan_items: Some(PlanItems { from_task: "build".into(), items: vec!["2".into()] }), continues: None,
         task_id: "follow".into(), request_id: "implement-report".into(), title: "Follow changes".into(), agent_id: None,
         review_prs: false, dependencies: ["build".into()].into(), stack: None, launch: Some(LaunchPlan::new("follow", "/tmp/repo")),
@@ -2223,6 +2223,49 @@ fn a_command_about_another_task_leaves_a_task_as_its_journal_left_it() {
     assert_eq!(after.tasks[&TaskId::from("task-1")].started, before.tasks[&TaskId::from("task-1")].started);
     assert_eq!(after.lifecycle_journal, before.lifecycle_journal);
     assert_eq!(events(&store), kept);
+}
+
+/// A task stored waiting for another before its lifecycle recorded the wait loads as it was kept,
+/// and the first command after the daemon starts records the wait: from then on it waits for that
+/// task in its lifecycle, not for a slot.
+#[test]
+fn a_stored_wait_from_before_the_lifecycle_recorded_it_is_recorded_on_the_first_command() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request-1".into(), title: "Goal".into() });
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "waiting", Command::CreateTask { priority: Default::default(),
+        task_id: "task-2".into(), request_id: "request-1".into(), title: "After the goal".into(), agent_id: None, review_prs: false,
+        dependencies: BTreeSet::from([TaskId::from("task-1")]), stack: None,
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
+    });
+    let waiting = TaskId::from("task-2");
+    let recorded = store.load().unwrap().lifecycle_journal[&waiting].clone();
+    assert!(matches!(recorded.last(), Some(alondra_domain_rules::LifecycleRecord::WaitsForTasks { .. })), "creating the task records its wait: {recorded:?}");
+    drop(store);
+    let conn = rusqlite::Connection::open(fixture.path()).unwrap();
+    let retained: String = conn.query_row("SELECT sql FROM sqlite_master WHERE name='lifecycle_event_retained'", [], |r| r.get(0)).unwrap();
+    conn.execute_batch("DROP TRIGGER lifecycle_event_retained;
+        DELETE FROM lifecycle_dependencies WHERE task_id='task-2';
+        DELETE FROM lifecycle_events WHERE task_id='task-2' AND revision=(SELECT max(revision) FROM lifecycle_events WHERE task_id='task-2');
+        UPDATE lifecycle_tasks SET revision=revision-1 WHERE task_id='task-2';").unwrap();
+    conn.execute_batch(&retained).unwrap();
+    drop(conn);
+
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let old = store.load().unwrap();
+    assert_eq!(old.tasks[&waiting].state, TaskState::WaitingDependency, "the row kept the wait");
+    assert_eq!(old.lifecycle_journal[&waiting].len() + 1, recorded.len(), "the journal is the one kept before the wait was recorded");
+    let owed = |s: &DomainState| s.obligation_of(&waiting).map(|owed| (owed.party, owed.owed));
+    assert_eq!(owed(&old), Some((alondra_domain::Party::Capacity(alondra_domain::Capacity::Gate), alondra_domain::Owed::Room(alondra_domain::Capacity::Gate))), "before the first command it reads as a wait for a slot");
+
+    execute(&mut store, &Actor::System, "listed", Command::ReviewWaits);
+    let migrated = store.load().unwrap();
+    assert_eq!(migrated.lifecycle_journal[&waiting], recorded, "the first command records the wait it lacked");
+    assert_eq!(owed(&migrated), Some((alondra_domain::Party::Tasks, alondra_domain::Owed::Tasks)));
+    let dependencies: Vec<String> = store.conn.prepare("SELECT dependency_id FROM lifecycle_dependencies WHERE task_id='task-2'").unwrap()
+        .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(dependencies, ["task-1"]);
 }
 
 /// The retention lets go of the texts of an ended task's inputs. The state the store keeps after
@@ -2606,7 +2649,7 @@ fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
     let worktree = worktree.to_str().unwrap();
     execute(&mut store, &user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut store, &orchestrator, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
-    let create = |id: &str, continues: Option<&str>| Command::CreateTask {
+    let create = |id: &str, continues: Option<&str>| Command::CreateTask { priority: Default::default(),
         task_id: id.into(), request_id: "r".into(), title: id.into(), agent_id: None, review_prs: false, dependencies: Default::default(),
         stack: None, launch: Some(LaunchPlan::new("node", worktree)), plan_items: None, continues: continues.map(TaskId::from),
     };

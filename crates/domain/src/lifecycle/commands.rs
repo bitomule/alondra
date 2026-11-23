@@ -13,6 +13,9 @@ impl TaskLifecycle {
                 if !self.plan_reviews.is_empty() {
                     return Err(Refusal::PlanReviewPending);
                 }
+                if matches!(self.state, State::AwaitingTasks { .. }) {
+                    return Err(Refusal::AwaitsTasks);
+                }
                 if self
                     .cards()
                     .iter()
@@ -164,6 +167,7 @@ impl TaskLifecycle {
                     }
                     State::Finishing(finishing) => tell(&mut finishing.session, input)?,
                     State::Unstarted { remaining, .. } => remaining.push_back(input),
+                    State::AwaitingTasks { start, .. } => start.remaining_mut().push_back(input),
                     State::Completed | State::Cancelled => return Err(Refusal::InvalidState),
                 }
             }
@@ -326,21 +330,18 @@ impl TaskLifecycle {
                     valid_id(&task.0)?;
                 }
                 let tasks = NonEmpty::new(dependencies)?;
-                let (stage, decisions, session) = match &self.state {
-                    State::Unstarted { input, remaining } => (WorkStage::Plan, BTreeMap::new(), {
-                        let mut pending = remaining.clone();
-                        pending.push_front(input.clone());
-                        Session::Absent(pending)
-                    }),
-                    State::InProgress(Progress::Queued {
-                        stage,
-                        input,
-                        remaining,
-                    }) => (*stage, BTreeMap::new(), {
-                        let mut pending = remaining.clone();
-                        pending.push_front(input.clone());
-                        Session::Absent(pending)
-                    }),
+                if let Some(start) = Start::of(&self.state) {
+                    self.state = State::AwaitingTasks { tasks, start };
+                    return Ok(());
+                }
+                let (stage, decisions, session) = match &mut self.state {
+                    State::AwaitingTasks { tasks: waited, .. } | State::InProgress(Progress::Dependency { tasks: waited, .. }) => {
+                        if *waited == tasks {
+                            return Err(Refusal::DuplicateObligation);
+                        }
+                        *waited = tasks;
+                        return Ok(());
+                    }
                     State::InProgress(Progress::Executing { stage, execution }) => (
                         *stage,
                         BTreeMap::new(),
@@ -359,6 +360,25 @@ impl TaskLifecycle {
                     decisions,
                     session,
                 });
+            }
+            Event::DependenciesLanded => {
+                self.state = match &self.state {
+                    State::AwaitingTasks { start, .. } => start.clone().into_state(),
+                    State::InProgress(Progress::Dependency { stage, decisions, session: Session::Absent(pending), .. }) => {
+                        if decisions.is_empty() {
+                            let mut pending = pending.clone();
+                            let input = pending.pop_front().ok_or(Refusal::EmptyObligation)?;
+                            State::InProgress(Progress::Queued { stage: *stage, input, remaining: pending })
+                        } else {
+                            State::InProgress(Progress::Waiting {
+                                stage: *stage,
+                                cards: Decisions::new(decisions.clone())?,
+                                session: Session::Absent(pending.clone()),
+                            })
+                        }
+                    }
+                    _ => return Err(Refusal::InvalidState),
+                };
             }
             Event::DependenciesResolved { input } => {
                 let State::InProgress(Progress::Dependency {
@@ -382,7 +402,7 @@ impl TaskLifecycle {
                 post_merge,
             } => self.finish(intent, cleanup, post_merge)?,
             Event::PostMergeDeclared { operation } => {
-                if matches!(self.state, State::Unstarted { .. } | State::Finishing(_) | State::Completed | State::Cancelled) {
+                if matches!(self.state, State::Unstarted { .. } | State::AwaitingTasks { .. } | State::Finishing(_) | State::Completed | State::Cancelled) {
                     return Err(Refusal::InvalidState);
                 }
                 if self.post_merge.is_some() {
@@ -489,9 +509,7 @@ impl TaskLifecycle {
             }
             Event::HoldForPlanReview { review } => {
                 valid_id(&review.0)?;
-                let not_admitted = matches!(self.state, State::Unstarted { .. }
-                    | State::InProgress(Progress::Queued { .. } | Progress::Dependency { session: Session::Absent(_), .. }));
-                if !not_admitted {
+                if !self.unadmitted() {
                     return Err(Refusal::InvalidState);
                 }
                 if self.plan_reviews.insert(review, self.plan_revision).is_some() {
@@ -575,6 +593,14 @@ impl TaskLifecycle {
             owner,
             callback: None,
         };
+        if let State::AwaitingTasks { tasks, start } = &self.state {
+            self.state = State::InProgress(Progress::Dependency {
+                stage: start.stage(),
+                tasks: tasks.clone(),
+                decisions: BTreeMap::new(),
+                session: Session::Absent(start.pending()),
+            });
+        }
         let (stage, mut cards, session) = match &self.state {
             State::Unstarted { input, remaining } => (WorkStage::Plan, BTreeMap::new(), {
                 let mut pending = remaining.clone();

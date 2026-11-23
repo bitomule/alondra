@@ -254,7 +254,7 @@ mod tests {
         }), None, || Ok(())).unwrap();
         let token = domain.bind_orchestrator("run").unwrap().expose_for_child_environment().to_owned();
         domain.execute_bearer(&token, &envelope("title", Command::TitleRequest { request_id: "r".into(), title: "Migration".into() })).unwrap();
-        let create = |n: usize| envelope(&format!("create-{n}"), Command::CreateTask {
+        let create = |n: usize| envelope(&format!("create-{n}"), Command::CreateTask { priority: Default::default(),
             task_id: format!("t-{n}").as_str().into(), request_id: "r".into(), title: format!("Phase {n}"), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
         });

@@ -130,6 +130,7 @@ pub fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
         30 => Some(Event::Decide { card: "second".into(), decision: Decision::Deny { message: "No".into() } }),
         31 => Some(Event::MoveCard { from: "first".into(), to: "moved".into() }),
         32 => Some(Event::MoveCard { from: "moved".into(), to: "first".into() }),
+        33 => Some(Event::DependenciesLanded),
         34 => task.turn().cloned().and_then(|turn| runtime(RuntimeFact::InterruptAccepted { turn })),
         35 => task.turn().cloned().map(|turn| Event::RequestControl { control: operation("force"), kind: Control::ForceStop { turn } }),
         36 => Some(Event::Tell { input: input("told"), answers: None }),

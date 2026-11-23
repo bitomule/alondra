@@ -333,8 +333,8 @@ impl DomainState {
 
     /// What the task's lifecycle says it is owed, except that a task the orchestrator has to
     /// re-plan (it waits for a cancelled task, or its launch plan was refused) owes the
-    /// orchestrator's decision: the lifecycle knows neither, and without it the wait would read
-    /// as a wait for a slot.
+    /// orchestrator's decision: the lifecycle knows neither, and without it the task would read
+    /// as waiting for those tasks or for a slot.
     pub fn obligation_of(&self, task: &TaskId) -> Option<alondra_domain::Obligation> {
         self.obligation_with(task, |t| self.replanned_for(t).is_some() || self.open_plan_refusal(&t.id).is_some())
     }

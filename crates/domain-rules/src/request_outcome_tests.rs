@@ -33,7 +33,7 @@ fn asked(s: &mut DomainState, actor: Actor, id: &str, maintenance: bool) {
     ok(s, orchestrator(), Command::TitleRequest { request_id: id.into(), title: "Claude accounts".into() });
 }
 fn task(s: &mut DomainState, id: &str, request: &str) {
-    ok(s, orchestrator(), Command::CreateTask {
+    ok(s, orchestrator(), Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None,
         review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp/project")),
     });
@@ -243,7 +243,7 @@ fn a_card_the_orchestrator_sent_before_the_upgrade_is_not_repeated() {
 }
 
 fn planned(s: &mut DomainState, id: &str, request: &str, after: &[&str]) {
-    ok(s, orchestrator(), Command::CreateTask {
+    ok(s, orchestrator(), Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None,
         review_prs: false, dependencies: after.iter().map(|d| TaskId::from(*d)).collect(), stack: None,
         launch: Some(LaunchPlan::new("node", "/tmp/project")),
@@ -605,7 +605,7 @@ fn a_folded_request_gets_no_task_afterwards() {
     task(&mut s, "t-idle", "r-idle");
     asked(&mut s, user(), "r-waiting", false);
     fold(&mut s, "r-waiting", "t-idle").unwrap();
-    let error = exec(&mut s, orchestrator(), Command::CreateTask {
+    let error = exec(&mut s, orchestrator(), Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: "t-waiting".into(), request_id: "r-waiting".into(), title: "Waiting".into(), agent_id: None,
         review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp/project")),
     }).unwrap_err();
@@ -624,7 +624,7 @@ fn new_batch(s: &mut DomainState, session: &str) {
     ok(s, Actor::System, Command::BindOrchestratorSession { session_id: session.into() });
 }
 fn another_task(s: &mut DomainState, id: &str, request: &str, continues: Option<&str>) -> Result<CommandOutcome, DomainError> {
-    exec(s, orchestrator(), Command::CreateTask {
+    exec(s, orchestrator(), Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: continues.map(Into::into), task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None,
         review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp/project")),
     })

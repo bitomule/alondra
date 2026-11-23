@@ -366,6 +366,11 @@ pub enum LifecycleRecord {
     PostMergeDeclared { operation: String },
     PostMergeEnded { operation: String, fact: PostMergeEnd },
     Reopened { input: String },
+    /// No execution of the task may be admitted until `tasks` land.
+    WaitsForTasks { tasks: Vec<TaskId> },
+    /// What the task waited for before an execution could be admitted landed, or it no longer
+    /// waits for it.
+    TasksLanded,
     HeldForPlanReview { review: InteractionId },
     PlanReviewSettled { review: InteractionId, plan_revision: u64, outcome: ReviewOutcome },
     /// Held by `card` until something outside the task changes: Claude's sign-in or the API.
@@ -752,6 +757,8 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             Event::PostMergeEnded { operation: operation_id(task, operation)?, fact: (*fact).into() }
         }
         LifecycleRecord::Reopened { input } => Event::Reopen { input: input_id(task, input)? },
+        LifecycleRecord::WaitsForTasks { tasks } => Event::WaitForDependencies { dependencies: tasks.clone() },
+        LifecycleRecord::TasksLanded => Event::DependenciesLanded,
         LifecycleRecord::HeldForPlanReview { review } => Event::HoldForPlanReview { review: review.clone() },
         LifecycleRecord::PlanReviewSettled { review, plan_revision, outcome } => Event::PlanReviewSettled {
             review: review.clone(),
@@ -1042,6 +1049,8 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             LifecycleRecord::PostMergeEnded { operation: operation.as_str().into(), fact: (*fact).into() }
         }
         Event::Reopen { input } => LifecycleRecord::Reopened { input: input.as_str().into() },
+        Event::WaitForDependencies { dependencies } => LifecycleRecord::WaitsForTasks { tasks: dependencies.clone() },
+        Event::DependenciesLanded => LifecycleRecord::TasksLanded,
         Event::HoldForPlanReview { review } => LifecycleRecord::HeldForPlanReview { review: review.clone() },
         Event::PlanReviewSettled { review, plan_revision, outcome } => LifecycleRecord::PlanReviewSettled {
             review: review.clone(),
@@ -1486,7 +1495,26 @@ impl DomainState {
 
 impl DomainState {
     /// A node takes the task: a new execution of its lifecycle, after releasing one it still had.
+    /// The tasks a task no execution runs waits for before one may be admitted, by title, as its
+    /// lifecycle records them.
+    pub fn awaited_before_start(&self, task: &TaskId) -> Vec<String> {
+        self.lifecycle_of(task).ok().map(|lifecycle| self.awaited_by(&lifecycle)).unwrap_or_default()
+    }
+    fn awaited_by(&self, lifecycle: &TaskLifecycle) -> Vec<String> {
+        if !lifecycle.unadmitted() {
+            return vec![];
+        }
+        lifecycle.dependencies().into_iter()
+            .map(|id| self.tasks.get(id).map_or_else(|| id.0.clone(), |t| format!("“{}”", t.title)))
+            .collect()
+    }
     pub(super) fn admit_node(&mut self, task: &TaskId, node: &AgentId, lifecycles: &mut Lifecycles) -> Result<()> {
+        let waited = self.awaited_by(self.lifecycle(lifecycles, task)?);
+        if !waited.is_empty() {
+            return Err(DomainError::new("dependency_not_done", format!(
+                "Task {task} waits for {} before it starts: no node takes it until they land, or until its dependencies change",
+                waited.join(", "))));
+        }
         if self.lifecycle(lifecycles, task)?.execution().is_some() {
             let record = LifecycleRecord::ExecutionReleased { input: self.next_input(task) };
             self.decide(lifecycles, task, record)?;
@@ -1618,6 +1646,9 @@ impl DomainState {
         let wakes = self.lifecycle(lifecycles, task)?.empty_turns() + 1;
         let text = wake.as_ref().map(|_| self.empty_turn(task).wake_text_at(wakes));
         self.decide(lifecycles, task, LifecycleRecord::TurnEnded { turn: turn.into(), unheard_card: card.clone(), text, wake, awaits, stalled })?;
+        if empty && self.idle_after_merge(task, lifecycles)? {
+            self.end_post_merge(task, PostMergeEnd::TurnEnded, lifecycles)?;
+        }
         let owed = if empty { self.owed_step(task, self.lifecycle(lifecycles, task)?) } else { None };
         if let Some(owed) = &owed {
             let wake = self.wake_for(task, lifecycles)?;
@@ -1644,6 +1675,27 @@ impl DomainState {
             }
         }
         Ok(())
+    }
+
+    /// After the merge, a turn that began after the node declared its work after the merge ended
+    /// with nothing of the node's own running, nothing waiting to reach it and nothing it waits
+    /// for: the node did not declare that work again in that turn, so the work is over.
+    fn idle_after_merge(&self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<bool> {
+        let t = &self.tasks[task];
+        if !t.wrap_up.post_merge_work.as_ref().is_some_and(|work| work.turn_since) || self.waiting_after_merge(t).is_some() {
+            return Ok(false);
+        }
+        let lifecycle = self.lifecycle(lifecycles, task)?;
+        Ok(lifecycle.activity() == ActivityView::Resting && lifecycle.cards().is_empty() && lifecycle.pending_inputs().is_empty()
+            && self.work_after_merge(task, lifecycle).is_some())
+    }
+
+    /// A turn of the node began: a declaration of work after the merge made before it ends when
+    /// this turn ends idle, unless the node declares it again first.
+    fn post_merge_turn_began(&mut self, task: &TaskId) {
+        if let Some(work) = self.tasks.get_mut(task).and_then(|t| t.wrap_up.post_merge_work.as_mut()) {
+            work.turn_since = true;
+        }
     }
 
     /// The input that hands an empty turn of `task` back to its node, while its empty turns in a
@@ -2339,6 +2391,9 @@ impl DomainState {
             return Err(DomainError::new(CLOSING, format!("Task {} is closing: its node only ends now, and no host takes it over", task.0)));
         }
         for fact in facts {
+            if matches!(fact, RuntimeObservation::TurnStarted { .. } | RuntimeObservation::TurnUnprompted { .. }) {
+                self.post_merge_turn_began(task);
+            }
             let record = match fact.clone() {
                 RuntimeObservation::ModelAnswered => {
                     let account = self.task_account_key(task);
@@ -2497,6 +2552,38 @@ impl DomainState {
                 let record = LifecycleRecord::PostMergeDeclared { operation: self.next_operation("post-merge", &task) };
                 self.decide(lifecycles, &task, record)?;
             }
+        }
+        Ok(())
+    }
+
+    /// A task no execution runs waits, in its lifecycle, for exactly the tasks it may not start
+    /// before: dependencies that have not landed, deliveries it needs, a stack upstream that is not
+    /// ready. Each change is recorded: the wait begins, changes, or ends when they land, are
+    /// cancelled out of it, or stop being its dependencies.
+    pub(super) fn record_start_waits(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
+        let open: Vec<TaskId> = self.tasks.values()
+            .filter(|t| !t.over() && !t.archived && t.agent_id.is_none())
+            .map(|t| t.id.clone())
+            .collect();
+        for task in open {
+            let lifecycle = self.lifecycle(lifecycles, &task)?;
+            if !lifecycle.unadmitted() {
+                continue;
+            }
+            let waited: BTreeSet<TaskId> = lifecycle.dependencies().into_iter().cloned().collect();
+            let unmet: BTreeSet<TaskId> = self.unmet_dependency_ids(&self.tasks[&task]).into_iter()
+                .filter(|id| **id != task && self.tasks.contains_key(*id))
+                .cloned()
+                .collect();
+            if unmet == waited {
+                continue;
+            }
+            let record = if unmet.is_empty() {
+                LifecycleRecord::TasksLanded
+            } else {
+                LifecycleRecord::WaitsForTasks { tasks: unmet.into_iter().collect() }
+            };
+            self.decide(lifecycles, &task, record)?;
         }
         Ok(())
     }

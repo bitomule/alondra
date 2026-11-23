@@ -101,7 +101,7 @@ fn world() -> (Home, Arc<DomainRuntime>) {
 }
 
 fn create(domain: &DomainRuntime, id: &str) {
-    run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+    run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),

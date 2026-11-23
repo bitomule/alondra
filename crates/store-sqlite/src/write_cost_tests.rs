@@ -52,7 +52,7 @@ fn seeded(root: &Path, tasks: usize, deliveries: usize, long: usize) -> DomainSt
     for t in 0..tasks {
         let agent: AgentId = format!("node-{t}").as_str().into();
         run(&mut store, &Actor::System, Command::RegisterAgent { agent_id: agent.clone(), name: format!("Node {t}"), at: 0 });
-        run(&mut store, &Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+        run(&mut store, &Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(),
             plan_items: None, continues: None, task_id: task(t), request_id: "r-cost".into(), title: format!("Task {t}"), agent_id: Some(agent),
             review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
         });

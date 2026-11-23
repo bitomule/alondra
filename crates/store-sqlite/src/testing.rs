@@ -100,7 +100,7 @@ pub fn seeded(store: &mut DomainStore) {
         store,
         &Actor::Orchestrator { generation: 0 },
         "task",
-        Command::CreateTask { plan_items: None, continues: None,
+        Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task-1".into(),
             request_id: "request-1".into(),
             title: "Goal".into(),
@@ -133,7 +133,7 @@ pub fn continuation_fixture(worktree: &Path) -> (Fixture, DomainStore, CommandEn
         attachments: vec![], interaction_id: "plan".into(), option_id: Hold::APPROVE.into(), inputs: Default::default(),
     });
     let checklist = store.load().unwrap().checklists[&TaskId::from("task-1")].clone();
-    let command = envelope(&mut store, "continue", Command::CreateTask {
+    let command = envelope(&mut store, "continue", Command::CreateTask { priority: Default::default(),
         task_id: "continued".into(), request_id: "request-1".into(), title: "Continue the answer".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", path)),
         plan_items: None, continues: Some("task-1".into()),

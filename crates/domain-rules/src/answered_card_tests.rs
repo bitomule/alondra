@@ -153,8 +153,38 @@ fn the_rest_after_the_wakes_goes_to_the_orchestrator_never_the_user() {
     assert_aggregate_rules(&s);
 }
 
+/// After the merge the node is told to do the work it declared. A turn in which it declares that
+/// work again and rests leaves it owed, and the node is woken to go on; the next turn that ends with
+/// nothing running and no new declaration ends the work, so the task closes instead of holding its
+/// host and its slot for ever.
 #[test]
-fn a_post_merge_turn_that_rests_with_its_work_owed_is_woken() {
+fn after_the_merge_a_turn_that_ends_idle_without_declaring_its_work_again_ends_that_work() {
+    let mut s = woken_after_the_merge();
+    start(&mut s, "turn-3");
+    let ended = end_empty(&mut s, "turn-3");
+    assert!(lifecycle(&s).post_merge().is_none(), "a turn that ended idle without declaring it again ended it: {:?}", last(&s, "t"));
+    assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, None);
+    assert!(s.lifecycle_journal[&"t".into()].iter().any(|record| matches!(record, LifecycleRecord::PostMergeEnded { fact: PostMergeEnd::TurnEnded, .. })));
+    assert!(open_case(&s).is_none(), "nothing is left for the orchestrator to settle");
+    assert!(!notifies_user(&ended) && pending(&s).is_empty(), "{:?}", pending(&s));
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn after_the_merge_a_turn_that_ends_behind_work_of_its_own_leaves_that_work_owed() {
+    let mut s = woken_after_the_merge();
+    start(&mut s, "turn-3");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1,
+        facts: vec![RuntimeObservation::WorkStarted { turn: "turn-3".into(), work: "release.sh".into() }] });
+    end_empty(&mut s, "turn-3");
+    assert!(lifecycle(&s).post_merge().is_some(), "its release still runs");
+    assert!(s.tasks[&"t".into()].wrap_up.post_merge_work.is_some());
+    assert_aggregate_rules(&s);
+}
+
+/// The PR merged and the node was told; in that turn it declared its work again and rested, so it
+/// still owes the work and is woken to go on.
+fn woken_after_the_merge() -> DomainState {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
     let targets = || vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }];
@@ -162,7 +192,8 @@ fn a_post_merge_turn_that_rests_with_its_work_owed_is_woken() {
         task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
         head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     });
-    must(&mut s, node("a"), Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("publish the release".into()), waits_for: vec![] });
+    let declare = |s: &mut DomainState| must(s, node("a"), Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("publish the release".into()), waits_for: vec![] });
+    declare(&mut s);
     must(&mut s, node("a"), Command::PresentResult {
         checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(),
         targets: targets(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
@@ -173,22 +204,18 @@ fn a_post_merge_turn_that_rests_with_its_work_owed_is_woken() {
     });
     end_empty(&mut s, "turn-1");
     assert_eq!(unfinished(&s), 0, "the turn that presented is not the work after the merge");
+    assert!(lifecycle(&s).post_merge().is_some(), "the turn that declared it leaves it owed");
     must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Your PR merged: publish the release.".into(), from_user: false, answers: None });
     start(&mut s, "turn-2");
+    declare(&mut s);
     let ended = end_empty(&mut s, "turn-2");
     let LifecycleRecord::Unfinished { wake: Some(_), text: Some(text), .. } = last(&s, "t") else {
-        panic!("the rest with the work owed wakes the node: {:?}", last(&s, "t"));
+        panic!("declaring it again keeps it owed, and the rest wakes the node: {:?}", last(&s, "t"));
     };
     assert_eq!(text, EmptyTurn::AfterMerge { reason: "publish the release".into() }.wake_text());
-    assert!(text.contains("publish the release") && text.contains("cleanup_done"), "{text}");
     assert!(!notifies_user(&ended) && pending(&s).is_empty(), "{:?}", pending(&s));
-    rest_through_wakes(&mut s);
-    start(&mut s, "turn-3");
-    let ended = end_empty(&mut s, "turn-3");
-    let case = open_case(&s).expect("resting again is a case");
-    assert!(s.interactions[&case].body.contains("publish the release"), "{}", s.interactions[&case].body);
-    assert!(!notifies_user(&ended) && pending(&s).is_empty(), "{:?}", pending(&s));
-    assert_aggregate_rules(&s);
+    assert!(lifecycle(&s).post_merge().is_some());
+    s
 }
 
 #[test]

@@ -50,7 +50,7 @@ fn state() -> DomainState {
     execute(
         &mut state,
         Actor::Orchestrator { generation: 0 },
-        Command::CreateTask {
+        Command::CreateTask { priority: Default::default(),
             plan_items: None,
             continues: None,
             task_id: "task".into(),

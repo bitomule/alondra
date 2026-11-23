@@ -860,6 +860,7 @@ pub(super) enum EventRecord {
     DependenciesResolved {
         input: String,
     },
+    DependenciesLanded,
     Tell {
         input: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1027,6 +1028,7 @@ impl From<&Event> for EventRecord {
             Event::DependenciesResolved { input } => Self::DependenciesResolved {
                 input: input.as_str().to_owned(),
             },
+            Event::DependenciesLanded => Self::DependenciesLanded,
             Event::Tell { input, answers } => Self::Tell {
                 input: input.as_str().to_owned(),
                 answers: answers.as_ref().map(|card| card.0.clone()),
@@ -1152,6 +1154,7 @@ impl EventRecord {
             Self::HandBack { .. } => "HandBack",
             Self::WaitForDependencies { .. } => "WaitForDependencies",
             Self::DependenciesResolved { .. } => "DependenciesResolved",
+            Self::DependenciesLanded => "DependenciesLanded",
             Self::Tell { .. } => "Tell",
             Self::Pause { .. } => "Pause",
             Self::Resume { .. } => "Resume",
@@ -1252,6 +1255,7 @@ impl EventRecord {
             EventRecord::DependenciesResolved { input } => Event::DependenciesResolved {
                 input: InputId::new(input).map_err(Error::from)?,
             },
+            EventRecord::DependenciesLanded => Event::DependenciesLanded,
             EventRecord::Tell { input, answers } => Event::Tell {
                 input: InputId::new(input).map_err(Error::from)?,
                 answers: answers.map(InteractionId),
@@ -1551,6 +1555,7 @@ mod tests {
                 input: InputId::new("input").unwrap(),
             },
         );
+        roundtrip(&current, Event::DependenciesLanded);
         roundtrip(
             &current,
             Event::Tell {

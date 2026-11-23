@@ -29,7 +29,7 @@ fn request(s: &mut DomainState, id: &str) {
     ok(s, orchestrator(), Command::TitleRequest { request_id: id.into(), title: format!("Request {id}") });
 }
 fn create(id: &str, request: &str, continues: Option<&str>) -> Command {
-    Command::CreateTask {
+    Command::CreateTask { priority: Default::default(),
         task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", WORKTREE)), plan_items: None,
         continues: continues.map(TaskId::from),

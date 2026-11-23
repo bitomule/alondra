@@ -53,7 +53,7 @@ fn pair() -> DomainState {
     ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
     ok(&mut s, user(), Command::TitleRequest { request_id: "r".into(), title: "Build it".into() });
     for (id, node) in [("a", "wa"), ("b", "wb")] {
-        ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+        ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: id.into(), request_id: "r".into(), title: id.to_uppercase(), agent_id: Some(node.into()),
             review_prs: false, dependencies: BTreeSet::new(), stack: None,
             launch: Some(crate::LaunchPlan::new("node", "/tmp")),
@@ -312,7 +312,7 @@ fn merged_outside(s: &mut DomainState) -> CommandOutcome {
 fn nothing_is_merged_or_accepted_while_a_review_of_the_task_is_open() {
     let mut s = pair();
     ok(&mut s, user(), Command::CreateRequest { request_id: "auto".into(), body: "Auto".into(), auto_merge: true, maintenance: false, message: false });
-    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "c".into(), request_id: "auto".into(), title: "C".into(), agent_id: None, review_prs: false,
         dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::LaunchPlan::new("node", "/tmp")),
@@ -482,7 +482,7 @@ fn the_node_resolving_conflicts_is_named_with_its_pr() {
 fn the_rounds_are_counted_per_reviewed_task_across_all_its_reviewers() {
     let mut s = pair();
     ok(&mut s, Actor::System, Command::RegisterAgent { agent_id: "wc".into(), name: "wc".into(), at: 0 });
-    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "c".into(), request_id: "r".into(), title: "C".into(), agent_id: Some("wc".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::LaunchPlan::new("node", "/tmp")),
@@ -577,4 +577,19 @@ fn a_verdict_recorded_before_the_count_reads_as_no_serious_findings() {
     let approved: Verdict = serde_json::from_str(r#"{"kind":"approved","summary":"Fine"}"#).unwrap();
     assert_eq!((changes.serious_findings(), approved.serious_findings()), (0, 0));
     assert_eq!(serde_json::to_string(&approved).unwrap(), r#"{"kind":"approved","summary":"Fine"}"#, "a zero count is not written");
+}
+
+#[test]
+fn a_task_cannot_be_made_to_wait_for_a_cancelled_one() {
+    let mut s = pair();
+    ok(&mut s, user(), Command::CancelTask { task_id: "a".into(), reason: None });
+    assert!(s.tasks[&"a".into()].cancelled());
+    assert_eq!(refused(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        task_id: "c".into(), request_id: "r".into(), title: "C".into(), agent_id: None,
+        review_prs: false, dependencies: BTreeSet::from(["a".into()]), stack: None,
+        launch: Some(crate::LaunchPlan::new("node", "/tmp")),
+    }), "invalid_input", "a new task waiting for a cancelled one would never start");
+    assert_eq!(refused(&mut s, user(), Command::SetDependencies {
+        task_id: "b".into(), dependencies: BTreeSet::from(["a".into()]), stack: None, reason: None,
+    }), "invalid_input", "re-pointing a task at a cancelled one leaves it waiting forever");
 }

@@ -44,7 +44,7 @@ fn task_then_on_next_spawn(f: &Fixture, requests: &[&str], after: impl FnOnce() 
                 data_epoch: state.state().data_epoch.clone(),
                 command_id: format!("task-for-{id}").into(),
                 expected_revision: 0,
-                command: Command::CreateTask {
+                command: Command::CreateTask { priority: Default::default(),
                     plan_items: None, continues: None,
                     task_id: format!("task-{id}").into(),
                     request_id: id.as_str().into(),

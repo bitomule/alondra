@@ -74,7 +74,7 @@ fn resting_node(slice: &Slice) -> (String, HostWatch) {
 
 #[cfg(not(feature = "real-hosts"))]
 fn launch_task(slice: &Slice, task: &str) -> Driver {
-    slice.run(&Actor::Orchestrator { generation: 0 }, &format!("task-{task}"), Command::CreateTask {
+    slice.run(&Actor::Orchestrator { generation: 0 }, &format!("task-{task}"), Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None,
         task_id: task.into(),
         request_id: "sdk-slice-request".into(),

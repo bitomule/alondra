@@ -42,6 +42,9 @@ pub const PLAN_REVIEW_KEEP_LABEL: &str = "Keep the plans as they are";
 pub const DEPENDENCY_CANCELLED_NOTICE_PREFIX: &str = "dependency-cancelled-";
 /// Alondra's one reminder to the orchestrator about a refused launch plan it left as it was.
 pub const PLAN_REFUSED_NOTICE_PREFIX: &str = "plan-refused-unsettled-";
+/// Alondra's reminders to the orchestrator about a request whose tasks all ended and that it left
+/// open; past the last one Alondra closes it with its Done card.
+pub const TASKS_ENDED_NOTICE_PREFIX: &str = "tasks-ended-unsettled-";
 
 const QUESTION_SHOWN: usize = 160;
 /// Held tasks a plan-review problem names before it counts the rest.

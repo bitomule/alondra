@@ -118,7 +118,7 @@ pub(super) fn must(s: &mut DomainState, actor: Actor, command: Command) -> Comma
 }
 
 pub(super) fn task(s: &mut DomainState, id: &str, agent: Option<&str>) {
-    must(s, orchestrator(), Command::CreateTask {
+    must(s, orchestrator(), Command::CreateTask { priority: Default::default(),
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: agent.map(Into::into), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
     });

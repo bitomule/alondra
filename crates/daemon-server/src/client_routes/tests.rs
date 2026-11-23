@@ -186,7 +186,7 @@ fn seed_work(fixture: &Fixture) {
     for request in ["request-1", "request-2"] {
         fixture.user(request, Command::CreateRequest { request_id: request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     }
-    fixture.orchestrator("task-1", Command::CreateTask { plan_items: None, continues: None,
+    fixture.orchestrator("task-1", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-1".into(), request_id: "request-1".into(), title: "Readable editor colours".into(),
         agent_id: Some("agent-a".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan { project: Some("Editor".into()), ..alondra_domain_rules::LaunchPlan::new("node", "/tmp") }),
@@ -471,7 +471,7 @@ async fn closing_a_node_that_runs_through_the_sdk_is_refused_because_it_ends_wit
     let worktree = fixture.home.join("worktree");
     std::fs::create_dir(&worktree).unwrap();
     fixture.user("request-sdk", Command::CreateRequest { request_id: "request-sdk".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });
-    fixture.orchestrator("task-sdk", Command::CreateTask { plan_items: None, continues: None,
+    fixture.orchestrator("task-sdk", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-sdk".into(), request_id: "request-sdk".into(), title: "Write the release notes".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())),
@@ -741,7 +741,7 @@ async fn a_new_request_keeps_what_the_user_chose_in_the_same_commit_as_the_reque
     let (status, error) = fixture.send("POST", path, &other).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("idempotency_conflict")), "one request id, one request");
 
-    fixture.orchestrator("task-9", Command::CreateTask { plan_items: None, continues: None,
+    fixture.orchestrator("task-9", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-9".into(), request_id: "request-9".into(), title: "Ship".into(), agent_id: None,
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan { project: Some("App".into()), ..alondra_domain_rules::LaunchPlan::new("node", "/tmp") }), });
@@ -1078,7 +1078,7 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
         alondra_domain_rules::RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
     ] });
     fixture.user("title-1", Command::TitleRequest { request_id: "request-1".into(), title: "Editor".into() });
-    fixture.orchestrator("task-9", Command::CreateTask { plan_items: None, continues: None,
+    fixture.orchestrator("task-9", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-9".into(), request_id: "request-1".into(), title: "Faster search".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
@@ -1207,7 +1207,7 @@ async fn a_node_whose_session_ended_with_its_task_open_leaves_the_tasks_in_progr
     let user = || Actor::User { user_id: "u".into() };
     run(Actor::System, "register-stopped", Command::RegisterAgent { agent_id: "stopped".into(), name: "alondra/stopped".into(), at: 0 });
     run(user(), "request-stopped", Command::CreateRequest { request_id: "request-stopped".into(), body: "Probe".into(), auto_merge: false, maintenance: false, message: false });
-    run(Actor::Orchestrator { generation: 0 }, "task-stopped", Command::CreateTask { plan_items: None, continues: None,
+    run(Actor::Orchestrator { generation: 0 }, "task-stopped", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-stopped".into(), request_id: "request-stopped".into(), title: "Probe".into(), agent_id: Some("stopped".into()),
         review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),

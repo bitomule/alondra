@@ -188,7 +188,7 @@ mod tests {
         register_bare(domain, agent);
         let orchestrator = Actor::Orchestrator { generation: 0 };
         run(domain, orchestrator.clone(), Command::CreateRequest { request_id: format!("r-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        run(domain, orchestrator, Command::CreateTask { plan_items: None, continues: None,
+        run(domain, orchestrator, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: format!("task-{agent}").into(), request_id: format!("r-{agent}").into(), title: agent.into(), agent_id: Some(agent.into()), review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
         });

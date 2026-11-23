@@ -711,6 +711,7 @@ impl TaskLifecycle {
             }
             State::Finishing(_)
             | State::Unstarted { .. }
+            | State::AwaitingTasks { .. }
             | State::InProgress(Progress::Queued { .. })
             | State::Completed
             | State::Cancelled => return Err(Refusal::InvalidState),

@@ -1157,7 +1157,7 @@ mod cache_tests {
         });
         execute(&domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request".into(), title: "Work".into() });
         for id in ["room", "launch", "relaunch", "send", "closed", "retry"] {
-            execute(&domain, Actor::Orchestrator { generation: 0 }, id, Command::CreateTask { plan_items: None, continues: None,
+            execute(&domain, Actor::Orchestrator { generation: 0 }, id, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: id.into(), request_id: "request".into(), title: id.into(), agent_id: None,
                 review_prs: true, dependencies: Default::default(), stack: None,
                 launch: Some(alondra_domain_rules::LaunchPlan::new("node", home.to_str().unwrap())),
@@ -1495,7 +1495,7 @@ mod cache_tests {
             execute(&domain, Actor::System, "pr-agent", Command::RegisterAgent {
                 agent_id: "pr-agent".into(), name: "Review node".into(), at: 0,
             });
-            execute(&domain, Actor::Orchestrator { generation: 0 }, "pr-task", Command::CreateTask {
+            execute(&domain, Actor::Orchestrator { generation: 0 }, "pr-task", Command::CreateTask { priority: Default::default(),
                 task_id: "pr-task".into(), request_id: "request".into(), title: "Export report".into(),
                 agent_id: Some("pr-agent".into()), review_prs: true, dependencies: Default::default(),
                 stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/work")),
@@ -1791,7 +1791,7 @@ mod cache_tests {
         execute(&domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        execute(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+        execute(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: Some("assigned".into()),
             review_prs: true, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_rules::LaunchPlan::new("node", home.to_str().unwrap())),
@@ -1978,7 +1978,7 @@ mod cache_tests {
         let now = alondra_core::now_millis();
         for id in ["build", "docs", "harness"] {
             let agent = format!("agent-{id}");
-            execute(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { plan_items: None, continues: None,
+            execute(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: id.into(), request_id: "request".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
                 dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
             });
@@ -2088,7 +2088,7 @@ mod cache_tests {
         run(Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "Phase B".into(), at: 0 });
         run(Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "r".into(), body: "Index".into(), auto_merge: false, maintenance: false, message: false });
-        run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+        run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(),
             task_id: "t-b".into(), request_id: "r".into(), title: "Phase B".into(), agent_id: Some("a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(crate::launch_plans::LaunchPlan { mission: Some("Phase B".into()), ..crate::launch_plans::LaunchPlan::new("t-b", "/tmp") }),
@@ -2523,7 +2523,7 @@ mod tests {
             run(&domain, Actor::User { user_id: "u".into() }, &format!("request-{n}"), Command::CreateRequest {
                 request_id: request.as_str().into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
             });
-            run(&domain, Actor::Orchestrator { generation: 0 }, &format!("task-{n}"), Command::CreateTask { plan_items: None, continues: None,
+            run(&domain, Actor::Orchestrator { generation: 0 }, &format!("task-{n}"), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: task.as_str().into(), request_id: request.as_str().into(), title: "Task".into(), agent_id: None, review_prs: false,
                 dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
             });

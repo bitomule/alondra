@@ -329,7 +329,7 @@ async fn a_task_of_a_scheduled_request_needs_its_plan_and_takes_the_schedules_mo
         let state = f.domain.state().unwrap();
         f.domain.execute_bearer(&bearer, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("create-{id}").into(), expected_revision: 0,
-            command: Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: "weekly".into(), title: "Register blurcamera.app".into(), agent_id: None,
+            command: Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: id.into(), request_id: "weekly".into(), title: "Register blurcamera.app".into(), agent_id: None,
                 review_prs: true, dependencies: Default::default(), stack: None, launch },
         })
     };
@@ -786,6 +786,23 @@ async fn twelve_independent_tasks_with_a_plan_start_four_at_a_time_and_the_next_
     assert!(agent_of(&f, "i05").is_some());
     pass(&*f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 5);
+}
+
+#[tokio::test]
+async fn a_task_created_with_a_high_priority_takes_the_next_free_slot_before_an_older_one() {
+    let f = world();
+    f.domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
+    create(&f, "busy", &[], Some(&plan(&f, "app/busy")));
+    pass(&*f.domain, &f.home).await.unwrap();
+    assert!(agent_of(&f, "busy").is_some());
+    create(&f, "older", &[], Some(&plan(&f, "app/older")));
+    create_with_priority(&f, "urgent", &[], Some(&plan(&f, "app/urgent")), alondra_domain_rules::TaskPriority::High);
+    assert_eq!(f.domain.state().unwrap().tasks[&"urgent".into()].priority, alondra_domain_rules::TaskPriority::High,
+        "the priority arrives with the task, before any pass can launch it");
+    finish(&f, "busy", "What busy delivered", false);
+    pass(&*f.domain, &f.home).await.unwrap();
+    assert!(agent_of(&f, "urgent").is_some(), "the freed slot goes to the high-priority task");
+    assert!(agent_of(&f, "older").is_none());
 }
 
 /// The orchestrator cancels a task after the gate let it through, while its start is under way: the

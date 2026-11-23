@@ -363,7 +363,7 @@ mod tests {
         run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
         run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into(), at: 0 });
         run(Actor::System, Command::RegisterAgent { agent_id: "agent-ab".into(), name: "Instance AB".into(), at: 0 });
-        run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
+        run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
         let options = vec![
             QuestionOption { id: "yes".into(), label: "Yes".into(), description: None },
             QuestionOption { id: "other".into(), label: "Other".into(), description: None },
@@ -490,7 +490,7 @@ mod tests {
             s.execute(&actor, &envelope).unwrap();
         };
         run(Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Build it".into() });
-        run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t-queued".into(), request_id: "r".into(), title: "Queued".into(), agent_id: None, review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
+        run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t-queued".into(), request_id: "r".into(), title: "Queued".into(), agent_id: None, review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
         let message = |s: &DomainState| {
             let d = alondra_domain_rules::ReadIndex::build(s);
             let live = alondra_view_model::LiveSnapshot::default();

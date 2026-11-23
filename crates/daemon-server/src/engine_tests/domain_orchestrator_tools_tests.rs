@@ -22,11 +22,11 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
     let domain = daemon.domain();
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
-    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
+    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "reviewer".into(), name: "Reviewer".into(), at: 0 });
-    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "review".into(), request_id: "r".into(), title: "Review the editor colours".into(),
+    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "review".into(), request_id: "r".into(), title: "Review the editor colours".into(),
         agent_id: Some("reviewer".into()), review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     command(&domain, user(), Command::SetRelations { task_id: "review".into(), delivered_dependencies: ["t".into()].into(), blocks: ["t".into()].into() });

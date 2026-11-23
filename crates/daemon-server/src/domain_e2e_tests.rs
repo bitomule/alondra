@@ -158,7 +158,7 @@ fn bg_node_with_a_task(daemon: &Daemon, home: &Path, title: &str) -> (String, Ta
     daemon.execute(Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
         request_id: "r-1".into(), body: title.into(), auto_merge: false, maintenance: false, message: false,
     });
-    daemon.execute(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+    daemon.execute(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: "t-1".into(), request_id: "r-1".into(), title: title.into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/work")),
     });

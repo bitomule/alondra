@@ -164,7 +164,7 @@ fn legacy_run(f: &crate::domain_orchestrator::testing::Fixture) -> Run {
         message_ids: vec![claim.message.id],
         attempts: vec![(claim.attempt_id, claim.version)],
         started_at: 0,
-        spawned: true,
+        spawned: true, replans_only: false,
     };
     save(
         &f.executor.home,
@@ -487,7 +487,7 @@ fn account_usage_and_explicit_user_waits_do_not_trigger_the_watchdog() {
         message_ids: vec![],
         attempts: vec![],
         started_at: 0,
-        spawned: true,
+        spawned: true, replans_only: false,
     });
     runtime.last_error = Some("Reconcile the earlier operation before continuing".into());
     save(&f.executor.home, &runtime).unwrap();

@@ -108,6 +108,9 @@ pub struct Run {
     pub attempts: Vec<(i64, u64)>,
     pub started_at: i64,
     pub spawned: bool,
+    /// It carried only re-plan reminders, so its end is no rest of the orchestrator.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replans_only: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -568,9 +571,13 @@ impl Executor {
             return Ok(());
         }
         self.domain.engine().log_account_choice("orchestrator batch", &selection.account, now);
+        let state = self.domain.state()?;
+        let replans_only = crate::orchestrator_inbox::only_replan_reminders(claimed.iter()
+            .map(|m| m.interaction_id.as_ref().and_then(|id| state.interactions.get(&InteractionId(id.clone()))).and_then(|card| card.system_card.as_ref())));
+        drop(state);
         let run = Run {
             id: run_id.clone(), message_ids: claimed.iter().map(|m| m.id).collect(),
-            attempts, started_at: now, spawned: false,
+            attempts, started_at: now, spawned: false, replans_only,
         };
         runtime.active_run = Some(run.clone());
         runtime.last_run_id = Some(run_id.clone());
@@ -695,7 +702,7 @@ impl Executor {
                 runtime.last_error = None;
                 runtime.failure = None;
                 runtime.retry_at = None;
-                self.rested(&mut runtime);
+                self.rested(&mut runtime, &run);
                 self.save(&runtime)
             }
             BatchEnd::Handled => {
@@ -735,7 +742,7 @@ impl Executor {
         runtime.retry_at = None;
         runtime.consecutive_failures = 0;
         runtime.pending_resolutions.clear();
-        self.rested(&mut runtime);
+        self.rested(&mut runtime, run);
         let prior_handoffs = std::mem::take(&mut runtime.batch_handoffs);
         if let Some(problem) = runtime.stuck_problem.take() {
             let _ = self.domain.withdraw_problem(&InteractionId(problem));
@@ -806,14 +813,17 @@ impl Executor {
     /// A run that changed nothing (`problem` is None) is offered again with a fresh prompt; one
     /// that may have changed something is the user's call.
     /// A turn of the orchestrator ended, whatever it did: it rests, and what it still has to
-    /// re-plan is handed to it again.
-    fn rested(&self, runtime: &mut Runtime) {
+    /// re-plan is handed to it again, unless the turn was only about those re-plans.
+    fn rested(&self, runtime: &mut Runtime, run: &Run) {
+        if run.replans_only {
+            return;
+        }
         runtime.rests = runtime.rests.saturating_add(1);
         self.domain.orchestrator_rests.store(runtime.rests, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn failed(&self, mut runtime: Runtime, run: &Run, error: String, problem: Option<BatchProblem>) -> Result<()> {
-        self.rested(&mut runtime);
+        self.rested(&mut runtime, run);
         let done = self.failed_batch(runtime, run, error, problem);
         crate::orchestrator_inbox::hand_replans(&self.domain);
         done
@@ -1345,7 +1355,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
             if self.domain().state().unwrap().tasks.is_empty() {
                 self.run(Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
                 self.run(Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-                self.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+                self.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                     task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
                     review_prs: false, dependencies: BTreeSet::new(), stack: None,
                     launch: Some(LaunchPlan::new("node", "/tmp")),
@@ -1773,7 +1783,7 @@ mod tests {
             let claim = domain.store.lock().unwrap().claim_message(pending).unwrap().unwrap();
             let epoch = domain.state().unwrap().data_epoch.clone();
             let run = Run { id: "unconfirmed-decision".into(), message_ids: vec![claim.message.id],
-                attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true };
+                attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true, replans_only: false };
             {
                 let mut store = domain.store.lock().unwrap();
                 store.bind_batch_effects(&run.id, &epoch).unwrap();
@@ -1913,7 +1923,7 @@ mod tests {
         let orchestrator = Actor::Orchestrator { generation: 0 };
         f.run(orchestrator.clone(), "title-sync", Command::TitleRequest { request_id: "sync".into(), title: "Sync notes".into() });
         for (task, after) in [("model", vec![]), ("mac", vec!["model"]), ("ios", vec!["model"])] {
-            f.run(orchestrator.clone(), &format!("create-{task}"), Command::CreateTask { plan_items: None, continues: None,
+            f.run(orchestrator.clone(), &format!("create-{task}"), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: task.into(), request_id: "sync".into(), title: format!("Sync {task}"), agent_id: None,
                 review_prs: false, dependencies: after.into_iter().map(TaskId::from).collect(), stack: None,
                 launch: Some(LaunchPlan::new("node", "/tmp")),
@@ -1953,7 +1963,7 @@ mod tests {
     }
 
     /// A task waits for a cancelled one and the orchestrator keeps failing: every turn it ends, it
-    /// is handed the open item again, and nobody else is asked.
+    /// is handed the open item again up to the last reminder, and nobody else is asked.
     #[tokio::test]
     async fn a_failing_orchestrator_is_handed_what_it_still_has_to_re_plan_at_every_turn_it_ends() {
         let f = fixture();
@@ -1965,7 +1975,7 @@ mod tests {
         });
         f.run(orchestrator.clone(), "pair-title", Command::TitleRequest { request_id: "pair".into(), title: "Pair".into() });
         for (id, after) in [("first", vec![]), ("second", vec!["first"])] {
-            f.run(orchestrator.clone(), id, Command::CreateTask {
+            f.run(orchestrator.clone(), id, Command::CreateTask { priority: Default::default(),
                 task_id: id.into(), request_id: "pair".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
                 dependencies: after.into_iter().map(|d: &str| TaskId::from(d)).collect(), stack: None,
                 launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
@@ -1976,7 +1986,7 @@ mod tests {
         for failure in 1..=3 {
             f.tick().await;
             assert!(load(&f.executor.home).unwrap().last_error.is_some() || load(&f.executor.home).unwrap().retry_at.is_some(), "the turn failed");
-            assert_eq!(notices(), failure + 1, "handed at the start and again when the turn ended, {failure} turns in");
+            assert_eq!(notices(), (failure + 1).min(crate::orchestrator_inbox::REPLAN_REMINDERS), "handed at the start and again when the turn ended, up to the last reminder, {failure} turns in");
             again(&f);
         }
         let state = f.executor.domain.state().unwrap();
@@ -2074,7 +2084,7 @@ mod tests {
         let pending = unhandled(domain)[0].0;
         let claim = domain.store.lock().unwrap().claim_message(pending).unwrap().unwrap();
         runtime.active_run = Some(Run { id: "interrupted".into(), message_ids: vec![claim.message.id],
-            attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true });
+            attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true, replans_only: false });
         save(&f.executor.home, &runtime).unwrap();
         let recovered = f.executor.recover().unwrap();
         assert!(recovered.active_run.is_none());
@@ -2111,7 +2121,7 @@ mod tests {
             store.begin_tool_operation("uncertain-restart","call","interrupt",&serde_json::json!({"session_id":"a"})).unwrap();
         }
         let mut runtime = load(&f.executor.home).unwrap();
-        runtime.active_run = Some(Run { id:"uncertain-restart".into(),message_ids:vec![claim.message.id],attempts:vec![(claim.attempt_id,claim.version)],started_at:1,spawned:true });
+        runtime.active_run = Some(Run { id:"uncertain-restart".into(),message_ids:vec![claim.message.id],attempts:vec![(claim.attempt_id,claim.version)],started_at:1,spawned:true, replans_only: false });
         save(&f.executor.home,&runtime).unwrap();
         for _ in 0..2 {
             let recovered = f.executor.recover().unwrap();
@@ -2129,7 +2139,7 @@ mod tests {
     fn the_hosts_start_holds_the_record_from_its_read_to_its_write_so_a_cancel_cannot_land_in_between() {
         let f = fixture();
         save(&f.executor.home, &Runtime {
-            active_run: Some(Run { id: "running".into(), message_ids: vec![], attempts: vec![], started_at: 1, spawned: false }),
+            active_run: Some(Run { id: "running".into(), message_ids: vec![], attempts: vec![], started_at: 1, spawned: false, replans_only: false }),
             ..Runtime::default()
         }).unwrap();
         let domain = Arc::clone(&f.executor.domain);
@@ -2160,7 +2170,7 @@ mod tests {
         save(&f.executor.home, &Runtime {
             session_id: Some("session".into()),
             active_run: Some(Run { id: "interrupted".into(), message_ids: vec![claim.message.id],
-                attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true }),
+                attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true, replans_only: false }),
             ..Runtime::default()
         }).unwrap();
         f.executor.recover().unwrap();
@@ -2194,7 +2204,7 @@ mod tests {
         command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "r".into(), body: "Design several Claude accounts".into(), auto_merge: false, maintenance: false, message: false,
         });
-        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "design".into(), request_id: "r".into(), title: "Design several Claude accounts".into(), agent_id: Some("a".into()),
             review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
         });
@@ -2299,7 +2309,7 @@ mod tests {
             command(&f.executor.domain, Actor::Orchestrator { generation: 0 }, &format!("title-{n}"), Command::TitleRequest {
                 request_id: request.as_str().into(), title: format!("Busy {n}"),
             });
-            command(&f.executor.domain, Actor::Orchestrator { generation: 0 }, &format!("task-{n}"), Command::CreateTask {
+            command(&f.executor.domain, Actor::Orchestrator { generation: 0 }, &format!("task-{n}"), Command::CreateTask { priority: Default::default(),
                 task_id: format!("t-busy-{n}").into(), request_id: request.as_str().into(), title: format!("Busy {n}"), agent_id: None,
                 review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp/project")),
                 plan_items: None, continues: None,

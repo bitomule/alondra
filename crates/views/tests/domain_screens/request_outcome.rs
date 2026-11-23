@@ -66,7 +66,7 @@ fn asked(s: &mut DomainState, actor: Actor, id: &str, maintenance: bool) {
 }
 
 fn task(s: &mut DomainState, id: &str, request: &str) {
-    ok(s, orchestrator(), Command::CreateTask {
+    ok(s, orchestrator(), Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None,
         review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp/project")),
     });

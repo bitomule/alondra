@@ -620,7 +620,7 @@ mod tests {
         let user = Actor::User { user_id: "user".into() };
         run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Agent".into(), at: 0 });
         run(&domain, user.clone(), "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent".into()), review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
         run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr { task_id: "task".into(),
@@ -661,7 +661,7 @@ mod tests {
         let user = Actor::User { user_id: "user".into() };
         run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Agent".into(), at: 0 });
         run(&domain, user.clone(), "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent".into()), review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
         run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr { task_id: "task".into(),
@@ -779,7 +779,7 @@ mod tests {
             let agent = format!("agent-{number}");
             let task = format!("task-{number}");
             apply(Actor::System, Command::RegisterAgent { agent_id: agent.clone().into(), name: "Fixture".into(), at: 0 });
-            apply(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+            apply(Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: task.clone().into(), request_id: "request".into(), title: "Review".into(),
                 agent_id: Some(agent.clone().into()), review_prs: true, dependencies: Default::default(), stack: None,
                 launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic")),
@@ -807,7 +807,7 @@ mod tests {
         run(&domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Review".into(), auto_merge: false, maintenance: false, message: false,
         });
-        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Review".into(), agent_id: Some("agent".into()),
             review_prs: true, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic")),
@@ -1261,7 +1261,7 @@ mod tests {
         run(&domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Review".into(), auto_merge: false, maintenance: false, message: false,
         });
-        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Review".into(), agent_id: Some("agent".into()),
             review_prs: true, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic")),
@@ -1295,7 +1295,7 @@ mod tests {
             run(&domain, Actor::User { user_id: "user".into() }, &request, Command::CreateRequest {
                 request_id: request.clone().into(), body: "Review".into(), auto_merge: false, maintenance: false, message: false,
             });
-            run(&domain, Actor::Orchestrator { generation: 0 }, &task, Command::CreateTask { plan_items: None, continues: None,
+            run(&domain, Actor::Orchestrator { generation: 0 }, &task, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: task.clone().into(), request_id: request.into(), title: "Review".into(),
                 agent_id: Some(agent.clone().into()), review_prs: true, dependencies: Default::default(), stack: None,
                 launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic")),

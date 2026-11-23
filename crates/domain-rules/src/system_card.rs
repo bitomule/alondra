@@ -88,10 +88,11 @@ pub enum InboxCard {
     PlanReviewProblem,
     DependencyCancelledNotice,
     PlanRefusedNotice,
+    TasksEndedNotice,
 }
 
 /// The ids Alondra's own cards were named with: a node or the orchestrator may not name a card so.
-pub const RESERVED_PREFIXES: [&str; 38] = [
+pub const RESERVED_PREFIXES: [&str; 39] = [
     super::NODE_PAUSE_PREFIX,
     alondra_core::usage::OVER_PACE_PREFIX,
     alondra_core::usage::PACE_RESUME_PREFIX,
@@ -128,6 +129,7 @@ pub const RESERVED_PREFIXES: [&str; 38] = [
     super::PLAN_REVIEW_PROBLEM_PREFIX,
     crate::orchestrator_cards::DEPENDENCY_CANCELLED_NOTICE_PREFIX,
     crate::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX,
+    crate::orchestrator_cards::TASKS_ENDED_NOTICE_PREFIX,
     crate::open_pr_delivery::OPEN_PR_DELIVERY_PREFIX,
     ALONDRA_PROBLEM_PREFIX,
 ];
@@ -214,6 +216,7 @@ impl SystemCard {
             (super::PLAN_REVIEW_PROBLEM_PREFIX, InboxCard::PlanReviewProblem),
             (inbox::DEPENDENCY_CANCELLED_NOTICE_PREFIX, InboxCard::DependencyCancelledNotice),
             (inbox::PLAN_REFUSED_NOTICE_PREFIX, InboxCard::PlanRefusedNotice),
+            (inbox::TASKS_ENDED_NOTICE_PREFIX, InboxCard::TasksEndedNotice),
         ];
         if let Some((rest, about)) = counted.into_iter().find_map(|(prefix, about)| Some((after(prefix)?, about))) {
             return numbered(rest, about);

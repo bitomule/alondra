@@ -17,7 +17,7 @@ fn user() -> Actor { Actor::User { user_id: "u".into() } }
 fn task(domain: &DomainRuntime, id: &str, number: Option<u64>) {
     command(domain, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: id.into(), at: 0 });
     command(domain, user(), Command::CreateRequest { request_id: id.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-    command(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    command(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(),
         task_id: id.into(), request_id: id.into(), title: "Work".into(), agent_id: Some(id.into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/fixture")), plan_items: None, continues: None,
     });

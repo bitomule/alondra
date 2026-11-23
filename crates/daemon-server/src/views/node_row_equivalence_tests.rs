@@ -37,7 +37,7 @@ impl Fixture {
             request_id: id.into(), body: "Review the synthetic project".into(),
             auto_merge: false, maintenance: false, message: false,
         });
-        self.command(Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask {
+        self.command(Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { priority: Default::default(),
             task_id: id.into(), request_id: id.into(), title: format!("Task {id}"),
             agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(LaunchPlan::new("node", self.home.to_str().unwrap())),

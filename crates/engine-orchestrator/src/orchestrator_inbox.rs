@@ -5,6 +5,7 @@
 //! outcome, it leaves the orchestrator:
 //!
 //! - an open request of the user's becomes the user's Problem; a message it acted on closes;
+//! - a request whose tasks all ended is reminded twice, then Alondra closes it with its Done card;
 //! - a node's question is withdrawn and its node told to decide by itself;
 //! - a node's suggestion is discarded with its reason;
 //! - the review of the plans a decision holds releases each with the plan it has;
@@ -32,7 +33,7 @@ use alondra_domain_rules::{
 use alondra_domain_rules::orchestrator_cards::{
     DEPENDENCY_CANCELLED_NOTICE_PREFIX, UNANSWERED_NOTICE_PREFIX, UNSETTLED_NOTICE_PREFIX, UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL, UNSPLIT_NOTICE_PREFIX,
     UNSPLIT_PROBLEM_PREFIX, UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL, UnsplitProblem,
-    PLAN_REVIEW_NOTICE_PREFIX, PLAN_REFUSED_NOTICE_PREFIX, STALL_NOTICE_PREFIX,
+    PLAN_REVIEW_NOTICE_PREFIX, PLAN_REFUSED_NOTICE_PREFIX, STALL_NOTICE_PREFIX, TASKS_ENDED_NOTICE_PREFIX,
 };
 
 const UNSPLIT_CAUSE: &str = "request_unsplit";
@@ -68,8 +69,18 @@ pub(crate) fn steps(state: &DomainState, read: &dyn Fn(&str) -> bool) -> Vec<Ste
         steps.push(Step::Withdraw { question: problem.id.clone() });
     }
     for request in state.requests.values().filter(|request| !request.closed) {
-        if state.tasks.values().any(|task| task.request_id == request.id) || asked_about(state, &request.id) {
+        if asked_about(state, &request.id) {
             continue;
+        }
+        match tasks_of(state, &request.id) {
+            Tasks::Open => continue,
+            Tasks::Ended => {
+                if !request.message {
+                    steps.push(tasks_ended(state, request, read));
+                }
+                continue;
+            }
+            Tasks::None => {}
         }
         if request.message {
             steps.push(Step::Close { request: request.id.clone(), withdrawn: false });
@@ -111,10 +122,15 @@ pub fn owed(state: &DomainState, read: &dyn Fn(&str) -> bool) -> Vec<Step> {
     steps
 }
 
+/// How many times one re-plan is handed to the orchestrator. Past it the task keeps saying the
+/// orchestrator decides, and no batch is spent on it until what it waits on changes: another
+/// cancelled dependency or another refusal is another subject.
+pub const REPLAN_REMINDERS: usize = 3;
+
 /// What the orchestrator has still to re-plan when it rests, `rest` being how many turns it has
-/// ended: a task that waits for a cancelled task, and a launch plan the start refused. Each is
-/// handed to it once per rest, with the open item, until it decides; Alondra never decides it,
-/// and no clock counts.
+/// ended for other work: a task that waits for a cancelled task, and a launch plan the start
+/// refused. Each is handed to it once per rest, with the open item, at most `REPLAN_REMINDERS`
+/// times; Alondra never decides it, and no clock counts.
 pub fn replans(state: &DomainState, rest: u64) -> Vec<Step> {
     let mut problems = None;
     state.tasks.values().filter(|task| !task.over() && !task.archived)
@@ -123,6 +139,19 @@ pub fn replans(state: &DomainState, rest: u64) -> Vec<Step> {
             dependency_cancelled(state, problems, task, rest).or_else(|| plan_refused(state, problems, task, rest))
         })
         .collect()
+}
+
+/// Whether a batch carried only re-plan reminders, by the cards its messages came from: its end is
+/// no rest, or each reminder would start the batch that hands the next one.
+pub fn only_replan_reminders<'a>(cards: impl IntoIterator<Item = Option<&'a SystemCard>>) -> bool {
+    let mut carried = false;
+    for card in cards {
+        if !matches!(card, Some(SystemCard::Inbox { about: InboxCard::DependencyCancelledNotice | InboxCard::PlanRefusedNotice, .. })) {
+            return false;
+        }
+        carried = true;
+    }
+    carried
 }
 
 /// Hands the orchestrator what it has still to re-plan. Called each time it rests, whatever its
@@ -135,6 +164,39 @@ pub fn hand_replans(domain: &DomainRuntime) {
     }
 }
 
+/// How many reminders a request whose tasks all ended gets before Alondra closes it.
+pub const TASKS_ENDED_REMINDERS: u32 = 2;
+
+enum Tasks {
+    None,
+    Open,
+    Ended,
+}
+
+fn tasks_of(state: &DomainState, request: &RequestId) -> Tasks {
+    let mut tasks = state.tasks.values().filter(|task| task.request_id == *request).peekable();
+    if tasks.peek().is_none() {
+        return Tasks::None;
+    }
+    if tasks.all(Task::over) { Tasks::Ended } else { Tasks::Open }
+}
+
+/// A request whose tasks all ended and that the orchestrator left open: it is reminded until
+/// `TASKS_ENDED_REMINDERS` reminders were read by batches that ended with their result, then
+/// Alondra closes it, and the user gets its Done card summing up each task.
+fn tasks_ended(state: &DomainState, request: &Request, read: &dyn Fn(&str) -> bool) -> Step {
+    let reminders = reminded(state, TASKS_ENDED_NOTICE_PREFIX, InboxCard::TasksEndedNotice, &request.id.0, read);
+    if reminders.read >= TASKS_ENDED_REMINDERS {
+        return Step::Close { request: request.id.clone(), withdrawn: false };
+    }
+    let left = TASKS_ENDED_REMINDERS - reminders.read;
+    let text = format!(
+        "{}every Task of Request {} has ended and the Request is still open. Close it now with close_request, outcome tasks_ended, its answer saying what came of it; if it still needs work, create its next Task. If {} still leave it open, Alondra closes it itself with a card listing its Tasks and their results, without your answer.",
+        reminder_of(reminders.next), request.id, if left == 1 { "this turn ends and you".to_owned() } else { format!("{left} more turns end and you") });
+    let (id, card) = inbox_card(TASKS_ENDED_NOTICE_PREFIX, InboxCard::TasksEndedNotice, &request.id.0, reminders.next);
+    Step::Remind { request: request.id.clone(), id, card, text }
+}
+
 /// The problems Alondra no longer raises: what they asked the user is settled by time now.
 fn retired_problem(i: &Interaction) -> bool {
     i.author == Author::System
@@ -142,7 +204,7 @@ fn retired_problem(i: &Interaction) -> bool {
 }
 
 /// What a handled batch left without an outcome, as `request <id>` or `suggestion <id>`: one of
-/// its open requests with no task, no open question of the orchestrator, and neither a reminder on
+/// its open requests with no task or every task ended, no open question of the orchestrator, and neither a reminder on
 /// its way back nor the user's problem; one of its node suggestions with no decision and no
 /// reminder. `settle` leaves it empty.
 pub(crate) fn unresolved(state: &DomainState, requests: &[RequestId], suggestions: &[InteractionId]) -> Vec<String> {
@@ -150,8 +212,9 @@ pub(crate) fn unresolved(state: &DomainState, requests: &[RequestId], suggestion
     for id in requests {
         let Some(request) = state.requests.get(id) else { continue };
         if request.closed
-            || state.tasks.values().any(|task| task.request_id == *id)
+            || matches!(tasks_of(state, id), Tasks::Open)
             || asked_about(state, id)
+            || !numbered(state, InboxCard::TasksEndedNotice, &id.0).is_empty()
             || !numbered(state, InboxCard::UnsplitNotice, &id.0).is_empty()
             || !numbered(state, InboxCard::UnsplitProblem, &id.0).is_empty()
         {
@@ -338,10 +401,10 @@ fn stalled(state: &DomainState, case: &Interaction, task: &Task, read: &dyn Fn(&
 fn plan_refused(state: &DomainState, problems: &StartProblems<'_>, task: &Task, rest: u64) -> Option<Step> {
     let card = problems.plan_refusal(&task.id)?;
     let (id, notice) = inbox_card(PLAN_REFUSED_NOTICE_PREFIX, InboxCard::PlanRefusedNotice, &card.id.0, rest as u32);
-    if state.interactions.contains_key(&InteractionId(id.clone())) {
+    let told = numbered(state, InboxCard::PlanRefusedNotice, &card.id.0).len();
+    if told >= REPLAN_REMINDERS || state.interactions.contains_key(&InteractionId(id.clone())) {
         return None;
     }
-    let told = numbered(state, InboxCard::PlanRefusedNotice, &card.id.0).len();
     Some(Step::Tell {
         id,
         card: notice,
@@ -393,10 +456,10 @@ fn dependency_cancelled(state: &DomainState, problems: &StartProblems<'_>, task:
     let dependency = problems.replanned_for(task)?;
     let subject = format!("{}--{dependency}", task.id);
     let (id, card) = inbox_card(DEPENDENCY_CANCELLED_NOTICE_PREFIX, InboxCard::DependencyCancelledNotice, &subject, rest as u32);
-    if state.interactions.contains_key(&InteractionId(id.clone())) {
+    let told = numbered(state, InboxCard::DependencyCancelledNotice, &subject).len();
+    if told >= REPLAN_REMINDERS || state.interactions.contains_key(&InteractionId(id.clone())) {
         return None;
     }
-    let told = numbered(state, InboxCard::DependencyCancelledNotice, &subject).len();
     let other = state.tasks.get(&dependency).map_or("", |t| t.title.as_str());
     let kept: Vec<&str> = task.dependencies.iter().filter(|d| **d != dependency).map(|d| d.0.as_str()).collect();
     let kept = if kept.is_empty() { "none".to_owned() } else { kept.join(", ") };
@@ -609,7 +672,7 @@ mod tests {
             ],
             card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Decide, "Pick the app"),
         });
-        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "t-1".into(), request_id: "split".into(), title: "Task".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
@@ -632,7 +695,7 @@ mod tests {
         let domain = crate::wiring::open(&home).unwrap();
         request(&domain, "solo", false);
         request(&domain, "pair", false);
-        let create = |id: &str, request: &str, dependencies: &[&str]| Command::CreateTask { plan_items: None, continues: None,
+        let create = |id: &str, request: &str, dependencies: &[&str]| Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
             dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None,
             launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
@@ -665,7 +728,7 @@ mod tests {
 
     fn pair_of_tasks(domain: &DomainRuntime, third: bool) {
         request(domain, "pair", false);
-        let create = |id: &str, dependencies: &[&str]| Command::CreateTask { plan_items: None, continues: None,
+        let create = |id: &str, dependencies: &[&str]| Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: id.into(), request_id: "pair".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
             dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None,
             launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
@@ -709,8 +772,8 @@ mod tests {
             "no open task must read no start-problem history");
     }
 
-    /// The wait is handed to the orchestrator every time it rests, with the open item, however long
-    /// it takes and whatever the clock says: Alondra never asks the user and never cancels it.
+    /// The wait is handed to the orchestrator every time it rests, with the open item, whatever the
+    /// clock says, up to its last reminder: Alondra never asks the user and never cancels it.
     #[test]
     fn a_wait_for_a_cancelled_task_is_handed_back_at_every_rest_and_never_decided_for_the_orchestrator() {
         let home = crate::test_support::Directory::new();
@@ -734,15 +797,99 @@ mod tests {
         rest(&domain);
         assert_eq!(reminders(), 2);
         rest(&domain);
-        rest(&domain);
-        assert_eq!(reminders(), 4, "one more at each rest");
+        assert_eq!(reminders(), REPLAN_REMINDERS, "one more at each rest");
+        for _ in 0..10 {
+            rest(&domain);
+        }
+        assert_eq!(reminders(), REPLAN_REMINDERS, "past the last reminder no rest hands it again");
         let state = domain.state().unwrap();
-        let text = &state.interactions[&"dependency-cancelled-second--first-3".into()].body;
-        assert!(text.contains("Still open, reminder 3: Task “Task second” (second) waits for “Task first” (first), which was cancelled"), "{text}");
+        let text = &state.interactions[&"dependency-cancelled-second--first-2".into()].body;
+        assert!(text.contains("Still open, reminder 2: Task “Task second” (second) waits for “Task first” (first), which was cancelled"), "{text}");
         assert!(state.open_start_problem(&task).is_none(), "the user is never asked");
         assert!(!state.tasks[&task].cancelled(), "and the task is never cancelled for the orchestrator");
         let owed = state.obligation_of(&task).expect("still owed");
         assert_eq!((owed.party, owed.owed), (Party::Alondra, Owed::Replan));
+    }
+
+    /// A batch that only carried a re-plan reminder and did nothing is no rest: the reminder does
+    /// not start the batch that hands the next one, and however many such batches run, the
+    /// orchestrator gets a bounded number of messages.
+    #[test]
+    fn a_replan_the_orchestrator_never_decides_starts_a_bounded_number_of_batches() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
+        pair_of_tasks(&domain, false);
+        hand(&domain);
+        let mut handed = 0;
+        for _ in 0..20 {
+            hand_replans(&domain);
+            let messages: Vec<Option<String>> = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+                .filter(|message| message.recipient_kind == "orchestrator").map(|message| message.interaction_id).collect();
+            if messages.is_empty() {
+                continue;
+            }
+            handed += messages.len();
+            let state = domain.state().unwrap();
+            let replans_only = only_replan_reminders(messages.iter()
+                .map(|id| id.as_ref().and_then(|id| state.interactions.get(&InteractionId::from(id.as_str()))).and_then(|card| card.system_card.as_ref())));
+            hand(&domain);
+            if !replans_only {
+                domain.orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        assert_eq!(handed, 1, "the one reminder its batch did nothing with is not handed again by that batch's end");
+        for _ in 0..20 {
+            rest(&domain);
+            hand(&domain);
+        }
+        assert_eq!(cards(&domain, DEPENDENCY_CANCELLED_NOTICE_PREFIX).len(), REPLAN_REMINDERS, "rests caused by other work stop at the last reminder");
+    }
+
+    #[test]
+    fn only_a_batch_of_nothing_but_replan_reminders_is_no_rest() {
+        let cancelled = SystemCard::Inbox { about: InboxCard::DependencyCancelledNotice, subject: "b--a".into(), number: 1 };
+        let refused = SystemCard::Inbox { about: InboxCard::PlanRefusedNotice, subject: "card".into(), number: 2 };
+        let unsplit = SystemCard::Inbox { about: InboxCard::UnsplitNotice, subject: "r".into(), number: 1 };
+        assert!(only_replan_reminders([Some(&cancelled), Some(&refused)]));
+        assert!(!only_replan_reminders([Some(&cancelled), None]), "a message of other work makes it a rest");
+        assert!(!only_replan_reminders([Some(&cancelled), Some(&unsplit)]));
+        assert!(!only_replan_reminders(std::iter::empty()), "a batch of no message is not one of reminders");
+    }
+
+    /// Issue #353: a request whose tasks all ended was handed to the orchestrator once; when that
+    /// batch did not close it, it stayed open for ever with no card for the user. Now it is
+    /// reminded twice, then Alondra closes it with its Done card.
+    #[test]
+    fn a_request_whose_tasks_ended_is_reminded_twice_then_closed_by_alondra_with_its_done_card() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
+        request(&domain, "r", false);
+        run(&domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Build it".into() });
+        run(&domain, Actor::System, "node", Command::RegisterAgent { agent_id: "n".into(), name: "n".into(), at: 0 });
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+            task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("n".into()), review_prs: false,
+            dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        });
+        run(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
+        let state = domain.state().unwrap();
+        assert!(state.tasks[&"t".into()].over() && !closed(&domain, "r"));
+        assert_eq!(unresolved(&state, &["r".into()], &[]), ["request r"], "a batch that leaves it open left it without an outcome");
+
+        turn_ends(&domain);
+        assert_eq!(cards(&domain, TASKS_ENDED_NOTICE_PREFIX), [format!("{TASKS_ENDED_NOTICE_PREFIX}r-1")]);
+        assert!(unresolved(&domain.state().unwrap(), &["r".into()], &[]).is_empty(), "a reminder is on its way");
+        turn_ends(&domain);
+        assert_eq!(cards(&domain, TASKS_ENDED_NOTICE_PREFIX).len(), 2);
+        assert!(!closed(&domain, "r"), "the orchestrator gets its two reminders first");
+        turn_ends(&domain);
+        let state = domain.state().unwrap();
+        let request = &state.requests[&"r".into()];
+        assert!(request.closed && !request.withdrawn);
+        let done = alondra_domain_rules::request_outcome::DoneCard::id("r");
+        assert!(state.interactions.contains_key(&InteractionId::from(done.as_str())), "the user gets the Done card");
+        assert_eq!(cards(&domain, TASKS_ENDED_NOTICE_PREFIX).len(), 2, "no third reminder");
     }
 
     /// Once the orchestrator re-points the task, nothing is owed any more; a card from before that
@@ -771,7 +918,7 @@ mod tests {
     fn node_with_task(domain: &DomainRuntime) {
         run(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "Node".into(), at: 0 });
         request(domain, "r", false);
-        run(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+        run(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Resume the migration".into(), agent_id: Some("a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
@@ -809,7 +956,7 @@ mod tests {
     fn sdk_node_with_task(domain: &DomainRuntime) {
         run(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "Node".into(), at: 0 });
         request(domain, "r", false);
-        run(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+        run(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Resume the migration".into(), agent_id: None,
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),

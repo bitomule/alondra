@@ -351,6 +351,8 @@ pub enum Refusal {
     /// A takeover of an execution whose last takeover its host never answered: it would change
     /// nothing, so what the execution waits for goes to a fresh host instead.
     RepeatedTakeover,
+    /// No execution is admitted while the tasks the task waits for have not landed.
+    AwaitsTasks,
 }
 
 impl From<IdentityError> for Refusal {
@@ -589,6 +591,9 @@ pub enum Event {
     DependenciesResolved {
         input: InputId,
     },
+    /// The tasks a task no execution runs waited for landed, or it no longer waits for them: it
+    /// may start as it would have without them.
+    DependenciesLanded,
     Pause {
         card: InteractionId,
         owner: Owner,
@@ -753,6 +758,7 @@ impl Event {
             | Self::Accept { .. }
             | Self::MergeObserved { .. }
             | Self::WaitForDependencies { .. }
+            | Self::DependenciesLanded
             | Self::Pause { .. }
             | Self::EndPause { .. }
             | Self::RecoveryEnded { .. }
@@ -1139,10 +1145,65 @@ struct Finishing {
     remaining: NonEmpty<DrainObligation>,
     session: Session,
 }
+/// How a task that no execution runs starts once nothing holds it: for the first time, or again
+/// at `stage` after it was reopened or its execution was released.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Start {
+    First { input: InputId, remaining: Inputs },
+    Again { stage: WorkStage, input: InputId, remaining: Inputs },
+}
+
+impl Start {
+    fn of(state: &State) -> Option<Self> {
+        match state {
+            State::Unstarted { input, remaining } => Some(Self::First { input: input.clone(), remaining: remaining.clone() }),
+            State::InProgress(Progress::Queued { stage, input, remaining }) => {
+                Some(Self::Again { stage: *stage, input: input.clone(), remaining: remaining.clone() })
+            }
+            _ => None,
+        }
+    }
+    fn into_state(self) -> State {
+        match self {
+            Self::First { input, remaining } => State::Unstarted { input, remaining },
+            Self::Again { stage, input, remaining } => State::InProgress(Progress::Queued { stage, input, remaining }),
+        }
+    }
+    fn stage(&self) -> WorkStage {
+        match self {
+            Self::First { .. } => WorkStage::Plan,
+            Self::Again { stage, .. } => *stage,
+        }
+    }
+    fn input(&self) -> &InputId {
+        match self {
+            Self::First { input, .. } | Self::Again { input, .. } => input,
+        }
+    }
+    fn remaining(&self) -> &Inputs {
+        match self {
+            Self::First { remaining, .. } | Self::Again { remaining, .. } => remaining,
+        }
+    }
+    fn remaining_mut(&mut self) -> &mut Inputs {
+        match self {
+            Self::First { remaining, .. } | Self::Again { remaining, .. } => remaining,
+        }
+    }
+    fn pending(&self) -> Inputs {
+        let mut pending = self.remaining().clone();
+        pending.push_front(self.input().clone());
+        pending
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum State {
     /// No node started the task: `input` starts it, and what it was told meanwhile follows.
     Unstarted { input: InputId, remaining: Inputs },
+    /// No execution runs the task and none may be admitted until `tasks` land; it then starts as
+    /// `start` says.
+    AwaitingTasks { tasks: NonEmpty<TaskId>, start: Start },
     InProgress(Progress),
     Delivered(Delivered),
     Finishing(Finishing),
@@ -1268,8 +1329,8 @@ impl TaskLifecycle {
     }
     pub fn phase(&self) -> TaskPhase {
         match self.state {
-            State::Unstarted { .. } => TaskPhase::Unstarted,
-            State::InProgress(_) => TaskPhase::InProgress,
+            State::Unstarted { .. } | State::AwaitingTasks { start: Start::First { .. }, .. } => TaskPhase::Unstarted,
+            State::InProgress(_) | State::AwaitingTasks { start: Start::Again { .. }, .. } => TaskPhase::InProgress,
             State::Delivered(_) => TaskPhase::Delivered,
             State::Finishing(_) => TaskPhase::Finishing,
             State::Completed => TaskPhase::Completed,
@@ -1285,6 +1346,7 @@ impl TaskLifecycle {
             State::Delivered(delivered) => delivered.session.execution(),
             State::Finishing(finishing) => finishing.session.execution(),
             State::Unstarted { .. }
+            | State::AwaitingTasks { .. }
             | State::InProgress(Progress::Queued { .. })
             | State::Completed
             | State::Cancelled => None,
@@ -1299,6 +1361,7 @@ impl TaskLifecycle {
             State::Delivered(delivered) => delivered.session.execution_mut(),
             State::Finishing(finishing) => finishing.session.execution_mut(),
             State::Unstarted { .. }
+            | State::AwaitingTasks { .. }
             | State::InProgress(Progress::Queued { .. })
             | State::Completed
             | State::Cancelled => None,
@@ -1500,6 +1563,8 @@ impl TaskLifecycle {
         match &self.state {
             State::Unstarted { .. } | State::Completed | State::Cancelled => None,
             State::InProgress(Progress::Queued { .. }) => Some(LiveState::WaitingCapacity(Capacity::Gate)),
+            State::AwaitingTasks { start: Start::First { .. }, .. } => None,
+            State::AwaitingTasks { tasks, start: Start::Again { .. } } => Several::new(tasks.iter().cloned()).map(LiveState::WaitingTask),
             State::InProgress(Progress::Executing { execution, .. }) => execution.0.live(),
             State::InProgress(Progress::Waiting { cards, .. }) => waits_on(cards.iter()),
             State::InProgress(Progress::Dependency { tasks, decisions, .. }) => {
@@ -1532,6 +1597,7 @@ impl TaskLifecycle {
     pub fn stage(&self) -> Option<WorkStage> {
         match &self.state {
             State::Unstarted { .. } => Some(WorkStage::Plan),
+            State::AwaitingTasks { start, .. } => Some(start.stage()),
             State::InProgress(
                 Progress::Queued { stage, .. }
                 | Progress::Executing { stage, .. }
@@ -1541,9 +1607,18 @@ impl TaskLifecycle {
             _ => None,
         }
     }
+    /// Whether no execution runs the task: the next one would be its admission.
+    pub fn unadmitted(&self) -> bool {
+        matches!(
+            self.state,
+            State::Unstarted { .. }
+                | State::AwaitingTasks { .. }
+                | State::InProgress(Progress::Queued { .. } | Progress::Dependency { session: Session::Absent(_), .. })
+        )
+    }
     pub fn dependencies(&self) -> Vec<&TaskId> {
         match &self.state {
-            State::InProgress(Progress::Dependency { tasks, .. }) => tasks.iter().collect(),
+            State::InProgress(Progress::Dependency { tasks, .. }) | State::AwaitingTasks { tasks, .. } => tasks.iter().collect(),
             State::Delivered(Delivered {
                 gate: DeliveryGate::Blocked(tasks),
                 ..
@@ -1568,6 +1643,7 @@ impl TaskLifecycle {
     fn waiting(&self) -> (Option<&InputId>, Option<&Inputs>) {
         let session = match &self.state {
             State::Unstarted { input, remaining } => return (Some(input), Some(remaining)),
+            State::AwaitingTasks { start, .. } => return (Some(start.input()), Some(start.remaining())),
             State::InProgress(Progress::Queued {
                 input, remaining, ..
             }) => return (Some(input), Some(remaining)),

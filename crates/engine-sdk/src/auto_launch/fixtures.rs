@@ -73,11 +73,15 @@ pub fn plan(f: &Fixture, name: &str) -> LaunchPlan {
 
 /// A task created the way the orchestrator creates one: with its plan, through its capability.
 pub fn create(f: &Fixture, id: &str, after: &[&str], plan: Option<&LaunchPlan>) {
+    create_with_priority(f, id, after, plan, Default::default());
+}
+
+pub fn create_with_priority(f: &Fixture, id: &str, after: &[&str], plan: Option<&LaunchPlan>, priority: alondra_domain_rules::TaskPriority) {
     let bearer = f.domain.bind_orchestrator(&format!("execution-{id}")).unwrap().expose_for_child_environment().to_owned();
     let state = f.domain.state().unwrap();
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("create-{id}").into(), expected_revision: 0,
-        command: Command::CreateTask { plan_items: None, continues: None,
+        command: Command::CreateTask { priority, plan_items: None, continues: None,
             task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
             dependencies: after.iter().map(|dep| TaskId::from(*dep)).collect(), stack: None,
             launch: plan.cloned(),
@@ -89,7 +93,7 @@ pub fn create(f: &Fixture, id: &str, after: &[&str], plan: Option<&LaunchPlan>) 
 /// A task an earlier node works on, which was never launched by Alondra.
 pub fn open_task(f: &Fixture, id: &str) {
     command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: format!("seed-{id}").into(), name: format!("Seed {id}").into(), at: 0 });
-    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"),
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"),
         agent_id: Some(format!("seed-{id}").into()), review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
 }

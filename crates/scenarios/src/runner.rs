@@ -913,7 +913,7 @@ impl Context<'_> {
 
     fn create_task(&mut self, index: usize, task: &str, title: &str, stack: Option<StackDependency>) -> Result<(), ScenarioError> {
         let request = self.request.clone().ok_or_else(|| Self::failed(index, "a task needs a request before it"))?;
-        self.command(index, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+        self.command(index, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(),
             task_id: task.to_owned().into(),
             request_id: request.into(),
             title: title.to_owned(),
