@@ -129,6 +129,9 @@ account through the provider's native sign-in. Claude Code owns its tokens; Alon
 sign-in flow can publish credentials to the selected profile and Keychain. The
 [credential inventory](docs/on-your-mac.md#credentials-and-authority) explains those boundaries.
 
+Antigravity accounts can be connected too, through your `agy` sign-in or a Gemini API key, and
+Alondra shows their models and usage; nodes do not run on Antigravity yet.
+
 ## Alondra Cloud
 
 Alondra Cloud connects your devices: accounts, pairing, push notifications and a
@@ -158,8 +161,8 @@ What Alondra Cloud cannot read:
 - your code, repositories and worktrees;
 - task and card contents, plans, diffs, transcripts and attachments, which travel between your
   devices end to end, as sealed envelopes the relay carries without being able to open them;
-- your Claude and Codex credentials: local provider profiles and Keychain hold them, and the
-  provider tools use them to authenticate directly with their services. See the
+- your Claude, Codex and Antigravity credentials: local provider profiles, Keychain and the
+  `0600` key file of an Antigravity account hold them, and the provider tools use them to authenticate directly with their services. See the
   [credential inventory](docs/on-your-mac.md#credentials-and-authority).
 
 How devices talk to a Mac is in [the device protocol](docs/iroh-protocol.md); report anything that looks

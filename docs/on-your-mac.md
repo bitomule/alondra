@@ -112,7 +112,7 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   changed, and clients see "Key set" or "No key". `--clear` (or Remove key) deletes the file;
   removing the account deletes its folder and the key with it. The default account takes no key.
   Treat the folder as credential access. See [key file](../crates/system/src/antigravity_account.rs)
-  and [key action](../crates/daemon-engine/src/antigravity_accounts.rs).
+  and [key action](../crates/daemon-engine/src/accounts.rs).
 - **Alondra Cloud login:** The CLI stores its refresh credential in Keychain; the daemon does
   not read that item. The Mac app uses `com.bitomule.alondra.mac.auth` for refresh tokens and
   `com.bitomule.alondra.mac.service-pairing.v1` for pairing secrets. The app's token item uses
