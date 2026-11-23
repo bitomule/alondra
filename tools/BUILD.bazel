@@ -76,7 +76,7 @@ sh_test(
         "//:tree",
     ],
     env_inherit = ["ALONDRA_PRIVATE_LITERALS"],
-    size = "small",
+    size = "medium",
     tags = ["external", "local"],
 )
 
