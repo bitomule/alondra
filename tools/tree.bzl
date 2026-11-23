@@ -26,6 +26,8 @@ LOCAL_STATE = [
     ".build/**",
     ".bsp/skbsp_generated/**",
     ".bazel-links/**",
+    "bazel/env/.bazel_env/**",
+    "bazel/env/.bazel_env.stamp",
     "bazel-*",
     "bazel-*/**",
     "**/target/**",

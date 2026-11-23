@@ -2,7 +2,7 @@
 
 Each macro checks that its package has that layer in `crate_layers.bzl`, declares the crate with the
 visibility of its layer, and adds `<name>_layer_test`, whose analysis fails when the crate, or any
-crate below it, depends on a layer its own may not use. `//tools/bazel:crate_layers_test` fails on a
+crate below it, depends on a layer its own may not use. `//tools/layers:crate_layers_test` fails on a
 production `rust_library` or `rust_binary` declared without them.
 """
 
@@ -44,7 +44,7 @@ LayerInfo = provider(
 )
 
 def layer_group(layer):
-    return "//tools/bazel:" + layer.replace("-", "_")
+    return "//tools/layers:" + layer.replace("-", "_")
 
 def _layer_aspect_impl(target, ctx):
     package = target.label.package
@@ -121,9 +121,9 @@ def _declare(layer, rule, name, srcs, deps, crate_name, crate_root, compile_data
     package = native.package_name()
     declared = CRATE_LAYERS.get(package)
     if declared == None:
-        fail("{} has no layer: add it to tools/bazel/crate_layers.bzl before declaring {}.".format(package, name))
+        fail("{} has no layer: add it to tools/layers/crate_layers.bzl before declaring {}.".format(package, name))
     if declared != layer:
-        fail("{} is {} in tools/bazel/crate_layers.bzl, so {} must be declared with the {} macro.".format(
+        fail("{} is {} in tools/layers/crate_layers.bzl, so {} must be declared with the {} macro.".format(
             package,
             declared,
             name,

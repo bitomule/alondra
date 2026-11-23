@@ -2,6 +2,7 @@ load("//tools:tree.bzl", "repo_tree")
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_unit_test")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 load("@simpool//:simpool_ios_test_runner.bzl", "simpool_ios_test_runner")
+load("@simpool_env//:env.bzl", "SIMPOOL_TEST_ENV")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 exports_files(
@@ -114,7 +115,8 @@ TRIAGE_SUITE = "TriageSnapshotTests"
             "//fixtures/views:metrics",
             "//fixtures/views:newer_daemon",
         ],
-        env = {
+        # A test action has no PATH, so the runner finds the pinned simpool through SIMPOOL_BIN.
+        env = SIMPOOL_TEST_ENV | {
             "KEEP_XCRESULT_ON_SUCCESS": "0",
             "TEST_HOST_BUNDLE_ID": "com.bitomule.alondra.snapshottesthost",
             "SNAPSHOT_ROOT": "apple/Testing/Snapshots/Tests/__Snapshots__",

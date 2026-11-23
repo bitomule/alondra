@@ -32,7 +32,12 @@ or probes through `sandbox-exec`; normal agent execution has no such confinement
 See [doctor](../crates/cli/src/doctor/system.rs), [uploads](../crates/daemon-support/src/uploads.rs),
 [language](../crates/client-port/src/i18n.rs) and [backend configuration](../crates/engine-kernel/src/sdk_backend.rs).
 
-Building from source additionally runs Bazel and its downloaded Rust, Swift and Node toolchains.
+Building from source additionally runs Bazel and its downloaded Rust, Swift and Node toolchains,
+and the two programs `bazel/env/tools.bzl` pins: `simpool` and `musts`, downloaded over HTTPS from
+their GitHub releases, checked against a SHA-256 and kept in Bazel's output base. The snapshot tests
+run that `simpool` to lease iOS simulators from the pool in `~/Library/Developer/SimPool`. The first
+Bazel command also writes two launcher scripts, `musts` and `simpool`, into `~/.local/bin` (never over
+a file it did not write) so both work in any shell; see [bazel/env/README.md](../bazel/env/README.md).
 Rust compiles incrementally: rustc and clippy keep about 5 GB of state in `rustc-incremental*`
 inside Bazel's output base, which `bazelisk clean --expunge` deletes. `make install` copies the three executables into `~/.local/bin` unless overridden; it is distinct
 from the Homebrew installation. See [Makefile](../Makefile) and [source installation](building-from-source.md).

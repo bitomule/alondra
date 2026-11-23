@@ -43,7 +43,7 @@ by its function name, and the command fails on a test that is nowhere any more, 
 longer does, unless a line of `--moves` says where it went and why.
 
 A test's package decides how often it runs. A test outside the root may not depend on a crate or a
-binary of the root (`//tools/bazel:crate_layers_test` fails on it): it would rerun on every edit of
+binary of the root (`//tools/layers:crate_layers_test` fails on it): it would rerun on every edit of
 the daemon. The tests that start the real daemon several times are `manual` targets of the root
 that the release's tests name (`RELEASE_ONLY_TESTS` in `deploy/brew/local-release.py`);
 `bazelisk test //crates/alondrad:codex_adoption_process_test` runs them on request.

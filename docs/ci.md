@@ -35,7 +35,9 @@ The job runs on `ubuntu-24.04`, checks out the pull request's merge commit and:
 
 1. Downloads the published `musts` Linux binary with `gh release download` from the project's
    GitHub release, verifies its SHA-256 and puts it on `PATH`. The version and hash are pinned in
-   `ci.yml`; update both together when moving to a newer release.
+   `ci.yml`; update both together when moving to a newer release. Bazel downloads the same
+   release for local runs and pins it in `bazel/env/tools.bzl`: `//tools:ci_test` fails when the
+   two disagree on version or Linux hash.
 2. Runs `musts validate`. No Bazel, Rust, Xcode or git history is needed; a shallow checkout is
    enough.
 

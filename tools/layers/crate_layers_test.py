@@ -188,14 +188,14 @@ def problems(table, targets):
             found.append(
                 f"{label} ({target['location']}) is a production {target['kind']} declared "
                 f"{'by ' + target['generator'] if target['generator'] else 'directly'}: declare it with "
-                f"the macro of its layer ({', '.join(table['role_macros'])}) from tools/bazel/crates.bzl, "
+                f"the macro of its layer ({', '.join(table['role_macros'])}) from tools/layers/crates.bzl, "
                 "or mark it testonly."
             )
     shipping = {package_of(label) for label in production}
     for package in sorted(shipping - table["crate_layers"].keys()):
-        found.append(f"{package} ships Rust but has no layer in tools/bazel/crate_layers.bzl.")
+        found.append(f"{package} ships Rust but has no layer in tools/layers/crate_layers.bzl.")
     for package in sorted(table["crate_layers"].keys() - shipping):
-        found.append(f"{package} has a layer in tools/bazel/crate_layers.bzl but no production crate: remove it.")
+        found.append(f"{package} has a layer in tools/layers/crate_layers.bzl but no production crate: remove it.")
     used = set()
     for label, target in sorted(production.items()):
         package = package_of(label)

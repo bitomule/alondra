@@ -23,7 +23,7 @@ the application: they talk through ports, and the roots wire them together.
 
 ## The crates
 
-[`tools/bazel/crate_layers.bzl`](../../tools/bazel/crate_layers.bzl) is the table.
+[`tools/layers/crate_layers.bzl`](../../tools/layers/crate_layers.bzl) is the table.
 
 | Layer | Packages |
 |---|---|
@@ -52,7 +52,7 @@ tests of the real daemon and CLI move to the root), and only shrinks.
 ## Declaring a crate
 
 A production crate is declared only with the macro of its layer, from
-[`tools/bazel/crates.bzl`](../../tools/bazel/crates.bzl): `foundation_crate`, `domain_crate`,
+[`tools/layers/crates.bzl`](../../tools/layers/crates.bzl): `foundation_crate`, `domain_crate`,
 `port_crate`, `application_crate`, `adapter_in_crate`, `adapter_out_crate`,
 `adapter_private_crate`, `root_library` and `root_binary`. They take the same fixed parameters
 (`name`, `srcs`, `deps`, `crate_name`, `crate_root`, `compile_data`, `version`, and
@@ -60,7 +60,7 @@ A production crate is declared only with the macro of its layer, from
 
 - fails at loading when the package's layer in the table is another one;
 - sets the crate's visibility to the `package_group` of each layer allowed to use it
-  (`//tools/bazel:<layer>`), the dependents in the exception list and `test_visibility`;
+  (`//tools/layers:<layer>`), the dependents in the exception list and `test_visibility`;
 - adds `<name>_layer_test`, whose analysis fails when the crate, or any crate below it, breaks the
   rule.
 
@@ -74,7 +74,7 @@ are declared as before.
 - **`LayerInfo` and an aspect.** `<name>_layer_test` applies `layer_aspect` along `deps`: it gives
   every crate its `LayerInfo` and fails the analysis with the crate, both layers and the rule broken.
   It also covers a dependency that `test_visibility` lets through.
-- **`//tools/bazel:crate_layers_test`.** A `genquery` reads every Rust target under `//:tree`. The
+- **`//tools/layers:crate_layers_test`.** A `genquery` reads every Rust target under `//:tree`. The
   test fails on a production `rust_library` or `rust_binary` whose `generator_function` is not a
   role macro, on a package with crates but no layer (or the reverse), on a forbidden dependency in
   any branch of a `select`, on a `testonly` library that builds a production crate again, on an
@@ -100,7 +100,7 @@ Why this combination, for Bazel 8.4:
 `LAYER_EXCEPTIONS` in the table lists the dependencies that break the rule today, by dependent
 package: 62 when it was introduced. The list only shrinks: `crate_layers_test` fails on an entry
 nothing uses, and on a count different from `EXCEPTION_CEILING` in
-`tools/bazel/crate_layers_test.py`, which drops with every entry removed. Adding one means raising
+`tools/layers/crate_layers_test.py`, which drops with every entry removed. Adding one means raising
 that ceiling in the same change, in plain sight of review.
 
 The phases of the build-graph plan empty it: `engine-ports` (phase 3) and the wide application

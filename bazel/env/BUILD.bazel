@@ -1,0 +1,29 @@
+load("@bazel_env.bzl", "bazel_env")
+load("//tools:tree.bzl", "repo_tree")
+
+exports_files(
+    ["tools.bzl"],
+    visibility = ["//tools:__pkg__"],
+)
+
+filegroup(
+    name = "scripts",
+    srcs = [
+        "BUILD.bazel",
+        "ensure.sh",
+        "launcher.sh",
+    ],
+    visibility = ["//tools:__pkg__"],
+)
+
+# The tools tools.bzl pins, run through the ~/.local/bin launchers (README.md).
+bazel_env(
+    name = "bazel_env",
+    tags = ["manual"],
+    tools = {
+        "musts": "@musts//:musts",
+        "simpool": "@simpool_bin//file",
+    },
+)
+
+repo_tree()

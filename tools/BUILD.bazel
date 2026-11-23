@@ -6,7 +6,20 @@ sh_test(
     name = "ci_test",
     size = "small",
     srcs = ["tests/test_ci.py"],
-    data = ["//:.bazelrc", "//.github/workflows:ci.yml"],
+    data = ["//:.bazelrc", "//.github/workflows:ci.yml", "//bazel/env:tools.bzl"],
+)
+
+sh_test(
+    name = "bazel_env_test",
+    size = "small",
+    srcs = ["tests/test_bazel_env.py"],
+    data = [
+        "//:.bazeliskrc",
+        "//:.gitignore",
+        "//bazel/env:scripts",
+        "bazel",
+        "musts-stamp.sh",
+    ],
 )
 
 sh_test(
@@ -285,7 +298,7 @@ sh_test(
 sh_binary(
     name = "test_execs",
     srcs = ["test_execs.py"],
-    data = ["//tools/bazel:rules"],
+    data = ["//tools/layers:rules"],
 )
 
 sh_test(
@@ -295,7 +308,7 @@ sh_test(
         "test_execs.py",
         "test_execs.tsv",
         "//:docs/running-tests.md",
-        "//tools/bazel:rules",
+        "//tools/layers:rules",
     ],
     size = "small",
 )

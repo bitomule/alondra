@@ -45,6 +45,11 @@ class RepoTreeExclusionsTest(unittest.TestCase):
         for name in [".musts/.lock", ".musts/.lock.owner", ".musts/state.sqlite-wal", ".musts/bep.json"]:
             self.assertTrue(excluded(self.root, name), name)
 
+    def test_the_pinned_tools_built_by_bazel_env_are_not_test_inputs(self):
+        for name in ["bazel/env/.bazel_env/bin/musts", "bazel/env/.bazel_env.stamp"]:
+            self.assertTrue(excluded(self.root, name), name)
+        self.assertIn("bazel/env/.bazel_env", (self.root / ".bazelignore").read_text().splitlines())
+
     def test_the_validated_state_is_not_a_test_input(self):
         self.assertTrue(excluded(self.root, ".musts/ledger/root%2Fapple-app-build"))
 

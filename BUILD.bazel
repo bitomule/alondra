@@ -40,7 +40,7 @@ exports_files(
     visibility = ["//crates/alondra:__pkg__", "//deploy/apple:__pkg__", "//tools:__pkg__"],
 )
 
-exports_files([".bazelrc", "MODULE.bazel.lock", "docs/running-tests.md"], visibility = ["//tools:__pkg__"])
+exports_files([".bazelrc", ".bazeliskrc", ".gitignore", "MODULE.bazel.lock", "docs/running-tests.md"], visibility = ["//tools:__pkg__"])
 
 exports_files(
     ["docs/architecture/push-fields.md", "web/react-router.config.ts"],
