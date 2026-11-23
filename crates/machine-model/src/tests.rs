@@ -363,6 +363,22 @@ fn a_host_that_dies_with_late_facts_leaves_a_task_taken_over_that_reports_the_tu
     }
 }
 
+/// A node sent back by the user that opens a pull request and ends its turn without delivering
+/// again leaves the task owed to nobody's card: it must end at work or in front of a card, never
+/// owed to the user with nothing open.
+#[test]
+fn a_node_sent_back_that_opens_a_pull_request_without_delivering_never_ends_owed_to_the_user_without_a_card() {
+    let history = History {
+        script: vec![world::Turn::DeliverPr, world::Turn::OpenPr, world::Turn::Deliver],
+        slots: 1,
+        depends: None,
+        actions: vec![world::Action::TurnEnds(0), world::Action::User(world::UserAct::Return, 0)],
+    };
+    if let Err(failure) = holds(&history, |verdicts| &verdicts.ends) {
+        panic!("{failure}");
+    }
+}
+
 proptest! {
     #![proptest_config(Histories::Plain.config())]
 

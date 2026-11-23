@@ -1775,9 +1775,10 @@ impl DomainState {
     }
 
     /// The step the node of `task` still owes its delivery while it rests: the answer to its own
-    /// card it was told and took up, with nothing told to it since, or, once a turn ran after the
-    /// delivery, the work it said runs after the merge. None once Alondra left the case of such a
-    /// rest unsettled: the delivery waits for the user.
+    /// card it was told and took up, with nothing told to it since; once a turn ran after the
+    /// delivery, the work it said runs after the merge; or what the user sent back of the
+    /// delivery, which no card of the user's lists while it stands. None once Alondra left the case
+    /// of such a rest unsettled: the delivery waits for the user.
     pub fn owed_step(&self, task: &TaskId, lifecycle: &TaskLifecycle) -> Option<EmptyTurn> {
         if lifecycle.phase() != TaskPhase::Delivered || lifecycle.activity() != ActivityView::Resting
             || !lifecycle.cards().is_empty() || lifecycle.resource() != Some(ResourceEvidence::Available) {
@@ -1794,6 +1795,9 @@ impl DomainState {
             let ran = since.iter().any(|record| matches!(record, LifecycleRecord::TurnStarted { .. } | LifecycleRecord::InputConsumed { .. }));
             let reason = self.work_after_merge(task, lifecycle).filter(|_| ran)?;
             Some(EmptyTurn::AfterMerge { reason })
+        }).or_else(|| {
+            let sent_back = self.task_handed_back(task).is_some_and(|instruction| instruction != Instruction::Reply);
+            sent_back.then(|| self.empty_turn(task))
         })
     }
 
