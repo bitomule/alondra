@@ -43,6 +43,45 @@ final class WindowSnapshotTests: XCTestCase {
     }
 }
 
+extension WindowSnapshotTests {
+    /// Moving the host off the screen takes its top safe area away, and one turn of the run loop later
+    /// the navigation controller hands its content the new bottom edge of the bar. On a loaded machine
+    /// that turn comes during the capture instead of after it; the screen must be the same either way,
+    /// not drawn again with the bar and the content ~50 pt higher than they were placed.
+    func test_aLayoutPassAfterTheHostLeftTheScreenMovesNothing() {
+        let traits = UITraitCollection(traitsFrom: [UITraitCollection(userInterfaceStyle: .light), UITraitCollection(displayScale: 1)])
+        func draw(_ latePass: @escaping (UIView) -> Void) -> UIImage {
+            drawInKeyWindow(
+                screen(.light) { ScreenFrame(height: 852) { LateLayoutScreen() } },
+                size: nil, traits: traits, drawn: latePass)
+        }
+        let settled = draw { _ in }
+        let late = draw { host in
+            host.window?.layoutIfNeeded()
+            while CFRunLoopRunInMode(.defaultMode, 0, true) == .handledSource {}
+            host.window?.layoutIfNeeded()
+        }
+        XCTAssertNil(
+            Snapshotting<UIImage, UIImage>.image(precision: 1, perceptualPrecision: 1, scale: traits.displayScale)
+                .diffing.diff(settled, late),
+            "a layout pass after the host left the screen moved the bar or the content")
+    }
+}
+
+private struct LateLayoutScreen: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Waiting for You").font(.largeTitle.bold()).padding(.horizontal, 20)
+            Spacer()
+            Text("Footer").padding(20)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.orange.opacity(0.2))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Mac") {} } }
+    }
+}
+
 /// Lets each of the navigation bar's glass views lay out once and drops every later layout until
 /// `stop`, the way a bar that UIKit never laid out again ends up.
 @MainActor
