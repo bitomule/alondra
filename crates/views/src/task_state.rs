@@ -574,17 +574,19 @@ fn stall_result(task: &Task, lang: super::Lang) -> Option<String> {
     })
 }
 
-/// The open tasks this one still waits for.
+/// The open tasks this one still waits for. Each one once, however many of the task's lists name it.
 pub(super) fn open_dependencies<'a>(task: &Task, context: &RenderContext<'a>) -> Vec<&'a Task> {
+    let mut seen = std::collections::BTreeSet::new();
     task.dependencies.iter().chain(task.waiting_for_tasks.iter().filter(|id| !task.ended_task_waits.contains_key(*id))).chain(&task.delivered_dependencies)
-        .filter(|id| **id != task.id)
+        .filter(|id| **id != task.id && seen.insert(*id))
         .filter_map(|id| context.domain.tasks.get(id))
         .filter(|dependency| !dependency.state.terminal())
         .collect()
 }
 
 /// A task waiting for other open tasks: "Waits for “Build a feature”", or for several "Waits for Install PR 4, 5
-/// and 7", each by the part of its title before ":", with what they share said once.
+/// and 7", each by the part of its title before ":", with what they share said once. When those parts do not tell
+/// the tasks apart ("Alondra: tests fail", "Alondra: build fails"), each goes by its whole title.
 fn chained(task: &Task, context: &RenderContext<'_>) -> Option<String> {
     let lang = context.lang;
     let dependencies = open_dependencies(task, context);
@@ -592,9 +594,11 @@ fn chained(task: &Task, context: &RenderContext<'_>) -> Option<String> {
         [] => None,
         [only] => Some(tf!(lang, "Waits for “{title}”", "Espera a «{title}»", title = only.title)),
         several => {
-            let names: Vec<String> = several.iter()
+            let heads: Vec<String> = several.iter()
                 .map(|dependency| dependency.title.split_once(':').map_or(dependency.title.as_str(), |(head, _)| head).trim().to_owned())
                 .collect();
+            let distinct = heads.iter().collect::<std::collections::BTreeSet<_>>().len() == heads.len();
+            let names = if distinct { heads } else { several.iter().map(|dependency| dependency.title.trim().to_owned()).collect() };
             let names = shared_prefix_once(&names);
             let (last, head) = names.split_last().expect("several names");
             let head = head.join(", ");
@@ -606,8 +610,8 @@ fn chained(task: &Task, context: &RenderContext<'_>) -> Option<String> {
 /// ["Install PR 4", "Install PR 5"] reads as ["Install PR 4", "5"]: the words they share are said once.
 fn shared_prefix_once(names: &[String]) -> Vec<String> {
     let [first, rest @ ..] = names else { return Vec::new() };
-    if rest.is_empty() {
-        return vec![first.clone()];
+    if rest.is_empty() || names.iter().collect::<std::collections::BTreeSet<_>>().len() < names.len() {
+        return names.to_vec();
     }
     let mut shared = first.as_str();
     for name in rest {

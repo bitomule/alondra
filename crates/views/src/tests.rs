@@ -3375,6 +3375,42 @@ fn a_task_that_waits_for_two_names_both_and_is_shown_once() {
 }
 
 #[test]
+fn a_dependency_listed_twice_is_named_and_listed_once() {
+    let mut state = across_requests();
+    let task = state.tasks.get_mut(&"t-4".into()).unwrap();
+    task.dependencies.insert("t-3".into());
+    task.waiting_for_tasks.insert("t-1".into());
+    task.waiting_for_tasks.insert("t-3".into());
+    task.delivered_dependencies.insert("t-3".into());
+    let rows = rows_of(&state, Client::Ios, Lang::En);
+    assert_eq!(fact_of(find(&rows, "t-4")), Some("Waits for Build a feature and Count the pushes"));
+    let detail = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "task:t-4", "");
+    let section = detail.sections.iter().find(|section| section.id == "dependencies").expect("dependencies section");
+    let listed: Vec<&str> = section.items.iter().filter_map(|item| match item { Item::Row(row) => Some(row.id.as_str()), _ => None }).collect();
+    assert_eq!(listed.len(), 2, "{listed:?}");
+}
+
+#[test]
+fn dependencies_with_the_same_head_are_told_apart() {
+    let mut state = across_requests();
+    for (id, title) in [("t-3", "Alondra: codex-session tests fail on main"), ("t-5", "Alondra: full validation fails under load")] {
+        let mut task = state.tasks[&"t-3".into()].clone();
+        task.id = id.into();
+        task.title = title.into();
+        state.tasks.insert(task.id.clone(), task);
+    }
+    state.tasks.get_mut(&"t-4".into()).unwrap().dependencies = ["t-3".into(), "t-5".into()].into();
+    let rows = rows_of(&state, Client::Ios, Lang::En);
+    assert_eq!(fact_of(find(&rows, "t-4")), Some("Waits for Alondra: codex-session tests fail on main and full validation fails under load"));
+    let rows = rows_of(&state, Client::Ios, Lang::Es);
+    assert_eq!(fact_of(find(&rows, "t-4")), Some("Espera a Alondra: codex-session tests fail on main y full validation fails under load"));
+    state.tasks.get_mut(&"t-5".into()).unwrap().title = "Alondra: codex-session tests fail on main".into();
+    let rows = rows_of(&state, Client::Ios, Lang::En);
+    assert_eq!(fact_of(find(&rows, "t-4")), Some("Waits for Alondra: codex-session tests fail on main and Alondra: codex-session tests fail on main"),
+        "identical titles are not cut to their last word");
+}
+
+#[test]
 fn tasks_that_wait_on_each_other_across_requests_are_each_shown_once() {
     let mut state = across_requests();
     state.tasks.get_mut(&"t-1".into()).unwrap().dependencies.insert("t-4".into());
