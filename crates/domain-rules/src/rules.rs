@@ -405,6 +405,10 @@ pub fn delivery_withdrawn_behind_pr(number: u64) -> String {
     format!("Pull request #{number} has commits your final delivery does not include, so that delivery was withdrawn \
 and the task is in progress again. When the work is ready, present your result again with the pull request at its new head.")
 }
+pub fn delivery_withdrawn_behind_document(title: &str) -> String {
+    format!("The document “{title}” has a newer revision than the one your final delivery carries, so that delivery \
+was withdrawn and the task is in progress again. Check the new revision, then present your result again with it.")
+}
 pub fn delivery_withdrawn() -> String {
     "Your final delivery was withdrawn, so the task is in progress again. When the work is ready, present your \
 result again.".into()
@@ -588,7 +592,7 @@ impl DomainState {
                 "A delivery presentation is required",
             );
         };
-        if t.final_presentation.as_ref() != Some(i) {
+        if t.final_presentation.as_ref() != Some(i) || p.withdrawn {
             return fail("acceptance_stale", "Presentation is not the current final");
         };
         self.targets(task_id, targets)?;
@@ -1141,6 +1145,11 @@ impl DomainState {
         }
         if !self.open(x) {
             return refuse("already_withdrawn", "card.replaces", &format!("Card {old} is no longer open: send a new card without card.replaces"));
+        }
+        if let Some(group) = &x.card.group {
+            return refuse("question_in_group", "card.replaces", &format!(
+                "Card {old} is one of the questions asked together as {}: its answers reach you only all together, so one of them is never replaced alone. To change the questions, withdraw {old} (it withdraws the whole group) and ask them again together",
+                group.id));
         }
         Ok(())
     }
@@ -2464,11 +2473,13 @@ impl DomainState {
         }
         Ok(())
     }
-    /// A node that pushes to its PR after its final delivery leaves that delivery behind the PR: it
-    /// could no longer be merged as presented, so it leaves the user's queue and the task is in
-    /// progress again until the node presents the new head. A merged PR settles the delivery instead.
-    fn withdraw_deliveries_behind_their_pr(&mut self, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
-        let behind: Vec<(TaskId, InteractionId, u64)> = self.tasks.values()
+    /// A final delivery whose pull request got new commits, or whose document got a new revision,
+    /// could no longer be accepted as presented: it leaves the user's queue and the task is in
+    /// progress again until its node presents what is current. The revision may come from the
+    /// node of another task sharing the document, so the node is told. A merged PR settles the
+    /// delivery instead.
+    fn withdraw_deliveries_behind_their_targets(&mut self, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let behind: Vec<(TaskId, InteractionId, String)> = self.tasks.values()
             .filter(|t| !t.over())
             .filter_map(|t| {
                 let p = self.interactions.get(t.final_presentation.as_ref()?)?;
@@ -2479,21 +2490,64 @@ impl DomainState {
                 targets.iter().find_map(|target| match target {
                     DeliveryTarget::PullRequest { pr_id, head } => self.pull_requests.get(pr_id)
                         .filter(|pr| pr.state != PrState::Closed && pr.head != *head)
-                        .map(|pr| (t.id.clone(), p.id.clone(), pr.number)),
-                    _ => None,
-                })
+                        .map(|pr| delivery_withdrawn_behind_pr(pr.number)),
+                    DeliveryTarget::DocumentRevision { document_id, revision_id } => self.documents.get(document_id)
+                        .filter(|d| d.current_revision != *revision_id)
+                        .map(|d| delivery_withdrawn_behind_document(&d.title)),
+                    DeliveryTarget::Text { .. } => None,
+                }).map(|notice| (t.id.clone(), p.id.clone(), notice))
             })
             .collect();
-        for (task_id, delivery, number) in behind {
+        for (task_id, delivery, notice) in behind {
             self.invalidate(&task_id);
             self.retire(&delivery);
-            let told = self.hand_back(&task_id, &delivery, delivery_withdrawn_behind_pr(number), lifecycles)?;
+            let told = self.hand_back(&task_id, &delivery, notice.clone(), lifecycles)?;
             let t = self.tasks.get_mut(&task_id).unwrap();
             if let Some(agent_id) = t.agent_id.clone().filter(|_| !told) {
-                effects.push(DomainEffect::NotifyAgent {
-                    agent_id, task_id: Some(task_id), interaction_id: None, message: delivery_withdrawn_behind_pr(number),
-                });
+                effects.push(DomainEffect::NotifyAgent { agent_id, task_id: Some(task_id), interaction_id: None, message: notice });
             }
+        }
+        Ok(())
+    }
+    /// The request building the plan this delivery proposed, once the user approved it.
+    fn approved_plan_build(&self, presentation_id: &InteractionId) -> Option<RequestId> {
+        let build = guards::implementation_request(presentation_id);
+        self.request_plans.get(&build).filter(|approved| approved.presentation_id == *presentation_id).map(|_| build)
+    }
+    /// An approved plan is read-only: its build is already under way, so the user's word on it never
+    /// sends its node back to rewrite it. Changes become a new request; a reply or a question reaches
+    /// the orchestrator as a message about the build, which goes on.
+    #[allow(clippy::too_many_arguments)]
+    fn feedback_on_approved_plan(&mut self, actor: &Actor, presentation_id: &InteractionId, build: RequestId, body: &str,
+        instruction: Instruction, effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let plan = &self.interactions[presentation_id];
+        let reference = CardReference {
+            interaction_id: presentation_id.clone(), title: plan.card.effective_title().to_owned(), scope: plan.scope.clone(),
+            task_ids: self.tasks.values().filter(|t| t.request_id == build).map(|t| t.id.clone()).collect(),
+            request_id: Some(build.clone()),
+        };
+        let request_id = RequestId(format!("{}-feedback-{}", presentation_id.0, self.revision + 1));
+        let auto_merge = self.requests.get(&build).is_some_and(|r| r.auto_merge);
+        self.apply(actor, &Command::CreateRequest {
+            request_id: request_id.clone(), body: body.to_owned(), auto_merge, maintenance: false,
+            message: instruction != Instruction::Changes,
+        }, effects, created, lifecycles)?;
+        self.requests.get_mut(&request_id).unwrap().reply_to = Some(reference);
+        Ok(())
+    }
+    /// A card that replaces the current final delivery withdraws it as `Withdraw` does: the task is
+    /// in progress again, never left delivered with nothing for the user to act on.
+    fn hand_back_replaced_deliveries(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
+        let replaced: Vec<(TaskId, InteractionId)> = self.tasks.values()
+            .filter(|t| !t.over())
+            .filter_map(|t| {
+                let p = self.interactions.get(t.final_presentation.as_ref()?)?;
+                p.withdrawn.then(|| (t.id.clone(), p.id.clone()))
+            })
+            .collect();
+        for (task_id, delivery) in replaced {
+            self.invalidate(&task_id);
+            self.hand_back(&task_id, &delivery, delivery_withdrawn(), lifecycles)?;
         }
         Ok(())
     }
@@ -3007,9 +3061,11 @@ impl DomainState {
         next.apply(actor, &envelope.command, &mut effects, &mut created, &mut lifecycles)?;
         next.end_lapsed_awaits(&mut effects, &mut lifecycles)?;
         next.withdraw_released_stalls(&mut lifecycles)?;
+        next.hand_back_replaced_deliveries(&mut lifecycles)?;
         next.withdraw_deliveries_asked_after(&mut effects, &mut lifecycles)?;
-        next.withdraw_deliveries_behind_their_pr(&mut effects, &mut lifecycles)?;
+        next.withdraw_deliveries_behind_their_targets(&mut effects, &mut lifecycles)?;
         if let Command::SubmitFeedback { presentation_id, body, instruction, .. } = &envelope.command
+            && next.approved_plan_build(presentation_id).is_none()
             && let Scope::Task { task_id } = next.interactions[presentation_id].scope.clone()
             && next.task(&task_id)?.agent_id.is_none()
             && next.lifecycle(&mut lifecycles, &task_id)?.execution().is_none()
@@ -5026,6 +5082,10 @@ impl DomainState {
                 merge_failure,
             } => {
                 let (u, task) = self.feedback_guard(actor, presentation_id, targets, body, attachments, *instruction, merge_failure.as_ref())?;
+                if let Some(build) = self.approved_plan_build(presentation_id) {
+                    self.feedback_on_approved_plan(actor, presentation_id, build, body, *instruction, effects, created, lifecycles)?;
+                    return Ok(());
+                }
                 let target = Self::feedback_target(self.presentation(presentation_id)?.2, targets)?;
                 let presentation = &self.interactions[presentation_id];
                 let reply_window_start = (*instruction == Instruction::Reply).then(|| {

@@ -561,6 +561,8 @@ async fn comments_sent_on_a_document_review_reach_the_node_even_when_it_moves_on
         ("present_result", tool_args(&epoch, "result-2", 0, json!({"kind": "present_result",
         "task_id": task.0, "interaction_id": "result-2", "need": "Review the migration design", "body": "The design",
         "targets": [{"kind": "document_revision", "document_id": "design", "revision_id": "design-r3"}], "is_final": true})))]);
+    let handed_back = pushed_text(&home, &mut pushed);
+    assert!(handed_back.contains("The document “Migration design” has a newer revision than the one your final delivery carries"), "{handed_back}");
     applied_done(&app.send_changes(open_result, comments.clone()).await);
     let told = pushed_text(&home, &mut pushed);
     assert!(told.contains("These comments are on version 2 of “Migration design”, which the user was reading; you have since presented version 3.")
