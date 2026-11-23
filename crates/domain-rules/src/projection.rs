@@ -257,11 +257,19 @@ impl DomainState {
             return true;
         }
         matches!(presentation.scope, Scope::Task { .. })
-            && self.requests.values().filter(|request| !request.closed).filter_map(|request| request.reply_to.as_ref()).any(|reply| {
+            && self.requests.values().filter(|request| !request.closed).filter_map(|request| request.reply_to.as_ref())
+                .filter(|reply| !self.about_the_build_of(reply))
+                .any(|reply| {
                 reply.interaction_id == presentation.id || self.interactions.get(&reply.interaction_id).is_some_and(|older| {
                     older.scope == presentation.scope && matches!(older.payload, InteractionPayload::Delivery { .. })
                 })
             })
+    }
+
+    /// Words on an approved plan go to the build of that plan, not to the delivery that proposed it.
+    fn about_the_build_of(&self, reply: &CardReference) -> bool {
+        reply.request_id.as_ref().and_then(|build| self.request_plans.get(build))
+            .is_some_and(|approved| approved.presentation_id == reply.interaction_id)
     }
 
     pub(super) fn has_reviewable_pr(&self, presentation: &Interaction) -> bool {

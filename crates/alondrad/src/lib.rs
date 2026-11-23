@@ -121,6 +121,9 @@ pub fn main() -> Result<()> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
+    if let Some(device) = diagnostic {
+        return test_push(&config, &device).await;
+    }
     log::rotate_when_full(&config.home);
     relaunch::record_supervision(&config.service_label);
     home_renames::apply(&config.home, domain_orchestrator::RECORDS, &alondra_store_sqlite::Sqlite)?;
@@ -149,20 +152,31 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     }
     ensure_domain_protocol(&config.home)?;
     sdk_owner::backend::load(&config.home, config.sandbox, &options::user_home())?;
-    let domain = wiring::open(&config.home, &alondra_store_sqlite::Sqlite)?;
-    if let Some(device) = diagnostic {
-        // Diagnostic delivery uses the same canonical domain store but does not
-        // start the long-running workers or HTTP listener.
-        let auth = Arc::new(auth::Auth::open(&config.home)?);
-        let service = service::Service::open(&config.home, config.port, auth)?
-            .context("service is not configured; run alondra first")?;
-        service.test_push(&device).await?;
-        println!(
-            "Encrypted diagnostic push accepted by APNs for {device}. Delivery and decryption must be confirmed on the device."
-        );
-        return Ok(());
-    }
+    let (_writer, domain) = open_as_writer(&config.home, |home| wiring::open(home, &alondra_store_sqlite::Sqlite))?;
     run_domain(&config, domain).await
+}
+
+/// The diagnostic push runs beside the live daemon: it reads the service's devices and sends,
+/// and never opens the domain database, whose restart recovery belongs to the daemon alone.
+async fn test_push(config: &Config, device: &str) -> Result<()> {
+    let _home_lock = alondra_core::home_lock::HomeLock::shared(&config.home)?;
+    alondra_core::home_lock::ensure_ready(&config.home)?;
+    let auth = Arc::new(auth::Auth::open(&config.home)?);
+    let service = service::Service::open(&config.home, config.port, auth)?
+        .context("service is not configured; run alondra first")?;
+    service.test_push(device).await?;
+    println!(
+        "Encrypted diagnostic push accepted by APNs for {device}. Delivery and decryption must be confirmed on the device."
+    );
+    Ok(())
+}
+
+/// Opens the domain database as its one writer: opening it marks what a dead daemon left in
+/// flight (deliveries, scheduled launches, local actions) as uncertain, which over a live daemon's
+/// work would undo it. A second daemon on the same HOME is refused before it opens anything.
+fn open_as_writer<R>(home: &Path, open: impl FnOnce(&Path) -> Result<R>) -> Result<(alondra_core::home_lock::HomeLock, R)> {
+    let writer = alondra_core::home_lock::HomeLock::daemon(home)?;
+    Ok((writer, open(home)?))
 }
 
 
@@ -336,12 +350,17 @@ async fn supervise(assembled: assemble::Assembled, upgrades: Option<relaunch::Wa
                 log!("could not record this release's first start: {error:#}");
             }
         }, outbox, scheduler, transport, github, orchestrator, connector, gates(machine_watch, gate)) => stopped,
-        () = replaced(upgrades) => relaunch_now(),
-        () = handed_over() => exit::now(relaunch::RELAUNCH, || log!(
-            "leaving the SDK hosts to the daemon launchd started"
-        )),
+        () = replaced(upgrades) => {
+            domain_orchestrator::note_shutdown(&owners, owners.home());
+            relaunch_now()
+        },
+        () = handed_over() => {
+            domain_orchestrator::note_shutdown(&owners, owners.home());
+            exit::now(relaunch::RELAUNCH, || log!("leaving the SDK hosts to the daemon launchd started"))
+        },
         signal = terminated() => {
             log!("{signal} received: stopping the SDK hosts, then exiting");
+            domain_orchestrator::note_shutdown(&owners, owners.home());
             stop_sdk_owners(owners).await;
             exit::now(0, || ())
         }

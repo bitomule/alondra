@@ -23,7 +23,7 @@ impl Drop for Operation {
 impl Operation {
     fn finish(&self, answer: &Answer) -> std::result::Result<(),StoreError> {
         self.domain.store.lock_or_exit("the domain store").complete_tool_operation(&self.run,&self.call,answer)?;
-        self.domain.orchestrator_progress();
+        self.domain.note_orchestrator_progress();
         Ok(())
     }
 }
@@ -47,7 +47,7 @@ impl DomainRuntime {
             return Ok(Admission::Existing { run: execution_id.clone(),call });
         }
         authority.record_change(&principal,kind);
-        self.orchestrator_progress();
+        self.note_orchestrator_progress();
         self.operations_live.lock_or_recover("the operation registry").insert((execution_id.clone(),call.clone()));
         self.operations_changed.send_modify(|version| *version = version.wrapping_add(1));
         Ok(Admission::Started(Operation { domain: Arc::clone(self),run: execution_id.clone(),call }))
@@ -175,6 +175,31 @@ mod tests {
         assert_eq!(repeated,json!({"node":"the-actually-started-node"}));
         assert!(domain.confirmed_batch_effects("run",&["launch".into()]).unwrap());
         assert_eq!(effects.load(Ordering::SeqCst),1);
+    }
+
+    #[tokio::test]
+    async fn admitting_and_finishing_a_tool_operation_each_count_as_orchestrator_progress() {
+        let home = Directory::new();
+        std::fs::create_dir_all(&*home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open_unwired_at(&home,&home.join("domain.db")).unwrap());
+        let token = domain.bind_orchestrator("run").unwrap().expose_for_child_environment().to_owned();
+        let before = domain.orchestrator_progress();
+        let (entered,started) = tokio::sync::oneshot::channel();
+        let (release,barrier) = tokio::sync::oneshot::channel::<()>();
+        let (job_domain,job_token) = (Arc::clone(&domain),token.clone());
+        let job = tokio::spawn(async move {
+            execute(job_domain,&job_token,Some("ab12"),"launch",json!({"task":"task"}),async move {
+                entered.send(()).unwrap();
+                barrier.await.unwrap();
+                Ok(json!({"node":"node"}))
+            }).await
+        });
+        started.await.unwrap();
+        let admitted = domain.orchestrator_progress();
+        assert!(admitted > before, "a long tool call is measured from its admission");
+        release.send(()).unwrap();
+        job.await.unwrap().unwrap();
+        assert!(domain.orchestrator_progress() > admitted, "its end counts too");
     }
 
     #[tokio::test]

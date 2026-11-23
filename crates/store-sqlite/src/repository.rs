@@ -798,7 +798,7 @@ pub(super) fn save_changes(
     {
         exec(c, "INSERT INTO orchestrator_batch(singleton,base) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET base=excluded.base", params![base as i64])?;
     }
-    for (x, _) in changed(&before.requests, &after.requests) {
+    for (x, prior) in changed(&before.requests, &after.requests) {
         let mut row = object(x)?;
         strip(&mut row, &["maintenance", "message", "cleared", "origin", "folded_into", "reply_to"]);
         upsert(c, "requests", &["id"], row)?;
@@ -810,6 +810,8 @@ pub(super) fn save_changes(
         }
         if x.cleared {
             exec(c, "INSERT OR IGNORE INTO cleared_requests(request_id) VALUES(?1)", params![x.id.0])?;
+        } else if prior.is_some_and(|prior| prior.cleared) {
+            exec(c, "DELETE FROM cleared_requests WHERE request_id=?1", params![x.id.0])?;
         }
         if x.origin != RequestOrigin::User {
             exec(c, "INSERT INTO request_origins(request_id,origin) VALUES(?1,?2) ON CONFLICT(request_id) DO UPDATE SET origin=excluded.origin",

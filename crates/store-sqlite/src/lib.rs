@@ -464,6 +464,18 @@ fn a_full_disk_is_told_from_other_failures_through_the_whole_chain() {
     assert!(!no_space(&anyhow::anyhow!("No space left on device")), "only the error itself counts, never its text");
 }
 
+/// Whether a message is for the orchestrator itself (not a user notification) and older than its
+/// 24 hours: the outbox discards it instead of sending it, whatever its delivery says.
+fn expired_for_the_orchestrator(tx: &rusqlite::Transaction<'_>, message: i64, now: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM domain_messages m JOIN command_audit a ON a.revision=m.revision
+            WHERE m.id=?1 AND m.recipient_kind='orchestrator' AND a.at<?2
+            AND NOT EXISTS (SELECT 1 FROM domain_message_user_targets u WHERE u.message_id=m.id))",
+        params![message, now.saturating_sub(ORCHESTRATOR_MESSAGE_TTL_MS)],
+        |row| row.get(0),
+    )
+}
+
 impl DomainStore {
     /// Begins a read transaction on this reader, ending one a holder left open. False when it
     /// could not: the reader's cursors are then void.
@@ -1849,6 +1861,10 @@ impl DomainStore {
         let Some(message_id) = message_id else {
             return Err(DomainError::new("delivery_uncertain", "uncertain delivery changed; refresh evidence").into());
         };
+        if retry && expired_for_the_orchestrator(&tx, message_id, alondra_core::now_millis()).map_err(anyhow::Error::from)? {
+            return Err(DomainError::new("delivery_expired",
+                "This message to the orchestrator is more than 24 hours old, so Alondra no longer sends it: discard it instead").into());
+        }
         let status = if retry { "retryable" } else { "discarded" };
         tx.execute("UPDATE delivery_attempts SET state=?3,version=version+1,reason='explicit_user_reconciliation' \
             WHERE id=?1 AND version=?2 AND state='uncertain'", params![attempt_id,version,status]).map_err(anyhow::Error::from)?;
