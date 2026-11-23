@@ -297,7 +297,7 @@ fn codex_admission_rechecks_billing_and_credential_generation_after_selection(){
     use std::io::Write as _;
     let slice=Slice::new();let trace=configured(&slice,"complete");let selected=selection();
     let skill=slice.plugin.join("skills/alondra/SKILL.md");let mission=std::fs::read(&skill).unwrap();std::fs::remove_file(&skill).unwrap();
-    assert!(std::process::Command::new("/usr/bin/mkfifo").args(["-m","600"]).arg(&skill).status().unwrap().success());
+    let fifo=std::ffi::CString::new(skill.to_str().unwrap()).unwrap();assert_eq!(unsafe{libc::mkfifo(fifo.as_ptr(),0o600)},0);
     std::thread::scope(|scope|{
         let runner=scope.spawn(||{
             let effective=selected.effective.clone().unwrap();
