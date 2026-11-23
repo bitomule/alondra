@@ -54,28 +54,31 @@ fn only_a_closed_and_reopened_task_can_choose_a_new_native_provider_and_account(
         assert_eq!(s.pending_reopening(&id), None);
     }
     assert_aggregate_rules(&s);
-    must(&mut s, Actor::System, Command::ReleaseTask { task_id: id.clone(), reason: "The host ended".into() });
+    must(&mut s, Actor::System, Command::ReleaseTask { task_id: id.clone(), reason: "The host ended".into(), relaunch: Relaunch::ByItself, cwd: None });
     assert_eq!(s.pending_reopening(&id), None, "releasing the new execution cannot reuse the old reopening");
     assert_eq!(exec(&mut s, Actor::System, admit(Provider::Claude, None, "after-release")).unwrap_err().code, "active_account_immutable");
     assert_aggregate_rules(&s);
 }
 
+/// F-LIFE-2: the user kept the SDK node open when Alondra closed the task. Reopened, the task gets
+/// no execution on that node that no host runs: it waits with no node for the gate, whose new SDK
+/// execution resumes the saved session and is heard.
 #[test]
-fn reopening_with_the_original_node_kept_cannot_change_its_native_session_account() {
-    use alondra_core::accounts::Provider;
-
+fn a_task_reopened_with_its_sdk_node_kept_by_the_user_waits_for_a_new_execution_that_is_heard() {
     let mut s = three_tasks();
     let id = TaskId::from(SDK);
     must(&mut s, user(), Command::CancelTask { task_id: id.clone(), reason: None });
     must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: id.clone(), end: NodeEnd::KeptByUser, agent_id: Some(NODE.into()) });
     must(&mut s, user(), Command::ReopenTask { task_id: id.clone() });
-    assert_eq!(s.pending_reopening(&id), None);
+    let task = &s.tasks[&id];
+    assert_eq!((task.state, task.started, task.agent_id.clone()), (TaskState::NotStarted, false, None), "it waits for a new execution");
+    assert!(s.lifecycle_of(&id).unwrap().execution().is_none(), "no execution that no host runs");
+    assert!(s.pending_reopening(&id).is_some(), "the gate's start resumes the saved session");
+    must(&mut s, Actor::System, Command::AdmitExecution { provider: Default::default(), task_id: id.clone(), agent_id: NODE.into(),
+        conversation: "conversation".into(), instance: "after-reopen".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
+    let generation = s.lifecycle_of(&id).unwrap().execution().unwrap().generation();
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: id.clone(), generation, facts: vec![RuntimeObservation::ResourceAvailable] });
     assert_eq!(s.tasks[&id].agent_id, Some(NODE.into()));
-    assert!(s.tasks[&id].started);
-    assert_eq!(exec(&mut s, Actor::System, Command::AdmitExecution {
-        provider: Provider::Codex, task_id: id, agent_id: NODE.into(), conversation: "other-conversation".into(),
-        instance: "other-instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None,
-    }).unwrap_err().code, "active_account_immutable");
     assert_aggregate_rules(&s);
 }
 

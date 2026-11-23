@@ -188,7 +188,7 @@ pub fn running() -> (Fixture, DomainStore, ExecutionStamp) {
 pub fn running_with(binding: &ProviderBinding) -> (Fixture, DomainStore, ExecutionStamp) {
     let (fixture, mut store) = installed();
     let state = store.load().unwrap();
-    let release = Command::ReleaseTask { task_id: task(), reason: "The SDK host takes it".into() };
+    let release = Command::ReleaseTask { task_id: task(), reason: "The SDK host takes it".into(), relaunch: alondra_domain_rules::Relaunch::ByItself, cwd: None };
     store.execute_filling_revision(&Actor::System, &envelope(&state, "fixture-release", release)).unwrap();
     let state = store.load().unwrap();
     let (execution, _) = store

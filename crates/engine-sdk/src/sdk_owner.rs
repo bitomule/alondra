@@ -815,7 +815,6 @@ pub(crate) async fn launch_prepared(domain: &dyn Runtime, launch: Launch, reopen
         })?;
     let agent = driver.agent().clone();
     domain.add_sdk_owner(Owner::spawn(driver));
-    domain.engine().forget_closed_task(&task);
     Ok(serde_json::json!({"agent_id": agent, "short_id": agent.0.chars().take(8).collect::<String>(), "task": task}))
 }
 
@@ -1174,7 +1173,6 @@ pub fn adopt_all(domain: &Arc<dyn Runtime>, backend: &SdkBackend) {
         match taken {
             Ok(driver) => {
                 domain.add_sdk_owner(Owner::spawn(driver));
-                domain.engine().forget_closed_task(&task);
                 domain.sdk_owners().host_losses_told.lock_or_recover("the tasks told of a lost host").remove(&task);
                 close_host_lost_card(&**domain, &task);
                 log!("the SDK execution of {task} was taken over: the same Claude session goes on");

@@ -241,6 +241,30 @@ pub struct Task {
     /// one's, and the request's outcome is this one's instead of that task's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continues: Option<TaskId>,
+    /// The node that worked on it was taken from it while it still had work left: what its next
+    /// node needs, and who starts it. Written with the release itself and gone once a node takes
+    /// the task or it ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released: Option<ClosedNode>,
+}
+/// What a relaunch needs of the node that closed while it worked on a task.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClosedNode {
+    pub name: String,
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub relaunch: Relaunch,
+}
+/// Who starts the task's next node.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Relaunch {
+    /// The user closed it: a card asks them to relaunch the task or cancel it.
+    #[default]
+    AskUser,
+    /// Alondra closed it for a reason of its own: the automatic launch starts the next node, with
+    /// its retries and, past them, the card that says the task does not start.
+    ByItself,
 }
 /// A command the user allowed for the rest of a task, and how many prompts it answered since.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

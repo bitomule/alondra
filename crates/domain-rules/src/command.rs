@@ -616,11 +616,17 @@ pub enum Command {
     SetBranchUpdate {
         update: BranchUpdate,
     },
-    /// The Agent working on the Task was closed by the user: the Task goes back to not started with
-    /// no Agent, and stays open for a new one.
+    /// The Agent working on the Task was closed, by the user or by Alondra: the Task goes back to
+    /// not started with no Agent, and stays open for a new one, which `relaunch` names who starts.
     ReleaseTask {
         task_id: TaskId,
         reason: String,
+        /// Who starts the task's next node.
+        #[serde(default)]
+        relaunch: Relaunch,
+        /// The folder the closed node worked in, where its next node starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
     /// Alondra left nothing of a Task that ends without a node: not in the launch queue, no
     /// worktree. The receipt its ending waited for.

@@ -4,7 +4,7 @@
 use crate::engine::EngineOf as _;
 use crate::locks::Poisonable as _;
 use alondra_engine_ports::Runtime;
-use alondra_domain_rules::{DomainState, InteractionPayload, NodePhase, Reaction, START_RETRY, StartProblem, TaskId};
+use alondra_domain_rules::{DomainState, InteractionPayload, NodePhase, Reaction, START_RETRY, Start, StartProblem, TaskId};
 use alondra_engine_kernel::start_failures::{failed, problem_of, raise};
 use anyhow::Result;
 use std::path::Path;
@@ -20,7 +20,7 @@ pub async fn react(domain: &dyn Runtime, home: &Path) -> Result<()> {
             Reaction::Ask(task, problem) => {
                 raise(domain, &task, problem)?;
             }
-            Reaction::Retry(task) => retry(domain, home, &task, facts.get(&task).is_some_and(|f| f.closed)).await?,
+            Reaction::Retry(task) => retry(domain, home, &task, facts.get(&task).is_some_and(|f| f.closed || f.start == Start::Launched)).await?,
         }
     }
     Ok(())
@@ -77,9 +77,9 @@ fn record_plan_cancels(domain: &dyn Runtime, state: &DomainState) -> Result<()> 
     Ok(())
 }
 
-/// The user asked to try again: a task whose node they closed gets a new node in that node's
-/// folder; any other goes back to the gate, which starts it with its plan, or relaunches it when
-/// Alondra closed its node. A relaunch refused
+/// The user asked to try again: a task whose node closed gets a new node in that node's folder;
+/// any other goes back to the gate, which starts it with its plan, or relaunches it when Alondra
+/// closed its node. A relaunch refused
 /// for a reason of its own is a failed start like any other. Trying again a folder Claude Code
 /// did not trust is the user trusting it, so Alondra records that first, or says why it could not.
 async fn retry(domain: &dyn Runtime, home: &Path, task: &TaskId, closed: bool) -> Result<()> {

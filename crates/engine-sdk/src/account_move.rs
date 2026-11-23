@@ -224,7 +224,6 @@ async fn admit(domain: &Arc<dyn Runtime>, moving: &AccountMove) -> Result<(), St
     match admitted {
         Ok(driver) => {
             domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
-            domain.engine().forget_closed_task(&moving.task);
             Ok(())
         }
         Err(crate::sdk_owner::Failed { why, .. }) if latest(&**domain, &moving.task).is_some_and(|now| now.step == AccountMoveStep::Admitted) => {

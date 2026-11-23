@@ -723,8 +723,8 @@ async fn a_task_that_goes_back_to_work_while_its_session_is_removed_is_released_
     assert_eq!((task.state, task.agent_id.clone()), (TaskState::NotStarted, None), "ready to be relaunched, not working without a node");
     assert!(task.wrap_up.is_default());
     assert_eq!(rig.closing(), None);
-    assert_eq!(rig.domain.live().closed_task("t").map(|node| node.relaunch), Some(crate::live::Relaunch::ByItself),
-        "what a relaunch needs is kept, and Alondra starts it by itself");
+    assert_eq!(task.released.map(|node| node.relaunch), Some(crate::live::Relaunch::ByItself),
+        "what a relaunch needs is kept with the release, and Alondra starts it by itself");
     let told: Vec<_> = rig.domain.state().unwrap().interactions.values().map(|i| i.body.clone()).collect();
     assert!(!told.iter().any(|body| body.contains("closed while the user asked for changes")), "the orchestrator is not asked to launch it: {told:?}");
 }

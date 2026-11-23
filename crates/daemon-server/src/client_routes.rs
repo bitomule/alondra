@@ -31,7 +31,7 @@ pub(crate) use crate::node_close::Sessions;
 pub(crate) use new_work::Github;
 pub(crate) use alondra_daemon_engine::live::Relaunch;
 #[cfg(test)]
-pub(crate) use alondra_daemon_engine::live::{ClosedNode, Live};
+pub(crate) use alondra_daemon_engine::live::Live;
 pub(crate) use alondra_daemon_engine::reply::Reply;
 pub use pr_details::PrView;
 pub use pr_details::{GhView, ViaGh};

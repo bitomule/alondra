@@ -1321,6 +1321,9 @@ impl DomainState {
             t.started = lifecycle.resource().is_some_and(|resource| resource != ResourceEvidence::Reserved);
         }
         t.ending = ending_of(lifecycle);
+        if terminal || t.ending.is_some() || t.agent_id.is_some() {
+            t.released = None;
+        }
         if t.ending.is_some() || matches!(lifecycle.phase(),TaskPhase::Completed|TaskPhase::Cancelled) { t.pending_selection=None; }
         t.state = match phase {
             TaskPhase::Unstarted | TaskPhase::InProgress => if t.started { TaskState::Running } else { TaskState::NotStarted },

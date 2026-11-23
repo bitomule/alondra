@@ -25,7 +25,7 @@ pub fn facts(domain: &dyn Runtime, state: &DomainState) -> Result<BTreeMap<TaskI
     for task in state.tasks.values().filter(|task| !task.over() && !task.archived) {
         let scheduled = state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id));
         let auto = autos.iter().find(|row| row.task_id == task.id);
-        let closed = domain.live().closed_task(&task.id.0).map(|node| node.relaunch);
+        let closed = task.released.as_ref().map(|node| node.relaunch);
         let relaunching = closed == Some(Relaunch::ByItself);
         let start = match (retries.get(&task.id).filter(|(_, at)| *at > now), auto.map(|row| (row.state, row.reason))) {
             (Some((attempt, at)), _) => Start::Retry { attempt: *attempt, at: *at },

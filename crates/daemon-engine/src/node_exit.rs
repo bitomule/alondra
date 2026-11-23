@@ -52,8 +52,6 @@ pub const REPLACE_ABORTED: &str = "node ended after the orchestrator's replaceme
 pub fn take_out(domain: &dyn Runtime, session: &str, reason: &str, cwd: Option<String>, relaunch: Relaunch) -> anyhow::Result<Vec<TaskId>> {
     let agent = AgentId(session.to_owned());
     let state = domain.state();
-    let name = state.agents.get(&agent).map_or_else(|| format!("node/{}", &session[..session.len().min(8)]), |known| known.name.clone());
-    let node = crate::live::ClosedNode { name, cwd, relaunch };
     let released: Vec<_> = state.tasks.values()
         .filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.over() && !task.archived && task.final_presentation.is_none())
         .map(|task| task.id.clone())
@@ -63,13 +61,10 @@ pub fn take_out(domain: &dyn Runtime, session: &str, reason: &str, cwd: Option<S
         let state = domain.state();
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("release-{}-{}", task_id.0, crate::auth::random_hex(8)).into(),
-            expected_revision: state.revision, command: Command::ReleaseTask { task_id: task_id.clone(), reason: reason.into() },
+            expected_revision: state.revision, command: Command::ReleaseTask { task_id: task_id.clone(), reason: reason.into(), relaunch, cwd: cwd.clone() },
         };
         match domain.execute_as_system(envelope) {
-            Ok(_) => {
-                domain.live().remember_closed_task(&task_id.0, node.clone());
-                freed.push(task_id);
-            }
+            Ok(_) => freed.push(task_id),
             Err(failure) => log!("could not free {task_id} after its node was closed: {failure:?}"),
         }
     }

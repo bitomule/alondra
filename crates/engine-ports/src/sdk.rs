@@ -17,26 +17,7 @@ use std::pin::Pin;
 
 pub type Work<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// What a relaunch needs of the node that closed while it worked on a task.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClosedNode {
-    pub name: String,
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub relaunch: Relaunch,
-}
-
-/// Who starts the task's next node.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Relaunch {
-    /// The user closed it: a card asks them to relaunch the task or cancel it.
-    #[default]
-    AskUser,
-    /// Alondra closed it for a reason of its own: the automatic launch starts the next node, with
-    /// its retries and, past them, the card that says the task does not start.
-    ByItself,
-}
+pub use alondra_domain_rules::{ClosedNode, Relaunch};
 
 /// The last request of a task this daemon timed: how large the conversation was after it, when it
 /// started and how long its cache lasts. A file an older daemon wrote also says whether that
@@ -105,14 +86,9 @@ pub trait SdkEngine: Send + Sync {
     fn relaunch<'a>(&'a self, runtime: &'a dyn Runtime, home: &'a Path, task: &'a TaskId, by_itself: bool) -> Launched<'a>;
     /// What the engine knows of how every open task gets going.
     fn start_facts(&self, runtime: &dyn Runtime, state: &DomainState) -> anyhow::Result<BTreeMap<TaskId, StartFacts>>;
-    fn closed_task(&self, runtime: &dyn Runtime, task: &TaskId) -> Option<ClosedNode>;
-    fn remember_closed_task(&self, runtime: &dyn Runtime, task: &TaskId, node: ClosedNode);
-    fn forget_closed_task(&self, runtime: &dyn Runtime, task: &TaskId);
 
     /// The live state of the `claude --bg` node `session`.
     fn node(&self, runtime: &dyn Runtime, session: &str) -> Option<Node>;
-    /// The folder `session`'s node last reported working in.
-    fn node_cwd(&self, runtime: &dyn Runtime, session: &str) -> Option<String>;
     /// `session`'s node is gone: it is closed and out of the live view.
     fn node_removed(&self, runtime: &dyn Runtime, session: &str);
     fn close_interrupted_at(&self, runtime: &dyn Runtime, session: &str) -> Option<Millis>;

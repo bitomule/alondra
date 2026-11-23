@@ -53,7 +53,7 @@ to its fix group and issue.
 | S1 | [F-GH-4](#f-gh-4--closing-a-task-with-a-merged-pr-deletes-the-branch-of-a-remote-less-repo-another-repo-with-commits-that-exist-only-there-pr-503) · Closing a task with a merged PR deletes the branch of a remote-less repo (another repo) with commits that exist only there (PR #503) | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S1 | [F-STORE-7](#f-store-7--a-request-cleared-and-then-taken-back-by-its-task-leaves-its-cleared-row-and-the-daemon-no-longer-loads-its-state) · A request cleared and then taken back by its task leaves its «cleared» row, and the daemon no longer loads its state | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S1 | [F-ORCH-5](#f-orch-5--a-non-domain-error-in-the-schedule-runner-stops-the-whole-daemon-with-an-unreadable-optionstoml-it-enters-a-restart-loop) · A non-domain error in the schedule runner stops the whole daemon; with an unreadable `options.toml` it enters a restart loop | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
-| S1 | [F-STORE-4](#f-store-4--a-released-task-whose-closed-task-nodesjson-entry-is-lost-is-left-without-a-node-forever-nothing-relaunches-it-or-says-so) · A released task whose `closed-task-nodes.json` entry is lost is left without a node forever: nothing relaunches it or says so | low | [G2](#g2--a-released-task-always-has-a-way-back) · #519 |
+| S1 | [F-STORE-4](#f-store-4--a-released-task-whose-closed-task-nodesjson-entry-is-lost-is-left-without-a-node-forever-nothing-relaunches-it-or-says-so) · A released task whose `closed-task-nodes.json` entry is lost is left without a node forever: nothing relaunches it or says so | low | [G2](#g2--a-released-task-always-has-a-way-back) · #519 · fixed in #552 |
 | S2 | [F-CARDS-1](#f-cards-1--a-request-whose-tasks-ended-depends-on-a-single-message-to-the-orchestrator-if-that-batch-does-not-close-it-it-stays-open-forever-with-no-result-card-issue-353) · A request whose tasks ended depends on a single message to the orchestrator: if that batch does not close it, it stays open forever with no result card (issue #353) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
 | S2 | [F-CARDS-2](#f-cards-2--replacing-one-question-of-a-group-leaves-the-group-incomplete-forever-the-node-never-receives-the-other-answers) · Replacing one question of a group leaves the group incomplete forever: the node never receives the other answers | low | [G6](#g6--card-protocol-replacements-approvals-and-stale-deliveries) · #523 · fixed in #551 |
 | S2 | [F-CARDS-3](#f-cards-3--requesting-changes-or-just-replying-on-an-already-approved-plan-while-its-task-closes-disapproves-it-but-leaves-the-implementation-request-alive-the-plan-is-implemented-twice-or-with-the-old-version) · Requesting changes (or just replying) on an already approved plan while its task closes disapproves it but leaves the implementation request alive: the plan is implemented twice or with the old version | low-medium | [G6](#g6--card-protocol-replacements-approvals-and-stale-deliveries) · #523 · fixed in #551 |
@@ -77,7 +77,7 @@ to its fix group and issue.
 | S2 | [F-GH-7](#f-gh-7--a-merge-that-github-blocks-for-a-required-review-goes-back-to-the-node-and-invalidates-the-users-acceptance-in-a-loop) · A merge that GitHub blocks for a required review goes back to the node and invalidates the user's acceptance, in a loop | medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S2 | [F-GH-8](#f-gh-8--the-github-api-limit-still-raises-technical-cards-one-per-pr-in-the-watcher-and-another-per-pr-in-the-merger) · The GitHub API limit still raises technical cards: one per PR in the watcher and another per PR in the merger | low | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S2 | [F-LIFE-1](#f-life-1--an-unstarted-task-that-waits-for-other-tasks-shows-as-queued-slot-wait-not-waiting-for-tasks) · An unstarted task that waits for other tasks shows as "Queued" (slot wait), not "Waiting for tasks" | high | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
-| S2 | [F-LIFE-2](#f-life-2--reopening-a-task-whose-sdk-node-the-user-left-open-creates-a-claude---bg-execution-nobody-runs) · Reopening a task whose SDK node the user left open creates a `claude --bg` execution nobody runs | low | [G2](#g2--a-released-task-always-has-a-way-back) · #519 |
+| S2 | [F-LIFE-2](#f-life-2--reopening-a-task-whose-sdk-node-the-user-left-open-creates-a-claude---bg-execution-nobody-runs) · Reopening a task whose SDK node the user left open creates a `claude --bg` execution nobody runs | low | [G2](#g2--a-released-task-always-has-a-way-back) · #519 · fixed in #552 |
 | S2 | [F-ORCH-1](#f-orch-1--a-daemon-restart-in-the-middle-of-a-batch-stops-the-orchestrator-until-the-user-answers-a-card) · A daemon restart in the middle of a batch stops the orchestrator until the user answers a card | medium | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-ORCH-2](#f-orch-2--replanning-reminders-feed-themselves-one-batch-per-reminder-without-end) · Replanning reminders feed themselves: one batch per reminder, without end | low-medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
 | S2 | [F-ORCH-3](#f-orch-3--after-24-h-of-launch-failures-requests-are-left-untreated-and-the-watchdog-restarts-in-vain-every-5-min) · After 24 h of launch failures, requests are left untreated and the watchdog restarts in vain every 5 min | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
@@ -169,6 +169,32 @@ Related: issue #323 (new evidence).
   engine test that releases a task, drops the in-memory/JSON entry (simulated crash between the two
   writes) and checks the task is relaunched or asked about; a domain test for reopen with a kept SDK
   node. Ablation: write the fact after the commit again and see the test fail.
+- **Status: fixed** in #552 (commit `56d796f26`, from `main` at `10ebafced`). Before the fix, `main` at
+  `10ebafced` still had all three: the entry lived only in `closed-task-nodes.json`, `holder()` was only called from
+  tests, and `ReopenTask` decided `Admitted{execution: None}` for a kept node. Final behaviour:
+  - `ReleaseTask` carries `relaunch` (who starts the next node) and the closed node's `cwd`; the rule stores
+    `Task.released = ClosedNode{name, cwd, relaunch}` in the same transaction, and the store keeps it in the table
+    `task_released_nodes`, written by the same commit. The release `RecordNodeEnd` makes for a task that went back to
+    work stores `ClosedNode{…, relaunch: ByItself}` the same way. `materialize` clears it when a node takes the task
+    or the task ends or starts ending. `closed-task-nodes.json` is no longer written or read; a daemon that starts
+    deletes the old file. Every reader (`auto_launch::pass`, `start_failures::facts`, `relaunch_from`, the replace
+    path, the server's Tasks lists) reads `Task.released`.
+  - `DomainState::react`, which the daemon runs on every automatic-launch pass (`start_retries::react`), now asks
+    `holder()`: an unstarted task launched before, with no node, no open card and no record of its closed node, is
+    `Ownerless` and gets the `NodeClosed` card («Relaunch or cancel»). Its «try again» relaunches it
+    (`start_retries::retry` relaunches any task launched before, and `relaunch_from` no longer needs the record: it
+    takes the task's worktree, then the project). This also covers a task an older daemon released whose file entry
+    was lost before the upgrade.
+  - `ReopenTask` never keeps the node: every reopened task is left with no node and no execution, goes back to the
+    launch queue with its seniority, and the gate's SDK start resumes the saved session (`pending_reopening`). The
+    domain no longer records a `claude-bg` execution on reopen.
+  - Evidence (tests, each ablated by hand; output in #552):
+    `domain-rules` `tests::a_released_task_keeps_who_starts_its_next_node_in_the_commit_that_releases_it`,
+    `ownership_tests::a_released_task_with_no_record_of_its_closed_node_is_put_to_the_user`,
+    `sdk_node_tests::a_task_reopened_with_its_sdk_node_kept_by_the_user_waits_for_a_new_execution_that_is_heard`;
+    `engine-sdk` `auto_launch::tests::a_node_alondra_closed_is_relaunched_by_itself_by_the_daemon_that_restarts_after_it`
+    (release, the old file cannot be written, restart: relaunched by itself, no card) and
+    `auto_launch::tests::a_task_reopened_with_its_node_kept_by_the_user_gets_a_new_execution_that_resumes_its_session`.
 
 ### G3 · The daemon survives its own restarts and recoverable errors
 
@@ -490,7 +516,7 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 | Executing/Waiting/Dependency/Delivered with an execution | ExecutionReleased / ExecutionLeftForReview [no work, callbacks or effects] | Session::Absent with what was not consumed |
 
 - **Rejected**: every `Err(Refusal::…)` is typed; `apply` leaves the aggregate untouched (`lifecycle.rs:1662-1666`). In `domain-rules` a refusal becomes a `DomainError` (`refused`, `lifecycle.rs:3198`) and aborts the whole command. Facts on terminal states: `runtime_fact` returns `StaleExecution` because there is no session (`observations.rs:10`). In `Finishing`, every fact other than `HostEnded/HostStopped/TakenOver/TakeoverUnanswered` is taken "unchanged" (only the cursor advances, `observations.rs:21-24`).
-- **Terminals**: `Completed`/`Cancelled`. Only `Reopen` reopens them, and only two explicit commands emit it (`Command::ReopenTask`, `rules.rs:5296-5315`; adoption of the PR of a closed task, `rules.rs:5260-5294`). No late provider fact or answer reopens them: without a session `runtime_fact` refuses and `answer()` refuses (`commands.rs:684-698`). `ReopenTask` can re-admit the old node with a synthetic `claude --bg` execution (`Admitted{execution:None}` + `ResourceAvailable`, `rules.rs:5310-5313`).
+- **Terminals**: `Completed`/`Cancelled`. Only `Reopen` reopens them, and only two explicit commands emit it (`Command::ReopenTask`, `rules.rs:5296-5315`; adoption of the PR of a closed task, `rules.rs:5260-5294`). No late provider fact or answer reopens them: without a session `runtime_fact` refuses and `answer()` refuses (`commands.rs:684-698`). Since G2 (#552) `ReopenTask` never re-admits the old node: the reopened task has no node and no execution, and its next SDK execution comes from the gate.
 - **Invariants**: enforced by type: `Decisions` non-empty, `NonEmpty` in dependencies and drain, `Several` in `LiveState`, `ActiveExecution` (not `Resting`), `TaskLifecycle` without `Clone`/`Deserialize` (`compile_fail` doctest). Only assumed: that `Executing` never ends up with `Activity::Resting` (imposed by the `runtime_fact` paths and `ActiveExecution::new`, not by the type; `Tell` on `Executing` mutates `execution.0` without revalidating, `commands.rs:174`).
 - **Persistence and restart**: the journal is the truth; after a restart `load_journal` rebuilds, validates each task with `agrees` (`domain-rules/src/lifecycle.rs:1351-1480`), and loading fails if a row does not match. The aggregate's cursor is recomputed on replay (`event()` always uses `current cursor + 1`, `lifecycle.rs:617-620`): the domain journal stores neither the provider's cursor nor its stamp; deduplication of repeated facts lives upstream (cursor of `provider_observations`, see M-STORE-5) and in `turn_end_recorded` for turn ends.
 - **Concurrency**: the aggregate is pure; only `DomainState::decide` mutates it, inside a command, and the store serializes commands (out of scope, see STORE).
@@ -610,6 +636,7 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 - **Impact**: the row says "Delivering" forever; the node's facts are discarded; the `HandInput` deadline does not act (no recorded exit and no own host, `obligation_watch.rs:144`, `:263-266`).
 - **Deterministic test and ablation**: a domain test in `crates/domain-rules/src/tests.rs`, an SDK variant of `a_task_reopened_with_its_node_kept_by_the_user_keeps_working_with_it` (`tests.rs:4111-4121`, which today only covers `claude --bg`): admit through `AdmitExecution`, close with `KeptByUser`, reopen, and check that the current execution is not `claude-bg` (or that the task is left without a node, depending on the product decision) and that a `RecordRuntimeFacts` from the node is accepted. Today it fails on the host assert.
 - **Expected fix and files**: never admit `execution: None` for an SDK node. Either the reopened task is left without a node (as with `Closed|Gone`) and the gate starts a new SDK execution that resumes the session, or `AdmitExecution` is recorded with the SDK identity of the kept node. Files: `rules.rs` (`ReopenTask`), test.
+- **Status: fixed** in #552 (commit `56d796f26`) with the default decision: `ReopenTask` no longer keeps the node (every live node runs through the SDK, `NodePhase` has only `ThroughSdk` and `Closed`), so a reopened task waits with no node in the launch queue and the gate's start resumes the saved session. Tests: `sdk_node_tests::a_task_reopened_with_its_sdk_node_kept_by_the_user_waits_for_a_new_execution_that_is_heard` (replaces `reopening_with_the_original_node_kept_cannot_change_its_native_session_account`, which asserted the old behaviour) and `tests::a_task_reopened_with_its_node_kept_by_the_user_waits_for_a_new_node` (replaces `…_keeps_working_with_it`). Ablation: restoring the kept node makes both fail on the node assert.
 
 ### Hypotheses
 
@@ -626,6 +653,7 @@ Missing to confirm: a real sequence in which the delivery is settled (accepted o
 
 #### H-LIFE-4 · The task of F-LIFE-2 does not leave "Delivering" by itself
 Missing: confirm in the engine that no loop picks up a `claude-bg` execution in `InputPending` of a `ThroughSdk` node (gate: `passes_gate_in` requires `admitted_through_sdk`; `obligation_watch`: `Requeue` only if `hosts().owns(agent)`; `bg_handover` only advances handovers already recorded, `bg_handover.rs:235-242`).
+**Status: CONFIRMED, then fixed with F-LIFE-2** (#552). `engine-sdk` `auto_launch::tests::a_task_reopened_with_its_node_kept_by_the_user_gets_a_new_execution_that_resumes_its_session` runs the real automatic-launch pass and the gate twice after the reopen. With the `ReopenTask` fix reverted, no loop starts anything: after both passes the task still has the kept node and its `claude-bg` execution, and the test fails on that host (`left: "claude-bg"`). With the fix, the gate starts a new SDK execution (generation 2) that resumes the original session.
 
 ### Docs that differ from the code
 Differences between `docs/architecture/task-states.md` and the code:
@@ -2284,7 +2312,8 @@ Inventory (helpers: `foundation/src/save.rs:9` `save::atomic` does fsync of the 
 
 | File | Write | Also in SQLite? | Reconciliation at startup |
 |---|---|---|---|
-| `closed-sessions.json`, `closed-task-nodes.json`, `aborted-replaces.json` (`daemon-engine/src/live.rs:22-29`) | tmp+rename **without fsync**; an error is only logged | Yes: written **after** `ReleaseTask`/`RecordNodeEnd` (`daemon-engine/src/node_exit.rs:66-78`, `engine-sdk/src/task_closer.rs:264-278`) | None; unreadable → empty silently (`live.rs:107-113`) |
+| `closed-sessions.json`, `aborted-replaces.json` (`daemon-engine/src/live.rs:22-29`) | tmp+rename **without fsync**; an error is only logged | No | None; unreadable → empty silently (`live.rs:107-113`) |
+| ~~`closed-task-nodes.json`~~ (until G2, #552) | — | Replaced by `Task.released` in `task_released_nodes`, written by the commit of `ReleaseTask`/`RecordNodeEnd` | A daemon that starts deletes the old file; a task whose entry it held is caught by `holder()` (F-STORE-4) |
 | `orchestrator.json` (`engine-orchestrator/src/domain_orchestrator.rs:125-131`) | tmp+rename without fsync | Yes, after the batch claim (`:509` → `:528`) | Yes, `repair_incomplete` (`domain_orchestrator/recovery.rs:26`); unreadable → retries every 5 s |
 | `admission.json` (`engine-admission/src/admission.rs:304-310`) | `save::atomic` | Partial (pauses in SQLite first) | `pauses.rs:111-133` prunes `owed/resumed` |
 | `sdk/<instance>/launch-options.json` (`daemon-engine-model/src/launch.rs:136`) | `save::atomic` | Partial (`selection`), JSON before the commit (`engine-sdk/src/provider_transition.rs:472-473`) | Not confirmed |
@@ -2511,6 +2540,15 @@ The `git log` of `live.rs` shows only crate moves.
     a relaunch, instead of only in tests;
   - files: `daemon-engine/src/node_exit.rs`, `engine-sdk/src/task_closer.rs`, `daemon-engine/src/live.rs`,
     `store-sqlite`, `domain-rules/src/ownership.rs`.
+- **Status: fixed** in #552 (commit `56d796f26`); confirmed on `main` at `10ebafced` before the change (the entry
+  was still written by `remember_closed_task` after the commit, and `holder()` still had no production caller).
+  The closed node is `Task.released`, written by the commit that releases the task (table `task_released_nodes`), and
+  `DomainState::react` turns an `Ownerless` released task with no record into the `NodeClosed` card. Final behaviour
+  and evidence: [G2](#g2--a-released-task-always-has-a-way-back). Ablations: removing the write of `released` from
+  `ReleaseTask` makes `tests::a_released_task_keeps_who_starts_its_next_node_in_the_commit_that_releases_it` fail, and
+  makes the engine test after a restart fail: the restarted daemon no longer relaunches the task by itself; removing the `holder()` branch
+  of `react` makes `ownership_tests::a_released_task_with_no_record_of_its_closed_node_is_put_to_the_user` fail with no
+  reaction.
 
 ### Hypotheses
 

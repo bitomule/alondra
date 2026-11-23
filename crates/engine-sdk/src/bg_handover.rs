@@ -155,7 +155,6 @@ async fn admit(domain: &Arc<dyn Runtime>, handover: &Handover) -> Result<(), Str
         .map_err(|error| format!("the admission stopped: {error}"))?
         .map_err(|crate::sdk_owner::Failed { why, .. }| format!("the SDK execution was not admitted: {why}"))?;
     domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
-    domain.engine().forget_closed_task(&handover.task);
     Ok(())
 }
 

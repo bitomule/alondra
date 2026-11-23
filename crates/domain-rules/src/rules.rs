@@ -514,6 +514,15 @@ impl DomainState {
             .map(|t| &t.id)
     }
     /// An Agent works on one Task at a time: the other non-terminal Task it holds, if any.
+    /// What the next node of a task whose node is being taken from it needs of that node.
+    fn closed_node(&self, task: &TaskId, cwd: Option<String>, relaunch: Relaunch) -> ClosedNode {
+        let agent = self.tasks.get(task).and_then(|task| task.agent_id.as_ref());
+        let name = agent.and_then(|agent| self.agents.get(agent)).map(|known| known.name.clone())
+            .or_else(|| agent.map(|agent| format!("node/{}", agent.0.chars().take(8).collect::<String>())))
+            .unwrap_or_else(|| format!("node/{}", task.0));
+        ClosedNode { name, cwd, relaunch }
+    }
+
     pub fn busy_with(&self, agent: &AgentId, except: &TaskId) -> Option<&Task> {
         self.tasks.values().find(|t| &t.id != except && t.agent_id.as_ref() == Some(agent) && !t.over())
     }
@@ -3800,7 +3809,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;
@@ -5430,24 +5439,15 @@ impl DomainState {
             }
             Command::ReopenTask { task_id } => {
                 self.reopen_guard(actor, task_id)?;
-                let task = &self.tasks[task_id];
-                let released = task.agent_id.as_ref().is_some_and(|a| self.busy_with(a, task_id).is_some()
-                    || self.agents.get(a).is_none_or(|agent| !agent.phase.live()));
                 self.invalidate(task_id);
                 let t = self.tasks.get_mut(task_id).unwrap();
                 t.archived = false;
                 t.stall_closing = None;
                 t.open_pr = None;
-                let node_gone = matches!(t.wrap_up.node, Some(NodeEnd::Closed | NodeEnd::Gone));
                 t.wrap_up = WrapUp::default();
-                let kept = self.tasks[task_id].agent_id.clone().filter(|_| !released && !node_gone);
                 let record = LifecycleRecord::Reopened { input: self.next_input(task_id) };
                 self.decide(lifecycles, task_id, record)?;
                 self.tasks.get_mut(task_id).unwrap().final_presentation = None;
-                if let Some(node) = kept {
-                    self.decide(lifecycles, task_id, LifecycleRecord::Admitted { node, execution: None })?;
-                    self.decide(lifecycles, task_id, LifecycleRecord::ResourceAvailable)?;
-                }
             }
             Command::ConfirmCleanup { task_id, discard } => {
                 let t = self.assigned(actor, task_id)?;
@@ -5514,9 +5514,12 @@ impl DomainState {
                     && (t.cancelled() || t.ending == Some(TaskEnding::Cancelling) || self.unproved_checklist(t).is_empty());
                 if !closing && !t.state.terminal() && !t.ending() {
                     if matches!(end, NodeEnd::Closed | NodeEnd::Gone) && t.agent_id.is_some() {
+                        let node = self.closed_node(task_id, None, Relaunch::ByItself);
                         self.end_post_merge(task_id, PostMergeEnd::SessionOver, lifecycles)?;
                         self.release(task_id, lifecycles)?;
-                        self.tasks.get_mut(task_id).unwrap().wrap_up = WrapUp::default();
+                        let task = self.tasks.get_mut(task_id).unwrap();
+                        task.wrap_up = WrapUp::default();
+                        task.released = Some(node);
                         return Ok(());
                     }
                     return fail("not_closing", &format!("Task {} is not closing", task_id.0));
@@ -5550,7 +5553,7 @@ impl DomainState {
                     self.release(task_id, lifecycles)?;
                 }
             }
-            Command::ReleaseTask { task_id, reason } => {
+            Command::ReleaseTask { task_id, reason, relaunch, cwd } => {
                 system(actor)?;
                 nonempty(reason)?;
                 let task = self.active(task_id)?;
@@ -5560,7 +5563,9 @@ impl DomainState {
                 if task.agent_id.is_none() || task.final_presentation.is_some() {
                     return fail("conflict", "Task has no working Agent to release");
                 }
+                let node = self.closed_node(task_id, cwd.clone(), *relaunch);
                 self.release(task_id, lifecycles)?;
+                self.tasks.get_mut(task_id).unwrap().released = Some(node);
             }
             Command::AdmitExecution { task_id, agent_id, conversation, instance, host, model, account, provider, leaves_limit } => {
                 system(actor)?;
