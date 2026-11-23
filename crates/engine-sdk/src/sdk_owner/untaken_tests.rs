@@ -145,9 +145,9 @@ fn an_input_the_provider_holds_is_never_given_up() {
     driver.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 // The deadline is on the session's own word that it took the input, not on its first message:
 // a session that says it runs at once and writes nothing for minutes is never given up.
-#[cfg(feature = "real-hosts")]
 #[test]
 fn a_session_that_is_running_is_not_reoffered() {
     let slice = Slice::new();
@@ -165,10 +165,10 @@ fn a_session_that_is_running_is_not_reoffered() {
     driver.stop().unwrap();
 }
 
+#[cfg(feature = "real-hosts")]
 // Claude's background command ended and Claude opened no turn to take up its notice: nothing woke
 // the node. Once the deadline passes with no such turn, Alondra tells the node, as it tells Codex
 // at once, and the turn that takes it up ends the wait. This deadline is enforced by default.
-#[cfg(feature = "real-hosts")]
 #[test]
 fn finished_work_wakes_a_claude_node_after_two_minutes() {
     let slice = Slice::new();
@@ -320,8 +320,8 @@ pub fn replaced_with_the_gate_full(slice: &Slice, mut driver: Driver) -> Driver 
     next
 }
 
-/// The task holds no slot and its input waits in the gate's queue like any other, with no card.
 #[cfg(feature = "real-hosts")]
+/// The task holds no slot and its input waits in the gate's queue like any other, with no card.
 pub fn assert_waits_for_a_slot(slice: &Slice, driver: &mut Driver) {
     assert_eq!(driver.pending_permits(), 1, "its input waits for the gate");
     let gate = slice.domain.admission().snapshot(&*slice.domain, alondra_core::now_millis()).unwrap();
@@ -330,9 +330,9 @@ pub fn assert_waits_for_a_slot(slice: &Slice, driver: &mut Driver) {
     assert!(lifecycle(&*slice.domain).cards().is_empty(), "no card asks the user");
 }
 
+#[cfg(feature = "real-hosts")]
 /// The gate has room again: the host that took the place of the old one gets the input, Claude
 /// starts on it, and every host resumed the session the first one opened.
-#[cfg(feature = "real-hosts")]
 pub fn goes_on_when_the_gate_has_room(slice: &Slice, driver: &mut Driver, text: &str, times: usize) {
     slice.let_claude_start();
     slice.domain.admission().tune(crate::admission::Tuning::default());
