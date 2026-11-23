@@ -372,20 +372,17 @@ mod tests {
         s
     }
 
-    /// A daemon too busy to answer the cancel: it takes it and waits until the client gives up,
-    /// and reads out the task's view as `before`, then as `after` once the cancel came.
+    /// A daemon that applies the cancel and never answers it: it reads the whole request and
+    /// drops the connection, and reads out the task's view as `before`, then as `after`.
     fn busy_daemon(before: Vec<u8>, after: Vec<u8>) -> (Client, std::thread::JoinHandle<()>) {
-        use std::io::{Read, Write};
+        use std::io::Write;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let mut view = before;
             for _ in 0..3 {
                 let (mut stream, _) = listener.accept().unwrap();
-                let mut chunk = [0; 4096];
-                let read = stream.read(&mut chunk).unwrap();
-                if chunk[..read].starts_with(b"POST") {
-                    while stream.read(&mut chunk).unwrap() > 0 {}
+                if read_request(&mut stream).starts_with(b"POST") {
                     view = after.clone();
                     continue;
                 }
@@ -393,7 +390,24 @@ mod tests {
                 stream.write_all(&view).unwrap();
             }
         });
-        (crate::test_client(base).bounded(Duration::from_millis(100)), server)
+        (crate::test_client(base), server)
+    }
+
+    fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        use std::io::Read;
+        let mut request = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            let read = stream.read(&mut chunk).unwrap();
+            assert!(read > 0, "the client closed before its request was complete");
+            request.extend_from_slice(&chunk[..read]);
+            let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+            let head = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+            let body = head.lines().find_map(|line| line.strip_prefix("content-length:")).map_or(0, |n| n.trim().parse().unwrap());
+            if request.len() >= end + 4 + body {
+                return request;
+            }
+        }
     }
 
     fn task_view(s: &DomainState) -> Vec<u8> {
