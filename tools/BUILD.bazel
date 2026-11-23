@@ -187,6 +187,22 @@ sh_test(
     size = "small",
 )
 
+sh_test(
+    name = "state_inventory_test",
+    srcs = ["tests/test_state_inventory.py"],
+    data = [
+        "clock_guard.py",
+        "state_inventory.py",
+        "state_inventory_exempt.tsv",
+        "state_inventory_known.tsv",
+        "//:docs/architecture/state-machines.md",
+        "//agent-host:tree",
+        "//apple:tree",
+        "//crates:tree",
+    ],
+    size = "small",
+)
+
 # `bazel run //tools:edit_bench`: what each frequent edit reopens and what Bazel really reruns.
 sh_binary(
     name = "edit_bench",

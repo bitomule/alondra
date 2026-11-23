@@ -1,0 +1,4 @@
+# What the state inventory guard fails on today and an open fix owns, with its finding.
+# rule<TAB>subject<TAB>finding. The list only shrinks: an entry that no longer fails is a failure.
+file	sending.json	G12: the report sending machine (pending, held, sent) is missing from the inventory
+writer	options.toml	F-STORE-6
