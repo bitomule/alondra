@@ -11,6 +11,8 @@ the error: the card type, the rule it broke and the field.
 
 - **Created by**: who may send it. `node` is a node through the MCP, `hook` a Claude Code hook of a
   node held for the user, `orchestrator` the orchestrator through its tools, `alondra` the daemon.
+  The orchestrator never asks the user about a task (a question, an action, an input or a trial
+  scoped to it): that task's node asks, so the user never gets two cards about one thing.
 - **Read by**: who it goes to. A suggestion and a node stuck on refused cards go to the
   orchestrator, never to the user.
 - **Kind**: the `CardKind` it may carry.

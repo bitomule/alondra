@@ -186,6 +186,10 @@ pub enum Step {
     /// The orchestrator tells the user something, as `publish_information` does: a card `card`
     /// with this title and body, under no request.
     Inform { card: String, title: String, body: String },
+    /// The orchestrator asks the user, as `request_action` does, to do `title` for `task`: a card
+    /// `card` scoped to that task. With `refused`, the daemon must turn it down with that code, and
+    /// nothing is shown.
+    OrchestratorAction { task: String, card: String, title: String, #[serde(default)] refused: Option<String> },
     /// The user writes `text` in the reply field of the card `card` of the home, as the app does.
     Reply { card: String, text: String },
     /// Files of the daemon's home are written as another process of the Mac writes them, each
