@@ -621,6 +621,7 @@ impl<'a> Builder<'a> {
                 open_blockers: self.open_blockers.get(&t.id).cloned().unwrap_or_default(),
                 open_dependencies: t.dependencies.iter().chain(t.waiting_for_tasks.iter().filter(|id| !t.ended_task_waits.contains_key(*id))).chain(&t.delivered_dependencies)
                     .filter(|id| **id != t.id && state.tasks.get(id).is_some_and(|d| !d.state.terminal()))
+                    .collect::<std::collections::BTreeSet<_>>().into_iter()
                     .cloned()
                     .collect(),
                 waits_for_user,
@@ -1073,7 +1074,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
             .filter_map(|id| state.tasks.get(id))
             .filter(|d| !d.state.terminal())
             .map(|d| d.id.clone())
-            .collect();
+            .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
         assert_eq!(read.open_dependencies, open);
     }
     let mut queued = 0;
