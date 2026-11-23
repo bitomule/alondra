@@ -4437,7 +4437,7 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
 ```toml state-machine
 id = "M-GH-1"
 code = ["crates/domain-rules/src/model.rs::PrState", "crates/domain-rules/src/model.rs::PullRequest", "crates/core/src/pr.rs::CheckState", "crates/core/src/pr.rs::PrState"]
-truth = ["sqlite:pull_requests", "sqlite:pull_request_tasks", "sqlite:pr_notes_from_github", "sqlite:pull_request_reviews"]
+truth = ["sqlite:pull_requests", "sqlite:pull_request_tasks", "sqlite:pull_request_aliases", "sqlite:pr_notes_from_github", "sqlite:pull_request_reviews"]
 states = "crates/domain-rules/src/model.rs::PrState"
 variants = ["Open", "Closed", "Merged"]
 terminals = ["Merged"]
