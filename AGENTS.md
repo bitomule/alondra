@@ -73,6 +73,27 @@ or in the private repository that keeps it, never here.
   bazel-test-root` records it instead of rerunning (`musts` 0.9.0 or later). It says what is missing
   when it answers "Not recorded". Never pass `--test_filter` or tag/size filters to a run you mean
   to record.
+- **One Bazel queue serves every checkout of the Mac, one pass at a time**: each pass, and each
+  minute it runs, holds every other checkout back. Iterate without blocking it
+  (`docs/running-tests.md`, "Iterating without blocking the queue"):
+  - One full validation per delivery: iterate on the targets of the crates you change, then run
+    `musts run bazel-test-root` once, right before delivering. Only a later code change reopens it;
+    a prose or comment edit does not.
+  - Rebase only when it is needed: the delivery comes back for a conflict, or once right before that
+    full validation. Never on every move of `main`. After a rebase, `bazelisk build` the crates you
+    change first (it shows in seconds what new code on `main` broke), then validate once.
+  - Never rerun a failure unchanged. Read the test log and rerun only the failing target with
+    `--test_arg`. No retry loops in scripts. A test that fails under load and passes alone is that
+    test's bug: report it with `suggest`, do not retry until it passes.
+  - Run every Bazel command in the background with the longest limit the tool allows (`timeout`
+    7200000). Never start a second copy while the first still waits in the queue; relaunch only one
+    the limit killed.
+  - Never iterate with `--runs_per_test`, `--cache_test_results=no`, `--nocache_test_results` or
+    `--config=release`: they skip the cache. A failure under load is reproduced inside the test (see
+    "Tests"). `bazel run //tools:edit_bench` runs four passes per measurement: use `--query-only`
+    unless the task is to measure. An ablation runs only the test that must fail.
+  - Subagents never run Bazel: the task's own session builds and validates. Stacked PRs are
+    revalidated only when one of them comes back.
 - A new test, fixture or `BUILD.bazel` change keeps each check's `paths` equal to what its targets
   read: `make musts-scopes` fails on a missing path, and
   `python3 tools/musts_scopes.py propose <check>` prints the paths Bazel asks for.

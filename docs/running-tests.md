@@ -48,6 +48,25 @@ the daemon. The tests that start the real daemon several times are `manual` targ
 that the release's tests name (`RELEASE_ONLY_TESTS` in `deploy/brew/local-release.py`);
 `bazelisk test //crates/alondrad:codex_adoption_process_test` runs them on request.
 
+## Iterating without blocking the queue
+
+On a shared Mac every Bazel command waits in one queue (bazelqueue) that runs one pass at a time,
+so a pass holds back every other checkout for as long as it runs. A pass of cached tests is short; a
+pass gets long when a change reopens many targets (the test wrapper `tools/test-tmpdir.sh`, a low
+crate such as `core` or `engine-ports`) or when an option skips the cache. Waiting in the queue,
+not running, is where most of a checkout's time goes, and every extra pass adds to everyone's wait.
+
+The passes that can be avoided come from the same few habits, each with its rule in `AGENTS.md`
+("Build and test"):
+
+| Habit | Instead |
+|---|---|
+| The full validation again after every rebase onto a newer `main` | Rebase when a conflict needs it, or once before the final validation; build the changed crates first |
+| An unchanged rerun of a failure, or a script that retries the suite | Read the log, rerun only the failing target with `--test_arg`; a test that fails under load is a bug in it |
+| A second copy of a command after the first was killed while still queued, or started while it waits | Background with the longest limit; one copy at a time |
+| `--runs_per_test`, `--nocache_test_results`, `--config=release` to "prove" a fix under load | Reproduce the load inside the test with fake clocks and injected limits |
+| Subagents building next to their session | Only the task's session runs Bazel |
+
 ## Where a test writes
 
 A test owns everything it creates. The wrapper gives it `TMPDIR`, a short private folder it makes
