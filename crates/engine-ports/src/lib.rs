@@ -6,6 +6,8 @@ pub mod accounts;
 pub mod admission;
 pub mod agent_host;
 pub mod api;
+pub mod claude_history;
+pub mod conversation_file;
 pub mod disk;
 pub mod extensions;
 pub mod gate;

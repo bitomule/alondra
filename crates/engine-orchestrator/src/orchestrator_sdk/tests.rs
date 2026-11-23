@@ -19,18 +19,19 @@ async fn a_batch_through_the_sdk_is_one_turn_and_is_handed_once() {
     f.tick().await;
     let prompts = f.prompts();
     assert_eq!(prompts.len(), 1, "one batch, one prompt: {prompts:?}");
-    assert!(prompts[0].contains("Where do I put change 1?") && prompts[0].contains("Where do I put change 2?") && prompts[0].contains("new conversation"), "{}", prompts[0]);
+    assert!(prompts[0].contains("Where do I put change 1?") && prompts[0].contains("Where do I put change 2?") && prompts[0].contains("This conversation is yours across batches"), "{}", prompts[0]);
     assert_eq!(f.attempts(), ["handed", "handed"]);
     assert_eq!(f.pending(), 0);
     let runtime = load(&f.executor.home).unwrap();
     assert!(runtime.active_run.is_none() && runtime.last_error.is_none(), "{runtime:?}");
     let session = runtime.session_id.clone().unwrap();
-    assert!(f.arguments().contains(&format!("--session-id={session}")), "{:?}", f.arguments());
+    let conversation = runtime.conversation.as_ref().unwrap().id.clone();
+    assert!(f.arguments().contains(&format!("--session-id={conversation}")), "Claude starts the conversation: {:?}", f.arguments());
     assert!(f.arguments().contains(&"--permission-mode=auto".to_owned()), "{:?}", f.arguments());
     {
         let store = f.domain().store.lock().unwrap();
         for item in store.delivery_evidence_page(0).unwrap().into_iter().filter(|i| i.recipient_kind == "orchestrator") {
-            assert_eq!(store.orchestrator_delivery(item.attempt_id).unwrap().as_deref(), Some(session.as_str()), "each message records the session it was handed to");
+            assert_eq!(store.orchestrator_delivery(item.attempt_id).unwrap().as_deref(), Some(session.as_str()), "each message records the batch's own session it was handed to");
         }
     }
     assert!(!f.executor.home.join("runtime/orchestrator/owner.json").exists(), "the host's record goes with it");
@@ -41,41 +42,123 @@ async fn a_batch_through_the_sdk_is_one_turn_and_is_handed_once() {
     assert!(prompts[1].contains("Where do I put change 3?") && !prompts[1].contains("Where do I put change 1?"), "{}", prompts[1]);
 }
 
-/// The context of a batch is what Alondra writes in its prompt: each starts its own conversation,
-/// with the note the previous one left and the questions the orchestrator still waits on, and
-/// nothing of the conversations before it.
+/// The session a batch resumes, as the SDK passed it to Claude.
+fn resumed(arguments: &[String]) -> Option<String> {
+    arguments.iter().enumerate().find_map(|(at, argument)| argument.strip_prefix("--resume=").map(str::to_owned)
+        .or_else(|| (argument == "--resume").then(|| arguments.get(at + 1).cloned()).flatten()))
+}
+
+/// One conversation carries the batches: the first starts it and reads the whole state, every
+/// batch after it resumes the same session and reads only what arrived and what the orchestrator
+/// owes now, so a batch does not pay again for the state the conversation already holds.
 #[tokio::test]
-async fn every_batch_is_a_new_conversation_and_carries_what_the_next_needs() {
+async fn every_batch_resumes_the_one_conversation_and_reads_only_what_changed() {
     let f = fixture();
     let mut sessions = vec![];
+    let (mut books, mut bases) = (vec![], vec![]);
+    let long = format!("Where do I put change 3? {}The end of change 3.", "Every detail of it matters. ".repeat(120));
     for n in 1..=5 {
-        f.tell(&format!("m-{n}"), &format!("Where do I put change {n}?"));
+        let body = if n == 3 { long.clone() } else { format!("Where do I put change {n}?") };
+        f.tell(&format!("m-{n}"), &body);
         f.tick().await;
         let arguments = f.arguments();
-        assert!(!arguments.iter().any(|argument| argument.starts_with("--resume")), "batch {n} resumes a conversation: {arguments:?}");
-        let session = load(&f.executor.home).unwrap().session_id.unwrap();
-        assert!(arguments.contains(&format!("--session-id={session}")), "{arguments:?}");
-        sessions.push(session);
+        let runtime = load(&f.executor.home).unwrap();
+        let session = runtime.conversation.as_ref().unwrap().id.clone();
+        books.push(runtime.session_id.unwrap());
+        bases.push(f.domain().state().unwrap().orchestrator_batch_base);
         if n == 1 {
+            assert!(arguments.contains(&format!("--session-id={session}")) && resumed(&arguments).is_none(), "the first batch starts it: {arguments:?}");
             f.run(Actor::Orchestrator { generation: 0 }, "question", Command::AskQuestion {
                 attachments: vec![], interaction_id: "q-waits".into(), scope: Scope::Orchestrator { request_id: None },
                 recipient: Recipient::User, body: "Which repository is change 1 for?".into(), blocking: false,
                 options: vec![QuestionOption { id: "web".into(), label: "Web".into(), description: None }, QuestionOption { id: "ios".into(), label: "iOS".into(), description: None }],
                 card: CardSpec::derived(CardKind::Decide, "Choose the repository"),
             });
+        } else {
+            assert_eq!(resumed(&arguments).as_deref(), Some(session.as_str()), "batch {n} resumes the conversation: {arguments:?}");
         }
+        sessions.push(session);
     }
-    assert_eq!(sessions.iter().collect::<BTreeSet<_>>().len(), 5, "five batches, five conversations: {sessions:?}");
+    assert_eq!(sessions.iter().collect::<BTreeSet<_>>().len(), 1, "five batches, one conversation: {sessions:?}");
+    assert_eq!(books.iter().collect::<BTreeSet<_>>().len(), 5, "each batch keeps its own books, its deliveries and recovery: {books:?}");
+    assert!(bases.windows(2).all(|pair| pair[1] > pair[0]), "each batch starts after the Tasks of the one before, so a Request never gets Tasks twice: {bases:?}");
     let prompts = f.prompts();
     assert_eq!(prompts.len(), 5, "{prompts:?}");
-    for prompt in &prompts[1..] {
-        assert!(prompt.contains("YOUR NOTE FROM THE PREVIOUS BATCH:\nBatch handled\n"), "the note of the batch before: {prompt}");
-        assert!(prompt.contains("your question q-waits, still unanswered: Which repository is change 1 for?"), "{prompt}");
+    assert!(prompts[0].contains("This conversation is yours across batches") && prompts[0].contains("your question q-waits") == false, "{}", prompts[0]);
+    assert!(prompts[2].contains(&long), "a request that came between batches reaches the resumed turn whole");
+    for (n, prompt) in prompts.iter().enumerate().skip(1) {
+        assert!(prompt.contains("NEXT BATCH: a new turn of this conversation") && prompt.contains(&format!("Where do I put change {}?", n + 1)), "{prompt}");
+        assert!(!prompt.contains("YOUR NOTE") && !prompt.contains("Where do I put change 1?"), "no note, nothing the conversation already holds: {prompt}");
+        assert!(!prompt.contains("Load the alondra-orchestrator skill"), "the conversation already holds the skill: {prompt}");
+        if n != 2 {
+            assert!(prompt.len() < prompts[0].len(), "a resumed batch with nothing long in it reads less than the one that started the conversation");
+        }
     }
-    let lengths: Vec<usize> = prompts[1..].iter().map(String::len).collect();
-    assert!(lengths.windows(2).all(|pair| pair[0] == pair[1]), "a batch does not grow with the batches before it: {lengths:?}");
-    let context = load(&f.executor.home).unwrap().last_context;
-    assert_eq!(context, Some(crate::domain_orchestrator::BatchContext { first: 25, last: 25, window: None }), "each batch records the context it read");
+    let status = crate::domain_orchestrator::status(&f.executor).unwrap();
+    assert_eq!((status["conversation"]["turns"].as_u64(), status["conversation"]["tokens"].as_u64(), status["conversation"]["limit"].as_u64(),
+        status["conversation"]["started_because"].as_str()), (Some(5), Some(25), Some(150_000), Some("first")), "{status}");
+    assert!(status["conversation"]["cache_expires_at"].as_i64().is_some(), "{status}");
+    assert_eq!(status["owes"].as_u64(), Some(0), "{status}");
+    let runtime = load(&f.executor.home).unwrap();
+    let conversation = runtime.conversation.expect("the conversation is kept");
+    assert_eq!((conversation.turns, conversation.tokens, conversation.started_because), (5, 25, crate::orchestrator_conversation::Migration::First));
+    assert_eq!(runtime.last_context, Some(crate::domain_orchestrator::BatchContext { first: 25, last: 25, window: None }), "each batch records the context it read");
+}
+
+/// The conversation starts anew, at the start of a batch and only then, when it reached its size
+/// limit, when its prompt cache expired with a large conversation, or when its session cannot be
+/// resumed; the new one is told why, what the old one said last, and nothing has to be redone.
+#[tokio::test]
+async fn the_conversation_starts_anew_at_its_size_limit_after_its_cache_expired_large_or_once_it_is_lost() {
+    use crate::orchestrator_conversation::{MIGRATE_TOKENS, Migration};
+    let f = fixture();
+    let tokens = |n: u64| std::fs::write(format!("{}.tokens", f.capture.display()), n.to_string()).unwrap();
+    let session = || load(&f.executor.home).unwrap().conversation.unwrap().id;
+    let tick_at = |at: i64| {
+        let (_hold, stop) = tokio::sync::watch::channel(false);
+        let executor = &f.executor;
+        async move { executor.tick_with_clock(stop, Some(at)).await.unwrap() }
+    };
+    f.tell("m-1", "Where do I put change 1?");
+    f.tick().await;
+    let first = session();
+    tokens(MIGRATE_TOKENS);
+    f.tell("m-2", "Where do I put change 2?");
+    f.tick().await;
+    assert_eq!(session(), first, "the batch that reaches the limit still resumes it");
+    tokens(alondra_engine_ports::sdk::REFRESH_FROM_TOKENS);
+    f.tell("m-3", "Where do I put change 3?");
+    f.tick().await;
+    let second = session();
+    assert_ne!(second, first, "the next batch starts a new conversation");
+    assert!(resumed(&f.arguments()).is_none());
+    let prompt = f.prompts().pop().unwrap();
+    assert!(prompt.contains("THIS IS A NEW CONVERSATION") && prompt.contains("reached its size limit") && prompt.contains("The end of your last answer in it:\nBatch handled")
+        && prompt.contains("could not be kept in a file") && prompt.contains("Where do I put change 3?"), "{prompt}");
+    assert_eq!(load(&f.executor.home).unwrap().conversation.unwrap().started_because, Migration::Size);
+
+    f.tell("m-4", "Where do I put change 4?");
+    f.tick().await;
+    assert_eq!(session(), second, "a large conversation resumes while its cache holds");
+    f.tell("m-5", "Where do I put change 5?");
+    tick_at(alondra_core::now_millis() + 2 * 60 * 60_000).await;
+    let third = session();
+    assert_ne!(third, second, "its cache expired: a new conversation");
+    assert_eq!(load(&f.executor.home).unwrap().conversation.unwrap().started_because, Migration::CacheExpired);
+
+    tokens(25);
+    f.tell("m-6", "Where do I put change 6?");
+    f.tick().await;
+    assert_eq!(session(), third);
+    std::fs::remove_file(format!("{}.sessions", f.capture.display())).unwrap();
+    f.tell("m-7", "Where do I put change 7?");
+    tick_at(alondra_core::now_millis() + 3 * 60 * 60_000).await;
+    assert_eq!(session(), third, "the batch that tried to resume it did not start");
+    assert!(load(&f.executor.home).unwrap().conversation.unwrap().resume_failed);
+    tick_at(alondra_core::now_millis() + 4 * 60 * 60_000).await;
+    assert_ne!(session(), third, "the next batch starts a new one instead of trying again");
+    assert_eq!(load(&f.executor.home).unwrap().conversation.unwrap().started_because, Migration::Lost);
+    assert!(f.prompts().pop().unwrap().contains("Where do I put change 7?"), "the message waited and went to the new conversation");
 }
 
 // The first daemon with an SDK backend finds the claude -p batch the daemon it replaced left
@@ -146,11 +229,11 @@ fn the_host_of_a_batch_takes_one_prompt_and_refuses_another() {
     let batch = Batch {
         owner, backend: backend.clone(), home: f.executor.home.clone(), directory,
         node_plugin: plugin(crate::plugins::NODE), orchestrator_plugin: plugin(crate::plugins::ORCHESTRATOR),
-        projects_root: None, capability: "c".repeat(64), session: session.into(), prompt: String::new(),
+        projects_root: None, capability: "c".repeat(64), session: session.into(), resume: false, prompt: String::new(),
         domain: Arc::clone(&f.executor.domain), selection: fixture_selection(),
     };
     let ((configuration, _preparing), profile) = (configuration(&batch).unwrap(), profile(&batch));
-    let mut host = BatchHost::start(ProviderOwner(batch.owner), &configuration, session, &profile, "fixture:hold the first batch").unwrap();
+    let mut host = BatchHost::start(ProviderOwner(batch.owner), &configuration, session, false, &profile, "fixture:hold the first batch").unwrap();
     f.wait_held();
     assert_eq!(host.offer("the second batch").unwrap(), Handoff::RefusedBeforeOffer, "one batch, one turn");
     f.release();
@@ -181,7 +264,7 @@ fn the_projects_root_is_readable_and_never_writable() {
         Batch {
             owner, backend: f.domain().sdk().unwrap().0.clone(), home: f.executor.home.clone(), directory: f.executor.home.join("runtime/orchestrator"),
             node_plugin: plugin(crate::plugins::NODE), orchestrator_plugin: plugin(crate::plugins::ORCHESTRATOR),
-            projects_root: root.map(Path::to_path_buf), capability: "c".repeat(64), session: "00000000-0000-4000-8000-00000000c0de".into(), prompt: String::new(),
+            projects_root: root.map(Path::to_path_buf), capability: "c".repeat(64), session: "00000000-0000-4000-8000-00000000c0de".into(), resume: false, prompt: String::new(),
             domain: Arc::clone(&f.executor.domain), selection: fixture_selection(),
         }
     };

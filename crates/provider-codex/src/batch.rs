@@ -106,13 +106,14 @@ impl<O: HostOwner> BatchHost<O> {
         owner: O,
         configuration: &CodexConfiguration,
         session: &str,
+        resume: bool,
         profile: &OrchestratorProfile,
         prompt: &str,
     ) -> Result<Self, AdapterError> {
         let control = configuration.control()?;
         let session = SessionRecord {
             session_id: MessageUuid::new(session).map_err(|_| AdapterError::InvalidObservation)?,
-            continued: false,
+            continued: resume,
         };
         let mut host = OwnedHost::launch(
             &*configuration.hosts,

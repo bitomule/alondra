@@ -17,6 +17,7 @@ pub use alondra_engine_kernel::{domain_runtime, domain_store, metrics_capture, o
 pub mod domain_orchestrator;
 pub mod engine;
 pub mod orchestrator_codex;
+pub mod orchestrator_conversation;
 pub mod orchestrator_inbox;
 pub mod orchestrator_process;
 pub mod orchestrator_provider;

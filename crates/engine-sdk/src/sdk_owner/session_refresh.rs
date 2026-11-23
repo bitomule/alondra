@@ -12,9 +12,7 @@ use super::*;
 use alondra_engine_ports::sdk::LastRequest;
 use alondra_core::Millis;
 
-/// The size from which a conversation whose prompt cache expired starts anew instead of resuming:
-/// below it, rewriting the cache costs less than what a new session reads again to go on.
-pub(crate) const FROM_TOKENS: u64 = 100_000;
+pub(crate) use alondra_engine_ports::sdk::REFRESH_FROM_TOKENS as FROM_TOKENS;
 
 /// What a host needs to find the conversation its session holds.
 pub(super) struct Conversation {
@@ -26,8 +24,7 @@ pub(super) struct Conversation {
 /// conversation of at least `FROM_TOKENS` whose last request's cache, for as long as the provider
 /// said it lasts, expired by `now`.
 pub(crate) fn starts_anew(provider: Provider, last: Option<LastRequest>, now: Millis, pending_input: bool) -> bool {
-    provider == Provider::Claude && pending_input
-        && last.is_some_and(|last| last.tokens >= FROM_TOKENS && now >= last.requested_at.saturating_add(last.cache_ms))
+    provider == Provider::Claude && pending_input && last.is_some_and(|last| last.starts_anew_at(now))
 }
 
 /// Where the size and cache expiry a decision rests on came from.

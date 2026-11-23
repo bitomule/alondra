@@ -189,6 +189,43 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         state(report, &user, "t-t7", CANCELLED)?;
         ended(report, fakes, &user, &node)
     });
+    report.case("TC8", "The orchestrator's batches resume one conversation, and a new one starts, told why, once the old one reached its size limit", |report| {
+        let orchestrator = fakes.dir.join("orchestrator");
+        let batch_of = |request: &str| -> anyhow::Result<Option<serde_json::Value>> {
+            let text = std::fs::read_to_string(orchestrator.join("batches.jsonl")).unwrap_or_default();
+            Ok(text.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter(|batch| batch["prompt"].as_str().is_some_and(|prompt| prompt.contains(&format!("Request {request}")))).last())
+        };
+        let answered = |report: &mut Report, request: &str| -> anyhow::Result<serde_json::Value> {
+            let script = crate::fake::script::RequestScript { request_id: request.into(), tasks: vec![], answer: Some(format!("{request} needs no task")),
+                headline: None, title: None, summary: None };
+            super::steps::request(report, fakes, &user, &script, &format!("Answer {request}"))?;
+            wait(report, &format!("a batch of the orchestrator reads {request}"), || {
+                let batch = batch_of(request)?;
+                let seen = format!("{batch:?}");
+                Ok((batch, seen))
+            })
+        };
+        let first = answered(report, "req-t8a")?;
+        let second = answered(report, "req-t8b")?;
+        report.step("the second batch resumes the conversation of the first", || {
+            anyhow::ensure!(second["session"] == first["session"] && second["resumed"] == true, "{first} / {second}");
+            Ok(())
+        })?;
+        report.step("the orchestrator's conversation reaches its size limit", || {
+            std::fs::write(orchestrator.join("tokens"), "150000").map_err(Into::into)
+        })?;
+        let full = answered(report, "req-t8c")?;
+        report.step("the new conversation is small again", || std::fs::write(orchestrator.join("tokens"), "25").map_err(Into::into))?;
+        let fresh = answered(report, "req-t8d")?;
+        report.step("the batch after the limit starts a new conversation and is told why", || {
+            let prompt = fresh["prompt"].as_str().unwrap_or_default();
+            anyhow::ensure!(full["session"] == first["session"], "the batch that reached the limit still resumed it: {full}");
+            anyhow::ensure!(fresh["session"] != first["session"] && fresh["resumed"] == false, "{fresh}");
+            anyhow::ensure!(prompt.contains("THIS IS A NEW CONVERSATION") && prompt.contains("reached its size limit"), "{prompt}");
+            Ok(())
+        })
+    });
     report.case("F1", "A final delivery with an uncommitted file is refused, naming the file", |report| {
         request(report, fakes, &user, &task_script("req-f1", "t-f1", "Add a scratch-free file"), "Add a scratch-free file")?;
         let node = launched(report, fakes, "t-f1")?;

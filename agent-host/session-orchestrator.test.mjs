@@ -25,13 +25,13 @@ const value = (args, flag) => {
 
 try {
   const { Session } = await import('./session.js');
-  async function turn(name, orchestrator) {
+  async function turn(name, orchestrator, resume = false) {
     const home = join(root, name);
     mkdirSync(home);
     const capture = join(root, `${name}.json`);
     const observations = [];
     const run = new Session({
-      executable: '/fixture/original-claude', cwd: root, sessionId: session, orchestrator,
+      executable: '/fixture/original-claude', cwd: root, sessionId: session, orchestrator, resume,
       env: { HOME: home, PATH: '/fixture/no-js-runtime', FIXTURE_SCENARIO: 'success', FIXTURE_CAPTURE: capture },
       spawn: (options) => spawn(process.env.JS_BINARY__NODE_BINARY, [fixture, ...options.args], { cwd: options.cwd, env: options.env, signal: options.signal, stdio: ['pipe', 'pipe', 'inherit'] }),
       observe: (observation) => observations.push(observation),
@@ -59,6 +59,13 @@ try {
   assert.equal(value(args, '--session-id'), session);
   assert.equal(value(args, '--resume'), undefined);
   assert.equal(value(args, '--permission-prompt-tool'), undefined, 'nobody answers a prompt in an orchestrator turn');
+
+  const next = await turn('next', profile(), true);
+  assert.equal(next.observations.filter((o) => o.type === 'sdk' && o.kind === 'result').length, 1);
+  assert.equal(value(next.args, '--resume'), session, 'a later batch is a new turn of the same conversation');
+  assert.equal(value(next.args, '--session-id'), undefined, next.args.join(' '));
+  assert.equal(value(next.args, '--model'), 'opus', 'it keeps the orchestrator profile');
+  assert(next.args.includes('--restricted'), next.args.join(' '));
 
 } finally {
   rmSync(root, { recursive: true, force: true });

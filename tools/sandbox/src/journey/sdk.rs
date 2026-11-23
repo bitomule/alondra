@@ -242,7 +242,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         }
         report.snapshot("tasks", &user.view("tasks")?)
     });
-    report.case("S12", "Five messages, five batches: each is a new conversation of the orchestrator's native Claude, and what it sends the model does not grow", |report| {
+    report.case("S12", "Five messages, five batches: each is a new turn of one conversation of the orchestrator's native Claude, which the model reads again from its cache", |report| {
         let mut batches = vec![];
         for n in 1..=CONTEXT_BATCHES {
             let request_id = format!("req-ctx-{n}");
@@ -258,9 +258,9 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             batches.push(batch);
         }
         report.snapshot("orchestrator-context", &serde_json::json!(batches))?;
-        report.step("each batch starts with the same context: none carries the conversations before it", || {
+        report.step("each batch goes on with the conversation before it: its first request carries more messages than the one before", || {
             let messages: Vec<u64> = batches.iter().map(|batch| batch["messages"].as_u64().unwrap_or(0)).collect();
-            anyhow::ensure!(messages.iter().all(|count| *count == messages[0]), "messages the first request of each batch carried: {messages:?} ({batches:?})");
+            anyhow::ensure!(messages.windows(2).all(|pair| pair[1] > pair[0]), "messages the first request of each batch carried: {messages:?} ({batches:?})");
             Ok(())
         })
     });

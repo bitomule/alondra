@@ -51,6 +51,8 @@ pub(crate) struct Batch {
     pub(crate) projects_root: Option<std::path::PathBuf>,
     pub(crate) capability: String,
     pub(crate) session: String,
+    /// The batch is a new turn of `session`'s conversation; otherwise it starts that conversation.
+    pub(crate) resume: bool,
     pub(crate) prompt: String,
     pub(crate) selection: BatchSelection,
 }

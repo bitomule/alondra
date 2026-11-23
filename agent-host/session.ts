@@ -211,7 +211,7 @@ export class Session {
     if (profile?.reasoning_effort && !['low', 'medium', 'high', 'xhigh', 'max'].includes(profile.reasoning_effort)) throw new Error('The selected Claude reasoning effort is unsupported by this SDK');
     const permissions: Options = profile
       ? {
-          sessionId,
+          ...(config.resume ? { resume: sessionId } : { sessionId }),
           model: profile.model,
           ...(profile.reasoning_effort ? { effort: profile.reasoning_effort as NonNullable<Options['effort']> } : {}),
           tools: profile.tools,

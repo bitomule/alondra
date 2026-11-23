@@ -403,6 +403,10 @@ pub(super) fn search(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
 /// links to it, because the orchestrator is Alondra's own.
 pub(super) fn orchestrator(key: &str, context: &RenderContext<'_>) -> View {
     let mut view = common::view("orchestrator", key, Some("Alondra".into()), context, vec![]);
+    if let Some(live) = context.live.orchestrator.as_ref() {
+        view.sections.push(common::section("conversation", Some(t!(context.lang, "Orchestrator", "Orquestador").into()),
+            vec![Item::Facts(super::Facts { items: orchestrator_facts(live, context.lang) })]));
+    }
     if let Some(mut message) = common::action(super::action_id::Verb::Msg, "view", context.domain.revision,
         t!(context.lang, "Message", "Mensaje"), super::Style::Primary) {
         message.input = super::Input::Text { placeholder: t!(context.lang, "Write to Alondra…", "Escribe a Alondra…").into(),
@@ -411,6 +415,34 @@ pub(super) fn orchestrator(key: &str, context: &RenderContext<'_>) -> View {
         view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions: vec![message] })]));
     }
     view
+}
+
+/// What the orchestrator's conversation and inbox hold now: how close the conversation is to
+/// starting anew and why it started, what it owes and what it handed to the user.
+fn orchestrator_facts(live: &alondra_view_model::live::LiveOrchestrator, lang: super::Lang) -> Vec<super::Fact> {
+    let fact = |label: &str, value: String| super::Fact { kind: None, label: label.into(), value, tone: None, link: None };
+    let mut facts = vec![];
+    if let Some(conversation) = &live.conversation {
+        let why = match conversation.started_because.as_str() {
+            "size" => t!(lang, "the one before reached its size limit", "la anterior llegó a su tamaño máximo"),
+            "cache_expired" => t!(lang, "the cache of a large one expired", "caducó la caché de una grande"),
+            "account" => t!(lang, "the account or provider changed", "cambió la cuenta o el proveedor"),
+            "lost" => t!(lang, "the one before could not be resumed", "la anterior no se pudo reanudar"),
+            _ => t!(lang, "it was the first", "era la primera"),
+        };
+        facts.push(fact(t!(lang, "Conversation", "Conversación"), format!("{} / {} {} · {} {}",
+            conversation.tokens, conversation.limit, t!(lang, "tokens", "fichas"), conversation.turns, t!(lang, "turns", "turnos"))));
+        facts.push(fact(t!(lang, "Started because", "Empezó porque"), why.into()));
+        if let Some(expires) = &conversation.cache_expires_at {
+            facts.push(fact(t!(lang, "Cache until", "Caché hasta"), expires.clone()));
+        }
+    }
+    facts.push(fact(t!(lang, "Owes", "Debe"), live.owes.to_string()));
+    facts.push(fact(t!(lang, "Waiting messages", "Mensajes en cola"), live.queue_depth.to_string()));
+    if live.handed_to_you > 0 {
+        facts.push(fact(t!(lang, "Handed to you", "Te ha pasado"), live.handed_to_you.to_string()));
+    }
+    facts
 }
 
 pub(super) fn machine(context: &RenderContext<'_>) -> View {

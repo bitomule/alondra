@@ -1489,6 +1489,36 @@ fn the_orchestrator_key_holds_only_the_message_to_alondra() {
     assert_eq!(actions, [format!("msg:view@{}", state.revision)]);
 }
 
+/// The orchestrator's screen says how close its conversation is to starting anew and why it
+/// started, what it owes, what waits for it and what it handed to the user.
+#[test]
+fn the_orchestrator_screen_shows_its_conversation_what_it_owes_and_what_it_handed_over() {
+    let state = fixture();
+    let live = LiveSnapshot { orchestrator: Some(live::LiveOrchestrator {
+        working: false, summary: None, failure: None, queue_depth: 2, active_run_id: None, can_retry: false, can_cancel: false, waits_for_sign_in: false,
+        conversation: Some(live::LiveConversation { turns: 7, tokens: 61_000, limit: 150_000, cache_expires_at: Some("2026-11-22T14:00:00+01:00".into()), started_because: "size".into() }),
+        owes: 3, handed_to_you: 1,
+    }), ..Default::default() };
+    let facts = |lang| {
+        let view = render(&state, &live, Client::Tui, lang, "orchestrator", "");
+        view.sections.iter().flat_map(|section| &section.items).filter_map(|item| if let Item::Facts(facts) = item { Some(facts.items.clone()) } else { None })
+            .flatten().map(|fact| (fact.label, fact.value)).collect::<Vec<_>>()
+    };
+    let shown = |label: &str, value: &str| (label.to_owned(), value.to_owned());
+    assert_eq!(facts(Lang::Es), [
+        shown("Conversación", "61000 / 150000 fichas · 7 turnos"),
+        shown("Empezó porque", "la anterior llegó a su tamaño máximo"),
+        shown("Caché hasta", "2026-11-22T14:00:00+01:00"),
+        shown("Debe", "3"),
+        shown("Mensajes en cola", "2"),
+        shown("Te ha pasado", "1"),
+    ]);
+    let none = LiveSnapshot { orchestrator: Some(live::LiveOrchestrator { conversation: None, owes: 0, handed_to_you: 0, ..live.orchestrator.clone().unwrap() }), ..Default::default() };
+    let view = render(&state, &none, Client::Tui, Lang::En, "orchestrator", "");
+    let text = serde_json::to_string(&view).unwrap();
+    assert!(!text.contains("Conversation") && !text.contains("Handed to you") && text.contains("Owes"), "{text}");
+}
+
 #[test]
 fn no_view_answers_the_fleet_or_a_node() {
     for key in ["fleet", "node:a-1", "node:orchestrator"] {
@@ -3502,6 +3532,7 @@ fn orchestrator_waiting(can_retry: bool) -> LiveSnapshot {
     LiveSnapshot { orchestrator: Some(live::LiveOrchestrator {
         working: false, summary: Some("Claude exited without a successful terminal result".into()), failure: None,
         queue_depth: 1, active_run_id: Some("run-1".into()), can_retry, can_cancel: !can_retry, waits_for_sign_in: false,
+        conversation: None, owes: 0, handed_to_you: 0,
     }), ..Default::default() }
 }
 
@@ -3632,6 +3663,7 @@ fn a_request_not_split_yet_says_it_waits_for_a_claude_sign_in_while_no_account_h
     state.requests.insert("r-2".into(), Request::new("r-2".into(), "Still splitting".into()));
     let live = |waits_for_sign_in| LiveSnapshot { orchestrator: Some(live::LiveOrchestrator {
         working: false, summary: None, failure: None, queue_depth: 1, active_run_id: None, can_retry: false, can_cancel: false, waits_for_sign_in,
+        conversation: None, owes: 0, handed_to_you: 0,
     }), ..Default::default() };
     let subtitle = |live: &LiveSnapshot, lang| active_row(&state, live, Client::Ios, lang, "r-2").1.subtitle.unwrap();
     assert_eq!(subtitle(&live(true), Lang::Es), "Esperando una sesión de proveedor");

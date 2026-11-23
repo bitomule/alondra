@@ -34,12 +34,11 @@ const PREVIOUS_FILE: &str = "orchestrator-v2.json";
 pub const RECORDS: &[(&str, &str)] = &[(PREVIOUS_FILE, FILE)];
 const SUMMARY_LINE: usize = 200;
 const MAX_SUMMARY_BYTES: usize = 32 * 1024;
-/// The most of its final words a batch hands to the next one.
-const MAX_NOTE_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Runtime {
-    /// The conversation of the latest batch. Every batch starts its own: none is resumed.
+    /// The conversation of the latest batch: the orchestrator's one conversation, which every
+    /// batch resumes until it starts a new one (`conversation`).
     pub session_id: Option<String>,
     pub active_run: Option<Run>,
     pub last_run_id: Option<String>,
@@ -62,10 +61,9 @@ pub struct Runtime {
     /// The open recovery question after repeated unsuccessful attempts.
     #[serde(default)]
     pub stuck_problem: Option<String>,
-    /// What the last handled batch said at its end, for the next batch, which starts a new
-    /// conversation and has only what Alondra hands it.
+    /// The conversation every batch resumes, its size and its prompt cache.
     #[serde(default)]
-    pub note: Option<String>,
+    pub conversation: Option<crate::orchestrator_conversation::Conversation>,
     /// The context the latest batch read.
     #[serde(default)]
     pub last_context: Option<BatchContext>,
@@ -423,12 +421,21 @@ impl Executor {
         Ok(())
     }
 
-    fn prompt(&self, runtime: &Runtime, projects_root: Option<&Path>, messages: &[OutboxMessage]) -> Result<String> {
+    /// The batch's prompt. A batch that starts a conversation (`opening`, with what it is told of
+    /// the one before) reads the whole state; one that resumes it reads what changed and what the
+    /// orchestrator owes now.
+    fn prompt(&self, runtime: &Runtime, opening: Option<&str>, projects_root: Option<&Path>, messages: &[OutboxMessage]) -> Result<String> {
         let state = self.domain.state()?;
         let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. Every open Request below marked (no task of its own) leaves this batch with its Tasks, an answer given with close_request, folded into the open Task that already covers it, or a question to the user: an answer written only in this conversation reaches nobody. Before create_task, compare each such Request with the open Tasks listed below: when one already covers what it asks, create no Task; send what is new to that Task's node and close the Request with close_request and folded_into naming that Task (outcome folded). Never two Tasks for the same work. A Request that lists its tasks already has them: never give it Tasks again unless every one of them has ended. After processing the batch, finish this invocation. Do not wait or poll for future work.\n");
-        text.push_str("This is a new conversation, as every batch is: nothing of an earlier batch is in it but what Alondra writes below, which is current. Call tasks_in_progress or node only for what it does not say; do not infer that existing tasks need to be started again. End with a short note, a few sentences at most, of what the next batch needs that Alondra does not already hold: it reaches the next batch and nobody else.\n");
-        if let Some(note) = &runtime.note {
-            text.push_str(&format!("\nYOUR NOTE FROM THE PREVIOUS BATCH:\n{note}\n"));
+        if opening.is_none() {
+            text = String::from("You are Alondra's orchestrator, in the conversation that holds your skill and the batches before this one. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. Every open Request below marked (no task of its own) leaves this batch with its Tasks, an answer given with close_request, folded into the open Task that already covers it (outcome folded), or a question to the user. Before create_task, compare each such Request with the open Tasks listed below: never two Tasks for the same work. After processing the batch, finish this invocation. Do not wait or poll for future work.\n");
+        }
+        match opening {
+            Some(opening) => {
+                text.push_str("This conversation is yours across batches: Alondra resumes it for every batch, and says so when it starts a new one. What Alondra writes below is current; call tasks_in_progress or node only for what it does not say, and do not infer that existing tasks need to be started again.\n");
+                text.push_str(opening);
+            }
+            None => text.push_str("\nNEXT BATCH: a new turn of this conversation. What arrived since your last turn is below, with what you owe now. The state you read in earlier turns may have changed since: call tasks_in_progress or node for anything you need as it is now.\n"),
         }
         if !runtime.pending_resolutions.is_empty() {
             text.push_str("\nDURABLE RESOLUTION: Previous interrupted inbox batches have already been resolved and are NOT replayed. Do not repeat or continue any of them unless a NEW User message explicitly authorizes it. This does not mean their business actions succeeded. An open Request below with no Task of its own was not turned into work: handle it now, unless tasks_in_progress shows an open question about it.\n");
@@ -451,8 +458,16 @@ impl Executor {
         text.push_str(&transfer);
         let user = alondra_core::config::user_name();
         let opened = self.domain.store.lock_or_exit("the domain store").request_times()?;
-        text.push_str(&summary(&state, &Ages { now: now_millis(), opened }, |request| self.domain.request_launch(request).ok().flatten()
+        let shown = if opening.is_some() { Shown::Whole } else { Shown::Open };
+        text.push_str(&summary(&state, &Ages { now: now_millis(), opened }, shown, |request| self.domain.request_launch(request).ok().flatten()
             .map(|choices| choices_text(&user, &self.home, &choices))));
+        let owed = crate::orchestrator_inbox::ledger(&state, false);
+        if !owed.is_empty() {
+            text.push_str("\nWHAT YOU OWE THE NODES NOW:\n");
+            for line in owed {
+                text.push_str(&format!("- {line}\n"));
+            }
+        }
         for message in messages {
             text.push_str(&format!("\n{}\n", self.domain.engine().render_message(&state, message)));
             if let Some(case) = message.interaction_id.as_ref().and_then(|id| state.interactions.get(&InteractionId(id.clone()))) {
@@ -493,7 +508,7 @@ impl Executor {
         self.tick_with_clock(stop, None).await
     }
 
-    async fn tick_with_clock(
+    pub(crate) async fn tick_with_clock(
         &self,
         stop: tokio::sync::watch::Receiver<bool>,
         now: Option<i64>,
@@ -556,7 +571,16 @@ impl Executor {
             bail!("Required Alondra plugins are not installed; run alondra doctor --fix");
         };
         let run_id = process::uuid()?;
+        // Every run keeps a session id of its own for Alondra's books (its deliveries, its recovery,
+        // the batch base that keeps a Request from getting Tasks twice), as when every batch was a
+        // conversation of its own; the provider's conversation, which runs resume, has its own id.
         let session = process::uuid()?;
+        let migration = crate::orchestrator_conversation::migration(runtime.conversation.as_ref(), &selection.account, now);
+        let conversation_id = match (migration, runtime.conversation.as_ref()) {
+            (None, Some(conversation)) => conversation.id.clone(),
+            _ => process::uuid()?,
+        };
+        let resume = migration.is_none();
         let state = self.domain.state()?;
         let epoch = state.data_epoch.clone();
         let asked = crate::orchestrator_inbox::asked(&state);
@@ -579,6 +603,18 @@ impl Executor {
             id: run_id.clone(), message_ids: claimed.iter().map(|m| m.id).collect(),
             attempts, started_at: now, spawned: false, replans_only,
         };
+        let directory = self.home.join("runtime/orchestrator");
+        let opening = match migration {
+            Some(why) => {
+                let opening = self.open_conversation(runtime.conversation.as_ref(), why, &directory);
+                log!("orchestrator: batch {run_id} starts conversation {conversation_id}: {}", why.text());
+                let mut conversation = crate::orchestrator_conversation::Conversation::new(conversation_id.clone(), &selection.account, now, why);
+                conversation.opening = Some(opening.clone());
+                runtime.conversation = Some(conversation);
+                Some(opening)
+            }
+            None => None,
+        };
         runtime.active_run = Some(run.clone());
         runtime.last_run_id = Some(run_id.clone());
         runtime.session_id = Some(session.clone());
@@ -594,12 +630,11 @@ impl Executor {
             .filter(|root| root.is_dir());
         let prepared = self.domain.bind_orchestrator(&run_id)
             .map_err(|error| anyhow::anyhow!("cannot bind the execution's capability: {error}"))
-            .and_then(|capability| Ok((capability, self.prompt(&runtime, projects_root.as_deref(), &claimed)?)));
+            .and_then(|capability| Ok((capability, self.prompt(&runtime, opening.as_deref(), projects_root.as_deref(), &claimed)?)));
         let (capability, prompt) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => return self.failed(runtime, &run, format!("{error:#}"), None),
         };
-        let directory = self.home.join("runtime/orchestrator");
         let home = self.home.clone();
         let spawned_domain = Arc::clone(&self.domain);
         let spawned_capability = capability.expose_for_child_environment().to_owned();
@@ -626,7 +661,7 @@ impl Executor {
                 owner, domain: Arc::clone(&self.domain), backend: backend.clone(), home: self.home.clone(), directory: directory.clone(),
                 node_plugin, orchestrator_plugin, projects_root: projects_root.clone(),
                 capability: capability.expose_for_child_environment().to_owned(),
-                session: session.clone(), prompt, selection: selection.clone(),
+                session: conversation_id.clone(), resume, prompt, selection: selection.clone(),
             }, mark_spawned, cancel).await,
             None => {
                 drop(owner);
@@ -671,7 +706,14 @@ impl Executor {
                 other => other,
             }
         };
-        crate::metrics_capture::orchestrator_provider_batch(&*self.domain, &session, selection.account.provider, &output.stream.spent, now_millis());
+        // Claude reports what its session spent so far, earlier turns included: recorded under the
+        // conversation, the store keeps its growth. Codex reports this turn alone: recorded under it.
+        let spent_by = if selection.account.provider == alondra_core::accounts::Provider::Claude { &conversation_id } else { &run_id };
+        crate::metrics_capture::orchestrator_provider_batch(&*self.domain, spent_by, selection.account.provider, &output.stream.spent, now_millis());
+        // The conversation grew by whatever the turn read, however the turn ended.
+        if let (Some(context), Some(conversation)) = (output.stream.context(), runtime.conversation.as_mut().filter(|conversation| conversation.id == conversation_id)) {
+            conversation.read(context.last, now_millis());
+        }
         if let Some(context) = output.stream.context() {
             log!("orchestrator: batch {} read {} tokens in its first call and {} in its last (window {})",
                 run.id, context.first, context.last, context.window.map_or("unknown".to_owned(), |window| window.to_string()));
@@ -706,10 +748,20 @@ impl Executor {
                 self.save(&runtime)
             }
             BatchEnd::Handled => {
-                runtime.note = output.stream.note.as_deref().map(|note| bounded_note(note, MAX_NOTE_BYTES)).filter(|note| !note.is_empty());
+                if let Some(conversation) = runtime.conversation.as_mut().filter(|conversation| conversation.id == conversation_id) {
+                    conversation.said(output.stream.note.as_deref());
+                }
                 self.handled(runtime, &run, &asked)
             }
-            BatchEnd::NotStarted { why } => self.failed(runtime, &run, why, None),
+            BatchEnd::NotStarted { why } => {
+                let lost = resume && runtime.conversation.as_ref().filter(|conversation| conversation.id == conversation_id)
+                    .is_some_and(|conversation| self.conversation_gone(conversation, &directory));
+                if lost && let Some(conversation) = runtime.conversation.as_mut() {
+                    log!("orchestrator: batch {} could not resume conversation {conversation_id}, which the provider no longer keeps: the next batch starts a new one", run.id);
+                    conversation.resume_failed = true;
+                }
+                self.failed(runtime, &run, why, None)
+            }
             BatchEnd::Interrupted { why, .. } if effects_confirmed && !output.stream.denied && !output.stream.native_request_rejected => {
                 runtime.batch_handoffs.push(crate::orchestrator_provider::BatchHandoff {
                     run_id: run.id.clone(), selection: selection.clone(),
@@ -742,6 +794,10 @@ impl Executor {
         runtime.retry_at = None;
         runtime.consecutive_failures = 0;
         runtime.pending_resolutions.clear();
+        // A handled batch is a turn of the conversation, also one a restart found handled.
+        if let Some(conversation) = runtime.conversation.as_mut() {
+            conversation.turn_handled();
+        }
         self.rested(&mut runtime, run);
         let prior_handoffs = std::mem::take(&mut runtime.batch_handoffs);
         if let Some(problem) = runtime.stuck_problem.take() {
@@ -784,6 +840,37 @@ impl Executor {
             log!("orchestrator: batch {} reached the task limit and could not be told to go on: {error:?}", run.id);
         }
         Ok(())
+    }
+
+    /// Whether the provider no longer keeps `conversation`, so no batch can resume it: Claude
+    /// Code holds no transcript of it, or the Codex host no record of its thread.
+    fn conversation_gone(&self, conversation: &crate::orchestrator_conversation::Conversation, directory: &Path) -> bool {
+        let Some((backend, _)) = self.domain.sdk() else { return false };
+        match conversation.provider {
+            alondra_core::accounts::Provider::Claude => alondra_core::accounts::AccountId::parse(&conversation.account).ok()
+                .and_then(|account| crate::orchestrator_sdk::conversation_kept(&self.domain, backend, &self.home, &account, directory, &conversation.id))
+                .is_some_and(|kept| !kept),
+            alondra_core::accounts::Provider::Codex => backend.for_provider(alondra_core::accounts::Provider::Codex, &self.home)
+                .is_ok_and(|backend| !backend.state_root.join("native-threads").join(&conversation.id).exists()),
+        }
+    }
+
+    /// What a new conversation is told of the one before it: why it starts, and the old one,
+    /// written down in the orchestrator's working directory when Claude Code kept its transcript.
+    /// A conversation whose first turn never ended hands on what it was told itself.
+    fn open_conversation(&self, previous: Option<&crate::orchestrator_conversation::Conversation>,
+        why: crate::orchestrator_conversation::Migration, directory: &Path) -> String {
+        use crate::orchestrator_conversation::handoff;
+        let Some(previous) = previous else { return String::new() };
+        if previous.turns == 0 {
+            return previous.opening.clone().unwrap_or_default();
+        }
+        let file = match (previous.provider, self.domain.sdk(), alondra_core::accounts::AccountId::parse(&previous.account)) {
+            (alondra_core::accounts::Provider::Claude, Some((backend, _)), Ok(account)) =>
+                crate::orchestrator_sdk::keep_conversation(&self.domain, backend, &self.home, &account, directory, &previous.id),
+            _ => None,
+        };
+        handoff(previous, why, file.as_deref())
     }
 
     /// What a batch was about, as the user knows it: the cards and tasks its messages came from.
@@ -971,8 +1058,20 @@ impl Ages {
 /// The durable domain as the orchestrator needs it to act on a batch, which starts a new
 /// conversation: every open Request, every question it asked that waits for its answer, and
 /// every Task not archived travel in the prompt.
-fn summary(state: &DomainState, ages: &Ages, choices: impl Fn(&alondra_domain_rules::RequestId) -> Option<String>) -> String {
-    let mut text = String::from("\nDURABLE DOMAIN (open Requests and Tasks not archived):\n");
+/// How much of the domain a batch's prompt shows: the whole of it to a conversation's first turn;
+/// to a turn that resumes it, what is open: the Requests that need something of the orchestrator
+/// (no Task of their own, or every Task ended) in full, and the Tasks still open in one line each.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shown {
+    Whole,
+    Open,
+}
+
+fn summary(state: &DomainState, ages: &Ages, shown: Shown, choices: impl Fn(&alondra_domain_rules::RequestId) -> Option<String>) -> String {
+    let mut text = String::from(match shown {
+        Shown::Whole => "\nDURABLE DOMAIN (open Requests and Tasks not archived):\n",
+        Shown::Open => "\nDURABLE DOMAIN NOW (open Requests that need you, open Tasks):\n",
+    });
     let one_line = |body: &str| body.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(SUMMARY_LINE).collect::<String>();
     let state_name = |task: &alondra_domain_rules::Task| serde_json::to_value(task.state).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
     let open: Vec<_> = state.requests.values().filter(|request| !request.closed).collect();
@@ -981,6 +1080,9 @@ fn summary(state: &DomainState, ages: &Ages, choices: impl Fn(&alondra_domain_ru
     for request in open {
         let tasks: Vec<_> = state.tasks.values().filter(|task| task.request_id == request.id).collect();
         let unsplit = tasks.is_empty();
+        if shown == Shown::Open && ((!unsplit && !tasks.iter().all(|task| task.over())) || crate::orchestrator_inbox::handed_to_user(state, &request.id)) {
+            continue;
+        }
         let body = if unsplit && !tight { request.body.trim().to_owned() } else { one_line(&request.body) };
         let age = ages.of(&request.id).map(|age| format!(" ({age})")).unwrap_or_default();
         let marker = if unsplit {
@@ -1020,7 +1122,7 @@ fn summary(state: &DomainState, ages: &Ages, choices: impl Fn(&alondra_domain_ru
         text.push_str(&format!("your question {}{about}, still unanswered: {}\n", card.id, one_line(&card.body)));
     }
     let tasks_start = text.len();
-    for task in state.tasks.values().filter(|task| !task.archived) {
+    for task in state.tasks.values().filter(|task| !task.archived && (shown == Shown::Whole || !task.over())) {
         let agent = task.agent_id.as_ref().map_or("none".to_owned(), |agent| agent.0.clone());
         let pr = task.pr_id.as_ref().map(|pr| format!(" pr={pr}")).unwrap_or_default();
         text.push_str(&format!("task {} of request {}: \"{}\" state={} agent={agent}{pr}\n",
@@ -1034,12 +1136,6 @@ fn summary(state: &DomainState, ages: &Ages, choices: impl Fn(&alondra_domain_ru
 }
 
 /// At most `limit` bytes of `note`, cut at a character.
-fn bounded_note(note: &str, limit: usize) -> String {
-    let note = note.trim();
-    let end = note.char_indices().map(|(at, c)| at + c.len_utf8()).take_while(|end| *end <= limit).last().unwrap_or(0);
-    note[..end].to_owned()
-}
-
 /// The orchestrator phase and the actions available to the user.
 pub fn status(executor: &Executor) -> Result<serde_json::Value> {
     let runtime = load(&executor.home)?;
@@ -1051,12 +1147,24 @@ pub fn status(executor: &Executor) -> Result<serde_json::Value> {
         (_, Some(_)) => "failed",
         (None, None) => "idle",
     };
+    let state = executor.domain.state()?;
+    let owes = crate::orchestrator_inbox::ledger(&state, true).len();
+    let handed_to_you = state.interactions.values()
+        .filter(|i| matches!(i.system_card, Some(alondra_domain_rules::SystemCard::Inbox { about: alondra_domain_rules::InboxCard::UnsplitProblem, .. })) && state.open(i))
+        .count();
+    let conversation = runtime.conversation.as_ref().map(|conversation| serde_json::json!({
+        "id": conversation.id, "provider": conversation.provider, "account": conversation.account, "turns": conversation.turns,
+        "tokens": conversation.tokens, "limit": crate::orchestrator_conversation::MIGRATE_TOKENS,
+        "cache_expires_at": conversation.last_request_at.filter(|_| conversation.cache_ms > 0).map(|at| at.saturating_add(conversation.cache_ms)),
+        "started_at": conversation.started_at, "started_because": conversation.started_because,
+    }));
     Ok(serde_json::json!({
         "phase": phase, "can_retry": ambiguous, "can_cancel": runtime.active_run.is_some() && !ambiguous,
         "cancel_requested": runtime.cancel_requested,
         "active_run_id": runtime.active_run.as_ref().map(|run| run.id.clone()),
         "queue_depth": queue_depth, "last_error": runtime.last_error, "failure": runtime.failure, "retry_at": runtime.retry_at,
         "waits_for_sign_in": executor.domain.engine().account_wait().is_waiting(),
+        "conversation": conversation, "owes": owes, "handed_to_you": handed_to_you,
     }))
 }
 
@@ -1569,7 +1677,7 @@ mod tests {
         let prompt = last_prompt(&f);
         assert!(!prompt.contains("data_epoch=") && prompt.contains("Where do I put change 1?")
             && prompt.contains("Where do I put change 2?") && !prompt.contains("inbox message")
-            && !prompt.contains("interaction_id=") && prompt.contains("new conversation"), "{prompt}");
+            && !prompt.contains("interaction_id=") && prompt.contains("This conversation is yours across batches"), "{prompt}");
         assert!(prompt.contains(" (tasks: t not_started): Work\n") && prompt.contains("task t of request r: \"Task\" state=not_started agent=a\n"), "{prompt}");
         assert!(unhandled(domain).is_empty());
         let mut reminded = reminders(domain);
@@ -1605,9 +1713,11 @@ mod tests {
         ask_orchestrator(&f, 3);
         f.tick().await;
         let prompt = last_prompt(&f);
-        assert!(prompt.contains("new conversation") && prompt.contains("Where do I put change 3?")
+        assert!(prompt.contains("NEXT BATCH: a new turn of this conversation") && prompt.contains("Where do I put change 3?")
             && !prompt.contains("Where do I put change 1?") && !prompt.contains("inbox message"), "{prompt}");
-        assert_ne!(load(&f.executor.home).unwrap().session_id, runtime.session_id, "every batch is a conversation of its own");
+        let after = load(&f.executor.home).unwrap();
+        assert_ne!(after.session_id, runtime.session_id, "every batch keeps books of its own");
+        assert_eq!(after.conversation.map(|c| c.id), runtime.conversation.map(|c| c.id), "the batch resumes the conversation the first started");
     }
 
     /// Recorded from the 2026-10-03 run e8ab8f90: Read on the projects root was refused, the
@@ -2240,7 +2350,7 @@ mod tests {
         let f = fixture();
         ask_orchestrator(&f, 1);
         let state = f.executor.domain.state().unwrap();
-        let text = summary(&state, &no_ages(), |request| (request.0 == "r").then(|| "  options: project App · Effort: hard".to_owned()));
+        let text = summary(&state, &no_ages(), Shown::Whole, |request| (request.0 == "r").then(|| "  options: project App · Effort: hard".to_owned()));
         assert!(text.contains("request r (tasks: t not_started): Work\n  options: project App · Effort: hard\ntask t"), "{text}");
     }
 
@@ -2255,7 +2365,7 @@ mod tests {
         command(&f.executor.domain, Actor::User { user_id: "u".into() }, "reply", Command::CreateCardReply {
             request_id: "reply".into(), interaction_id: "notice".into(), body: "Why so late?".into(), auto_merge: false,
         });
-        let text = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
+        let text = summary(&f.executor.domain.state().unwrap(), &no_ages(), Shown::Whole, |_| None);
         assert!(text.contains("request reply (no task of its own): Why so late?\n  the user wrote it as a reply to the card notice “Read the weekly report”\n"), "{text}");
     }
 
@@ -2279,7 +2389,7 @@ mod tests {
             request_id: "recent".into(), body: "Fix the badge".into(), auto_merge: false, maintenance: false, message: false,
         });
         let now = 100 * 24 * hour;
-        let text = summary(&f.executor.domain.state().unwrap(), &ages(now, &[("old", now - 73 * hour), ("recent", now - 5 * hour), ("r", now - 10)]), |_| None);
+        let text = summary(&f.executor.domain.state().unwrap(), &ages(now, &[("old", now - 73 * hour), ("recent", now - 5 * hour), ("r", now - 10)]), Shown::Whole, |_| None);
         assert!(text.contains("request old (opened 3 days ago) (no task of its own): Split the public repo"), "{text}");
         assert!(text.contains("request recent (opened 5 hours ago) (no task of its own): Fix the badge"), "{text}");
         assert!(text.contains("request r (opened less than an hour ago) (tasks: t not_started): Work"), "{text}");
@@ -2289,10 +2399,10 @@ mod tests {
     fn a_request_whose_tasks_all_ended_is_told_to_be_closed() {
         let f = fixture();
         ask_orchestrator(&f, 1);
-        let before = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
+        let before = summary(&f.executor.domain.state().unwrap(), &no_ages(), Shown::Whole, |_| None);
         assert!(!before.contains("every task of it has ended"), "{before}");
         command(&f.executor.domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
-        let after = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
+        let after = summary(&f.executor.domain.state().unwrap(), &no_ages(), Shown::Whole, |_| None);
         assert!(after.contains("request r (tasks: t closing; every task of it has ended: close it with close_request, or create its next tasks): Work"), "{after}");
     }
 
@@ -2318,7 +2428,7 @@ mod tests {
         command(&f.executor.domain, Actor::User { user_id: "u".into() }, "fresh", Command::CreateRequest {
             request_id: "fresh".into(), body: "A node that waits holds no memory".into(), auto_merge: false, maintenance: false, message: false,
         });
-        let text = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
+        let text = summary(&f.executor.domain.state().unwrap(), &no_ages(), Shown::Whole, |_| None);
         assert!(body.len() * 60 > MAX_SUMMARY_BYTES, "the open requests alone outgrow the bound");
         for n in 0..60 {
             assert!(text.contains(&format!("request busy-{n} (tasks: t-busy-{n} not_started): ")), "busy-{n} lost its tasks:\n{text}");
@@ -2334,7 +2444,7 @@ mod tests {
         command(&f.executor.domain, Actor::User { user_id: "u".into() }, "long", Command::CreateRequest {
             request_id: "long".into(), body: long.clone(), auto_merge: false, maintenance: false, message: false,
         });
-        let text = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
+        let text = summary(&f.executor.domain.state().unwrap(), &no_ages(), Shown::Whole, |_| None);
         assert!(text.contains("end of the message"), "{text}");
     }
 

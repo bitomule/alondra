@@ -6,7 +6,9 @@
 //! from a successful run. A run that wrote `fakes/orchestrator/ask.json` has the next batch ask
 //! the user that card once, then moves it to `asked.json`. A run whose batch holds the case of a
 //! stopped node settles it with the outcome `fakes/orchestrator/stall.json` holds, then moves that
-//! file to `stall-settled-<case>.json`; without the file it leaves the case unsettled.
+//! file to `stall-settled-<case>.json`; without the file it leaves the case unsettled. A batch
+//! resumes the conversation `--resume` names, and reports the size `fakes/orchestrator/tokens`
+//! holds.
 use std::{
     io::{BufRead, Read, Write},
     path::PathBuf,
@@ -153,7 +155,8 @@ fn server(args: &[String]) -> Result<(PathBuf, Vec<String>)> {
 /// One batch as the native Claude of an SDK host runs it: its input, every call it makes as a tool
 /// use with its result, and one result for the input. It ends when the host closes its input.
 pub fn batch(fakes: &Fakes, args: &[String]) -> Result<i32> {
-    let session = flag(args, "--session-id").context("the SDK named no session")?.to_lowercase();
+    let resumed = flag(args, "--resume").is_some();
+    let session = flag(args, "--session-id").or_else(|| flag(args, "--resume")).context("the SDK named no session")?.to_lowercase();
     let model = flag(args, "--model").unwrap_or("opus").to_owned();
     let dir = fakes.dir.join("orchestrator");
     std::fs::create_dir_all(&dir)?;
@@ -179,7 +182,7 @@ pub fn batch(fakes: &Fakes, args: &[String]) -> Result<i32> {
         }
         let input = message["uuid"].as_str().context("an input without a uuid")?.to_lowercase();
         let prompt = message["message"]["content"].as_str().unwrap_or_default().to_owned();
-        append(&dir.join("batches.jsonl"), &json!({"at": now_ms(), "session": session, "account": super::native::account(), "prompt": prompt}))?;
+        append(&dir.join("batches.jsonl"), &json!({"at": now_ms(), "session": session, "resumed": resumed, "account": super::native::account(), "prompt": prompt}))?;
         let lifecycle = |state: &str| -> Result<Value> {
             Ok(json!({"type": "command_lifecycle", "command_uuid": input, "state": state, "session_id": session, "uuid": uuid()?}))
         };
@@ -192,11 +195,13 @@ pub fn batch(fakes: &Fakes, args: &[String]) -> Result<i32> {
             "mcp_servers": [{"name": SERVER, "status": "connected"}], "slash_commands": [], "output_style": "default", "skills": [], "plugins": [],
             "apiKeySource": "none",
         }))?;
+        // A journey plays a conversation of any size by writing it to `tokens`.
+        let tokens: u64 = std::fs::read_to_string(dir.join("tokens")).ok().and_then(|text| text.trim().parse().ok()).unwrap_or(25);
         let assistant = |content: Value| -> Result<Value> {
             Ok(json!({
                 "type": "assistant", "session_id": session, "uuid": uuid()?, "parent_tool_use_id": null,
                 "message": {"id": format!("msg_{}", hex(&random::<8>()?)), "type": "message", "role": "assistant", "model": model, "content": content,
-                    "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 25, "output_tokens": 1}},
+                    "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": tokens, "output_tokens": 1}},
                 "user_message_uuid": input, "user_message_uuids": [input],
             }))
         };

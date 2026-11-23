@@ -221,7 +221,7 @@ async fn legacy_resolution_save_failure_keeps_claims_and_preserves_an_unrelated_
                     last_error: Some("Keep the other run's explicit refusal".into()),
                     failure: Some(Failure::Denied),
                     retry_at: Some(123),
-                    note: Some("Keep the unrelated context".into()),
+                    conversation: Some(crate::orchestrator_conversation::Conversation::new("00000000-0000-4000-8000-0000000c0de0".into(), &alondra_core::accounts::AccountKey::native(alondra_core::accounts::Provider::Claude), 1, crate::orchestrator_conversation::Migration::First)),
                     ..Default::default()
                 },
             )
@@ -381,7 +381,7 @@ async fn persisted_handoff_survives_reconcile_failure_and_restart_without_a_cold
                     }),
                     last_error: Some("Preserve the unrelated refusal".into()),
                     failure: Some(Failure::Denied),
-                    note: Some("Keep this unrelated context".into()),
+                    conversation: Some(crate::orchestrator_conversation::Conversation::new("00000000-0000-4000-8000-0000000c0de0".into(), &alondra_core::accounts::AccountKey::native(alondra_core::accounts::Provider::Claude), 1, crate::orchestrator_conversation::Migration::First)),
                     ..Default::default()
                 },
             )

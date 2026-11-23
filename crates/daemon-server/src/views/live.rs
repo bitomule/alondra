@@ -551,6 +551,15 @@ async fn gather_inner(
         can_retry: value["can_retry"].as_bool().unwrap_or(false),
         can_cancel: value["can_cancel"].as_bool().unwrap_or(false),
         waits_for_sign_in: value["waits_for_sign_in"].as_bool().unwrap_or(false),
+        conversation: value["conversation"].as_object().map(|conversation| alondra_view_model::live::LiveConversation {
+            turns: conversation.get("turns").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            tokens: conversation.get("tokens").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            limit: conversation.get("limit").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            cache_expires_at: conversation.get("cache_expires_at").and_then(serde_json::Value::as_i64).map(timestamp),
+            started_because: conversation.get("started_because").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned(),
+        }),
+        owes: value["owes"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32,
+        handed_to_you: value["handed_to_you"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32,
     });
     let update = crate::updates::status(client.home());
     let update = update.available.then(|| Notice {
