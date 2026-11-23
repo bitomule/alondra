@@ -2002,6 +2002,31 @@ async fn a_takeover_that_works_without_the_user_closes_the_host_lost_card_and_th
 }
 
 #[cfg(feature = "real-hosts")]
+// 20 November (release check of the Codex test fix, Mac loaded): while a test stopped its owners, a
+// turn of its task was resumed with no owner left and a takeover started after the stop had joined
+// the ones under way. Its host outlived the test. A takeover asked for while every owner stops
+// starts nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_takeover_asked_for_while_every_owner_stops_starts_no_host() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    strand_host(&slice, driver);
+    let refuse = |refused: bool| std::fs::set_permissions(&slice.backend.state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
+    refuse(true);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
+    refuse(false);
+    let retaking = Arc::clone(&restarted);
+    restarted.while_owners_stop(move || crate::sdk_owner::retake(&*retaking, TASK.into()));
+    restarted.stop_sdk_owners();
+    restarted.join_retakes();
+    let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
+    assert!(!restarted.owns_sdk_host(&agent), "no host takes the execution over while the owners stop");
+}
+
+#[cfg(feature = "real-hosts")]
 // A session whose account changed identity could not be taken over, and each «Try again» opened a
 // card with its own push. An outage tells the user once, however many times it is tried, and a
 // takeover that works ends it.
