@@ -44,6 +44,8 @@ mod card_contract_tests;
 #[cfg(test)]
 mod card_tests;
 #[cfg(test)]
+mod card_protocol_tests;
+#[cfg(test)]
 mod checklist_tests;
 #[cfg(test)]
 mod close_after_acceptance_tests;
