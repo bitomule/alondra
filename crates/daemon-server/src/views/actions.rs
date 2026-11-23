@@ -3650,7 +3650,7 @@ for line in sys.stdin:
             id: id.into(), task_id: "t-1".into(), host: "github.com".into(),
             repository: "bitomule/alondra".into(), number: 154,
             head: "bbbbbbbb2222".into(), base: "main".into(), state: PrState::Open,
-            merged_head: None, allowed_methods: vec![MergeMethod::Merge], review: None,
+            merged_head: None, allowed_methods: vec![MergeMethod::Merge], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
         });
         let reviewed = ActionId::new(Verb::Changes, id, 1, Some("aaaaaaaa".into())).unwrap();
         let reply = changed_pr_head(&state, &reviewed, Lang::Es).unwrap();

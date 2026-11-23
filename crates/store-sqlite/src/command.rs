@@ -293,6 +293,7 @@ pub(super) fn stage(
         }
         for (index, effect) in outcome.effects.iter().enumerate() {
             let (kind, agent, task, interaction, message) = match effect {
+                DomainEffect::Relocate { .. } => continue,
                 DomainEffect::NotifyUser {
                     task_id,
                     interaction_id,

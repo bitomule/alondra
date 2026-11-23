@@ -37,7 +37,8 @@ impl DomainState {
         let texts = targets.iter().filter_map(|t| match t { DeliveryTarget::Text { text } => Some(("targets.text", Some(text.as_str()))), _ => None });
         for (field, text) in fields.into_iter().chain(texts) {
             for citation in citations(text.unwrap_or_default()) {
-                let matches = |pr: &PullRequest| normalize_pr_repository(&pr.repository) == citation.repository && pr.number == citation.number
+                let matches = |pr: &PullRequest| pr.is_tracked() && pr.number == citation.number
+                    && (normalize_pr_repository(&pr.repository) == citation.repository || pr.aliases.iter().any(|alias| normalize_pr_repository(alias) == citation.repository))
                     && citation.host.as_ref().is_none_or(|host| normalize_pr_host(&pr.host) == *host);
                 if !self.pull_requests.values().any(|pr| pr.task_id == *task_id && matches(pr)) { continue; }
                 let carried = targets.iter().any(|t| match t {

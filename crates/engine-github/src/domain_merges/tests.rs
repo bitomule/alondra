@@ -417,7 +417,7 @@ async fn branch_protection_github_refuses_to_show_counts_as_no_required_checks()
     let (gh, _) = private_repo_gh(&home, "{}");
     let pr = PullRequest { id: "pr".into(), task_id: "t".into(), host: "github".into(), repository: "owner/repo".into(),
         number: 7, head: HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None,
-        allowed_methods: vec![MergeMethod::Squash], review: None };
+        allowed_methods: vec![MergeMethod::Squash], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None, };
     assert_eq!(gh.required_checks(&pr, "main").await, Ok(vec![]));
 }
 
@@ -812,7 +812,7 @@ async fn required_checks_are_read_from_githubs_http_status_and_its_rate_limit() 
     std::fs::create_dir(&home.0).unwrap();
     let pr = PullRequest { id: "pr".into(), task_id: "t".into(), host: "github".into(), repository: "owner/repo".into(),
         number: 7, head: HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None,
-        allowed_methods: vec![MergeMethod::Squash], review: None };
+        allowed_methods: vec![MergeMethod::Squash], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None, };
     let none = api_gh(&home, "HTTP/2.0 200 OK", "HTTP/2.0 404 Not Found\\r\\nX-Ratelimit-Remaining: 4999");
     assert_eq!(none.required_checks(&pr, "main").await, Ok(vec![]));
     let limited = api_gh(&home, "HTTP/2.0 200 OK", "HTTP/2.0 403 Forbidden\\r\\nX-Ratelimit-Remaining: 0");

@@ -24,7 +24,7 @@ pub fn execute_system(domain: &dyn alondra_engine_ports::Runtime, command: Comma
 /// Only registered, open PRs need periodic observation. One final observation
 /// records a remote close or merge, then removes the PR from this set.
 fn watched(state: &DomainState) -> Vec<PullRequest> {
-    state.pull_requests.values().filter(|pr| pr.state == PrState::Open).cloned().collect()
+    state.pull_requests.values().filter(|pr| pr.is_tracked() && pr.state == PrState::Open).cloned().collect()
 }
 
 /// What the watcher waits on: the open PRs and the ones a node was seen opening.

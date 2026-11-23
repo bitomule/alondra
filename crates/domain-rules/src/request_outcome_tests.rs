@@ -63,7 +63,7 @@ fn merged(s: &mut DomainState, task_id: &str, number: u64) {
     s.pull_requests.insert(id.clone(), PullRequest {
         id: id.clone(), task_id: task_id.into(), host: "github.com".into(), repository: "owner/repo".into(), number,
         head: "head1".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()),
-        allowed_methods: vec![MergeMethod::Squash], review: None,
+        allowed_methods: vec![MergeMethod::Squash], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
     });
     s.tasks.get_mut(&task_id.into()).unwrap().pr_id = Some(id);
 }

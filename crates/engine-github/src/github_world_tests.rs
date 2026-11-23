@@ -5,7 +5,7 @@ use alondra_domain_rules::{PrId, TaskId};
 fn pr(number: u64) -> PullRequest {
     PullRequest {
         id: PrId::from("pr"), task_id: TaskId::from("t"), host: "github.com".into(), repository: "owner/repo".into(), number,
-        head: String::new(), base: String::new(), state: PrState::Open, merged_head: None, allowed_methods: vec![], review: None,
+        head: String::new(), base: String::new(), state: PrState::Open, merged_head: None, allowed_methods: vec![], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
     }
 }
 

@@ -29,6 +29,7 @@ mod node_machine;
 pub mod obligation_policy;
 mod ownership;
 mod plan;
+mod pr_identity;
 mod projection;
 mod refusal;
 pub mod reads;
@@ -106,6 +107,8 @@ mod stall_tests;
 #[cfg(test)]
 mod open_pr_close_tests;
 #[cfg(test)]
+mod pr_identity_tests;
+#[cfg(test)]
 mod answered_card_tests;
 #[cfg(test)]
 mod system_card_tests;
@@ -133,6 +136,7 @@ pub use lifecycle::*;
 pub use node_machine::*;
 pub use ownership::*;
 pub use plan::*;
+pub use pr_identity::*;
 pub use projection::*;
 pub use read_index::*;
 pub use refusal::*;
@@ -140,4 +144,4 @@ pub use schedule::*;
 pub use situation::*;
 pub use system_card::*;
 pub use alondra_foundation::{McpConnect, McpOrigin, McpScope, McpTraits};
-pub use rules::{cancelled_pr_comment, command_name, AccountLogin, AccountLoginPhase, body_title, result_excerpt, Clipped, RESULT_LIMIT, MCP_GO_ON_WITHOUT, MCP_SERVER_PREFIX, MCP_WAIT_PREFIX, McpServerKey, McpWaiting, MAX_MCP_SERVERS, McpNodeReading, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn, ALONDRA_MCP_SERVER, PLUGIN_SOURCE, UNASKABLE, UNWRITTEN_PLAN, decision_policy, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_REVIEW_REMIND, PlanReviewProblem, SCHEDULED_TASK_CANCELLED, SCHEDULED_TASK_ENDED, STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, TurnResult, UNSETTLED_AFTER_MERGE, UNSETTLED_DELIVERY, UNSETTLED_INSTRUCT, UNSETTLED_UNANSWERED, is_stall_case, stalled_card_id, ALONDRA_MERGES, ORCHESTRATOR_READER, ENDED_UNANSWERED_PREFIX, OPEN_SUGGESTIONS_MAX, SUGGESTION_ANSWERS, suggestion_options, unanswered_withdrawn_notice, cancelled_notice, delivery_withdrawn_for_questions, delivery_withdrawn_behind_pr, dependencies_done_notice, post_merge_wait_over_notice, Landed, cleanup_request, post_merge_reminder, merge_failed_text, merged_notice, closed_notice, node_closing_notice, plan_after_acceptance_notice};
+pub use rules::{cancelled_pr_comment, PR_DETACHED, PR_SUPERSEDED, detached_notice, joined_elsewhere_notice, command_name, AccountLogin, AccountLoginPhase, body_title, result_excerpt, Clipped, RESULT_LIMIT, MCP_GO_ON_WITHOUT, MCP_SERVER_PREFIX, MCP_WAIT_PREFIX, McpServerKey, McpWaiting, MAX_MCP_SERVERS, McpNodeReading, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn, ALONDRA_MCP_SERVER, PLUGIN_SOURCE, UNASKABLE, UNWRITTEN_PLAN, decision_policy, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_REVIEW_REMIND, PlanReviewProblem, SCHEDULED_TASK_CANCELLED, SCHEDULED_TASK_ENDED, STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, TurnResult, UNSETTLED_AFTER_MERGE, UNSETTLED_DELIVERY, UNSETTLED_INSTRUCT, UNSETTLED_UNANSWERED, is_stall_case, stalled_card_id, ALONDRA_MERGES, ORCHESTRATOR_READER, ENDED_UNANSWERED_PREFIX, OPEN_SUGGESTIONS_MAX, SUGGESTION_ANSWERS, suggestion_options, unanswered_withdrawn_notice, cancelled_notice, delivery_withdrawn_for_questions, delivery_withdrawn_behind_pr, dependencies_done_notice, post_merge_wait_over_notice, Landed, cleanup_request, post_merge_reminder, merge_failed_text, merged_notice, closed_notice, node_closing_notice, plan_after_acceptance_notice};

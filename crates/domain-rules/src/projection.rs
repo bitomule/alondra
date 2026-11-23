@@ -339,7 +339,7 @@ impl DomainState {
             _ => None,
         }).collect();
         let open: Vec<(&PrId, &str)> = prs.iter().copied()
-            .filter(|(id, head)| self.pull_requests.get(*id).is_some_and(|pr| pr.state == PrState::Open && pr.head == *head)
+            .filter(|(id, head)| self.pull_requests.get(*id).is_some_and(|pr| pr.is_tracked() && pr.state == PrState::Open && pr.head == *head)
                 && self.interactions.get(interaction_id).is_some_and(|presentation|
                     self.handed_back_for(presentation, &FeedbackTarget::PullRequest { pr_id: (*id).clone(), head: (*head).to_owned() }).is_none()))
             .collect();

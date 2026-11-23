@@ -129,7 +129,7 @@ mod tests {
     fn task_with_two_open_prs() -> DomainState {
         let pr = |repository: &str, number: u64, head: &str| alondra_domain_rules::PullRequest {
             id: hosted_pr_id("github.com", repository, number), task_id: "t".into(), host: "github.com".into(), repository: repository.into(), number,
-            head: head.into(), base: "main".into(), state: alondra_domain_rules::PrState::Open, merged_head: None, allowed_methods: vec![], review: None,
+            head: head.into(), base: "main".into(), state: alondra_domain_rules::PrState::Open, merged_head: None, allowed_methods: vec![], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
         };
         let mut state: DomainState = serde_json::from_value(serde_json::to_value(DomainState::new("epoch")).unwrap()).unwrap();
         let (first, second) = (pr("me/app", 1, "aaa"), pr("me/site", 2, "bbb"));

@@ -495,6 +495,20 @@ pub enum Command {
         pr_id: PrId,
         allowed_methods: Vec<MergeMethod>,
     },
+    /// What the provider's adapter decided a read of a registered pull request says: which pull
+    /// request it is and where it lives now.
+    ObservePrAddress {
+        pr_id: PrId,
+        read: PrRead,
+        read_started_at: Millis,
+        verdict: PrAddressVerdict,
+    },
+    /// The user takes a pull request Alondra cannot check out of Alondra, without closing or
+    /// merging it.
+    DetachPr {
+        pr_id: PrId,
+        at: Millis,
+    },
     PublishStackReadiness {
         task_id: TaskId,
         presentation_id: InteractionId,
@@ -1060,6 +1074,12 @@ pub enum DomainEffect {
         task_id: TaskId,
         title: String,
         reason: String,
+    },
+    /// The pull request's address no longer leads to it: the adapter finds it again by its
+    /// locator and reports what it found with `ObservePrAddress`.
+    Relocate {
+        pr_id: PrId,
+        locator: ProviderLocator,
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -35,11 +35,16 @@ fn hosted_pr(id: &str) -> bool {
             && s.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
     };
+    let (number, copy) = match number.split_once('~') {
+        Some((number, copy)) => (number, Some(copy)),
+        None => (number, None),
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     segment(owner)
         && segment(name)
-        && !number.is_empty()
-        && number.bytes().all(|b| b.is_ascii_digit())
+        && digits(number)
         && number.parse::<u64>().is_ok_and(|number| number > 0 && number <= alondra_foundation::MAX_REVISION)
+        && copy.is_none_or(|copy| digits(copy) && copy.parse::<u64>().is_ok_and(|copy| copy >= 2))
 }
 
 /// Encode an opaque ID as exactly one URL path segment.
@@ -69,6 +74,7 @@ mod tests {
             "gitlab.example.com/bitomule/alondra#154",
             "gitlab/bitomule/alondra#154",
             "gitlab./bitomule/alondra#154",
+            "github.com/ana/lumo#42~2",
         ] {
             assert!(valid(id), "{id}");
         }
@@ -88,6 +94,10 @@ mod tests {
             "%2F",
             "a:b",
             "a@b",
+            "github.com/ana/lumo#42~",
+            "github.com/ana/lumo#42~1",
+            "github.com/ana/lumo#42~x",
+            "github.com/ana/lumo#42~2~3",
         ] {
             assert!(!valid(id), "{id}");
         }
