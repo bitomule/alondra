@@ -439,6 +439,41 @@ final class TriageSnapshotTests: XCTestCase {
 
     private func language(_ spanish: Bool) -> SnapshotLanguage { spanish ? .spanish : .english }
 
+    private static let joinedCopyReply = [
+        false: #"{"protocol":1,"outcome":"rejected","code":"pr_superseded","message":"This card was another copy of the same pull request; use the one that remains","result":{"kind":"refused","title":"This card was another copy of the same pull request; use the one that remains"}}"#,
+        true: #"{"protocol":1,"outcome":"rejected","code":"pr_superseded","message":"Esta tarjeta era otra copia del mismo PR; usa la que queda","result":{"kind":"refused","title":"Esta tarjeta era otra copia del mismo PR; usa la que queda"}}"#,
+    ]
+
+    /// A pull request Alondra cannot check says why and offers only to take it out of Alondra.
+    func test_aPullRequestAlondraCannotCheckOffersOnlyRemoval() throws {
+        for spanish in [false, true] {
+            let name = spanish ? "card-pr-uncheckable-es" : "card-pr-uncheckable"
+            let document = spanish ? try Fixtures.spanish(try Fixtures.document(name)) : try Fixtures.document(name)
+            let card = try XCTUnwrap(document.sections.flatMap(\.items).compactMap { item -> Card? in
+                if case .card(let card) = item { card } else { nil }
+            }.first)
+            XCTAssertEqual(card.actions.compactMap(\.id), ["detach_pr:github.com/example/repo#12@6"])
+            XCTAssertTrue(card.more.isEmpty)
+            XCTAssertNil(card.reply)
+            let store = try single(document, spanish: spanish)
+            assertScreen([.light, .dark], language: language(spanish), inWindow: true) { Harness(store: store) }
+        }
+    }
+
+    /// Merging or closing from a card that turned out to be another copy of the same pull request
+    /// does nothing and says which card to use.
+    func test_aJoinedCopyIsRefusedSayingWhichCardRemains() throws {
+        for spanish in [false, true] {
+            let reply = try ContractCodec.decode(ActionResponse.self, from: Data(try XCTUnwrap(Self.joinedCopyReply[spanish]).utf8))
+            guard case .failure(let why) = OutcomeStyle(reply) else { return XCTFail("a refusal fails") }
+            let store = try pullRequest(spanish: spanish) { actions, card in
+                actions.action = try XCTUnwrap(card.more.first { $0.id?.hasPrefix("close_unmerged:") == true })
+                actions.error = why
+            }
+            assertScreen([.light, .dark], language: language(spanish), inWindow: true) { Harness(store: store) }
+        }
+    }
+
     func test_closingWithoutMergingAsksFirstInRed() async throws {
         for spanish in [false, true] {
             let store = try pullRequest(spanish: spanish) { actions, card in

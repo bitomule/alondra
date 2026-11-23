@@ -144,7 +144,7 @@ mod tests {
             Refusal::BlockedByQuestion { need: "q".into() }, Refusal::BlockedByTask { title: "t".into() }, Refusal::WaitsForTask { title: "t".into() },
             Refusal::UpstreamPrOpen { number: 1 }, Refusal::MethodNotAllowed { method: MergeMethod::Merge, allowed: vec![] },
             Refusal::NoMethodChosen { number: 1 }, Refusal::StaleHead { number: 1 }, Refusal::ResultBehindPr { number: 1 }, Refusal::MergeInProgress { number: 1 },
-            Refusal::PrClosed { number: 1 }, Refusal::PrAlreadyMerged { number: 1 }, Refusal::NewerResult, Refusal::UnansweredMessage, Refusal::PendingUserMessage, Refusal::UserMessageUnavailable, Refusal::AlreadyAnswered, Refusal::Withdrawn,
+            Refusal::PrClosed { number: 1 }, Refusal::PrAlreadyMerged { number: 1 }, Refusal::PrSuperseded, Refusal::PrDetached, Refusal::PrUncheckable, Refusal::NewerResult, Refusal::UnansweredMessage, Refusal::PendingUserMessage, Refusal::UserMessageUnavailable, Refusal::AlreadyAnswered, Refusal::Withdrawn,
             Refusal::ClarificationPending, Refusal::TaskNotActive, Refusal::TaskClosing, Refusal::Changed, Refusal::NotForYou,
             Refusal::NodeUnreachable { node: "n".into() }, Refusal::NothingToInterrupt, Refusal::DeviceNotApproved, Refusal::StorageUnavailable,
             Refusal::GithubUnreachable, Refusal::NoLongerAvailable, Refusal::DefaultAccountStays { name: "n".into() },

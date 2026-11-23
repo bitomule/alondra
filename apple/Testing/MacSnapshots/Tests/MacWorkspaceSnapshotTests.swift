@@ -310,6 +310,30 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 720), spanish: true) { MacServiceDetail(presentation: store) }
     }
 
+    func test_card_aPullRequestAlondraCannotCheckOffersOnlyRemoval() throws {
+        let store = try presentation(detail: "card-pr-uncheckable-mac")
+        assertWindow(size: CGSize(width: 900, height: 720)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_aPullRequestAlondraCannotCheckOffersOnlyRemoval_spanish() throws {
+        let store = try presentation(detail: "card-pr-uncheckable-es-mac", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 720), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_aJoinedCopyIsRefusedSayingWhichCardRemains() throws {
+        let store = try presentation(detail: "card-pr-mac") {
+            $0.returnReasons["hf-weekly-2026-09-30"] = "This card was another copy of the same pull request; use the one that remains"
+        }
+        assertWindow(size: CGSize(width: 900, height: 720)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_aJoinedCopyIsRefusedSayingWhichCardRemains_spanish() throws {
+        let store = try presentation(detail: "card-pr-es-mac", spanish: true) {
+            $0.returnReasons["hf-weekly-2026-09-30"] = "Esta tarjeta era otra copia del mismo PR; usa la que queda"
+        }
+        assertWindow(size: CGSize(width: 900, height: 720), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     func test_card_aReplyWaitingForAPausedNodeSaysSo() throws {
         let store = try presentation(detail: "card-reply-waiting-mac")
         assertWindow(size: CGSize(width: 900, height: 720)) { MacServiceDetail(presentation: store) }

@@ -14,7 +14,7 @@ use super::{
 use alondra_domain_rules::{CardType, InboxCard, Need, SystemCard,
     AvailableAction, Author, CardKind, CardSpec, ContentKind as DomainContent,
     DeliveryTarget, DocumentRevisionId, FeedbackTarget, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
-    InteractionPayload, InteractionSubject, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, Task, clip, fit_title,
+    InteractionPayload, InteractionSubject, PrId, PrIdentity, PrState, PullRequest, UnresolvableReason, QuestionGroup, QuestionOption, Recipient, Scope, Task, clip, fit_title,
     included_files, without_included_files,
 };
 
@@ -483,10 +483,45 @@ fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLi
     lines
 }
 
+/// The pull request of a card Alondra cannot check: which one it is is unknown, so the card says
+/// why and offers only to take it out of Alondra (`detach_action`).
+fn uncheckable_pr<'a>(item: &InboxItem, context: &RenderContext<'a>) -> Option<&'a PullRequest> {
+    let interaction = interaction_of(item, context.domain)?;
+    card_pr(item, interaction, context.domain).filter(|pr| pr.identity.is_unresolvable())
+}
+
+/// Why the card of a pull request Alondra cannot check offers only its removal, and what that
+/// removal leaves alone.
+fn uncheckable_why(item: &InboxItem, context: &RenderContext<'_>) -> Option<String> {
+    let pr = uncheckable_pr(item, context)?;
+    let lang = context.lang;
+    let reason = match &pr.identity {
+        PrIdentity::Unresolvable { reason: UnresolvableReason::AddressReused, .. } => t!(lang,
+            "This pull request's old address now leads to a different pull request",
+            "La dirección antigua de este PR lleva ahora a otro PR"),
+        _ => t!(lang,
+            "This pull request's repository no longer exists or Alondra has no access to it",
+            "El repositorio de este PR ya no existe o Alondra no tiene acceso"),
+    };
+    let removal = t!(lang, "“Remove from Alondra” doesn't close or merge the pull request",
+        "«Quitar de Alondra» no cierra el PR ni hace merge");
+    Some(format!("{reason}. {removal}."))
+}
+
+/// The one way out of a card whose pull request Alondra cannot check: forget it here, never touch it
+/// on GitHub.
+fn detach_action(pr: &PullRequest, context: &RenderContext<'_>) -> Option<Action> {
+    let lang = context.lang;
+    let id = action_id(Verb::DetachPr, &pr.id.0, context.domain.revision, None)?;
+    let mut action = button(id.to_string(), t!(lang, "Remove from Alondra", "Quitar de Alondra"), Role::Advance);
+    action.stamp = Some(t!(lang, "Removed", "Quitado").into());
+    Some(action)
+}
+
 /// Why a pull request's card offers no merge, when nothing else on it says so already.
 fn merge_unavailable(item: &InboxItem, context: &RenderContext<'_>) -> Option<String> {
     let interaction = interaction_of(item, context.domain)?;
-    let pr = card_pr(item, interaction, context.domain).filter(|pr| pr.state == PrState::Open)?;
+    let pr = card_pr(item, interaction, context.domain).filter(|pr| pr.state == PrState::Open && !pr.identity.is_unresolvable())?;
     let live = live_pr(pr, context);
     if blocked_reason(item, context).is_some() || live.is_some_and(|detail| detail.conflicts || detail.stacked_on.is_some()) {
         return None;
@@ -593,7 +628,9 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             Some(humanize_task_ids(spec.why.trim(), domain)).filter(|why| !why.is_empty()),
         ),
     };
-    let why = match interaction.and_then(|i| waiting_reply(item, i, context)).or_else(|| unanswered_message_line(item, context)) {
+    let why = match uncheckable_why(item, context)
+        .or_else(|| interaction.and_then(|i| waiting_reply(item, i, context)))
+        .or_else(|| unanswered_message_line(item, context)) {
         Some(reply) => Some(why.map_or_else(|| reply.clone(), |why| format!("{reply}\n\n{why}"))),
         None => why,
     };
@@ -658,7 +695,10 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     let changes = visible.iter().position(|action| ActionId::parse(&action.id).is_ok_and(|id| id.verb == Verb::Changes))
         .map(|at| visible.remove(at))
         .filter(|changes| changes.enabled);
-    more.extend(extra_actions(item, interaction, context));
+    let uncheckable = uncheckable_pr(item, context).is_some();
+    if !uncheckable {
+        more.extend(extra_actions(item, interaction, context));
+    }
     visible.retain(|action| action.enabled);
     more.retain(|action| action.enabled);
     if visible.len() > VISIBLE_ACTIONS {
@@ -674,6 +714,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             changes.enabled = interaction.is_some_and(|interaction| !interaction.withdrawn);
             Some(changes)
         }
+        None if uncheckable => None,
         None => reply_action(item, interaction, context),
     };
     if context.client != Client::Ios {
@@ -1878,6 +1919,9 @@ fn delivery_actions(
         }
         return (visible, more);
     };
+    if pr.identity.is_unresolvable() {
+        return (detach_action(pr, context).into_iter().collect(), vec![]);
+    }
     let revision = context.domain.revision;
     let open: Vec<(&PullRequest, &str)> = pr_targets(interaction, domain).into_iter()
         .filter(|(target, _)| target.state == PrState::Open && (own_pr(item).is_none() || target.id == pr.id))

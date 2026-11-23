@@ -165,6 +165,15 @@ fn tui_shots() {
             let html = page(&mut app);
             std::fs::write(out.join(format!("{shot}-{name}.html")), html).unwrap();
         }
+        let mut uncheckable = app_with_the_pr_card(lang);
+        let mut card = view_fixture(if es { "card-pr-uncheckable-es-tui.json" } else { "card-pr-uncheckable-tui.json" });
+        card["key"] = format!("card:{CARD}").into();
+        uncheckable.on_msg(Msg::ViewCard { key: format!("card:{CARD}"), result: Ok(serde_json::from_value(card).unwrap()) });
+        let mut joined = answered(lang, Outcome::refused(&Refusal::PrSuperseded, view_lang));
+        for (shot, app) in [("13-pr-uncheckable", &mut uncheckable), ("14-joined-copy-refused", &mut joined)] {
+            std::fs::write(out.join(format!("{shot}-{name}.html")), page(app)).unwrap();
+            std::fs::write(out.join(format!("{shot}-light-{name}.html")), light_page(app)).unwrap();
+        }
         let html = page(&mut crash_report_refused(lang));
         std::fs::write(out.join(format!("12-crash-report-refused-{name}.html")), html).unwrap();
         let html = page(&mut task_on_another_model(lang));
@@ -185,6 +194,16 @@ fn task_on_another_model(lang: crate::i18n::Lang) -> App {
 }
 
 fn page(app: &mut App) -> String {
+    themed_page(app, "#16181d", "#d7dae0")
+}
+
+/// The same screen in a terminal with a light profile: what the TUI leaves to the terminal's own
+/// colours turns light, and its named colours stay.
+fn light_page(app: &mut App) -> String {
+    themed_page(app, "#fafafa", "#24292e")
+}
+
+fn themed_page(app: &mut App, background: &str, foreground: &str) -> String {
     let backend = ratatui::backend::TestBackend::new(WIDTH, HEIGHT);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|frame| draw::draw(frame, app)).unwrap();
@@ -212,8 +231,8 @@ fn page(app: &mut App) -> String {
         rows.push('\n');
     }
     format!(
-        "<!doctype html><meta charset=\"utf-8\"><style>body{{margin:0;background:#16181d}}\
-         pre{{margin:0;padding:12px;font:15px/1.25 Menlo,monospace;color:#d7dae0;background:#16181d}}</style>\
+        "<!doctype html><meta charset=\"utf-8\"><style>body{{margin:0;background:{background}}}\
+         pre{{margin:0;padding:12px;font:15px/1.25 Menlo,monospace;color:{foreground};background:{background}}}</style>\
          <pre>{rows}</pre>"
     )
 }

@@ -23,6 +23,8 @@ pub enum PrStatus {
     Ready,
     /// GitHub has not answered yet, or is still working out whether it merges.
     Unknown,
+    /// Alondra cannot check which pull request this is, so it does nothing with it on GitHub.
+    Uncheckable,
 }
 
 pub fn status(pr: &PullRequest, live: Option<&LivePullRequest>) -> PrStatus {
@@ -30,6 +32,9 @@ pub fn status(pr: &PullRequest, live: Option<&LivePullRequest>) -> PrStatus {
         PrState::Merged => return PrStatus::Merged,
         PrState::Closed => return PrStatus::Closed,
         PrState::Open => {}
+    }
+    if pr.identity.is_unresolvable() {
+        return PrStatus::Uncheckable;
     }
     let Some(live) = live.filter(|live| live.fetched) else { return PrStatus::Unknown };
     let any = |state: CheckState| live.checks.iter().any(|check| check.state == state);
@@ -61,6 +66,7 @@ pub fn label(status: PrStatus, lang: Lang) -> Label {
         PrStatus::Blocked => (t!(lang, "Blocked on GitHub", "Bloqueado en GitHub"), Tone::Warning),
         PrStatus::Ready => (t!(lang, "Ready to merge", "Listo para merge"), Tone::Success),
         PrStatus::Unknown => (t!(lang, "Checking with GitHub…", "Consultando GitHub…"), Tone::Neutral),
+        PrStatus::Uncheckable => (t!(lang, "Can't be checked", "No se puede comprobar"), Tone::Warning),
     };
     Label { text: text.into(), tone, elapsed: None }
 }

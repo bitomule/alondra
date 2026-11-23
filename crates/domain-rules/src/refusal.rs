@@ -32,6 +32,12 @@ pub enum Refusal {
     PrClosed { number: u64 },
     /// GitHub says the PR was merged already, so it cannot be closed without merging.
     PrAlreadyMerged { number: u64 },
+    /// The card is a copy of a pull request that joined another record: the one left acts for it.
+    PrSuperseded,
+    /// The user removed the pull request from Alondra.
+    PrDetached,
+    /// Alondra cannot check which pull request this is, so it does nothing on the provider.
+    PrUncheckable,
     /// A newer result replaced the one the user looked at.
     NewerResult,
     PendingUserMessage,
@@ -111,6 +117,9 @@ impl Refusal {
             "forbidden" => Self::NotForYou,
             "storage_unavailable" => Self::StorageUnavailable,
             "unchanged" => Self::Unchanged,
+            "pr_superseded" => Self::PrSuperseded,
+            "pr_detached" => Self::PrDetached,
+            "pr_not_unresolvable" => Self::Changed,
             _ => Self::NoLongerAvailable,
         }
     }
@@ -124,7 +133,7 @@ mod tests {
     /// the catalog lists as only reachable by a node; a new code must be put in one of them.
     #[test]
     fn every_code_the_rules_produce_is_known_to_the_refusal_catalog() {
-        let source = [include_str!("rules.rs"), include_str!("rules/plan_review.rs"), include_str!("checklist.rs")].concat();
+        let source = [include_str!("rules.rs"), include_str!("rules/plan_review.rs"), include_str!("rules/pr_identity.rs"), include_str!("checklist.rs")].concat();
         let mut found = std::collections::BTreeSet::new();
         for marker in ["fail(\"", "refuse(\"", "DomainError::new(\"", "fail(\n", "Some((\""] {
             for part in source.split(marker).skip(1) {
