@@ -43,8 +43,9 @@ async fn until_released(domain: &DomainRuntime, tasks: &[&str]) {
 #[cfg(not(feature = "real-hosts"))]
 async fn until_working(slice: &Slice, count: usize) {
     let mut changed = slice.domain.subscribe();
-    let reached = changed.wait_for(|_| crate::admission::working_tasks(&*slice.domain, &slice.domain.read().state()).len() == count);
-    reached.await.unwrap();
+    while crate::admission::working_tasks(&*slice.domain, &slice.domain.read().state()).len() != count {
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(100), changed.changed()).await;
+    }
 }
 
 /// Until the gate holds no slot back from any of `tasks`: a node counts as working a little before
@@ -57,6 +58,7 @@ async fn until_nobody_waits(slice: &Slice, tasks: &[&str]) {
         tokio::select! {
             changed = state_changed.changed() => changed.unwrap(),
             changed = gate_changed.changed() => changed.unwrap(),
+            () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
         }
     }
 }
@@ -428,8 +430,15 @@ async fn a_paused_node_adopted_on_a_host_of_the_release_before_gives_up_that_hos
 
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
-    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
+    // The adoption `adopt_all` makes, with the owner spawned after the check: spawned at once, it
+    // gives the host up before a loaded Mac reads whether it was adopted.
+    let runtime = restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>;
+    let taken = take_all(&runtime, &slice.backend);
+    assert_eq!(taken.len(), 1, "the paused node is the only one to take over");
     assert!(old_host.runs(), "the daemon adopted the host of the release before");
+    for (_, driver) in taken {
+        restarted.add_sdk_owner(Owner::spawn(driver.expect("the paused node is adopted on the host it had")));
+    }
 
     look_after_the_wait(&restarted);
     let mut changed = restarted.subscribe();
