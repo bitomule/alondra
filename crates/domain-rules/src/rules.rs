@@ -2505,12 +2505,15 @@ impl DomainState {
     /// could no longer be accepted as presented: it leaves the user's queue and the task is in
     /// progress again until its node presents what is current. The revision may come from the
     /// node of another task sharing the document, so the node is told. A merged PR settles the
-    /// delivery instead.
+    /// delivery instead. A node working on conflicts or changes Alondra handed back already knows
+    /// the delivery is stale and is on its way to present the new head: the push that moves the
+    /// head retires the delivery without a second notice, which would only make it present twice.
     fn withdraw_deliveries_behind_their_targets(&mut self, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
-        let behind: Vec<(TaskId, InteractionId, String)> = self.tasks.values()
+        let behind: Vec<(TaskId, InteractionId, String, bool)> = self.tasks.values()
             .filter(|t| !t.over())
             .filter_map(|t| {
                 let p = self.interactions.get(t.final_presentation.as_ref()?)?;
+                let sent_back = matches!(self.handed_back(p), Some(Instruction::Conflicts | Instruction::Changes));
                 let InteractionPayload::Delivery { targets, .. } = &p.payload else { return None };
                 if p.withdrawn || self.settled(t, p) {
                     return None;
@@ -2523,15 +2526,21 @@ impl DomainState {
                         .filter(|d| d.current_revision != *revision_id)
                         .map(|d| delivery_withdrawn_behind_document(&d.title)),
                     DeliveryTarget::Text { .. } => None,
-                }).map(|notice| (t.id.clone(), p.id.clone(), notice))
+                }).map(|notice| (t.id.clone(), p.id.clone(), notice, sent_back))
             })
             .collect();
-        for (task_id, delivery, notice) in behind {
+        for (task_id, delivery, notice, sent_back) in behind {
             self.invalidate(&task_id);
             self.retire(&delivery);
+            let working = matches!(self.lifecycle(lifecycles, &task_id)?.activity(), alondra_domain::ActivityView::Working);
+            let quiet = sent_back && working;
+            let unheard = quiet.then(|| self.next_input(&task_id));
             let told = self.hand_back(&task_id, &delivery, notice.clone(), lifecycles)?;
+            if let Some(unheard) = unheard {
+                self.consume_replacement_notice(&task_id, unheard, lifecycles)?;
+            }
             let t = self.tasks.get_mut(&task_id).unwrap();
-            if let Some(agent_id) = t.agent_id.clone().filter(|_| !told) {
+            if let Some(agent_id) = t.agent_id.clone().filter(|_| !told && !quiet) {
                 effects.push(DomainEffect::NotifyAgent { agent_id, task_id: Some(task_id), interaction_id: None, message: notice });
             }
         }

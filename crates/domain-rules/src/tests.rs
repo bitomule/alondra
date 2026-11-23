@@ -4340,6 +4340,20 @@ fn a_push_after_the_final_delivery_withdraws_it_until_the_node_presents_the_new_
     assert!(pending(&s, "d2"), "presenting the new head brings the card back");
     exec(&mut s, user(), merge("d2", "head2")).unwrap();
 }
+/// A node sent back for conflicts or changes already knows its delivery is stale: the push that
+/// moves the PR's head retires the delivery and tells it nothing more, or it presents twice.
+#[test]
+fn a_push_after_conflicts_were_handed_back_withdraws_the_delivery_without_a_second_notice() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    hand_back(&mut s, Actor::System, Instruction::Conflicts).unwrap();
+    let pushed = exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head2".into(),
+        base: "main".into(), state: PrState::Open, merged_head: None }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].final_presentation, None, "the stale delivery is retired");
+    assert!(s.interactions[&"d".into()].withdrawn);
+    assert_eq!(sent_to_node(&pushed), Vec::<String>::new(), "the node was already told to fix it");
+}
 #[test]
 fn observing_the_head_a_delivery_presented_keeps_it() {
     let mut s = fixture();
