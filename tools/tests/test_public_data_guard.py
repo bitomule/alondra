@@ -135,6 +135,42 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(guard.main(["--files", str(self.root)]), 0)
 
 
+class TriggersTest(unittest.TestCase):
+    LINES = [
+        "write to maria.garcia@gmail.com", "cwd /Users/mariagarcia/Projects", "peer 81.40.12.7 and 2a0c:5a80::7",
+        "Ipv4Addr::new(81, 40, 12, 7)", "1:2:3:4:5:6:7:8", "std::io::Error", "version 1.2.3", "ok",
+        "udid: 3F2A9C1E-7B44-4D0A-9E55-1C8D2B6A4F90", "UDID 3F2A9C1E-7B44-4D0A-9E55-1C8D2B6A4F90",
+        "\u017Ferial number 3F2A9C1E-7B44-4D0A-9E55-1C8D2B6A4F90", "\u212Aeys hardware uuid 3F2A9C1E-7B44-4D0A-9E55-1C8D2B6A4F90",
+        "token ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8", "-----BEGIN RSA PRIVATE KEY-----", "fixes BIT-123",
+        "AKIA" + "ABCDEFGHIJKLMNOP", "sk-ant-" + "abcdefghijklmnopqrstuvwxyz", "xoxb-" + "1234567890abc", "the Canary release",
+    ]
+
+    def test_the_triggers_hide_no_finding(self):
+        for literals in ([], ["canary"]):
+            for line in self.LINES:
+                every = [(1, rule, text) for rule, text in guard.hits(line, literals)]
+                self.assertEqual(list(guard.findings([line], literals)), every, line)
+            every = [(n, rule, text) for n, line in enumerate(self.LINES, 1) for rule, text in guard.hits(line, literals)]
+            self.assertEqual(list(guard.findings(self.LINES, literals)), every)
+        self.assertGreaterEqual(len(guard.hits(self.LINES[0], [])), 1)
+
+    def test_a_line_without_a_trigger_runs_no_rule(self):
+        class Forbidden:
+            def finditer(self, line):
+                raise AssertionError(f"a rule scanned {line!r}")
+
+            search = finditer
+
+        saved = {name: getattr(guard, name) for name in ("EMAIL", "HOME", "IPV4", "IPV6", "OCTETS", "UUID", "DEVICE_LINE")}
+        self.addCleanup(lambda: [setattr(guard, name, value) for name, value in saved.items()])
+        for name in saved:
+            setattr(guard, name, Forbidden())
+        guard.SECRETS, secrets = [Forbidden()], guard.SECRETS
+        self.addCleanup(setattr, guard, "SECRETS", secrets)
+        lines = ["fn main() { let x = 1; }", "let y = a % b;", "ratio 3:1 at ten", "a task list, no risk"]
+        self.assertEqual(list(guard.findings(lines, [])), [])
+
+
 class DiffTest(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()

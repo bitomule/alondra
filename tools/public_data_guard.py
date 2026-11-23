@@ -77,21 +77,70 @@ def synthetic_id(text):
     return len(set(digits)) <= 3 or digits.startswith(("12345678", "abcdef", "deadbeef"))
 
 
-def hits(line, literals):
+# The only non-ASCII characters a case-insensitive ASCII pattern matches: lowering them is not enough.
+FOLDING = "İıſ\N{KELVIN SIGN}"
+DIGIT_DOT_DIGIT = re.compile(r"\d\.\d")
+SECRET_STARTS = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "xox", "AKIA", "sk-", "-----BEGIN ")
+DEVICE_WORDS = ("udid", "hardware", "serial", "provisioning")
+
+
+class Triggers:
+    """What a text can hold, looked for once with plain substring tests: each rule can only match a
+    line that carries one of its triggers, and nearly every line of the tree carries none. `hits` asks
+    this before each rule, so a file or a line is never scanned by a rule it cannot match. A rule that
+    changes keeps its trigger here, or `test_the_triggers_hide_no_finding` fails."""
+
+    def __init__(self, text=None):
+        everything = text is None
+        self.email = everything or "@" in text
+        self.home = everything or "/Users/" in text
+        self.octets = everything or "Ipv4Addr::new(" in text
+        self.dotted = everything or DIGIT_DOT_DIGIT.search(text) is not None
+        self.compressed = everything or "::" in text
+        self.full = everything or text.count(":") >= 7
+        self.names = everything or "BIT-" in text
+        self.secrets = SECRET_STARTS if everything else tuple(s for s in SECRET_STARTS if s in text)
+        if everything:
+            self.devices = True
+        elif not any(char in text for char in FOLDING):
+            lowered = text.lower()
+            self.devices = any(word in lowered for word in DEVICE_WORDS)
+        else:
+            self.devices = bool(DEVICE_LINE.search(text))
+
+
+EVERYTHING = Triggers()
+
+
+def labelled_device(line):
+    """Whether `line` matches DEVICE_LINE: its plain words are looked for first, in a lowered line
+    that holds no character the pattern folds to an ASCII letter."""
+    if not any(char in line for char in FOLDING):
+        lowered = line.lower()
+        if not any(word in lowered for word in DEVICE_WORDS):
+            return False
+    return DEVICE_LINE.search(line) is not None
+
+
+def hits(line, literals, triggers=EVERYTHING):
     """Every (rule, matched text) a single line carries."""
     found = []
-    for m in EMAIL.finditer(line):
-        user, domain = m.group(1).lower(), m.group(2).lower()
-        reserved = any(domain == d or domain.endswith("." + d) for d in RESERVED_EMAIL_DOMAINS)
-        throwaway = len(domain.split(".")[0]) <= 1
-        if not reserved and not throwaway and user not in GENERIC_EMAIL_USERS:
-            found.append(("personal-email", m.group(0)))
-    for m in HOME.finditer(line):
-        if m.group(1).lower() not in GENERIC_HOMES and not m.group(1).startswith(("$", "{")):
-            found.append(("home-path", m.group(0)))
-    spelled = [(m.group(0), ".".join(m.groups())) for m in OCTETS.finditer(line)]
-    for m in IPV4.finditer(line):
-        spelled.append((m.group(1), m.group(1)))
+    if triggers.email and "@" in line:
+        for m in EMAIL.finditer(line):
+            user, domain = m.group(1).lower(), m.group(2).lower()
+            reserved = any(domain == d or domain.endswith("." + d) for d in RESERVED_EMAIL_DOMAINS)
+            throwaway = len(domain.split(".")[0]) <= 1
+            if not reserved and not throwaway and user not in GENERIC_EMAIL_USERS:
+                found.append(("personal-email", m.group(0)))
+    if triggers.home and "/Users/" in line:
+        for m in HOME.finditer(line):
+            if m.group(1).lower() not in GENERIC_HOMES and not m.group(1).startswith(("$", "{")):
+                found.append(("home-path", m.group(0)))
+    spelled = []
+    if triggers.octets and "Ipv4Addr::new(" in line:
+        spelled += [(m.group(0), ".".join(m.groups())) for m in OCTETS.finditer(line)]
+    if triggers.dotted and DIGIT_DOT_DIGIT.search(line):
+        spelled += [(m.group(1), m.group(1)) for m in IPV4.finditer(line)]
     for shown, text in spelled:
         try:
             ip = ipaddress.IPv4Address(text)
@@ -99,29 +148,41 @@ def hits(line, literals):
             continue
         if ip.is_global and text not in PUBLIC_ADDRESSES and not text.startswith(("0.", "255.")):
             found.append(("public-ip", text))
-    for m in IPV6.finditer(line):
-        try:
-            ip = ipaddress.IPv6Address(m.group(1))
-        except ValueError:
-            continue
-        if ip.is_global and m.group(1) not in PUBLIC_ADDRESSES:
-            found.append(("public-ip", m.group(1)))
-    if DEVICE_LINE.search(line):
+    if (triggers.compressed and "::" in line) or (triggers.full and ":" in line and line.count(":") >= 7):
+        for m in IPV6.finditer(line):
+            try:
+                ip = ipaddress.IPv6Address(m.group(1))
+            except ValueError:
+                continue
+            if ip.is_global and m.group(1) not in PUBLIC_ADDRESSES:
+                found.append(("public-ip", m.group(1)))
+    if triggers.devices and labelled_device(line):
         for m in UUID.finditer(line):
             if not synthetic_id(m.group(0)):
                 found.append(("device-id", m.group(0)))
-    for pattern in SECRETS:
-        for m in pattern.finditer(line):
-            if not any(marker in m.group(0).lower() for marker in PLACEHOLDER):
-                found.append(("secret", m.group(0)))
-    for rule, pattern in PRIVATE_NAMES:
-        for m in pattern.finditer(line):
-            found.append((rule, m.group(0)))
-    lowered = line.lower()
-    for literal in literals:
-        if literal in lowered:
-            found.append(("private-literal", ANY))
+    if triggers.secrets and any(start in line for start in triggers.secrets):
+        for pattern in SECRETS:
+            for m in pattern.finditer(line):
+                if not any(marker in m.group(0).lower() for marker in PLACEHOLDER):
+                    found.append(("secret", m.group(0)))
+    if triggers.names and "BIT-" in line:
+        for rule, pattern in PRIVATE_NAMES:
+            for m in pattern.finditer(line):
+                found.append((rule, m.group(0)))
+    if literals:
+        lowered = line.lower()
+        for literal in literals:
+            if literal in lowered:
+                found.append(("private-literal", ANY))
     return found
+
+
+def findings(lines, literals):
+    """Every (line number, rule, matched text) of `lines`."""
+    triggers = Triggers("\n".join(lines))
+    for number, line in enumerate(lines, 1):
+        for rule, text in hits(line, literals, triggers):
+            yield number, rule, text
 
 
 def private_literals():
@@ -195,13 +256,12 @@ def report(root, against=None):
     else:
         sources = {p: lines_of(root, p) for p in tracked(root) if not skipped(p)}
     for relative in sorted(sources):
-        for number, line in enumerate(sources[relative], 1):
-            for rule, text in hits(line, literals):
-                key = next((k for k in ((relative, rule, text), (relative, rule, ANY)) if k in allowlist), None)
-                if key:
-                    used.add(key)
-                else:
-                    problems.append(f"{relative}:{number}: {rule}: {text}")
+        for number, rule, text in findings(sources[relative], literals):
+            key = next((k for k in ((relative, rule, text), (relative, rule, ANY)) if k in allowlist), None)
+            if key:
+                used.add(key)
+            else:
+                problems.append(f"{relative}:{number}: {rule}: {text}")
     if not against:
         unverifiable = {key for key in allowlist if key[1] == PRIVATE_RULE}
         for key in sorted(set(allowlist) - used - unverifiable):
@@ -215,9 +275,8 @@ def files_report(root, relatives):
     literals = private_literals()
     problems = []
     for relative in relatives:
-        for number, line in enumerate(lines_of(root, relative), 1):
-            for rule, _ in hits(line, literals):
-                problems.append(f"{relative}:{number}: {rule}")
+        for number, rule, _ in findings(lines_of(root, relative), literals):
+            problems.append(f"{relative}:{number}: {rule}")
     return problems
 
 

@@ -148,37 +148,48 @@ def without_cfg_test(text):
         i = j + 1
 
 
+STRING_OR_COMMENT_START = re.compile(r'["`/]')
+STRING_ESCAPE_OR_END = {'"': re.compile(r'[\\"]'), "`": re.compile(r"[\\`]")}
+NOT_NEWLINE = re.compile(r"[^\n]")
+
+
 def without_comments(text):
     """Blanks `//` and `/* */` comments outside string literals, keeping line breaks."""
     out = []
     i, n = 0, len(text)
     quote = None
     while i < n:
-        c = text[i]
+        found = (STRING_ESCAPE_OR_END[quote] if quote else STRING_OR_COMMENT_START).search(text, i)
+        if not found:
+            out.append(text[i:])
+            break
+        at = found.start()
+        out.append(text[i:at])
+        c = text[at]
         if quote:
-            out.append(c)
-            if c == "\\" and i + 1 < n:
-                out.append(text[i + 1])
-                i += 2
-                continue
-            if c == quote:
+            if c == "\\":
+                out.append(text[at:at + 2])
+                i = at + 2
+            else:
+                out.append(c)
                 quote = None
-            i += 1
+                i = at + 1
             continue
-        if c in "\"`":
-            quote = c
-        elif c == "/" and text.startswith("//", i):
+        i = at
+        if c == "/" and text.startswith("//", i):
             end = text.find("\n", i)
             end = n if end < 0 else end
             out.append(" " * (end - i))
             i = end
             continue
-        elif c == "/" and text.startswith("/*", i):
+        if c == "/" and text.startswith("/*", i):
             end = text.find("*/", i + 2)
             end = n if end < 0 else end + 2
-            out.append("".join(ch if ch == "\n" else " " for ch in text[i:end]))
+            out.append(NOT_NEWLINE.sub(" ", text[i:end]))
             i = end
             continue
+        if c != "/":
+            quote = c
         out.append(c)
         i += 1
     return "".join(out)
