@@ -238,6 +238,34 @@ pub fn working() -> usize {
     }
 }
 
+/// One unit of real-time work in flight, counted in [`working`] until dropped.
+pub struct RealWork(Option<&'static Work>);
+
+impl Drop for RealWork {
+    fn drop(&mut self) {
+        if let Some(work) = self.0 {
+            work.remove();
+        }
+    }
+}
+
+/// Runs `future`, which waits on the real world (a process, the disk) from a task of the runtime,
+/// as work virtual time waits for: from its first poll until it ends or is dropped, [`working`]
+/// counts it and the runtime does not jump to its next timer. Without it a task parked on a
+/// process lets the runtime look idle, and whatever the task does after is stamped some virtual
+/// seconds later than the instant that started it. The future must not wait on the clock itself.
+/// Under the system clock it is the future.
+pub async fn real_time<F: Future>(future: F) -> F::Output {
+    let _counted = match Clock::current() {
+        Clock::Virtual { work, .. } => {
+            work.add();
+            RealWork(Some(work))
+        }
+        Clock::System => RealWork(None),
+    };
+    future.await
+}
+
 /// A wait for a stream another thread writes, such as a host's socket: what ends it is that
 /// writer's, never the clock's, so virtual time does not wait for the thread while it lasts.
 pub struct StreamWait(Option<&'static Work>);

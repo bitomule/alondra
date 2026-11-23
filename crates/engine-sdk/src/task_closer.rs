@@ -84,7 +84,7 @@ pub async fn run(domain: Arc<dyn Runtime>, sessions: Arc<dyn Sessions>, timing: 
         removed => log!("deleted the folders of {removed} hosts that nothing needs any more"),
     }
     loop {
-        let pause = match pass(&*domain, sessions.as_ref(), &timing, alondra_core::now_millis()).await {
+        let pause = match clock::real_time(pass(&*domain, sessions.as_ref(), &timing, alondra_core::now_millis())).await {
             Ok(()) => {
                 backoff = FIRST_BACKOFF;
                 timing.tick

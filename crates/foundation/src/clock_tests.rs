@@ -432,3 +432,22 @@ fn each_virtual_clock_has_its_own_deadlines_and_the_system_clock_none() {
     assert!(!deadline_within(HOUR));
     drop(pending);
 }
+
+#[test]
+fn work_in_real_time_counts_from_its_first_poll_until_it_ends() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        let waiting = tokio::spawn(real_time(async move { finished.await.unwrap() }));
+        until("the work started", || working() == 1).await;
+        finish.send(()).unwrap();
+        waiting.await.unwrap();
+        assert_eq!(working(), 0);
+        let (_keep, dropped) = tokio::sync::oneshot::channel::<()>();
+        let cancelled = tokio::spawn(real_time(async move { let _ = dropped.await; }));
+        until("the second work started", || working() == 1).await;
+        cancelled.abort();
+        let _ = cancelled.await;
+        assert_eq!(working(), 0, "a cancelled work gives its unit back");
+    });
+}

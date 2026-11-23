@@ -31,6 +31,7 @@ struct Slowness {
     exit: Option<std::time::Duration>,
     start: Option<std::time::Duration>,
     io_timeout_seconds: Option<u64>,
+    probe: Option<std::time::Duration>,
 }
 
 /// The I/O timeout of the hosts of a scenario's daemon, unless a test gives a shorter one.
@@ -58,6 +59,12 @@ impl ClaudeEdge {
     /// Claude Code that finishes writing before it goes; without it, a host exits at once.
     pub fn set_slow_exit(&self, by: std::time::Duration) {
         self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).exit = Some(by);
+    }
+
+    /// Every run of Claude's command line or of a host's probe takes `by` of real time, as a
+    /// process a loaded Mac starts late; without it, they end at once.
+    pub fn set_slow_probe(&self, by: std::time::Duration) {
+        self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).probe = Some(by);
     }
 
     /// Every host started from now on takes `by` to open its socket, as a host a loaded Mac starts
@@ -174,7 +181,8 @@ impl HostLauncher for ClaudeEdge {
     }
 
     fn run(&self, run: ProbeRun) -> std::io::Result<ProbeOutput> {
-        self.0.probe(&run)
+        let slow = self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).probe;
+        self.0.probe_after(&run, slow)
     }
 }
 

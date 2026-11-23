@@ -168,11 +168,21 @@ pub(crate) fn run_with_slow_host_starts(scenario: &Scenario, by: Duration, io_ti
     }
 }
 
+/// `run`, with every run of a command line or a probe around the Claude hosts taking `by`.
+#[cfg(test)]
+pub(crate) fn run_with_slow_probes(scenario: &Scenario, by: Duration) -> Result<Outcome, ScenarioError> {
+    match run_inner(scenario, None, |_| {}, Slowness { probe: Some(by), ..Slowness::default() })? {
+        (outcome, None) => Ok(outcome),
+        (_, Some(failure)) => Err(failure),
+    }
+}
+
 /// How slow, in real time, the Claude hosts of a run are.
 #[derive(Clone, Copy, Default)]
 struct Slowness {
     exit: Option<Duration>,
     start: Option<(Duration, u64)>,
+    probe: Option<Duration>,
 }
 
 fn run_inner(
@@ -287,6 +297,9 @@ async fn execute(
         let edge = ClaudeEdge::new(&config.home, leaks.clone());
         if let Some(by) = slowness.exit {
             edge.set_slow_exit(by);
+        }
+        if let Some(by) = slowness.probe {
+            edge.set_slow_probe(by);
         }
         if let Some((by, io_timeout_seconds)) = slowness.start {
             edge.set_slow_start(by);

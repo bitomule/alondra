@@ -180,6 +180,9 @@ struct Shared {
     clock: alondra_core::clock::Clock,
     runtime: Option<tokio::runtime::Handle>,
     startup_probe: (Mutex<bool>, std::sync::Condvar),
+    /// The runs of Claude's command line and of the host's probes under way, which take real time
+    /// and answer into a world the daemon may have changed meanwhile: a test waits for them.
+    probing: AtomicU64,
     /// No host starts any more: the test that played them is over.
     closed: AtomicBool,
     starts: Mutex<Vec<NativeStart>>,
@@ -342,6 +345,7 @@ impl ClaudeModel {
             clock: alondra_core::clock::Clock::current(),
             runtime: tokio::runtime::Handle::try_current().ok(),
             startup_probe: (Mutex::new(false), std::sync::Condvar::new()),
+            probing: AtomicU64::new(0),
             closed: AtomicBool::new(false),
             starts: Mutex::default(),
             prompts: Mutex::default(),
@@ -526,7 +530,7 @@ impl ClaudeModel {
 
     /// Whether the daemon is attached to every host that runs and has acknowledged what each said.
     pub fn committed(&self) -> bool {
-        self.0.starting.load(Ordering::SeqCst) == 0 && lock(&self.0.hosts).iter().all(|host| host.settled())
+        self.0.starting.load(Ordering::SeqCst) == 0 && self.0.probing.load(Ordering::SeqCst) == 0 && lock(&self.0.hosts).iter().all(|host| host.settled())
     }
 
     /// Claude loses what it kept of `session`: a host that resumes it starts with no history.
@@ -1461,6 +1465,23 @@ impl ClaudeModel {
     /// Answers a run of Claude's command line or of the host's probes from the world, and refuses
     /// anything else, which it counts as a leak.
     pub fn probe(&self, run: &ProbeRun) -> io::Result<ProbeOutput> {
+        self.probe_after(run, None)
+    }
+
+    /// `probe`, which takes `delay` of real time first, as a process that starts slowly: it counts
+    /// as under way for the whole of it, apart from the wait the test holds a startup probe for.
+    pub fn probe_after(&self, run: &ProbeRun, delay: Option<std::time::Duration>) -> io::Result<ProbeOutput> {
+        struct Probing<'a>(&'a AtomicU64);
+        impl Drop for Probing<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        self.0.probing.fetch_add(1, Ordering::SeqCst);
+        let _under_way = Probing(&self.0.probing);
+        if let Some(delay) = delay {
+            std::thread::sleep(delay);
+        }
         let args: Vec<String> = run.command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
         let environment: BTreeMap<String, String> = run
             .command
@@ -1478,8 +1499,12 @@ impl ClaudeModel {
         if args.iter().any(|arg| arg == "--usage-probe") {
             let (held, ready) = &self.0.startup_probe;
             let mut held = lock(held);
-            while *held {
-                held = ready.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *held {
+                self.0.probing.fetch_sub(1, Ordering::SeqCst);
+                while *held {
+                    held = ready.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                self.0.probing.fetch_add(1, Ordering::SeqCst);
             }
             drop(held);
             let session = match lock(&self.0.world).limit_resets_at {

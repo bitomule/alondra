@@ -341,6 +341,52 @@ screens = ["task:t2"]
     assert_eq!(at_once.checkpoints, slowly.checkpoints);
 }
 
+/// The commands and probes the daemon runs around a host take real time too, which virtual time
+/// never waits for: a probe that takes a second leaves every instant where a probe that takes none
+/// leaves it.
+#[test]
+fn a_slow_probe_moves_no_instant() {
+    let text = r#"
+name = "a resting node whose host closes"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report"
+task = "t1"
+title = "Add the export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "login_expired"
+account = "default"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Add the summary"
+
+[[step]]
+do = "checkpoint"
+name = "after-the-rest"
+screens = ["task:t2"]
+"#;
+    let at_once = run(&scenario(text), None).expect("the scenario runs");
+    let slowly = crate::runner::run_with_slow_probes(&scenario(text), std::time::Duration::from_millis(1500)).expect("the scenario runs");
+    assert_eq!(at_once.checkpoints, slowly.checkpoints);
+}
+
 /// 15 November: on a loaded Mac a release run failed «starting the SDK host» for a host that did
 /// start, only later than the daemon's I/O timeout in real time. A host that opens its socket later
 /// than that timeout still starts its node, and the scenario reads the same as with a host that
