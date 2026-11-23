@@ -10,6 +10,7 @@ use crate::account_move::MovesOf as _;
 use super::*;
 use crate::domain_store::StoreError;
 use crate::test_support::Directory;
+use crate::sdk_owner::fixtures::Hosts as _;
 use alondra_core::accounts::{AccountState, AccountStatus};
 use alondra_core::claude_account;
 use std::collections::BTreeSet;
@@ -26,11 +27,11 @@ fn work() -> AccountId {
 struct World {
     domain: Arc<DomainRuntime>,
     backend: crate::sdk_backend::SdkBackend,
-    capture: PathBuf,
     worktree: PathBuf,
     database: PathBuf,
+    /// Before `home`: the hosts write in the HOME they get, so they end before it is removed.
+    hosts: crate::engine_tests::SliceHosts,
     home: Directory,
-    _state: crate::sdk_owner::fixtures::HostRoot,
 }
 
 fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
@@ -54,16 +55,16 @@ impl World {
     fn with_accounts(moving: bool) -> Self {
         let home = Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
-        let state = crate::sdk_owner::fixtures::HostRoot::new();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         std::fs::DirBuilder::new().mode(0o700).create(home.join(crate::plugins::NODE)).unwrap();
         std::fs::create_dir_all(home.join(".claude/projects")).unwrap();
         alondra_engine_ports::accounts::Accounts::prepare_claude(&alondra_engine_doubles::accounts::Accounts::default(), &home, &work(), &home.join(".claude")).unwrap();
-        let (backend, capture) = crate::sdk_owner::fixtures::fixture_backend(&home, &state);
+        let mut hosts = crate::engine_tests::SliceHosts::default();
+        let backend = hosts.backend(&home);
         let database = home.join("domain.sqlite");
-        let domain = Self::boot(&home, &database, &backend);
-        let world = Self { domain, backend, capture, worktree, database, home, _state: state };
+        let domain = Self::boot(&home, &database, &backend, &hosts);
+        let world = Self { domain, backend, worktree, database, hosts, home };
         world.set_moving(moving);
         world.accounts_seen("seen", AccountState::SignedIn, AccountState::SignedIn);
         let orchestrator = Actor::Orchestrator { generation: 0 };
@@ -76,8 +77,9 @@ impl World {
         world
     }
 
-    fn boot(home: &Path, database: &Path, backend: &crate::sdk_backend::SdkBackend) -> Arc<DomainRuntime> {
+    fn boot(home: &Path, database: &Path, backend: &crate::sdk_backend::SdkBackend, hosts: &crate::engine_tests::SliceHosts) -> Arc<DomainRuntime> {
         let domain = Arc::new(crate::engine_fixtures::open_at(home, database).unwrap());
+        hosts.serve(&domain);
         domain.enable_sdk(backend.clone());
         domain
     }
@@ -114,11 +116,12 @@ impl World {
         }
     }
 
+    #[cfg(not(feature = "real-hosts"))]
     /// A daemon that died: what it ran is gone, a new one opens the same database and, as at
     /// startup, takes over the SDK executions before it goes on with the moves.
     async fn restart(&mut self) {
         self.domain.stop_sdk_owners();
-        self.domain = Self::boot(&self.home, &self.database, &self.backend);
+        self.domain = Self::boot(&self.home, &self.database, &self.backend, &self.hosts);
         let (domain, backend) = (Arc::clone(&self.domain), self.backend.clone());
         tokio::task::spawn_blocking(move || crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &backend)).await.unwrap();
     }
@@ -132,18 +135,20 @@ impl World {
     }
 
     fn starts(&self) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(format!("{}.starts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+        self.hosts.starts()
     }
 
+    #[cfg(not(feature = "real-hosts"))]
     /// The prompts Claude got, besides the wake Alondra sends after a turn that ended empty.
     fn prompts(&self) -> Vec<String> {
-        crate::sdk_owner::fixtures::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
+        crate::sdk_owner::fixtures::not_wakes(self.hosts.prompts().into_iter())
     }
 
     fn node(&self) -> AgentId {
         self.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap()
     }
 
+    #[cfg(feature = "real-hosts")]
     /// Waits until the task's execution of `generation` ended a turn with Claude's answer and
     /// rests on the card that turn ended on.
     async fn until_answered(&self, generation: u64) {
@@ -151,6 +156,7 @@ impl World {
     }
 }
 
+#[cfg(feature = "real-hosts")]
 /// Whether `card` is one a turn of the task's execution of `generation` ended on.
 fn rested(card: &InteractionId, generation: u64) -> bool {
     [STALLED_PREFIX, TURN_ENDED_PREFIX].iter().any(|prefix| card.0.starts_with(&format!("{prefix}{TASK}-{generation}-")))
@@ -162,6 +168,7 @@ impl Drop for World {
     }
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// A quota hold keeps its original physical native process, account and pending mission.
 async fn assert_stayed(world: &World, old: &AgentId) {
     assert_eq!(world.domain.state().unwrap().task_account(&TASK.into()),work());
@@ -172,6 +179,7 @@ async fn assert_stayed(world: &World, old: &AgentId) {
     assert!(world.domain.owns_sdk_host(old));
 }
 
+#[cfg(not(feature = "real-hosts"))]
 // The old distribution flag cannot authorize changing an already-started legacy node.
 #[tokio::test]
 async fn an_already_started_legacy_node_keeps_its_account_when_the_old_move_flag_is_on() {
@@ -186,6 +194,7 @@ async fn an_already_started_legacy_node_keeps_its_account_when_the_old_move_flag
     assert!(world.domain.store.lock().unwrap().plan_account_move(&TASK.into(),&forged).unwrap_err().to_string().contains("creating a node"));
 }
 
+#[cfg(not(feature = "real-hosts"))]
 // Old pre-admission journals remain readable and are safely cancelled after restart.
 #[tokio::test]
 async fn a_crash_after_each_pre_admission_step_undoes_the_old_move_without_changing_accounts() {
@@ -198,6 +207,7 @@ async fn a_crash_after_each_pre_admission_step_undoes_the_old_move_without_chang
     }
 }
 
+#[cfg(not(feature = "real-hosts"))]
 // A daemon that comes back to a move that can no longer happen undoes it before its admission:
 // with the setting turned off meanwhile, the task stays on its account's limit with its execution
 // taken over again, and no Claude ran on the other account.
@@ -214,6 +224,7 @@ async fn a_move_that_can_no_longer_happen_is_undone_and_the_task_waits_on_its_ac
     }
 }
 
+#[cfg(not(feature = "real-hosts"))]
 // With the setting off, a task whose account ran out waits on its limit as it always did.
 #[tokio::test]
 async fn with_the_setting_off_a_task_waits_on_its_accounts_limit() {
@@ -224,6 +235,7 @@ async fn with_the_setting_off_a_task_waits_on_its_accounts_limit() {
     assert_eq!(world.domain.state().unwrap().claude_held().len(), 1);
 }
 
+#[cfg(not(feature = "real-hosts"))]
 // Only a real limit keeps an account from taking the task: when the other account is signed out
 // too, every account is at its limit and the task waits on its own.
 #[tokio::test]
@@ -239,6 +251,7 @@ async fn when_every_account_is_at_its_limit_the_task_waits() {
     assert_eq!(world.domain.state().unwrap().task_account(&TASK.into()),work());
 }
 
+#[cfg(not(feature = "real-hosts"))]
 // Capacity observations keep initial account choice separate from existing-session recovery.
 #[tokio::test]
 async fn fresh_capacity_does_not_change_the_account_of_an_existing_node() {
@@ -250,6 +263,7 @@ async fn fresh_capacity_does_not_change_the_account_of_an_existing_node() {
     assert!(world.journal().is_empty());assert_stayed(&world,&old).await;
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_typed_claude_node_never_enters_legacy_account_migration_even_when_enabled(){
     let world=World::new().await;let original=world.node();
@@ -277,6 +291,7 @@ fn historical(world:&World,step:AccountMoveStep,source_node:AgentId)->i64{
     }number
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn historical_unstarted_destinations_are_parked_before_startup_or_explicit_recovery(){
     for step in [AccountMoveStep::Admitted,AccountMoveStep::Done]{
@@ -299,6 +314,7 @@ async fn historical_unstarted_destinations_are_parked_before_startup_or_explicit
     }
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test]
 async fn a_historical_started_destination_is_adopted_with_its_existing_physical_process_and_binding(){
     let mut world=World::with_accounts(true);
@@ -310,7 +326,7 @@ async fn a_historical_started_destination_is_adopted_with_its_existing_physical_
     run(&world.domain,&Actor::System,"historical-source",Command::RegisterAgent{agent_id:"legacy-source".into(),name:"legacy-source".into(),at:0}).unwrap();
     historical(&world,AccountMoveStep::Admitted,"legacy-source".into());world.set_moving(false);
     drop(driver);
-    world.domain=World::boot(&world.home,&world.database,&world.backend);
+    world.domain=World::boot(&world.home,&world.database,&world.backend,&world.hosts);
     let (domain,backend)=(world.domain.clone(),world.backend.clone());
     tokio::task::spawn_blocking(move||crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&backend)).await.unwrap();
     tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
@@ -321,6 +337,7 @@ async fn a_historical_started_destination_is_adopted_with_its_existing_physical_
 }
 
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test]
 async fn manual_replacement_of_an_existing_legacy_sdk_node_is_refused_before_stop_or_workspace_effects(){
     let world=World::new().await;let original=world.node();let starts=world.starts();

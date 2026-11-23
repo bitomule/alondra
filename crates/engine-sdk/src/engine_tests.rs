@@ -6,7 +6,7 @@ mod accounts_tests;
 mod orchestrator_tools_tests;
 #[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
 mod owner_tests;
-#[cfg(all(test, feature = "real-hosts"))]
+#[cfg(all(test, feature = "whole-engine"))]
 mod pauses_tests;
 #[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
 mod system_command_tests;

@@ -21,10 +21,12 @@ use std::sync::Arc;
 
 use crate::engine_fixtures::sdk_node_fixture::*;
 const MIN: Millis = 60_000;
+#[cfg(not(feature = "real-hosts"))]
 const SAMPLE: Millis = 10_000;
 
 
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_the_resume_text_and_what_it_was_told() {
     super::wired();
@@ -45,6 +47,7 @@ async fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_th
     assert_eq!(node.domain.state().unwrap().node_pause(&AgentId(node.agent())), None);
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// The orchestrator's message to a node the user paused is kept for it, not refused: nothing about
 /// it is for the user, and the node reads it once resumed.
 #[tokio::test]
@@ -70,6 +73,7 @@ async fn the_orchestrators_message_to_a_paused_node_waits_for_its_resume_and_ask
 
 
 
+#[cfg(not(feature = "real-hosts"))]
 /// The user paused the node and its host died with no owner left to replace it, as when a daemon's
 /// start puts a host the pause's interrupt then closes. Resuming it launches a host that resumes the
 /// same native session, and what the node goes on with reaches it.
@@ -86,9 +90,7 @@ async fn resuming_a_paused_sdk_node_whose_host_died_resumes_its_session_in_a_new
     node.gate_look().await;
     node.domain.join_retakes();
     assert!(node.domain.owns_sdk_host(&AgentId(node.agent())), "a new host took the task over");
-    let capture = node.capture.clone();
-    let told = move || crate::sdk_owner::fixtures::not_wakes(std::fs::read_to_string(format!("{}.prompts", capture.display())).unwrap_or_default()
-        .lines().map(|line| serde_json::from_str(line).unwrap())).iter().any(|prompt: &String| prompt.contains("resumed you"));
+    let told = || node.prompts().iter().any(|prompt| prompt.contains("resumed you"));
     changed.wait_for(|_| told()).await.unwrap();
     node.domain.stop_sdk_owners();
     let starts = node.starts();
@@ -96,6 +98,7 @@ async fn resuming_a_paused_sdk_node_whose_host_died_resumes_its_session_in_a_new
     assert!(node.host_lost_card().is_none());
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// While the node is paused, a host that could not be replaced puts no card the pause would refuse.
 /// Its resume tries again; when no host can start, the task gets the card to try again or cancel.
 #[tokio::test(flavor = "multi_thread")]
@@ -121,6 +124,7 @@ async fn resuming_a_paused_sdk_node_no_host_can_take_over_gives_its_task_a_card_
     assert_eq!(node.domain.state().unwrap().tasks[&TaskId::from(SDK_TASK)].state, alondra_domain_rules::TaskState::NeedsYou);
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// 4 Nov, t-oss-9-export: the disk fell under its floor while the node built, and the gate held its
 /// next turn. The turn it ran ended with nothing told; once the disk had room the gate ended the
 /// pause with nothing new, the lifecycle refused that every minute, and the node never came back.
@@ -146,6 +150,7 @@ async fn a_disk_hold_the_node_rested_through_ends_once_there_is_room_by_telling_
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything");
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// 5 Nov, t-env-allowlist-nodes: the user sent its delivery back and the node worked on it when the
 /// disk fell under its floor. Its host died, a new one took the same session, and once the disk had
 /// room the gate ended the pause with nothing to go on with: the task read as running for 2 h 40 min
@@ -173,15 +178,14 @@ async fn a_host_that_dies_under_a_disk_hold_of_a_delivery_sent_back_goes_on_once
     let mut changed = domain.subscribe();
     node.gate_look().await;
     assert!(domain.admission().paused(&*domain, &node.agent()).is_none(), "the pause ended");
-    let capture = node.capture.clone();
-    let told = move || crate::sdk_owner::fixtures::not_wakes(std::fs::read_to_string(format!("{}.prompts", capture.display())).unwrap_or_default()
-        .lines().map(|line| serde_json::from_str(line).unwrap())).iter().any(|prompt: &String| prompt.contains("held your next turn"));
+    let told = || node.prompts().iter().any(|prompt| prompt.contains("held your next turn"));
     tokio::time::timeout(std::time::Duration::from_secs(60), changed.wait_for(|_| told())).await.expect("nothing told the session to go on").unwrap();
     domain.stop_sdk_owners();
     assert_eq!(node.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session goes on");
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// A host stopped on purpose while its node worked on what the user sent back leaves the delivery
 /// with nothing that starts a turn. The end of the host owes the start at once: no clock decides it.
 #[tokio::test(flavor = "multi_thread")]
@@ -213,6 +217,7 @@ async fn a_host_stopped_on_purpose_while_the_node_worked_on_a_delivery_sent_back
     domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// An intentional interruption is never woken automatically by the gate, however long it waits.
 #[tokio::test]
 async fn an_interrupted_task_waits_for_instruction_instead_of_being_woken_by_the_gate() {
@@ -246,6 +251,7 @@ async fn an_interrupted_task_waits_for_instruction_instead_of_being_woken_by_the
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// 5 November, 20:54: ten nodes the disk held, six of them still in the turn they ran, and 19 GB free
 /// in the container. Those turns reserved 3 GB each, so nothing came back, not even before a new
 /// High task. A held node reserves nothing: they come back one by one, first, while their builds fit.
@@ -304,6 +310,7 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
     }
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// The 7 of 6 working of 11 November: a node of the Agent SDK whose turn the disk's floor held was
 /// counted by the gate while its task read paused, so the gate and the header disagreed.
 #[tokio::test]
@@ -320,6 +327,7 @@ async fn a_node_paused_for_disk_takes_no_slot_in_the_gate_or_the_header() {
     assert_eq!(domain.read().index().activity().working, 0, "the header counts none either");
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// The disk fell under its floor while two nodes built. The heavier one's turn goes on uncut and
 /// takes no slot; once it ends, what the node is told waits, with no card, shown in the
 /// queue for the disk; once the disk has room it gets it, and is never told it was held. The
@@ -384,6 +392,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
 
 
 
+#[cfg(not(feature = "real-hosts"))]
 /// 6 Nov, t-account-identity-per-profile: the disk fell under its floor while the node's turn ran,
 /// and 30 s later its host's connection broke and its owner stopped. Nothing took the task over
 /// and nothing recorded that its host had ended: it read as running, with no node, for 44 minutes.
@@ -406,6 +415,7 @@ async fn a_host_that_dies_under_a_disk_hold_while_its_turn_runs_never_leaves_its
     domain.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 /// Production, 2026-11-08 (t-agents-md-review-public-audit, t-security-audit-local-daemon and
 /// t-usage-limit-no-cards): each read as working with no host, and every gate pass tried to take it
 /// over and failed on the same observation of its ended host, for good. Here the host ends its turn
@@ -434,6 +444,7 @@ async fn a_working_task_whose_ended_host_left_an_observation_no_owner_can_settle
     domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// 2026-11-10: tasks read «Esperando a que Claude empiece» for hours, holding slots of the gate,
 /// with no host to start anything. An execution that waits for a turn to start, or for a
 /// notification to open one, is taken over when no owner holds it, as one at work is.
@@ -451,6 +462,7 @@ async fn a_task_waiting_for_its_turn_to_start_with_no_host_of_its_own_is_taken_o
     domain.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 /// 0.3.31, a task «delivering» with no host of its own: Alondra took it over every minute for
 /// hours, and nothing about the task changed. Here every new host ends before it takes the input
 /// it is handed. The first look takes the task over; its hosts end until the task waits on the
@@ -482,6 +494,7 @@ async fn a_delivering_task_whose_hosts_end_before_taking_its_input_is_never_take
     domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// A retake that records the takeover and then cannot start a host changes the task's revision
 /// itself: the next look must not read that as a new fact and take the task over again.
 #[tokio::test(flavor = "multi_thread")]
@@ -502,6 +515,7 @@ async fn a_takeover_that_fails_after_recording_is_not_repeated_by_its_own_revisi
     domain.stop_sdk_owners();
 }
 
+#[cfg(feature = "real-hosts")]
 /// A native Claude that ends as soon as it is handed a prompt, before it starts a turn.
 const ENDS_ON_ITS_FIRST_PROMPT: &str = r#"#!/usr/bin/python3
 import json, sys
@@ -510,6 +524,7 @@ for raw in sys.stdin:
         sys.exit(0)
 "#;
 
+#[cfg(not(feature = "real-hosts"))]
 /// 6 Nov: «Resume» on the card of a node the gate held for the disk or the machine answered «no
 /// longer available» while the node was still paused. Every pause card's Resume is taken while
 /// the card is open.
@@ -535,6 +550,7 @@ async fn resume_on_the_card_of_a_paused_sdk_node_is_taken_while_the_card_is_open
     }
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// A turn at work always has an owner of this daemon.
 fn owned_while_working(node: &SdkNode, case: &str) {
     let activity = node.lifecycle().activity();
@@ -542,6 +558,7 @@ fn owned_while_working(node: &SdkNode, case: &str) {
         "{case}: the task reads as running with no node");
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// The running and paused states of a node of the Agent SDK, for each pause, with its host lost
 /// during the pause or not: a turn at work always has an owner; while the pause's card is open the
 /// gate holds the pause and the card's Resume is taken; once the pause ends the card goes.
@@ -594,6 +611,7 @@ async fn every_pause_with_its_host_lost_or_not_keeps_a_working_task_owned_and_it
 }
 
 
+#[cfg(not(feature = "real-hosts"))]
 /// 7 November: with 8 as the limit, 39 nodes worked, because only starts passed the gate. Ten nodes
 /// told at once with two slots: two go on, eight wait with no card, and they enter as slots free.
 #[tokio::test(flavor = "multi_thread")]
@@ -620,7 +638,7 @@ async fn ten_nodes_told_at_once_with_two_slots_never_work_more_than_two_and_the_
     let gate = node.gate();
     assert_eq!((gate.working, node.waiting_turns().len()), (2, 8), "two have a slot and eight wait, however the asks interleaved");
 
-    let held = |node: &SdkNode| std::fs::read_to_string(format!("{}.prompts", node.capture.display())).unwrap().matches("consume-and-hold").count();
+    let held = |node: &SdkNode| node.prompts().iter().filter(|prompt| prompt.contains("consume-and-hold")).count();
     let mut rounds = 0;
     while held(&node) < 2 || rounds < 3 {
         for (_, driver) in &mut drivers {
@@ -647,6 +665,7 @@ async fn ten_nodes_told_at_once_with_two_slots_never_work_more_than_two_and_the_
     }
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_slot_that_frees_goes_to_the_waiting_turn_of_highest_priority_then_to_the_oldest() {
     super::wired();
@@ -672,6 +691,7 @@ async fn a_slot_that_frees_goes_to_the_waiting_turn_of_highest_priority_then_to_
 }
 
 
+#[cfg(not(feature = "real-hosts"))]
 /// A message to a resting node waits for a slot, and reaches Claude once one frees.
 #[tokio::test]
 async fn a_message_to_a_resting_node_waits_for_a_slot() {
@@ -688,6 +708,7 @@ async fn a_message_to_a_resting_node_waits_for_a_slot() {
     node.until_told("A message for the node");
 }
 
+#[cfg(not(feature = "real-hosts"))]
 /// A resume the gate let through reserved a slot, and the turn it starts takes that slot: it never
 /// waits behind its own reservation.
 #[tokio::test]
@@ -710,6 +731,7 @@ async fn a_node_back_from_a_pause_starts_its_turn_on_the_slot_of_its_resume() {
 
 
 
+#[cfg(not(feature = "real-hosts"))]
 /// 17 November, 15:15: the user's answer to a task of high priority waited for a slot while the
 /// gate's log named a normal task coming back from a pause as the next. The high task's turn is the
 /// head of the queue, the log names it, and the first slot that frees is its.
@@ -742,6 +764,7 @@ async fn a_high_tasks_input_goes_before_a_normal_node_coming_back_and_the_log_na
 }
 
 
+#[cfg(not(feature = "real-hosts"))]
 /// 17 November, 22:48: a Resume of the user that waited for a slot all day brought a node back at the
 /// moment the user paused it again. A pause of Alondra's own the user's Resume waits behind must not
 /// outlive the user's new pause: it leaves the queue, and no free slot brings the node back.
