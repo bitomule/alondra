@@ -92,7 +92,7 @@ impl SdkNode {
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateRequest {
             request_id: "r".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Release notes".into() });
-        run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+        run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: SDK_TASK.into(), request_id: "r".into(), title: "Write the release notes".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())) });
         let driver = alondra_engine_sdk::sdk_owner::start(domain.clone(), &backend, alondra_engine_sdk::sdk_owner::Launch {
@@ -125,7 +125,7 @@ impl SdkNode {
     pub fn beside_told(&self, task: &str, prompt: &str) -> alondra_engine_sdk::sdk_owner::Driver {
         let worktree = self.home.join(task);
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
-        run(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+        run(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: task.into(), request_id: "r".into(), title: format!("Task {task}"), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())) });
         let driver = alondra_engine_sdk::sdk_owner::start(self.domain.clone(), &self.backend, alondra_engine_sdk::sdk_owner::Launch {

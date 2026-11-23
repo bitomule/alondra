@@ -102,7 +102,7 @@ fn ends_well(machine: &Machine, state: &DomainState, index: &ReadIndex, task: &T
     match situation(index, task) {
         Situation::Working(_) => runs(machine, task),
         Situation::NeedsYou | Situation::Paused | Situation::Delivered(Delivery::ForReview) => true,
-        Situation::Waiting(WaitsFor::Slot) if waits_for_a_task_still_open(state, task) => true,
+        Situation::Waiting(WaitsFor::Tasks) if waits_for_a_task_still_open(state, task) => true,
         Situation::Waiting(WaitsFor::Slot) => room_is_scarce(machine, state),
         Situation::Waiting(WaitsFor::Step(AlondraStep::Starting)) if machine.deferred.contains_key(task)
             && state.lifecycle_of(task).is_ok_and(|lifecycle| lifecycle.execution().is_none())
@@ -499,7 +499,7 @@ proptest! {
 }
 
 /// The user cancels the task another one waits for while the orchestrator fails: the task is handed
-/// to it at every rest, never gets a card for the user and is never cancelled by Alondra; once the
+/// to it at its rests, up to the last reminder, never gets a card for the user and is never cancelled by Alondra; once the
 /// orchestrator answers again it decides.
 #[test]
 fn a_task_waiting_for_a_cancelled_one_waits_for_the_orchestrator_and_is_handed_to_it_at_every_rest() {
@@ -518,7 +518,7 @@ fn a_task_waiting_for_a_cancelled_one_waits_for_the_orchestrator_and_is_handed_t
     machine.rest(|_| {});
     let state = machine.state();
     let notices = state.interactions.values().filter(|i| i.id.0.starts_with(alondra_domain_rules::orchestrator_cards::DEPENDENCY_CANCELLED_NOTICE_PREFIX)).count();
-    assert!(notices >= 10, "one at every rest of the two hours: {notices}");
+    assert_eq!(notices, alondra_engine_orchestrator::orchestrator_inbox::REPLAN_REMINDERS, "one at each rest, up to the last reminder, however long it rests: {notices}");
     assert!(state.open_start_problem(&waiting).is_none() && machine.seen.clock_cards.is_empty(), "no card for the user");
     assert!(!state.tasks[&waiting].cancelled(), "Alondra never cancels it");
     assert!(matches!(situation(&ReadIndex::build(&state), &waiting), Situation::Waiting(WaitsFor::Step(AlondraStep::Answering))));

@@ -90,7 +90,7 @@ async fn after_the_update_a_claude_p_batch_left_running_is_not_repeated_and_the_
     let claim = f.domain().store.lock().unwrap().claim_message(pending).unwrap().unwrap();
     save(&f.executor.home, &Runtime {
         session_id: Some("0f0f0f0f-0000-4000-8000-000000000001".into()),
-        active_run: Some(Run { id: "claude-p-run".into(), message_ids: vec![claim.message.id], attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true }),
+        active_run: Some(Run { id: "claude-p-run".into(), message_ids: vec![claim.message.id], attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true, replans_only: false }),
         ..Runtime::default()
     }).unwrap();
     f.executor.recover().unwrap();
@@ -205,7 +205,7 @@ async fn every_request_of_a_handled_batch_ends_with_a_task_an_answer_or_a_questi
         f.run(user(), id, Command::CreateRequest { request_id: id.into(), body: format!("Do {id}"), auto_merge: false, maintenance: false, message: false });
     }
     f.run(Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
-    f.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+    f.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "t-2".into(), request_id: "r-2".into(), title: "Task".into(), agent_id: Some("a".into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });

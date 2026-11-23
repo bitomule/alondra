@@ -48,7 +48,7 @@ fn clearing_takes_a_task_whose_request_closed_while_its_node_was_still_ending() 
     present(&mut s, "d", text());
     exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: text() }).unwrap();
     end_node(&mut s, "t");
-    exec(&mut s, orchestrator(), Command::CreateTask { plan_items: None, continues: None, task_id: "c".into(), request_id: "r".into(),
+    exec(&mut s, orchestrator(), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "c".into(), request_id: "r".into(),
         title: "c".into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) }).unwrap();
     exec(&mut s, user(), Command::CancelTask { task_id: "c".into(), reason: None }).unwrap();
@@ -132,7 +132,7 @@ fn fixture() -> DomainState {
     exec(
         &mut s,
         orchestrator(),
-        Command::CreateTask { plan_items: None, continues: None,
+        Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "t".into(),
             request_id: "r".into(),
             title: "Result".into(),

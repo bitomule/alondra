@@ -41,7 +41,7 @@ impl DomainState {
         let request = self.requests.get_mut(&request_id).unwrap();
         request.title = Some(clip(&task.title, REQUEST_TITLE_LIMIT));
         request.origin = RequestOrigin::User;
-        self.apply(&Actor::Orchestrator { generation: self.orchestrator_generation }, &Command::CreateTask {
+        self.apply(&Actor::Orchestrator { generation: self.orchestrator_generation }, &Command::CreateTask { priority: Default::default(),
             task_id, request_id, title: task.title, agent_id: None, review_prs: false,
             dependencies: BTreeSet::new(), stack: None, launch: Some(launch), plan_items: None, continues: None,
         }, effects, created, lifecycles)

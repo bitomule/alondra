@@ -502,6 +502,13 @@ impl DomainState {
             None => Ok(()),
         }
     }
+    fn no_cancelled_dependency(&self, dependencies: &BTreeSet<TaskId>) -> Result<()> {
+        match dependencies.iter().find(|d| self.tasks.get(*d).is_some_and(Task::cancelled)) {
+            Some(cancelled) => refuse("invalid_input", "dependencies", &format!(
+                "Task {cancelled} is cancelled, so a task that waits for it would never start: leave it out, wait for the task that replaces it, or reopen it")),
+            None => Ok(()),
+        }
+    }
     /// A task ends only once every worktree it made or took has ended.
     fn no_open_worktrees(&self, task: &TaskId) -> Result<()> {
         match self.task(task)?.open_worktrees().next() {
@@ -943,7 +950,7 @@ impl DomainState {
                     request.origin = RequestOrigin::Node { agent_id: agent_id.clone() };
                 }
                 self.apply(actor, &Command::TitleRequest { request_id: request_id.clone(), title: title.clone() }, effects, created, lifecycles)?;
-                self.apply(actor, &Command::CreateTask { plan_items: None, continues: None,
+                self.apply(actor, &Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                     task_id: new_task.clone(), request_id: request_id.clone(), title: title.clone(), agent_id: None,
                     review_prs: false, dependencies: dependencies.clone(), stack: None, launch: Some(launch.clone()),
                 }, effects, created, lifecycles)?;
@@ -3757,6 +3764,7 @@ impl DomainState {
                 launch,
                 plan_items,
                 continues,
+                priority,
             } => {
                 self.fence(actor)?;
                 if !matches!(actor, Actor::Orchestrator { .. }) {
@@ -3773,6 +3781,7 @@ impl DomainState {
                 if self.tasks.contains_key(task_id) {
                     return fail("invalid_input", "Task already exists");
                 };
+                self.no_cancelled_dependency(dependencies)?;
                 let Some(request) = self.requests.get(request_id).filter(|r| !r.closed) else {
                     return fail("not_found", "Open Request required");
                 };
@@ -3831,7 +3840,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: *priority, paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;
@@ -3946,6 +3955,7 @@ impl DomainState {
                         ScheduleLaunchState::Pending | ScheduleLaunchState::Dispatching))) {
                     return fail("conflict", "Scheduled Task launch is pending or dispatching");
                 }
+                self.no_cancelled_dependency(dependencies)?;
                 self.invalidate(task_id);
                 let t = self.tasks.get_mut(task_id).unwrap();
                 t.dependencies = dependencies.clone();

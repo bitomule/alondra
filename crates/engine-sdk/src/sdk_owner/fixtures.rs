@@ -443,7 +443,7 @@ impl<H: Hosts> Slice<H> {
             message: false,
         });
         slice.run(&Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "sdk-slice-request".into(), title: "Release notes".into() });
-        slice.run(&Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+        slice.run(&Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(),
             plan_items: None, continues: None,
             task_id: TASK.into(),
             request_id: "sdk-slice-request".into(),
@@ -671,7 +671,7 @@ pub fn assert_told_the_work_ended(slice: &Slice<ProcessHosts>, domain: &Arc<Doma
 impl<H: Hosts> Slice<H> {
     /// A second task of the request, ready to launch in the slice's worktree.
     pub fn task(&self, task: &str) {
-        self.run(&Actor::Orchestrator { generation: 0 }, &format!("task-{task}"), Command::CreateTask {
+        self.run(&Actor::Orchestrator { generation: 0 }, &format!("task-{task}"), Command::CreateTask { priority: Default::default(),
             plan_items: None, continues: None,
             task_id: task.into(),
             request_id: "sdk-slice-request".into(),

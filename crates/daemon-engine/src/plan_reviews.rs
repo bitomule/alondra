@@ -49,7 +49,7 @@ pub mod fixtures {
     }
 
     pub fn task(domain: &dyn Runtime, id: &str, agent: Option<&str>, dependencies: &[&str], mission: &str) {
-        must(domain, orchestrator(), &format!("create-{id}"), Command::CreateTask {
+        must(domain, orchestrator(), &format!("create-{id}"), Command::CreateTask { priority: Default::default(),
             task_id: id.into(), request_id: "r".into(), title: format!("Redraft index · Phase {}", id.to_uppercase()), agent_id: agent.map(Into::into),
             review_prs: false, dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None, launch: Some(plan(id, mission)),
             plan_items: None, continues: None,

@@ -1618,6 +1618,9 @@ impl DomainState {
         let wakes = self.lifecycle(lifecycles, task)?.empty_turns() + 1;
         let text = wake.as_ref().map(|_| self.empty_turn(task).wake_text_at(wakes));
         self.decide(lifecycles, task, LifecycleRecord::TurnEnded { turn: turn.into(), unheard_card: card.clone(), text, wake, awaits, stalled })?;
+        if empty && self.idle_after_merge(task, lifecycles)? {
+            self.end_post_merge(task, PostMergeEnd::TurnEnded, lifecycles)?;
+        }
         let owed = if empty { self.owed_step(task, self.lifecycle(lifecycles, task)?) } else { None };
         if let Some(owed) = &owed {
             let wake = self.wake_for(task, lifecycles)?;
@@ -1644,6 +1647,27 @@ impl DomainState {
             }
         }
         Ok(())
+    }
+
+    /// After the merge, a turn that began after the node declared its work after the merge ended
+    /// with nothing of the node's own running, nothing waiting to reach it and nothing it waits
+    /// for: the node did not declare that work again in that turn, so the work is over.
+    fn idle_after_merge(&self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<bool> {
+        let t = &self.tasks[task];
+        if !t.wrap_up.post_merge_work.as_ref().is_some_and(|work| work.turn_since) || self.waiting_after_merge(t).is_some() {
+            return Ok(false);
+        }
+        let lifecycle = self.lifecycle(lifecycles, task)?;
+        Ok(lifecycle.activity() == ActivityView::Resting && lifecycle.cards().is_empty() && lifecycle.pending_inputs().is_empty()
+            && self.work_after_merge(task, lifecycle).is_some())
+    }
+
+    /// A turn of the node began: a declaration of work after the merge made before it ends when
+    /// this turn ends idle, unless the node declares it again first.
+    fn post_merge_turn_began(&mut self, task: &TaskId) {
+        if let Some(work) = self.tasks.get_mut(task).and_then(|t| t.wrap_up.post_merge_work.as_mut()) {
+            work.turn_since = true;
+        }
     }
 
     /// The input that hands an empty turn of `task` back to its node, while its empty turns in a
@@ -2339,6 +2363,9 @@ impl DomainState {
             return Err(DomainError::new(CLOSING, format!("Task {} is closing: its node only ends now, and no host takes it over", task.0)));
         }
         for fact in facts {
+            if matches!(fact, RuntimeObservation::TurnStarted { .. } | RuntimeObservation::TurnUnprompted { .. }) {
+                self.post_merge_turn_began(task);
+            }
             let record = match fact.clone() {
                 RuntimeObservation::ModelAnswered => {
                     let account = self.task_account_key(task);

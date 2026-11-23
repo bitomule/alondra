@@ -1746,7 +1746,7 @@ async fn a_resting_task_moves_at_once(){
 /// excerpt every task that builds on it reads.
 fn built_on_a_compacted_result(slice:&Slice)->String{
     let earlier:TaskId="journal-robustness".into();
-    slice.run(&Actor::Orchestrator{generation:0},"earlier-task",Command::CreateTask{
+    slice.run(&Actor::Orchestrator{generation:0},"earlier-task",Command::CreateTask{priority: Default::default(),
         plan_items:None,continues:None,task_id:earlier.clone(),request_id:"sdk-slice-request".into(),title:"Make the journal robust".into(),
         agent_id:None,review_prs:false,dependencies:BTreeSet::new(),stack:None,launch:Some(LaunchPlan::new("journal",slice.worktree.to_str().unwrap())),
     });
@@ -1788,7 +1788,7 @@ async fn a_task_built_on_an_ended_task_whose_result_was_compacted_moves(){
 /// An earlier task this one builds on, ended with a final result of about `size` characters.
 fn built_on_an_ended_task(slice:&Slice,earlier:&str,size:usize){
     let earlier:TaskId=earlier.into();
-    slice.run(&Actor::Orchestrator{generation:0},&format!("{earlier}-task"),Command::CreateTask{
+    slice.run(&Actor::Orchestrator{generation:0},&format!("{earlier}-task"),Command::CreateTask{priority: Default::default(),
         plan_items:None,continues:None,task_id:earlier.clone(),request_id:"sdk-slice-request".into(),title:format!("Research {earlier}"),
         agent_id:None,review_prs:false,dependencies:BTreeSet::new(),stack:None,launch:Some(LaunchPlan::new(&earlier.to_string(),slice.worktree.to_str().unwrap())),
     });
@@ -1989,7 +1989,7 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
         mission: Some(mission.into()), model: Some("claude/sonnet".into()), reason: Some("Prepare the approved release notes".into()),
         ..LaunchPlan::new("release-notes", slice.worktree.to_str().unwrap())
     };
-    slice.run(&Actor::Orchestrator { generation: 0 }, "create-implementation", Command::CreateTask {
+    slice.run(&Actor::Orchestrator { generation: 0 }, "create-implementation", Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: task.clone(), request_id: "implement-report".into(), title: "Publish the release notes".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(plan),
     });

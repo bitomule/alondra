@@ -220,7 +220,7 @@ fn a_question_about_one_pr_keeps_the_other_card_and_the_working_task_visible() {
         request_id: "r".into(), title: "Update the phone menu".into(),
     });
     for id in ["queued-one", "queued-two"] {
-        must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+        must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(),
             task_id: id.into(), request_id: "r".into(), title: id.into(), agent_id: None, review_prs: false,
             plan_items: None, continues: None, dependencies: Default::default(), stack: None,
             launch: Some(LaunchPlan::new("node", "/synthetic/repository")),
@@ -392,7 +392,7 @@ fn work_waiting_after_a_merge_reads_waiting_on_every_client_and_in_the_header() 
     must(&mut s, Actor::Orchestrator { generation: 0 }, Command::TitleRequest {
         request_id: "r".into(), title: "Update the package".into(),
     });
-    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(),
         task_id: "package".into(), request_id: "r".into(), title: "Publish the package".into(), agent_id: None,
         review_prs: false, plan_items: None, continues: None, dependencies: BTreeSet::new(), stack: None,
         launch: Some(LaunchPlan::new("node", "/synthetic/repository")),
@@ -678,7 +678,7 @@ fn at_work() -> DomainState {
     let mut s = DomainState::new("epoch");
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: AGENT.into(), name: "Node".into(), at: 0 });
     must(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: TASK.into(), request_id: "r".into(), title: "Fix the phone menu".into(), agent_id: None, review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });

@@ -181,7 +181,7 @@ impl Machine {
         }
         for (index, task) in TASKS.into_iter().enumerate() {
             let dependencies = history.depends.filter(|(_, dependent)| *dependent == index).map(|(dependency, _)| TaskId::from(TASKS[dependency])).into_iter().collect();
-            machine.must(orchestrator.clone(), Command::CreateTask {
+            machine.must(orchestrator.clone(), Command::CreateTask { priority: Default::default(),
                 task_id: task.into(), request_id: "r".into(), title: format!("Task {task}"), agent_id: None, review_prs: false,
                 dependencies, stack: None, launch: Some(LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
             });

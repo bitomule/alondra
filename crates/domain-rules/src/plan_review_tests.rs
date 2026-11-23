@@ -34,7 +34,7 @@ fn user() -> Actor {
 }
 
 fn task(s: &mut DomainState, id: &str, agent: Option<&str>, dependencies: &[&str]) {
-    must(s, orchestrator(), Command::CreateTask {
+    must(s, orchestrator(), Command::CreateTask { priority: Default::default(),
         task_id: id.into(), request_id: "r".into(), title: format!("Phase {id}"), agent_id: agent.map(Into::into), review_prs: false,
         dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
         plan_items: None, continues: None,

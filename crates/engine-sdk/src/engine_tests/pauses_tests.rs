@@ -278,7 +278,7 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
         }
     };
     (0..4).for_each(&mut end_turn);
-    run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+    run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "t-high".into(), request_id: "r".into(), title: "Task t-high".into(), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
     let high = Waiting { key: Key::Task("t-high".into()), priority: TaskPriority::High, resuming: false, since: now };
@@ -331,7 +331,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     let mut node = SdkNode::working();
     let domain = Arc::clone(&node.domain);
     domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-    run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+    run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "t-light".into(), request_id: "r".into(), title: "Fix a typo".into(), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
     run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId("agent-light".into()), name: "agent-light".into(), at: 0 });

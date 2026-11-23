@@ -29,7 +29,7 @@ mod cancelled_dependencies {
 
     /// 20 October: a cancelled dependency put a card in front of the user at once. The task never
     /// starts while it waits for a cancelled task; it is the orchestrator's to decide, and it is
-    /// handed back at every rest of the orchestrator, never to the user. Letting it start without the
+    /// handed back at the orchestrator's rests, up to its last reminder, never to the user. Letting it start without the
     /// cancelled task is the orchestrator's decision.
     #[tokio::test]
     async fn a_cancelled_dependency_is_the_orchestrators_to_decide_and_never_the_users() {
@@ -52,10 +52,10 @@ mod cancelled_dependencies {
             && notice.contains("cancel_task") && notice.contains("yours to decide"), "{notice}");
         alondra_engine_orchestrator::orchestrator_inbox::hand_replans(&f.domain);
         assert_eq!(notices().len(), 1, "once per rest");
-        for _ in 0..3 {
+        for _ in 0..5 {
             rest(&f);
         }
-        assert_eq!(notices().len(), 4);
+        assert_eq!(notices().len(), alondra_engine_orchestrator::orchestrator_inbox::REPLAN_REMINDERS, "one per rest, up to the last reminder");
         assert!(problem(&f, "f1").is_none(), "the user is never asked");
         pass(&*f.domain, &f.home).await.unwrap();
         assert_eq!(launches(&f), 0);
@@ -150,16 +150,16 @@ mod refused_plans {
             f.domain.orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             alondra_engine_orchestrator::orchestrator_inbox::hand_replans(&f.domain);
         }
-        assert_eq!(reminders(), 4);
+        assert_eq!(reminders(), alondra_engine_orchestrator::orchestrator_inbox::REPLAN_REMINDERS, "one per rest, up to the last reminder");
         for hour in 0..30 {
             alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&f.domain, hour * 3_600_000);
         }
         let state = f.domain.state().unwrap();
         assert!(!state.tasks[&TaskId::from("t")].cancelled(), "no clock cancels it for the orchestrator");
         assert!(state.open_plan_refusal(&"t".into()).is_some(), "it stays open until the orchestrator decides");
-        let reminder = state.interactions.values().find(|i| i.id.0.ends_with("-3") && i.id.0.starts_with(alondra_domain_rules::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).unwrap();
+        let reminder = state.interactions.values().find(|i| i.id.0.ends_with("-2") && i.id.0.starts_with(alondra_domain_rules::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).unwrap();
         assert_eq!(reminder.recipient, alondra_domain_rules::Recipient::Orchestrator);
-        assert!(reminder.body.starts_with("Still open, reminder 3:"), "{}", reminder.body);
+        assert!(reminder.body.starts_with("Still open, reminder 2:"), "{}", reminder.body);
         assert!(state.interactions.values().all(|i| i.recipient != alondra_domain_rules::Recipient::User
             || !matches!(&i.scope, alondra_domain_rules::Scope::Task { task_id } if task_id.0 == "t")), "the user is never asked");
     }
@@ -360,7 +360,7 @@ mod usage_hold {
         as_actor(domain, Actor::User { user_id: "u".into() }, Command::CreateRequest {
             request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        as_actor(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+        as_actor(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(),
             plan_items: None, continues: None, task_id: task(), request_id: "r".into(), title: "Task".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
         });

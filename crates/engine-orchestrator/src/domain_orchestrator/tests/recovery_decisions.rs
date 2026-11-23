@@ -73,7 +73,7 @@ fn batch_with_confirmed_effect(f: &Fixture, selected: bool) -> Run {
             .map(|claim| (claim.attempt_id, claim.version))
             .collect(),
         started_at: 1,
-        spawned: true,
+        spawned: true, replans_only: false,
     };
     save(
         &f.executor.home,
@@ -216,7 +216,7 @@ async fn legacy_resolution_save_failure_keeps_claims_and_preserves_an_unrelated_
                         message_ids: vec![],
                         attempts: vec![],
                         started_at: 17,
-                        spawned: true,
+                        spawned: true, replans_only: false,
                     }),
                     last_error: Some("Keep the other run's explicit refusal".into()),
                     failure: Some(Failure::Denied),
@@ -313,7 +313,7 @@ async fn selected_continuation_metadata_save_failure_keeps_old_claims_recoverabl
                         message_ids: vec![],
                         attempts: vec![],
                         started_at: 23,
-                        spawned: true,
+                        spawned: true, replans_only: false,
                     }),
                     last_error: Some("Preserve the unrelated stop".into()),
                     failure: Some(Failure::Denied),
@@ -377,7 +377,7 @@ async fn persisted_handoff_survives_reconcile_failure_and_restart_without_a_cold
                         message_ids: vec![],
                         attempts: vec![],
                         started_at: 29,
-                        spawned: true,
+                        spawned: true, replans_only: false,
                     }),
                     last_error: Some("Preserve the unrelated refusal".into()),
                     failure: Some(Failure::Denied),
@@ -522,7 +522,7 @@ async fn startup_still_resolves_a_legacy_sessionless_batch() {
         message_ids: vec![claim.message.id],
         attempts: vec![(claim.attempt_id, claim.version)],
         started_at: 1,
-        spawned: true,
+        spawned: true, replans_only: false,
     };
     save(
         &f.executor.home,
@@ -605,7 +605,7 @@ fn ambiguous_batch(f: &Fixture, messages: bool) -> Run {
             .map(|claim| (claim.attempt_id, claim.version))
             .collect(),
         started_at: 0,
-        spawned: true,
+        spawned: true, replans_only: false,
     };
     drop(store);
     save(

@@ -156,7 +156,7 @@ impl World {
         let orchestrator = Actor::Orchestrator { generation: 0 };
         run(&world.domain, &orchestrator, "request", Command::CreateRequest { request_id: "r".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
         run(&world.domain, &orchestrator, "title", Command::TitleRequest { request_id: "r".into(), title: "Release notes".into() }).unwrap();
-        run(&world.domain, &orchestrator, "task", Command::CreateTask {
+        run(&world.domain, &orchestrator, "task", Command::CreateTask { priority: Default::default(),
             plan_items: None, continues: None, task_id: TASK.into(), request_id: "r".into(), title: "Write the release notes".into(), agent_id: None, review_prs: false,
             dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", world.worktree.to_str().unwrap())),
         }).unwrap();

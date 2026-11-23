@@ -139,7 +139,7 @@ impl Executor {
                         })
                         .collect(),
                     started_at: 0,
-                    spawned: true,
+                    spawned: true, replans_only: false,
                 };
                 let handed = !batch.attempts.is_empty()
                     && batch

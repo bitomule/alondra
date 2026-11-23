@@ -362,3 +362,26 @@ fn an_answer_to_a_card_of_a_replaced_node_reaches_the_new_node() {
     assert!(s.lifecycle_journal[&TaskId::from(SDK)].iter().any(|record|
         matches!(record, LifecycleRecord::Told { answers: Some(card), .. } if card.0 == "question-0")));
 }
+
+/// A task created to wait for another one is waiting for that task, not for a slot: it is counted
+/// with the tasks that wait, never in the queue, until what it waits for lands.
+#[test]
+fn an_unstarted_task_that_waits_for_another_waits_for_tasks_not_for_a_slot() {
+    let mut s = DomainState::new("epoch");
+    super::lifecycle_tests::must(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
+    super::lifecycle_tests::must(&mut s, user(), Command::TitleRequest { request_id: "r".into(), title: "Build it".into() });
+    for (id, after) in [("first", vec![]), ("second", vec!["first"])] {
+        super::lifecycle_tests::must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+            task_id: id.into(), request_id: "r".into(), title: id.into(), agent_id: None, review_prs: false,
+            dependencies: after.into_iter().map(TaskId::from).collect(), stack: None, launch: Some(crate::LaunchPlan::new("node", "/tmp")),
+        });
+    }
+    let second = TaskId::from("second");
+    assert_eq!(s.tasks[&second].state, TaskState::WaitingDependency);
+    let index = ReadIndex::build(&s);
+    assert_eq!(situation(&index, &second), Situation::Waiting(WaitsFor::Tasks));
+    assert_eq!(situation(&index, &second).tally(), Some(Tally::Waiting));
+    assert_eq!(situation(&index, &"first".into()), Situation::Waiting(WaitsFor::Slot), "the task it waits for is the one in the queue");
+    let owed = s.obligation_of(&second).expect("a live task owes something");
+    assert_eq!((owed.party, owed.owed), (Party::Tasks, alondra_domain::Owed::Tasks));
+}

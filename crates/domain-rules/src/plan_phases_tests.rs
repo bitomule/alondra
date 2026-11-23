@@ -32,7 +32,7 @@ fn refused(s: &mut DomainState, a: Actor, c: Command) -> String {
     error.code
 }
 fn task(id: &str, request: &str, agent: Option<&str>, dependencies: &[&str], plan_items: Option<PlanItems>) -> Command {
-    Command::CreateTask {
+    Command::CreateTask { priority: Default::default(),
         task_id: id.into(), request_id: request.into(), title: format!("Phase {id}"), agent_id: agent.map(Into::into),
         review_prs: false, dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect::<BTreeSet<_>>(), stack: None,
         launch: Some(LaunchPlan::new("node", "/tmp/project")), plan_items, continues: None,

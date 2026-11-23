@@ -1850,7 +1850,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     seeded(&mut store);
     execute(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Reviewer".into(), at: 0 });
     execute(&mut store, &user(), "request-title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
-    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { plan_items: None, continues: None,
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-2".into(), request_id: "request-1".into(), title: "Review".into(), agent_id: Some("agent-2".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
@@ -1962,7 +1962,7 @@ fn plan() -> alondra_daemon_engine_model::LaunchPlan {
 fn planned_task(id: &str, request: &str, epoch: &alondra_domain_rules::DataEpoch, plan: alondra_daemon_engine_model::LaunchPlan) -> CommandEnvelope {
     CommandEnvelope {
         protocol_version: 2, data_epoch: epoch.clone(), command_id: format!("plan-{id}").into(), expected_revision: 0,
-        command: Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
+        command: Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
             review_prs: false, dependencies: Default::default(), stack: None, launch: Some(plan) },
     }
 }
@@ -2156,11 +2156,11 @@ fn an_approved_proposed_plan_its_request_and_the_new_task_s_scope_survive_a_rest
     assert!(message.contains("approved the plan") && message.contains("implement-report") && message.contains("dependencies on task-1"), "{message}");
     let orchestrator = Actor::Orchestrator { generation: 0 };
     execute(&mut store, &orchestrator, "title", Command::TitleRequest { request_id: "implement-report".into(), title: "Index the library".into() });
-    execute(&mut store, &orchestrator, "build", Command::CreateTask { plan_items: None, continues: None,
+    execute(&mut store, &orchestrator, "build", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "build".into(), request_id: "implement-report".into(), title: "Index the library".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("build", "/tmp/repo")),
     });
-    execute(&mut store, &orchestrator, "follow", Command::CreateTask {
+    execute(&mut store, &orchestrator, "follow", Command::CreateTask { priority: Default::default(),
         plan_items: Some(PlanItems { from_task: "build".into(), items: vec!["2".into()] }), continues: None,
         task_id: "follow".into(), request_id: "implement-report".into(), title: "Follow changes".into(), agent_id: None,
         review_prs: false, dependencies: ["build".into()].into(), stack: None, launch: Some(LaunchPlan::new("follow", "/tmp/repo")),
@@ -2606,7 +2606,7 @@ fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
     let worktree = worktree.to_str().unwrap();
     execute(&mut store, &user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut store, &orchestrator, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
-    let create = |id: &str, continues: Option<&str>| Command::CreateTask {
+    let create = |id: &str, continues: Option<&str>| Command::CreateTask { priority: Default::default(),
         task_id: id.into(), request_id: "r".into(), title: id.into(), agent_id: None, review_prs: false, dependencies: Default::default(),
         stack: None, launch: Some(LaunchPlan::new("node", worktree)), plan_items: None, continues: continues.map(TaskId::from),
     };

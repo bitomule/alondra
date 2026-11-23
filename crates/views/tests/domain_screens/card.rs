@@ -149,7 +149,7 @@ fn ok(s: &mut DomainState, a: Actor, c: Command) -> CommandOutcome {
 }
 
 fn task(s: &mut DomainState, id: &str, agent: &str) {
-    ok(s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+    ok(s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: Some(agent.into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
@@ -166,7 +166,7 @@ fn sdk_fixture() -> DomainState {
     register_agent(&mut s, "a");
     ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
     s.requests.get_mut(&"r".into()).unwrap().title = Some("Build it".into());
-    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "t".into(), request_id: "r".into(), title: "Task t".into(), agent_id: None,
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),

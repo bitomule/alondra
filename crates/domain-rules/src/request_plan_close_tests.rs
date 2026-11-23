@@ -20,7 +20,7 @@ fn ok(s: &mut DomainState, a: Actor, c: Command) -> CommandOutcome {
     s.execute(&a, &envelope).unwrap()
 }
 fn task(id: &str, agent: &str, plan_items: Option<PlanItems>) -> Command {
-    Command::CreateTask {
+    Command::CreateTask { priority: Default::default(),
         task_id: id.into(), request_id: "r".into(), title: format!("Phase {id}"), agent_id: Some(agent.into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(LaunchPlan::new("node", "/tmp/project")), plan_items, continues: None,

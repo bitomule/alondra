@@ -39,7 +39,7 @@ fn at_work() -> DomainState {
     let mut s = DomainState::new("epoch");
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: AGENT.into(), name: "Node".into(), at: 0 });
     must(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: TASK.into(), request_id: "r".into(), title: "Fix the phone menu".into(), agent_id: None, review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
@@ -93,7 +93,7 @@ fn an_unregistered_pr_is_allowed_as_context_in_a_final_result() {
 
 fn register_context_pr(s: &mut DomainState) {
     must(s, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
-    must(s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    must(s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(),
         task_id: "other".into(), request_id: "r".into(), title: "Fix permissions".into(), agent_id: None,
         review_prs: false, plan_items: None, continues: None, dependencies: BTreeSet::new(), stack: None,
         launch: Some(LaunchPlan::new("node", "/synthetic/repository")),
@@ -503,7 +503,7 @@ fn a_noted_pr_is_read_once_and_a_pr_of_another_task_stays_there() {
 
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Other".into(), at: 0 });
     must(&mut s, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
-    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "other".into(), request_id: "r".into(), title: "Other".into(), agent_id: Some("b".into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });

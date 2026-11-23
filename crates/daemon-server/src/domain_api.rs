@@ -1432,7 +1432,7 @@ mod tests {
         apply(user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         apply(orchestrator.clone(), Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
         for (id, agent) in [("t", Some("node".into())), ("d", None)] {
-            apply(orchestrator.clone(), Command::CreateTask {
+            apply(orchestrator.clone(), Command::CreateTask { priority: Default::default(),
                 task_id: id.into(), request_id: "r".into(), title: id.into(), agent_id: agent, review_prs: false,
                 dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
             });
@@ -1498,7 +1498,7 @@ mod tests {
         let token = host.domain.issue(Principal::Orchestrator { generation: 0, execution_id: "continuation-probe".into() }).unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("authorization", format!("Bearer {}", token.expose_for_child_environment()).parse().unwrap());
-        let command = envelope(&host, "continue-api", Command::CreateTask {
+        let command = envelope(&host, "continue-api", Command::CreateTask { priority: Default::default(),
             task_id: "continued".into(), request_id: "request-a".into(), title: "DO_NOT_LOG_COMMAND_BODY".into(), agent_id: None,
             review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: Some("task-a".into()),
             launch: Some(serde_json::from_value(json!({"name":"node", "cwd":path, "model":"sonnet", "reason":"fixture"})).unwrap()),
@@ -1545,7 +1545,7 @@ mod tests {
         let state = domain.state().unwrap();
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "task".into(), expected_revision: state.revision,
-            command: Command::CreateTask { plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: None,
+            command: Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: None,
                 review_prs: false, dependencies: Default::default(), stack: None, launch: Some(serde_json::from_value(json!({"name":"node", "cwd":directory.to_string_lossy(), "model":"sonnet", "reason":"fixture"})).unwrap()) },
         };
         let driver = std::thread::current().id();
@@ -1864,7 +1864,7 @@ mod tests {
         create_task["dependencies"] = json!([]);
         create_task["stack"] = Value::Null;
         let adapted = resource_envelope_from_path("POST", "/requests/r-1/tasks", create_task).unwrap();
-        assert_eq!(adapted.command, Command::CreateTask { plan_items: None, continues: None,
+        assert_eq!(adapted.command, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task-1".into(), request_id: "r-1".into(), title: "Build".into(),
             agent_id: None, review_prs: false, dependencies: Default::default(), stack: None, launch: None,
         });
@@ -1918,7 +1918,7 @@ mod tests {
             (
                 Actor::Orchestrator { generation: 0 },
                 "task",
-                Command::CreateTask { plan_items: None, continues: None,
+                Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                     task_id: "task-a".into(),
                     request_id: "request-a".into(),
                     title: "Synthetic task".into(),

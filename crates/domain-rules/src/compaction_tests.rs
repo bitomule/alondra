@@ -26,7 +26,7 @@ fn ok(s: &mut DomainState, a: Actor, c: Command) -> CommandOutcome {
     exec(s, a, c).unwrap()
 }
 fn task(id: &str, dependencies: &[&str]) -> Command {
-    Command::CreateTask {
+    Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None,
         review_prs: false, dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect::<BTreeSet<_>>(), stack: None,
         launch: Some(LaunchPlan::new("node", "/tmp/project")),
@@ -194,7 +194,7 @@ fn a_plan_another_task_implements_is_kept_whole() {
         card: CardSpec::new(CardKind::Review, "Smaller").content(ContentKind::Plan, PLAN),
     });
     ok(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "plan".into(), option_id: Hold::APPROVE.into(), inputs: Default::default() });
-    ok(&mut s, orchestrator(), Command::CreateTask {
+    ok(&mut s, orchestrator(), Command::CreateTask { priority: Default::default(),
         plan_items: Some(PlanItems { from_task: "t".into(), items: vec!["2".into()] }), continues: None, task_id: "phase".into(), request_id: "r".into(),
         title: "Phase 2".into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(LaunchPlan::new("node", "/tmp/project")),

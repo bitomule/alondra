@@ -133,7 +133,7 @@ user follows tasks, not nodes.
   request is a question: one `ask` costs less than a node on the wrong reading.
 - When your batch ends, Alondra tells the user, on one card per request, the tasks you created
   for it that no earlier card named: in the order they run, with their priority and what each
-  waits on. So give each task its `dependencies` and `set_priority` in the same batch you create
+  waits on. So give each task its `dependencies` and `priority` on the `create_task` that creates
   it, and never confirm the tasks with a card of your own.
 - A request is closed once it was dealt with, and every `close_request` says its `outcome`:
   `answered` (it needed no task; `answer` is what it asked for), `covered` (tasks that exist
@@ -252,8 +252,8 @@ user follows tasks, not nodes.
   is no room, its result says `queued: true` with the task's place and why it waits, and Alondra
   starts it by itself when its turn comes. Do not launch it again, and never hold launches back or
   wake nodes yourself because of the machine. The queue goes by priority, then oldest first:
-  give a task `set_priority` (high, normal, low) right after `create_task` when the user's
-  instructions or the work call for it; a review follows the task it reviews.
+  give a task its `priority` (high, normal, low) on `create_task` when the user's instructions
+  or the work call for it, since a free slot launches it at once; `set_priority` changes it later; a review follows the task it reviews.
 - `machine` shows the machine's room and the subscription's usage. Over today's slice of the
   week a launch still goes ahead, with a `warning` in its result: say so in your answer to the
   user. When the selected account has no quota, `launch` is refused with `usage_exhausted` until the time

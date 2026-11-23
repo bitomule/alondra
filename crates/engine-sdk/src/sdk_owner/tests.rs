@@ -26,7 +26,7 @@ use super::fixtures::*;
 fn unchanged_driver_pause_checks_do_not_query_the_domain() {
     let slice = Slice::new();
     for n in 0..8 {
-        slice.run(&Actor::Orchestrator { generation: 0 }, &format!("unrelated-{n}"), Command::CreateTask {
+        slice.run(&Actor::Orchestrator { generation: 0 }, &format!("unrelated-{n}"), Command::CreateTask { priority: Default::default(),
             task_id: format!("unrelated-{n}").into(), request_id: "sdk-slice-request".into(),
             title: "Unrelated task".into(), agent_id: None, review_prs: false,
             dependencies: BTreeSet::new(), stack: None,
@@ -1225,7 +1225,7 @@ fn usage_coming_back_lets_a_task_of_the_agent_sdk_the_limit_held_go_on() {
 #[test]
 fn a_second_task_starts_through_the_same_sdk_host() {
     let slice = Slice::new();
-    slice.run(&Actor::Orchestrator { generation: 0 }, "second-task", Command::CreateTask {
+    slice.run(&Actor::Orchestrator { generation: 0 }, "second-task", Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None,
         task_id: "sdk-slice-second".into(),
         request_id: "sdk-slice-request".into(),
@@ -3597,7 +3597,7 @@ fn stale_reopening_does_not_admit(reopen_again: bool) {
     let reopening = prepare_reopening(&*slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
         &AccountId::default_account(), &slice.worktree, input.clone(), true).unwrap();
     if reopen_again {
-        slice.run(&Actor::Orchestrator { generation: 0 }, "keep-request-open", Command::CreateTask {
+        slice.run(&Actor::Orchestrator { generation: 0 }, "keep-request-open", Command::CreateTask { priority: Default::default(),
             plan_items: None, continues: None, task_id: "remaining-release-work".into(), request_id: "sdk-slice-request".into(),
             title: "Check the release checklist".into(), agent_id: None, review_prs: false,
             dependencies: BTreeSet::new(), stack: None,

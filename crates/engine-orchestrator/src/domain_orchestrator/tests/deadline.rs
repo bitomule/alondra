@@ -60,7 +60,7 @@ fn stalled(domain: &DomainRuntime) -> InteractionId {
     as_actor(domain, Actor::User { user_id: "u".into() }, Command::CreateRequest {
         request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
     });
-    as_actor(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    as_actor(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: task(), request_id: "r".into(), title: "Task".into(), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });

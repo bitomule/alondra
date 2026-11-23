@@ -195,7 +195,7 @@ impl Rig {
         let domain = Arc::new(crate::engine_fixtures::open(&home).unwrap());
         command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: SESSION.into(), name: "Node".into(), at: 0 });
         command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+        command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Result".into(), agent_id: Some(SESSION.into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
@@ -264,7 +264,7 @@ async fn recording_a_closed_node_failure_keeps_its_receipt_and_stops_after_three
     rig.confirm();
     command(&rig.domain, Actor::System, "other-agent", Command::RegisterAgent { agent_id: "other".into(), name: "Other".into(), at: 0 });
     command(&rig.domain, user(), "other-request", Command::CreateRequest { request_id: "other".into(), body: "Other work".into(), auto_merge: false, maintenance: false, message: false });
-    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "other-task", Command::CreateTask {
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "other-task", Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: "z".into(), request_id: "other".into(), title: "Other task".into(), agent_id: Some("other".into()),
         review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("other", "/tmp")),
@@ -1179,7 +1179,7 @@ async fn a_noted_worktree_another_open_task_holds_or_git_does_not_know_is_never_
     let root = crate::test_support::Directory::new();
     let (held, noted) = unseen_subagent_worktree(&rig, &root);
     command(&rig.domain, user(), "request-u", Command::CreateRequest { request_id: "r-u".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "create-u", Command::CreateTask {
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "create-u", Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: "u".into(), request_id: "r-u".into(), title: "Other".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
     });
@@ -1319,7 +1319,7 @@ async fn a_node_whose_session_ends_during_its_work_after_the_merge_is_closed_and
 async fn a_cancelled_task_without_a_node_is_cancelled_by_alondras_cleanup_receipt() {
     let rig = Rig::undelivered(thirty_minutes());
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
-    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "task-u", Command::CreateTask { plan_items: None, continues: None,
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "task-u", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "u".into(), request_id: "r".into(), title: "Later".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
@@ -1348,7 +1348,7 @@ fn moved(continues: Option<&str>) -> (Rig, crate::test_support::Directory, std::
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     std::fs::write(dir.join("a.txt"), "x").unwrap();
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
-    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "continuation", Command::CreateTask {
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "continuation", Command::CreateTask { priority: Default::default(),
         task_id: "t-claude".into(), request_id: "r".into(), title: "Result on Claude".into(), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", dir.to_str().unwrap())),
         plan_items: None, continues: continues.map(TaskId::from),
@@ -1402,7 +1402,7 @@ async fn a_cancelled_task_whose_continuation_is_already_over_leaves_its_unsaved_
 #[tokio::test]
 async fn several_continuations_of_one_task_keep_its_worktree_until_the_last_one_ends() {
     let (rig, _root, dir) = moved(Some("t"));
-    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "second", Command::CreateTask {
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "second", Command::CreateTask { priority: Default::default(),
         task_id: "t-sonnet".into(), request_id: "r".into(), title: "Result on Sonnet".into(), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", dir.to_str().unwrap())),
         plan_items: None, continues: Some("t".into()),
@@ -1449,7 +1449,7 @@ impl Rig {
         command(&self.domain, user(), &format!("request-{id}"), Command::CreateRequest {
             request_id: format!("r-{id}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        command(&self.domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask {
+        command(&self.domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { priority: Default::default(),
             plan_items: None, continues: None, task_id: id.into(), request_id: format!("r-{id}").into(), title: format!("Task {id}"), agent_id: None,
             review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
@@ -1790,7 +1790,7 @@ async fn closing_a_task_launched_in_the_projects_root_hands_it_to_no_other_task_
     let folders = UsersFolders::protecting(&rig.domain);
     rig.domain.store.lock().unwrap().set_task_worktree(&"t".into(), folders.projects.to_str().unwrap(), T0).unwrap();
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
-    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "other", Command::CreateTask {
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "other", Command::CreateTask { priority: Default::default(),
         plan_items: None, continues: None, task_id: "t-other".into(), request_id: "r".into(), title: "Other".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", folders.projects.to_str().unwrap())),
@@ -1858,7 +1858,7 @@ async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the
     command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "node".into(), name: "Node".into(), at: 0 });
     command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(),
         auto_merge: false, maintenance: false, message: false });
-    command(&domain, Actor::Orchestrator { generation: 0 }, "create", Command::CreateTask {
+    command(&domain, Actor::Orchestrator { generation: 0 }, "create", Command::CreateTask { priority: Default::default(),
         task_id: task_id.clone(), request_id: "r".into(), title: "Finish the change".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic/repository")),

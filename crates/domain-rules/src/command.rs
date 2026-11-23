@@ -185,6 +185,10 @@ pub enum Command {
         /// The task of the same request this one carries on, taking its worktrees and its plan.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         continues: Option<TaskId>,
+        /// Where its node stands in the queue from the start, so a free slot never launches it
+        /// before its priority arrives.
+        #[serde(default)]
+        priority: TaskPriority,
     },
     AssignTask {
         task_id: TaskId,
