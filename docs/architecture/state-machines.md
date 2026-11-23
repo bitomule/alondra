@@ -325,7 +325,7 @@ F-ENGINE-6, F-ENGINE-7, F-ENGINE-9, F-ENGINE-10 · Depends on: none · Related: 
 Issue: #522 · Severity: S2 · Findings: F-CARDS-1, F-CARDS-6, F-ORCH-2, F-ORCH-8, F-LIFE-1,
 F-GH-5, F-CARDS-7 (added on 2026-11-22 by the user's decision, after the re-check of #536) · Depends on: none · Related: issues #353, #323, #350, #352.
 
-**Status: fixed** in commit `3332b0597` (phase 5 of the fix plan). Each finding below says what
+**Status: fixed** in #553 (phase 5 of the fix plan). Each finding below says what
 changed and which test proved it; every new test was seen failing with its fix removed.
 
 - **Expected behaviour**: a request whose tasks all ended is reminded to the orchestrator at most
@@ -674,7 +674,7 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 ### Findings
 
 #### F-LIFE-1 · An unstarted task that waits for other tasks shows as "Queued" (slot wait), not "Waiting for tasks"
-**Status: FIXED** in `5a6def99d`, in the lifecycle aggregate as its single source (the user decided on 2026-11-23
+**Status: FIXED** in #553, in the lifecycle aggregate as its single source (the user decided on 2026-11-23
 that the wait is a state of the task's machine, not something read beside it). A task no execution runs and whose
 dependencies have not landed is `AwaitingTasks{tasks, start}`: it owes `(Party::Tasks, Owed::Tasks)` (or the plan
 review's `Answer`) and `Admit` refuses it with `AwaitsTasks`, so no node takes it. `record_start_waits`
@@ -912,7 +912,7 @@ Execution model common to all machines in this area (stated once):
 ### Findings
 
 #### F-CARDS-1 · A request whose tasks ended depends on a single message to the orchestrator: if that batch does not close it, it stays open forever with no result card (issue #353)
-**Status: FIXED** in `3332b0597`, as the user decided on 2026-11-22. `orchestrator_inbox::steps` treats an open request
+**Status: FIXED** in #553, as the user decided on 2026-11-22. `orchestrator_inbox::steps` treats an open request
 (not a message) whose tasks all ended like a request without tasks: `tasks_ended` sends the reminder
 `tasks-ended-unsettled-<request>-<n>` (new `InboxCard::TasksEndedNotice`, a reserved prefix) when the orchestrator rests
 with nothing waiting for it; once `TASKS_ENDED_REMINDERS` (2) reminders were read by batches that ended with their result,
@@ -1000,7 +1000,7 @@ Still holds at `68770a298`: #516 rewrote the orchestrator inbox, but `steps` and
 - **Expected fix and files**: replacing the current delivery with any card goes through the same path as `Withdraw` (`invalidate` + `hand_back`), or `replaceable` only allows replacing a final delivery with another final delivery. In addition `presentation()` must reject a withdrawn delivery. Files: `rules.rs` (`insert_interaction`, `replaceable`, `presentation`).
 
 #### F-CARDS-6 · `CreateTask` and `SetDependencies` accept an already cancelled dependency: the task is born waiting for something that will not come (issue #323)
-**Status: FIXED** in `3332b0597` (the guard; the re-pointing replacement command of #323 is not part of it). Both
+**Status: FIXED** in #553 (the guard; the re-pointing replacement command of #323 is not part of it). Both
 commands call `no_cancelled_dependency` before changing anything and refuse with `invalid_input`, field `dependencies`,
 like `SetRelations`. Test: `attention_tests::a_task_cannot_be_made_to_wait_for_a_cancelled_one` (without the fix both
 commands are accepted).
@@ -3237,7 +3237,7 @@ turn that began after the last declaration ending idle after the merge (`PostMer
   `crates/system/src/worktree.rs`, callers in `task_worktrees.rs` and `task_closer.rs`.
 
 #### F-GH-5 · Post-merge work declared and the node idle: the task stays "Working" forever, its host is never released and it holds a slot
-**Status: FIXED** in `3332b0597`. On `main` an idle rest after the merge woke the node and then opened a case for the
+**Status: FIXED** in #553. On `main` an idle rest after the merge woke the node and then opened a case for the
 orchestrator, but nothing ended the work: the documented rule (a turn after the merge that ends with nothing running ends
 the work unless the node declared it again) was lost with the `claude --bg` node machine in #173, which left
 `PostMergeWork.turn_since` never set and `PostMergeEnd::TurnEnded` never recorded. Now `record_runtime_facts` marks
@@ -3650,7 +3650,7 @@ counterpart of H-ORCH-3, which no longer happens.
   Files: `domain_orchestrator/recovery.rs`, the test at `domain_orchestrator.rs:1970` (it should use `startup_recovery`).
 
 #### F-ORCH-2 · Replanning reminders feed themselves: one batch per reminder, without end
-**Status: FIXED** in `3332b0597`, with the default decision. A batch whose messages were all re-plan reminders
+**Status: FIXED** in #553, with the default decision. A batch whose messages were all re-plan reminders
 (`only_replan_reminders`, stored as `Run.replans_only`) does not count as a rest, so a reminder no longer starts the batch
 that hands the next one; and each subject (task and cancelled dependency, or refusal card) is handed at most
 `REPLAN_REMINDERS` (3) times. Past it the task keeps its factual state («“X” was cancelled · the orchestrator decides what
@@ -3839,7 +3839,7 @@ statement (`domain_orchestrator.rs:701`); #516 moved the lines around it, not th
   outside the file.
 
 #### F-ORCH-8 · `create_task` carries no priority and automatic launch wakes in the same commit (issue #352)
-**Status: FIXED** in `3332b0597`. `Command::CreateTask` has `priority` (`TaskPriority`, `#[serde(default)]` so commands
+**Status: FIXED** in #553. `Command::CreateTask` has `priority` (`TaskPriority`, `#[serde(default)]` so commands
 recorded before read back as normal), stored on the task in the creating commit; the MCP `create_task` tool takes it and
 the orchestrator skill says to pass it there; `set_priority` only changes it later. Test:
 `auto_launch::tests::a_task_created_with_a_high_priority_takes_the_next_free_slot_before_an_older_one` (without the fix
