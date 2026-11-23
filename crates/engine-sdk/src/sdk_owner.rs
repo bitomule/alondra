@@ -117,7 +117,7 @@ fn store_text(error: &StoreError) -> String {
     }
 }
 fn adapter(what: &str) -> impl Fn(AdapterError) -> Failed + '_ {
-    move |error| Failed::new(format!("{what}: {error:?}"))
+    move |error| Failed::new(format!("{what}: {error}"))
 }
 
 impl Preparer for Worker {
@@ -1140,7 +1140,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
     let unadmitted = Unadmitted { domain: Some(Arc::clone(&domain)), agent: agent.clone() };
     let environment = node_environment(domain.home(), &agent, capability.expose_for_child_environment());
     domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref().map(|identity| identity as &dyn crate::domain_store::KnownIdentity))).map_err(failed("Alondra cannot resume this session"))?;
-    worker.relaunch(grant, adapter_state, base, resume, retaken, environment).map_err(|error| Failed::new(format!("its new host could not start ({error:?})")))?;
+    worker.relaunch(grant, adapter_state, base, resume, retaken, environment).map_err(|error| Failed::new(format!("its new host could not start ({error})")))?;
     domain.engine().context_launched(&task, if resume { StartKind::Resumed } else { StartKind::New });
     if retaken && adoption.receipt_candidates.is_empty() && let Some(archive) = worker.retired_host() && let Err(error) = std::fs::remove_dir_all(&archive) {
         log!("could not remove the folder of the released host of {task} ({}): {error}", archive.display());

@@ -697,22 +697,25 @@ async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_cor
 
     tell(slice, TASK, "Now the changelog.").await;
     let mut changed = slice.domain.subscribe();
-    let goes_on = async {
-        loop {
-            let open = slice.domain.store.lock_or_exit("the domain store").provider_transition(&task).unwrap().is_some();
-            let pending = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].pending_selection.is_some();
-            if !open && !pending && slice.prompts().last().is_some_and(|prompt| prompt.ends_with("Now the changelog.")) { break }
-            if open {
-                match crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &task).await {
-                    Ok(_) => {}
-                    Err(error) if error.code == "selection_transition" => {}
-                    Err(error) => panic!("advancing the transition: {error:?}"),
-                }
-            }
-            let _ = tokio::time::timeout(std::time::Duration::from_millis(100), changed.changed()).await;
+    // Each change of the domain is looked at until the message reached Claude or the task ended up
+    // somewhere it cannot go on from; how long the hosts take to start is the machine's, not the
+    // test's to judge.
+    loop {
+        let open = slice.domain.store.lock_or_exit("the domain store").provider_transition(&task).unwrap().is_some();
+        let pending = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].pending_selection.is_some();
+        if !open && !pending && slice.prompts().last().is_some_and(|prompt| prompt.ends_with("Now the changelog.")) { break }
+        if let Some(lost) = open_card(&slice.domain, alondra_domain_rules::HOST_LOST_PREFIX) {
+            panic!("the message never reached Claude, its host was lost: {:?}; prompts {:?}", lost.card.content.map(|content| content.body), slice.prompts());
         }
-    };
-    goes_on.await;
+        if open {
+            match crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &task).await {
+                Ok(_) => {}
+                Err(error) if error.code == "selection_transition" => {}
+                Err(error) => panic!("advancing the transition: {error:?}"),
+            }
+        }
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(100), changed.changed()).await;
+    }
     let capture: serde_json::Value = slice.hosts.native_capture();
     let args: Vec<&str> = capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
     let settings = args.iter().position(|arg| *arg == "--settings").map(|at| serde_json::from_str(args[at + 1]).unwrap()).unwrap_or_default();

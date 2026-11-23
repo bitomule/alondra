@@ -475,7 +475,7 @@ impl Read for DeadlineReader {
             .deadline
             .lock()
             .map_err(|_| std::io::Error::other("deadline lock"))?;
-        read_bounded(&mut self.stream, bytes, deadline, Instant::now())
+        read_bounded(&mut self.stream, bytes, deadline, || alondra_foundation::clock::instant().into_std())
     }
 }
 fn receive(
@@ -492,7 +492,7 @@ fn receive(
         .ok_or(AdapterError::Disconnected)
 }
 fn write(writer: &mut UnixStream, bytes: &[u8], deadline: Instant) -> Result<(), AdapterError> {
-    write_bounded(writer, bytes, deadline, Instant::now).map_err(disconnected)
+    write_bounded(writer, bytes, deadline, || alondra_foundation::clock::instant().into_std()).map_err(disconnected)
 }
 fn write_bounded<W: Write + TimeoutWriter>(
     writer: &mut W,
@@ -505,7 +505,7 @@ fn write_bounded<W: Write + TimeoutWriter>(
         match writer.write(bytes) {
             Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::WriteZero)),
             Ok(count) => bytes = &bytes[count..],
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted || timed_out(&error) => continue,
             Err(error) => return Err(error),
         }
     }
@@ -526,8 +526,8 @@ fn budget(deadline: Instant, now: Instant) -> std::io::Result<std::time::Duratio
         .filter(|duration| !duration.is_zero())
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::TimedOut))
 }
-fn disconnected(_: std::io::Error) -> AdapterError {
-    AdapterError::Disconnected
+fn disconnected(error: std::io::Error) -> AdapterError {
+    AdapterError::Unreachable(error.to_string())
 }
 fn invalid(message: &str) -> AdapterError {
     AdapterError::Protocol(message.into())
@@ -559,10 +559,20 @@ fn read_bounded<R: Read + TimeoutReader>(
     reader: &mut R,
     bytes: &mut [u8],
     deadline: Instant,
-    now: Instant,
+    mut now: impl FnMut() -> Instant,
 ) -> std::io::Result<usize> {
-    reader.timeout(budget(deadline, now)?)?;
-    reader.read(bytes)
+    loop {
+        reader.timeout(budget(deadline, now())?)?;
+        match reader.read(bytes) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted || timed_out(&error) => continue,
+            read => return read,
+        }
+    }
+}
+/// A socket timeout ran out in real time. The deadline is on the daemon's clock, which a virtual
+/// clock holds while the daemon works: the caller reads the clock again before it gives up.
+fn timed_out(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
 }
 #[cfg(test)]
 mod tests {
@@ -614,12 +624,8 @@ mod tests {
     impl Read for Fragmented {
         fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
             let count = bytes.len().min(1);
-            read_bounded(
-                &mut self.bytes,
-                &mut bytes[..count],
-                self.deadline,
-                self.clock.next().unwrap_or(self.deadline),
-            )
+            let (clock, deadline) = (&mut self.clock, self.deadline);
+            read_bounded(&mut self.bytes, &mut bytes[..count], deadline, || clock.next().unwrap_or(deadline))
         }
     }
     struct FixtureOwner(DataEpoch);

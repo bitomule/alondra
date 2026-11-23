@@ -24,6 +24,11 @@ fn main() {
     }
     let stall = std::env::var("ALONDRA_FIXTURE_STARTUP_STALL_MS").ok().and_then(|value| value.parse().ok()).unwrap_or(0);
     std::thread::sleep(std::time::Duration::from_millis(stall));
+    if std::env::var("ALONDRA_FIXTURE_MODE").as_deref() == Ok("silent") {
+        loop {
+            std::thread::park();
+        }
+    }
     let listener = bind(&path.join("s"));
     println!("Alondra host: socket listening");
     for stream in listener.incoming() {

@@ -43,6 +43,9 @@ fn main() {
         // SAFETY: the handler only calls async-signal-safe functions.
         unsafe { libc::signal(libc::SIGTERM, exit_slowly as libc::sighandler_t) };
     }
+    if let Some(millis) = std::env::var("SCENARIO_HOST_SLOW_START_MS").ok().and_then(|value| value.parse().ok()) {
+        std::thread::sleep(std::time::Duration::from_millis(millis));
+    }
     let Ok(listener) = UnixListener::bind(&socket) else { std::process::exit(1) };
     if std::env::var_os("SCENARIO_TEST_BOUND").is_some() {
         let _ = writeln!(std::io::stdout(), "bound");

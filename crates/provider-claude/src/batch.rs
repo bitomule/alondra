@@ -122,9 +122,9 @@ impl<O: HostOwner> BatchHost<O> {
             HostLaunch { artifact: configuration.artifact.clone(), state_dir: &configuration.state_directory, environment: &configuration.host_environment, confinement: configuration.confinement.as_deref() },
             |owner, identity| bootstrap(owner, identity, &control, configuration, &session, Some(profile), None),
         )
-        .map_err(|_| AdapterError::Disconnected)?;
+        .map_err(|error| AdapterError::Unreachable(format!("launching the host: {error}")))?;
         let deadline = deadline(configuration.io_timeout)?;
-        let stream = host.wait_for_socket(deadline).map_err(|_| AdapterError::Disconnected)?;
+        let stream = host.wait_for_socket(deadline).map_err(|error| AdapterError::Unreachable(format!("connecting to the host: {error}")))?;
         let connection = Connection::attach(stream, host.owner(), &crate::wire::LaunchedAs::this_release(host.identity().artifact()), &control, 0, deadline)?;
         let mut batch = Self {
             host,
@@ -228,7 +228,7 @@ impl<O: HostOwner> BatchHost<O> {
 }
 
 fn deadline(timeout: Duration) -> Result<Instant, AdapterError> {
-    Instant::now().checked_add(timeout).ok_or(AdapterError::Disconnected)
+    alondra_foundation::clock::instant().into_std().checked_add(timeout).ok_or(AdapterError::Disconnected)
 }
 
 #[cfg(test)]

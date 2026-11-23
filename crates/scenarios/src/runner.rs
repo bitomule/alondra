@@ -133,7 +133,7 @@ pub fn run(scenario: &Scenario, accepted: Option<&Path>) -> Result<Outcome, Scen
 
 /// Runs the scenario as far as it goes: the checkpoints it passed, and the failure that stopped it.
 pub fn run_partial(scenario: &Scenario) -> (Outcome, Option<ScenarioError>) {
-    match run_inner(scenario, None, |_| (), None) {
+    match run_inner(scenario, None, |_| (), Slowness::default()) {
         Ok((outcome, failure)) => (outcome, failure),
         Err(error) => (Outcome { checkpoints: Vec::new(), timings: Timings::default() }, Some(error)),
     }
@@ -142,7 +142,7 @@ pub fn run_partial(scenario: &Scenario) -> (Outcome, Option<ScenarioError>) {
 /// `run`, with `probe` handed the launcher the daemon starts processes through, once it is
 /// assembled: how a test of the harness makes something reach for a process.
 pub fn run_with(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Launcher)) -> Result<Outcome, ScenarioError> {
-    match run_inner(scenario, accepted, probe, None)? {
+    match run_inner(scenario, accepted, probe, Slowness::default())? {
         (outcome, None) => Ok(outcome),
         (_, Some(failure)) => Err(failure),
     }
@@ -151,23 +151,41 @@ pub fn run_with(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce
 /// `run`, with every Claude host taking `by` to exit once the daemon tells it to stop.
 #[cfg(test)]
 pub(crate) fn run_with_slow_host_exits(scenario: &Scenario, by: Duration) -> Result<Outcome, ScenarioError> {
-    match run_inner(scenario, None, |_| {}, Some(by))? {
+    match run_inner(scenario, None, |_| {}, Slowness { exit: Some(by), ..Slowness::default() })? {
         (outcome, None) => Ok(outcome),
         (_, Some(failure)) => Err(failure),
     }
+}
+
+/// `run`, with every Claude host taking `by` to open its socket while the daemon gives each one
+/// `io_timeout_seconds` for its I/O: a start that outlasts that timeout in real time, as on a
+/// loaded Mac.
+#[cfg(test)]
+pub(crate) fn run_with_slow_host_starts(scenario: &Scenario, by: Duration, io_timeout_seconds: u64) -> Result<Outcome, ScenarioError> {
+    match run_inner(scenario, None, |_| {}, Slowness { start: Some((by, io_timeout_seconds)), ..Slowness::default() })? {
+        (outcome, None) => Ok(outcome),
+        (_, Some(failure)) => Err(failure),
+    }
+}
+
+/// How slow, in real time, the Claude hosts of a run are.
+#[derive(Clone, Copy, Default)]
+struct Slowness {
+    exit: Option<Duration>,
+    start: Option<(Duration, u64)>,
 }
 
 fn run_inner(
     scenario: &Scenario,
     accepted: Option<&Path>,
     probe: impl FnOnce(&Launcher),
-    slow_exit: Option<Duration>,
+    slowness: Slowness,
 ) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
     if std::env::var("TZ").as_deref() != Ok("UTC") {
         return Err(ScenarioError::Invalid("scenarios run with TZ=UTC: the views show local time, which differs from Mac to Mac".into()));
     }
     let runtime = alondra_core::clock::VirtualRuntime::new(EPOCH_MILLIS).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
-    runtime.block_on(execute(scenario, accepted, probe, slow_exit))
+    runtime.block_on(execute(scenario, accepted, probe, slowness))
 }
 
 /// 2026-11-15 09:00 UTC: every scenario starts at the same instant.
@@ -228,7 +246,7 @@ async fn execute(
     scenario: &Scenario,
     accepted: Option<&Path>,
     probe: impl FnOnce(&Launcher),
-    slow_exit: Option<Duration>,
+    slowness: Slowness,
 ) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
     // Tokio jumps a paused clock to its next timer whenever the runtime waits, as it does on a view
     // read over HTTP, unless a blocking task runs: one runs for the whole scenario, so virtual time
@@ -264,12 +282,16 @@ async fn execute(
     let mut startup_probe = None;
     let (launcher, backend, peer) = if codex.is_empty() {
         let edge = ClaudeEdge::new(&config.home, leaks.clone());
-        if let Some(by) = slow_exit {
+        if let Some(by) = slowness.exit {
             edge.set_slow_exit(by);
+        }
+        if let Some((by, io_timeout_seconds)) = slowness.start {
+            edge.set_slow_start(by);
+            edge.set_io_timeout(io_timeout_seconds);
         }
         startup_probe = Some(edge.hold_startup_probe());
         let launcher = Launcher::new(edge.clone());
-        let backend = claude_backend(&config.home, &scenario.world.release).map_err(|e| invalid(&e))?;
+        let backend = claude_backend(&config.home, &scenario.world.release, edge.io_timeout_seconds()).map_err(|e| invalid(&e))?;
         claude = Some(edge);
         (launcher, Backend::Given(Some(backend)), None)
     } else {
@@ -423,8 +445,8 @@ fn codex_backend(home: &Path) -> Result<alondra_engine_sdk::sdk_owner::backend::
 }
 
 /// The backend of a daemon whose Claude nodes run `release`.
-fn claude_backend(home: &Path, release: &str) -> Result<alondra_engine_sdk::sdk_owner::backend::SdkBackend, String> {
-    sdk_backend(home, alondra_core::accounts::Provider::Claude, "claude", release)
+fn claude_backend(home: &Path, release: &str, io_timeout_seconds: u64) -> Result<alondra_engine_sdk::sdk_owner::backend::SdkBackend, String> {
+    sdk_backend(home, alondra_core::accounts::Provider::Claude, "claude", release).map(|backend| alondra_engine_sdk::sdk_owner::backend::SdkBackend { io_timeout_seconds, ..backend })
 }
 
 /// The backend of a daemon: three files that stand where the
@@ -1111,7 +1133,7 @@ impl Context<'_> {
             (Some(edge), _) => {
                 let release = release.unwrap_or_else(|| self.scenario.world.release.clone());
                 let launcher = Launcher::new(edge.clone());
-                Some(claude_backend(&self.config.home, &release).map(|backend| (launcher, backend)).map_err(|e| Self::failed(index, e))?)
+                Some(claude_backend(&self.config.home, &release, edge.io_timeout_seconds()).map(|backend| (launcher, backend)).map_err(|e| Self::failed(index, e))?)
             }
             (None, _) => None,
         };

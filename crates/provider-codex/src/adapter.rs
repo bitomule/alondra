@@ -705,7 +705,7 @@ impl CodexAdapter {
         })
     }
     fn deadline(&self) -> Result<Instant, AdapterError> {
-        Instant::now()
+        alondra_foundation::clock::instant().into_std()
             .checked_add(self.configuration.io_timeout)
             .ok_or(AdapterError::Disconnected)
     }
@@ -761,7 +761,7 @@ impl CodexAdapter {
     fn connect(&mut self, committed_cursor: u64) -> Result<(), AdapterError> {
         let deadline = self.deadline()?;
         let host = self.host.as_mut().ok_or(AdapterError::Disconnected)?;
-        let stream = host.connect(deadline).map_err(|_| AdapterError::Disconnected)?;
+        let stream = host.connect(deadline).map_err(|error| AdapterError::Unreachable(format!("connecting to the host: {error}")))?;
         self.connection = Some(Connection::attach(stream, host.owner(), &host.launched_as(), &self.control, committed_cursor, deadline)?);
         Ok(())
     }
@@ -881,7 +881,7 @@ impl CodexAdapter {
             HostLaunch { artifact: self.configuration.artifact.clone(), state_dir: &directory, environment: &self.configuration.host_environment, confinement: self.configuration.confinement.as_deref() },
             |grant, identity| bootstrap(grant, identity, &self.control, &self.configuration, &session, None, Some(continued)),
         )
-        .map_err(|_| AdapterError::Disconnected)?;
+        .map_err(|error| AdapterError::Unreachable(format!("launching the host: {error}")))?;
         self.host = Some(Host::Launched(host));
         self.normalizer.session = Some(session);
         self.normalizer.fence = Some(expected);
@@ -1111,7 +1111,7 @@ impl DurableAdapter for CodexAdapter {
                 )
             },
         )
-        .map_err(|_| AdapterError::Disconnected)?;
+        .map_err(|error| AdapterError::Unreachable(format!("launching the host: {error}")))?;
         self.host = Some(Host::Launched(host));
         self.normalizer.session = Some(session);
         self.normalizer.fence = Some(expected);
