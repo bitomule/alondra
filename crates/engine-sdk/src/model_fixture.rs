@@ -213,6 +213,26 @@ impl crate::engine_fixtures::owner::Hosts for ModelHosts {
     fn forget(&self, session: &str) {
         self.model().forget(session);
     }
+
+    fn hold(&self) {
+        self.model().hold();
+    }
+
+    fn hold_prompts(&self, _: &Path) {
+        self.model().set_turns(Turns::Ignored);
+    }
+
+    fn release_prompts(&self, _: &Path) {
+        self.model().set_turns(Turns::Answered);
+    }
+
+    fn recover(&self) {
+        self.model().recover();
+    }
+
+    fn own_turn(&self) {
+        self.model().own_turn();
+    }
 }
 
 #[cfg(feature = "whole-engine")]

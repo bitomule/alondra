@@ -145,7 +145,7 @@ fn an_input_the_provider_holds_is_never_given_up() {
     driver.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // The deadline is on the session's own word that it took the input, not on its first message:
 // a session that says it runs at once and writes nothing for minutes is never given up.
 #[test]
