@@ -2,7 +2,7 @@
 // stdio and records what it receives under ALONDRA_FAKE_AGY_RECORD. Each prompt follows the
 // steps of ALONDRA_FAKE_AGY_SCRIPT (a JSON array with one array of steps per prompt); every wait
 // is on a message from the host, never on a timer.
-import { appendFileSync, statSync, writeSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
@@ -22,6 +22,11 @@ record('starts.jsonl', {
   values: Object.fromEntries(RECORDED_VALUES.filter((key) => key in env).map((key) => [key, env[key]])),
   geminiKeyMatches: matches('GEMINI_API_KEY'), googleKeyMatches: matches('GOOGLE_API_KEY'), tmpdirMode,
 });
+// A folder of agy's TMPDIR the host cannot empty, as one a tool left read-only.
+if (env.ALONDRA_FAKE_AGY_LOCKED_TMPDIR === '1' && env.TMPDIR) {
+  const locked = join(env.TMPDIR, 'locked');
+  mkdirSync(locked, { recursive: true }); writeFileSync(join(locked, 'kept'), ''); chmodSync(locked, 0o500);
+}
 // Diagnostics go to stderr, which the host drains and never keeps.
 process.stderr.write('fake agy diagnostics\n');
 

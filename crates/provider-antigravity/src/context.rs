@@ -58,6 +58,7 @@ pub fn failure_message(code: &str) -> Option<&'static str> {
         "native_protocol_failed" => "Antigravity CLI sent something that is not the Agent Client Protocol",
         "native_response_uncertain" => "An answer to Antigravity could not be delivered, so Alondra ended the session",
         "native_prompt_uncertain" => "Alondra could not tell whether Antigravity received the input",
+        "native_session_not_durable" => "Alondra could not keep the Antigravity session to resume it later, so Alondra ended the session",
         "native_decision_not_durable" | "native_decision_capacity" | "native_request_identity_conflict" => "Antigravity asked for a permission Alondra could not keep track of, so Alondra ended the session",
         "max_tokens" => "Antigravity stopped the turn at the model's output limit",
         "max_turn_requests" => "Antigravity stopped the turn after its most model requests in one turn",
@@ -70,14 +71,17 @@ pub fn failure_message(code: &str) -> Option<&'static str> {
 
 /// A refusal before any `session/prompt` was sent for an input: the reason the task holds.
 pub fn account_refusal(observation: &OrderedObservation) -> Option<&'static str> {
-    let message = native_message(observation)?;
+    refusal_of(&native_message(observation)?)
+}
+
+fn refusal_of(message: &Value) -> Option<&'static str> {
     match message.get("method")?.as_str()? {
         "alondra/accountBlocked" => {}
         "alondra/inputRefused" if message.pointer("/params/nativeSubmitted").and_then(Value::as_bool) == Some(false) => {}
         _ => return None,
     }
     match message.pointer("/params/code")?.as_str()? {
-        code @ ("authentication_required" | "native_version_unsupported" | "native_incompatible") => failure_message(code),
+        code @ ("authentication_required" | "native_version_unsupported" | "native_version_unreadable" | "native_incompatible") => failure_message(code),
         _ => None,
     }
 }
@@ -96,12 +100,26 @@ mod tests {
     }
 
     #[test]
+    fn only_a_refusal_that_lasts_holds_the_task_and_only_before_agy_took_the_input() {
+        let refused = |method: &str, code: &str, submitted: bool| refusal_of(&json!({"method": method, "params": {"code": code, "nativeSubmitted": submitted}}));
+        for code in ["authentication_required", "native_version_unsupported", "native_version_unreadable", "native_incompatible"] {
+            assert_eq!(refused("alondra/accountBlocked", code, false), failure_message(code), "{code}");
+            assert_eq!(refused("alondra/inputRefused", code, false), failure_message(code), "{code}");
+            assert_eq!(refused("alondra/inputRefused", code, true), None, "{code} after agy took the input");
+        }
+        for code in ["native_spawn_failed", "native_initialization_timeout", "native_process_exited", "agy_-32603"] {
+            assert_eq!(refused("alondra/inputRefused", code, false), None, "{code} is retried with the next input");
+        }
+        assert_eq!(refused("alondra/transportFailed", "authentication_required", false), None);
+    }
+
+    #[test]
     fn every_code_the_host_and_the_normalizer_report_has_its_message() {
         for code in [
             "authentication_required", "native_version_unsupported", "native_version_unreadable", "native_incompatible",
             "native_spawn_failed", "native_initialization_timeout", "native_initialization_failed", "alondra_mcp_missing",
             "native_process_exited", "native_input_closed", "native_output_closed", "native_protocol_failed",
-            "native_response_uncertain", "native_prompt_uncertain", "native_decision_not_durable", "native_decision_capacity",
+            "native_response_uncertain", "native_prompt_uncertain", "native_session_not_durable", "native_decision_not_durable", "native_decision_capacity",
             "native_request_identity_conflict", "max_tokens", "max_turn_requests", "refusal", "interrupted", "agy_-32603",
         ] {
             assert!(failure_message(code).is_some_and(|message| !message.is_empty()), "{code}");

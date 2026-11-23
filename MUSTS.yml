@@ -76,6 +76,7 @@ checks:
       - "crates/agent-protocol/src/archived_receipts.rs"
       - "crates/provider-claude/src/**"
       - "crates/provider-codex/src/**"
+      - "crates/provider-antigravity/src/**"
       - "crates/process-group/src/**"
       - "crates/store/src/**"
       - "crates/core/src/accounts.rs"

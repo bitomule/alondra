@@ -202,7 +202,7 @@ impl ObservationNormalizer for Normalizer {
                         let input = string(params, "inputId").ok_or(AdapterError::InvalidObservation)?;
                         facts.push(Observation::InputDropped { input: lookup(metadata, input)? });
                     }
-                    _ if state.session.is_some() && string(params, "sessionId") == state.session.as_deref() => {
+                    _ if of_this_session(&state, params) => {
                         fold(batch, &mut state, method, params, &mut facts, &mut context, |id| lookup(metadata, id))?;
                     }
                     _ => {}
@@ -258,13 +258,16 @@ fn fold(
             };
             end_turn(batch, state, &prompt.turn, outcome, facts, context)?;
         }
-        // agy answered the prompt with a JSON-RPC error: before any update for it, it never took
-        // the input; after, the turn it ran failed.
+        // agy answered the prompt with a JSON-RPC error. A failure of the model's API means it took
+        // the input and called the model, even before any update for it; any other error before an
+        // update means it never took the input, and after one the turn it ran failed.
         "alondra/promptFailed" => {
             let Some(prompt) = answered_prompt(state, params)? else { return Ok(()) };
             let error = params.get("error").ok_or(AdapterError::InvalidObservation)?;
-            if prompt.started {
-                end_turn(batch, state, &prompt.turn, failed_outcome(error)?, facts, context)?;
+            let outcome = failed_outcome(error)?;
+            if prompt.started || matches!(outcome, TurnOutcome::ApiFailed(_)) {
+                start_turn(batch, state, &prompt, facts, &lookup)?;
+                end_turn(batch, state, &prompt.turn, outcome, facts, context)?;
             } else {
                 state.forget_turn();
                 match lookup(&prompt.input) {
@@ -412,6 +415,11 @@ fn end_unprompted(batch: &OrderedObservation, state: &mut Checkpoint, facts: &mu
 /// A JSON-RPC error answering a prompt. Its `data`, when it carries the upstream call's status in
 /// Google's error shape (`code` an HTTP status, `status` a gRPC status), says the API failed and
 /// how; otherwise the failure is named by the JSON-RPC code. Never by the error's text.
+/// Whether a message of agy names the session this task opened: only those reach `fold`.
+fn of_this_session(state: &Checkpoint, params: &Value) -> bool {
+    state.session.is_some() && string(params, "sessionId") == state.session.as_deref()
+}
+
 fn failed_outcome(error: &Value) -> Result<TurnOutcome, AdapterError> {
     let code = error.get("code").and_then(Value::as_i64).ok_or(AdapterError::InvalidObservation)?;
     let data = error.get("data").filter(|data| data.is_object());
@@ -526,6 +534,19 @@ mod tests {
     }
 
     #[test]
+    fn a_model_api_failure_before_any_update_is_a_failed_turn_not_a_dropped_input() {
+        for (data, error) in [(json!({"code": 429, "status": "RESOURCE_EXHAUSTED"}), "rate_limit"), (json!({"code": 401}), "authentication_failed"), (json!({"code": 503}), "api_error")] {
+            let mut state = session();
+            sent(&mut state);
+            step(&mut state, "session/update", update(json!({"sessionUpdate": "usage_update", "used": 0, "size": 1000000})));
+            let mut facts = vec![];
+            fold(&batch(), &mut state, "alondra/promptFailed", &json!({"sessionId": "session-1", "inputId": INPUT, "turnId": "alondra:7", "error": {"code": -32603, "data": data}}), &mut facts, &mut vec![], input).unwrap();
+            assert!(matches!(&facts[..], [Observation::TurnStarted { .. }, Observation::TurnEnded { outcome: TurnOutcome::ApiFailed(failure), .. }, Observation::Reconciled { .. }] if failure.error == error), "{error}: {facts:?}");
+            assert!(state.prompt.is_none());
+        }
+    }
+
+    #[test]
     fn a_prompt_held_is_consumed_dropped_or_left_uncertain() {
         // Consumed: answered with a stop reason, even with nothing said first.
         let mut consumed = session();
@@ -593,13 +614,14 @@ mod tests {
     #[test]
     fn updates_of_another_session_are_not_this_task_s() {
         let mut state = session();
-        sent(&mut state);
-        let mut facts = vec![];
-        let other = json!({"sessionId": "session-2", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "x"}}});
-        // `normalize` routes only this session's updates to `fold`; a stray one changes nothing.
-        assert!(string(&other, "sessionId") != state.session.as_deref());
-        fold(&batch(), &mut state, "unknown/method", &other, &mut facts, &mut vec![], input).unwrap();
-        assert!(facts.is_empty());
+        let chunk = |session: Value| json!({"sessionId": session, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "x"}}});
+        assert!(of_this_session(&state, &chunk(json!("session-1"))));
+        for other in [json!("session-2"), json!(null), json!(1)] {
+            assert!(!of_this_session(&state, &chunk(other.clone())), "{other}");
+        }
+        assert!(!of_this_session(&state, &json!({"update": {}})));
+        state.session = None;
+        assert!(!of_this_session(&state, &chunk(json!("session-1"))), "nothing is routed before a session opens");
     }
 
     #[test]

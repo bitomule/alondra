@@ -186,8 +186,9 @@ function optionValues(option: Json | undefined): string[] {
   visit(option?.options);
   return values;
 }
+/** The tool's own name, never its title: agy titles a command with its command line, which the model writes. */
 function namesAlondra(toolCall: Json): boolean {
-  return [toolCall.name, toolCall.title].some((name) => typeof name === 'string' && name.startsWith(ALONDRA_TOOL_PREFIX));
+  return typeof toolCall.name === 'string' && toolCall.name.startsWith(ALONDRA_TOOL_PREFIX);
 }
 
 export type Launcher = { argvPrefix?: readonly string[] };
@@ -210,6 +211,7 @@ export class AntigravitySession implements HostSession {
   private inputs = new Set<string>();
   private queue: { id: string; prompt: string }[] = [];
   private preamble?: string;
+  private unsaved?: { account: string; access: Access };
   private native?: string;
   private opened = false;
   private turn?: Turn;
@@ -339,8 +341,9 @@ export class AntigravitySession implements HostSession {
     this.refuseQueued(this.failure ?? 'native_session_ended');
     if (this.failure) this.emit('alondra/transportFailed', { code: this.failure, ...(this.failure === 'native_initialization_timeout' ? { step: this.opening } : {}) }, 'diagnostic');
     this.config.observe({ type: 'process_exited', exit_code: code, signal });
-    try { if (this.temporary) rmSync(this.temporary, { recursive: true, force: true }); }
-    finally { this.finish(); }
+    // A folder agy's surviving children still write to, or one left unwritable, never keeps the end from being reported.
+    try { if (this.temporary) rmSync(this.temporary, { recursive: true, force: true }); } catch {}
+    this.finish();
   }
   private rejectPending(): void {
     for (const pending of this.pending.values()) pending.reject(new Error('Antigravity process ended'));
@@ -456,12 +459,15 @@ export class AntigravitySession implements HostSession {
       id = text(opened.sessionId);
       if (!id || id.length > 256) throw new Error('Antigravity session identity absent');
       // The daemon hands a first launch its context; a session that could not be resumed needs it here.
-      const handoff = stored ? text(this.config.worker?.handoff_context) : undefined;
+      const handoff = stored || this.config.resume ? text(this.config.worker?.handoff_context) : undefined;
       const preamble = [instructions && !this.appendsSystemPrompt ? instructions : undefined, handoff].filter((part): part is string => part !== undefined);
       if (preamble.length) this.preamble = preamble.join('\n\n');
     }
     this.native = id!;
-    this.writeMapping(this.native, account, access);
+    // A new session that still owes the node its instructions or handoff is kept for a later host only
+    // once the prompt carrying them is sent: resuming it earlier would lose them.
+    if (this.preamble) this.unsaved = { account, access };
+    else this.writeMapping(this.native, account, access);
     this.opening = 'configure';
     const result = object(opened);
     if (Array.isArray(result.configOptions)) this.configOptions = result.configOptions.map(object);
@@ -603,6 +609,12 @@ export class AntigravitySession implements HostSession {
         this.fail('native_prompt_uncertain');
         return;
       }
+      if (this.unsaved) {
+        const { account, access } = this.unsaved;
+        this.unsaved = undefined;
+        try { this.writeMapping(this.native!, account, access); }
+        catch { this.starting = false; this.fail('native_session_not_durable'); return; }
+      }
       this.emit('alondra/promptSent', { sessionId: this.native, inputId: input.id, turnId: id }, 'message', turn);
       this.starting = false;
       this.release();
@@ -651,18 +663,20 @@ export class AntigravitySession implements HostSession {
     const first = (kind: string) => options.find((option) => option.kind === kind);
     const cancelled = { outcome: { outcome: 'cancelled' } };
     const select = (option: Option | undefined) => option ? { outcome: { outcome: 'selected', optionId: option.optionId } } : cancelled;
-    if (!this.turn || this.turn.cancelled || this.closing) { this.answer(id, key, identity, cancelled); return; }
-    if (this.mode === 'dontAsk') { this.answer(id, key, identity, select(first('reject_once'))); return; }
-    if (this.mode === 'default' && this.acpMode === 'auto' && namesAlondra(toolCall) && first('allow_once')) { this.answer(id, key, identity, select(first('allow_once'))); return; }
+    if (!this.turn || this.turn.cancelled || this.closing) { this.reply(id, cancelled); return; }
+    if (namesAlondra(toolCall) && first('allow_once') && (this.mode === 'dontAsk' || (this.mode === 'default' && this.acpMode === 'auto'))) { this.reply(id, select(first('allow_once'))); return; }
+    if (this.mode === 'dontAsk') { this.reply(id, select(first('reject_once'))); return; }
     const tool = text(toolCall.toolCallId);
-    if (!tool || options.length === 0) { this.answer(id, key, identity, cancelled); return; }
+    if (!tool || options.length === 0) { this.reply(id, cancelled); return; }
     if (this.answered.size >= 256) { this.fail('native_decision_capacity'); return; }
     if (this.asked.size >= MAX_PENDING) { this.fail('native_decision_capacity'); return; }
     const kind: DecisionKind = first('allow_once') || first('reject_once') ? 'permission' : 'question';
+    const title = text(toolCall.title) ?? text(toolCall.kind) ?? 'tool';
+    // A question is asked as the cards ask one: its answer is the name of the option it chose.
+    const questions = kind === 'question' ? { questions: [{ question: title, options: options.filter((option) => !NEVER_CHOSEN.has(option.kind)).map((option) => ({ label: option.name })) }] } : {};
     const payload = JSON.parse(JSON.stringify({
-      provider: 'antigravity', method: 'session/request_permission', native: params,
-      tool: text(toolCall.title) ?? text(toolCall.kind) ?? 'tool',
-      input: { options, toolCall: params.toolCall },
+      provider: 'antigravity', method: 'session/request_permission', native: params, tool: title,
+      input: { ...questions, options, toolCall: params.toolCall },
     })) as Json;
     const epoch = this.config.observe({ type: 'decision_requested', request_id: key, tool_use_id: tool, kind, payload });
     if (typeof epoch !== 'number') { this.fail('native_decision_not_durable'); return; }
@@ -671,6 +685,10 @@ export class AntigravitySession implements HostSession {
   private answer(id: RequestId, key: string, identity: string, result: Json): Promise<void> {
     this.answered.set(key, { identity, result });
     return this.send({ id, result });
+  }
+  /** An answer the host gives by itself. It is not kept: a repeated request is decided again. */
+  private reply(id: RequestId, result: Json): void {
+    void this.send({ id, result }).catch(() => this.fail('native_response_uncertain'));
   }
   respond(request: DecisionRequest, decision: Decision): boolean {
     const entry = this.asked.get(request.request_id);
@@ -696,7 +714,7 @@ export class AntigravitySession implements HostSession {
   private cancelAsked(): void {
     for (const [key, entry] of [...this.asked]) {
       this.asked.delete(key);
-      void this.answer(entry.id, key, entry.identity, { outcome: { outcome: 'cancelled' } }).catch(() => {});
+      void this.send({ id: entry.id, result: { outcome: { outcome: 'cancelled' } } }).catch(() => {});
       this.settled(key, entry, 'cancelled');
     }
   }

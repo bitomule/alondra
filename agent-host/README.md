@@ -105,10 +105,12 @@ and the session ends.
 folder, `0600` file written atomically, refused when it is a link, another user's or has another
 mode), holding the ACP session id with the account, access and agy version it ran on. A later host
 sends `session/resume` only for the same account and access, and never `session/load`. For another
-account or access, or when agy refuses the resume with any error but `-32000` (agy answers an
-unknown session with a generic one), it opens a new session and puts the task's handoff ahead of
-its first prompt. A node's first launch, with no stored
-session, opens a new session and takes the handoff the daemon already gave it.
+account or access, when agy refuses the resume with any error but `-32000` (agy answers an
+unknown session with a generic one), or when a resumed node has no stored session, it opens a new
+session and puts the task's handoff ahead of its first prompt. A node's first launch, with no stored
+session, opens a new session and takes the handoff the daemon already gave it. A new session whose
+first prompt carries the node's instructions or handoff is stored only once that prompt is sent, so
+a later host never resumes a session that never got them.
 
 **Session.** `session/new` and `session/resume` carry Alondra's MCP server, `alondra`, with the
 node's role environment (`ALONDRA_PROVIDER=antigravity`); a node without it fails
@@ -118,7 +120,7 @@ new session's first prompt; a resumed session already holds them. The host then 
 after it the thinking level with `session/set_config_option`, from the options the session
 reported (a level the model does not offer is not set), and the mode with `session/set_mode`:
 Alondra's `default` is agy's `auto` when the session offers it, else `default`; `plan` is `plan`;
-`dontAsk` is `default` with every permission request rejected by the host. Model and mode changes
+`dontAsk` is `default` with every permission request but Alondra's own tools rejected by the host. Model and mode changes
 apply the same calls to the live session.
 
 **Turns.** One `session/prompt` is open at a time; an input offered during a turn waits until agy
@@ -127,8 +129,12 @@ journals `alondra/sessionReady`, `alondra/promptSent` once the prompt is written
 `session/update` as agy sent it, and `alondra/promptEnded` with agy's `stopReason`, or
 `alondra/promptFailed` with the JSON-RPC error's code and structured `data`, never its message.
 A `session/request_permission` becomes a card that lists its options; the answer selects the
-option the decision names, and Alondra never selects `allow_always` or `reject_always`. In `auto`
-mode, a request for one of Alondra's own MCP tools is allowed once without a card.
+option the decision names, and Alondra never selects `allow_always` or `reject_always`. A request
+with neither an `allow_once` nor a `reject_once` option is a question, asked with its options'
+names as answers. In `auto` and `dontAsk` modes, a request for one of Alondra's own MCP tools is
+allowed once without a card; the tool is known by its `name`, never by its title, which agy writes
+from the call (a command's title is its command line). Answers the host gives by itself are not
+kept, so they never count against the decisions a session keeps.
 
 agy reports an upstream failure such as a rejected key as an agent message in a turn that ends
 `end_turn`; only a JSON-RPC error answering the prompt is `promptFailed`.

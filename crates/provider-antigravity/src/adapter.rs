@@ -386,17 +386,16 @@ impl AntigravityWorker {
     /// as evidence of life after it exits; adopted hosts use their authenticated endpoint identity.
     pub fn native_liveness(&mut self) -> Result<NativeLiveness, AdapterError> {
         if self.adapter.native_lost { return Ok(NativeLiveness::Lost); }
-        let Some(host) = self.adapter.host()?.stopper().process().map_err(|_| AdapterError::Disconnected)? else {
+        let stopper = self.adapter.host()?.stopper();
+        if stopper.process().map_err(|_| AdapterError::Disconnected)?.is_none() {
             return Ok(NativeLiveness::Lost);
-        };
-        if let Some(native) = self.adapter.native_process {
-            return alondra_process_group::alive(&native).map(|alive| if alive { NativeLiveness::Alive(native) } else { NativeLiveness::Lost }).map_err(|_| AdapterError::Disconnected);
         }
-        for member in alondra_process_group::members(host.pid).map_err(|_| AdapterError::Disconnected)? {
-            if !member.zombie && alondra_process_group::parent(member.pid).map_err(|_| AdapterError::Disconnected)? == Some(host) {
-                self.adapter.native_process = Some(member);
-                return Ok(NativeLiveness::Alive(member));
-            }
+        if let Some(native) = self.adapter.native_process {
+            return stopper.alive(&native).map(|alive| if alive { NativeLiveness::Alive(native) } else { NativeLiveness::Lost }).map_err(|_| AdapterError::Disconnected);
+        }
+        if let Some(member) = stopper.native().map_err(|_| AdapterError::Disconnected)? {
+            self.adapter.native_process = Some(member);
+            return Ok(NativeLiveness::Alive(member));
         }
         Ok(if self.adapter.native_expected { NativeLiveness::Lost } else { NativeLiveness::NotStarted })
     }
