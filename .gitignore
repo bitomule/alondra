@@ -40,3 +40,5 @@ __pycache__/
 /.bazelrc.local.*
 /.bazel-output-disk.log
 /.bazel-links/
+/bazel/env/.bazel_env
+/bazel/env/.bazel_env.stamp

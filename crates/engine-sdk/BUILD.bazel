@@ -1,4 +1,4 @@
-load("//tools/bazel:crates.bzl", "application_crate")
+load("//tools/layers:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
@@ -114,7 +114,7 @@ SDK_TEST_COMPILE_DATA = [
 
 # The SDK's own tests: its pieces on a runtime whose other pieces are the doubles of
 # engine-doubles, with the doubled hosts the Claude host model plays; they run no program. It links
-# neither daemon-engine nor engine-admission (tools/bazel/crate_layers_test.py), so an edit of those
+# neither daemon-engine nor engine-admission (tools/layers/crate_layers_test.py), so an edit of those
 # does not rerun it.
 low_opt_rust_test(
     name = "engine_sdk_test",

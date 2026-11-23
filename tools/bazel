@@ -1,0 +1,24 @@
+#!/bin/bash
+# bazelisk runs tools/bazel instead of Bazel (.bazeliskrc) and passes the real one in BAZEL_REAL.
+# Before running it, this installs bazel/env/launcher.sh into ~/.local/bin as each tool bazel/env
+# pins, so they work in any shell, and builds bazel/env/.bazel_env when it is missing or stale, so
+# the build's status script finds the pinned musts (bazel/env/README.md). It never replaces a file it
+# did not install, and does nothing on CI.
+if [ -z "${CI:-}" ] && [ -z "${ALONDRA_BAZEL_ENV_ENSURING:-}" ]; then
+	root="$(cd "$(dirname "$0")/.." && pwd)"
+	bin="${ALONDRA_TOOLS_BIN:-$HOME/.local/bin}"
+	for tool in musts simpool; do
+		target="$bin/$tool"
+		[ -e "$target" ] && ! grep -q alondra-bazel-env-launcher "$target" 2>/dev/null && continue
+		cmp -s "$root/bazel/env/launcher.sh" "$target" && continue
+		mkdir -p "$bin" && install -m 755 "$root/bazel/env/launcher.sh" "$target" && echo "bazel/env: installed $target" >&2
+	done
+	# Nothing to build for a command that only stops or describes Bazel.
+	for argument in "$@"; do
+		case "$argument" in
+		clean | shutdown | version | help) exec "${BAZEL_REAL:?tools/bazel is run by bazelisk, which sets BAZEL_REAL}" "$@" ;;
+		esac
+	done
+	"$root/bazel/env/ensure.sh" >&2 || true
+fi
+exec "${BAZEL_REAL:?tools/bazel is run by bazelisk, which sets BAZEL_REAL}" "$@"

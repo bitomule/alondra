@@ -1,4 +1,4 @@
-load("//tools/bazel:crates.bzl", "adapter_in_crate")
+load("//tools/layers:crates.bzl", "adapter_in_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")

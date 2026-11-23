@@ -679,7 +679,7 @@ Measured with `edit_bench`, one run each on the shared Mac under load (load aver
   `engine_fixtures`, `engine_assembly` and the test `use`s of `daemon-engine` in `lib.rs` compile
   only with `whole-engine`. `engine_sdk_test` runs no program; the git the close of a task asks
   about went with `task_closer` to `engine_sdk_engine_test`'s `TEST_EXECS`.
-- `tools/bazel/crate_layers_test.py` fails when `engine_sdk_test` reaches `daemon-engine` or
+- `tools/layers/crate_layers_test.py` fails when `engine_sdk_test` reaches `daemon-engine` or
   `engine-admission` again, through anything it reads at any depth (`TESTS_KEPT_APART`). Checked by
   hand: putting `engine-admission` back in its `deps` fails the check, taking it out passes.
 - The tools that tell test-only code from production (`prose_decisions`, `module_graph`) take any

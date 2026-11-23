@@ -11,7 +11,7 @@ guard's) or `e2e` (a `manual` target tagged `e2e`, which only the release runs).
 `//tools:test_execs_test` fails on a malformed entry, a program with no reason in
 `tools/test_execs.tsv`, a reason no target uses, a total above its ceiling, or a table in
 `docs/running-tests.md` that is not the one the entries make; `bazel run //tools:test_execs -- write`
-rewrites that table from the XML of `//tools/bazel:rules`.
+rewrites that table from the XML of `//tools/layers:rules`.
 """
 import collections
 import os
@@ -32,7 +32,7 @@ OWN_SANDBOX = "own-sandbox"
 E2E = "e2e"
 REASONS = "tools/test_execs.tsv"
 E2E_REASON = "End to end: runs without the guard, only when the release names it in `RELEASE_ONLY_TESTS` or on request."
-RULES = "tools/bazel/rules"
+RULES = "tools/layers/rules"
 DOC = "docs/running-tests.md"
 BEGIN = "<!-- test-execs:begin -->"
 END = "<!-- test-execs:end -->"

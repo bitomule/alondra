@@ -1,4 +1,4 @@
-load("//tools/bazel:crates.bzl", "root_binary", "root_library")
+load("//tools/layers:crates.bzl", "root_binary", "root_library")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "low_opt_rust_test")

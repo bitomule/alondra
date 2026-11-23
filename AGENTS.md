@@ -59,8 +59,8 @@ or in the private repository that keeps it, never here.
   and Clippy actions carry `no-cache`, so they never reach the disk or remote cache
   (`tools/tests/test_release_config.py` guards it). A release builds with `--config=release`, without it.
 - Web (`web/`): `npm ci --include=dev`, `npm run typecheck`, `npm run build`, `npm run test:e2e`.
-- `musts validate` is the done-check before committing. Bazel downloads the pinned `musts`:
-  `bazelisk run //tools:musts -- validate` (and the same for `run`, `record`), nothing to install. It asks only for
+- `musts validate` is the done-check before committing. Bazel downloads the pinned `musts` and puts it
+  on PATH (`bazel/env/README.md`): nothing to install. It asks only for
   the checks whose `paths` a change touches (`MUSTS.yml`); a change that only touches prose or images
   no test loads must leave it empty, otherwise a `paths` entry is wrong: fix `MUSTS.yml`.
   Iterate with `bazelisk test <target>`, then `musts run` once when the change is done, never right

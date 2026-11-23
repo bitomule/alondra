@@ -43,15 +43,16 @@ brew install bazelisk tmux gh jq tuicr
 ```
 
 Nothing else is installed by hand to build and test. Bazel downloads, checks against a pinned hash
-and keeps in its output base the two programs the tests need besides the toolchains:
+and keeps in its output base the two programs the tests need besides the toolchains, and the first
+Bazel command of a checkout puts them on `PATH` as launchers in `~/.local/bin` (keep it on `PATH`;
+[`bazel/env/README.md`](../bazel/env/README.md)):
 
-- `simpool`, which leases the iOS simulators the snapshot tests run on. The runner finds it through
-  `SIMPOOL_BIN`, which the build sets; a `simpool` of your own on `PATH` is never used.
-- `musts`, which validates the checks of `MUSTS.yml`: `bazelisk run //tools:musts -- validate`
-  (and `run`, `record`, `evidence`). Builds stamp themselves with it, so `tools/musts-stamp.sh`
-  needs none on `PATH`.
+- `simpool`, which leases the iOS simulators the snapshot tests run on. The runner finds the pinned
+  one through `SIMPOOL_BIN`, which the build sets, with no `simpool` of your own installed.
+- `musts`, which validates the checks of `MUSTS.yml`: `musts validate`, `musts run`, `musts record`.
+  Builds stamp themselves with it, so `tools/musts-stamp.sh` needs none installed.
 
-Their versions are in `tools/pinned_tools.bzl`, the only place to change them.
+Their versions are in `bazel/env/tools.bzl`, the only place to change them.
 
 **Check**
 

@@ -1,3 +1,4 @@
 experiments
 .bazel-output
 .bazel-links
+bazel/env/.bazel_env

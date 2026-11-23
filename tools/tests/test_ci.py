@@ -14,7 +14,7 @@ def workflow_text():
 
 
 def pinned_tools():
-    return (ROOT / "tools/pinned_tools.bzl").read_text()
+    return (ROOT / "bazel/env/tools.bzl").read_text()
 
 
 def ci_job():

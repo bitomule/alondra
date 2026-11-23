@@ -9,23 +9,14 @@ bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "rules_swift_package_manager", version = "1.23.0")
 bazel_dep(name = "sourcekit_bazel_bsp", version = "0.8.3", dev_dependency = True)
 
-# simpool routes `ios_test_runner` through a shared, flock-guarded simulator pool, so concurrent
-# test actions never share one fixed-name simulator. An archive, not git_override: under Bazel
-# 8.4.2, git_repository's strip_prefix leaves absolute symlinks into the output base that fetched
-# it, and once that base is deleted the shared repo contents cache entry has no MODULE.bazel.
-# The runner starts the simpool binary that `tools/pinned_tools.bzl` downloads from the same release
-# (v0.35.0, commit 993ec8233acd): bump both together.
-bazel_dep(name = "simpool", version = "0.3.1")
-archive_override(
-    module_name = "simpool",
-    integrity = "sha256-zKez0Nf/I888Lj8dMv165ME1VkMlINa9F8fpVsrW9qA=",
-    strip_prefix = "simpool-993ec8233acdd514eb72662e05e67dd9eb8b2468/bazel",
-    urls = ["https://github.com/bitomule/simpool/archive/993ec8233acdd514eb72662e05e67dd9eb8b2468.tar.gz"],
-)
+# Developer tools, fetched by Bazel and put on PATH by //bazel/env:bazel_env (bazel/env/README.md):
+# musts, and simpool with the runner that routes `ios_test_runner` through its shared, flock-guarded
+# simulator pool, so concurrent test actions never share one fixed-name simulator. Their pins live
+# in bazel/env/tools.bzl.
+bazel_dep(name = "bazel_env.bzl", version = "0.10.0", dev_dependency = True)
 
-# simpool and musts, downloaded and verified by Bazel so nobody installs them by hand.
-pinned_tools = use_extension("//tools:pinned_tools.bzl", "pinned_tools")
-use_repo(pinned_tools, "musts", "simpool_env")
+developer_tools = use_extension("//bazel/env:tools.bzl", "developer_tools")
+use_repo(developer_tools, "musts", "simpool", "simpool_bin", "simpool_env")
 
 swift_deps = use_extension("@rules_swift_package_manager//:extensions.bzl", "swift_deps")
 swift_deps.from_package(
