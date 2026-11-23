@@ -57,7 +57,7 @@ build from a clean Mac is in [`docs/building-from-source.md`](docs/building-from
 1. Fork, branch from `main`, keep the change small and focused. Name the branch and title the pull
    request by what changes (`Reselect disabled providers before first launch`); link the issue it
    closes as `Closes #N` in the description.
-2. Make `make build` and `make test` pass; run `musts validate` if you have `musts` installed. It asks
+2. Make `make build` and `make test` pass; run `bazelisk run //tools:musts -- validate` (Bazel downloads `musts`). It asks
    only for the checks whose files your change touches, and a change to prose or images no test
    loads asks for nothing. Adding a test or fixture? Run `make musts-scopes` to keep the check's
    `paths` complete.

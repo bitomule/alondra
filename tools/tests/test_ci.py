@@ -13,6 +13,10 @@ def workflow_text():
     return (ROOT / ".github/workflows/ci.yml").read_text()
 
 
+def pinned_tools():
+    return (ROOT / "tools/pinned_tools.bzl").read_text()
+
+
 def ci_job():
     return json.loads(workflow_text())["jobs"]["CI"]
 
@@ -41,6 +45,14 @@ class WorkflowContract(unittest.TestCase):
         self.assertIn("sha256sum --check", install)
         for compile_step in ("cargo ", "brew ", "rustup"):
             self.assertNotIn(compile_step, workflow_text())
+
+    def test_the_workflow_installs_the_musts_version_and_hash_bazel_pins(self):
+        pinned = pinned_tools()
+        version = re.search(r'^MUSTS_VERSION = "([^"]+)"$', pinned, re.MULTILINE).group(1)
+        linux = re.search(r'"x86_64-unknown-linux-gnu": "([a-f0-9]{64})"', pinned).group(1)
+        env = ci_job()["env"]
+        self.assertEqual(env["MUSTS_VERSION"], version)
+        self.assertEqual(env["MUSTS_SHA256"], linux)
 
     def test_workflow_uses_read_only_permissions_pinned_actions_and_no_secrets_or_publication(self):
         text = workflow_text()

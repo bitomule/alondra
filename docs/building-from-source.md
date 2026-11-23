@@ -42,6 +42,17 @@ xcode-select --install 2>/dev/null; sudo xcodebuild -license accept
 brew install bazelisk tmux gh jq tuicr
 ```
 
+Nothing else is installed by hand to build and test. Bazel downloads, checks against a pinned hash
+and keeps in its output base the two programs the tests need besides the toolchains:
+
+- `simpool`, which leases the iOS simulators the snapshot tests run on. The runner finds it through
+  `SIMPOOL_BIN`, which the build sets; a `simpool` of your own on `PATH` is never used.
+- `musts`, which validates the checks of `MUSTS.yml`: `bazelisk run //tools:musts -- validate`
+  (and `run`, `record`, `evidence`). Builds stamp themselves with it, so `tools/musts-stamp.sh`
+  needs none on `PATH`.
+
+Their versions are in `tools/pinned_tools.bzl`, the only place to change them.
+
 **Check**
 
 ```bash
@@ -55,6 +66,21 @@ claude --version; claude --help | grep -c -- '--bg'
 `sudo xcode-select -s /Applications/Xcode.app`); `bazel 8.4.2` (run it from the repo, it reads
 `.bazelversion`); `tmux 3.x`; gh logged in (if not: `gh auth login`); `jq-1.x`; a Claude Code
 version and a number ≥ 1.
+
+### Apple tests need Xcode 27 *selected*, not only installed
+
+The Swift tests embed rpaths through `/var/db/xcode_select_link`, the link `xcode-select` keeps.
+With `DEVELOPER_DIR` pointing at Xcode 27 while `xcode-select -p` names another Xcode or the
+command line tools, the rpaths still go through the old selection: `DEVELOPER_DIR` alone is not
+enough. Select it, once:
+
+```bash
+sudo xcode-select -s /Applications/Xcode.app    # the Xcode 27 or later you installed
+```
+
+The selected toolchain also decides how the Swift packages resolve: when it is older than
+Swift 6.4, they resolve to the old `swiftpkg_xctest_dynamic_overlay` repository (the former name of
+`swiftpkg_swift_issue_reporting`, the one `MODULE.bazel` declares). Selecting Xcode 27 fixes both.
 
 ## 2. Build and install alondra and alondrad
 

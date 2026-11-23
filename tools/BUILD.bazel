@@ -6,7 +6,7 @@ sh_test(
     name = "ci_test",
     size = "small",
     srcs = ["tests/test_ci.py"],
-    data = ["//:.bazelrc", "//.github/workflows:ci.yml"],
+    data = ["//:.bazelrc", "//.github/workflows:ci.yml", "pinned_tools.bzl"],
 )
 
 sh_test(
@@ -352,6 +352,14 @@ sh_test(
 exports_files(
     ['worktree-bazel-setup'],
     visibility = ["//tools/worktree_setup_test:__pkg__"],
+)
+
+# The pinned musts (`tools/pinned_tools.bzl`): `bazelisk run //tools:musts -- validate`.
+sh_binary(
+    name = "musts",
+    srcs = ["musts.sh"],
+    args = ["$(rootpath @musts//:bin)"],
+    data = ["@musts//:bin"],
 )
 
 repo_tree()
