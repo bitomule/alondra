@@ -12,6 +12,7 @@ mod images;
 mod merges;
 pub mod pr_viewed;
 pub mod prs;
+pub mod verdict;
 
 pub use cli::GhCli;
 

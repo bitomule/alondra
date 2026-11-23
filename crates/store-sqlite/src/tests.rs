@@ -1393,6 +1393,9 @@ fn second_merge_authorization_from_the_same_snapshot_is_stale() {
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     document_package(&mut store, true);
+    execute(&mut store, &Actor::System, "pr-1-merge-verdict", Command::ObserveMergeVerdict {
+        pr_id: "pr-1".into(), head: "aaa".into(), verdict: alondra_domain_rules::MergeVerdict::mergeable(),
+    });
     let authorize = |store: &mut DomainStore, id: &str, method| {
         envelope(
             store,

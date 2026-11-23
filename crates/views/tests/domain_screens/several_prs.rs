@@ -653,6 +653,7 @@ const FIRST_HEAD: &str = "1111111111111111111111111111111111111111";
 const CLOUD_HEAD: &str = "6666666666666666666666666666666666666666";
 
 fn exec(s: &mut DomainState, actor: Actor, command: Command) -> Result<CommandOutcome, DomainError> {
+    s.seed_mergeable_for_presented(&command);
     s.execute(&actor, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: format!("c-{}", s.revision).into(),
         expected_revision: s.revision, command,

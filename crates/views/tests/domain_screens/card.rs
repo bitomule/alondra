@@ -133,6 +133,7 @@ fn assert_cards_usable(s: &DomainState) {
 }
 
 fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, DomainError> {
+    s.seed_mergeable_for_presented(&c);
     let outcome = s.execute(&a, &CommandEnvelope {
         protocol_version: 2,
         data_epoch: s.data_epoch.clone(),

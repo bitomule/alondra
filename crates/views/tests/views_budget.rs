@@ -89,6 +89,7 @@ impl Seed {
             expected_revision: self.0.revision,
             command,
         };
+        self.0.seed_mergeable_for_presented(&envelope.command);
         if let Err(error) = self.0.execute(&actor, &envelope) {
             panic!("seeding the synthetic domain: {error:?}");
         }
@@ -573,6 +574,7 @@ fn every_action_of_the_user_fits_its_budget_on_a_live_size_domain() {
     println!("copy of the state: {:.2} ms CPU, read index: {:.2} ms CPU",
         median_of(&|| drop(std::hint::black_box(state.clone()))), median_of(&|| drop(std::hint::black_box(ReadSnapshot::build(Arc::new(state.clone())))))
             - median_of(&|| drop(std::hint::black_box(state.clone()))));
+    state.seed_every_open_pr_mergeable();
     let mut over = vec![];
     for (name, actor, command) in actions(&mut state) {
         let envelope = envelope_on(&state, &format!("budget-{name}"), command);

@@ -3631,6 +3631,9 @@ for line in sys.stdin:
             is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
         checked_on_github(domain);
+        apply_seed_command(domain, Actor::System, "merge-verdict", Command::ObserveMergeVerdict {
+            pr_id: "pr".into(), head: "0123456789abcdef".into(), verdict: alondra_domain_rules::MergeVerdict::mergeable(),
+        });
     }
 
     fn waits_for_the_user(domain: &crate::domain_runtime::DomainRuntime) -> bool {
@@ -3903,6 +3906,9 @@ for line in sys.stdin:
             is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
         checked_on_github(domain);
+        apply_seed_command(domain, Actor::System, "merge-verdict", Command::ObserveMergeVerdict {
+            pr_id: site.clone(), head: "fedcba9876543210".into(), verdict: alondra_domain_rules::MergeVerdict::mergeable(),
+        });
         (alondra_domain_rules::hosted_pr_id("github.com", "me/app", 7), site)
     }
 

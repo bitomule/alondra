@@ -55,6 +55,7 @@ fn assert_cards_usable(s: &DomainState) {
     }
 }
 fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, DomainError> {
+    s.seed_mergeable_for(&c);
     let outcome = s.execute(
         &a,
         &CommandEnvelope {
@@ -542,6 +543,7 @@ fn present(s: &mut DomainState, id: &str, targets: Vec<DeliveryTarget>) {
     .unwrap();
 }
 fn reject_unchanged(s: &mut DomainState, a: Actor, c: Command, code: &str) {
+    s.seed_mergeable_for(&c);
     let before = s.clone();
     assert_eq!(exec(s, a, c).unwrap_err().code, code);
     assert_eq!(*s, before, "Rejected command changed state");
@@ -3265,9 +3267,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordHostRetaken { .. } => 130,
         Command::PauseQueuedTask { .. } => 139,
         Command::ResumeQueuedTask { .. } => 140,
+        Command::ObserveMergeVerdict { .. } => 141,
     }
 }
-const COMMAND_KINDS: usize = 141;
+const COMMAND_KINDS: usize = 142;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3397,6 +3400,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::SetRelations { task_id: ids.task.into(), delivered_dependencies: BTreeSet::new(), blocks: BTreeSet::new() }, false),
         (Command::RecordVerdict { task_id: ids.task.into(), presentation_id: ids.interaction.into(), verdict: Verdict::Approved { summary: "ok".into(), open_issues: false, serious_findings: 0 } }, false),
         (Command::ObservePrMergeMethods { pr_id: ids.pr.into(), allowed_methods: vec![MergeMethod::Squash] }, false),
+        (Command::ObserveMergeVerdict { pr_id: ids.pr.into(), head: "a".repeat(40), verdict: crate::MergeVerdict::mergeable() }, false),
         (Command::ObservePrAddress { pr_id: ids.pr.into(), read: PrRead::Locator, read_started_at: 1, verdict: PrAddressVerdict::NotFound }, false),
         (Command::DetachPr { pr_id: ids.pr.into(), at: 1 }, false),
         (Command::SetPriority { task_id: ids.task.into(), priority: TaskPriority::High }, false),
@@ -4380,6 +4384,7 @@ fn a_question_asked_after_the_final_delivery_withdraws_it_until_the_node_deliver
     assert!(sent_to_node(&asked).contains(&delivery_withdrawn_for_questions()), "the node hears why");
     let merge = |presentation: &str| Command::AuthorizeMerge { authorization_id: "auth".into(), presentation_id: presentation.into(),
         pr_id: "pr".into(), expected_head: "head1".into(), method: MergeMethod::Squash, despite_pending_message: false };
+    s.seed_mergeable_for(&merge("d"));
     let before = s.clone();
     assert!(exec(&mut s, user(), merge("d")).is_err(), "the withdrawn delivery cannot be merged");
     assert_eq!(s, before);

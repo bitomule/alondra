@@ -68,6 +68,10 @@ pub fn envelope(store: &mut DomainStore, id: &str, command: Command) -> CommandE
     }
 }
 pub fn execute(store: &mut DomainStore, actor: &Actor, id: &str, command: Command) -> Commit {
+    for (n, observation) in store.load().unwrap().mergeable_observations(&command).into_iter().enumerate() {
+        let e = envelope(store, &format!("{id}-merge-verdict-{n}"), observation);
+        store.execute_authenticated(&Actor::System, &e, None).unwrap();
+    }
     let e = envelope(store, id, command);
     let committed = store.execute_authenticated(actor, &e, None).unwrap();
     assert_eq!(

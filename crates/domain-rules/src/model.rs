@@ -1518,6 +1518,9 @@ pub struct DomainState {
     pub pr_task_history: BTreeMap<PrId, BTreeSet<TaskId>>,
     pub interactions: BTreeMap<InteractionId, Interaction>,
     pub merge_authorizations: BTreeMap<AuthorizationId, MergeAuthorization>,
+    /// Whether the provider would let each open PR merge, as last read for the head it names.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub merge_verdicts: BTreeMap<PrId, crate::ObservedVerdict>,
     pub stack_readiness: BTreeMap<TaskId, StackReadiness>,
     #[serde(default)]
     pub schedule: ScheduleState,
@@ -1604,6 +1607,7 @@ impl DomainState {
             pr_task_history: BTreeMap::new(),
             interactions: BTreeMap::new(),
             merge_authorizations: BTreeMap::new(),
+            merge_verdicts: BTreeMap::new(),
             stack_readiness: BTreeMap::new(),
             schedule: ScheduleState::default(),
             holds: BTreeMap::new(),

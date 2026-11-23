@@ -16,7 +16,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_domain_rules::{
     AuthorizationId, CardSpec, Command, DeliveryTarget, DomainError, DomainState, Feedback, FeedbackTarget, Instruction, InteractionId, InteractionPayload,
-    MergeAttemptState, MergeMethod, PrId, PrState, ProviderPrKey, PullRequest, Scope, clip,
+    MergeAttemptState, MergeBlocker, MergeMethod, MergeVerdict, PrId, PrState, ProviderPrKey, PullRequest, Scope, clip,
 };
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
@@ -84,6 +84,26 @@ fn still_due(state: &DomainState, item: &Due, authorization: &AuthorizationId) -
         && state.pull_requests.get(&item.pr.id).is_some_and(|pr| pr.state == PrState::Open && pr.head == item.head)
         && state.merge_authorizations.get(authorization).is_some_and(|a| a.valid && a.claimed_by.is_none()
             && matches!(a.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain))
+}
+
+/// What a failing check means for a merge, by what GitHub said of merging the PR at this head.
+enum FailingChecks {
+    /// GitHub lets it merge: the failing checks are not ones its base requires.
+    NotRequired,
+    /// Nothing required is failing; something else (a review, say) blocks the merge and a person gives it.
+    BlockedByOthers,
+    /// A required check failed, or GitHub has not said: the node fixes it.
+    Required,
+}
+
+fn failing_checks(state: &DomainState, item: &Due) -> FailingChecks {
+    match state.merge_verdicts.get(&item.pr.id).filter(|observed| observed.head == item.head).map(|observed| &observed.verdict) {
+        Some(MergeVerdict::Mergeable { .. }) => FailingChecks::NotRequired,
+        Some(MergeVerdict::Blocked { blockers }) if !blockers.iter().any(|blocker| matches!(blocker, MergeBlocker::RequiredCheckFailing { .. } | MergeBlocker::Conflicts)) => {
+            FailingChecks::BlockedByOthers
+        }
+        _ => FailingChecks::Required,
+    }
 }
 
 /// A final delivery whose PR GitHub confirms is still a draft cannot be merged, so it is refused;
@@ -360,11 +380,15 @@ impl Merger {
         }
         let mut bypass = false;
         match &status.checks {
-            Checks::Failed(names) => {
-                self.clear_action(domain, pr);
-                hand_back(domain, item, &format!("its checks failed ({})", names.join(", ")))?;
-                return Ok(Step::Settled);
-            }
+            Checks::Failed(names) => match failing_checks(&*domain.state()?, item) {
+                FailingChecks::NotRequired => self.clear_action(domain, pr),
+                FailingChecks::BlockedByOthers => return Ok(Step::Wait),
+                FailingChecks::Required => {
+                    self.clear_action(domain, pr);
+                    hand_back(domain, item, &format!("its checks failed ({})", names.join(", ")))?;
+                    return Ok(Step::Settled);
+                }
+            },
             Checks::ActionRequired(names) => {
                 self.ask_action(domain, pr, names);
                 return Ok(Step::Wait);
@@ -400,6 +424,7 @@ impl Merger {
         let authorization = match &item.authorization {
             Some(authorization) => authorization.clone(),
             None => {
+                crate::domain_verdicts::read(domain, github, pr).await?;
                 let revision = domain.state()?.revision;
                 let authorization = AuthorizationId(format!("auto-{}-{}-{revision}", item.presentation, pr.id));
                 let authorize = Command::AuthorizeMerge { authorization_id: authorization.clone(), presentation_id: item.presentation.clone(),
@@ -512,6 +537,14 @@ impl Merger {
         if github.in_queue(pr).await == Ok(true) {
             self.queued.insert(pr.id.clone());
             return Ok(Step::Wait);
+        }
+        if status.merge_state == MergeState::Other
+            && let Ok(verdict) = github.verdict(pr).await
+        {
+            crate::domain_verdicts::record(domain, pr, verdict.clone())?;
+            if matches!(&verdict, MergeVerdict::Blocked { blockers } if !blockers.contains(&MergeBlocker::Conflicts)) {
+                return Ok(Step::Wait);
+            }
         }
         if status.merge_state == MergeState::Other && !matches!(status.checks, Checks::Failed(_) | Checks::ActionRequired(_)) {
             match github.required_checks(pr, &status.base).await {
@@ -769,6 +802,8 @@ pub struct FakeGithub {
     pub required: std::sync::Mutex<BTreeMap<u64, Result<Vec<String>, GhFailure>>>,
     /// The required checks the signed-in account may bypass on each PR's base; unlisted PRs none.
     pub bypassable: std::sync::Mutex<BTreeMap<u64, Result<Vec<String>, GhFailure>>>,
+    /// What GitHub says of merging each PR; unlisted PRs are mergeable.
+    pub verdicts: std::sync::Mutex<BTreeMap<u64, Result<MergeVerdict, GhFailure>>>,
     /// What a failed merge leaves GitHub reporting of the PR's merge state.
     pub refused_as: std::sync::Mutex<BTreeMap<u64, MergeState>>,
     /// PRs GitHub merges although `gh pr merge` reports a failure.
@@ -787,7 +822,7 @@ impl FakeGithub {
         Self { statuses: Default::default(), merges: Default::default(), queue: Default::default(),
             merged: Default::default(), reads: Default::default(), on_read: Default::default(), merged_by_queue: Default::default(),
             drafts: Default::default(), readies: Default::default(), calls: Default::default(),
-            required: Default::default(), bypassable: Default::default(), refused_as: Default::default(), merged_anyway: Default::default(),
+            required: Default::default(), bypassable: Default::default(), verdicts: Default::default(), refused_as: Default::default(), merged_anyway: Default::default(),
             no_access: Default::default(), default_base: std::sync::Mutex::new("main".into()),
             retargets: Default::default(), after_retarget: Default::default(), on_draft: Default::default(), on_default: Default::default() }
     }
@@ -911,6 +946,11 @@ impl PrMerger for FakeGithub {
         self.calls.lock_or_recover("a test's fixture").push(format!("required {}", pr.number));
         let required = self.required.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or(Ok(vec![]));
         Box::pin(async move { required })
+    }
+    fn verdict<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, MergeVerdict> {
+        self.calls.lock_or_recover("a test's fixture").push(format!("verdict {}", pr.number));
+        let verdict = self.verdicts.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or(Ok(MergeVerdict::mergeable()));
+        Box::pin(async move { verdict })
     }
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         let allowed = !self.no_access.lock_or_recover("a test's fixture").contains(&pr.number);

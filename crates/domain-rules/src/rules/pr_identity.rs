@@ -61,6 +61,7 @@ impl DomainState {
             Command::AuthorizeMerge { pr_id, .. }
             | Command::ObservePrState { pr_id, .. }
             | Command::ObservePrMergeMethods { pr_id, .. }
+            | Command::ObserveMergeVerdict { pr_id, .. }
             | Command::PublishStackReadiness { pr_id, .. }
             | Command::AdoptOpenPr { pr_id, .. }
             | Command::ClosePrOfCancelledTask { pr_id, .. }

@@ -527,6 +527,13 @@ pub mod tests {
     }
 
     fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
+        for (n, observation) in domain.state().unwrap().mergeable_observations(&command).into_iter().enumerate() {
+            let seen = domain.state().unwrap();
+            domain.execute(&Actor::System, &CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION, data_epoch: seen.data_epoch.clone(), command_id: format!("{}-merge-verdict-{n}", id).into(),
+                expected_revision: seen.revision, command: observation,
+            }, None, || Ok(())).unwrap();
+        }
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
@@ -988,6 +995,9 @@ pub mod tests {
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: OTHER.into() }], is_final: true,
             nothing_to_review: false,
             card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+        });
+        command(&domain, Actor::System, "verdict-2", Command::ObserveMergeVerdict {
+            pr_id: "pr".into(), head: OTHER.into(), verdict: alondra_domain_rules::MergeVerdict::mergeable(),
         });
         let read = domain.read();
         let item = read.index().item(read.state(), &read.state().interactions[&"d2".into()]);

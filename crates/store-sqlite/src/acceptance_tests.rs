@@ -358,6 +358,16 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
         let authorization = field(variant, "authorization");
         setup_command(
             store,
+            &format!("setup-verdict-{name}"),
+            Actor::System,
+            Command::ObserveMergeVerdict {
+                pr_id: string(field(authorization, "pr_id")).into(),
+                head: string(field(authorization, "head")).into(),
+                verdict: alondra_domain_rules::MergeVerdict::mergeable(),
+            },
+        );
+        setup_command(
+            store,
             &format!("setup-authorize-{name}"),
             actor(string(field(authorization, "actor"))),
             Command::AuthorizeMerge {
@@ -686,6 +696,11 @@ fn shared_catalog_domain_and_sql_cases() {
             } else {
                 panic!("{case_id}: unsupported arrangement {arrangement}");
             }
+        }
+        let open: Vec<_> = store.load().unwrap().pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
+        for (pr_id, head) in open {
+            run(&mut store, &format!("{case_id}-verdict-{pr_id}"), Actor::System,
+                Command::ObserveMergeVerdict { pr_id, head, verdict: alondra_domain_rules::MergeVerdict::mergeable() }).unwrap();
         }
         let before = baseline(&mut store);
         let mut last_error = None;

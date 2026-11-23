@@ -13,6 +13,7 @@ fn orchestrator() -> Actor {
     Actor::Orchestrator { generation: 0 }
 }
 fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, DomainError> {
+    s.seed_mergeable_for(&c);
     s.execute(&a, &CommandEnvelope {
         protocol_version: 2,
         data_epoch: s.data_epoch.clone(),

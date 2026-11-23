@@ -96,6 +96,13 @@ fn agent() -> Actor {
 }
 
 fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
+    for (n, observation) in domain.state().unwrap().mergeable_observations(&command).into_iter().enumerate() {
+        let seen = domain.state().unwrap();
+        domain.execute(&Actor::System, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: seen.data_epoch.clone(), command_id: format!("{}-merge-verdict-{n}", id).into(),
+            expected_revision: seen.revision, command: observation,
+        }, None, || Ok(())).unwrap();
+    }
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),

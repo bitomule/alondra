@@ -1,7 +1,7 @@
 //! The words of every refusal, in one catalog whose `match` has no fallback: a variant without
 //! text in both languages does not compile.
 use crate::text::{t, t as tr, tf, Lang};
-use alondra_domain_rules::{MergeMethod, Refusal};
+use alondra_domain_rules::{MergeBlocker, MergeMethod, MergeNote, Refusal};
 
 fn methods(methods: &[MergeMethod]) -> String {
     methods
@@ -13,6 +13,35 @@ fn methods(methods: &[MergeMethod]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// What stops a merge, as the end of "can't merge yet: …".
+pub fn blocker_text(blocker: &MergeBlocker, lang: Lang) -> String {
+    match blocker {
+        MergeBlocker::RequiredCheckFailing { name } => tf!(lang, "check {name} is failing", "el check {name} falla", name = name),
+        MergeBlocker::RequiredCheckRunning { name } => tf!(lang, "check {name} is still running", "el check {name} sigue en marcha", name = name),
+        MergeBlocker::RequiredCheckMissing { name } => tf!(lang, "check {name} hasn't run yet", "falta el check {name}", name = name),
+        MergeBlocker::CheckNeedsAction { name } => tf!(lang, "check {name} needs someone to act on it on GitHub",
+            "el check {name} necesita que alguien actúe en GitHub", name = name),
+        MergeBlocker::ReviewRequired => t!(lang, "it needs a review on GitHub", "falta una revisión en GitHub").into(),
+        MergeBlocker::ChangesRequested => t!(lang, "a reviewer asked for changes", "un revisor pidió cambios").into(),
+        MergeBlocker::Conflicts => t!(lang, "it has conflicts with its base", "tiene conflictos con su rama base").into(),
+        MergeBlocker::BehindBase => t!(lang, "its branch must be brought up to date with its base first",
+            "su rama debe ponerse al día con su base primero").into(),
+        MergeBlocker::Other => t!(lang, "GitHub blocks the merge: open the PR to see why", "GitHub bloquea el merge: abre la PR para ver por qué").into(),
+    }
+}
+
+/// A warning beside a merge that GitHub allows.
+pub fn note_text(note: &MergeNote, lang: Lang) -> String {
+    match note {
+        MergeNote::BypassingRules { names } => tf!(lang, "Merging past rules your account can bypass: {names}",
+            "El merge se salta reglas que tu cuenta puede omitir: {names}", names = names.join(", ")),
+        MergeNote::CheckFailingNotRequired { name } => tf!(lang, "{name} is failing, but GitHub doesn't require it",
+            "{name} falla, pero GitHub no lo exige", name = name),
+        MergeNote::CheckRunningNotRequired { name } => tf!(lang, "{name} is still running, but GitHub doesn't require it",
+            "{name} sigue en marcha, pero GitHub no lo exige", name = name),
+    }
 }
 
 pub fn refusal_text(refusal: &Refusal, lang: Lang) -> String {
@@ -36,6 +65,11 @@ pub fn refusal_text(refusal: &Refusal, lang: Lang) -> String {
             "La PR #{number} tiene commits nuevos desde que la miraste. Revísalos y vuelve a intentarlo.", number = number),
         Refusal::ResultBehindPr { number } => tf!(lang, "PR #{number} has commits this result doesn't include, so it can't be merged from here until the node presents it again.",
             "La PR #{number} tiene commits que este resultado no incluye: no se puede hacer merge desde aquí hasta que el nodo la vuelva a presentar.", number = number),
+        Refusal::MergeBlocked { number, blockers } => tf!(lang, "PR #{number} can't merge yet: {reasons}.",
+            "La PR #{number} aún no se puede mergear: {reasons}.", number = number,
+            reasons = blockers.iter().map(|blocker| blocker_text(blocker, lang)).collect::<Vec<_>>().join("; ")),
+        Refusal::MergeVerdictUnknown { number } => tf!(lang, "Checking with GitHub whether PR #{number} can merge…",
+            "Consultando a GitHub si la PR #{number} se puede mergear…", number = number),
         Refusal::MergeInProgress { number } => tf!(lang, "Alondra is already merging PR #{number}; wait for GitHub to confirm.",
             "Alondra ya está haciendo merge de la PR #{number}; espera a que GitHub lo confirme.", number = number),
         Refusal::PrClosed { number } => tf!(lang, "PR #{number} is closed on GitHub, so it can't be merged.",

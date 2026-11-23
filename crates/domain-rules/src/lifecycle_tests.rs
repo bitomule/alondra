@@ -15,6 +15,7 @@ pub(super) fn node(id: &str) -> Actor {
     Actor::Agent { agent_id: id.into() }
 }
 pub(super) fn exec(s: &mut DomainState, actor: Actor, command: Command) -> Result<CommandOutcome, DomainError> {
+    s.seed_mergeable_for(&command);
     s.execute(&actor, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: format!("c-{}", s.revision).into(),
         expected_revision: s.revision, command,

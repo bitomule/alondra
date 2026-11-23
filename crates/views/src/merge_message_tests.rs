@@ -15,6 +15,7 @@ fn run(state: &mut DomainState, actor: Actor, command: Command) -> Result<(), Do
         protocol_version: 2, data_epoch: state.data_epoch.clone(),
         command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command,
     };
+    state.seed_mergeable_for_presented(&envelope.command);
     state.execute(&actor, &envelope).map(drop)
 }
 

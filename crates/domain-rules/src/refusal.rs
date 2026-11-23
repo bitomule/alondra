@@ -22,6 +22,10 @@ pub enum Refusal {
     MethodNotAllowed { method: MergeMethod, allowed: Vec<MergeMethod> },
     /// The merge came without saying how.
     NoMethodChosen { number: u64 },
+    /// The provider would not let the PR merge yet, for these reasons.
+    MergeBlocked { number: u64, blockers: Vec<super::MergeBlocker> },
+    /// The provider has not said yet whether the PR can merge.
+    MergeVerdictUnknown { number: u64 },
     /// The PR moved since the user looked.
     StaleHead { number: u64 },
     /// The PR has commits the presented result does not include.

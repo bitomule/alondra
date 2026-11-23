@@ -548,6 +548,7 @@ fn pr_fixture() -> DomainState {
         },
     );
     deliver_pr(&mut state, "pr-1");
+    state.seed_every_open_pr_mergeable();
     state
 }
 
@@ -706,6 +707,7 @@ fn golden_fixture() -> DomainState {
         state.interactions.get_mut(&"f12d034b-249e-4487-a89b-57de38c26372".into()).unwrap().blocking = false;
         state.interactions.get_mut(&"cc2d034b-249e-4487-a89b-57de38c26372".into()).unwrap().blocking = false;
     }
+    state.seed_every_open_pr_mergeable();
     state
 }
 
@@ -2935,6 +2937,7 @@ fn checklist_delivery_fixture() -> DomainState {
             evidence(EvidenceKind::Link, "https://github.com/example/repo/pull/12#snapshots", None),
         ] },
     ]);
+    state.seed_every_open_pr_mergeable();
     state.validate().expect("the fixture is a state the domain could reach");
     state
 }
@@ -3002,6 +3005,56 @@ fn only_destructive_card_actions_ask_for_confirmation() {
     }
     assert!(merges > 0, "the fixtures offer a merge");
     assert!(confirms > 0, "closing without merging still confirms");
+}
+
+fn merge_buttons(view: &serde_json::Value, found: &mut Vec<serde_json::Value>) {
+    match view {
+        serde_json::Value::Object(map) => {
+            if map.get("id").and_then(|id| id.as_str()).is_some_and(|id| id.starts_with("merge:")) {
+                found.push(view.clone());
+            }
+            map.values().for_each(|value| merge_buttons(value, found));
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|value| merge_buttons(value, found)),
+        _ => {}
+    }
+}
+
+fn merge_buttons_of(state: &DomainState, client: Client, lang: Lang) -> Vec<serde_json::Value> {
+    let view = render(state, &golden_live(), client, lang, "card:hf-weekly-2026-09-30", "2026-09-30T10:00:00Z");
+    let mut found = vec![];
+    merge_buttons(&serde_json::to_value(&view).unwrap(), &mut found);
+    found
+}
+
+#[test]
+fn a_merge_github_does_not_allow_yet_offers_no_merge_and_says_why_on_every_client() {
+    use alondra_domain_rules::{MergeBlocker, MergeVerdict, ObservedVerdict};
+    let mut state = golden_fixture();
+    let open: Vec<(alondra_domain_rules::PrId, String)> = state.pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
+    let set = |state: &mut DomainState, verdict: Option<MergeVerdict>| for (pr_id, head) in &open {
+        match &verdict {
+            Some(verdict) => { state.merge_verdicts.insert(pr_id.clone(), ObservedVerdict { head: head.clone(), verdict: verdict.clone() }); }
+            None => { state.merge_verdicts.remove(pr_id); }
+        }
+    };
+    let card = |state: &DomainState, client, lang| serde_json::to_string(&render(state, &golden_live(), client, lang, "card:hf-weekly-2026-09-30", "2026-09-30T10:00:00Z")).unwrap();
+    set(&mut state, Some(MergeVerdict::Blocked { blockers: vec![
+        MergeBlocker::ReviewRequired, MergeBlocker::RequiredCheckFailing { name: "build".into() },
+    ] }));
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        assert!(merge_buttons_of(&state, client, Lang::En).is_empty(), "{client:?}: nothing to press while GitHub blocks the merge");
+        assert!(card(&state, client, Lang::En).contains("PR #12 can't merge yet: it needs a review on GitHub; check build is failing."), "{client:?}");
+        assert!(card(&state, client, Lang::Es).contains("La PR #12 aún no se puede mergear: falta una revisión en GitHub; el check build falla."), "{client:?}");
+    }
+    set(&mut state, None);
+    assert!(merge_buttons_of(&state, Client::Ios, Lang::En).is_empty());
+    assert!(card(&state, Client::Ios, Lang::En).contains("Checking with GitHub whether PR #12 can merge"));
+    set(&mut state, Some(MergeVerdict::Mergeable { notes: vec![alondra_domain_rules::MergeNote::CheckFailingNotRequired { name: "lint".into() }] }));
+    let allowed = merge_buttons_of(&state, Client::Ios, Lang::En);
+    assert_eq!(allowed.len(), 1);
+    assert_eq!(allowed[0]["enabled"], true);
+    assert!(card(&state, Client::Ios, Lang::En).contains("lint is failing, but GitHub doesn't require it"), "the note rides beside the merge");
 }
 
 #[test]
@@ -5750,6 +5803,7 @@ fn execute(state: &mut DomainState, actor: alondra_domain_rules::Actor, command:
         protocol_version: 2, data_epoch: state.data_epoch.clone(),
         command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command,
     };
+    state.seed_mergeable_for_presented(&envelope.command);
     state.execute(&actor, &envelope).unwrap();
 }
 
@@ -9812,6 +9866,7 @@ const OUTCOME_CASES: [(&str, &str, Client, Lang); 18] = [
 fn outcome_state() -> DomainState {
     use alondra_domain_rules::{Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION};
     fn run(state: &mut DomainState, actor: Actor, command: Command) {
+        state.seed_mergeable_for_presented(&command);
         state.execute(&actor, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),

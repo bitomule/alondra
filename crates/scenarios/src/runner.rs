@@ -665,6 +665,9 @@ impl Context<'_> {
                     self.github.reuse_name(repository);
                     self.github.open_pr_in(repository, *number, head, base);
                 }
+                GithubChange::RequireReview { number } => self.github.set_verdict(*number,
+                    alondra_domain_rules::MergeVerdict::Blocked { blockers: vec![alondra_domain_rules::MergeBlocker::ReviewRequired] }),
+                GithubChange::ApproveReview { number } => self.github.set_verdict(*number, alondra_domain_rules::MergeVerdict::mergeable()),
             },
             Step::Press { presentation, action, text, screen } => self.press(index, presentation, action, text.as_deref(), screen.as_deref().unwrap_or("home")).await?,
             Step::Answer { card, option, text } => self.answer(index, card, option, text.as_deref()).await?,

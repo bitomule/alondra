@@ -226,6 +226,14 @@ impl Fixture {
 
     fn user(&mut self, command: Value) {
         let envelope: CommandEnvelope = serde_json::from_value(self.envelope(command)).unwrap();
+        for (n, observation) in self.domain.state().unwrap().mergeable_observations(&envelope.command).into_iter().enumerate() {
+            let state = self.domain.state().unwrap();
+            self.domain.execute(&Actor::System, &CommandEnvelope {
+                protocol_version: envelope.protocol_version, data_epoch: state.data_epoch.clone(),
+                command_id: format!("{}-merge-verdict-{n}", envelope.command_id).into(), expected_revision: state.revision, command: observation,
+            }, None, || Ok(())).unwrap();
+        }
+        let envelope = CommandEnvelope { expected_revision: self.domain.state().unwrap().revision, ..envelope };
         self.domain
             .execute(
                 &Actor::User {

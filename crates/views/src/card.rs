@@ -479,7 +479,8 @@ fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLi
             chip: chip(node.and_then(|node| node.project.as_ref())), state: None });
     }
     lines.extend(review_lines(item, context));
-    lines.extend(merge_unavailable(item, context).map(|text| ContextLine { icon: Icon::Warning, text, link: None, chip: None, state: None }));
+    lines.extend(merge_unavailable(item, context).into_iter().chain(merge_notes(item, context))
+        .map(|text| ContextLine { icon: Icon::Warning, text, link: None, chip: None, state: None }));
     lines
 }
 
@@ -530,6 +531,20 @@ fn merge_unavailable(item: &InboxItem, context: &RenderContext<'_>) -> Option<St
     let refusal = merge.refusal.clone()
         .unwrap_or_else(|| alondra_domain_rules::Refusal::for_code(merge.disabled_reason.as_deref().unwrap_or_default()));
     Some(super::messages::refusal_text(&refusal, context.lang))
+}
+
+/// What the user should know about a merge GitHub allows: rules it goes past, checks it does not require.
+fn merge_notes(item: &InboxItem, context: &RenderContext<'_>) -> Vec<String> {
+    let Some(interaction) = interaction_of(item, context.domain) else { return vec![] };
+    let Some(pr) = card_pr(item, interaction, context.domain) else { return vec![] };
+    let Some((_, head)) = pr_targets(interaction, context.domain).into_iter().find(|(target, _)| target.id == pr.id) else { return vec![] };
+    if !merge_available(item, pr, head).is_some_and(|available| available.enabled) {
+        return vec![];
+    }
+    match context.domain.merge_verdicts.get(&pr.id).filter(|observed| observed.head == head).map(|observed| &observed.verdict) {
+        Some(alondra_domain_rules::MergeVerdict::Mergeable { notes }) => notes.iter().map(|note| super::messages::note_text(note, context.lang)).collect(),
+        _ => vec![],
+    }
 }
 
 /// A reply to a delivery whose node cannot take it now keeps the delivery in front of the user

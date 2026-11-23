@@ -1,6 +1,7 @@
 //! Merging a pull request with `gh`, and what GitHub's rules and checks say about merging it.
 use crate::cli::GhCli;
-use alondra_domain_rules::{MergeMethod, ProviderPrKey, PullRequest};
+use crate::verdict::{CheckKind, classify, derive, explains_with_rules, gate};
+use alondra_domain_rules::{MergeMethod, MergeVerdict, PrState, ProviderPrKey, PullRequest};
 use alondra_engine_ports::github::{Checks, GhFailure, HttpAnswer, MergeState, Pending, PrMerger, Status, pr_url};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -130,6 +131,24 @@ impl PrMerger for GhCli {
             }
         })
     }
+    fn verdict<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, MergeVerdict> {
+        Box::pin(async move {
+            let url = pr_url(&pr.host, &pr.repository, pr.number);
+            let out = self.run(&["pr", "view", &url, "--json",
+                "state,headRefOid,baseRefName,statusCheckRollup,mergeStateStatus,mergeable,reviewDecision,isDraft"], None, Duration::from_secs(30)).await?;
+            let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
+            let facts = crate::cli::parse(&value).map_err(GhFailure::Unreadable)?;
+            if facts.state != PrState::Open || facts.head != pr.head {
+                return Ok(MergeVerdict::Unknown);
+            }
+            let (required, bypassable) = if explains_with_rules(gate(&value)) {
+                (self.required_checks(pr, &facts.base).await?, self.bypassable_checks(pr, &facts.base).await?)
+            } else {
+                (vec![], vec![])
+            };
+            Ok(derive(&value, &required, &bypassable))
+        })
+    }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         Box::pin(async move {
             let (owner, name) = pr.repository.split_once('/')
@@ -207,13 +226,12 @@ pub fn rollup(value: &Value) -> Checks {
     let Some(list) = value["statusCheckRollup"].as_array().filter(|list| !list.is_empty()) else { return Checks::None };
     let (mut failed, mut action, mut pending) = (vec![], vec![], false);
     for check in list {
-        let s = |key: &str| check.get(key).and_then(Value::as_str).unwrap_or_default();
-        let name = [s("name"), s("context")].into_iter().find(|name| !name.is_empty()).unwrap_or("check").to_owned();
-        match (s("status"), s("conclusion"), s("state")) {
-            (_, "FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE", _) | (_, _, "FAILURE" | "ERROR") => failed.push(name),
-            (_, "ACTION_REQUIRED", _) => action.push(name),
-            (_, "SUCCESS" | "NEUTRAL" | "SKIPPED" | "CANCELLED" | "STALE", _) | (_, _, "SUCCESS") => {}
-            _ => pending = true,
+        let (name, kind) = classify(check);
+        match kind {
+            CheckKind::Failed => failed.push(name),
+            CheckKind::NeedsAction => action.push(name),
+            CheckKind::Passed => {}
+            CheckKind::Running => pending = true,
         }
     }
     if !failed.is_empty() {

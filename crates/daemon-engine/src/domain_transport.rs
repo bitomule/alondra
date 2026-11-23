@@ -900,6 +900,13 @@ pub mod fixtures {
     }
 
     pub fn command(domain: &Arc<dyn Runtime>, actor: Actor, id: &str, command: Command) {
+        for (n, observation) in domain.state().mergeable_observations(&command).into_iter().enumerate() {
+            let seen = domain.state();
+            domain.execute(&Actor::System, &CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION, data_epoch: seen.data_epoch.clone(), command_id: format!("{id}-merge-verdict-{n}").into(),
+                expected_revision: seen.revision, command: observation,
+            }, None, || Ok(())).unwrap();
+        }
         let state = domain.state();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),

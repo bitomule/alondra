@@ -23,6 +23,7 @@ fn assert_cards_usable(s: &DomainState) {
     }
 }
 fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, DomainError> {
+    s.seed_mergeable_for(&c);
     let outcome = s.execute(&a, &CommandEnvelope {
         protocol_version: 2,
         data_epoch: s.data_epoch.clone(),
@@ -38,6 +39,7 @@ fn ok(s: &mut DomainState, a: Actor, c: Command) -> CommandOutcome {
 }
 /// The rejection's code and field; the state must not move.
 fn refused(s: &mut DomainState, a: Actor, c: Command) -> (String, Option<String>) {
+    s.seed_mergeable_for(&c);
     let before = s.clone();
     let error = exec(s, a, c).unwrap_err();
     assert_eq!(*s, before, "a rejected command changed state");
