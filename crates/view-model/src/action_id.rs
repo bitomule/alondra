@@ -95,7 +95,7 @@ pub enum Verb {
     AccountCredential,
 }
 impl Verb {
-    pub const ALL: [Self; 63] = [
+    pub const ALL: [Self; 64] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
