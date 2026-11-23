@@ -6,6 +6,12 @@ load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 swift_library(
     name = "IrohLib",
     srcs = ["@irohlib_swift//file"],
+    # The macOS slice asks Core WLAN for the Wi-Fi interface, which the import does not link; iOS
+    # has no such framework.
+    linkopts = select({
+        "@platforms//os:macos": ["-framework", "CoreWLAN"],
+        "//conditions:default": [],
+    }),
     module_name = "IrohLib",
     deps = ["@iroh_xcframework//:Iroh"],
 )
