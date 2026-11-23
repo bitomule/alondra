@@ -231,6 +231,7 @@ impl DomainRuntime {
         self.orchestrator_progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    #[must_use = "this only reads the progress count; note_orchestrator_progress counts progress"]
     pub fn orchestrator_progress(&self) -> u64 {
         self.orchestrator_progress.load(std::sync::atomic::Ordering::Relaxed)
     }

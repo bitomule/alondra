@@ -191,6 +191,18 @@ impl Executor {
                 }
                 let admitted = self.domain.end_execution(&run.id);
                 self.domain.drain_batch_operations(&run.id).await?;
+                let cut_by_shutdown = runtime.cut_by_shutdown.as_deref() == Some(run.id.as_str())
+                    && !self.domain.orchestrator().runs.lock_or_recover("the orchestrator runs").contains(&run.id);
+                let cut_selection = if cut_by_shutdown && !self.domain.confirmed_batch_effects(&run.id, &admitted)? {
+                    self.domain.store.lock_or_exit("the domain store").batch_selection(&run.id)?
+                } else { None };
+                if let Some(selection) = cut_selection {
+                    let unconfirmed = self.domain.unconfirmed_operations(&run.id);
+                    self.hand_off_cut_batch(runtime, &run, selection, format!(
+                        "The daemon stopped during this batch; these operations may or may not have happened: {}. Check the current state before doing them again, then continue pending goals",
+                        unconfirmed.join(", ")))?;
+                    continue 'discover;
+                }
                 if !self.domain.confirmed_batch_effects(&run.id, &admitted)? {
                     runtime.active_run = Some(run.clone());
                     let why = "An interrupted batch has an operation without a confirmed durable result; reconcile its effects before continuing".to_owned();
@@ -224,6 +236,7 @@ impl Executor {
                         )
                 });
                 let cold_batch = !automatic
+                    && !cut_by_shutdown
                     && selection.is_some()
                     && !batch.ended
                     && !runtime
@@ -326,7 +339,7 @@ impl Executor {
                         .lock_or_recover("the orchestrator runs")
                         .remove(&run.id);
                 }
-                self.domain.orchestrator_progress();
+                self.domain.note_orchestrator_progress();
                 log!(
                     "orchestrator: recovered incomplete batch {}{}",
                     run.id,
@@ -341,5 +354,29 @@ impl Executor {
             }
             return Ok(());
         }
+    }
+
+    /// A batch the daemon's stop cut with operations nobody confirmed: its claims are settled
+    /// and the next batch gets them as evidence, without a card for the user.
+    fn hand_off_cut_batch(&self, mut runtime: Runtime, run: &Run, selection: crate::orchestrator_provider::BatchSelection, reason: String) -> Result<()> {
+        if !runtime.batch_handoffs.iter().any(|handoff| handoff.run_id == run.id) {
+            runtime.batch_handoffs.push(crate::orchestrator_provider::BatchHandoff { run_id: run.id.clone(), selection, reason });
+        }
+        if !runtime.pending_resolutions.iter().any(|resolution| resolution.run_id == run.id) {
+            runtime.pending_resolutions.push(Resolution { run_id: run.id.clone(), message_ids: run.message_ids.clone() });
+        }
+        if runtime.active_run.as_ref().is_some_and(|active| active.id == run.id) {
+            runtime.active_run = None;
+            runtime.last_error = None;
+            runtime.failure = None;
+            runtime.retry_at = None;
+            runtime.cancel_requested = false;
+        }
+        runtime.cut_by_shutdown = None;
+        self.save(&runtime)?;
+        self.domain.store.lock_or_exit("the domain store").reconcile_orchestrator_batch(&run.id, true)?;
+        self.domain.note_orchestrator_progress();
+        log!("orchestrator: batch {} was cut by the daemon's stop with unconfirmed operations; the next batch gets them as evidence", run.id);
+        Ok(())
     }
 }
