@@ -1391,23 +1391,6 @@ fn stop_codex_host(pid: libc::pid_t) {
     assert!(libc::WIFSTOPPED(status));
 }
 
-/// Claude signed in on its own account, with a model the moved task can run.
-pub fn claude_ready(slice:&Slice){
-    let state=slice.domain.state().unwrap();
-    let mut accounts=state.accounts.clone();
-    accounts.retain(|account|!(account.provider==Provider::Claude && account.id.is_default()));
-    accounts.push(alondra_core::accounts::AccountStatus{provider:Provider::Claude,id:AccountId::default_account(),name:"Claude fixture".into(),state:alondra_core::accounts::AccountState::SignedIn,native_identity:None,email:None,plan:None,billing:Default::default(),sign_ins:0,profile:None});
-    slice.run(&system(),"claude-fixture-account",Command::RecordAccounts{accounts,reserve:state.account_reserve});
-    claude_window(slice,Some(200_000),1);
-}
-/// The context window Claude's catalog gives its model, as measured at `measured_at`.
-pub fn claude_window(slice:&Slice,window:Option<u64>,measured_at:alondra_core::Millis){
-    use alondra_core::model_selection::{AccountModelCatalog,CatalogModel};
-    slice.run(&system(),&format!("claude-fixture-catalog-{measured_at}"),Command::RecordModelCatalog{catalog:AccountModelCatalog{
-        account:AccountKey::native(Provider::Claude),revision:format!("claude-catalog-{measured_at}"),measured_at,native_default:Some("claude-fixture".into()),
-        models:vec![CatalogModel{model:"claude-fixture".into(),display_name:"Claude fixture".into(),reasoning_efforts:vec!["high".into()],default_reasoning_effort:Some("high".into()),context_window:window,input_modalities:vec!["text".into()],is_default:true,hidden:false}],
-    }});
-}
 pub fn git(worktree:&Path,arguments:&[&str])->String{
     let output=std::process::Command::new("/usr/bin/git").arg("-C").arg(worktree).args(arguments).output().unwrap();
     assert!(output.status.success(),"git {arguments:?}: {}",String::from_utf8_lossy(&output.stderr));
