@@ -245,6 +245,11 @@ class Fixture(unittest.TestCase):
         self.work = self.root / 'work'
         self.work.mkdir()
         self.rehearsal = u.Rehearsal(self.work, self.protected, self.live)
+        # The launcher's answer deadline is wall-clock time: on a loaded Mac a slow launcher read as
+        # having no version, and the rehearsal blamed the upgrade.
+        limit = patch.object(u, 'LAUNCHER_ANSWER_WITHIN', 600)
+        limit.start()
+        self.addCleanup(limit.stop)
 
     def tearDown(self):
         subprocess.run(['/bin/rm', '-rf', str(self.root)], check=True)

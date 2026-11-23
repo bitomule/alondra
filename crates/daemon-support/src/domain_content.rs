@@ -365,7 +365,7 @@ mod tests {
             "second admission must wait for the first commit/cleanup lease");
         release_tx.send(()).unwrap();
         first.join().unwrap();
-        let prepared = second_done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let prepared = second_done_rx.recv().unwrap();
         assert!(!prepared.created_digests.is_empty());
         assert_eq!(std::fs::read(home.join("files/domain-v2").join(digest)).unwrap(), body);
         second.join().unwrap();

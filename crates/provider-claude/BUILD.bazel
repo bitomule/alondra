@@ -54,7 +54,7 @@ _HOST_CASES = ["src/host_cases_tests.rs"] + glob(["src/host_cases/*_tests.rs"])
 
 low_opt_rust_test(
     name = "sdk_worker_test",
-    size = "small",
+    size = "medium",
     crate_root = "src/lib.rs",
     srcs = _PROVIDER_TEST_SOURCES + ["src/sdk_tests.rs"] + _HOST_CASES,
     crate_name = "alondra_provider_claude",

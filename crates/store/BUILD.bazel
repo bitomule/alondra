@@ -17,7 +17,7 @@ port_crate(
 
 low_opt_rust_test(
     name = "store_test",
-    size = "small",
+    size = "medium",
     crate_root = "tests/lifecycle.rs",
     srcs = ["tests/lifecycle.rs", "//crates:test_support.rs"],
     compile_data = ["src/controls.sql", "src/controls_before_mcp.sql", "src/controls_before_force_stop.sql", "src/controls_before_clear_auth.sql", "src/cards_before_orchestrator.sql", "//crates/domain-store-schema:schema.sql", "//crates/domain-store-schema:schedule_launch_transition.sql"],

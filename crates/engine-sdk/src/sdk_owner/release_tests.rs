@@ -35,9 +35,9 @@ async fn until_released(domain: &DomainRuntime, tasks: &[&str]) {
         tasks.iter().all(|task| read.state().lifecycle_of(&TaskId::from(*task)).is_ok_and(|lifecycle| lifecycle.host_released()))
     };
     let arrived = changed.wait_for(|_| released(domain));
-    tokio::time::timeout(std::time::Duration::from_secs(60), arrived).await.expect("the hosts never closed").unwrap();
+    arrived.await.unwrap();
     let ended = async { while !domain.node_groups().is_empty() { tokio::task::yield_now().await } };
-    tokio::time::timeout(std::time::Duration::from_secs(60), ended).await.expect("the owners never ended");
+    ended.await;
 }
 
 #[cfg(not(feature = "real-hosts"))]
@@ -200,14 +200,14 @@ async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_o
     slice.domain.on_takeover_wait(move || drop(waits.send("waits")));
     deliver_and_accept(&slice, &agent, vec![DeliveryTarget::Text { text: "The notes".into() }]);
     crate::domain_messages::tell_sdk_node(&*slice.domain, &TASK.into(), crate::node_push::ALONDRA, "Clean up and call cleanup_done.", "tell-cleanup", false).unwrap();
-    tokio::task::block_in_place(|| first_reserved.recv_timeout(std::time::Duration::from_secs(60))).expect("the first takeover never reserved its owner");
+    tokio::task::block_in_place(|| first_reserved.recv()).expect("the first takeover never reserved its owner");
     let handle = tokio::runtime::Handle::current();
     std::thread::scope(|scope| {
         let closer = scope.spawn(|| {
             handle.block_on(close_pass(&slice));
             drop(settled.send("closed"));
         });
-        tokio::task::block_in_place(|| closer_settled.recv_timeout(std::time::Duration::from_secs(60))).expect("the closer neither took over nor waited");
+        tokio::task::block_in_place(|| closer_settled.recv()).expect("the closer neither took over nor waited");
         go.send(()).unwrap();
         closer.join().unwrap();
     });
@@ -280,7 +280,7 @@ async fn a_model_chosen_for_a_closed_node_reaches_it_and_stays_when_it_closes_ag
     slice.domain.execute_as_system(envelope(&state, "model-of-a-closed-node", Command::SetModel { task_id: TASK.into(), model: "sonnet".into() })).unwrap();
     let mut changed = slice.domain.subscribe();
     let applied = changed.wait_for(|_| slice.control_rows().iter().any(|(kind, _, status)| kind == "set_model" && status != "requested"));
-    tokio::time::timeout(std::time::Duration::from_secs(60), applied).await.expect("the control never reached a host").unwrap();
+    applied.await.unwrap();
     assert!(slice.domain.read().state().last_model_asked(&TASK.into()).is_some_and(|model| model == "sonnet"));
 
     look_after_the_wait(&slice.domain);
@@ -414,14 +414,20 @@ async fn a_paused_node_adopted_on_a_host_of_the_release_before_gives_up_that_hos
 
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
-    adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
+    // The adoption `adopt_all` makes, with the owner spawned after the check: spawned at once, it
+    // gives the host up before a loaded Mac reads whether it was adopted.
+    let runtime = restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>;
+    let taken = take_all(&runtime, &slice.backend);
+    assert_eq!(taken.len(), 1, "the paused node is the only one to take over");
     assert!(old_host.runs(), "the daemon adopted the host of the release before");
+    for (_, driver) in taken {
+        restarted.add_sdk_owner(Owner::spawn(driver.expect("the paused node is adopted on the host it had")));
+    }
 
     look_after_the_wait(&restarted);
     let mut changed = restarted.subscribe();
     let gone = || !old_host.runs();
-    tokio::time::timeout(std::time::Duration::from_secs(60), changed.wait_for(|_| gone()))
-        .await.expect("the paused node kept the host of the release before").unwrap();
+    changed.wait_for(|_| gone()).await.unwrap();
     restarted.stop_sdk_owners();
 }
 
@@ -444,7 +450,7 @@ async fn a_closed_codex_node_resumes_the_same_thread() {
     tell(&slice, TASK, "Now the changelog.").await;
     let mut changed = slice.domain.subscribe();
     let resumed = changed.wait_for(|_| !resumed_threads(&trace).is_empty() && lifecycle(&*slice.domain).pending_inputs().is_empty());
-    tokio::time::timeout(std::time::Duration::from_secs(60), resumed).await.expect("the input never reached the thread").unwrap();
+    resumed.await.unwrap();
     slice.domain.stop_sdk_owners();
     assert_eq!(resumed_threads(&trace).len(), 1);
     assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
@@ -554,7 +560,7 @@ async fn a_node_whose_host_closed_while_it_rests_holds_no_capability_until_its_s
     look_after_the_wait(&slice.domain);
     until_released(&slice.domain, &[TASK]).await;
     let retired = async { while holds(&slice.domain) { tokio::task::yield_now().await } };
-    tokio::time::timeout(std::time::Duration::from_secs(60), retired).await.expect("the closed host's capability is retired");
+    retired.await;
     tell(&slice, TASK, "Now the changelog.").await;
     until_last_prompt_ends_with(&slice.domain, &slice.hosts, "Now the changelog.").await;
     assert!(holds(&slice.domain), "the host that resumes the session is issued a new one");
@@ -707,7 +713,7 @@ async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_cor
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), changed.changed()).await;
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(60), goes_on).await.unwrap_or_else(|_| panic!("the message never reached Claude: {:?}", slice.prompts()));
+    goes_on.await;
     let capture: serde_json::Value = slice.hosts.native_capture();
     let args: Vec<&str> = capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
     let settings = args.iter().position(|arg| *arg == "--settings").map(|at| serde_json::from_str(args[at + 1]).unwrap()).unwrap_or_default();
@@ -761,7 +767,7 @@ async fn the_new_session_that_took_over_a_large_conversation_goes_on_with_the_ne
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), changed.changed()).await;
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(60), reached).await.unwrap_or_else(|_| panic!("the next input never reached Claude: {:?}", slice.prompts()));
+    reached.await;
     slice.domain.stop_sdk_owners();
     assert_eq!(latest(), first, "no other new session was requested");
     let prompts = slice.prompts();

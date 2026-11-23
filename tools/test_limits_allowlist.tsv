@@ -3,3 +3,5 @@
 //crates/engine-sdk:engine_sdk_host_test	The SDK owners' tests that need a real Agent SDK or Codex host or a fake native Claude or Codex: about 150 to 170 seconds under load.
 //crates/engine-orchestrator:engine_orchestrator_test	151 tests, most of them through a real Agent SDK host or a fake Claude or Codex, about 60 seconds; the orchestrator crate keeps one test target.
 //agent-host:codex_session_test	About 40 tests, each through a real Codex host and a fake Codex app-server, that wait on events with no per-test clock: about 25 seconds on an idle Mac, 80 under background QoS and up to 270 with other test runs on the Mac.
+//crates/engine-sdk:engine_sdk_engine_test	The SDK owners' tests on the Claude host model, with no network and no clock of their own, including property and ten-node matrices: about 60 seconds alone, 240 to 325 seconds in a full run on a busy Mac.
+//crates/daemon-server:daemon_server_test	The server's tests render with the real screens and start the daemon: 87 to 93 seconds alone, 270 to 325 seconds in a full run on a busy Mac.

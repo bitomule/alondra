@@ -8,6 +8,9 @@ private final class OffScreenSnapshotWindow: NSWindow {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
+/// The window's colour space is pinned: left alone, a capture is drawn in the profile of the Mac's
+/// main display, so the same screen came out a few levels different on a Mac with an external
+/// monitor than on its built-in display, and the baselines never matched both.
 @MainActor
 func snapshotWindow(size: CGSize, styleMask: NSWindow.StyleMask = [.borderless]) -> NSWindow {
     let screens = NSScreen.screens.map(\.frame).reduce(CGRect.null) { $0.union($1) }
@@ -15,6 +18,7 @@ func snapshotWindow(size: CGSize, styleMask: NSWindow.StyleMask = [.borderless])
     let window = OffScreenSnapshotWindow(contentRect: CGRect(origin: origin, size: size), styleMask: styleMask, backing: .buffered, defer: false)
     window.setFrameOrigin(origin)
     window.isReleasedWhenClosed = false
+    window.colorSpace = .displayP3
     return window
 }
 

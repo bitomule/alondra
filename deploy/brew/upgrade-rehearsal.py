@@ -45,6 +45,7 @@ FIRST_WATCHING_BEFORE_ANSWERING = (0, 3, 31)
 SERVE_WITHIN = 60
 EXIT_WITHIN = 120
 STAY_UP = 10
+LAUNCHER_ANSWER_WITHIN = 10
 PREFLIGHT_TIMEOUT = 300
 READER_CASE = 'previous-doctor'
 CASES = ('live', 'empty-legacy-stores', 'tableless-legacy-store', 'outdated-launcher', 'fresh-previous', READER_CASE)
@@ -394,7 +395,7 @@ def launcher_version(rehearsal, home, launcher):
     if not launcher.is_file():
         return None
     try:
-        result = rehearsal.run([launcher, '--version'], rehearsal.env(home), 10)
+        result = rehearsal.run([launcher, '--version'], rehearsal.env(home), LAUNCHER_ANSWER_WITHIN)
     except (OSError, subprocess.TimeoutExpired):
         return None
     text = result.stdout.strip()
