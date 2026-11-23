@@ -103,7 +103,7 @@ pub fn state_label(state: AccountState, lang: Lang) -> &'static str {
 pub fn subtitle(account: &AccountStatus, lang: Lang) -> String {
     let antigravity = account.antigravity.as_ref();
     let access = antigravity.map(|status| access_label(status.access, lang).to_owned());
-    let key = antigravity.filter(|status| status.access.takes_key()).map(|status| key_label(status.key_set, lang).to_owned());
+    let key = antigravity.filter(|status| status.access.takes_key() && !account.id.is_default()).map(|status| key_label(status.key_set, lang).to_owned());
     let reason = antigravity.and_then(|status| status.unavailable).filter(|_| account.state == AccountState::Unavailable).map(|why| unavailable_label(why, lang).to_owned());
     [access, account.email.clone(), billing(account, lang), key, Some(state_label(account.state, lang).to_owned()), reason].into_iter().flatten().collect::<Vec<_>>().join(" · ")
 }

@@ -133,7 +133,7 @@ pub fn list(json: bool) -> Result<()> {
     if json {
         let accounts: Vec<Value> = listing.accounts.iter().map(|row| json!({
             "provider": row.provider, "id": row.id, "name": row.name, "enabled": row.enabled, "default": row.default, "billing": row.billing,
-            "state": row.state, "email": row.email, "plan": row.plan,
+            "state": row.state, "email": row.email, "plan": row.plan, "antigravity": row.antigravity,
         })).collect();
         println!("{}", serde_json::to_string_pretty(&json!({"schema": "alondra.accounts/1", "ok": true, "distribution": listing.config.distribution, "accounts": accounts}))?);
         return Ok(());
@@ -265,7 +265,7 @@ pub fn remove(name: &str) -> Result<()> {
 
 fn provider_row<'a>(listing: &'a Listing, provider: Provider, name: &str) -> Result<&'a Row> {
     listing.accounts.iter().find(|row| row.provider == provider && (row.id.as_str() == name || shown_name(row).eq_ignore_ascii_case(name.trim())))
-        .ok_or_else(|| anyhow!("No {} account is called {name}", provider.as_str()))
+        .ok_or_else(|| { let provider = provider.display_name(); anyhow!(trf!("No {provider} account is called {name}", "No hay ninguna cuenta de {provider} que se llame {name}")) })
 }
 
 pub fn list_for(provider: Provider, json: bool) -> Result<()> {
@@ -273,7 +273,7 @@ pub fn list_for(provider: Provider, json: bool) -> Result<()> {
     let listing = check(&daemon())?;
     let rows: Vec<Row> = listing.accounts.into_iter().filter(|row| row.provider == provider).collect();
     if json {
-        let rows: Vec<Value> = rows.iter().map(|row| json!({"provider":row.provider,"id":row.id,"name":row.name,"state":row.state,"email":row.email,"plan":row.plan,"enabled":row.enabled,"default":row.default,"billing":row.billing})).collect();
+        let rows: Vec<Value> = rows.iter().map(|row| json!({"provider":row.provider,"id":row.id,"name":row.name,"state":row.state,"email":row.email,"plan":row.plan,"enabled":row.enabled,"default":row.default,"billing":row.billing,"antigravity":row.antigravity})).collect();
         println!("{}", serde_json::to_string_pretty(&json!({"schema":"alondra.accounts/1","ok":true,"accounts":rows}))?);
     } else {
         for line in lines(&rows) { println!("{line}"); }
@@ -303,14 +303,21 @@ pub fn remove_for(provider: Provider, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The provider and account `name` names: `antigravity/<id or name>`, or a bare one of `provider`.
+pub(crate) fn named_account(provider: Provider, name: &str) -> (Provider, String) {
+    let name = name.trim();
+    match name.split_once('/').and_then(|(prefix, rest)| Provider::parse(prefix).ok().map(|provider| (provider, rest.trim()))) {
+        Some((provider, rest)) => (provider, rest.to_owned()),
+        None => (provider, name.to_owned()),
+    }
+}
+
 /// Sets the key of the named Antigravity account `name`, read from standard input without echoing
-/// it, or removes it (`clear`). It goes to the daemon as the account's credential action, sealed
-/// like every action; Alondra keeps it in a file of the account's folder only the user can read.
-pub fn set_key(provider: Provider, name: &str, clear: bool) -> Result<()> {
-    let (provider, name) = match alondra_core::accounts::AccountKey::parse_wire(name.trim()) {
-        Ok(key) if name.contains('/') => (key.provider, key.account.as_str().to_owned()),
-        _ => (provider, name.trim().to_owned()),
-    };
+/// it, or removes it (`clear`). It goes to the daemon as the account's credential action, a signed
+/// request to the daemon on this Mac; Alondra keeps it in a file of the account's folder only the
+/// user can read. A terminal it may not ask on (`no_input`) gets no prompt.
+pub fn set_key(provider: Provider, name: &str, clear: bool, no_input: bool) -> Result<()> {
+    let (provider, name) = named_account(provider, name);
     if provider != Provider::Antigravity {
         bail!(tr!("Only an Antigravity account keeps a key: alondra accounts set-key antigravity/<account>",
             "Solo una cuenta de Antigravity guarda una clave: alondra accounts set-key antigravity/<cuenta>"));
@@ -325,7 +332,7 @@ pub fn set_key(provider: Provider, name: &str, clear: bool) -> Result<()> {
     if !row.antigravity.as_ref().is_some_and(|status| status.access.takes_key()) {
         bail!(trf!("{shown} signs in with Google and keeps no key", "{shown} inicia sesión con Google y no guarda ninguna clave"));
     }
-    let key = if clear { None } else { Some(read_secret(&trf!("Key for {shown}: ", "Clave para {shown}: "))?) };
+    let key = if clear { None } else { Some(read_secret(&trf!("Key for {shown}: ", "Clave para {shown}: "), no_input)?) };
     let client = crate::client::Client::for_user(Duration::from_secs(120));
     let view = client.views(alondra_view_model::accounts::KEY, None).context(tr!("Alondra is not running on this Mac: start it and try again", "Alondra no está en marcha en este Mac: arráncalo y vuelve a probar"))?;
     let wanted = |action: &alondra_view_model::Action| alondra_view_model::action_id::ActionId::parse(&action.id).is_ok_and(|id|
@@ -348,11 +355,30 @@ pub fn set_key(provider: Provider, name: &str, clear: bool) -> Result<()> {
     Ok(())
 }
 
-/// One line of standard input, without echoing it when it is a terminal.
-fn read_secret(prompt: &str) -> Result<alondra_core::antigravity_account::Secret> {
+/// The terminal's settings before the key prompt hid what is typed, for an interrupt to put back.
+static TYPED: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
+
+extern "C" fn interrupted(signal: libc::c_int) {
+    if let Some(attributes) = TYPED.get() { unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, attributes) }; }
+    unsafe { libc::_exit(128 + signal) };
+}
+
+/// Whether the key is asked on a terminal (`Some(true)`), read from a pipe (`Some(false)`), or
+/// needs a person it may not ask (`None`).
+pub(crate) fn key_prompt(stdin_terminal: bool, may_ask: bool) -> Option<bool> {
+    match (stdin_terminal, may_ask) { (false, _) => Some(false), (true, true) => Some(true), (true, false) => None }
+}
+
+/// One line of standard input, without echoing it when it is a terminal: an interrupt puts the
+/// terminal's echo back before it ends the command.
+fn read_secret(prompt: &str, no_input: bool) -> Result<alondra_core::antigravity_account::Secret> {
     use std::io::{BufRead as _, IsTerminal as _, Write as _};
     let stdin = std::io::stdin();
-    let terminal = stdin.is_terminal();
+    let may_ask = !no_input && std::env::var("ALONDRA_NO_INPUT").as_deref() != Ok("1");
+    let Some(terminal) = key_prompt(stdin.is_terminal(), may_ask) else {
+        return Err(crate::commands::NeedsPerson(tr!("Setting a key needs you to type it: run alondra accounts set-key in a terminal, or pipe the key to it",
+            "Poner una clave necesita que la escribas: ejecuta alondra accounts set-key en una terminal, o pásale la clave por una tubería").into()).into());
+    };
     let mut saved: Option<libc::termios> = None;
     if terminal {
         eprint!("{prompt}");
@@ -360,6 +386,10 @@ fn read_secret(prompt: &str) -> Result<alondra_core::antigravity_account::Secret
         let mut attributes = unsafe { std::mem::zeroed::<libc::termios>() };
         if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut attributes) } == 0 {
             saved = Some(attributes);
+            let _ = TYPED.set(attributes);
+            for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
+                unsafe { libc::signal(signal, interrupted as *const () as libc::sighandler_t) };
+            }
             attributes.c_lflag &= !libc::ECHO;
             unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &attributes) };
         }
@@ -368,6 +398,7 @@ fn read_secret(prompt: &str) -> Result<alondra_core::antigravity_account::Secret
     let read = stdin.lock().read_line(&mut line);
     if let Some(attributes) = saved {
         unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &attributes) };
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] { unsafe { libc::signal(signal, libc::SIG_DFL) }; }
         eprintln!();
     }
     read.context(tr!("Could not read the key", "No se pudo leer la clave"))?;

@@ -102,12 +102,16 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   the path of a service-account key file you name with `--credentials-file`, never its contents.
 - **Antigravity API keys:** the only credential Alondra keeps. A Gemini API key (or an Agent
   Platform key of a Cloud project account) is entered in the account's settings in the app or
-  with `alondra accounts set-key antigravity/<account>`, which reads it without echo. It reaches
-  the daemon inside the sealed action every client sends, and the daemon writes it to
+  with `alondra accounts set-key antigravity/<account>`, which reads it without echo (or from a
+  pipe, and never prompts under `--no-input`). It reaches the daemon inside the account's
+  credential action: from an app over its own connection to the daemon, and from the CLI as a
+  request signed with the user's local identity to the daemon's local port, which travels in plain
+  HTTP inside the Mac and is not encrypted. The daemon writes it to
   `~/.alondra/provider-accounts/antigravity/<account>/gemini-api-key`: a `0600` file written whole
   to a new file of the folder, synced, then renamed over the old one, and read only when it is
   a regular file of the folder's owner, no one else can read, with no other link. Only that account's `agy` gets it, as `GEMINI_API_KEY`
-  (or `GOOGLE_API_KEY`) in its environment at start. It is never in `options.toml`, `domain.db`, a
+  (or `GOOGLE_API_KEY`) in its environment at start, and so do the hooks and MCP servers that
+  `agy` starts from the settings the folder links to in your `~/.gemini`. It is never in `options.toml`, `domain.db`, a
   log line, an action's reply or any screen: the domain records only that the account's credential
   changed, and clients see "Key set" or "No key". `--clear` (or Remove key) deletes the file;
   removing the account deletes its folder and the key with it. The default account takes no key.

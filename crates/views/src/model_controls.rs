@@ -11,7 +11,7 @@ fn profile_label(profile: ModelProfile, context: &RenderContext<'_>) -> &'static
 }
 
 pub(super) fn profile_rows(context: &RenderContext<'_>) -> Vec<Item> {
-    let providers: std::collections::BTreeSet<_> = context.index.accounts().iter().map(|account| account.provider).collect();
+    let providers: std::collections::BTreeSet<_> = context.index.accounts().iter().map(|account| account.provider).filter(|provider| provider.runs_nodes()).collect();
     providers.into_iter().flat_map(|provider| PROFILES.iter().map(move |(profile, slug)| {
         let role = profile_label(*profile, context); let provider_name = super::accounts::provider_name(provider);
         let mut row = common::row(&format!("{}-{slug}", provider.as_str()), "model_profile", Icon::Machine, format!("{provider_name} · {role}"), None);

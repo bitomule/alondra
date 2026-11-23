@@ -509,7 +509,7 @@ pub(super) fn enrich_model_fields(fields: &mut Vec<Field>, context: &RenderConte
     let automatic = || item("auto".into(), t!(lang, "Automatic", "Automático").into(), None, None, None);
     let mut models = vec![automatic()];
     let mut efforts: std::collections::BTreeMap<String, Vec<serde_json::Value>> = std::collections::BTreeMap::new();
-    for catalog in context.index.model_catalogs() {
+    for catalog in context.index.model_catalogs().iter().filter(|catalog| catalog.account.provider.runs_nodes()) {
         for model in catalog.models.iter().filter(|model| !model.hidden) {
             let id = format!("{}/{}", catalog.account.provider.as_str(), model.model);
             if !models.iter().any(|item| item.id == id) {
@@ -526,7 +526,7 @@ pub(super) fn enrich_model_fields(fields: &mut Vec<Field>, context: &RenderConte
     reasoning.extend(efforts.into_iter().map(|(effort, models)| item(effort.clone(), common::effort_label(&effort, lang).unwrap_or(&effort).into(), None, None,
         Some(super::Condition { field: "model".into(), equals: None, any_of: models }))));
     let mut accounts = vec![automatic()];
-    for account in context.index.accounts() {
+    for account in context.index.accounts().iter().filter(|account| account.provider.runs_nodes()) {
         let key = alondra_core::accounts::AccountKey { provider: account.provider, account: account.id.clone() };
         let mut compatible = vec![json!("auto")];
         if let Some(catalog) = context.index.model_catalogs().iter().find(|catalog| catalog.account == key) {

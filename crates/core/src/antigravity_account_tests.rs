@@ -212,6 +212,7 @@ fn usage_has_one_window_per_pool_and_the_account_stops_once_every_pool_ran_out()
 fn utc_times_read_as_milliseconds() {
     assert_eq!(parse_utc("1970-01-01T00:00:00Z"), Some(0));
     assert_eq!(parse_utc("2026-11-22T10:00:00.5Z"), Some(1_795_341_600_500));
+    assert_eq!(parse_utc("2026-11-22T10:00:00.5+00:00"), Some(1_795_341_600_500), "UTC written as an offset is the same instant");
     assert_eq!(parse_utc("2026-13-01T00:00:00Z"), None);
     assert_eq!(parse_utc("2026-11-22 10:00:00"), None);
 }

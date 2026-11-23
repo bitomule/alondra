@@ -576,7 +576,7 @@ pub fn run(command: Cmd, json: bool, no_input: bool) -> Result<()> {
                 }).transpose()?;
                 provider_accounts::add(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), antigravity)
             }
-            AccountsCmd::SetKey { account, clear } => provider_accounts::set_key(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &account, clear),
+            AccountsCmd::SetKey { account, clear } => provider_accounts::set_key(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &account, clear, no_input),
             AccountsCmd::Enable { name } => provider_accounts::set_enabled_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), true),
             AccountsCmd::Disable { name } => provider_accounts::set_enabled_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), false),
             AccountsCmd::Remove { name } => provider_accounts::remove_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" ")),

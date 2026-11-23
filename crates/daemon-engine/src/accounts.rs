@@ -576,7 +576,8 @@ pub fn check_current(domain: &dyn Runtime, home: &Path) -> crate::native_probe::
                 }
                 statuses.push(status);
             }
-            let (antigravity, antigravity_found) = crate::antigravity_accounts::observe(domain, home, &config, &known, now);
+            let initial = domain.live().initial_account_check_pending.load(std::sync::atomic::Ordering::Acquire);
+            let (antigravity, antigravity_found, antigravity_checked) = crate::antigravity_accounts::observe(domain, home, &config, &known, now, !initial);
             statuses.extend(antigravity);
             let order: Vec<_> = config.ordered_accounts().into_iter().map(|(key, _)| key).collect();
             statuses.sort_by_key(|status| order.iter().position(|key| key.provider == status.provider && key.account == status.id));
@@ -602,9 +603,11 @@ pub fn check_current(domain: &dyn Runtime, home: &Path) -> crate::native_probe::
                 log!("Discarded native account metadata: {why}");
                 return crate::native_probe::Outcome::of(&why);
             }
+            crate::antigravity_accounts::remember(home, antigravity_checked);
             correct_crossed_sessions(domain, &known);
             if domain.live().initial_account_check_pending.swap(false, std::sync::atomic::Ordering::AcqRel) {
                 domain.gate().poke();
+                if config.is_connected(Provider::Antigravity) { domain.live().account_check.notify_one(); }
             }
             let refresh: Vec<_> = domain.read().state().accounts.iter().filter(|account| account.provider == Provider::Claude && account.state == AccountState::SignedIn)
                 .filter(|account| {
@@ -736,11 +739,11 @@ pub fn set_credential_authorized(domain: &dyn Runtime, home: &Path, actor: &Acto
     accounts.prepare_antigravity(home, key, &crate::antigravity_accounts::Antigravity::shared(&user_home)).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
     accounts.set_antigravity_key(home, key, secret.as_ref()).map_err(|why| ChangeRefused::Store(Refused::Folder(why)))?;
     drop(secret);
+    crate::antigravity_accounts::forget(home, key);
     domain.execute(actor, &envelope, None, || Ok(())).map_err(|why| match why {
         crate::domain_store::StoreError::Domain(why) => ChangeRefused::Domain(why),
         why => ChangeRefused::Store(Refused::Folder(why.to_string())),
     })?;
-    crate::antigravity_accounts::forget(home, key);
     Ok(())
 }
 
@@ -816,7 +819,7 @@ pub(crate) fn replace_configuration_authorized(domain: &dyn Runtime, home: &Path
     let codex = (current.is_connected(Provider::Codex) || next.is_connected(Provider::Codex)).then(|| Codex::of(domain)).flatten();
     let user_home = claude.as_ref().map(|claude| claude.user_home.clone()).or_else(|| codex.as_ref().map(|codex| codex.user_home.clone())).unwrap_or_else(|| home.join("unavailable-native-home"));
     let refused = std::cell::RefCell::new(None);
-    let removed = std::cell::RefCell::new(Vec::new());
+    let removed = std::cell::RefCell::new(Leftovers::default());
     let result = crate::settings_projection::apply_authorized(domain, home, actor, envelope, previous, target, recorded, authorize, |state| {
         match prepare_account_changes(&*domain.ports().accounts(), home, &user_home, claude.as_ref(), codex.as_ref(), &current, &next, &working_keys(state)) {
             Ok(keys) => { *removed.borrow_mut() = keys; Ok(()) }
@@ -1070,7 +1073,12 @@ pub(crate) fn store(accounts: &dyn Accounts, home: &Path, user_home: &Path, clau
     store_provider(accounts, home, user_home, claude, None, seen, next, &working)
 }
 
-fn prepare_account_changes(accounts: &dyn Accounts, home: &Path, user_home: &Path, claude: Option<&Claude>, codex: Option<&Codex>, current: &AccountsConfig, next: &AccountsConfig, working: &[AccountKey]) -> Result<Vec<AccountKey>, Refused> {
+/// What a change leaves to do once `options.toml` holds it: the folders of the accounts it took
+/// away, and the keys of the Antigravity accounts whose new access keeps none.
+#[derive(Default)]
+struct Leftovers { removed: Vec<AccountKey>, keyless: Vec<AccountKey> }
+
+fn prepare_account_changes(accounts: &dyn Accounts, home: &Path, user_home: &Path, claude: Option<&Claude>, codex: Option<&Codex>, current: &AccountsConfig, next: &AccountsConfig, working: &[AccountKey]) -> Result<Leftovers, Refused> {
     let ids = |config: &AccountsConfig| -> Vec<AccountKey> { Provider::ALL.into_iter().flat_map(|provider| config.listed(provider).into_owned().into_iter().filter(|account| !account.id.is_default()).map(move |account| AccountKey::new(provider, account.id))).collect() };
     let (before, after) = (ids(&current), ids(&next));
     let shared = claude_account::config_folder(claude.and_then(Claude::default_profile).as_deref(), user_home);
@@ -1078,13 +1086,14 @@ fn prepare_account_changes(accounts: &dyn Accounts, home: &Path, user_home: &Pat
         match id.provider {
             Provider::Claude => { accounts.prepare_claude(home, &id.account, &shared).map_err(|e| Refused::Folder(e.to_string()))?; }
             Provider::Codex => { accounts.prepare_codex(home, id).map_err(Refused::Folder)?; }
-            Provider::Antigravity => { accounts.prepare_antigravity(home, id, &crate::antigravity_accounts::Antigravity::shared(user_home)).map_err(Refused::Folder)?; }
+            Provider::Antigravity => {
+                accounts.remove_antigravity(home, id).map_err(|e| Refused::Folder(e.to_string()))?;
+                accounts.prepare_antigravity(home, id, &crate::antigravity_accounts::Antigravity::shared(user_home)).map_err(Refused::Folder)?;
+            }
         }
     }
-    for id in after.iter().filter(|id| id.provider == Provider::Antigravity && before.contains(id)) {
-        let (was, is) = (current.antigravity_settings(&id.account).access, next.antigravity_settings(&id.account).access);
-        if was.takes_key() && !is.takes_key() { accounts.set_antigravity_key(home, id, None).map_err(Refused::Folder)?; }
-    }
+    let keyless = after.iter().filter(|id| id.provider == Provider::Antigravity && before.contains(id)
+        && current.antigravity_settings(&id.account).access.takes_key() && !next.antigravity_settings(&id.account).access.takes_key()).cloned().collect();
     let removed: Vec<AccountKey> = before.iter().filter(|id| !after.contains(id)).cloned().collect();
     if let Some(busy) = removed.iter().find(|id| working.contains(*id)) {
         let name = current.find(busy.provider, busy.account.as_str()).map_or_else(|| busy.wire_id(), |account| account.name);
@@ -1097,11 +1106,14 @@ fn prepare_account_changes(accounts: &dyn Accounts, home: &Path, user_home: &Pat
             Provider::Antigravity => {}
         }
     }
-    Ok(removed)
+    Ok(Leftovers { removed, keyless })
 }
 
-fn cleanup_account_folders(accounts: &dyn Accounts, home: &Path, removed: &[AccountKey]) {
-    for id in removed {
+fn cleanup_account_folders(accounts: &dyn Accounts, home: &Path, leftovers: &Leftovers) {
+    for id in &leftovers.keyless {
+        if let Err(why) = accounts.set_antigravity_key(home, id, None) { log!("Account {} no longer takes a key, but its key file needs cleanup: {why}", id.wire_id()); }
+    }
+    for id in &leftovers.removed {
         let deleted = match id.provider {
             Provider::Claude => accounts.remove_claude(home, &id.account),
             Provider::Codex => accounts.remove_codex(home, id),
@@ -1122,7 +1134,7 @@ fn store_provider(accounts: &dyn Accounts, home: &Path, user_home: &Path, claude
     if !next.any_enabled_globally() {
         return Err(Refused::Invalid("At least one account stays on".into()));
     }
-    let removed = prepare_account_changes(accounts, home, user_home, claude, codex, &current, &next, working)?;
+    let leftovers = prepare_account_changes(accounts, home, user_home, claude, codex, &current, &next, working)?;
     let file = alondra_core::options::path_in(home);
     let original = match std::fs::read_to_string(&file) {
         Ok(text) => text,
@@ -1131,7 +1143,7 @@ fn store_provider(accounts: &dyn Accounts, home: &Path, user_home: &Path, claude
     };
     let text = alondra_core::accounts::with_accounts(&original, &next).map_err(Refused::Invalid)?;
     crate::settings_file::replace(&file, text.as_bytes()).map_err(|e| Refused::Folder(format!("{}: {e}", file.display())))?;
-    cleanup_account_folders(accounts, home, &removed);
+    cleanup_account_folders(accounts, home, &leftovers);
     Ok(())
 }
 

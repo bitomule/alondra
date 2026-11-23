@@ -440,9 +440,9 @@ pub enum UsageOutcome {
 pub const WINDOW_PREFIX: &str = "antigravity:";
 const SLUG_LIMIT: usize = 24;
 
-/// Milliseconds since the epoch of a UTC time written `YYYY-MM-DDTHH:MM:SS[.fff]Z`.
+/// Milliseconds since the epoch of a UTC time written `YYYY-MM-DDTHH:MM:SS[.fff]Z` (or `+00:00`).
 pub fn parse_utc(text: &str) -> Option<crate::Millis> {
-    let text = text.strip_suffix('Z')?;
+    let text = text.strip_suffix('Z').or_else(|| text.strip_suffix("+00:00"))?;
     let (date, time) = text.split_once('T')?;
     if !date.bytes().all(|b| b.is_ascii_digit() || b == b'-') || !time.bytes().all(|b| b.is_ascii_digit() || matches!(b, b':' | b'.')) { return None; }
     if date.split('-').any(str::is_empty) || time.split(':').any(str::is_empty) { return None; }

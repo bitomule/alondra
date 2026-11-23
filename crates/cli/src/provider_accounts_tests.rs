@@ -120,3 +120,19 @@ fn moving_to_another_account_says_whether_it_is_on_and_its_risk() {
     let on = moving_lines(true);
     assert!(on[0].ends_with(": on") || on[0].ends_with(": activado"), "{on:?}");
 }
+
+#[test]
+fn set_key_names_an_antigravity_account_by_its_id_or_its_name_and_never_falls_back_to_claude() {
+    assert_eq!(named_account(Provider::Claude, "antigravity/studio"), (Provider::Antigravity, "studio".into()));
+    assert_eq!(named_account(Provider::Claude, " antigravity/My Lab "), (Provider::Antigravity, "My Lab".into()), "a name with capitals and spaces keeps its provider");
+    assert_eq!(named_account(Provider::Antigravity, "Studio"), (Provider::Antigravity, "Studio".into()));
+    assert_eq!(named_account(Provider::Claude, "nowhere/x"), (Provider::Claude, "nowhere/x".into()), "an unknown prefix is part of the name");
+}
+
+#[test]
+fn a_key_is_asked_on_a_terminal_only_when_asking_is_allowed_and_read_from_a_pipe_always() {
+    assert_eq!(key_prompt(true, true), Some(true));
+    assert_eq!(key_prompt(true, false), None, "--no-input never waits on a terminal");
+    assert_eq!(key_prompt(false, false), Some(false), "a piped key needs nobody");
+    assert_eq!(key_prompt(false, true), Some(false));
+}

@@ -112,14 +112,26 @@ pub(crate) fn forget(home: &Path, key: &AccountKey) {
     CHECKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&(home.to_path_buf(), key.clone()));
 }
 
-/// The Antigravity accounts as this round sees them, and what their checks found to record after
-/// them: catalogs and usage readings.
-pub(crate) fn observe(domain: &dyn Runtime, home: &Path, config: &AccountsConfig, known: &[AccountStatus], now: alondra_core::Millis) -> (Vec<AccountStatus>, Vec<Command>) {
+/// The accounts a round checked, each with what it saw, so the next round skips them only once the
+/// round that checked them is recorded.
+pub(crate) type Checked = Vec<(AccountKey, String, alondra_core::Millis)>;
+
+/// Keeps the checks of a round the domain recorded, so the next round runs no `agy` for them.
+pub(crate) fn remember(home: &Path, checked: Checked) {
+    let mut cache = CHECKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (key, fingerprint, at) in checked { cache.insert((home.to_path_buf(), key), (fingerprint, at)); }
+}
+
+/// The Antigravity accounts as this round sees them, what their checks found to record after
+/// them (catalogs and usage readings), and the checks to `remember` once they are recorded. A
+/// round that may not `probe` (the one after startup, which every launch waits for, while no node
+/// runs on Antigravity) runs no `agy` and keeps what each account stood at.
+pub(crate) fn observe(domain: &dyn Runtime, home: &Path, config: &AccountsConfig, known: &[AccountStatus], now: alondra_core::Millis, probe: bool) -> (Vec<AccountStatus>, Vec<Command>, Checked) {
     let accounts = config.accounts(Provider::Antigravity);
-    if accounts.is_empty() { return (vec![], vec![]); }
+    if accounts.is_empty() { return (vec![], vec![], vec![]); }
     let agy = Antigravity::of(domain);
     let port = domain.ports().port::<dyn Accounts>();
-    let (mut statuses, mut found) = (vec![], vec![]);
+    let (mut statuses, mut found, mut checked_now) = (vec![], vec![], vec![]);
     for account in accounts {
         let key = AccountKey::new(Provider::Antigravity, account.id.clone());
         let settings = config.antigravity_settings(&account.id);
@@ -135,10 +147,14 @@ pub(crate) fn observe(domain: &dyn Runtime, home: &Path, config: &AccountsConfig
         let stands = |state: AccountState| if state == AccountState::SignedIn { DAY } else { HOUR };
         let fresh = checked.is_some_and(|(seen, at)| seen == fingerprint && prior.is_some_and(|prior| now - at < stands(prior.state)))
             && prior.is_some_and(|prior| !matches!(prior.state, AccountState::Unchecked | AccountState::Disabled));
-        if fresh {
-            let prior = prior.expect("a fresh check has a recorded status");
-            status.state = prior.state;
-            if let (Some(now), Some(before)) = (status.antigravity.as_mut(), prior.antigravity.as_ref()) { now.unavailable = before.unavailable; }
+        if fresh || !probe {
+            match prior.filter(|prior| prior.state != AccountState::Disabled) {
+                Some(prior) => {
+                    status.state = prior.state;
+                    if let (Some(now), Some(before)) = (status.antigravity.as_mut(), prior.antigravity.as_ref()) { now.unavailable = before.unavailable; }
+                }
+                None => status.state = AccountState::Unchecked,
+            }
             statuses.push(status);
             continue;
         }
@@ -149,7 +165,7 @@ pub(crate) fn observe(domain: &dyn Runtime, home: &Path, config: &AccountsConfig
             Some(agy) => agy.check(home, &key, &settings),
             None => CheckReport { version: None, check: Check::Unavailable(Unavailable::NotInstalled) },
         };
-        CHECKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((home.to_path_buf(), key.clone()), (fingerprint, now));
+        checked_now.push((key.clone(), fingerprint, now));
         match report.check {
             Check::SignedIn { models, native_default } => {
                 status.state = AccountState::SignedIn;
@@ -173,7 +189,7 @@ pub(crate) fn observe(domain: &dyn Runtime, home: &Path, config: &AccountsConfig
         }
         statuses.push(status);
     }
-    (statuses, found)
+    (statuses, found, checked_now)
 }
 
 fn catalog(key: &AccountKey, models: Vec<alondra_core::model_selection::CatalogModel>, native_default: Option<String>, now: alondra_core::Millis) -> Option<AccountModelCatalog> {

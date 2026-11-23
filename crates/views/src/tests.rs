@@ -10950,6 +10950,7 @@ fn antigravity_accounts_show_their_access_key_and_sign_in_and_never_the_key() {
         assert!(key.id.starts_with("account_credential:studio@") && key.id.ends_with("~antigravity"), "{}", key.id);
         let clear = studio.actions.iter().find(|action| action.label == if es { "Quitar clave" } else { "Remove key" }).unwrap();
         assert_eq!(clear.option_id.as_deref(), Some("clear"));
+        assert!(clear.confirm.as_ref().is_some_and(|confirm| confirm.title.contains("Studio")), "removing a key asks first");
         let fresh = row("fresh");
         assert!(fresh.subtitle.as_deref().unwrap().contains(if es { "Sin clave" } else { "No key" }));
         assert!(labels(&fresh).contains(&(if es { "Poner clave" } else { "Set key" }).to_owned()));

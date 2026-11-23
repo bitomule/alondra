@@ -1355,9 +1355,9 @@ pub(crate) fn available_models(state: &alondra_domain_rules::DomainState, tasks:
     use alondra_core::accounts::{AccountKey, AccountState};
     use alondra_core::model_table::AccountRoom;
     let rooms: Vec<AccountRoom> = if state.accounts.is_empty() {
-        state.model_catalogs.iter().map(|catalog| AccountRoom { account: catalog.account.clone(), name: catalog.account.account.as_str().to_owned(), margin: None }).collect()
+        state.model_catalogs.iter().filter(|catalog| catalog.account.provider.runs_nodes()).map(|catalog| AccountRoom { account: catalog.account.clone(), name: catalog.account.account.as_str().to_owned(), margin: None }).collect()
     } else {
-        state.accounts.iter().filter(|account| account.state != AccountState::Disabled).map(|account| {
+        state.accounts.iter().filter(|account| account.state != AccountState::Disabled && account.provider.runs_nodes()).map(|account| {
             let usage = state.account_usage.iter().find(|usage| usage.provider == account.provider && usage.account == account.id);
             let unavailable = match account.state {
                 AccountState::SignedOut => Some("signed out"),
@@ -1581,6 +1581,10 @@ mod tests {
             "usedPercent":10,"windowDurationMins":300,"resetsAt":3600}}}), None).unwrap();
         state.account_usage.push(record(None, Provider::Codex, &AccountId::default_account(), &reading, 1, "2026-01-01"));
         assert!(available_models(&state, &[], 2).0.unwrap().contains("Native 90%"));
+        let mut offered = state.clone();
+        offered.accounts.push(AccountStatus { provider: Provider::Antigravity, ..offered.accounts[0].clone() });
+        offered.model_catalogs.push(AccountModelCatalog { account: AccountKey::native(Provider::Antigravity), ..offered.model_catalogs[0].clone() });
+        assert!(!available_models(&offered, &[], 2).0.unwrap().contains("antigravity/"), "the orchestrator is never offered a model no node can run");
         state.accounts[0].state = AccountState::SignedOut;
         assert!(available_models(&state, &[], 2).0.unwrap().contains("Native (signed out) 0%"));
         state.accounts[0].state = AccountState::SignedIn;

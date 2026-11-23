@@ -78,6 +78,11 @@ impl Provider {
             Provider::Antigravity => "antigravity",
         }
     }
+    /// Whether Alondra starts nodes on the provider's accounts: Antigravity's are only signed in,
+    /// checked and read for usage, so nothing that chooses where work runs offers them.
+    pub fn runs_nodes(self) -> bool {
+        self != Provider::Antigravity
+    }
     /// The name a screen gives the provider.
     pub fn display_name(self) -> &'static str {
         match self {

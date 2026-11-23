@@ -171,6 +171,13 @@ fn key_actions(account: &AccountStatus, context: &RenderContext<'_>) -> Vec<Acti
     }
     if status.key_set && let Some(mut clear) = scoped_action(Verb::AccountCredential, account, t!(lang, "Remove key", "Quitar clave"), Style::Destructive, context) {
         clear.option_id = Some("clear".into());
+        let shown = name(account, lang);
+        clear.confirm = Some(Confirm { cancel: None,
+            title: tf!(lang, "Remove the key of {shown}?", "¿Quitar la clave de {shown}?"),
+            message: t!(lang, "Alondra deletes the key from this Mac, and the account stays signed out until you set one again.",
+                "Alondra borra la clave de este Mac, y la cuenta queda sin sesión hasta que pongas otra.").into(),
+            button: t!(lang, "Remove key", "Quitar clave").into(),
+        });
         clear.stamp = Some(t!(lang, "Key removed", "Clave quitada").into());
         actions.push(clear);
     }
