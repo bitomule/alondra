@@ -60,7 +60,7 @@ slots are taken, and both numbers come from the same computation.
 | `Answer` | Alondra | The orchestrator settles a stopped node, answers a node, or reviews a plan |
 | `Merge`, `Close` | Alondra | An accepted delivery merges; a task winds up |
 | `Room(capacity)` | Capacity | The gate, the machine, the disk, the usage limit or the provider's API holds it |
-| `Tasks` | Other tasks | It waits for tasks or a pull request |
+| `Tasks` | Other tasks | It waits for tasks or a pull request. A task no node runs waits for its dependencies in its lifecycle (`AwaitingTasks`): it enters the wait when created or when a dependency reopens, and leaves it in the command that lands the last one |
 | `User` | The user | A card, a pause or a delivery waits on them |
 
 Only a finished or cancelled task owes nothing.

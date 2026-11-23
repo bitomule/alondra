@@ -491,7 +491,7 @@ with an outcome card; several Macs per client). Each can be changed in the revie
 
 | Finding | Default |
 |---|---|
-| F-LIFE-1 · where the wait for other tasks lives | In the lifecycle aggregate, as the single source (dependency records, `Progress::Dependency` reachable again). |
+| F-LIFE-1 · where the wait for other tasks lives | In the lifecycle aggregate, as the single source: `AwaitingTasks`, recorded with `WaitsForTasks`/`TasksLanded` (the user confirmed it on 2026-11-23). |
 | F-LIFE-2 · reopening a task whose SDK node the user kept open | Reopen without a node; the gate starts a new SDK execution that resumes the saved session. |
 | F-CARDS-2 · replacing one question of a group | Refused: the node replaces the whole group with another group. |
 | F-CARDS-5 · replacing the current final delivery with a card that is not a final delivery | Same effects as `withdraw`: the task goes back to in progress (while #317 keeps clarifications). |
@@ -531,17 +531,18 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 | State | Content | Notes |
 |---|---|---|
 | `Unstarted{input, remaining}` | no execution | |
+| `AwaitingTasks{tasks≠∅, start}` | no execution; `start` is `First{input, remaining}` (phase `Unstarted`) or `Again{stage, input, remaining}` (phase `InProgress`) | the wait of a task no execution runs for the tasks it may not start before; owes `Tasks` (or the plan review's `Answer`); `Admit` refuses it with `AwaitsTasks` (F-LIFE-1) |
 | `InProgress(Queued{stage,input,remaining})` | no execution | |
 | `InProgress(Executing{stage, ActiveExecution})` | execution present, `Available` or `Reserved+Launching` | `ActiveExecution::new` rejects `Resting` (`lifecycle.rs:1063-1077`) |
 | `InProgress(Waiting{stage, Decisions≠∅, Session})` | non-empty cards by kind (`Decisions`) | |
-| `InProgress(Dependency{stage, tasks≠∅, decisions, Session})` | | **unreachable in production**: no record produces `WaitForDependencies`. The wait of an unstarted task is read from its dependencies by `obligation_of` instead (F-LIFE-1, fixed) |
+| `InProgress(Dependency{stage, tasks≠∅, decisions, Session})` | | with `Session::Absent`: an `AwaitingTasks` task asked a card. With an execution: **unreachable in production**, no record makes a running task wait for its dependencies |
 | `Delivered{delivery, gate, decisions, Session}` | `gate ∈ {Review, Blocked, AwaitingMerge, Accepted}` | `Blocked` and `AwaitingMerge` are **unreachable in production** (no `BlockDelivery` record, no `Accept{merge:Some}`) |
 | `Finishing{intent, remaining≠∅, Session}` | drain obligations | |
 | `Completed` / `Cancelled` | terminal | |
 
 - **Composite state**: `State × Execution (M-LIFE-2) × plan_reviews × post_merge × doubts/settled × empty_turns/woken`. The fields outside `state` (`plan_reviews`, `post_merge`, `doubts`, `settled`, `cancelled_through_generation`) survive `Reopen`.
-- **Events** (`Event`, `lifecycle.rs:513-712`): Admit, Runtime{stamp,cursor,fact}, Ask, Answer, Decide, MoveCard, KeepQuestion, PlanApproved, HostReleased, HostRetaken, BlockDelivery, DeliveryUnblocked, Present, Accept, MergeObserved, HandBack, WaitForDependencies, Tell, DependenciesResolved, Pause, Resume, EndPause, RecoveryEnded, Finish, DrainObserved, PostMergeDeclared, PostMergeEnded, RetireReleasedExecution, ExecutionReleased, ExecutionLeftForReview, Reopen, HoldForPlanReview, PlanReviewSettled, DoubtHandoff, ResendUntaken, ResendDoubtful, SettleHandoff, Discard, AwaitEnded, Unfinished, RequestControl, Compact.
-- **Events produced by `domain-rules`** (mapping `event()`, `domain-rules/src/lifecycle.rs:616-803`): all except `Ask`, `PlanApproved`, `BlockDelivery`, `DeliveryUnblocked`, `MergeObserved`, `Accept{merge:Some}`, `WaitForDependencies`, `DependenciesResolved`, `RetireReleasedExecution`, and the facts `ConnectionLost`, `ResourceReleased`, `Notification`, `EffectAccepted`, `EffectObserved` (checked with `rg`: 0 occurrences in `domain-rules/src/{lifecycle.rs,rules.rs,rules/}`). These are aggregate branches that only its own tests exercise.
+- **Events** (`Event`, `lifecycle.rs:513-712`): Admit, Runtime{stamp,cursor,fact}, Ask, Answer, Decide, MoveCard, KeepQuestion, PlanApproved, HostReleased, HostRetaken, BlockDelivery, DeliveryUnblocked, Present, Accept, MergeObserved, HandBack, WaitForDependencies, Tell, DependenciesResolved, DependenciesLanded, Pause, Resume, EndPause, RecoveryEnded, Finish, DrainObserved, PostMergeDeclared, PostMergeEnded, RetireReleasedExecution, ExecutionReleased, ExecutionLeftForReview, Reopen, HoldForPlanReview, PlanReviewSettled, DoubtHandoff, ResendUntaken, ResendDoubtful, SettleHandoff, Discard, AwaitEnded, Unfinished, RequestControl, Compact.
+- **Events produced by `domain-rules`** (mapping `event()`, `domain-rules/src/lifecycle.rs:616-803`): all except `Ask`, `PlanApproved`, `BlockDelivery`, `DeliveryUnblocked`, `MergeObserved`, `Accept{merge:Some}`, `DependenciesResolved`, `RetireReleasedExecution`, and the facts `ConnectionLost`, `ResourceReleased`, `Notification`, `EffectAccepted`, `EffectObserved` (checked with `rg`: 0 occurrences in `domain-rules/src/{lifecycle.rs,rules.rs,rules/}`). These are aggregate branches that only its own tests exercise.
 - **`Compact` since #507** (at `3fc0370ea`): no command writes a new `Compacted` record any more
   (`Command::CompactConversation`, its guard and the idle-compaction loop were removed). The record and its event stay
   so older journals replay: `LifecycleRecord::Compacted` (`domain-rules/src/lifecycle.rs:474-476`) still maps to
@@ -554,6 +555,11 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 
 | From | Event [guard] | To / effect |
 |---|---|---|
+| Unstarted, Queued | WaitForDependencies (record `WaitsForTasks`) | AwaitingTasks{tasks, start} |
+| AwaitingTasks, Dependency | WaitForDependencies [another set] | the same state with the new set |
+| AwaitingTasks | DependenciesLanded (record `TasksLanded`) | Unstarted/Queued as `start` says |
+| Dependency{Absent} | DependenciesLanded | Queued, or Waiting with its cards |
+| AwaitingTasks | Ask, Pause | Dependency{Absent} with the card |
 | Unstarted, Queued, Delivered{Absent, gate≠Blocked}, Waiting{Absent, only Unheard/Recovery} | Admit [no `plan_reviews`, no pause] | Executing{Reserved, Launching(input)} (Delivered stays `Delivered` with a session); `generation+1` |
 | any state with a current execution | Runtime [stamp == current, cursor == current+1] | depends on the fact (M-LIFE-2) |
 | Unstarted/Queued/Executing/Waiting/Dependency/Delivered | Pause [owner≠Gate, no other pause], Ask, DoubtHandoff | Waiting (or the same Delivered/Dependency with the card added) |
@@ -617,7 +623,7 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 - **Kind**: implicit, derived with validation. **Defined in**: `domain-rules/src/model.rs:123-145` (`TaskState` with 9 values), `Task` (`started`, `agent_id`, `final_presentation`, `ending`, `wrap_up`, `pending_user_inputs`, `waiting_for_tasks`, `dependencies`, …).
 - **How it is written**: (1) `materialize` after every lifecycle decision sets `agent_id`, `started`, `ending` and the phase's `TaskState` (`domain-rules/src/lifecycle.rs:1314-1336`); (2) `derive_states` / `state_within_phase` picks the attention state within the phase (`rules.rs:2614-2662`, `lifecycle.rs:2613-2650`); (3) `derive_loaded_states` keeps `WaitingDependency` on open (`rules.rs:2626-2636`).
 - **Validation**: `agrees` (`lifecycle.rs:1413-1480`) for every task "touched" in the commit (`rules.rs:3012`) and on load: node/start/ending equal to the execution; phase ↔ state compatible; required cards actionable.
-- **Copies that can diverge**: `dependencies`/`waiting_for_tasks` (row) against `Progress::Dependency` (aggregate, dead) and `Await::Tasks` (aggregate, only after a turn): the dependency wait of an unstarted task exists only in the row, and `obligation_of` turns it into `Owed::Tasks` (F-LIFE-1, fixed). `wrap_up.post_merge_work` (row) against `post_merge` (aggregate): synchronized in `declare_post_merge`/`end_post_merge`/`adopt_declared_post_merge` (`lifecycle.rs:2441-2491`).
+- **Copies that can diverge**: `dependencies`/`waiting_for_tasks` (row) against `Progress::Dependency` (aggregate, dead) and `Await::Tasks` (aggregate, only after a turn): the dependency wait of a task no execution runs is `AwaitingTasks` in the aggregate, recorded from the row's relations by `record_start_waits` at the end of every command (F-LIFE-1, fixed). `wrap_up.post_merge_work` (row) against `post_merge` (aggregate): synchronized in `declare_post_merge`/`end_post_merge`/`adopt_declared_post_merge` (`lifecycle.rs:2441-2491`).
 - **Terminals**: `Done`/`Cancelled` only from the phase; `derive_states` does not touch terminal rows.
 
 ### M-LIFE-7 · `Situation` and `Tally`
@@ -668,14 +674,23 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 ### Findings
 
 #### F-LIFE-1 · An unstarted task that waits for other tasks shows as "Queued" (slot wait), not "Waiting for tasks"
-**Status: FIXED** in `1dce3a4d1`. `obligation_with` (`domain-rules/src/ownership.rs`) returns `(Party::Tasks, Owed::Tasks)`
-for a task whose lifecycle is unstarted and owes the gate, has no node, has not started and whose row is
-`WaitingDependency`; `Situation` reads `Waiting(Tasks)` and `Tally::Waiting`, and the queue counts only tasks that wait for a
-slot. The aggregate still does not record the wait (`Progress::Dependency` stays unreachable before a first execution):
-recording it would move an unstarted task to `InProgress` and touch reopening, cancelling and stored journals, so this
-fix takes the second option the finding lists. Test:
+**Status: FIXED** in `6ad84c2b7`, in the lifecycle aggregate as its single source (the user decided on 2026-11-23
+that the wait is a state of the task's machine, not something read beside it). A task no execution runs and whose
+dependencies have not landed is `AwaitingTasks{tasks, start}`: it owes `(Party::Tasks, Owed::Tasks)` (or the plan
+review's `Answer`) and `Admit` refuses it with `AwaitsTasks`, so no node takes it. `record_start_waits`
+(`domain-rules/src/lifecycle.rs`), at the end of every command, records `WaitsForTasks{tasks}` when the set of tasks it
+may not start before (`unmet_dependency_ids`) differs from the one its lifecycle waits for, and `TasksLanded` when that
+set is empty: the task enters the wait in the command that creates it, follows `SetDependencies`/`SetRelations`, leaves
+it in the command that lands its last dependency, enters it again when a dependency is reopened, and ends it with
+`Finish` when cancelled. A reopened task waits the same way from `Queued` and starts again at its stage.
+`AssignTask` on a waiting task, and the orchestrator's `launch` of one, are refused with `dependency_not_done`. Tasks stored waiting before this record existed
+load as they were kept; `ReviewWaits`, the first command the daemon sends on start, records their wait. The read beside
+the lifecycle in `obligation_with` is gone. Tests:
+`lifecycle_tests::an_unstarted_task_records_its_wait_for_another_until_it_lands`,
 `situation_tests::an_unstarted_task_that_waits_for_another_waits_for_tasks_not_for_a_slot` (without the fix:
-`Waiting(Slot)`).
+`Waiting(Slot)`), `store-sqlite` `a_stored_wait_from_before_the_lifecycle_recorded_it_is_recorded_on_the_first_command`,
+and in `crates/domain/tests/lifecycle.rs` the three tests of `AwaitingTasks` plus the property tests that now
+generate `DependenciesLanded`.
 **Class**: CONFIRMED · **Severity**: S2 (wrong visible state and counters; nothing is lost) · **Probability**: high (every task created with `dependencies`, e.g. stacked phases, goes through this while its dependency has not landed) · **Overlap**: no task in the plans of related work and no open issue covers it (#323 is about the outcome of dependents when one is cancelled, not their visible state). `git log` of `situation.rs`: no related changes since #297. The evidence is new.
 **Status**: still holds at `3fc0370ea`. #536 only changes which tasks the Tasks list shows (every task that has not ended is in the active list, M-CARDS-13); the block each one goes to still comes from `Tally` of its `Situation`, which #536 does not touch. Refreshed refs at `3fc0370ea`: `LifecycleRecord` `domain-rules/src/lifecycle.rs:295-496`, `event()` `:617-803`, `plan_lifecycle` `:1277-1284`, `state_within_phase` `:2625-2626`, `waits_are_over` `rules.rs:1986-2002`, blocks `views/src/tasks.rs:545-555`.
 - **Invalid state/transition and broken invariant**: rule 1 of `task-states.md` ("`Situation` … nothing else decides a label, a block, a count") and the definition of `Tally::Waiting` ("It waits for something else: other tasks", `situation.rs:63-66`). There are two sources of truth for "waits for tasks": the row (`TaskState::WaitingDependency`, `dependencies`) and the aggregate. The aggregate does not know it before the first turn, so `Situation` says something different from the row.
