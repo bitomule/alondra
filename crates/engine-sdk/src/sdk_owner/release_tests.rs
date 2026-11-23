@@ -37,13 +37,19 @@ async fn until_released(domain: &DomainRuntime, tasks: &[&str]) {
     arrived.await.unwrap();
     let ended = async { while !domain.node_groups().is_empty() { tokio::task::yield_now().await } };
     ended.await;
+    // An owner reads as ended once its host closed, but its driver keeps the task's execution and
+    // slot until its thread lets go of them: a look of the gate before that finds the task in hand
+    // and takes nothing over, and the owner's end then withdraws the slot the look granted.
+    let in_hand = || tasks.iter().any(|task| domain.sdk_owners().in_hand.lock_or_recover("the executions in hand").contains_key(&TaskId::from(*task)));
+    let let_go = async { while in_hand() { tokio::task::yield_now().await } };
+    let_go.await;
 }
 
 #[cfg(not(feature = "real-hosts"))]
 async fn until_working(slice: &Slice, count: usize) {
     let mut changed = slice.domain.subscribe();
     let reached = changed.wait_for(|_| crate::admission::working_tasks(&*slice.domain, &slice.domain.read().state()).len() == count);
-    tokio::time::timeout(std::time::Duration::from_secs(60), reached).await.expect("the nodes never resumed").unwrap();
+    reached.await.unwrap();
 }
 
 /// The gate's look, which gives the turns that wait a slot and takes over the tasks with no host.
