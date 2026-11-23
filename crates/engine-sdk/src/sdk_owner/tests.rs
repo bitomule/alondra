@@ -694,6 +694,39 @@ async fn a_delivery_behind_its_pr_goes_back_to_the_sdk_node_with_what_changed() 
 }
 
 
+// The node was told to resolve the PR's conflicts and pushes its rebase: the delivery behind the
+// new head goes back quietly. A second notice, that the delivery was withdrawn, made the node
+// present twice for one fix and the user get two pushes.
+#[cfg(not(feature = "real-hosts"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_fixing_conflicts_is_not_told_again_when_its_push_withdraws_the_delivery() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    let node = Actor::Agent { agent_id: driver.agent().clone() };
+    slice.run(&node, "register", Command::RegisterPr {
+        task_id: TASK.into(), pr_id: "pr-notes".into(), host: "github.example.invalid".into(), repository: "synthetic/notes".into(),
+        number: 7, head: "head-a".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    let targets = vec![DeliveryTarget::PullRequest { pr_id: "pr-notes".into(), head: "head-a".into() }];
+    slice.run(&node, "deliver", Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
+    });
+    slice.run(&Actor::System, "conflicts", Command::SubmitFeedback {
+        attachments: vec![], presentation_id: "final".into(), targets, body: "Resolve the conflicts".into(),
+        instruction: Instruction::Conflicts, merge_failure: None,
+    });
+    slice.run(&Actor::System, "observe", Command::ObservePrState {
+        pr_id: "pr-notes".into(), head: "head-b".into(), base: "main".into(), state: PrState::Open, merged_head: None,
+    });
+    let state = slice.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from(TASK)].final_presentation, None, "the delivery behind the PR was taken back");
+    assert!(state.interactions[&InteractionId::from("final")].withdrawn);
+    assert_eq!(driver.pending_permits(), 0, "the node is not sent a second notice");
+    driver.stop().unwrap();
+}
+
+
 #[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn cancelling_an_sdk_task_that_waits_on_its_card_stops_its_host_and_ends_the_task() {
