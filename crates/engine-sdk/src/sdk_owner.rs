@@ -1455,6 +1455,9 @@ fn retake_with_policy(domain: &dyn Runtime, task: TaskId,explicit_account_retry:
     };
     let backend = backend.clone();
     let mut retakes = domain.sdk_owners().retakes.lock_or_recover("the retakes");
+    if domain.sdk_owners().stopping_owners.load(Ordering::SeqCst) {
+        return log!("{task} is not taken over: every SDK host of this daemon is stopping");
+    }
     retakes.retain(|(_, retake)| !retake.is_finished());
     if retakes.iter().any(|(taking, _)| *taking == task) {
         return;
@@ -2940,6 +2943,9 @@ pub struct Owners {
     /// A holder that panics leaves it whole, so it is recovered: a retain and then one push of a
     /// thread already spawned.
     pub retakes: Mutex<Vec<(TaskId, Retake)>>,
+    /// Set, under `retakes`, while every owner stops: a takeover asked for then, as when a host the
+    /// stop ends leaves its task resumed with no owner, would start a host nothing stops.
+    stopping_owners: AtomicBool,
     /// Holds each retake's thread after it woke the waiters on the domain, until the test lets it
     /// return: what reads a retake as under way must not need its thread to have returned.
     pub retakes_held_after_waking: HoldAfterWaking,
@@ -2964,6 +2970,7 @@ pub struct Owners {
     /// that resumes the same session in place of its own, and the input waits for a slot.
     pub requeues: Mutex<BTreeSet<TaskId>>,
     after_owner_reserved: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    while_owners_stop: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     takeover_waits: Mutex<Option<Box<dyn FnMut() + Send>>>,
     owner_failures: Mutex<Option<Box<dyn Fn(String) + Send>>>,
     /// The nodes whose driver a test steps by hand, with no owner thread: they count as owned.
@@ -3019,6 +3026,10 @@ pub trait SdkOwners {
     /// Runs `hook` once, as the next takeover has reserved its owner and not yet looked for the host.
     fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static);
 
+    /// Runs `hook` once, as the next stop of every owner has joined the takeovers under way and
+    /// not yet stopped the owners.
+    fn while_owners_stop(&self, hook: impl FnOnce() + Send + 'static);
+
     fn owner_reserved(&self);
 
     /// Runs `hook` each time a takeover waits for another of the same task.
@@ -3041,8 +3052,20 @@ impl<R: alondra_engine_ports::Runtime + ?Sized> SdkOwners for R {
     }
 
     fn stop_sdk_owners(&self) {
-        self.join_retakes();
-        let owners = std::mem::take(&mut *self.sdk_owners().held.lock_or_recover("the SDK owners"));
+        let owners_of = self.sdk_owners();
+        let retakes = {
+            let mut retakes = owners_of.retakes.lock_or_recover("the retakes");
+            owners_of.stopping_owners.store(true, Ordering::SeqCst);
+            std::mem::take(&mut *retakes)
+        };
+        for (_, retake) in retakes {
+            let _ = retake.join();
+        }
+        let hook = owners_of.while_owners_stop.lock_or_recover("the owners stop hook").take();
+        if let Some(hook) = hook {
+            hook();
+        }
+        let owners = std::mem::take(&mut *owners_of.held.lock_or_recover("the SDK owners"));
         log!("stopping {} SDK host(s)", owners.len());
         for mut owner in owners {
             match owner.stop() {
@@ -3050,6 +3073,7 @@ impl<R: alondra_engine_ports::Runtime + ?Sized> SdkOwners for R {
                 Err(error) => log!("the SDK host of {} did not stop with the daemon: {error}", owner.agent()),
             }
         }
+        owners_of.stopping_owners.store(false, Ordering::SeqCst);
     }
 
     fn join_retakes(&self) {
@@ -3129,6 +3153,10 @@ impl<R: alondra_engine_ports::Runtime + ?Sized> SdkOwners for R {
 
     fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static) {
         *self.sdk_owners().after_owner_reserved.lock().unwrap() = Some(Box::new(hook));
+    }
+
+    fn while_owners_stop(&self, hook: impl FnOnce() + Send + 'static) {
+        *self.sdk_owners().while_owners_stop.lock_or_recover("the owners stop hook") = Some(Box::new(hook));
     }
 
     fn owner_reserved(&self) {
