@@ -2991,6 +2991,58 @@ fn each_pr_of_a_delivery_matches_the_goldens_of_its_own_card_in_every_apple_clie
     }
 }
 
+/// The golden PR card once Alondra cannot tell which pull request it is.
+fn uncheckable_fixture(reason: alondra_domain_rules::UnresolvableReason) -> DomainState {
+    let mut state = golden_fixture();
+    state.pull_requests.get_mut(&"github.com/example/repo#12".into()).unwrap().identity =
+        alondra_domain_rules::PrIdentity::Unresolvable { key: None, reason, since: 0 };
+    state
+}
+
+#[test]
+fn an_unresolvable_pr_offers_only_removal_and_removal_touches_nothing() {
+    use action_id::{ActionId, Verb};
+    use alondra_domain_rules::UnresolvableReason;
+    let live = golden_live();
+    let key = "card:github.com/example/repo#12";
+    for (reason, en, es) in [
+        (UnresolvableReason::AddressReused, "This pull request's old address now leads to a different pull request",
+            "La dirección antigua de este PR lleva ahora a otro PR"),
+        (UnresolvableReason::Gone, "This pull request's repository no longer exists or Alondra has no access to it",
+            "El repositorio de este PR ya no existe o Alondra no tiene acceso"),
+    ] {
+        let state = uncheckable_fixture(reason);
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            for (lang, reason_text, label, note, chip) in [
+                (Lang::En, en, "Remove from Alondra", "“Remove from Alondra” doesn't close or merge the pull request.", "Can't be checked"),
+                (Lang::Es, es, "Quitar de Alondra", "«Quitar de Alondra» no cierra el PR ni hace merge.", "No se puede comprobar"),
+            ] {
+                let view = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");
+                let card = card_of(&view);
+                let at = format!("{reason:?} {client:?} {lang:?}");
+                let offered: Vec<(Option<Verb>, &str)> = card.actions.iter().chain(&card.more).chain(&card.reply)
+                    .map(|action| (ActionId::parse(&action.id).ok().map(|id| id.verb), action.label.as_str())).collect();
+                assert_eq!(offered, [(Some(Verb::DetachPr), label)], "{at}: only the removal");
+                assert_eq!(card.actions[0].id, format!("detach_pr:github.com/example/repo#12@{}", state.revision), "{at}");
+                let why = card.why.as_deref().unwrap_or_default();
+                assert!(why.starts_with(&format!("{reason_text}. {note}")), "{at}: {why}");
+                assert_eq!(card.state.as_ref().map(|state| state.text.as_str()), Some(chip), "{at}");
+            }
+        }
+    }
+    let state = uncheckable_fixture(UnresolvableReason::AddressReused);
+    for (filename, client, lang, expected) in [
+        ("card-pr-uncheckable.json", Client::Ios, Lang::En, include_str!("../../../fixtures/views/cards/card-pr-uncheckable.json")),
+        ("card-pr-uncheckable-es.json", Client::Ios, Lang::Es, include_str!("../../../fixtures/views/cards/card-pr-uncheckable-es.json")),
+        ("card-pr-uncheckable-mac.json", Client::Mac, Lang::En, include_str!("../../../fixtures/views/cards/card-pr-uncheckable-mac.json")),
+        ("card-pr-uncheckable-es-mac.json", Client::Mac, Lang::Es, include_str!("../../../fixtures/views/cards/card-pr-uncheckable-es-mac.json")),
+        ("card-pr-uncheckable-tui.json", Client::Tui, Lang::En, include_str!("../../../fixtures/views/cards/card-pr-uncheckable-tui.json")),
+        ("card-pr-uncheckable-es-tui.json", Client::Tui, Lang::Es, include_str!("../../../fixtures/views/cards/card-pr-uncheckable-es-tui.json")),
+    ] {
+        assert_golden(filename, &render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z"), expected);
+    }
+}
+
 #[test]
 fn spanish_cards_match_goldens() {
     let state = golden_fixture();

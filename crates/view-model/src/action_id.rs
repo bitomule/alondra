@@ -34,6 +34,8 @@ pub enum Verb {
     ScheduleSelection,
     /// Close the delivered PR on GitHub without merging it, and cancel its task.
     CloseUnmerged,
+    /// Take a pull request Alondra cannot check out of Alondra, without closing or merging it.
+    DetachPr,
     /// Take back an answer to one of the questions asked together with this one.
     Retake,
     /// Pause a working node, or take a queued task out of the queue.
@@ -90,7 +92,7 @@ pub enum Verb {
     AccountAdd,
 }
 impl Verb {
-    pub const ALL: [Self; 62] = [
+    pub const ALL: [Self; 63] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -121,6 +123,7 @@ impl Verb {
         Self::NewRequestSelection,
         Self::ScheduleSelection,
         Self::CloseUnmerged,
+        Self::DetachPr,
         Self::Retake,
         Self::Pause,
         Self::Resume,
@@ -186,6 +189,7 @@ impl Verb {
             Self::NewRequestSelection => "new_request_selection",
             Self::ScheduleSelection => "schedule_selection",
             Self::CloseUnmerged => "close_unmerged",
+            Self::DetachPr => "detach_pr",
             Self::Retake => "retake",
             Self::Pause => "pause",
             Self::Resume => "resume",

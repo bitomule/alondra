@@ -423,6 +423,9 @@ async fn execute_external(
     if matches!(action.verb, Verb::AccountLogin | Verb::AccountLoginCancel) {
         return Ok(no_longer_available(lang, "Alondra no longer signs in for you: sign in with the provider in Terminal on the Mac"));
     }
+    if let Some(refusal) = untracked_pr_refusal(&state, action) {
+        return Ok(refused_value(&refusal, lang));
+    }
     let user_id = format!("device:{device}");
     let transport = identity.map(|(sender, request_id, digest)| (sender, request_id, digest));
     let stamp = match action.verb {
@@ -539,21 +542,11 @@ async fn execute_external(
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
         Verb::CloseUnmerged => {
-            let Some(pr) = closed_pr(&state, &action.subject) else { return Ok(refused_value(&Refusal::NoLongerAvailable, lang)); };
-            let Some(task) = state.tasks.get(&pr.task_id).filter(|task| !task.over()) else {
-                return Ok(refused_value(&Refusal::TaskNotActive, lang));
+            let (pr, task_id, was_open) = match close_on_github(&state, client.github().as_ref(), &action.subject, lang).await {
+                Ok(closed) => closed,
+                Err(refused) => return Ok(refused),
             };
-            let (task_id, number, mut was_open) = (task.id.clone(), pr.number, pr.state == alondra_domain_rules::PrState::Open);
-            if was_open {
-                if let Err(detail) = client.github().close_pr(&pr.host, &pr.repository, pr.number, &alondra_domain_rules::cancelled_pr_comment(&task.title)).await {
-                    log!("could not close PR #{number} on GitHub: {detail}");
-                    match client.github().pr_state(&pr.host, &pr.repository, pr.number).await {
-                        Ok(alondra_domain_rules::PrState::Merged) => return Ok(refused_value(&Refusal::PrAlreadyMerged { number }, lang)),
-                        Ok(alondra_domain_rules::PrState::Closed) => was_open = false,
-                        Ok(alondra_domain_rules::PrState::Open) | Err(_) => return Ok(refused_value(&Refusal::GithubUnreachable, lang)),
-                    }
-                }
-            }
+            let number = pr.number;
             if pr.state == alondra_domain_rules::PrState::Open {
                 let closed = Command::ObservePrState { pr_id: pr.id.clone(), head: pr.head.clone(), base: pr.base.clone(),
                     state: alondra_domain_rules::PrState::Closed, merged_head: None };
@@ -1265,6 +1258,9 @@ fn map_domain_action(
     attachments: &[alondra_domain_rules::AttachmentRef],
     lang: Lang,
 ) -> Result<(Command, String), Refusal> {
+    if let Some(refusal) = untracked_pr_refusal(state, action) {
+        return Err(refusal);
+    }
     if action.verb == Verb::Merge {
         return map_merge(state, action, request, lang);
     }
@@ -1272,6 +1268,13 @@ fn map_domain_action(
         seen_delivery_is_current(state, &action.subject)?;
     }
     map_action(state, action, request, attachments, lang).ok_or_else(|| unavailable(state, action))
+}
+
+/// An action on the card of a pull request that joined another record, or that the user removed:
+/// nothing is done, and the user is told why.
+fn untracked_pr_refusal(state: &alondra_domain_rules::DomainState, action: &ActionId) -> Option<Refusal> {
+    let pr = state.pull_requests.get(&PrId(action.subject.clone()))?;
+    state.tracked_pr(&pr.id).err().map(|error| error.why())
 }
 
 /// Why an action that maps to nothing is no longer possible.
@@ -1319,6 +1322,34 @@ fn current_delivery<'a>(
         .and_then(|id| state.interactions.get(id))
         .filter(|current| matches!(current.payload, InteractionPayload::Delivery { .. }))
         .unwrap_or(interaction)
+}
+
+/// "Close without merging" on GitHub, before Alondra records it: the PR its card names, whether
+/// it was still open there, and its task. A copy that joined another record, a removed PR or one
+/// Alondra cannot check is refused without reaching GitHub.
+async fn close_on_github(state: &alondra_domain_rules::DomainState, github: &dyn crate::client_routes::Github, subject: &str, lang: Lang)
+    -> Result<(alondra_domain_rules::PullRequest, TaskId, bool), Value> {
+    let Some(pr) = closed_pr(state, subject) else { return Err(refused_value(&Refusal::NoLongerAvailable, lang)); };
+    if let Err(error) = state.tracked_pr(&pr.id) {
+        return Err(domain_refusal_value(&error, lang));
+    }
+    if pr.identity.is_unresolvable() {
+        return Err(refused_value(&Refusal::PrUncheckable, lang));
+    }
+    let Some(task) = state.tasks.get(&pr.task_id).filter(|task| !task.over()) else {
+        return Err(refused_value(&Refusal::TaskNotActive, lang));
+    };
+    let number = pr.number;
+    let mut was_open = pr.state == alondra_domain_rules::PrState::Open;
+    if was_open && let Err(detail) = github.close_pr(&pr.host, &pr.repository, number, &alondra_domain_rules::cancelled_pr_comment(&task.title)).await {
+        log!("could not close PR #{number} on GitHub: {detail}");
+        match github.pr_state(&pr.host, &pr.repository, number).await {
+            Ok(alondra_domain_rules::PrState::Merged) => return Err(refused_value(&Refusal::PrAlreadyMerged { number }, lang)),
+            Ok(alondra_domain_rules::PrState::Closed) => was_open = false,
+            Ok(alondra_domain_rules::PrState::Open) | Err(_) => return Err(refused_value(&Refusal::GithubUnreachable, lang)),
+        }
+    }
+    Ok((pr.clone(), task.id.clone(), was_open))
 }
 
 /// The PR "Close without merging" is about: the one its card names, or its delivery's.
@@ -1598,6 +1629,10 @@ fn map_action(
             let update = alondra_domain_rules::BranchUpdate::parse(request.option_id.as_deref()?)?;
             Some((Command::SetBranchUpdate { update }, stamp("Branch update changed", "Modo de actualizar la rama cambiado")))
         }
+        Verb::DetachPr => {
+            let pr = state.pull_requests.get(&PrId(action.subject.clone()))?;
+            Some((Command::DetachPr { pr_id: pr.id.clone(), at: alondra_core::now_millis() }, stamp("Removed", "Quitado")))
+        }
         Verb::Cancel => {
             let task = state.tasks.get(&TaskId(action.subject.clone()))?;
             Some((Command::CancelTask { task_id: task.id.clone(), reason: None }, stamp("Cancelled", "Cancelada")))
@@ -1847,6 +1882,7 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
             Some(say("You'll see it finished in its task when GitHub confirms.", "La verás terminada en su tarea cuando GitHub lo confirme.")),
         ),
         Verb::CloseUnmerged => Outcome::done(say("PR closed without merging. The task is cancelled.", "PR cerrada sin hacer merge. La tarea está cancelada.")),
+        Verb::DetachPr => Outcome::done(say("Removed from Alondra. The pull request stays as it is on GitHub.", "Quitado de Alondra. El PR sigue como estaba en GitHub.")),
         Verb::Accept => Outcome::done(match accepted {
             Accepted::Plan => say("Plan approved.", "Plan aprobado."),
             Accepted::Document => say("Document accepted.", "Documento aceptado."),
@@ -3924,6 +3960,114 @@ for line in sys.stdin:
         let reply = act(&home, &domain, &client, SECOND, close(&app), None, None).await;
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert!(domain.state().unwrap().tasks[&"task".into()].cancelled(), "nothing merged and nothing left open");
+    }
+
+    /// The domain state alone, as the commands leave it: what storage cannot keep yet is still there.
+    fn state_after(commands: Vec<(Actor, Command)>) -> alondra_domain_rules::DomainState {
+        let mut state = alondra_domain_rules::DomainState::new("epoch");
+        for (actor, command) in commands {
+            let shown = format!("{command:?}");
+            state.execute(&actor, &CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(),
+                command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command })
+                .unwrap_or_else(|error| panic!("{shown}: {error}"));
+        }
+        state
+    }
+
+    fn task_with_prs(prs: &[(&PrId, &str, u64)]) -> Vec<(Actor, Command)> {
+        use alondra_domain_rules::DeliveryTarget;
+        let agent = Actor::Agent { agent_id: "agent-a".into() };
+        let mut commands = vec![
+            (Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 }),
+            (Actor::User { user_id: "user".into() }, Command::CreateRequest {
+                request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false }),
+            (Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+                task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+                agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
+                launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) }),
+        ];
+        for (pr, repository, number) in prs {
+            commands.push((agent.clone(), Command::RegisterPr {
+                task_id: "task".into(), pr_id: (*pr).clone(), host: "github.com".into(), repository: (*repository).into(),
+                number: *number, head: "0123456789abcdef".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] }));
+        }
+        commands.push((agent, Command::PresentResult {
+            checklist: Vec::new(), attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Ready".into(),
+            targets: prs.iter().map(|(pr, _, _)| DeliveryTarget::PullRequest { pr_id: (*pr).clone(), head: "0123456789abcdef".into() }).collect(),
+            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) }));
+        commands
+    }
+
+    fn observed(pr: &PrId, via: &str, verdict: alondra_domain_rules::PrAddressVerdict) -> (Actor, Command) {
+        (Actor::System, Command::ObservePrAddress { pr_id: pr.clone(),
+            read: alondra_domain_rules::PrRead::Address { repository: via.into() }, read_started_at: 1_000, verdict })
+    }
+
+    /// `ana/lumo` moved to `lumo-org/lumo`: the task delivered its PR at both addresses, and a read
+    /// at the old one confirmed it lives at the new one, so the copy at the new address joined it.
+    fn joined_copy() -> (alondra_domain_rules::DomainState, PrId, PrId) {
+        use alondra_domain_rules::{PrAddressVerdict, ProviderLocator, ProviderPrKey};
+        let (kept, copy) = (alondra_domain_rules::hosted_pr_id("github.com", "ana/lumo", 42), alondra_domain_rules::hosted_pr_id("github.com", "lumo-org/lumo", 42));
+        let mut commands = task_with_prs(&[(&kept, "ana/lumo", 42), (&copy, "lumo-org/lumo", 42)]);
+        commands.push(observed(&kept, "ana/lumo", PrAddressVerdict::Confirmed { key: ProviderPrKey("key-a".into()),
+            locator: ProviderLocator("locator-a".into()), current_repository: "lumo-org/lumo".into() }));
+        let state = state_after(commands);
+        assert_eq!(state.pull_requests[&copy].tracking, alondra_domain_rules::PrTracking::Superseded { by: kept.clone() });
+        (state, kept, copy)
+    }
+
+    fn request_for(state: &alondra_domain_rules::DomainState, action: &ActionId, lang: &str) -> ActionRequest {
+        ActionRequest { protocol: VIEWS_PROTOCOL, command_id: FIRST.into(), data_epoch: state.data_epoch.0.clone(), client: "ios".into(),
+            lang: lang.into(), action_id: action.to_string(), option_id: Some("squash".into()), input: ActionInput::default() }
+    }
+
+    #[tokio::test]
+    async fn an_action_on_a_joined_card_is_refused_and_touches_nothing() {
+        let (state, _, copy) = joined_copy();
+        let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_rules::PrState::Open));
+        for (lang, said) in [(Lang::En, "This card was another copy of the same pull request; use the one that remains"),
+            (Lang::Es, "Esta tarjeta era otra copia del mismo PR; usa la que queda")] {
+            let refused = close_on_github(&state, &github, &copy.0, lang).await.unwrap_err();
+            assert_eq!((refused["outcome"].as_str(), refused["code"].as_str()), (Some("rejected"), Some("pr_superseded")), "{refused}");
+            assert_eq!(refused["message"], said);
+            for verb in [Verb::Merge, Verb::Changes, Verb::DetachPr] {
+                let action = ActionId::new(verb, &copy.0, state.revision, (verb == Verb::Merge).then(|| "01234567-result".into())).unwrap();
+                let request = request_for(&state, &action, if lang == Lang::Es { "es" } else { "en" });
+                assert_eq!(map_domain_action(&state, &action, &request, &[], lang).unwrap_err(), Refusal::PrSuperseded, "{action}");
+            }
+            let ask = ActionId::new(Verb::AskPr, &copy.0, state.revision, None).unwrap();
+            assert_eq!(untracked_pr_refusal(&state, &ask), Some(Refusal::PrSuperseded), "the copy's node is not asked either");
+        }
+        assert!(github.0.lock().unwrap().is_empty(), "nothing reached GitHub");
+    }
+
+    #[tokio::test]
+    async fn an_unresolvable_pr_offers_only_removal_and_removal_touches_nothing() {
+        let pr = alondra_domain_rules::hosted_pr_id("github.com", "me/app", 7);
+        let mut commands = task_with_prs(&[(&pr, "me/app", 7)]);
+        commands.push(observed(&pr, "me/app", alondra_domain_rules::PrAddressVerdict::NamesAnotherPr));
+        let mut state = state_after(commands);
+        assert!(state.pull_requests[&pr].identity.is_unresolvable());
+        let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_rules::PrState::Open));
+        for subject in [pr.0.as_str(), "result"] {
+            let refused = close_on_github(&state, &github, subject, Lang::Es).await.unwrap_err();
+            assert_eq!(refused["outcome"], "rejected", "{refused}");
+            assert_eq!(refused["message"], "Alondra no puede comprobar qué PR es, así que no hace nada en GitHub. Quítalo de Alondra.");
+        }
+
+        let detach = ActionId::new(Verb::DetachPr, &pr.0, state.revision, None).unwrap();
+        let (command, stamp) = map_domain_action(&state, &detach, &request_for(&state, &detach, "es"), &[], Lang::Es).unwrap();
+        assert!(matches!(&command, Command::DetachPr { pr_id, .. } if *pr_id == pr), "{command:?}");
+        assert_eq!(stamp, "Quitado");
+        assert_eq!(applied_outcome(Verb::DetachPr, Lang::Es, &stamp, Accepted::Result).title, "Quitado de Alondra. El PR sigue como estaba en GitHub.");
+        let outcome = state.execute(&Actor::User { user_id: "device:phone".into() }, &CommandEnvelope { protocol_version: 2,
+            data_epoch: state.data_epoch.clone(), command_id: "detach".into(), expected_revision: detach.revision as Revision, command }).unwrap();
+        assert!(outcome.effects.iter().all(|effect| !matches!(effect, alondra_domain_rules::DomainEffect::Relocate { .. })), "{:?}", outcome.effects);
+        assert!(matches!(state.pull_requests[&pr].tracking, alondra_domain_rules::PrTracking::Detached { .. }));
+        assert_eq!(state.pull_requests[&pr].state, alondra_domain_rules::PrState::Open, "the PR stays as it is on GitHub");
+        assert!(state.tasks[&"task".into()].cancelled(), "a delivery of only that PR ends as when the PR closes unmerged");
+        assert_eq!(map_domain_action(&state, &detach, &request_for(&state, &detach, "es"), &[], Lang::Es).unwrap_err(), Refusal::PrDetached);
+        assert!(github.0.lock().unwrap().is_empty(), "nothing reached GitHub");
     }
 
     #[tokio::test]

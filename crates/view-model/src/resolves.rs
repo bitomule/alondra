@@ -31,7 +31,7 @@ fn reply_nobody_attends(domain: &DomainState, action: &ActionId) -> bool {
 /// An answer, an acceptance, a read or a request for changes always settles the card it came from, and
 /// clearing the completed work empties the section whose header offers it.
 pub fn always_resolves(verb: Verb) -> bool {
-    matches!(verb, Verb::Ans | Verb::Ctx | Verb::Changes | Verb::Read | Verb::Accept | Verb::Merge | Verb::CloseUnmerged
+    matches!(verb, Verb::Ans | Verb::Ctx | Verb::Changes | Verb::Read | Verb::Accept | Verb::Merge | Verb::CloseUnmerged | Verb::DetachPr
         | Verb::ClearCompleted)
 }
 
