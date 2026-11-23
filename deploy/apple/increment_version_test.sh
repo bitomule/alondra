@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # `make increment-version` in a throwaway repo: a refused commit must leave no release tag.
 set -euo pipefail
+# The exec guard allows only the absolute programs the target declares, so resolve them from the system directories.
+export PATH=/usr/bin:/bin
 
 makefile=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 shared=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
