@@ -9,9 +9,8 @@ use alondra_engine_ports::{Registry, Runtime};
 use alondra_foundation::runtime_mutex::RuntimeMutex;
 use alondra_store::{AuthorityScope, Committed, ContextPage, ContextRef};
 use alondra_foundation::principal::{Capability, Principal};
-use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 
@@ -74,9 +73,6 @@ impl Runtime for Forwarded {
     }
     fn forget_sealed_observations(&self, task: &TaskId) {
         self.0.forget_sealed_observations(task);
-    }
-    fn held(&self) -> &Mutex<BTreeMap<AgentId, Vec<String>>> {
-        self.0.held()
     }
     fn system_command(&self, envelope: CommandEnvelope) -> Result<CommandOutcome, DomainError> {
         self.0.system_command(envelope)

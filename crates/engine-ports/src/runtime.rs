@@ -8,8 +8,6 @@ use crate::journal::owner::StagedOutcome;
 use crate::journal::{Journal, ReadTransaction, RequestLaunch, StoreError, TransportIdentity};
 use alondra_store::{AuthorityScope, Committed, ContextPage, ContextRef};
 use alondra_foundation::principal::{Capability, Principal};
-use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::time::Duration;
 use alondra_domain_rules::*;
 use alondra_foundation::runtime_mutex::RuntimeMutex;
@@ -89,8 +87,6 @@ pub trait Runtime: Any + Send + Sync + AsRuntime {
     fn pause_for_seals(&self, timeout: Duration, stopped: &dyn Fn() -> bool);
     /// Drops the sealed observations of `task` no host is left to acknowledge.
     fn forget_sealed_observations(&self, task: &TaskId);
-    /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
-    fn held(&self) -> &Mutex<BTreeMap<AgentId, Vec<String>>>;
     /// Commits `envelope` as Alondra itself, at whatever revision the domain is at; a storage
     /// failure comes back as the refusal a producer gets.
     fn system_command(&self, envelope: CommandEnvelope) -> Result<CommandOutcome, DomainError>;

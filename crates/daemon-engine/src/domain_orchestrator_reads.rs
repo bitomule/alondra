@@ -234,7 +234,6 @@ pub fn node(domain: &dyn Runtime, key: &str) -> Result<Value, DomainError> {
         .map(|m| json!({"id": m.id, "from": "alondra", "text": m.message, "handed_at": null})).collect();
     Ok(json!({"node": node, "questions": mine().filter_map(|i| question(i, &state)).collect::<Vec<_>>(),
         "reports": mine().filter_map(|i| report(i, &state)).collect::<Vec<_>>(), "messages": messages,
-        "messages_held_for_turn_end": domain.held().lock_or_recover("the held messages").get(&agent).map_or(0, Vec::len),
         "timeline": []}))
 }
 

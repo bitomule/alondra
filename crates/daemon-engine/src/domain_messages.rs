@@ -5,7 +5,6 @@ use crate::domain_store::IntoDomainError as _;
 use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
-use crate::locks::Poisonable as _;
 use alondra_engine_ports::Runtime;
 #[cfg(test)]
 use crate::domain_runtime::DomainRuntime;
@@ -399,11 +398,6 @@ fn read_after(domain: &dyn Runtime, user: &Actor, body: &MessageBody, mut answer
         }
     }
     answer
-}
-
-/// What the user wrote to this session while it was in its own terminal, once.
-pub(crate) fn take_held(domain: &dyn Runtime, agent: &AgentId) -> Vec<String> {
-    domain.held().lock_or_recover("the held messages").remove(agent).unwrap_or_default()
 }
 
 fn mark_read(domain: &dyn Runtime, user: &Actor, interaction_id: InteractionId) -> Result<(), DomainError> {
