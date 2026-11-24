@@ -3,8 +3,9 @@ use crate::domain_github::tests::{Fixture, open};
 use crate::domain_github::{ObservationFailures, reconcile};
 use crate::github_world::GithubWorld;
 use alondra_domain_rules::{
-    Actor, CommandEnvelope, MergeMethod, PROTOCOL_VERSION, PrId, PrState, PrTracking, ProviderLocator, UnresolvableReason,
+    Actor, CommandEnvelope, GONE_STRIKES, MergeMethod, PROTOCOL_VERSION, PrId, PrState, PrTracking, ProviderLocator, STRIKE_GAP, UnresolvableReason,
 };
+use std::time::Duration;
 
 const OLD: &str = "ana/lumo";
 const NEW: &str = "lumo-org/lumo";
@@ -135,10 +136,12 @@ async fn a_close_never_reaches_a_pr_whose_identity_does_not_match() {
     reconcile(&domain, &world, &mut failures).await.unwrap();
     assert_eq!(world.state_in(OLD, 42), Some(PrState::Open), "the pull request that took the old name stays open");
     assert!(world.closes().is_empty(), "no close reached any pull request: {:?}", world.gh_calls());
+    assert!(world.attempts().is_empty(), "Alondra did not even try to close it with a key GitHub's answer there did not give: {:?}", world.attempts());
     assert_eq!(record(&domain, &pr).repository, NEW, "the record was found where its repository went");
 
     reconcile(&domain, &world, &mut failures).await.unwrap();
     assert_eq!(world.closes(), [(42, "Cancelled in Alondra: Task".to_owned())]);
+    assert_eq!(world.attempts(), [(NEW.to_owned(), 42, world.key_of(42).0)], "the close named the key read at its new address");
     assert_eq!((world.state_in(NEW, 42), world.state_in(OLD, 42)), (Some(PrState::Closed), Some(PrState::Open)));
     assert_eq!(record(&domain, &pr).state, PrState::Closed);
 }
@@ -165,4 +168,35 @@ async fn an_unreachable_github_counts_nothing_and_a_deleted_repository_counts_it
     reconcile(&domain, &world, &mut ObservationFailures::default()).await.unwrap();
     assert_eq!(domain.state().unwrap().revision, before, "another miss within the hour writes nothing");
     assert!(record(&domain, &pr).tracking == PrTracking::Tracked);
+}
+
+/// A repository that is gone costs several calls to GitHub per read: once nobody can check the
+/// record, it is read again once an hour, not on every round.
+#[test]
+fn a_gone_repository_is_read_once_an_hour_not_every_round() {
+    alondra_core::clock::VirtualRuntime::new(1_000_000).unwrap().block_on(a_gone_repository_is_read_once_an_hour_at_a_virtual_time());
+}
+
+async fn a_gone_repository_is_read_once_an_hour_at_a_virtual_time() {
+    let hour = Duration::from_millis(STRIKE_GAP as u64 + 1);
+    let world = GithubWorld::new();
+    world.set_repository(OLD);
+    let head = world.open_pr(42, "csv-export", "main");
+    let (_fixture, domain, pr) = registered("gone-hourly", &head);
+    let mut failures = ObservationFailures::default();
+    world.delete_repository(OLD);
+    for _ in 0..GONE_STRIKES {
+        alondra_core::clock::sleep(hour).await;
+        reconcile(&domain, &world, &mut failures).await.unwrap();
+    }
+    assert!(matches!(record(&domain, &pr).identity, PrIdentity::Unresolvable { reason: UnresolvableReason::Gone, .. }));
+    reconcile(&domain, &world, &mut failures).await.unwrap();
+    let read = world.observations().len();
+    for _ in 0..5 {
+        reconcile(&domain, &world, &mut failures).await.unwrap();
+    }
+    assert_eq!(world.observations().len(), read, "no read of a repository nobody can reach within the hour");
+    alondra_core::clock::sleep(hour).await;
+    reconcile(&domain, &world, &mut failures).await.unwrap();
+    assert_eq!(world.observations().len(), read + 1, "one read an hour later, in case it came back");
 }

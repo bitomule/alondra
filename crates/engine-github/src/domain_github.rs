@@ -48,7 +48,7 @@ pub async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserver, tas
         let started = read_start();
         let facts = match observer.observe(&pr.host, &pr.repository, pr.number).await {
             Ok(facts) if !facts.allowed_methods.is_empty() || state.task_prs(&state.tasks[&task_id])
-                .any(|known| known.host == pr.host && known.repository == pr.repository && known.number == pr.number) => facts,
+                .any(|known| known.answers_to(&pr.host, &pr.repository, pr.number)) => facts,
             Ok(_) => {
                 log!("GitHub does not say how {}#{} merges yet: its task keeps waiting for it", pr.repository, pr.number);
                 continue;
@@ -59,6 +59,9 @@ pub async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserver, tas
             }
         };
         let answer = || Ok((facts.identity.as_ref(), facts.head.as_str()));
+        if let Some(known) = known_by_key(&*domain.state()?, &pr, facts.identity.as_ref()) {
+            identify(domain, &known, &pr.repository, started, answer())?;
+        }
         if let Some(known) = living_at(&*domain.state()?, &pr)
             && identify(domain, &known, &pr.repository, started, answer())?.is_none()
             && living_at(&*domain.state()?, &pr).is_some()
@@ -82,6 +85,15 @@ pub async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserver, tas
         }
     }
     Ok(())
+}
+
+/// The record Alondra keeps of the pull request that answered at `pr`'s address while it lives at
+/// another one: the repository moved. A read through the new address moves the record there, so
+/// the pull request is not recorded a second time.
+fn known_by_key(state: &DomainState, pr: &OpenedPr, read: Option<&ReadIdentity>) -> Option<PullRequest> {
+    let key = &read?.key;
+    state.pull_requests.values().find(|known| known.is_tracked() && known.host == pr.host && known.identity.key() == Some(key)
+        && !known.lives_at(&pr.host, &pr.repository, pr.number)).cloned()
 }
 
 /// The record Alondra keeps at `pr`'s address, unless nobody can tell which pull request it is.
@@ -148,6 +160,9 @@ pub async fn reconcile(
     let state = domain.state()?;
     failures.forget_untracked(domain, &state);
     for pr in watched(&state) {
+        if !failures.gone_read_due(&pr) {
+            continue;
+        }
         let started = read_start();
         let facts = match observer.observe(&pr.host, &pr.repository, pr.number).await {
             Ok(facts) => facts,
@@ -261,7 +276,7 @@ const CLOSE_WAIT_MAX_ROUNDS: u32 = 32;
 /// repeating itself. Closes that GitHub refused count apart: each failure
 /// doubles the rounds Alondra lets pass before it tries again.
 #[derive(Default)]
-pub struct ObservationFailures(BTreeMap<PrId, u32>, BTreeMap<PrId, CloseFailure>, BTreeMap<PrId, alondra_domain_rules::Millis>);
+pub struct ObservationFailures(BTreeMap<PrId, u32>, BTreeMap<PrId, CloseFailure>, BTreeMap<PrId, alondra_domain_rules::Millis>, BTreeMap<PrId, clock::Instant>);
 
 #[derive(Default)]
 struct CloseFailure {
@@ -277,6 +292,23 @@ impl ObservationFailures {
             self.recovered(domain, pr);
             self.closed(domain, pr);
         }
+    }
+
+    /// A record whose repository is gone is read again at most once per [`alondra_domain_rules::STRIKE_GAP`]:
+    /// every read of it costs several calls to GitHub, and a repository that comes back is found then.
+    fn gone_read_due(&mut self, pr: &PullRequest) -> bool {
+        let gone = matches!(pr.identity, alondra_domain_rules::PrIdentity::Unresolvable { reason: alondra_domain_rules::UnresolvableReason::Gone, .. });
+        if !gone {
+            self.3.remove(&pr.id);
+            return true;
+        }
+        let now = alondra_core::clock::instant();
+        let wait = std::time::Duration::from_millis(alondra_domain_rules::STRIKE_GAP as u64);
+        if self.3.get(&pr.id).is_some_and(|last| now < *last + wait) {
+            return false;
+        }
+        self.3.insert(pr.id.clone(), now);
+        true
     }
 
     fn recovered(&mut self, domain: &DomainRuntime, pr: &PullRequest) {

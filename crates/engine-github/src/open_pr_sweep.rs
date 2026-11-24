@@ -26,9 +26,11 @@ fn identity(found: &AuthoredPr) -> Option<OpenedPr> {
     })
 }
 
-/// The tracked record GitHub's search names, by its current address or one GitHub confirmed was it.
+/// The tracked record GitHub's search names, by its current address: the search answers with
+/// current ones, so a name only an alias of a moved record has leads to another pull request, and
+/// reading it again every round would cost calls for nothing.
 fn registered<'a>(state: &'a DomainState, pr: &OpenedPr) -> Option<&'a PullRequest> {
-    state.pull_requests.values().find(|p| p.is_tracked() && !p.identity.is_unresolvable() && p.answers_to(&pr.host, &pr.repository, pr.number))
+    state.pull_requests.values().find(|p| p.is_tracked() && !p.identity.is_unresolvable() && p.lives_at(&pr.host, &pr.repository, pr.number))
 }
 
 /// The task that registered `pr`, when its work has no live owner and nothing is closing it.

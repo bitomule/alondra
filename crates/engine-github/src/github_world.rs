@@ -51,6 +51,12 @@ struct World {
     commits: u64,
     keys: u64,
     calls: Vec<String>,
+    /// Every change aimed at a pull request, with the key the caller named, whether GitHub let it through or not.
+    attempts: Vec<(String, u64, String)>,
+    /// Every pull request read, as `(repository, number)`, answered or not.
+    observations: Vec<(String, u64)>,
+    /// The branch checked out in each directory a node works in.
+    checkouts: BTreeMap<std::path::PathBuf, String>,
     reads: Vec<String>,
     merges: Vec<(u64, String, MergeMethod)>,
     retargets: Vec<(u64, String)>,
@@ -93,6 +99,7 @@ impl World {
     /// A change GitHub makes only to the pull request the caller read there: an address that
     /// answers with another one changes nothing.
     fn checked(&mut self, repository: &str, number: u64, expected: &ProviderPrKey) -> Result<&mut Pr, GhFailure> {
+        self.attempts.push((repository.to_owned(), number, expected.0.clone()));
         let pr = self.lookup_mut(repository, number)?;
         if pr.key != expected.0 {
             return Err(GhFailure::IdentityMismatch(format!("{repository}#{number} is pull request {}, not {}", pr.key, expected.0)));
@@ -131,6 +138,9 @@ impl GithubWorld {
             commits: 0,
             keys: 0,
             calls: Vec::new(),
+            attempts: Vec::new(),
+            observations: Vec::new(),
+            checkouts: BTreeMap::new(),
             reads: Vec::new(),
             merges: Vec::new(),
             retargets: Vec::new(),
@@ -304,6 +314,22 @@ impl GithubWorld {
 
     /// Every `gh` call Alondra made that changes something, in order, as `gh` would be typed:
     /// `edit 8 --base main`, `merge 8`, `ready 8`, `close 8`.
+    /// Each pull request Alondra read, as `(repository, number)`: what a round of reads costs.
+    pub fn observations(&self) -> Vec<(String, u64)> {
+        self.world().observations.clone()
+    }
+
+    /// The node checks out `branch` in `dir`: the open pull request from it is that directory's.
+    pub fn check_out(&self, dir: &std::path::Path, branch: &str) {
+        self.world().checkouts.insert(dir.to_path_buf(), branch.to_owned());
+    }
+
+    /// Each change Alondra aimed at a pull request, as `(repository, number, key it named)`, also
+    /// the ones GitHub refused because another pull request answered at that address.
+    pub fn attempts(&self) -> Vec<(String, u64, String)> {
+        self.world().attempts.clone()
+    }
+
     pub fn gh_calls(&self) -> Vec<String> {
         self.world().calls.clone()
     }
@@ -453,7 +479,8 @@ impl PrMerger for GithubWorld {
 
 impl PrObserver for GithubWorld {
     fn observe<'a>(&'a self, _host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
-        let world = self.world();
+        let mut world = self.world();
+        world.observations.push((repository.to_owned(), number));
         let facts = world.lookup(repository, number).map(|(_, github)| PrFacts {
             head: github.head.clone(),
             base: github.base.clone(),
@@ -540,6 +567,14 @@ impl Gh for GithubWorld {
                     repository: repository.clone(), number: *number, url: format!("https://github.com/{repository}/pull/{number}"),
                 }).collect())
         };
+        Box::pin(async { found })
+    }
+    fn branch_pr<'a>(&'a self, dir: &'a std::path::Path) -> Read<'a, Option<(String, String, u64)>> {
+        let world = self.world();
+        let found = (!world.unreachable).then(|| world.checkouts.get(dir)).flatten().and_then(|branch| {
+            world.prs.iter().find(|((repository, _), pr)| pr.head_ref == *branch && pr.state == PrState::Open && !world.gone.contains(repository))
+                .map(|((repository, number), _)| ("github.com".to_owned(), repository.clone(), *number))
+        });
         Box::pin(async { found })
     }
     fn head_ref<'a>(&'a self, url: &'a str) -> Read<'a, Result<String, GhFailure>> {

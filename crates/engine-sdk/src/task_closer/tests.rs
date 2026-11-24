@@ -1726,6 +1726,25 @@ async fn the_startup_sweep_leaves_a_cancelled_worktree_whose_commits_no_remote_h
 }
 
 #[tokio::test]
+async fn a_task_keeps_the_branch_of_the_worktree_it_owns() {
+    let rig = Rig::undelivered(thirty_minutes());
+    command(&rig.domain, user(), "request-t-s", Command::CreateRequest {
+        request_id: "r-t-s".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+    });
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "create-t-s", Command::CreateTask { priority: Default::default(),
+        plan_items: None, continues: None, task_id: "t-s".into(), request_id: "r-t-s".into(), title: "Task t-s".into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+    });
+    let root = crate::test_support::Directory::new();
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t-s");
+    let made = alondra_engine_ports::worktrees::Workplace::Made(dir.clone());
+    alondra_engine_kernel::launches::own_worktree(&*rig.domain, &"t-s".into(), &made).await.unwrap();
+    let state = rig.domain.state().unwrap();
+    let worktree = &state.tasks[&TaskId::from("t-s")].worktrees[dir.to_str().unwrap()];
+    assert_eq!(worktree.branch.as_deref(), Some("worktree-t-s"), "the branch its pull requests come from is known before any push");
+}
+
+#[tokio::test]
 async fn a_worktree_made_for_a_task_cancelled_while_it_started_goes_at_once() {
     let rig = Rig::undelivered(thirty_minutes());
     command(&rig.domain, user(), "request-t-s", Command::CreateRequest {

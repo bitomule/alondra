@@ -690,6 +690,15 @@ impl PullRequest {
     pub fn answers_to(&self, host: &str, repository: &str, number: u64) -> bool {
         self.lives_at(host, repository, number) || (self.host == host && self.number == number && self.aliases.contains(repository))
     }
+    /// Both records are in one repository, even when one of them still has the name it had before
+    /// the repository moved: a name one of them knew as an alias is the other's current one.
+    pub fn same_repository_as(&self, other: &PullRequest) -> bool {
+        self.host == other.host
+            && (self.repository == other.repository
+                || self.aliases.contains(&other.repository)
+                || other.aliases.contains(&self.repository)
+                || self.aliases.intersection(&other.aliases).next().is_some())
+    }
     /// The PR in the ids of cards about it: its own id while it is a plain one, its task's
     /// once the id carries its host and repository, which a card id cannot hold.
     pub fn slug(&self) -> &str {
