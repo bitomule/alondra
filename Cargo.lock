@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-antigravity-protocol"
-version = "0.3.68"
+version = "0.3.69"
 dependencies = [
  "alondra-foundation",
  "hmac 0.12.1",
@@ -816,7 +816,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-provider-antigravity"
-version = "0.3.68"
+version = "0.3.69"
 dependencies = [
  "alondra-agent-application",
  "alondra-antigravity-protocol",
