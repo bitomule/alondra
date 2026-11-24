@@ -447,17 +447,15 @@ pub async fn advance(domain:&Arc<dyn Runtime>,task:&TaskId)->Result<Phase,Domain
                     if !domain.owns_sdk_host(&plan.source.agent){
                         let (backend,_)=domain.sdk().ok_or_else(||failure("Provider runtime missing"))?;
                         let plugin=domain.home().join(crate::plugins::NODE);
-                        match crate::sdk_owner::adopt_for_transition(Arc::clone(domain),backend,task.clone(),Some(&plugin)).map_err(failure)? {
-                            Some(driver)=>{domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));return Ok(Phase::Draining)},
-                            None=>if !drained(&**domain,plan)?{return Err(failure("The source ended with unresolved work or delivery; its native input cannot be repeated"))},
-                        }
+                        if crate::sdk_owner::adopt_for_transition(Arc::clone(domain),backend,task.clone(),Some(&plugin)).map_err(failure)?{return Ok(Phase::Draining)}
+                        if !drained(&**domain,plan)?{return Err(failure("The source ended with unresolved work or delivery; its native input cannot be repeated"))}
                     }else{return Ok(Phase::Draining)}
                 }
                 if !domain.owns_sdk_host(&plan.source.agent){
                     let (backend,_)=domain.sdk().ok_or_else(||failure("The native runtime is unavailable"))?;
                     let plugin=domain.ports().plugins().node(domain.home()).ok_or_else(||failure("The node plugin is unavailable; run alondra doctor --fix"))?;
-                    let driver=crate::sdk_owner::adopt_for_transition(Arc::clone(domain),backend,task.clone(),Some(&plugin)).map_err(failure)?.ok_or_else(||failure("The existing native session cannot be adopted; create a new node instead of transferring it"))?;
-                    domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));return Ok(Phase::Draining)
+                    if !crate::sdk_owner::adopt_for_transition(Arc::clone(domain),backend,task.clone(),Some(&plugin)).map_err(failure)?{return Err(failure("The existing native session cannot be adopted; create a new node instead of transferring it"))}
+                    return Ok(Phase::Draining)
                 }
                 let available=domain.read().state().lifecycle_of(task)?.resource()==Some(alondra_domain::ResourceEvidence::Available);
                 if available && matches!(classify(plan),SelectionTransition::ApplyNextTurn){

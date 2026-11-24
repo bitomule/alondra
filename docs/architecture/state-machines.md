@@ -78,7 +78,7 @@ to its fix group and issue.
 | S2 | **FIXED** [F-CLIENTS-R1](#f-clients-r1--the-tui-automatic-restart-throws-away-answers-not-yet-confirmed) · The TUI automatic restart throws away answers not yet confirmed | medium | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 · fixed |
 | S2 | **FIXED** [F-CLIENTS-R4](#f-clients-r4--a-terminal-whose-local-device-was-removed-stays-locked-out-forever) · A terminal whose local device was removed stays locked out forever | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 · fixed |
 | S2 | [F-ENGINE-1](#f-engine-1--the-slot-of-an-admitted-start-expires-after-3-min-even-if-the-node-does-not-exist-yet-the-gate-admits-above-the-limit) · The slot of an admitted start expires after 3 min even if the node does not exist yet: the gate admits above the limit | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
-| S2 | [F-ENGINE-12](#f-engine-12--a-retake-in-progress-and-the-adoption-of-a-model-transition-take-the-same-host-at-once-a-false-host-lost-card-or-two-live-owners-for-one-agent-formerly-h-engine-1) · A retake in progress and the adoption of a model transition take the same host at once: a false "host lost" card, or two live `Owner`s for one agent | low | [G8](#g8--one-owner-per-host-and-provider-facts-in-order) · #525 |
+| S2 | **FIXED** [F-ENGINE-12](#f-engine-12--a-retake-in-progress-and-the-adoption-of-a-model-transition-take-the-same-host-at-once-a-false-host-lost-card-or-two-live-owners-for-one-agent-formerly-h-engine-1) · A retake in progress and the adoption of a model transition take the same host at once: a false "host lost" card, or two live `Owner`s for one agent | low | [G8](#g8--one-owner-per-host-and-provider-facts-in-order) · #525 · fixed in #PRNUM |
 | S2 | [F-ENGINE-3](#f-engine-3--the-pause-of-a-queued-task-lives-in-admissionjson-apart-from-launch_queue-it-can-be-lost-duplicated-or-stay-forever) · The pause of a queued task lives in `admission.json`, apart from `launch_queue`: it can be lost, duplicated or stay forever | — | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
 | S2 | [F-ENGINE-6](#f-engine-6--the-watch-advances-the-disk-incident-on-every-look-not-on-every-sample-with-watched-volumes-any-domain-change-restarts-the-recovery-and-without-them-one-sample-counts-twice) · The watch advances the disk incident on every look, not on every sample: with watched volumes any domain change restarts the recovery (and without them one sample counts twice) | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
 | S2 | [F-ENGINE-7](#f-engine-7--the-stretches-of-build-volumes-do-not-survive-a-restart-working-nodes-then-reserve-at-most-1-gb-there) · The stretches of build volumes do not survive a restart: working nodes then reserve at most 1 GB there | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · no longer applies (`e7b898c30`) |
@@ -94,7 +94,7 @@ to its fix group and issue.
 | S2 | [F-ORCH-2](#f-orch-2--replanning-reminders-feed-themselves-one-batch-per-reminder-without-end) · Replanning reminders feed themselves: one batch per reminder, without end | low-medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
 | S2 | [F-ORCH-3](#f-orch-3--after-24-h-of-launch-failures-requests-are-left-untreated-and-the-watchdog-restarts-in-vain-every-5-min) · After 24 h of launch failures, requests are left untreated and the watchdog restarts in vain every 5 min | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-ORCH-4](#f-orch-4--a-scheduled-launch-that-did-start-is-considered-failed-after-a-restart-and-answering-the-card-cancels-the-live-task) · A scheduled launch that did start is considered failed after a restart, and answering the card cancels the live task | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
-| S2 | [F-PROV-1](#f-prov-1--a-usage-reading-measured-before-a-limit-erases-it-when-it-arrives-later-the-account-reads-as-having-margin-again) · A usage reading measured before a limit erases it when it arrives later: the account reads as having margin again | low | [G8](#g8--one-owner-per-host-and-provider-facts-in-order) · #525 |
+| S2 | **FIXED** [F-PROV-1](#f-prov-1--a-usage-reading-measured-before-a-limit-erases-it-when-it-arrives-later-the-account-reads-as-having-margin-again) · A usage reading measured before a limit erases it when it arrives later: the account reads as having margin again | low | [G8](#g8--one-owner-per-host-and-provider-facts-in-order) · #525 · fixed in #PRNUM |
 | S2 | [F-SERVER-D1](#f-server-d1--a-transient-failure-on-the-first-enrollment-permanently-revokes-a-devices-relay-access-while-it-still-shows-as-paired) · A transient failure on the first enrollment permanently revokes a device's relay access while it still shows as paired | medium-low | [G11](#g11--devices-relay-and-self-update) · #528 |
 | S2 | **FIXED** [F-SERVER-D4](#f-server-d4--if-the-macs-own-terminal-is-revoked-the-tui-stays-on-device-not-paired-forever) · If the Mac's own terminal is revoked, the TUI stays on «device not paired» forever | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 · fixed |
 | S2 | [F-SERVER-R4](#f-server-r4--if-live-activity-pruning-fails-after-a-revocation-the-removed-mac-keeps-the-live-activity-alive-indefinitely) · If Live Activity pruning fails after a revocation, the removed Mac keeps the Live Activity alive indefinitely | low | [G11](#g11--devices-relay-and-self-update) · #528 |
@@ -391,6 +391,11 @@ Issue: #524 · Severity: S2 · Findings: F-GH-1, F-GH-7, F-GH-8, F-GH-9 · Depen
 
 Issue: #525 · Severity: S2 · Findings: F-ENGINE-12, F-PROV-1 · Hypothesis to confirm or
 refute with a test: H-ENGINE-8 · Depends on: coordination with the Codex recovery work (phase 2) (`take_host`).
+**Status**: F-ENGINE-12 and F-PROV-1 FIXED in #PRNUM; H-ENGINE-8 stays a hypothesis (see its entry). Both
+findings were reproduced on `main` (`e1d5ec2aa`) by their new tests, failing, before the fix. Coordination: the
+Codex recovery work (phase 2) had nothing on `main` and its pending changes touch the owner's handoff and the
+Codex host's exit, not `take_host` or the adoption; this fix keeps `take_host` as it was and puts the exclusion in
+`adopt_for_transition`, so the two do not overlap.
 
 - **Expected behaviour**: the adoption after a model transition waits its turn and never takes a host
   a resume is taking; a stale take never reaches `lost()` or ends the other owner's host. A usage
@@ -400,6 +405,14 @@ refute with a test: H-ENGINE-8 · Depends on: coordination with the Codex recove
   `crates/core/src/usage.rs`, `crates/daemon-engine/src/usage_probe.rs`, the `RecordAccountUsage` rule.
 - **Tests**: an engine test with barriers that interleaves a resume and an adoption of the same host;
   a usage test applying a reading measured before a rejection after it.
+- **Final behaviour**: `adopt_for_transition` takes the task's `TakeoverTurn`, looks again whether an owner of this
+  daemon holds the host (`owned_now`) and, only if none does, takes it and adds its owner before letting the turn go;
+  it returns whether an owner now carries the host. A retake under way therefore finishes first and the change goes
+  on with the owner it left. `usage::record` keeps every window measured after the reading it applies: a reading
+  never replaces a newer window of the same dimension, and a complete reading only removes windows measured before
+  it. The probe fence does not cover `account_usage`: with readings ordered by measurement time a probe that
+  overlaps a limit no longer needs to be repeated, and a fence on usage would repeat every probe that overlaps any
+  turn's usage event.
 
 ### G9 · Terminal client and local pairing recover by themselves
 
@@ -486,13 +499,14 @@ parallel fix is planned here.
 | F-ENGINE-5 (part) · `opening_deadline` decides a host replacement outside the obligation policy | the stalled-node recovery work | Yes. Since #541 (at `68770a298`) it is a constant of its own, `OPENING_TIMEOUT` = 120 s (`engine-sdk/src/sdk_owner.rs:53`), no longer `io_timeout_seconds`, and past it the owner first reads what the host already wrote (`:2298-2306`). Still outside `obligation_policy` |
 | M-ORCH-6, H-ORCH-3 · the orchestrator's `Answer` deadline | the stalled-node recovery work (phase 4, `AnswerSkipped`) | Yes: #516 already removed that deadline (at `68770a298`); what the orchestrator owes is settled only after a turn of it ends handled (M-ORCH-5), so while it cannot end one (F-ORCH-3) nothing settles a node's question or a stopped node's case |
 | H-PROV-2 · an input "offered" to Codex is only queued in the host | the provider adapters work (phase 3), point 10 | No |
+| F-PROV-1 (variant) · usage readings an ended host's journal kept are committed on adoption with the commit time, so an old one can overwrite a newer reading | the provider adapters work: the host stamps each journal event with its time and the Claude and Codex adapters read it | Yes: `OrderedObservation` carries no event time; `store-sqlite/src/owner.rs` records `ObservedFact::Usage` with `at = now`. Referred by the user on 2026-11-24 |
 | H-GH-1, H-GH-2 · identity of moved pull requests | the stable pull request identity work | See the hypotheses in the GH area. #537 touches neither (`RegisterPr` and `ObservePrState` are unchanged at `68770a298`) |
 | H-GH-6 · a branch PR noted for a task and registered meanwhile by another live task blocks that task's final delivery for good | the stable pull request identity work | Yes, new at `68770a298` (see the hypothesis in the GH area) |
 | #537 · a PR enters a task only through `register_pr` or GitHub's open PR of one of its worktree branches at a final delivery | the stable pull request identity work | Yes: a PR the node opens from a checkout that is not one of its task's worktrees and does not register is never known to Alondra, and nothing asks about it any more (`AskToRegisterPr` is inert, `domain-rules/src/rules.rs:4855-4858` at `68770a298`); before, the output of `gh pr create` noted it or asked the node. A design choice of #537, listed so the identity work weighs it |
 | F-STORE-2 (part) · `--preflight` does not exercise the JSON state files startup needs | the tests-by-layer work (host model), point 30 (binary smoke test) | Yes: the list of files startup refuses on |
 
-F-ENGINE-12 (two owners take the same host) is fixed here, in group G8, but it changes
-`take_host`, the same function the Codex recovery work (phase 2) changes: the two must be coordinated.
+F-ENGINE-12 (two owners take the same host) is fixed in group G8 (#PRNUM) without changing `take_host`, the
+function the Codex recovery work (phase 2) changes: the exclusion lives in `adopt_for_transition`.
 
 ## Product decisions
 
@@ -1998,8 +2012,16 @@ the stalled-node recovery work (phase 3) removes `take_working_unowned` and `UNO
 path (this one already checks `unowned()`); it covers neither `take_again` nor `adopt_for_transition`.
 the Bazel layers work (phase 5f) moves `sdk_owner/worker.rs`, not these functions. No open issue covers it. New evidence. The
 `git log` of `sdk_owner.rs` and `provider_transition.rs` has no fixes for this.
-**Status**: still holds at `3fc0370ea`. #505 changed only the `Owner`'s stop, not how hosts are taken, so the
-exclusion gaps below are unchanged. New evidence from #505: the handoff gate belongs to each `Owner`
+**Status**: FIXED in #PRNUM. `adopt_for_transition` now takes the task's `TakeoverTurn`, checks `owned_now` inside
+it and adds its owner before releasing it, so it never overlaps `take_again`, `take_over_unowned` or any other
+takeover of the task: whichever runs second finds the host owned and does nothing. Test:
+`sdk_owner::codex_tests::a_model_change_during_a_retake_waits_for_it_and_never_reads_the_host_as_lost` (a barrier
+holds the retake right after it reserved its owner, the model change runs, the barrier opens). Without the fix,
+on `e1d5ec2aa`, the change adopts the host and the retake fails with «the reservation issued no owner grant»: the
+change took the retake's grant from the task's seals, the variant noted below as not followed, now seen. The
+retake then gives the host up as lost (`lost()`, `host_losses_told`) while the change's owner works with it,
+which is branch 1. The text below is the audit, kept as evidence. Earlier status: still holds at `3fc0370ea`. #505 changed only the
+`Owner`'s stop, not how hosts are taken, so the exclusion gaps below are unchanged. New evidence from #505: the handoff gate belongs to each `Owner`
 (M-ENGINE-4), so in branch 2 a close stops the first live `Owner` (`take_sdk_owner`, `sdk_owner.rs:3074-3079`),
 whose `Owner::end` waits only for its own handoffs and then asks the shared host to end (`:2812-2818`) while the
 second `Owner` may be handing it an input. That is the uncertain receipt #505 removed for the single-owner case,
@@ -2458,8 +2480,14 @@ deliver). **Overlap**: H-ENGINE-1 / F-ENGINE-12. What is here is a new consequen
   - A `lost()` or an `Unadmitted` of another take of the same task that runs in that window revokes the capability
     the first has just passed to its host.
 - **Missing to confirm**: it has the same requirement as H-ENGINE-1 (two concurrent takes of the same host). That
-  race is now confirmed as F-ENGINE-12, whose branch 1 reaches `lost()` → `host_ended(agent)` while another take
-  holds the host: the precondition of H-ENGINE-8 is reachable. What remains to check is the rest of H-ENGINE-8 (that
+  race was confirmed as F-ENGINE-12, whose branch 1 reached `lost()` → `host_ended(agent)` while another take
+  held the host. **Since #PRNUM** (F-ENGINE-12 fixed) every takeover of a task, the model change's included, runs in
+  its `TakeoverTurn`, and the `lost()` of a failed take runs inside that turn (`not_taken` in `take_again` and
+  `take_over_unowned`), so that path no longer reaches another take's window. Left to check: whether a `lost()` from
+  an `Owner`'s own failure (`sdk_owner.rs`, the `replace_ended_host` and `lost_because` paths, which run outside
+  any turn with the owner already reading as ended) can overlap a takeover started by something that checks only
+  `owns_sdk_host` (`provider_transition`'s `retake` after a move, a retake from the host-lost card). Not tested,
+  so it stays a hypothesis. What remains to check is the rest of H-ENGINE-8 (that
   the revocation leaves the new host without a credential).
 - **Proposed test**: with `engine-doubles::agent_host`, a barrier at `after_owner_reserved` of take A, after its
   `bind_agent`; run `lost()` of the same task, release the barrier and check `resolve_bearer` with A's capability.
@@ -4165,14 +4193,14 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Kind**: derived, snapshot. **Defined in**: `crates/core/src/accounts.rs:541-561` (`AccountState`: `Unchecked | SignedIn | SignedOut | Unavailable | Disabled`), `:453-536` (`AccountsConfig::changed`); produced in `crates/daemon-engine/src/accounts.rs:134-176` (Claude), `:522-612` (`check_current`, Codex) and `:416-418`.
 - **Source of truth**: `options.toml` (`enabled`, order, policy) plus the native probe. The domain stores the snapshot (`RecordAccounts`) and each probe replaces it whole.
 - **Transitions**: any state to any other on each probe; `Disabled` if `enabled=false`; `Unavailable` if the probe fails (`:166`, `:559`); `Unchecked` at startup or on re-enable (`:895-897`).
-- **Concurrency (fence)**: the probe commit compares `accounts`, configuration versions and `options.toml` with the snapshot taken before (`commit_probe`, `:333-345`); if they changed, `stale_probe` and it is repeated. It does **not** include usage (`account_usage`), see F-PROV-1.
+- **Concurrency (fence)**: the probe commit compares `accounts`, configuration versions and `options.toml` with the snapshot taken before (`commit_probe`, `:333-345`); if they changed, `stale_probe` and it is repeated. It does not include usage (`account_usage`), on purpose: readings are ordered by measurement time in `record` (F-PROV-1, fixed).
 - **Missing**: no native error of a node (401, "login expired") changes the state; that is the scope of the expired provider login work.
 
 ### M-PROV-13 · Usage and limit of each account
 - **Kind**: implicit, derived from readings. **Defined in**: `crates/core/src/usage.rs:198-300` (`AccountUsage`, `ran_out`, `exhausted_until`), `:329-358` (`record`); `crates/domain-rules/src/rules.rs:3442-3453` (`RecordAccountUsage`).
 - **States per window**: Unmeasured, then With margin (`used < FULL`, not `exhausted`), then Exhausted until `resets_at` (`exhausted` or `used == FULL`, with a future reset), then Exhausted with no known time, then With margin again (`resets_at` passes, another reading arrives, or in Codex a working turn, `native_turn_worked`).
 - **Writers**: `usage_probe::measure_account` (full reading, always `exhausted:false`, `usage_probe.rs:100-121`), `usage_probe::record_limit` (orchestrator), turn observations (`store-sqlite/src/owner.rs:301-323`, `:486-497`), `accounts::check_current` (Codex). Codex's account check reads `account/rateLimits/read` through `ProbeReport::usage_reading` (`crates/core/src/codex_account.rs`): with `ordinaryUsageAllowed: true` it records the percentages; with `false` it records them too, plus the exhausted native-limit mark, so the account shows its current reading and stays held until a later check says `true`; with `null` (the provider does not know) it records nothing and the last reading stands. No reset time ends that hold: only Codex's answer does.
-- **Invariants**: assumed and not enforced: an older reading does not overwrite a newer one. `record` replaces the window of the same dimension without looking at `measured_at`, except the native-limit mark of Codex (`usage.rs:331-333`). See F-PROV-1.
+- **Invariants**: enforced in `record`: an older reading does not overwrite a newer one. A window measured after the reading's `at` stays, and a complete reading removes only windows measured before it (F-PROV-1, fixed). Readings an ended host's journal commits on adoption still carry the commit time (see F-PROV-1).
 
 ### M-PROV-14 · Orchestrator batch over the host
 - **Kind**: explicit, bounded. **Defined in**: `persistent-core.ts:189-191`, `session.ts:212-226`, `:357`; Codex `codex-session.ts` (`if (this.config.orchestrator) this.close()` when the turn ends).
@@ -4181,6 +4209,13 @@ Read only superficially, with no finding to report; this is pending coverage, no
 ### Findings
 
 #### F-PROV-1 · A usage reading measured before a limit erases it when it arrives later: the account reads as having margin again
+**Status**: FIXED in #PRNUM, as the user decided on 2026-11-22 (the latest measurement wins, by measurement time).
+`usage::record` leaves a window measured after the reading's `at` as it is, and a complete reading no longer removes
+a window measured after it. Test: `usage::margin_tests::a_probe_measured_before_a_limit_and_recorded_after_it_leaves_the_limit_standing`,
+failing on `e1d5ec2aa` and passing with the fix. The variant of an ended host's journal (readings committed on
+adoption with `at = now`) is **not** fixed: the observation carries no event time (`OrderedObservation` has none),
+so ordering it needs the host to stamp its events, which is the provider adapters' work. The user decided on
+2026-11-24 to refer it there; it is listed in "Referred to the tasks that own them".
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: low to medium (each account is probed every 15 min, `usage_probe.rs:28`; a probe takes seconds and up to 60 s, `:29`; a limit arriving inside that window is enough) · **Overlap**: no open task. Issues #396/#330/#342 are about how limits are shown, not their order. `git log` of `usage.rs` and `usage_probe.rs`: no later fixes. The evidence is new.
 - **Invalid state/transition and broken invariant**: M-PROV-13 in "With margin" after the account itself said "Exhausted", because `RecordAccountUsage` applies readings in arrival order, not measurement order. This breaks the assumed invariant "an older reading does not overwrite a newer one".
 - **Evidence**:

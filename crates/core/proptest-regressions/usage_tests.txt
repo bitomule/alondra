@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 67670b96a7f9404fbf20f7c262ab2938002c745896d47d9904bed561cb13b59a # shrinks to readings = [UsageReading { windows: [], plan: None, complete: false }, UsageReading { windows: [WindowReading { kind: Session, used: Share(0), resets_at: Some(1790105802000), exhausted: false }], plan: None, complete: false }], reserve = 0.01, over = 0.41401165629957276
