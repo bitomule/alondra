@@ -477,8 +477,15 @@ F-CLIENTS-A4, F-CLIENTS-A5 · Depends on: none · Related: issue #386.
   (`ViewActionSender.startDelivery(_, failedSince:)`), which waits its turn and goes as soon as anything wakes
   it, whether or not a screen of that Mac is open; a push wakes every paired Mac's sender
   (`AccountSession.macReached`). Tasks, the task detail and Scheduled tasks start a 30-second confirmation
-  timer per sent action: when it runs out the hidden row or button shows again, the toast says «Your Mac
-  hasn’t confirmed “<action>”.» and the delivery goes on; a late confirmation hides it again. QR pairing
+  timer per sent action: when it runs out the hidden row or button shows again, the toast says what has
+  not reached the Mac and why, from the app's single connection state (`LateNotice`, cause first so a long name
+  never hides it: «No internet: still sending “Cancel Task”.», «Connecting to your Mac: still sending…», or
+  «Your Mac hasn’t confirmed it yet: still sending…» when it is connected), and the delivery goes on; a late confirmation
+  hides it again. The card queue's 30-second notice on iPhone says the same. Every failed delivery try logs
+  its cause (error kind and code, never what was written) in the app log the app report reads
+  (`answer-delivery`). A message to a task's node shows nothing while it is retried, by the user's decision
+  of 24 Nov 2026: the field clears once the message is saved on the phone, and only a real failure brings
+  the text back with why. QR pairing
   asks the account for the access token on every request (`PairingAuthorization.bearer`), tells it when the
   relay refused one, and the approval poll waits and asks again after a cut, a 401, 408, 429 or 5xx until
   the QR expires. The Live Activity treats a report from one Mac as the end of the previous one being
@@ -7174,7 +7181,7 @@ truth = ["memory"]
 | applied | daemon `.ask` response (asks again) | `release`: returns to the front (`:278-281`) |
 
 - **Terminals**: deleted. Invariant: every `sending` entry receives a `settled` or the epoch changes; since G10 a request that could not be prepared also emits `.settled(applied: false)` (F-CLIENTS-A5).
-- **Other screens** (since G10): Tasks, the task detail and Scheduled tasks use the same `Optimistic` with a 30-second confirmation timer per sent action (`actionOverdue`): on expiry the row or button shows again with the toast «Your Mac hasn’t confirmed “<action>”.» while delivery goes on (F-CLIENTS-A2).
+- **Other screens** (since G10): Tasks, the task detail and Scheduled tasks use the same `Optimistic` with a 30-second confirmation timer per sent action (`actionOverdue`): on expiry the row or button shows again with a toast that says why from the connection state (`LateNotice`) while delivery goes on (F-CLIENTS-A2).
 - **Persistence and restart**: no; after a relaunch the hiding comes from `undelivered` (from disk).
 
 ### M-CLIENTS-A4 · State of an on-screen action (`ActionFeature`)
@@ -7286,7 +7293,7 @@ truth = ["memory"]
 
 #### F-CLIENTS-A2 · In Tasks and in the task detail (iPhone) the optimistic action has no notice at 30 s: withdrawing a request, deleting Completed or cancelling/pausing a task stays hidden while the Mac does not confirm
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: medium (any such action with the Mac not answering; frequent on iPhone) · **Overlap**: none; `git log` of both files shows no changes to this logic since `Optimistic` was added.
-**Status**: FIXED in group G10 (issue #527). `TasksFeature`, `TaskDetailFeature` and `SchedulesFeature` start `Optimistic.confirmation` (30 s on the `continuousClock`) when an action is sent; on expiry `actionOverdue` calls `expire`, so the row or button shows again, and the toast says «Your Mac hasn’t confirmed “<action label>”.» (es: «Tu Mac aún no ha confirmado «…».»); the delivery goes on, and a late confirmation hides it again. `settle` cancels the timer. Tests: `AlondraFeaturesTests` `TasksFeatureTests.testAWithdrawTheMacNeverConfirmsShowsTheRequestAgainWithANoticeAfterTheTimeout`, `testAWithdrawTheMacConfirmsInTimeNeverComesBack`, `TaskDetailTests.testACancelTheMacNeverConfirmsShowsItsButtonAgainWithANoticeAfterTheTimeout` (`TestClock`, a `perform` held by a `Gate`); captures `TasksSnapshotTests.test_taskDetail_anUnconfirmedCancelShowsItsButtonAgainAndTheToastSaysWhich` in light and dark, English and Spanish. Ablation: with `Optimistic.confirmation` returning `.none` both «never confirms» tests fail (no `actionOverdue` arrives); restored, they pass.
+**Status**: FIXED in group G10 (issue #527). `TasksFeature`, `TaskDetailFeature` and `SchedulesFeature` start `Optimistic.confirmation` (30 s on the `continuousClock`) when an action is sent; on expiry `actionOverdue` calls `expire`, so the row or button shows again, and the toast says what has not reached the Mac and why, from the app's connection state (`LateNotice`, the user's decision of 24 Nov 2026: «No internet: still sending “Cancel Task”.»; es: «Sin internet: se sigue enviando «Cancelar tarea».»); the delivery goes on, and a late confirmation hides it again. The iPhone card queue uses the same notice. Each failed try logs its cause in the app log. Tests for the cause: `LateNoticeTests` (each connection state). Ablation: with `LateNotice.message` ignoring the connection, `LateNoticeTests.testAnUnreachableMacSaysWhyFirstAndThatItKeepsSending`, `testAConnectionStillStartingSaysSo` and the Tasks withdraw test fail; restored, they pass. `settle` cancels the timer. Tests: `AlondraFeaturesTests` `TasksFeatureTests.testAWithdrawTheMacNeverConfirmsShowsTheRequestAgainWithANoticeAfterTheTimeout`, `testAWithdrawTheMacConfirmsInTimeNeverComesBack`, `TaskDetailTests.testACancelTheMacNeverConfirmsShowsItsButtonAgainWithANoticeAfterTheTimeout` (`TestClock`, a `perform` held by a `Gate`); captures `TasksSnapshotTests.test_taskDetail_anUnconfirmedCancelShowsItsButtonAgainAndTheToastSaysWhich` in light and dark, English and Spanish. Ablation: with `Optimistic.confirmation` returning `.none` both «never confirms» tests fail (no `actionOverdue` arrives); restored, they pass.
 - **Invalid state/transition and broken invariant**: optimistic UI rule "silent retries, and the interaction returns with a notice after 30 s". The queue (`TriageFeature.confirmationTimer`, `TriageFeature.swift:410-418`) and the Mac (`MacPresentationFeature.swift:626-630`) comply; Tasks and the task detail do not.
 - **Evidence**:
   1. `TasksFeature` hides what was sent (`board` = `TasksBoard(...).hiding(optimistic)`, `apple/Features/Sources/Tasks/TasksFeature.swift:25-27`; `TasksBoard.hiding`, `TasksBoard.swift:141-154`: the withdrawn request and the delete-Completed button disappear). `TaskDetailView` hides the sent task buttons (interrupt, resume, relaunch, pause, model, cancel, reopen) and shows the chosen priority (`apple/iOS/UI/Sources/Tasks/TaskDetailView.swift:401,423,437`).

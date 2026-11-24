@@ -177,7 +177,7 @@ final class TasksSnapshotTests: XCTestCase {
     }
 
     /// A cancel the Mac has not confirmed after thirty seconds: its button is back on the task and
-    /// the toast says which action the Mac has not confirmed, while it keeps being sent.
+    /// the toast says which action has not reached the Mac and why, while it keeps being sent.
     func test_taskDetail_anUnconfirmedCancelShowsItsButtonAgainAndTheToastSaysWhich() throws {
         for spanish in [false, true] {
             let document = try SampleViews.document(spanish ? "task-detail-es" : "task-detail")
@@ -193,7 +193,8 @@ final class TasksSnapshotTests: XCTestCase {
                 $0.viewsClient.observe = ViewsClient.serving(document)
             }
             XCTAssertFalse(store.optimistic.hides(cancel.id))
-            let message = spanish ? "Tu Mac aún no ha confirmado «\(cancel.label)»." : Optimistic.actionNotConfirmed(cancel.label)
+            let message = spanish ? "Tu Mac no responde: se sigue enviando «\(cancel.label)»."
+                : LateNotice.action(cancel.label).message(.unreachable(.macNotAnswering))
             var app = AppFeature.State()
             app.notice = WorkspaceNotice(event: .failure(message))
             let notices = Store(initialState: app) { EmptyReducer<AppFeature.State, AppFeature.Action>() }

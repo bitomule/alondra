@@ -145,7 +145,8 @@ public struct TasksFeature: Sendable {
                 return .cancel(id: CancelID.confirmation(target))
             case .actionOverdue(let id):
                 guard state.optimistic.expire(id) else { return .none }
-                return .send(.delegate(.failed(Optimistic.actionNotConfirmed(state.sentLabels[id]))))
+                let late = LateNotice.action(state.sentLabels[id])
+                return .run { [viewsClient] send in await send(.delegate(.failed(await viewsClient.lateNotice(late)))) }
             case .actions(.delegate(let outcome)):
                 return .concatenate(.send(.actions(.dismiss)), .send(.delegate(ScreenDelegate(outcome))))
             case .screen, .actions, .delegate:

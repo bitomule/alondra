@@ -303,6 +303,7 @@ final class TasksFeatureTests: XCTestCase {
         }
         let store = await loaded(document)
         store.dependencies.continuousClock = clock
+        store.dependencies.viewsClient.connection = { AsyncStream { $0.yield(.unreachable(.noInternet)); $0.finish() } }
         store.dependencies.viewsClient.perform = { _ in
             await gate.wait()
             return try Responses.applied("Request withdrawn")
@@ -318,7 +319,7 @@ final class TasksFeatureTests: XCTestCase {
 
         await clock.advance(by: .milliseconds(1))
         await store.receive(\.actionOverdue, "withdraw:r-2@4")
-        await store.receive(\.delegate.failed, "Your Mac hasn’t confirmed “Withdraw Request”.")
+        await store.receive(\.delegate.failed, "No internet: still sending “Withdraw Request”.")
         XCTAssertTrue(store.state.board?.active.requests.contains { $0.id == "r-2" } ?? false, "the unconfirmed request shows again")
 
         await gate.open()

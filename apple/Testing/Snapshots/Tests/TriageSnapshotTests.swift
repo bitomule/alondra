@@ -557,7 +557,7 @@ final class TriageSnapshotTests: XCTestCase {
     // MARK: An answer that did not go through
 
     /// An answer the Mac never confirmed: its card waits again, plain, with nothing about the
-    /// retry inside it, and the toast says which answer did not arrive.
+    /// retry inside it, and the toast says which answer did not arrive, why, and that it keeps going.
     func test_anUnconfirmedAnswerBringsItsCardBackAndTheToastSaysWhich() throws {
         for spanish in [false, true] {
             let document = spanish ? try Fixtures.spanishCard(Fixtures.questionID) : try Fixtures.card(Fixtures.questionID)
@@ -570,8 +570,8 @@ final class TriageSnapshotTests: XCTestCase {
             XCTAssertEqual(store.state.orderedIDs, [Fixtures.questionID])
             let card = try XCTUnwrap(store.state.currentCard)
             let title = card.need ?? card.title
-            let message = spanish ? "Tu respuesta a «\(title)» no ha llegado a tu Mac."
-                : Optimistic.notConfirmed(title)
+            let message = spanish ? "Tu Mac no responde: se sigue enviando tu respuesta a «\(title)»."
+                : LateNotice.answer(title).message(.unreachable(.macNotAnswering))
             let notices = Store(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
                 $0.continuousClock = TestClock()
             }

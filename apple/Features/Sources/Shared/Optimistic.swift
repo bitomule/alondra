@@ -103,12 +103,6 @@ public extension Optimistic {
         return String(localized: "Your Mac hasn’t confirmed your answer to “\(card)”.")
     }
 
-    /// What the app says when an action has not reached the Mac in time and its button shows again.
-    static func actionNotConfirmed(_ label: String?) -> String {
-        guard let label, !label.isEmpty else { return String(localized: "Your Mac hasn’t confirmed an action.") }
-        return String(localized: "Your Mac hasn’t confirmed “\(label)”.")
-    }
-
     /// Waits for the daemon to confirm what was sent for `id`; when it has not in time, `overdue`
     /// goes to the screen, which shows the item again while the delivery goes on.
     static func confirmation<Action>(

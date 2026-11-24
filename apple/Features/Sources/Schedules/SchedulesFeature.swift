@@ -73,7 +73,8 @@ public struct SchedulesFeature: Sendable {
                 return .cancel(id: CancelID.confirmation(target))
             case .actionOverdue(let id):
                 guard state.optimistic.expire(id) else { return .none }
-                return .send(.delegate(.failed(Optimistic.actionNotConfirmed(state.sentLabels[id]))))
+                let late = LateNotice.action(state.sentLabels[id])
+                return .run { [viewsClient] send in await send(.delegate(.failed(await viewsClient.lateNotice(late)))) }
             case .open(let link):
                 return ScreenDelegate.opening(link).map { .send(.delegate($0)) } ?? .none
             case .add:

@@ -2,6 +2,7 @@ import AlondraTransport
 import AlondraContract
 import CryptoKit
 import Foundation
+import OSLog
 import Synchronization
 
 /// Transport boundary used by the feed and action actors. The API client implementation
@@ -662,7 +663,9 @@ public actor ViewActionSender {
             } catch where ActionDeliveryDisposition(error) == .final {
                 await discard(current)
                 throw error
-            } catch {}
+            } catch {
+                Self.log.notice("Answer \(key, privacy: .public) attempt \(attempt + 1) not delivered: \(Self.cause(of: error), privacy: .public)")
+            }
             try checkDelivering()
             if let activeEpoch, activeEpoch != current.request.dataEpoch {
                 await discard(current)
@@ -675,6 +678,14 @@ public actor ViewActionSender {
             attempt += 1
             await pause(attempt, since: wakes)
         }
+    }
+
+    private static let log = Logger(subsystem: "com.bitomule.alondra", category: "answer-delivery")
+
+    /// Why a try failed, without anything the person wrote: the error's kind and code.
+    static func cause(of error: any Error) -> String {
+        let described = error as NSError
+        return "\(described.domain) \(described.code)"
     }
 
     private func checkDelivering() throws {

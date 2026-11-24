@@ -305,7 +305,7 @@ final class TaskDetailTests: XCTestCase {
 
         await clock.advance(by: .milliseconds(1))
         await store.receive(\.actionOverdue, try XCTUnwrap(cancel.id))
-        await store.receive(\.delegate.failed, "Your Mac hasn’t confirmed “\(cancel.label)”.")
+        await store.receive(\.delegate.failed, "Your Mac hasn’t confirmed it yet: still sending “\(cancel.label)”.")
         XCTAssertFalse(store.state.optimistic.hides(cancel.id), "the unconfirmed cancel shows its button again")
 
         await gate.open()
