@@ -62,7 +62,12 @@ class BazelTestTmpdirTest(unittest.TestCase):
 
     def environment(self, execs="own-sandbox", **more):
         environment = without_test_tmpdir()
-        environment.update(BAZEL_TEST_TMPDIR_ROOT=str(self.root), TEST_EXECS=execs, TEST_TARGET="//crates/a:a_test")
+        environment.update(
+            BAZEL_TEST_TMPDIR_ROOT=str(self.root),
+            ALONDRA_INVALID_EXECUTABLE_DIR=str(self.root / "kept"),
+            TEST_EXECS=execs,
+            TEST_TARGET="//crates/a:a_test",
+        )
         environment.update(more)
         return environment
 
@@ -185,6 +190,48 @@ class BazelTestTmpdirTest(unittest.TestCase):
         self.assertFalse(marker.exists())
         self.assertIn(b"Invalid test executable", result.stderr)
         self.assertIn(b"--noremote_accept_cached --disk_cache=", result.stderr)
+        self.assertNotIn(b"make ", result.stderr)
+
+    def test_an_invalid_executable_leaves_a_bounded_copy_that_expires(self):
+        kept = self.root / "kept"
+        kept.mkdir()
+        old = kept / "old"
+        old.write_bytes(b"x")
+        os.utime(old, (time.time() - 8 * 86400,) * 2)
+        contents = Path("/bin/ls").read_bytes()[:16]
+        for number in range(4):
+            result = self.run_executable(contents + bytes([number]))
+            self.assertEqual(result.returncode, 126)
+            time.sleep(1.1)
+        copies = sorted(kept.iterdir())
+        self.assertEqual(len(copies), 3, "at most three copies stay")
+        self.assertFalse(old.exists(), "a copy older than a week goes")
+        self.assertEqual(copies[-1].read_bytes(), contents + bytes([3]))
+        self.assertIn(str(copies[-1]).encode(), result.stderr)
+
+    def test_by_default_the_copy_stays_in_the_checkouts_scratch_folder(self):
+        checkout = self.root / "checkout"
+        (checkout / "tools").mkdir(parents=True)
+        copied = checkout / "tools" / "test-tmpdir.sh"
+        copied.write_bytes(wrapper.read_bytes())
+        copied.chmod(0o755)
+        executable = self.root / "test-executable"
+        executable.write_bytes(b"\x00" * 64)
+        executable.chmod(0o755)
+        environment = self.environment()
+        del environment["ALONDRA_INVALID_EXECUTABLE_DIR"]
+        result = subprocess.run([str(copied), str(executable)], env=environment, capture_output=True)
+        self.assertEqual(result.returncode, 126)
+        [copy] = (checkout / ".scratch" / "invalid-test-executables").iterdir()
+        self.assertEqual(copy.read_bytes(), b"\x00" * 64)
+        self.assertEqual((checkout / ".scratch" / ".gitignore").read_text(), "*\n")
+        self.assertIn(b"scratch folder of this checkout", result.stderr)
+
+    def test_a_kept_copy_is_cut_at_the_size_limit(self):
+        result = self.run_executable(b"\x00" * 5000, ALONDRA_INVALID_EXECUTABLE_MAX_BYTES="1000")
+        self.assertEqual(result.returncode, 126)
+        [copy] = (self.root / "kept").iterdir()
+        self.assertEqual(copy.stat().st_size, 1000)
 
     def test_a_truncated_native_executable_is_rejected(self):
         result = self.run_executable(Path("/bin/ls").read_bytes()[:16])

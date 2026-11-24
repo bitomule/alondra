@@ -1868,6 +1868,18 @@ checks:
       targets:
         - //tools:test_scratch_guard_test
 
+  output-base-ownership:
+    uses: bazel/test
+    paths:
+      - "Makefile"
+      - "docs/**/*.md"
+      - "tools/output_base_guard.py"
+      - "tools/tests/test_output_base_guard.py"
+      - "tools/test-tmpdir.sh"
+    with:
+      targets:
+        - //tools:output_base_guard_test
+
   hermetic-tests:
     uses: bazel/test
     paths:
