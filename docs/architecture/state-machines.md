@@ -369,7 +369,7 @@ which fail without the fix and pass with it (ablation in the pull request).
 
 ### G7 · GitHub: no closing, merging or reading against a stale picture
 
-**Status**: FIXED (G7, PR #606, commit `48d7b959d`, from `main` at `93dbd23c8`). Each finding below carries its
+**Status**: FIXED (G7, PR #606, commit `eff59c21d`, from `main` at `93dbd23c8`). Each finding below carries its
 test and ablation. The race F-GH-1 describes in the watcher's round was already closed on `main` by #590
 (`9c599b4dc`), which reads the domain again after each PR's GitHub read; its test pins that. What still broke
 the user's decision of 2026-11-22 was the hourly sweep, which closed again a PR the user reopened.
