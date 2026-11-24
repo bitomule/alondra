@@ -15,7 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alondra_engine_ports::github::GitHub;
-pub use alondra_engine_ports::github::{Closed, GhFailure, HttpAnswer, Observed, PrFacts, PrObserver, pr_url};
+pub use alondra_engine_ports::github::{Closed, GhFailure, HttpAnswer, Located, Observed, PrFacts, PrObserver, ReadIdentity, pr_url};
+use crate::pr_identity::{identify, read_start, relocate};
 
 pub fn execute_system(domain: &dyn alondra_engine_ports::Runtime, command: Command) -> Result<(), StoreError> {
     alondra_engine_kernel::domain_runtime::RuntimeRecords::execute_system_command(domain, command)
@@ -44,6 +45,7 @@ pub async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserver, tas
     let opened: Vec<(TaskId, OpenedPr)> = state.tasks.values().filter(|t| task.is_none_or(|task| *task == t.id))
         .flat_map(|t| t.opened_prs.iter().map(|pr| (t.id.clone(), pr.clone()))).collect();
     for (task_id, pr) in opened {
+        let started = read_start();
         let facts = match observer.observe(&pr.host, &pr.repository, pr.number).await {
             Ok(facts) if !facts.allowed_methods.is_empty() || state.task_prs(&state.tasks[&task_id])
                 .any(|known| known.host == pr.host && known.repository == pr.repository && known.number == pr.number) => facts,
@@ -56,16 +58,36 @@ pub async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserver, tas
                 continue;
             }
         };
+        let answer = || Ok((facts.identity.as_ref(), facts.head.as_str()));
+        if let Some(known) = living_at(&*domain.state()?, &pr)
+            && identify(domain, &known, &pr.repository, started, answer())?.is_none()
+            && living_at(&*domain.state()?, &pr).is_some()
+        {
+            log!("{}#{} answered as another pull request than the one Alondra has there: its task keeps waiting for it", pr.repository, pr.number);
+            continue;
+        }
         match execute_system(domain, Command::RecordOpenedPr {
-            task_id, host: pr.host, repository: pr.repository, number: pr.number, head: facts.head, base: facts.base,
-            state: facts.state, merged_head: facts.merged_head, allowed_methods: facts.allowed_methods,
+            task_id: task_id.clone(), host: pr.host.clone(), repository: pr.repository.clone(), number: pr.number, head: facts.head.clone(),
+            base: facts.base.clone(), state: facts.state, merged_head: facts.merged_head.clone(), allowed_methods: facts.allowed_methods.clone(),
         }) {
             Ok(()) => (),
-            Err(StoreError::Domain(error)) => log!("the PR a node opened was refused: {error}"),
+            Err(StoreError::Domain(error)) => {
+                log!("the PR a node opened was refused: {error}");
+                continue;
+            }
             Err(StoreError::Storage(error)) => return Err(error),
+        }
+        if let Some(made) = living_at(&*domain.state()?, &pr).filter(|made| made.task_id == task_id) {
+            identify(domain, &made, &pr.repository, started, answer())?;
         }
     }
     Ok(())
+}
+
+/// The record Alondra keeps at `pr`'s address, unless nobody can tell which pull request it is.
+fn living_at(state: &DomainState, pr: &OpenedPr) -> Option<PullRequest> {
+    state.pull_requests.values().find(|known| known.is_tracked() && !known.identity.is_unresolvable()
+        && known.lives_at(&pr.host, &pr.repository, pr.number)).cloned()
 }
 
 /// What a node's delivery is judged on, read when it presents: the open PR of each branch the task
@@ -97,10 +119,19 @@ pub async fn catch_up_task_using(domain: &DomainRuntime, github: &GitHub, source
         .filter(|pr| pr.state == PrState::Open || (is_final && pr.state == PrState::Closed)).collect();
     if is_final || prs.len() > 1 {
         for pr in prs {
+            let started = read_start();
             match source.observe(&pr.host, &pr.repository, pr.number).await {
-                Ok(facts) => { apply(domain, &state, pr, &facts)?; }
-                Err(reason) if is_final => anyhow::bail!("Could not read {}#{} before the final delivery: {reason}", pr.repository, pr.number),
-                Err(_) => (),
+                Ok(facts) => {
+                    if let Some((pr, _)) = identify(domain, pr, &pr.repository, started, Ok((facts.identity.as_ref(), &facts.head)))? {
+                        apply(domain, &*domain.state()?, &pr, &facts)?;
+                    }
+                }
+                Err(reason) => {
+                    identify(domain, pr, &pr.repository, started, Err(&reason))?;
+                    if is_final && !reason.not_found() {
+                        anyhow::bail!("Could not read {}#{} before the final delivery: {reason}", pr.repository, pr.number);
+                    }
+                }
             }
         }
     }
@@ -117,31 +148,43 @@ pub async fn reconcile(
     let state = domain.state()?;
     failures.forget_untracked(domain, &state);
     for pr in watched(&state) {
+        let started = read_start();
         let facts = match observer.observe(&pr.host, &pr.repository, pr.number).await {
             Ok(facts) => facts,
             Err(reason) => {
-                failures.failed(domain, &pr, &reason);
+                identify(domain, &pr, &pr.repository, started, Err(&reason))?;
+                if !reason.not_found() {
+                    failures.failed(domain, &pr, &reason.to_string());
+                }
                 continue;
             }
         };
         failures.recovered(domain, &pr);
+        let Some((pr, key)) = identify(domain, &pr, &pr.repository, started, Ok((facts.identity.as_ref(), &facts.head)))? else {
+            log!("{}#{} did not answer as the pull request Alondra has there: nothing of it is recorded or changed", pr.repository, pr.number);
+            continue;
+        };
+        let state = domain.state()?;
         apply(domain, &state, &pr, &facts)?;
         settle(domain, &pr, &facts)?;
         if facts.state == PrState::Open
             && let Some(OpenPrPending::Close { comment }) = pending(&state, &pr)
             && failures.close_due(&pr.id)
         {
-            match observer.close(&pr.host, &pr.repository, pr.number, comment).await {
+            match observer.close(&pr.host, &pr.repository, pr.number, &key, comment).await {
                 Ok(()) => {
                     failures.closed(domain, &pr);
-                    if let Ok(closed) = observer.observe(&pr.host, &pr.repository, pr.number).await {
+                    if let Ok(closed) = observer.observe(&pr.host, &pr.repository, pr.number).await
+                        && closed.identity.as_ref().is_some_and(|read| read.key == key)
+                    {
                         apply(domain, &*domain.state()?, &pr, &closed)?;
                     }
                 }
-                Err(reason) => failures.close_failed(domain, &pr, &reason),
+                Err(reason) => failures.close_failed(domain, &pr, &reason.to_string()),
             }
         }
     }
+    relocate(domain, observer, &mut failures.2).await?;
     Ok(())
 }
 
@@ -159,12 +202,22 @@ fn pending<'a>(state: &'a DomainState, pr: &PullRequest) -> Option<&'a OpenPrPen
 async fn deliver_held(domain: &DomainRuntime, observer: &impl PrObserver) -> Result<()> {
     let state = domain.state()?;
     for pr in watched(&state).into_iter().filter(|pr| matches!(pending(&state, pr), Some(OpenPrPending::Deliver { .. }))) {
-        let status = match observer.observe(&pr.host, &pr.repository, pr.number).await {
-            Ok(facts) => {
+        let started = read_start();
+        let read = observer.observe(&pr.host, &pr.repository, pr.number).await;
+        let checked = match &read {
+            Ok(facts) => identify(domain, &pr, &pr.repository, started, Ok((facts.identity.as_ref(), &facts.head)))?,
+            Err(reason) => identify(domain, &pr, &pr.repository, started, Err(reason))?,
+        };
+        let status = match (read, checked) {
+            (Ok(facts), Some((pr, _))) => {
                 apply(domain, &*domain.state()?, &pr, &facts)?;
                 facts.status()
             }
-            Err(reason) => {
+            (Ok(_), None) => {
+                log!("delivering the open PR {} as last known: its address answered as another pull request", pr.id);
+                OpenPrStatus { state: pr.state, head: pr.head.clone(), base: pr.base.clone(), mergeable: PrMergeable::Computing, checks: PrChecks::None }
+            }
+            (Err(reason), _) => {
                 log!("delivering the open PR {} as last known: GitHub did not report it: {reason}", pr.id);
                 OpenPrStatus { state: pr.state, head: pr.head.clone(), base: pr.base.clone(), mergeable: PrMergeable::Computing, checks: PrChecks::None }
             }
@@ -208,7 +261,7 @@ const CLOSE_WAIT_MAX_ROUNDS: u32 = 32;
 /// repeating itself. Closes that GitHub refused count apart: each failure
 /// doubles the rounds Alondra lets pass before it tries again.
 #[derive(Default)]
-pub struct ObservationFailures(BTreeMap<PrId, u32>, BTreeMap<PrId, CloseFailure>);
+pub struct ObservationFailures(BTreeMap<PrId, u32>, BTreeMap<PrId, CloseFailure>, BTreeMap<PrId, alondra_domain_rules::Millis>);
 
 #[derive(Default)]
 struct CloseFailure {
@@ -415,14 +468,26 @@ impl FakeObserver {
 }
 #[cfg(test)]
 impl PrObserver for FakeObserver {
-    fn observe<'a>(&'a self, _: &'a str, _: &'a str, number: u64) -> Observed<'a> {
+    /// A PR set without an identity answers as the fake GitHub's one pull request of that number,
+    /// at whichever address it is asked.
+    fn observe<'a>(&'a self, _: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         let facts = self.0.lock().unwrap().get(&number).cloned()
-            .unwrap_or_else(|| Err("no such PR".into()));
+            .unwrap_or_else(|| Err("no such PR".into()))
+            .map(|mut facts| {
+                facts.identity.get_or_insert_with(|| fake_identity(repository, number));
+                facts
+            })
+            .map_err(|reason| GhFailure::Exit(Some(1), reason));
         Box::pin(async move { facts })
     }
-    fn close<'a>(&'a self, _: &'a str, _: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
+    fn close<'a>(&'a self, _: &'a str, _: &'a str, number: u64, expected: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str) -> Closed<'a> {
         self.3.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let refused = self.2.lock().unwrap().clone();
+        let answered = self.0.lock().unwrap().get(&number).and_then(|facts| facts.as_ref().ok()).and_then(|facts| facts.identity.as_ref())
+            .map_or_else(|| crate::domain_merges::fake_key(number), |read| read.key.clone());
+        if answered != *expected {
+            return Box::pin(async move { Err(GhFailure::IdentityMismatch(format!("PR {number} is {} here", answered.0))) });
+        }
+        let refused = self.2.lock().unwrap().clone().map(|reason| GhFailure::Exit(Some(1), reason));
         if refused.is_none() {
             self.1.lock().unwrap().push((number, comment.to_owned()));
             if let Some(Ok(facts)) = self.0.lock().unwrap().get_mut(&number) {
@@ -431,6 +496,13 @@ impl PrObserver for FakeObserver {
         }
         Box::pin(async move { refused.map_or(Ok(()), Err) })
     }
+}
+
+/// The fake GitHub's one pull request of `number`, read at `repository`.
+#[cfg(test)]
+pub fn fake_identity(repository: &str, number: u64) -> ReadIdentity {
+    ReadIdentity { key: crate::domain_merges::fake_key(number), locator: alondra_domain_rules::ProviderLocator(format!("PR_{number}")),
+        repository: repository.to_owned(), head_ref: String::new() }
 }
 
 #[cfg(test)]
@@ -476,7 +548,7 @@ pub mod tests {
     fn facts(head: &str, state: PrState) -> PrFacts {
         PrFacts { head: head.into(), base: "main".into(), state,
             merged_head: (state == PrState::Merged).then(|| head.to_owned()), allowed_methods: vec![],
-            mergeable: PrMergeable::Computing, checks: PrChecks::None }
+            mergeable: PrMergeable::Computing, checks: PrChecks::None, identity: None }
     }
 
     /// A Task with a registered PR, a presented final and the user's merge authorization.
@@ -492,6 +564,7 @@ pub mod tests {
             task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
             number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
         });
+        verified(domain, 7);
         command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
             checklist: Vec::new(),
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
@@ -500,6 +573,17 @@ pub mod tests {
         command(domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "d".into(), pr_id: "pr".into(),
             expected_head: HEAD.into(), method: MergeMethod::Squash, despite_pending_message: false,
+        });
+    }
+
+    /// PR `number` of `owner/repo` as a first read of the fake GitHub leaves it: confirmed as the
+    /// fake's pull request of that number.
+    pub fn verified(domain: &DomainRuntime, number: u64) {
+        let read = super::fake_identity("owner/repo", number);
+        command(domain, Actor::System, &format!("verify-{number}"), Command::ObservePrAddress {
+            pr_id: domain.state().unwrap().pull_requests.values().find(|pr| pr.number == number).unwrap().id.clone(),
+            read: alondra_domain_rules::PrRead::Address { repository: "owner/repo".into() }, read_started_at: crate::pr_identity::read_start(),
+            verdict: alondra_domain_rules::PrAddressVerdict::Confirmed { key: read.key, locator: read.locator, current_repository: read.repository },
         });
     }
 
@@ -631,7 +715,7 @@ pub mod tests {
         let (fixture, domain) = open("closed-before-result");
         authorized(&domain);
         let program = fixture.0.join("gh");
-        std::fs::write(&program, format!("#!/bin/sh\nprintf '%s' '{{\"state\":\"CLOSED\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}'\n")).unwrap();
+        std::fs::write(&program, format!("#!/bin/sh\nprintf '%s' '{{\"fullDatabaseId\":\"7\",\"id\":\"PR_7\",\"url\":\"https://github.com/owner/repo/pull/7\",\"headRefName\":\"work\",\"state\":\"CLOSED\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}'\n")).unwrap();
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         catch_up_task(&domain, &github(GhCli::at(program)), &"t".into(), true).await.unwrap();
         assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Closed);
@@ -760,7 +844,7 @@ pub mod tests {
                     if let Some(release) = release {
                         release
                             .await
-                            .map_err(|_| "test released observer was dropped".to_owned())?;
+                            .map_err(|_| GhFailure::Unreadable("test released observer was dropped".to_owned()))?;
                     }
                     Ok(facts(HEAD, PrState::Open))
                 })

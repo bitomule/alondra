@@ -235,7 +235,7 @@ async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_app
 #[tokio::test]
 async fn an_auto_merge_goes_through_the_claims_checks() {
     let (_home, domain, github) = presented("auto-base", true);
-    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), head_ref: String::new(), base: "develop".into(), checks: Checks::Passed, passed: BTreeSet::new(), merge_state: MergeState::Clean }));
+    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), head_ref: String::new(), base: "develop".into(), checks: Checks::Passed, passed: BTreeSet::new(), merge_state: MergeState::Clean, identity: None }));
     assert!(now().merge_due(&domain, &github).await.unwrap());
     assert!(github.merged.lock().unwrap().is_empty(), "GitHub's base differs from the registered one: the claim refuses");
     assert_eq!(domain.state().unwrap().merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Unclaimed);
@@ -363,7 +363,7 @@ case "$*" in
   *rules/branches*) printf 'HTTP/2.0 200 OK\r\n\r\n[]';;
   *isDraft*) echo false;;
   *"pr merge"*) touch {merged};;
-  *statusCheckRollup*) if [ -f {merged} ]; then printf '%s' '{{"state":"MERGED","headRefOid":"{HEAD}","baseRefName":"main","statusCheckRollup":[]}}'; else printf '%s' '{view}'; fi;;
+  *statusCheckRollup*) if [ -f {merged} ]; then printf '%s' '{{"fullDatabaseId":"7","id":"PR_7","url":"https://github.com/owner/repo/pull/7","headRefName":"work","state":"MERGED","headRefOid":"{HEAD}","baseRefName":"main","statusCheckRollup":[]}}'; else printf '%s' '{view}'; fi;;
 esac
 "#, log = log.display(), merged = merged.display())).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -371,7 +371,7 @@ esac
 }
 
 fn private_repo_pr(home: &Home, merge_state: &str, mergeable: &str) -> (GhCli, std::path::PathBuf) {
-    private_repo_gh(home, &format!(r#"{{"state":"OPEN","headRefOid":"{HEAD}","baseRefName":"main","statusCheckRollup":[],"mergeable":"{mergeable}","mergeStateStatus":"{merge_state}"}}"#))
+    private_repo_gh(home, &format!(r#"{{"fullDatabaseId":"7","id":"PR_7","url":"https://github.com/owner/repo/pull/7","headRefName":"work","state":"OPEN","headRefOid":"{HEAD}","baseRefName":"main","statusCheckRollup":[],"mergeable":"{mergeable}","mergeStateStatus":"{merge_state}"}}"#))
 }
 
 #[tokio::test]
@@ -656,7 +656,7 @@ case "$*" in
   *statusCheckRollup*)
     state=OPEN; [ -e '{merged}' ] && state=MERGED
     merge_state=CLEAN; [ -e '{tries}' ] && merge_state={refused}
-    printf '{{"state":"%s","headRefOid":"{HEAD}","baseRefName":"main","mergeStateStatus":"%s","statusCheckRollup":[{{"name":"build","status":"COMPLETED","conclusion":"SUCCESS"}}]}}' "$state" "$merge_state";;
+    printf '{{"fullDatabaseId":"7","id":"PR_7","url":"https://github.com/owner/repo/pull/7","headRefName":"work","state":"%s","headRefOid":"{HEAD}","baseRefName":"main","mergeStateStatus":"%s","statusCheckRollup":[{{"name":"build","status":"COMPLETED","conclusion":"SUCCESS"}}]}}' "$state" "$merge_state";;
 esac
 "#, tries = tries.display(), merged = merged.display())).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();

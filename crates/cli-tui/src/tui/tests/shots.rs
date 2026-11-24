@@ -170,7 +170,8 @@ fn tui_shots() {
         card["key"] = format!("card:{CARD}").into();
         uncheckable.on_msg(Msg::ViewCard { key: format!("card:{CARD}"), result: Ok(serde_json::from_value(card).unwrap()) });
         let mut joined = answered(lang, Outcome::refused(&Refusal::PrSuperseded, view_lang));
-        for (shot, app) in [("13-pr-uncheckable", &mut uncheckable), ("14-joined-copy-refused", &mut joined)] {
+        let mut not_checked = answered(lang, Outcome::refused(&Refusal::PrNotCheckedYet, view_lang));
+        for (shot, app) in [("13-pr-uncheckable", &mut uncheckable), ("14-joined-copy-refused", &mut joined), ("15-not-checked-yet-refused", &mut not_checked)] {
             std::fs::write(out.join(format!("{shot}-{name}.html")), page(app)).unwrap();
             std::fs::write(out.join(format!("{shot}-light-{name}.html")), light_page(app)).unwrap();
         }

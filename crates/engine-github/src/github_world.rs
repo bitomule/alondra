@@ -1,18 +1,23 @@
 //! One GitHub for the whole daemon: merging, observing, reading and the images of a description
 //! all see the same pull requests, so a scenario changes GitHub once and every part of the daemon
 //! finds it changed. It lets happen what GitHub lets happen: a PR merges into whatever base it
-//! has, however stale, and someone else can merge or close a PR at any time.
+//! has, however stale, and someone else can merge or close a PR at any time. A repository can
+//! move (its old name redirects), have its old name taken by another one, be deleted, or GitHub can
+//! stop answering; every pull request has a key no move changes, and a change aimed at one key
+//! never reaches another pull request at the same address.
 use alondra_daemon_support::locks::Poisonable as _;
-use crate::domain_github::{Closed, GhFailure, Observed, PrFacts, PrObserver};
+use crate::domain_github::{Closed, GhFailure, Located, Observed, PrFacts, PrObserver, ReadIdentity};
 use crate::domain_merges::{Checks, MergeState, Pending, PrMerger, Status};
 use crate::pr_images::{Failure, Fetch, GitHubImages};
-use alondra_domain_rules::{MergeMethod, PrChecks, PrMergeable, PrState, PullRequest};
+use alondra_domain_rules::{MergeMethod, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey, PullRequest, normalize_pr_repository};
 use alondra_engine_ports::github::{AuthoredPr, Gh, Read};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 struct Pr {
+    key: String,
+    locator: String,
     head_ref: String,
     head: String,
     base: String,
@@ -31,16 +36,77 @@ struct Pr {
 }
 
 struct World {
-    prs: BTreeMap<u64, Pr>,
+    /// Each pull request under the repository that holds it now.
+    prs: BTreeMap<(String, u64), Pr>,
+    /// The old name of a moved or renamed repository and where GitHub redirects it.
+    moved: BTreeMap<String, String>,
+    /// Repositories that no longer exist or that the account lost access to.
+    gone: BTreeSet<String>,
+    /// GitHub answers nothing at all: a network failure.
+    unreachable: bool,
     default_branch: String,
     repository: String,
     delete_head_on_merge: bool,
     commits: u64,
+    keys: u64,
     calls: Vec<String>,
     reads: Vec<String>,
     merges: Vec<(u64, String, MergeMethod)>,
     retargets: Vec<(u64, String)>,
     closes: Vec<(u64, String)>,
+}
+
+impl World {
+    /// The repository a name leads to now, after GitHub's redirects, unless it is gone.
+    fn resolve(&self, repository: &str) -> Option<String> {
+        let mut current = normalize_pr_repository(repository);
+        for _ in 0..=self.moved.len() {
+            match self.moved.get(&current) {
+                Some(next) => current.clone_from(next),
+                None => break,
+            }
+        }
+        (!self.gone.contains(&current)).then_some(current)
+    }
+
+    /// The pull request an address reaches, as GitHub answers it: through the redirect of a moved
+    /// repository, "could not resolve" when nothing is there, nothing at all while unreachable.
+    fn lookup(&self, repository: &str, number: u64) -> Result<(String, &Pr), GhFailure> {
+        if self.unreachable {
+            return Err(offline());
+        }
+        let Some(current) = self.resolve(repository) else {
+            return Err(GhFailure::NotFound(format!("Could not resolve to a Repository with the name '{repository}'.")));
+        };
+        match self.prs.get(&(current.clone(), number)) {
+            Some(pr) => Ok((current, pr)),
+            None => Err(GhFailure::NotFound(format!("Could not resolve to a PullRequest with the number of {number}."))),
+        }
+    }
+
+    fn lookup_mut(&mut self, repository: &str, number: u64) -> Result<&mut Pr, GhFailure> {
+        let (current, _) = self.lookup(repository, number)?;
+        Ok(self.prs.get_mut(&(current, number)).expect("the pull request just found"))
+    }
+
+    /// A change GitHub makes only to the pull request the caller read there: an address that
+    /// answers with another one changes nothing.
+    fn checked(&mut self, repository: &str, number: u64, expected: &ProviderPrKey) -> Result<&mut Pr, GhFailure> {
+        let pr = self.lookup_mut(repository, number)?;
+        if pr.key != expected.0 {
+            return Err(GhFailure::IdentityMismatch(format!("{repository}#{number} is pull request {}, not {}", pr.key, expected.0)));
+        }
+        Ok(pr)
+    }
+
+    fn identity(&self, repository: &str, number: u64) -> Result<ReadIdentity, GhFailure> {
+        let (current, pr) = self.lookup(repository, number)?;
+        Ok(ReadIdentity { key: ProviderPrKey(pr.key.clone()), locator: ProviderLocator(pr.locator.clone()), repository: current, head_ref: pr.head_ref.clone() })
+    }
+}
+
+fn offline() -> GhFailure {
+    GhFailure::Exit(Some(1), "error connecting to api.github.com".into())
 }
 
 pub struct GithubWorld(Mutex<World>);
@@ -55,10 +121,14 @@ impl GithubWorld {
     pub fn new() -> Self {
         Self(Mutex::new(World {
             prs: BTreeMap::new(),
+            moved: BTreeMap::new(),
+            gone: BTreeSet::new(),
+            unreachable: false,
             default_branch: "main".into(),
             repository: "owner/repo".into(),
             delete_head_on_merge: false,
             commits: 0,
+            keys: 0,
             calls: Vec::new(),
             reads: Vec::new(),
             merges: Vec::new(),
@@ -71,44 +141,107 @@ impl GithubWorld {
         self.0.lock_or_recover("a test's fixture")
     }
 
+    /// PR `number` of the world's repository, as it is now.
     fn change<T>(&self, number: u64, change: impl FnOnce(&mut Pr) -> T) -> T {
-        change(self.world().prs.get_mut(&number).unwrap_or_else(|| panic!("the world has no PR {number}")))
+        let mut world = self.world();
+        let key = (world.repository.clone(), number);
+        change(world.prs.get_mut(&key).unwrap_or_else(|| panic!("the world has no PR {number}")))
     }
 
     /// The repository the world's pull requests belong to, as `owner/repo`.
     pub fn set_repository(&self, repository: &str) {
-        self.world().repository = repository.into();
+        self.world().repository = normalize_pr_repository(repository);
     }
 
     /// Opens PR `number` from branch `head_ref` into `base`; a PR whose base is another PR's head
     /// branch is stacked on it. Returns the head commit.
     pub fn open_pr(&self, number: u64, head_ref: &str, base: &str) -> String {
+        let repository = self.world().repository.clone();
+        self.open_pr_in(&repository, number, head_ref, base)
+    }
+
+    /// `open_pr` in another repository than the world's.
+    pub fn open_pr_in(&self, repository: &str, number: u64, head_ref: &str, base: &str) -> String {
         let head = {
             let mut world = self.world();
             world.commits += 1;
             format!("{:040x}", world.commits)
         };
-        self.open_pr_at(number, head_ref, base, &head);
+        self.open_at(repository, number, head_ref, base, &head);
         head
     }
 
     /// `open_pr` with the head commit a test already knows.
     pub fn open_pr_at(&self, number: u64, head_ref: &str, base: &str, head: &str) {
-        let head = head.to_owned();
-        self.world().prs.insert(number, Pr {
-            head_ref: head_ref.into(), head, base: base.into(), state: PrState::Open, merged_into: None,
+        let repository = self.world().repository.clone();
+        self.open_at(&repository, number, head_ref, base, head);
+    }
+
+    fn open_at(&self, repository: &str, number: u64, head_ref: &str, base: &str, head: &str) {
+        let mut world = self.world();
+        world.keys += 1;
+        let key = format!("{}", 9000 + world.keys);
+        let repository = normalize_pr_repository(repository);
+        world.prs.insert((repository, number), Pr {
+            locator: format!("PR_node{key}"), key,
+            head_ref: head_ref.into(), head: head.to_owned(), base: base.into(), state: PrState::Open, merged_into: None,
             draft: false, checks: Checks::Passed, merge_state: MergeState::Clean, title: format!("Pull request {number}"),
             body: String::new(), required: Vec::new(), bypassable: Vec::new(), merge_failure: None, no_access: false,
             methods: vec![MergeMethod::Squash, MergeMethod::Merge, MergeMethod::Rebase],
         });
     }
 
+    /// The key GitHub has for PR `number` of the world's repository.
+    pub fn key_of(&self, number: u64) -> ProviderPrKey {
+        ProviderPrKey(self.change(number, |pr| pr.key.clone()))
+    }
+
+    /// GitHub moves or renames `from` to `to`: its pull requests keep their numbers and keys, and
+    /// the old name redirects to the new one until someone takes it again.
+    pub fn move_repository(&self, from: &str, to: &str) {
+        let (from, to) = (normalize_pr_repository(from), normalize_pr_repository(to));
+        let mut world = self.world();
+        let moving: Vec<(String, u64)> = world.prs.keys().filter(|(repository, _)| *repository == from).cloned().collect();
+        for key in moving {
+            let pr = world.prs.remove(&key).expect("a pull request of the moved repository");
+            world.prs.insert((to.clone(), key.1), pr);
+        }
+        for target in world.moved.values_mut().filter(|target| **target == from) {
+            target.clone_from(&to);
+        }
+        world.moved.remove(&to);
+        world.moved.insert(from.clone(), to.clone());
+        if world.repository == from {
+            world.repository = to;
+        }
+    }
+
+    /// Someone creates a repository with an old name: GitHub no longer redirects it.
+    pub fn reuse_name(&self, repository: &str) {
+        let repository = normalize_pr_repository(repository);
+        let mut world = self.world();
+        world.moved.remove(&repository);
+        world.gone.remove(&repository);
+    }
+
+    /// The repository is deleted, or the account loses access to it.
+    pub fn delete_repository(&self, repository: &str) {
+        self.world().gone.insert(normalize_pr_repository(repository));
+    }
+
+    /// GitHub answers nothing while `on`: every read and change fails as a network does.
+    pub fn set_unreachable(&self, on: bool) {
+        self.world().unreachable = on;
+    }
+
     /// A new commit on the PR's branch; returns the new head.
     pub fn push_commit(&self, number: u64) -> String {
-        let mut world = self.world();
-        world.commits += 1;
-        let head = format!("{:040x}", world.commits);
-        world.prs.get_mut(&number).unwrap_or_else(|| panic!("the world has no PR {number}")).head.clone_from(&head);
+        let head = {
+            let mut world = self.world();
+            world.commits += 1;
+            format!("{:040x}", world.commits)
+        };
+        self.change(number, |pr| pr.head.clone_from(&head));
         head
     }
 
@@ -146,20 +279,21 @@ impl GithubWorld {
     /// Someone else merges the PR on GitHub, into the base it has now.
     pub fn merge_externally(&self, number: u64) {
         let mut world = self.world();
-        merge(&mut world, number);
+        let repository = world.repository.clone();
+        merge(&mut world, &repository, number);
     }
     /// Someone else closes the PR on GitHub.
     pub fn close_externally(&self, number: u64) {
         self.change(number, |pr| pr.state = PrState::Closed);
     }
 
-    /// Every `gh` call Alondra made that changes something, in order, as `gh` would be typed:
-    /// `edit 8 --base main`, `merge 8`, `ready 8`, `close 8`.
     /// The searches and branch reads the daemon made, in order: what a sweep of open PRs asks.
     pub fn sweep_reads(&self) -> Vec<String> {
         self.world().reads.clone()
     }
 
+    /// Every `gh` call Alondra made that changes something, in order, as `gh` would be typed:
+    /// `edit 8 --base main`, `merge 8`, `ready 8`, `close 8`.
     pub fn gh_calls(&self) -> Vec<String> {
         self.world().calls.clone()
     }
@@ -178,29 +312,34 @@ impl GithubWorld {
     pub fn state_of(&self, number: u64) -> PrState {
         self.change(number, |pr| pr.state)
     }
+    /// The state of PR `number` of `repository`, wherever it lives now.
+    pub fn state_in(&self, repository: &str, number: u64) -> Option<PrState> {
+        self.world().lookup(repository, number).ok().map(|(_, pr)| pr.state)
+    }
     /// The branch a merged PR landed in: its base at merge time.
     pub fn merged_into(&self, number: u64) -> Option<String> {
         self.change(number, |pr| pr.merged_into.clone())
     }
 
-    fn merge_as(&self, pr: &PullRequest, head: &str, method: MergeMethod, bypass: bool) -> Result<(), GhFailure> {
+    fn merge_as(&self, pr: &PullRequest, expected: &ProviderPrKey, head: &str, method: MergeMethod, bypass: bool) -> Result<(), GhFailure> {
         let mut world = self.world();
-        world.calls.push(if bypass { format!("merge {} --admin", pr.number) } else { format!("merge {}", pr.number) });
-        let result = match world.prs.get(&pr.number) {
-            None => Err(unknown()),
-            Some(github) if github.state != PrState::Open => Err(GhFailure::Exit(Some(1), "Pull request is not open".into())),
-            Some(github) if github.head != head => Err(GhFailure::Exit(Some(1), "Head branch was modified. Review and try the merge again.".into())),
-            Some(github) if github.merge_failure.is_some() => Err(github.merge_failure.clone().unwrap_or_else(unknown)),
-            Some(github) if github.draft => Err(GhFailure::Exit(Some(1), "Pull request is still a draft".into())),
-            Some(github) if github.merge_state == MergeState::Conflicting => Err(GhFailure::Exit(Some(1), "Pull request is not mergeable".into())),
-            Some(github) if github.checks != Checks::Passed && missing_check(github, bypass).is_some() => Err(GhFailure::Exit(Some(1),
+        let github = world.checked(&pr.repository, pr.number, expected)?;
+        let result = match github {
+            github if github.state != PrState::Open => Err(GhFailure::Exit(Some(1), "Pull request is not open".into())),
+            github if github.head != head => Err(GhFailure::Exit(Some(1), "Head branch was modified. Review and try the merge again.".into())),
+            github if github.merge_failure.is_some() => Err(github.merge_failure.clone().unwrap_or_else(offline)),
+            github if github.draft => Err(GhFailure::Exit(Some(1), "Pull request is still a draft".into())),
+            github if github.merge_state == MergeState::Conflicting => Err(GhFailure::Exit(Some(1), "Pull request is not mergeable".into())),
+            github if github.checks != Checks::Passed && missing_check(github, bypass).is_some() => Err(GhFailure::Exit(Some(1),
                 format!("Pull request #{} is not mergeable: Required status check \"{}\" is expected.", pr.number,
                     missing_check(github, bypass).unwrap_or_default()))),
-            Some(_) => Ok(()),
+            _ => Ok(()),
         };
+        world.calls.push(if bypass { format!("merge {} --admin", pr.number) } else { format!("merge {}", pr.number) });
         if result.is_ok() {
             world.merges.push((pr.number, head.to_owned(), method));
-            merge(&mut world, pr.number);
+            let repository = world.resolve(&pr.repository).unwrap_or_default();
+            merge(&mut world, &repository, pr.number);
         }
         result
     }
@@ -211,29 +350,26 @@ fn missing_check(pr: &Pr, bypass: bool) -> Option<String> {
     pr.required.iter().find(|check| !bypass || !pr.bypassable.contains(check)).cloned()
 }
 
-fn merge(world: &mut World, number: u64) {
-    let Some(merged) = world.prs.get_mut(&number) else { return };
+fn merge(world: &mut World, repository: &str, number: u64) {
+    let Some(merged) = world.prs.get_mut(&(repository.to_owned(), number)) else { return };
     merged.state = PrState::Merged;
     merged.merged_into = Some(merged.base.clone());
     let (head_ref, base) = (merged.head_ref.clone(), merged.base.clone());
     if world.delete_head_on_merge {
-        for dependant in world.prs.values_mut().filter(|pr| pr.state == PrState::Open && pr.base == head_ref) {
-            dependant.base.clone_from(&base);
+        for (_, pr) in world.prs.iter_mut().filter(|((r, _), pr)| r == repository && pr.state == PrState::Open && pr.base == head_ref) {
+            pr.base.clone_from(&base);
         }
     }
 }
 
-fn unknown() -> GhFailure {
-    GhFailure::Exit(Some(1), "no such PR".into())
-}
-
 impl PrMerger for GithubWorld {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> {
-        let status = self.world().prs.get(&pr.number).map(|github| Status {
+        let world = self.world();
+        let status = world.lookup(&pr.repository, pr.number).map(|(_, github)| Status {
             state: github.state, head: github.head.clone(), head_ref: github.head_ref.clone(), base: github.base.clone(), checks: github.checks.clone(),
-            passed: BTreeSet::new(), merge_state: github.merge_state,
+            passed: BTreeSet::new(), merge_state: github.merge_state, identity: world.identity(&pr.repository, pr.number).ok(),
         });
-        Box::pin(async move { status.ok_or_else(unknown) })
+        Box::pin(async move { status })
     }
 
     fn default_branch<'a>(&'a self, _pr: &'a PullRequest) -> Pending<'a, String> {
@@ -241,32 +377,34 @@ impl PrMerger for GithubWorld {
         Box::pin(async move { Ok(base) })
     }
 
-    fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()> {
+    fn retarget<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, base: &'a str) -> Pending<'a, ()> {
         let mut world = self.world();
-        world.calls.push(format!("edit {} --base {base}", pr.number));
-        world.retargets.push((pr.number, base.to_owned()));
-        let result = match world.prs.get_mut(&pr.number) {
-            Some(github) if github.state == PrState::Open => {
+        let result = match world.checked(&pr.repository, pr.number, expected) {
+            Ok(github) if github.state == PrState::Open => {
                 github.base = base.to_owned();
                 Ok(())
             }
-            Some(_) => Err(GhFailure::Exit(Some(1), "Cannot change the base branch of a closed pull request".into())),
-            None => Err(unknown()),
+            Ok(_) => Err(GhFailure::Exit(Some(1), "Cannot change the base branch of a closed pull request".into())),
+            Err(failure) => Err(failure),
         };
+        if !matches!(result, Err(GhFailure::IdentityMismatch(_))) {
+            world.calls.push(format!("edit {} --base {base}", pr.number));
+            world.retargets.push((pr.number, base.to_owned()));
+        }
         Box::pin(async move { result })
     }
 
-    fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
-        Box::pin(std::future::ready(self.merge_as(pr, head, method, false)))
+    fn merge<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        Box::pin(std::future::ready(self.merge_as(pr, expected, head, method, false)))
     }
 
-    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
-        Box::pin(std::future::ready(self.merge_as(pr, head, method, true)))
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        Box::pin(std::future::ready(self.merge_as(pr, expected, head, method, true)))
     }
 
     fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, _base: &'a str) -> Pending<'a, Vec<String>> {
-        let bypassable = self.world().prs.get(&pr.number).map(|github| github.bypassable.clone());
-        Box::pin(async move { bypassable.ok_or_else(unknown) })
+        let bypassable = self.world().lookup(&pr.repository, pr.number).map(|(_, github)| github.bypassable.clone());
+        Box::pin(async move { bypassable })
     }
 
     fn in_queue<'a>(&'a self, _pr: &'a PullRequest) -> Pending<'a, bool> {
@@ -274,31 +412,34 @@ impl PrMerger for GithubWorld {
     }
 
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
-        let draft = self.world().prs.get(&pr.number).map(|github| github.draft);
-        Box::pin(async move { draft.ok_or_else(unknown) })
+        let draft = self.world().lookup(&pr.repository, pr.number).map(|(_, github)| github.draft);
+        Box::pin(async move { draft })
     }
 
-    fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> {
+    fn ready<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey) -> Pending<'a, ()> {
         let mut world = self.world();
-        world.calls.push(format!("ready {}", pr.number));
-        let found = world.prs.get_mut(&pr.number).map(|github| github.draft = false);
-        Box::pin(async move { found.ok_or_else(unknown) })
+        let found = world.checked(&pr.repository, pr.number, expected).map(|github| github.draft = false);
+        if !matches!(found, Err(GhFailure::IdentityMismatch(_))) {
+            world.calls.push(format!("ready {}", pr.number));
+        }
+        Box::pin(async move { found })
     }
 
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, _base: &'a str) -> Pending<'a, Vec<String>> {
-        let required = self.world().prs.get(&pr.number).map(|github| github.required.clone());
-        Box::pin(async move { required.ok_or_else(unknown) })
+        let required = self.world().lookup(&pr.repository, pr.number).map(|(_, github)| github.required.clone());
+        Box::pin(async move { required })
     }
 
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
-        let allowed = self.world().prs.get(&pr.number).map(|github| !github.no_access);
-        Box::pin(async move { allowed.ok_or_else(unknown) })
+        let allowed = self.world().lookup(&pr.repository, pr.number).map(|(_, github)| !github.no_access);
+        Box::pin(async move { allowed })
     }
 }
 
 impl PrObserver for GithubWorld {
-    fn observe<'a>(&'a self, _host: &'a str, _repository: &'a str, number: u64) -> Observed<'a> {
-        let facts = self.world().prs.get(&number).map(|github| PrFacts {
+    fn observe<'a>(&'a self, _host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
+        let world = self.world();
+        let facts = world.lookup(repository, number).map(|(_, github)| PrFacts {
             head: github.head.clone(),
             base: github.base.clone(),
             merged_head: (github.state == PrState::Merged).then(|| github.head.clone()),
@@ -317,25 +458,44 @@ impl PrObserver for GithubWorld {
                 Checks::Failed(names) => PrChecks::Failed { names: names.clone() },
                 Checks::ActionRequired(names) => PrChecks::ActionRequired { names: names.clone() },
             },
+            identity: world.identity(repository, number).ok(),
         });
-        Box::pin(async move { facts.ok_or_else(|| "no such PR".to_owned()) })
+        Box::pin(async move { facts })
     }
 
-    fn close<'a>(&'a self, _host: &'a str, _repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
+    fn close<'a>(&'a self, _host: &'a str, repository: &'a str, number: u64, expected: &'a ProviderPrKey, comment: &'a str) -> Closed<'a> {
         let mut world = self.world();
-        world.calls.push(format!("close {number}"));
-        world.closes.push((number, comment.to_owned()));
-        let closed = world.prs.get_mut(&number).map(|github| {
+        let closed = world.checked(repository, number, expected).map(|github| {
             if github.state == PrState::Open {
                 github.state = PrState::Closed;
             }
         });
-        Box::pin(async move { closed.ok_or_else(|| "no such PR".to_owned()) })
+        if !matches!(closed, Err(GhFailure::IdentityMismatch(_))) {
+            world.calls.push(format!("close {number}"));
+            world.closes.push((number, comment.to_owned()));
+        }
+        Box::pin(async move { closed })
+    }
+
+    fn relocate<'a>(&'a self, _host: &'a str, locator: &'a ProviderLocator) -> Located<'a> {
+        let world = self.world();
+        let found = if world.unreachable {
+            Err(offline())
+        } else {
+            world.prs.iter().find(|(_, pr)| pr.locator == locator.0)
+                .filter(|((repository, _), _)| !world.gone.contains(repository))
+                .map(|((repository, number), _)| world.identity(repository, *number))
+                .unwrap_or_else(|| Err(GhFailure::NotFound(format!("Could not resolve to a node with the global id of '{}'", locator.0))))
+        };
+        Box::pin(async move { found })
     }
 }
 
-fn number_of(url: &str) -> Option<u64> {
-    url.trim_end_matches('/').rsplit('/').next()?.parse().ok()
+/// The repository and number of a pull request's URL.
+fn address_of(url: &str) -> Option<(String, u64)> {
+    let path = url.split_once("://")?.1.split_once('/')?.1;
+    let (repository, number) = path.split_once("/pull/")?;
+    Some((repository.to_owned(), number.trim_end_matches('/').parse().ok()?))
 }
 
 fn rollup(checks: &Checks) -> Vec<Value> {
@@ -357,25 +517,35 @@ impl Gh for GithubWorld {
         let mut world = self.world();
         world.reads.push("search open PRs".into());
         let world = world;
-        let found = world.prs.iter().filter(|(_, pr)| pr.state == PrState::Open).map(|(number, _)| AuthoredPr {
-            repository: world.repository.clone(), number: *number, url: format!("https://github.com/{}/pull/{number}", world.repository),
-        }).collect();
-        Box::pin(async { Ok(found) })
+        let found = if world.unreachable {
+            Err(offline())
+        } else {
+            Ok(world.prs.iter().filter(|((repository, _), pr)| pr.state == PrState::Open && !world.gone.contains(repository))
+                .map(|((repository, number), _)| AuthoredPr {
+                    repository: repository.clone(), number: *number, url: format!("https://github.com/{repository}/pull/{number}"),
+                }).collect())
+        };
+        Box::pin(async { found })
     }
     fn head_ref<'a>(&'a self, url: &'a str) -> Read<'a, Result<String, GhFailure>> {
-        let found = number_of(url).and_then(|number| {
-            let mut world = self.world();
-            world.reads.push(format!("branch of PR {number}"));
-            world.prs.get(&number).map(|pr| pr.head_ref.clone())
-        });
-        Box::pin(async move { found.ok_or_else(|| GhFailure::Unreadable(format!("the world has no PR at {url}"))) })
+        let found = match address_of(url) {
+            Some((repository, number)) => {
+                let mut world = self.world();
+                world.reads.push(format!("branch of PR {number}"));
+                world.lookup(&repository, number).map(|(_, pr)| pr.head_ref.clone())
+            }
+            None => Err(GhFailure::Unreadable(format!("{url} is not a pull request"))),
+        };
+        Box::pin(async move { found })
     }
 }
 
 impl GithubWorld {
+    /// `gh pr view --json` of the pull request at `url`, after GitHub's redirect.
     fn viewed(&self, url: &str) -> Option<Value> {
         let world = self.world();
-        let pr = world.prs.get(&number_of(url)?)?;
+        let (repository, number) = address_of(url)?;
+        let (current, pr) = world.lookup(&repository, number).ok()?;
         let (mergeable, status) = match pr.merge_state {
             MergeState::Clean => ("MERGEABLE", "CLEAN"),
             MergeState::Conflicting => ("CONFLICTING", "DIRTY"),
@@ -387,6 +557,7 @@ impl GithubWorld {
             "additions": 1, "deletions": 0, "changedFiles": 1, "isDraft": pr.draft,
             "state": match pr.state { PrState::Merged => "MERGED", PrState::Closed => "CLOSED", _ => "OPEN" },
             "mergeable": mergeable, "mergeStateStatus": status, "statusCheckRollup": rollup(&pr.checks),
+            "fullDatabaseId": pr.key, "id": pr.locator, "url": format!("https://github.com/{current}/pull/{number}"),
         }))
     }
 }
@@ -401,9 +572,9 @@ impl GitHubImages for GithubWorld {
     fn repository<'a>(&'a self, _host: &'a str, _repository: &'a str) -> Fetch<'a, ()> {
         Box::pin(async { Ok(()) })
     }
-    fn body_html<'a>(&'a self, _host: &'a str, _repository: &'a str, number: u64) -> Fetch<'a, String> {
-        let body = self.world().prs.get(&number).map(|pr| pr.body.clone());
-        Box::pin(async move { body.ok_or(Failure::NotFound) })
+    fn body_html<'a>(&'a self, _host: &'a str, repository: &'a str, number: u64) -> Fetch<'a, String> {
+        let body = self.world().lookup(repository, number).map(|(_, pr)| pr.body.clone()).map_err(|_| Failure::NotFound);
+        Box::pin(async move { body })
     }
     fn download<'a>(&'a self, _url: &'a str) -> Fetch<'a, Vec<u8>> {
         Box::pin(async { Err(Failure::NotFound) })

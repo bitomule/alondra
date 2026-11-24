@@ -1,7 +1,7 @@
 //! GitHub as the engine sees it: observing, merging and reading pull requests, and the images their
 //! descriptions cite. `github-gh` implements it with the Mac's `gh`; a scenario registers a GitHub
 //! of its own in its place.
-use alondra_domain_rules::{MergeMethod, OpenPrStatus, PrChecks, PrMergeable, PrState, PullRequest};
+use alondra_domain_rules::{MergeMethod, OpenPrStatus, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey, PullRequest};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -40,6 +40,20 @@ pub struct PrFacts {
     pub allowed_methods: Vec<MergeMethod>,
     pub mergeable: PrMergeable,
     pub checks: PrChecks,
+    /// Which pull request answered, when GitHub said.
+    pub identity: Option<ReadIdentity>,
+}
+
+/// Which pull request a read reached, in the same answer as everything else it read: the
+/// adapter's stable key and locator, the address GitHub serves it at now (after any redirect of a
+/// moved or renamed repository) and the branch it comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadIdentity {
+    pub key: ProviderPrKey,
+    pub locator: ProviderLocator,
+    /// `owner/repo`, lower case.
+    pub repository: String,
+    pub head_ref: String,
 }
 
 impl PrFacts {
@@ -49,14 +63,21 @@ impl PrFacts {
     }
 }
 
-pub type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, String>> + Send + 'a>>;
-pub type Closed<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+pub type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, GhFailure>> + Send + 'a>>;
+pub type Closed<'a> = Pin<Box<dyn Future<Output = Result<(), GhFailure>> + Send + 'a>>;
+pub type Located<'a> = Pin<Box<dyn Future<Output = Result<ReadIdentity, GhFailure>> + Send + 'a>>;
 
 pub trait PrObserver: Send + Sync + 'static {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a>;
-    /// Closes the PR on GitHub with `comment`.
-    fn close<'a>(&'a self, _host: &'a str, _repository: &'a str, _number: u64, _comment: &'a str) -> Closed<'a> {
-        Box::pin(async { Err("this observer cannot close pull requests".to_owned()) })
+    /// Closes the PR at this address on GitHub with `comment`, only while it is `expected`: the
+    /// caller read that key there in this same round. An answer from another pull request is
+    /// [`GhFailure::IdentityMismatch`] and closes nothing.
+    fn close<'a>(&'a self, _host: &'a str, _repository: &'a str, _number: u64, _expected: &'a ProviderPrKey, _comment: &'a str) -> Closed<'a> {
+        Box::pin(async { Err(GhFailure::Unreadable("this observer cannot close pull requests".to_owned())) })
+    }
+    /// Finds the pull request by its locator, whatever its address is now.
+    fn relocate<'a>(&'a self, _host: &'a str, _locator: &'a ProviderLocator) -> Located<'a> {
+        Box::pin(async { Err(GhFailure::Unreadable("this observer cannot find pull requests by their locator".to_owned())) })
     }
 }
 
@@ -64,8 +85,11 @@ impl PrObserver for Arc<dyn PrObserver> {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         (**self).observe(host, repository, number)
     }
-    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
-        (**self).close(host, repository, number, comment)
+    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a ProviderPrKey, comment: &'a str) -> Closed<'a> {
+        (**self).close(host, repository, number, expected, comment)
+    }
+    fn relocate<'a>(&'a self, host: &'a str, locator: &'a ProviderLocator) -> Located<'a> {
+        (**self).relocate(host, locator)
     }
 }
 
@@ -73,8 +97,11 @@ impl<T: PrObserver> PrObserver for Arc<T> {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         (**self).observe(host, repository, number)
     }
-    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
-        (**self).close(host, repository, number, comment)
+    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a ProviderPrKey, comment: &'a str) -> Closed<'a> {
+        (**self).close(host, repository, number, expected, comment)
+    }
+    fn relocate<'a>(&'a self, host: &'a str, locator: &'a ProviderLocator) -> Located<'a> {
+        (**self).relocate(host, locator)
     }
 }
 
@@ -90,6 +117,11 @@ pub enum GhFailure {
     Http(u16, String),
     /// `gh` answered something Alondra cannot read.
     Unreadable(String),
+    /// GitHub answered for certain that nothing is there, or that this account cannot see it.
+    NotFound(String),
+    /// The address answered with another pull request than the one the action was for: nothing
+    /// was done.
+    IdentityMismatch(String),
 }
 
 impl GhFailure {
@@ -106,6 +138,10 @@ impl GhFailure {
         matches!(self, Self::TimedOut(_))
     }
 
+    pub fn not_found(&self) -> bool {
+        matches!(self, Self::NotFound(_))
+    }
+
     pub fn unreadable(error: impl std::fmt::Display) -> Self {
         Self::Unreadable(error.to_string())
     }
@@ -114,7 +150,8 @@ impl GhFailure {
 impl std::fmt::Display for GhFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Launch(_, text) | Self::TimedOut(text) | Self::Exit(_, text) | Self::Unreadable(text) => f.write_str(text),
+            Self::Launch(_, text) | Self::TimedOut(text) | Self::Exit(_, text) | Self::Unreadable(text) | Self::NotFound(text)
+                | Self::IdentityMismatch(text) => f.write_str(text),
             Self::Http(status, text) => write!(f, "{text} (HTTP {status})"),
         }
     }
@@ -198,6 +235,8 @@ pub struct Status {
     /// The names of the checks that succeeded or need nothing more.
     pub passed: BTreeSet<String>,
     pub merge_state: MergeState,
+    /// Which pull request answered, when GitHub said.
+    pub identity: Option<ReadIdentity>,
 }
 
 /// What GitHub's `mergeable` and `mergeStateStatus` say about merging the PR into its base.
@@ -218,15 +257,18 @@ pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, GhFailure>> + Se
 pub trait PrMerger: Send + Sync + 'static {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status>;
     fn default_branch<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, String>;
-    fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()>;
+    /// Every change takes the key the caller read at the PR's current address in this same round:
+    /// an address that answers with another pull request is [`GhFailure::IdentityMismatch`] and
+    /// changes nothing.
+    fn retarget<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, base: &'a str) -> Pending<'a, ()>;
     /// Merges the PR only while GitHub still has it at `head`. Success may only mean GitHub put
     /// it in its merge queue.
-    fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()>;
+    fn merge<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()>;
     /// `merge` using the signed-in account's bypass of the base's rules (`gh pr merge --admin`).
-    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()>;
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()>;
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
-    fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()>;
+    fn ready<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey) -> Pending<'a, ()>;
     /// The checks the PR's base branch requires, from its rulesets and its classic branch protection.
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>>;
     /// The required checks of `base` the signed-in account may bypass: every ruleset that requires
@@ -238,15 +280,17 @@ pub trait PrMerger: Send + Sync + 'static {
 
 impl PrMerger for Arc<dyn PrMerger> {
     fn default_branch<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, String> { (**self).default_branch(pr) }
-    fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()> { (**self).retarget(pr, base) }
+    fn retarget<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, base: &'a str) -> Pending<'a, ()> { (**self).retarget(pr, expected, base) }
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> { (**self).status(pr) }
-    fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> { (**self).merge(pr, head, method) }
-    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
-        (**self).merge_bypassing(pr, head, method)
+    fn merge<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        (**self).merge(pr, expected, head, method)
+    }
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        (**self).merge_bypassing(pr, expected, head, method)
     }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> { (**self).in_queue(pr) }
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> { (**self).is_draft(pr) }
-    fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> { (**self).ready(pr) }
+    fn ready<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey) -> Pending<'a, ()> { (**self).ready(pr, expected) }
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> { (**self).required_checks(pr, base) }
     fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
         (**self).bypassable_checks(pr, base)
@@ -256,15 +300,17 @@ impl PrMerger for Arc<dyn PrMerger> {
 
 impl<T: PrMerger> PrMerger for Arc<T> {
     fn default_branch<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, String> { (**self).default_branch(pr) }
-    fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()> { (**self).retarget(pr, base) }
+    fn retarget<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, base: &'a str) -> Pending<'a, ()> { (**self).retarget(pr, expected, base) }
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> { (**self).status(pr) }
-    fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> { (**self).merge(pr, head, method) }
-    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
-        (**self).merge_bypassing(pr, head, method)
+    fn merge<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        (**self).merge(pr, expected, head, method)
+    }
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        (**self).merge_bypassing(pr, expected, head, method)
     }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> { (**self).in_queue(pr) }
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> { (**self).is_draft(pr) }
-    fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> { (**self).ready(pr) }
+    fn ready<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey) -> Pending<'a, ()> { (**self).ready(pr, expected) }
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> { (**self).required_checks(pr, base) }
     fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
         (**self).bypassable_checks(pr, base)

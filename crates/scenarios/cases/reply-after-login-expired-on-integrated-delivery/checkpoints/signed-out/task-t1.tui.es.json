@@ -73,7 +73,7 @@
           "icon": "history",
           "id": "now",
           "link": {
-            "key": "card:claude-signed-out-t1-17",
+            "key": "card:claude-signed-out-t1-18",
             "kind": "view"
           },
           "struck": false,
@@ -133,10 +133,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-signed-out-t1-17",
+          "id": "claude-signed-out-t1-18",
           "kind": "problem",
           "link": {
-            "key": "card:claude-signed-out-t1-17",
+            "key": "card:claude-signed-out-t1-18",
             "kind": "view"
           },
           "meta": "Alondra",

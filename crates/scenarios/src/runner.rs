@@ -596,13 +596,14 @@ impl Context<'_> {
                 };
                 self.create_task(index, id, title, stack)?;
             }
-            Step::RegisterPr { task, number } => {
+            Step::RegisterPr { task, number, repository } => {
                 let head = self.head(index, *number)?;
+                let repository = repository.clone().unwrap_or_else(|| self.scenario.world.repository.clone());
                 self.node_command(index, task, &format!("/tasks/{task}/pull-requests"), None, Command::RegisterPr {
                     task_id: task.clone().into(),
-                    pr_id: self.pr_id(*number),
+                    pr_id: alondra_domain_rules::hosted_pr_id(REPOSITORY_HOST, &repository, *number),
                     host: REPOSITORY_HOST.into(),
-                    repository: self.scenario.world.repository.clone(),
+                    repository,
                     number: *number,
                     head,
                     base: self.github.base_of(*number),
@@ -659,6 +660,11 @@ impl Context<'_> {
                 GithubChange::MarkReady { number } => self.github.set_draft(*number, false),
                 GithubChange::MergeExternally { number } => self.github.merge_externally(*number),
                 GithubChange::CloseExternally { number } => self.github.close_externally(*number),
+                GithubChange::MoveRepository { to } => self.github.move_repository(&self.scenario.world.repository, to),
+                GithubChange::ReuseName { repository, number, head, base } => {
+                    self.github.reuse_name(repository);
+                    self.github.open_pr_in(repository, *number, head, base);
+                }
             },
             Step::Press { presentation, action, text, screen } => self.press(index, presentation, action, text.as_deref(), screen.as_deref().unwrap_or("home")).await?,
             Step::Answer { card, option, text } => self.answer(index, card, option, text.as_deref()).await?,
@@ -1508,6 +1514,12 @@ impl Context<'_> {
                 let actual = self.github.sweep_reads();
                 if &actual != reads {
                     return Err(failed(format!("{reads:?}"), format!("{actual:?}")));
+                }
+            }
+            Expect::PrStateIn { repository, pr, state } => {
+                let actual = self.github.state_in(repository, *pr);
+                if actual != Some(*state) {
+                    return Err(failed(format!("PR {pr} of {repository} {state:?}"), format!("{actual:?}")));
                 }
             }
             Expect::PrMergedInto { pr, branch } => {

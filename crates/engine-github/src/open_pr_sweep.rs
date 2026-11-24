@@ -2,6 +2,7 @@
 //! A PR no task registered is someone else's: the sweep never reads or adopts it.
 use alondra_core::clock;
 use crate::domain_github::execute_system;
+use crate::pr_identity::{identify, read_start};
 use alondra_engine_ports::github::{AuthoredPr, GitHub};
 use crate::domain_runtime::DomainRuntime;
 use alondra_domain_rules::{Command, DomainState, OpenPrPending, OpenedPr, PullRequest, TaskState};
@@ -23,9 +24,9 @@ fn identity(found: &AuthoredPr) -> Option<OpenedPr> {
     })
 }
 
+/// The tracked record GitHub's search names, by its current address or one GitHub confirmed was it.
 fn registered<'a>(state: &'a DomainState, pr: &OpenedPr) -> Option<&'a PullRequest> {
-    state.pull_requests.values().find(|p|
-        p.host == pr.host && p.repository == pr.repository && p.number == pr.number)
+    state.pull_requests.values().find(|p| p.is_tracked() && !p.identity.is_unresolvable() && p.answers_to(&pr.host, &pr.repository, pr.number))
 }
 
 /// The task that registered `pr`, when its work has no live owner and nothing is closing it.
@@ -75,12 +76,19 @@ pub async fn sweep(domain: &DomainRuntime, github: &GitHub, options: &OptionsFil
             Err(error) => { log!("open PR sweep could not read the branch of {}: {error}", found.url); continue; }
         };
         let state = domain.state()?;
-        let Some((task_id, pr_id)) = ownerless(&state, &pr).map(|p| (p.task_id.clone(), p.id.clone())) else { continue };
+        let Some(known) = ownerless(&state, &pr).cloned() else { continue };
         if branch_excluded(&state, &branch, &options.pr_sweep_ignore_branch_prefixes) { continue; }
+        let started = read_start();
         let facts = match github.observer.observe(&pr.host, &pr.repository, pr.number).await {
             Ok(facts) => facts,
             Err(error) => { log!("open PR sweep could not read {}: {error}", found.url); continue; }
         };
+        let Some((known, _)) = identify(domain, &known, &pr.repository, started, Ok((facts.identity.as_ref(), &facts.head)))? else {
+            log!("open PR sweep leaves {}: it is not the pull request Alondra has by that name", found.url);
+            continue;
+        };
+        let state = domain.state()?;
+        let (task_id, pr_id) = (known.task_id.clone(), known.id.clone());
         let command = if state.tasks.get(&task_id).is_some_and(|task| task.state == TaskState::Cancelled) {
             Command::ClosePrOfCancelledTask { task_id, pr_id, branch, status: facts.status() }
         } else {

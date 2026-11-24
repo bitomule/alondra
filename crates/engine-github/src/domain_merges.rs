@@ -11,11 +11,12 @@ use alondra_daemon_support::locks::Poisonable as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::domain_github::{GhFailure, execute_system, pr_url};
+use crate::pr_identity::{identify, read_start};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_domain_rules::{
     AuthorizationId, CardSpec, Command, DeliveryTarget, DomainError, DomainState, Feedback, FeedbackTarget, Instruction, InteractionId, InteractionPayload,
-    MergeAttemptState, MergeMethod, PrId, PrState, PullRequest, Scope, clip,
+    MergeAttemptState, MergeMethod, PrId, PrState, ProviderPrKey, PullRequest, Scope, clip,
 };
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
@@ -211,18 +212,21 @@ impl Merger {
         self.transient.values().filter(|retry| retry.at > now).map(|retry| retry.at - now).fold(self.poll, Duration::min)
     }
 
-    async fn retarget_stack(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, status: Status) -> Result<Option<Status>> {
+    async fn retarget_stack(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, key: &ProviderPrKey, status: Status) -> Result<Option<Status>> {
         let state = domain.state()?;
         let Some(stack) = state.tasks.get(&item.pr.task_id).and_then(|task| task.stack.as_ref()).cloned() else {
-            return self.retarget_sibling(domain, github, item, status).await;
+            return self.retarget_sibling(domain, github, item, key, status).await;
         };
         if state.stack_ready(&state.tasks[&item.pr.task_id]).is_err() { return Ok(None); }
-        let Some(upstream) = state.pull_requests.get(&stack.pr_id) else { return Ok(None) };
+        let Some(upstream) = state.pull_requests.get(state.surviving_pr(&stack.pr_id)).filter(|upstream| upstream.is_tracked()) else { return Ok(None) };
         if upstream.host != item.pr.host || upstream.repository != item.pr.repository { return Ok(None); }
+        let started = read_start();
         let remote = match github.status(upstream).await {
             Ok(remote) => remote,
             Err(error) => { self.troubled(domain, &item.pr, &error); return Ok(None); }
         };
+        let Some((upstream, _)) = identify(domain, upstream, &upstream.repository, started, Ok((remote.identity.as_ref(), &remote.head)))? else { return Ok(None) };
+        let upstream = &upstream;
         if remote.state != PrState::Merged || remote.head != stack.head { return Ok(None); }
         let default = match github.default_branch(&item.pr).await {
             Ok(base) => base,
@@ -242,17 +246,17 @@ impl Merger {
                 && now.presentation == item.presentation && now.authorization == item.authorization)
         { return Ok(None); }
         if current.base != default {
-            return self.move_onto(domain, github, item, &default).await;
+            return self.move_onto(domain, github, item, key, &default).await;
         }
         Ok((current.state == PrState::Open && current.head == item.head).then_some(current))
     }
 
     /// A pull request opened on the branch of another pull request of its own task, with no stack declared:
     /// it waits until that one is merged, then moves onto the default branch before it merges.
-    async fn retarget_sibling(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, status: Status) -> Result<Option<Status>> {
+    async fn retarget_sibling(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, key: &ProviderPrKey, status: Status) -> Result<Option<Status>> {
         let state = domain.state()?;
         let siblings: Vec<_> = state.pull_requests.values().filter(|other| other.id != item.pr.id && other.task_id == item.pr.task_id
-            && other.host == item.pr.host && other.repository == item.pr.repository).cloned().collect();
+            && other.is_tracked() && other.host == item.pr.host && other.repository == item.pr.repository).cloned().collect();
         if siblings.is_empty() { return Ok(Some(status)); }
         let default = match github.default_branch(&item.pr).await {
             Ok(base) => base,
@@ -260,10 +264,13 @@ impl Merger {
         };
         if status.base == default { return Ok(Some(status)); }
         for sibling in &siblings {
+            let started = read_start();
             let remote = match github.status(sibling).await {
                 Ok(remote) => remote,
                 Err(error) => { self.troubled(domain, &item.pr, &error); return Ok(None); }
             };
+            let Some((sibling, _)) = identify(domain, sibling, &sibling.repository, started, Ok((remote.identity.as_ref(), &remote.head)))? else { continue };
+            let sibling = &sibling;
             if remote.head_ref != status.base { continue; }
             match remote.state {
                 PrState::Open => return Ok(None),
@@ -271,13 +278,13 @@ impl Merger {
                 PrState::Merged if remote.base != default => return Ok(None),
                 PrState::Merged => record_merged(domain, sibling, &remote)?,
             }
-            return self.move_onto(domain, github, item, &default).await;
+            return self.move_onto(domain, github, item, key, &default).await;
         }
         Ok(Some(status))
     }
 
-    async fn move_onto(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, default: &str) -> Result<Option<Status>> {
-        if let Err(error) = github.retarget(&item.pr, default).await {
+    async fn move_onto(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, key: &ProviderPrKey, default: &str) -> Result<Option<Status>> {
+        if let Err(error) = github.retarget(&item.pr, key, default).await {
             self.troubled(domain, &item.pr, &error);
             return Ok(None);
         }
@@ -290,17 +297,24 @@ impl Merger {
     }
 
     async fn step(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due) -> Result<Step> {
-        let pr = &item.pr;
-        let status = match github.status(pr).await {
+        let started = read_start();
+        let status = match github.status(&item.pr).await {
             Ok(status) => {
-                self.recovered(domain, pr);
+                self.recovered(domain, &item.pr);
                 status
             }
             Err(reason) => {
-                self.troubled(domain, pr, &reason);
+                identify(domain, &item.pr, &item.pr.repository, started, Err(&reason))?;
+                self.troubled(domain, &item.pr, &reason);
                 return Ok(Step::Wait);
             }
         };
+        let Some((checked, key)) = identify(domain, &item.pr, &item.pr.repository, started, Ok((status.identity.as_ref(), &status.head)))? else {
+            log!("{} did not answer as the pull request Alondra was asked to merge: nothing is changed on it", item.pr.id);
+            return Ok(Step::Wait);
+        };
+        let item = &Due { pr: checked, ..item.clone() };
+        let (pr, key) = (&item.pr, &key);
         match status.state {
             PrState::Merged => {
                 record_merged(domain, pr, &status)?;
@@ -311,7 +325,7 @@ impl Merger {
             PrState::Open if status.head != item.head => return Ok(Step::Settled),
             PrState::Open => {}
         }
-        let Some(status) = self.retarget_stack(domain, github, item, status).await? else { return Ok(Step::Wait) };
+        let Some(status) = self.retarget_stack(domain, github, item, key, status).await? else { return Ok(Step::Wait) };
         if self.queued.contains(&pr.id) {
             return match github.in_queue(pr).await {
                 Ok(true) => Ok(Step::Wait),
@@ -410,7 +424,7 @@ impl Merger {
         }
         let marked = match github.is_draft(pr).await {
             Ok(false) => Ok(()),
-            Ok(true) | Err(_) => github.ready(pr).await,
+            Ok(true) | Err(_) => github.ready(pr, key).await,
         };
         if let Err(failure) = marked {
             return self.not_ready(domain, item, &failure);
@@ -431,9 +445,9 @@ impl Merger {
         }
         if !still_due(&*domain.state()?, item, &authorization) { return Ok(Step::Settled); }
         let merged = if bypass {
-            github.merge_bypassing(pr, &item.head, item.method).await
+            github.merge_bypassing(pr, key, &item.head, item.method).await
         } else {
-            github.merge(pr, &item.head, item.method).await
+            github.merge(pr, key, &item.head, item.method).await
         };
         match merged {
             Ok(()) => {
@@ -779,7 +793,7 @@ impl FakeGithub {
     }
     pub fn open(&self, number: u64, head: &str, checks: Checks) {
         self.statuses.lock_or_recover("a test's fixture").insert(number, Ok(Status { state: PrState::Open, head: head.into(), head_ref: String::new(), base: "main".into(), checks,
-            passed: BTreeSet::new(), merge_state: MergeState::Clean }));
+            passed: BTreeSet::new(), merge_state: MergeState::Clean, identity: None }));
     }
     /// An open PR whose `mergeStateStatus` is BLOCKED.
     pub fn open_blocked(&self, number: u64, head: &str, checks: Checks) {
@@ -791,8 +805,25 @@ impl FakeGithub {
 }
 
 
+/// The key the fake GitHub has for PR `number`: one per number, the same at every address.
+pub fn fake_key(number: u64) -> ProviderPrKey {
+    ProviderPrKey(number.to_string())
+}
+
 impl FakeGithub {
-    fn fake_merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod, call: String) -> Pending<'a, ()> {
+    /// What the fake GitHub answers a change for `expected` at PR `number`'s address: the change
+    /// goes through only when that address has that pull request.
+    fn mismatch(&self, number: u64, expected: &ProviderPrKey) -> Option<GhFailure> {
+        let statuses = self.statuses.lock_or_recover("a test's fixture");
+        let answered = statuses.get(&number).and_then(|status| status.as_ref().ok()).and_then(|status| status.identity.as_ref())
+            .map_or_else(|| fake_key(number), |read| read.key.clone());
+        (answered != *expected).then(|| GhFailure::IdentityMismatch(format!("PR {number} is {} here, not {}", answered.0, expected.0)))
+    }
+
+    fn fake_merge<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod, call: String) -> Pending<'a, ()> {
+        if let Some(mismatch) = self.mismatch(pr.number, expected) {
+            return Box::pin(async move { Err(mismatch) });
+        }
         let result = self.merges.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or(Ok(()));
         self.calls.lock_or_recover("a test's fixture").push(call);
         if result.is_err()
@@ -826,7 +857,10 @@ impl PrMerger for FakeGithub {
         let base = self.default_base.lock_or_recover("a test's fixture").clone();
         Box::pin(async move { Ok(base) })
     }
-    fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()> {
+    fn retarget<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, base: &'a str) -> Pending<'a, ()> {
+        if let Some(mismatch) = self.mismatch(pr.number, expected) {
+            return Box::pin(async move { Err(mismatch) });
+        }
         self.retargets.lock_or_recover("a test's fixture").push((pr.number, base.to_owned()));
         self.calls.lock_or_recover("a test's fixture").push(format!("retarget {} {base}", pr.number));
         if let Some(Ok(status)) = self.statuses.lock_or_recover("a test's fixture").get_mut(&pr.number) {
@@ -840,14 +874,19 @@ impl PrMerger for FakeGithub {
         if let Some(hook) = self.on_read.lock_or_recover("a test's fixture").take() {
             hook();
         }
-        let status = self.statuses.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or_else(|| Err(GhFailure::Exit(Some(1), "no such PR".into())));
+        let status = self.statuses.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or_else(|| Err(GhFailure::Exit(Some(1), "no such PR".into())))
+            .map(|mut status| {
+                status.identity.get_or_insert_with(|| crate::domain_github::ReadIdentity { key: fake_key(pr.number),
+                    locator: alondra_domain_rules::ProviderLocator(format!("PR_{}", pr.number)), repository: pr.repository.clone(), head_ref: status.head_ref.clone() });
+                status
+            });
         Box::pin(async move { status })
     }
-    fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
-        self.fake_merge(pr, head, method, format!("merge {}", pr.number))
+    fn merge<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        self.fake_merge(pr, expected, head, method, format!("merge {}", pr.number))
     }
-    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
-        self.fake_merge(pr, head, method, format!("merge {} --admin", pr.number))
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        self.fake_merge(pr, expected, head, method, format!("merge {} --admin", pr.number))
     }
     fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, _base: &'a str) -> Pending<'a, Vec<String>> {
         self.calls.lock_or_recover("a test's fixture").push(format!("bypassable {}", pr.number));
@@ -860,7 +899,10 @@ impl PrMerger for FakeGithub {
         let draft = self.drafts.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or(Ok(false));
         Box::pin(async move { draft })
     }
-    fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> {
+    fn ready<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey) -> Pending<'a, ()> {
+        if let Some(mismatch) = self.mismatch(pr.number, expected) {
+            return Box::pin(async move { Err(mismatch) });
+        }
         self.calls.lock_or_recover("a test's fixture").push(format!("ready {}", pr.number));
         let result = self.readies.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or(Ok(()));
         Box::pin(async move { result })

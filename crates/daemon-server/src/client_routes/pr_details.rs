@@ -42,8 +42,17 @@ impl FakePrView {
 
 #[cfg(test)]
 impl PrView for FakePrView {
-    fn view<'a>(&'a self, _: &'a str) -> Viewed<'a> {
-        let view = self.0.lock().unwrap().clone();
+    /// An answer that does not say which pull request it is answers as GitHub does: the one at
+    /// the address asked, whose database id is its number.
+    fn view<'a>(&'a self, url: &'a str) -> Viewed<'a> {
+        let view = self.0.lock().unwrap().clone().map(|mut view| {
+            if view.get("url").is_none() && let Some(number) = url.rsplit('/').next() {
+                view["url"] = Value::from(url);
+                view["fullDatabaseId"] = Value::from(number);
+                view["id"] = Value::from(format!("PR_{number}"));
+            }
+            view
+        });
         Box::pin(async move { view })
     }
 }
@@ -66,11 +75,12 @@ impl PrView for GhView {
 struct PrViewObserver(Arc<dyn PrView>);
 
 impl crate::domain_github::PrObserver for PrViewObserver {
-    fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Pin<Box<dyn Future<Output = Result<crate::domain_github::PrFacts, String>> + Send + 'a>> {
+    fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> crate::domain_github::Observed<'a> {
         Box::pin(async move {
             let url = crate::domain_github::pr_url(host, repository, number);
-            let answer = self.0.view(&url).await.ok_or_else(|| "GitHub did not report the pull request".to_owned())?;
-            alondra_github_gh::cli::parse(&answer)
+            let answer = self.0.view(&url).await
+                .ok_or_else(|| crate::domain_github::GhFailure::Unreadable("GitHub did not report the pull request".to_owned()))?;
+            alondra_github_gh::cli::parse(&answer).map_err(crate::domain_github::GhFailure::Unreadable)
         })
     }
 }

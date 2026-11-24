@@ -1,8 +1,8 @@
 //! `gh` itself: running it, reading what it answers, and observing a pull request with it.
 use alondra_core::clock;
 use alondra_core::pr::CheckState;
-use alondra_domain_rules::{MergeMethod, PrChecks, PrMergeable, PrState};
-use alondra_engine_ports::github::{Closed, GhFailure, HttpAnswer, Observed, PrFacts, PrObserver, pr_url};
+use alondra_domain_rules::{MergeMethod, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey};
+use alondra_engine_ports::github::{Closed, GhFailure, HttpAnswer, Located, Observed, PrFacts, PrObserver, ReadIdentity, pr_url};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,7 +10,14 @@ use std::time::Duration;
 /// How long a delivery waits for GitHub to name one branch's open PR.
 const BRANCH_PR_LIMIT: Duration = Duration::from_secs(3);
 
-const OBSERVED_FIELDS: &str = "state,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup";
+const OBSERVED_FIELDS: &str = "state,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup,fullDatabaseId,id,url,headRefName";
+
+/// The fields of a PR that say which one it is, asked for in every read that already reads it.
+pub const IDENTITY_FIELDS: &str = "fullDatabaseId,id,url,headRefName";
+
+/// Finds a pull request by its node id, wherever its repository lives now.
+const RELOCATE_QUERY: &str = "query($id:ID!){node(id:$id){... on PullRequest{fullDatabaseId id url headRefName}}}";
+const ADDRESS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id}}}";
 
 /// GitHub through the Mac's `gh`, and a signed image link through a request without credentials.
 #[derive(Clone)]
@@ -53,23 +60,90 @@ impl PrObserver for GhCli {
                 .output();
             let output = match clock::timeout(Duration::from_secs(30), run).await {
                 Ok(Ok(output)) if output.status.success() => output,
-                Ok(Ok(output)) => return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
-                Ok(Err(error)) => return Err(error.to_string()),
-                Err(_) => return Err("gh pr view did not finish within 30 s".into()),
+                Ok(Ok(output)) => {
+                    let failure = GhFailure::Exit(output.status.code(), String::from_utf8_lossy(&output.stderr).trim().to_owned());
+                    return Err(self.view_failure(host, repository, number, failure).await);
+                }
+                Ok(Err(error)) => return Err(GhFailure::Launch(error.kind(), error.to_string())),
+                Err(_) => return Err(GhFailure::TimedOut("gh pr view did not finish within 30 s".into())),
             };
-            let value: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-            let mut facts = parse(&value)?;
+            let value: Value = serde_json::from_slice(&output.stdout).map_err(GhFailure::unreadable)?;
+            let mut facts = parse(&value).map_err(GhFailure::Unreadable)?;
             facts.allowed_methods = self.repository_methods(host, repository).await;
             Ok(facts)
         })
     }
-    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
+    /// `gh pr close` cannot check which pull request it closes, so the key is the one the
+    /// observer read at this address just before, in the same round.
+    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, _expected: &'a ProviderPrKey, comment: &'a str) -> Closed<'a> {
         Box::pin(async move {
             let url = pr_url(host, repository, number);
-            self.run(&["pr", "close", &url, "--comment", comment], None, Duration::from_secs(30)).await
-                .map(drop).map_err(|failure| failure.to_string())
+            self.run(&["pr", "close", &url, "--comment", comment], None, Duration::from_secs(30)).await.map(drop)
         })
     }
+    fn relocate<'a>(&'a self, host: &'a str, locator: &'a ProviderLocator) -> Located<'a> {
+        Box::pin(async move {
+            let host = alondra_domain_rules::normalize_pr_host(host);
+            let (query, id) = (format!("query={RELOCATE_QUERY}"), format!("id={}", locator.0));
+            let answer = self.api(&["graphql", "--hostname", &host, "-f", &query, "-f", &id], Duration::from_secs(30)).await?;
+            located(&answer)
+        })
+    }
+}
+
+/// GitHub's `NOT_FOUND` in a GraphQL answer, the one signal that says for certain nothing is
+/// there for this account; a limit, an outage or an answer with data says nothing about it.
+pub fn missing(answer: &HttpAnswer) -> Option<String> {
+    if !answer.success() {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&answer.body).ok()?;
+    let errors = value["errors"].as_array()?;
+    let found = errors.iter().find(|error| error["type"].as_str() == Some("NOT_FOUND"))?;
+    Some(found["message"].as_str().unwrap_or("GitHub has nothing at this address").to_owned())
+}
+
+/// What GitHub answered to `node(id:)`: the pull request it found, or for certain that none is
+/// there any more.
+pub fn located(answer: &HttpAnswer) -> Result<ReadIdentity, GhFailure> {
+    if !answer.success() {
+        return Err(answer.failure());
+    }
+    let value: Value = serde_json::from_slice(&answer.body).map_err(GhFailure::unreadable)?;
+    let node = &value["data"]["node"];
+    if node.is_null() {
+        return Err(match missing(answer) {
+            Some(message) => GhFailure::NotFound(message),
+            None => GhFailure::Unreadable(value["errors"][0]["message"].as_str().unwrap_or("GitHub did not answer which pull request it is").to_owned()),
+        });
+    }
+    identity(node).ok_or_else(|| GhFailure::Unreadable("GitHub's node is not a pull request".into()))
+}
+
+/// Which pull request a `gh` answer is about: `fullDatabaseId` is the key, which no move or
+/// rename changes; the node `id` only finds it again, and GitHub may hand a new one; `url` is
+/// where GitHub serves it now.
+pub fn identity(value: &Value) -> Option<ReadIdentity> {
+    let key = match &value["fullDatabaseId"] {
+        Value::String(key) => key.trim().to_owned(),
+        Value::Number(key) => key.to_string(),
+        _ => return None,
+    };
+    if key.is_empty() || !key.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let locator = value["id"].as_str().map(str::trim).filter(|id| !id.is_empty())?;
+    let (_, repository, _) = address(value["url"].as_str()?)?;
+    let head_ref = value["headRefName"].as_str().unwrap_or_default().to_owned();
+    Some(ReadIdentity { key: ProviderPrKey(key), locator: ProviderLocator(locator.to_owned()), repository, head_ref })
+}
+
+/// `https://<host>/<owner>/<repo>/pull/<number>` as host, lower-case `owner/repo` and number.
+pub fn address(url: &str) -> Option<(String, String, u64)> {
+    let (host, path) = url.split_once("://")?.1.split_once('/')?;
+    let (repository, number) = path.split_once("/pull/")?;
+    let number = number.trim_end_matches('/').parse().ok()?;
+    (repository.split('/').count() == 2).then(|| (alondra_domain_rules::normalize_pr_host(host), alondra_domain_rules::normalize_pr_repository(repository), number))
 }
 
 impl GhCli {
@@ -115,6 +189,38 @@ impl GhCli {
         }
     }
 
+    /// Closes the PR at this address with `comment` only after a read of it there answers with
+    /// `expected`: a moved repository whose old name another one took never gets its pull
+    /// request closed. One more read, only when the user closes from a card.
+    pub async fn close_checked(&self, host: &str, repository: &str, number: u64, expected: &ProviderPrKey, comment: &str) -> Result<(), GhFailure> {
+        let url = pr_url(host, repository, number);
+        let out = match self.run(&["pr", "view", &url, "--json", IDENTITY_FIELDS], None, Duration::from_secs(30)).await {
+            Ok(out) => out,
+            Err(failure) => return Err(self.view_failure(host, repository, number, failure).await),
+        };
+        let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
+        let read = identity(&value).ok_or_else(|| GhFailure::Unreadable("GitHub did not say which pull request it is".into()))?;
+        if read.key != *expected {
+            return Err(GhFailure::IdentityMismatch(format!("{repository}#{number} is another pull request now")));
+        }
+        PrObserver::close(self, host, repository, number, expected, comment).await
+    }
+
+    /// What a failed `gh pr view` means for the pull request: `gh` prints GitHub's answer only as
+    /// text, so the same lookup goes to GraphQL, whose `NOT_FOUND` says for certain nothing is
+    /// there. Anything else keeps the failure as it was. One more call, only after a failed read.
+    async fn view_failure(&self, host: &str, repository: &str, number: u64, failure: GhFailure) -> GhFailure {
+        let (GhFailure::Exit(..), Some((owner, name))) = (&failure, repository.split_once('/')) else {
+            return failure;
+        };
+        let host = alondra_domain_rules::normalize_pr_host(host);
+        let (query, owner, name, number) = (format!("query={ADDRESS_QUERY}"), format!("owner={owner}"), format!("name={name}"), format!("number={number}"));
+        match self.api(&["graphql", "--hostname", &host, "-f", &query, "-f", &owner, "-f", &name, "-F", &number], Duration::from_secs(30)).await {
+            Ok(answer) => missing(&answer).map_or(failure, GhFailure::NotFound),
+            Err(_) => failure,
+        }
+    }
+
     /// The open PR GitHub has for the branch checked out in `dir`, as host, `owner/repo` and number.
     pub async fn branch_pr_within(&self, dir: &std::path::Path, limit: Duration) -> Option<(String, String, u64)> {
         let out = self.run(&["pr", "view", "--json", "url,state"], Some(dir), limit).await.ok()?;
@@ -122,9 +228,7 @@ impl GhCli {
         if value["state"].as_str() != Some("OPEN") {
             return None;
         }
-        let (host, path) = value["url"].as_str()?.split_once("://")?.1.split_once('/')?;
-        let (repository, number) = path.split_once("/pull/")?;
-        Some((alondra_domain_rules::normalize_pr_host(host), repository.to_owned(), number.trim_end_matches('/').parse().ok()?))
+        address(value["url"].as_str()?)
     }
 }
 
@@ -161,6 +265,7 @@ pub fn parse(value: &Value) -> Result<PrFacts, String> {
         allowed_methods: vec![],
         mergeable: mergeable(value),
         checks: checks(value),
+        identity: identity(value),
     })
 }
 
