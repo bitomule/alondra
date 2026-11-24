@@ -390,7 +390,7 @@ case "$*" in
 esac
 "#, log = log.display(), merged = merged.display())).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    (GhCli::at(program), log)
+    (GhCli::at(program).without_limits(), log)
 }
 
 fn private_repo_pr(home: &Home, merge_state: &str, mergeable: &str) -> (GhCli, std::path::PathBuf) {
@@ -684,7 +684,7 @@ case "$*" in
 esac
 "#, tries = tries.display(), merged = merged.display())).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    (GhCli::at(program), tries)
+    (GhCli::at(program).without_limits(), tries)
 }
 
 fn tries(log: &std::path::Path) -> usize {
@@ -826,7 +826,7 @@ case "$*" in
 esac
 "#)).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    GhCli::at(program)
+    GhCli::at(program).without_limits()
 }
 
 /// D-14: the HTTP status GitHub answered decides whether a branch has rules, never gh's words.

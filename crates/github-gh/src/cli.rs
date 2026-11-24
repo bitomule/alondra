@@ -24,6 +24,9 @@ const ADDRESS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){re
 pub struct GhCli {
     program: PathBuf,
     pub(crate) branch_pr_limit: Duration,
+    /// Whether a call waits for `gh` however long it asks to, as a test scripts a `gh` that only
+    /// the Mac's load decides how fast it starts.
+    unbounded: bool,
     pub(crate) web: std::sync::OnceLock<reqwest::Client>,
 }
 
@@ -39,10 +42,12 @@ impl GhCli {
     }
     /// A `gh` at `program`, as a test scripts it.
     pub fn at(program: PathBuf) -> Self {
-        Self { program, branch_pr_limit: BRANCH_PR_LIMIT, web: std::sync::OnceLock::new() }
+        Self { program, branch_pr_limit: BRANCH_PR_LIMIT, unbounded: false, web: std::sync::OnceLock::new() }
     }
-    pub fn with_branch_pr_limit(mut self, limit: Duration) -> Self {
-        self.branch_pr_limit = limit;
+    /// A `gh` no call gives up on: a test of what `gh` answers never races the time the Mac takes to
+    /// start it. A test of the limits itself keeps the `gh` of [`GhCli::at`].
+    pub fn without_limits(mut self) -> Self {
+        self.unbounded = true;
         self
     }
     pub fn program(&self) -> &std::path::Path {
@@ -58,7 +63,7 @@ impl PrObserver for GhCli {
                 .args(["pr", "view", &url, "--json", OBSERVED_FIELDS])
                 .kill_on_drop(true)
                 .output();
-            let output = match clock::timeout(Duration::from_secs(30), run).await {
+            let output = match self.within(Duration::from_secs(30), run).await {
                 Ok(Ok(output)) if output.status.success() => output,
                 Ok(Ok(output)) => {
                     let failure = GhFailure::Exit(output.status.code(), String::from_utf8_lossy(&output.stderr).trim().to_owned());
@@ -184,13 +189,20 @@ impl GhCli {
         }
     }
 
+    async fn within<F: std::future::Future>(&self, limit: Duration, call: F) -> Result<F::Output, clock::Elapsed> {
+        if self.unbounded {
+            return Ok(call.await);
+        }
+        clock::timeout(limit, call).await
+    }
+
     async fn output(&self, args: &[&str], dir: Option<&std::path::Path>, limit: Duration) -> Result<std::process::Output, GhFailure> {
         let mut command = tokio::process::Command::new(&self.program);
         command.args(args).kill_on_drop(true);
         if let Some(dir) = dir {
             command.current_dir(dir);
         }
-        match clock::timeout(limit, command.output()).await {
+        match self.within(limit, command.output()).await {
             Ok(Ok(output)) => Ok(output),
             Ok(Err(error)) => Err(GhFailure::Launch(error.kind(), error.to_string())),
             Err(_) => Err(GhFailure::TimedOut(format!("gh {} did not finish within {} s", args.first().copied().unwrap_or_default(), limit.as_secs()))),

@@ -203,7 +203,7 @@ fn answering_gh(dir: &Path, stdout: &str, stderr: &str, code: i32) -> alondra_gi
     let program = dir.join("gh");
     std::fs::write(&program, format!("#!/bin/sh\nprintf '{stdout}'\nprintf '%s\\n' '{stderr}' >&2\nexit {code}\n")).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    alondra_github_gh::GhCli::at(program)
+    alondra_github_gh::GhCli::at(program).without_limits()
 }
 
 #[tokio::test]
