@@ -2799,3 +2799,16 @@ fn an_unstarted_task_records_its_wait_for_another_until_it_lands() {
     assert!(kinds(&s, "second").ends_with(&["waits_for_tasks".to_owned(), "finished".to_owned(), "drained".to_owned()]), "{:?}", kinds(&s, "second"));
     assert_aggregate_rules(&s);
 }
+
+#[test]
+fn a_host_lost_while_the_orchestrator_holds_the_stalled_case_leaves_it_with_the_orchestrator() {
+    let mut s = world();
+    let case = InteractionId::from(sdk_woken_turn(&mut s, "t", "a").as_str());
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "its host stopped".into(), quiet: false });
+    let open: Vec<&InteractionId> = s.interactions.values().filter(|i| s.open(i)).map(|i| &i.id).collect();
+    assert_eq!(open, [&case], "the case stays the only card of the task, with the orchestrator");
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(HOST_LOST_PREFIX)), "no card for the user");
+    assert_eq!(notices(&lost), 0);
+    assert_aggregate_rules(&s);
+}
