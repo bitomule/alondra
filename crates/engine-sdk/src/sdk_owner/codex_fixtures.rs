@@ -61,8 +61,10 @@ pub fn launch_selected(slice: &Slice, selected: alondra_core::model_selection::T
     driver.replaced_with(slice.plugin.clone());
     driver
 }
+/// The messages the fake app-server finished writing. Its writer runs on another thread or process,
+/// so a last line without its newline is still being written: it is read once its newline lands.
 pub fn transcript(path: &Path) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    std::fs::read_to_string(path).unwrap_or_default().split_inclusive('\n').filter_map(|line| line.strip_suffix('\n')).map(|line| serde_json::from_str(line).unwrap()).collect()
 }
 
 pub fn assert_synthetic_native_auth(home:&Path) {

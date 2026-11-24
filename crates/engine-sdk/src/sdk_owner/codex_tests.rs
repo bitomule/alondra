@@ -7,6 +7,16 @@ use super::*;
 use crate::sdk_owner::fixtures::codex::*;
 use crate::sdk_owner::fixtures::codex::launch;
 
+#[test]
+fn a_transcript_line_still_being_written_is_read_once_its_newline_lands() {
+    let slice = Slice::new();
+    let trace = slice._home.join("codex-transcript");
+    std::fs::write(&trace, "{\"method\":\"thread/start\"}\n{\"method\":\"thread/resume\",\"params\":{\"threadId\":\"thr").unwrap();
+    assert_eq!(transcript(&trace), [serde_json::json!({"method": "thread/start"})]);
+    std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&trace).unwrap(), b"ead-1\"}}\n").unwrap();
+    assert_eq!(resumed_threads(&trace).len(), 1);
+}
+
 #[cfg(not(feature = "real-hosts"))]
 #[test]
 fn reopening_codex_with_a_retained_mapping_but_a_missing_rollout_starts_a_clean_thread() {
