@@ -215,6 +215,26 @@ fn not_accepted(name: &str) -> anyhow::Error {
     })
 }
 
+/// What a refusal the Mac gave, over iroh or sealed over HTTP, means for the request.
+fn refused(name: &str, code: &str, detail: Option<String>) -> Result<(u16, Value)> {
+    match code {
+        "unauthorized" => Err(not_accepted(name)),
+        "idempotency_conflict" => Ok((409, json!({"error": "idempotency_conflict"}))),
+        "busy" => Err(anyhow::Error::new(Unsent(trf!(
+            "{name} is busy and did not take the request; try again in a moment",
+            "{name} está ocupado y no ha aceptado la petición; vuelve a intentarlo en un momento"
+        )))),
+        "expired" => Err(anyhow::Error::new(Answered {
+            status: 401,
+            message: trf!(
+                "{name} refused the request because this computer's clock and the Mac's do not match; check the date and time on both",
+                "{name} ha rechazado la petición porque el reloj de este ordenador y el del Mac no coinciden; revisa la fecha y la hora en los dos"
+            ),
+        })),
+        _ => Err(anyhow::Error::new(Answered { status: 400, message: detail.unwrap_or_else(|| code.to_owned()) })),
+    }
+}
+
 pub fn hello(route: &str) -> Result<Hello> {
     let mut response = agent(HELLO_TIMEOUT).get(format!("http://{route}/direct/hello")).call()?;
     if response.status() != 200 {
@@ -413,27 +433,14 @@ impl Connection {
                 if let Some(observer) = observer { observer.received(); }
                 OverIroh::Answered(self.open(&sealed, request_id))
             }
-            Ok(Reply::Refused { error, detail }) => match error.as_str() {
-                "unauthorized" => {
-                    if let Some(observer) = observer { observer.received(); }
-                    OverIroh::Answered(Err(not_accepted(name)))
-                }
-                "idempotency_conflict" => {
-                    if let Some(observer) = observer { observer.received(); }
-                    OverIroh::Answered(Ok((409, json!({"error": "idempotency_conflict"}))))
-                }
-                "wrong_mac" => {
-                    self.iroh_down();
-                    OverIroh::NotSent
-                }
-                _ => {
-                    if let Some(observer) = observer { observer.received(); }
-                    OverIroh::Answered(Err(anyhow::Error::new(Answered {
-                        status: 400,
-                        message: detail.unwrap_or(error),
-                    })))
-                }
-            },
+            Ok(Reply::Refused { error, .. }) if error == "wrong_mac" => {
+                self.iroh_down();
+                OverIroh::NotSent
+            }
+            Ok(Reply::Refused { error, detail }) => {
+                if let Some(observer) = observer { observer.received(); }
+                OverIroh::Answered(refused(name, &error, detail))
+            }
             Err(failed) => {
                 let mut iroh = self.iroh.lock().expect("iroh lock poisoned");
                 iroh.link = IrohLink::Untried;
@@ -500,6 +507,14 @@ impl Connection {
     }
 
     fn open(&self, bytes: &[u8], request_id: &str) -> Result<(u16, Value)> {
+        let result = self.open_sealed(bytes, request_id)?;
+        let status = result["status"].as_u64().filter(|s| (100..600).contains(s)).context("invalid endpoint status")?
+            as u16;
+        Ok((status, result.get("body").cloned().unwrap_or(result)))
+    }
+
+    /// What the Mac sealed for this request, verified as the Mac's.
+    fn open_sealed(&self, bytes: &[u8], request_id: &str) -> Result<Value> {
         let response: Envelope = serde_json::from_slice(bytes)?;
         if response.kind != "response" || response.request_id != request_id {
             bail!("response correlation mismatch");
@@ -514,10 +529,7 @@ impl Connection {
                 now_ms(),
             )
             .map_err(|_| key_changed(&self.mac.name))?;
-        let result: Value = serde_json::from_slice(&plaintext)?;
-        let status = result["status"].as_u64().filter(|s| (100..600).contains(s)).context("invalid endpoint status")?
-            as u16;
-        Ok((status, result.get("body").cloned().unwrap_or(result)))
+        Ok(serde_json::from_slice(&plaintext)?)
     }
 
     /// Sends one request and returns the Mac's answer, over iroh first. If a path fails mid-way,
@@ -571,6 +583,13 @@ impl Connection {
             {
                 *self.current.lock().expect("route lock poisoned") = Some(route.clone());
                 return Ok(answer);
+            }
+            if status != 200
+                && let Ok(sealed) = self.open_sealed(&text, request_id)
+                && let Some(code) = sealed["refusal"].as_str()
+            {
+                *self.current.lock().expect("route lock poisoned") = Some(route.clone());
+                return refused(name, code, sealed["detail"].as_str().map(str::to_owned));
             }
             sent = true;
             *self.current.lock().expect("route lock poisoned") = None;

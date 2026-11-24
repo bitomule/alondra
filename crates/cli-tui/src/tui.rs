@@ -229,6 +229,7 @@ enum ModalThen {
         review: Option<Key>,
         label: String,
     },
+    Quit,
 }
 
 /// A device asking to use Alondra on this Mac, as `/devices/pending` lists it.
@@ -624,6 +625,14 @@ pub struct Search {
     pub remote: Remote,
 }
 
+#[cfg(test)]
+impl Msg {
+    /// The screen's view as the answer to the newest request.
+    fn home(result: Result<ViewDocument, crate::client::availability::ViewFailure>) -> Msg {
+        Msg::ViewHome(u64::MAX, result)
+    }
+}
+
 impl Search {
     pub fn query(&self) -> String {
         self.input.text().trim().to_lowercase()
@@ -631,7 +640,9 @@ impl Search {
 }
 
 enum Msg {
-    ViewHome(Result<ViewDocument, crate::client::availability::ViewFailure>),
+    /// The screen's view, or why it could not be read; the ticket orders its request among the
+    /// others this instance sent.
+    ViewHome(u64, Result<ViewDocument, crate::client::availability::ViewFailure>),
     /// The rows of a folded section, asked for when the user opened it.
     ViewSection {
         section: String,
@@ -715,6 +726,8 @@ enum Msg {
 pub enum Flow {
     Go,
     Quit,
+    /// Quit confirmed over answers still on their way.
+    QuitNow,
     NextMac,
     /// The PR in tuicr on its local clone; its comments come back as feedback on `key`.
     Review {
@@ -860,6 +873,10 @@ pub struct App {
     last_clock: i64,
     tx: SyncSender<Msg>,
     open_views: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
+    /// The next ticket a request for the screen's view takes, here or in the views feed.
+    view_tickets: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The ticket of the newest screen view request answered: an older answer arrives too late.
+    home_ticket: u64,
     availability_probe: crate::client::availability::AvailabilityProbe,
     card_view_asked: Option<String>,
     screen_view_asked: Option<String>,
@@ -891,10 +908,10 @@ pub fn run() -> Result<()> {
             (app, rx)
         })
         .collect();
-    let local = &mut macs[0].0;
     if let Some(state) = restored {
-        local.restore(state);
+        take_over(&mut macs, state, now_millis());
     }
+    let local = &mut macs[0].0;
     local.start_pairing_feed();
     local.here = Some(identity::Here::of_this_process());
     local.start_identity_feed();
@@ -959,6 +976,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
     let mut dirty = true;
     let mut tab_title = title::TerminalTitle::default();
     loop {
+        let mut quit = false;
         if dirty {
             let tabs = mac_tabs(&macs, active);
             let app = &mut macs[active].0;
@@ -975,7 +993,12 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
             loop {
                 match event::read()? {
                     Event::Key(k) if k.kind != KeyEventKind::Release => match app.on_key(k) {
-                        Flow::Quit => return Ok(()),
+                        Flow::Quit => {
+                            quit = true;
+                            dirty = true;
+                            break;
+                        }
+                        Flow::QuitNow => return Ok(()),
                         Flow::NextMac => {
                             active = (active + 1) % macs.len();
                             chosen = true;
@@ -1017,6 +1040,9 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
                 }
             }
         }
+        if quit && quits(&mut macs, active) {
+            return Ok(());
+        }
         for (app, rx) in &mut macs {
             while let Ok(m) = rx.try_recv() {
                 app.on_msg(m);
@@ -1025,7 +1051,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
             dirty |= app.on_timers();
         }
         if macs[0].0.updated.restart && !macs.iter().any(|(app, _)| app.holds_restart()) {
-            restart(terminal, &mut macs[0].0)?;
+            restart(terminal, &mut macs)?;
             tab_title.forget();
             dirty = true;
         }
@@ -1038,10 +1064,67 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
     }
 }
 
-/// Hands the screen and the open composer to the new binary and becomes it. Only comes back when `exec`
-/// failed, with the terminal and the composer where they were.
-fn restart(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
-    let state = app.to_restore();
+/// Quitting with answers no Mac has confirmed asks first, since nothing would send them; asked
+/// already, quitting again quits.
+fn quits(macs: &mut [(App, Receiver<Msg>)], active: usize) -> bool {
+    let unconfirmed: usize = macs.iter().map(|(app, _)| app.optimistic.unconfirmed_count()).sum();
+    let app = &mut macs[active].0;
+    if unconfirmed == 0 || app.modal.as_ref().is_some_and(|modal| matches!(modal.then, ModalThen::Quit)) {
+        return true;
+    }
+    let body = if unconfirmed == 1 {
+        tr!(
+            "Your Mac has not confirmed one of your answers yet. If you quit now, Alondra stops sending it.",
+            "Tu Mac aún no ha confirmado una de tus respuestas. Si sales ahora, Alondra deja de enviarla."
+        )
+        .to_owned()
+    } else {
+        trf!(
+            "Your Mac has not confirmed {unconfirmed} of your answers yet. If you quit now, Alondra stops sending them.",
+            "Tu Mac aún no ha confirmado {unconfirmed} de tus respuestas. Si sales ahora, Alondra deja de enviarlas."
+        )
+    };
+    app.ask(Modal {
+        title: tr!("Answers still on their way", "Respuestas aún en camino").to_owned(),
+        body,
+        button: tr!("quit anyway", "salir igualmente").to_owned(),
+        cancel: Some(tr!("keep sending", "seguir enviando").to_owned()),
+        destructive: true,
+        then: ModalThen::Quit,
+    });
+    false
+}
+
+/// What the new process takes over: this Mac's screen and composer, and every Mac's answers
+/// still on their way.
+fn handover(macs: &mut [(App, Receiver<Msg>)]) -> restore::Restore {
+    let mut state = macs[0].0.to_restore();
+    state.unconfirmed = macs
+        .iter()
+        .map(|(app, _)| restore::MacAnswers { mac: app.mac_id(), answers: app.optimistic.unconfirmed() })
+        .filter(|mac| !mac.answers.is_empty())
+        .collect();
+    state
+}
+
+/// Opens where the previous process was and goes on sending, to each Mac, the answers it left
+/// on their way.
+fn take_over(macs: &mut [(App, Receiver<Msg>)], mut state: restore::Restore, now: i64) {
+    let mut carried = std::mem::take(&mut state.unconfirmed);
+    for (app, _) in macs.iter_mut() {
+        let mac = app.mac_id();
+        if let Some(at) = carried.iter().position(|answers| answers.mac == mac) {
+            app.optimistic.resume(carried.swap_remove(at).answers, now);
+        }
+    }
+    macs[0].0.restore(state);
+}
+
+/// Hands the screen, the open composer and the answers on their way to the new binary and becomes
+/// it. Only comes back when `exec` failed, with the terminal and the composer where they were.
+fn restart(terminal: &mut DefaultTerminal, macs: &mut [(App, Receiver<Msg>)]) -> Result<()> {
+    let state = handover(macs);
+    let app = &mut macs[0].0;
     let file = match restore::save(&state) {
         Ok(file) => file,
         Err(error) => {
@@ -1327,6 +1410,8 @@ impl App {
             last_clock: now_millis(),
             tx,
             open_views: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            view_tickets: Default::default(),
+            home_ticket: 0,
             availability_probe: Default::default(),
             card_view_asked: None,
             screen_view_asked: None,
@@ -1339,7 +1424,7 @@ impl App {
     fn start_view_feed(&self) {
         let tx = self.tx.clone();
         let open_views = self.open_views.clone();
-        view_feed::start(tx, open_views, self.target.clone(), self.availability_probe.clone());
+        view_feed::start(tx, open_views, self.view_tickets.clone(), self.target.clone(), self.availability_probe.clone());
     }
 
     /// Asks this Mac's daemon every few seconds which daemon it is, since another can take its port.
@@ -1385,6 +1470,14 @@ impl App {
                     std::thread::sleep(PAIRING_POLL);
                 }
             });
+    }
+
+    /// The paired Mac this instance talks to, by id; `None` for this Mac.
+    fn mac_id(&self) -> Option<String> {
+        match &self.target {
+            MacTarget::Local => None,
+            MacTarget::Direct(connection) => Some(connection.mac_id().to_owned()),
+        }
     }
 
     /// The Mac this instance reaches from afar, by id; `None` for this Mac over loopback.
@@ -1535,10 +1628,11 @@ impl App {
         self.screen_view_asked = Some(key.clone());
         self.home_view = None;
         let probe = self.availability_probe.clone();
+        let ticket = view_feed::ticket(&self.view_tickets);
         self.spawn(move |tx, target| {
             let client = Client::for_target(target, Duration::from_secs(25));
             let result = client.checked(&probe, |client| client.views(&key, None));
-            let _ = tx.send(Msg::ViewHome(result));
+            let _ = tx.send(Msg::ViewHome(ticket, result));
         });
     }
 
@@ -1699,6 +1793,7 @@ impl App {
                     .and_then(|id| action.options.iter().find(|option| option.id == id));
                 self.run_view_action_confirmed(&action, option, &selected, epoch);
             }
+            ModalThen::Quit => self.pending_flow = Some(Flow::QuitNow),
             ModalThen::Changed {
                 request,
                 action_id,
@@ -1791,17 +1886,14 @@ impl App {
         let (version, epoch) = self.home_view.as_ref()
             .map(|home| (Some(home.version.clone()), home.data_epoch.clone()))
             .unwrap_or_default();
-        self.optimistic.hold(key, version, epoch);
+        self.optimistic.hold(key, version, epoch, self.view_tickets.load(std::sync::atomic::Ordering::SeqCst));
         self.reconcile();
     }
 
     /// Every call to alondrad runs here. Tests never reach the user's live alondrad.
     fn spawn(&self, job: impl FnOnce(&SyncSender<Msg>, &MacTarget) + Send + 'static) {
         #[cfg(test)]
-        self.spawned.borrow_mut().push(match &self.target {
-            MacTarget::Local => None,
-            MacTarget::Direct(connection) => Some(connection.mac_id().to_owned()),
-        });
+        self.spawned.borrow_mut().push(self.mac_id());
         if cfg!(test) {
             return;
         }
@@ -2058,7 +2150,7 @@ impl App {
     }
 
     fn on_msg(&mut self, mut m: Msg) {
-        if let Msg::ViewHome(Ok(view)) | Msg::ViewCard { result: Ok(view), .. } | Msg::ViewSection { result: Ok(view), .. }
+        if let Msg::ViewHome(_, Ok(view)) | Msg::ViewCard { result: Ok(view), .. } | Msg::ViewSection { result: Ok(view), .. }
         | Msg::FormView { result: Ok(view), .. } = &mut m
         {
             view_render::placeholders(view);
@@ -2067,12 +2159,13 @@ impl App {
             self.action_answered();
         }
         match m {
-            Msg::ViewHome(Ok(view)) => {
-                if view.key != self.screen_view_key() {
+            Msg::ViewHome(ticket, Ok(view)) => {
+                if view.key != self.screen_view_key() || ticket < self.home_ticket {
                     return;
                 }
+                self.home_ticket = ticket;
                 self.screen_view_asked = None;
-                self.optimistic.reconcile(&view.version, &view.data_epoch);
+                self.optimistic.reconcile(&view.version, &view.data_epoch, ticket);
                 self.view_data_epoch = Some(view.data_epoch.clone());
                 self.view_status = Some(view.status.clone());
                 let changed = self.home_view.as_ref().is_none_or(|home| home.key != view.key || home.version != view.version);
@@ -2096,7 +2189,11 @@ impl App {
                 }
                 Err(error) => self.fail(error),
             },
-            Msg::ViewHome(Err(error)) => {
+            Msg::ViewHome(ticket, Err(error)) => {
+                if ticket < self.home_ticket {
+                    return;
+                }
+                self.home_ticket = ticket;
                 self.connected = error.availability == crate::client::availability::Availability::Responding;
                 self.offline = !self.connected;
                 self.screen_view_asked = None;
@@ -2371,7 +2468,7 @@ impl App {
         };
         let applied = matches!(outcome.kind, OutcomeKind::Done | OutcomeKind::Started);
         let shown = self.home_view.as_ref().map(|home| home.version.clone());
-        let settled = self.optimistic.settle(command, applied, shown)
+        let settled = self.optimistic.settle(command, applied, shown, self.view_tickets.load(std::sync::atomic::Ordering::SeqCst))
             .unwrap_or(optimistic::Settled { target: None, was_overdue: false, comes_back: false });
         let origin = settled.target.clone();
         let review = self.review_sends.remove(command);
@@ -2565,6 +2662,12 @@ impl App {
             dirty = true;
         }
         dirty |= self.tick_answers(now);
+        if matches!(self.target, MacTarget::Local)
+            && let Some(notice) = alondra_client_port::transport::transport().local_notice()
+        {
+            self.flash = Some(Flash { text: notice, kind: FlashKind::Success, at: now, ttl: NOTICE_MS });
+            dirty = true;
+        }
         let waiting = self.pairing.len();
         self.pairing.retain(|d| d.expires_at_ms > now);
         dirty |= self.pairing.len() != waiting;

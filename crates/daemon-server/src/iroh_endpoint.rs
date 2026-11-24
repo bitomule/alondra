@@ -355,6 +355,7 @@ pub(crate) async fn answer(service: &Service, device_id: &str, body: &[u8]) -> V
         Err(DirectRefusal::Unauthorized) => refusal("unauthorized", None),
         Err(DirectRefusal::Conflict) => refusal("idempotency_conflict", None),
         Err(DirectRefusal::Rejected(detail)) => refusal("rejected", Some(detail)),
+        Err(DirectRefusal::Sealed { code, detail, .. }) => refusal(code, detail),
     }
 }
 

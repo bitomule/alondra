@@ -39,7 +39,7 @@ fn app_with_the_pr_card(lang: crate::i18n::Lang) -> App {
     crate::i18n::set_for_this_thread(lang);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     app.sel = Some(Key(CARD.into()));
     the_card_arrives(&mut app, lang);
@@ -86,7 +86,7 @@ fn tasks(lang: crate::i18n::Lang) -> App {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
     app.reconcile();
     app
 }

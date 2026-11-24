@@ -85,6 +85,10 @@ pub trait Transport: Send + Sync {
     fn forget_direct(&self, home: &Path, mac: &str) -> Result<Vec<String>>;
     /// Whether a failure of this transport, found among an error's causes, left the machine.
     fn delivery(&self, cause: &(dyn std::error::Error + 'static)) -> Option<Delivery>;
+    /// What the route to this Mac's daemon did on its own that the user is to hear about, once.
+    fn local_notice(&self) -> Option<String> {
+        None
+    }
 }
 
 static TRANSPORT: OnceLock<Arc<dyn Transport>> = OnceLock::new();

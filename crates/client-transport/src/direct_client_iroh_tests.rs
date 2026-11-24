@@ -33,6 +33,11 @@ pub(crate) fn answer(request: &[u8], routes: &Value) -> Vec<u8> {
         .unwrap();
     let request: Value = serde_json::from_slice(&plain).unwrap();
     let body = if request["path"] == "/routes" { routes.clone() } else { json!({"path": request["path"]}) };
+    sealed_for(&envelope, &json!({"status": 200, "body": body}))
+}
+
+/// `payload` sealed by the Mac as the response to `request`.
+fn sealed_for(envelope: &Envelope, payload: &Value) -> Vec<u8> {
     let sealed = Envelope::seal_random(
         EnvelopeContext {
             route: MAC,
@@ -42,7 +47,7 @@ pub(crate) fn answer(request: &[u8], routes: &Value) -> Vec<u8> {
             kind: "response",
             expires_at_ms: now_ms() + 60_000,
         },
-        &serde_json::to_vec(&json!({"status": 200, "body": body})).unwrap(),
+        &serde_json::to_vec(payload).unwrap(),
         &mac_signing(),
         &device_agreement().public_key(),
     )
@@ -57,6 +62,8 @@ enum Reply {
     Bare(u16, &'static str),
     /// A response envelope for the request whose ciphertext does not open.
     Tampered,
+    /// The Mac's refusal `code`, sealed to the device, with the status it travels with.
+    Refused(u16, &'static str),
 }
 
 /// The fake Mac's direct HTTP listener; it records every request envelope.
@@ -107,6 +114,12 @@ impl Http {
                     match current {
                         Reply::Sealed => (200, answer(&body, &routes_given.lock().unwrap())),
                         Reply::Bare(status, text) => (status, text.as_bytes().to_vec()),
+                        Reply::Refused(status, code) => {
+                            let envelope: Envelope = serde_json::from_slice(&body).unwrap();
+                            let detail = "the Mac's reason";
+                            (status, sealed_for(&envelope, &json!({"status": status, "refusal": code, "detail": detail,
+                                "body": {"error": code, "detail": detail}})))
+                        }
                         Reply::Tampered => {
                             let mut sealed: Value = serde_json::from_slice(&answer(&body, &Value::Null)).unwrap();
                             sealed["ciphertext"] = json!(B64.encode([0u8; 48]));
@@ -391,6 +404,29 @@ fn only_a_sealed_answer_speaks_for_the_mac_over_http() {
     let http = Http::start();
     let terminal = terminal(&http, None);
     assert_eq!(read(&terminal).unwrap(), (200, json!({"path": "/capabilities"})));
+}
+
+#[test]
+fn a_refusal_the_mac_sealed_reads_over_http_as_a_refusal() {
+    use crate::client::{Delivery, delivery};
+    let refusal = |status, code| {
+        let http = Http::replying(Reply::Refused(status, code));
+        let terminal = terminal(&http, None);
+        let answer = read(&terminal);
+        assert!(terminal.connection.route().is_some(), "{code}: the route the Mac answered on is kept");
+        let received = http.received();
+        assert_eq!(received.iter().filter(|bytes| **bytes == received[0]).count(), 1, "{code}: a refusal is not sent again");
+        answer
+    };
+    assert_eq!(refusal(409, "idempotency_conflict").unwrap(), (409, json!({"error": "idempotency_conflict"})));
+    assert_eq!(delivery(&refusal(400, "rejected").unwrap_err()), Delivery::Answered(Some("the Mac's reason".into())));
+    assert_eq!(delivery(&refusal(503, "busy").unwrap_err()), Delivery::Unsent, "nothing ran: safe to send again");
+    let expired = refusal(401, "expired").unwrap_err();
+    let unauthorized = refusal(401, "unauthorized").unwrap_err();
+    for refused in [&expired, &unauthorized] {
+        assert_eq!(refused.downcast_ref::<Answered>().map(|answered| answered.status), Some(401), "{refused:#}");
+    }
+    assert_ne!(format!("{expired:#}"), format!("{unauthorized:#}"), "a late envelope is not told to pair again");
 }
 
 #[test]

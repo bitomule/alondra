@@ -35,7 +35,7 @@ pub(crate) fn reason(device: &Device, used: Option<&DeviceUse>, tracking_since_m
 }
 
 /// The device this Mac's own terminal signs with.
-fn own_terminal(home: &Path) -> Option<String> {
+pub(crate) fn own_terminal(home: &Path) -> Option<String> {
     std::fs::read_to_string(home.join("tui-device")).ok().map(|id| id.trim().to_owned())
 }
 

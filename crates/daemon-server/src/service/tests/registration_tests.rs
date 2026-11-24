@@ -131,7 +131,7 @@ fn registration_rejections_keep_the_typed_reason_on_the_wire_and_in_the_log() {
         }));
         let work = changes_work(&service, "queued-revocation", json!({"method":"POST","path":PUSH_BINDING_ROUTE,
             "body":{"push_binding":binding,"preferences_revision":1,"quiet_start":null,"quiet_end":null}}));
-        assert!(matches!(service.handle_direct(work.envelope).await, Err(DirectRefusal::Rejected(_))));
+        assert!(matches!(service.handle_direct(work.envelope).await, Err(DirectRefusal::Sealed { code: "rejected", .. })));
         assert_eq!(service.journal.db().unwrap().query_row("SELECT count(*) FROM service_push_preference_revisions", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     });
 }

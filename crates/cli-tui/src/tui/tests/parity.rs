@@ -157,7 +157,7 @@ fn server_merge_action(action_id: &str) -> serde_json::Value {
 
 fn merge_card(app: &mut App, merge: impl FnOnce(&str) -> serde_json::Value) -> (String, String) {
     let id = "hf-weekly-2026-09-30";
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     app.sel = Some(Key(id.into()));
     let action_id = format!("merge:{id}@7~abcdef12");
@@ -349,7 +349,7 @@ fn failed_views_feed_marks_cached_tasks_as_outdated_until_recovery() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
     app.on_msg(Msg::ViewFeed(Err(crate::client::availability::ViewFailure { error: anyhow::anyhow!("offline"), availability: crate::client::availability::Availability::Unavailable })));
     assert!(app.offline);
     assert!(screen(&mut app, 120, 26).contains("saved data · connection lost"));
@@ -373,7 +373,7 @@ fn tasks_search_shows_pending_and_uses_the_typed_query() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
     press(&mut app, KeyCode::Char('/'));
     assert!(app.search.as_ref().is_some_and(|search| search.editing));
     press(&mut app, KeyCode::Char('N'));
@@ -447,7 +447,7 @@ fn views_home_fixture_renders_server_rows_and_selected_card() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture(
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture(
         "home-tui.json",
     ))
     .unwrap())));
@@ -488,7 +488,7 @@ fn tasks_search_key_opens_the_server_search_view() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
 
     press(&mut app, KeyCode::Char('/'));
 
@@ -533,7 +533,7 @@ fn schedule_row_keys_post_the_selected_views_action() {
             }]
         }]
     }]);
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view).unwrap())));
     let rendered = screen(&mut app, 100, 24);
     assert!(
         rendered.contains("Weekly") && rendered.contains("Run Now"),
@@ -984,7 +984,7 @@ fn number_keys_press_the_buttons_and_answer_with_their_option_id() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture(
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture(
         "home-tui.json",
     ))
     .unwrap())));
@@ -1299,7 +1299,7 @@ fn detail_pane_is_titled_with_the_kind_of_the_card() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     app.on_msg(Msg::ViewCard {
         key: format!("card:{}", question_id()),
@@ -1346,7 +1346,7 @@ fn an_empty_inbox_says_all_caught_up_and_offers_the_next_step() {
     let mut app = App::new(tx);
     let mut home = view_fixture("home-tui.json");
     home["sections"] = serde_json::json!([]);
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(home).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(home).unwrap())));
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let shown = screen(&mut app, 100, 20);
     for expected in [
@@ -1546,7 +1546,7 @@ fn the_usage_indicator_is_one_word_in_the_header_of_tasks_and_inbox() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap())));
     app.view_status = Some(status_with(usage_gauges(crate::i18n::Lang::Es)));
     for screen_shown in [Screen::Tasks, Screen::Inbox] {
         app.screen = screen_shown;
@@ -1567,7 +1567,7 @@ fn u_opens_the_usage_sheet_with_one_section_per_provider_and_any_key_closes_it()
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap())));
     app.view_status = Some(status_with(usage_gauges(crate::i18n::Lang::Es)));
     press(&mut app, KeyCode::Char('u'));
     let shown = screen(&mut app, 120, 30);
@@ -1638,7 +1638,7 @@ fn tasks_open_on_the_first_task_and_leave_scheduled_to_the_s_key() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap())));
     assert_eq!(app.sel_idx, 0);
     assert_eq!(
         app.selected_view_key().as_deref(),
@@ -1859,7 +1859,7 @@ fn a_reply_written_on_a_delivery_leaves_the_queue_and_the_detail_at_once() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     let id = "hf-weekly-2026-09-30";
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     app.sel = Some(Key(id.into()));
     let mut card = view_fixture("card-pr.json");
@@ -1890,7 +1890,7 @@ fn a_card_opened_from_a_link_leaves_the_detail_the_moment_it_is_answered() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     let key = format!("card:{}", question_id());
     let mut card = view_fixture("card-question.json");
@@ -1917,20 +1917,20 @@ fn views_that_arrive_before_the_mac_confirms_never_bring_the_card_back() {
     let mut home: ViewDocument = serde_json::from_value(view_fixture("home-tui.json")).unwrap();
     for version in ["same-as-before", "rendered-while-sending"] {
         home.version = version.into();
-        app.on_msg(Msg::ViewHome(Ok(home.clone())));
+        app.on_msg(Msg::home(Ok(home.clone())));
         assert!(!app.inbox_keys().contains(&Key(origin.clone())), "{version}: the answer is still on its way");
     }
     home.version = "shown-when-confirmed".into();
-    app.on_msg(Msg::ViewHome(Ok(home.clone())));
+    app.on_msg(Msg::home(Ok(home.clone())));
     app.on_msg(Msg::ViewAction { request, result: applied("done", "Merged") });
-    app.on_msg(Msg::ViewHome(Ok(home.clone())));
+    app.on_msg(Msg::home(Ok(home.clone())));
     assert!(!app.inbox_keys().contains(&Key(origin.clone())), "the view the daemon had when it confirmed is older than the answer");
     let mut after = home.clone();
     after.version = "after-the-answer".into();
     for section in &mut after.sections {
         section.items.retain(|item| !matches!(item, alondra_views::Item::Card(card) if card.id == origin));
     }
-    app.on_msg(Msg::ViewHome(Ok(after)));
+    app.on_msg(Msg::home(Ok(after)));
     assert!(!app.inbox_keys().contains(&Key(origin)), "the daemon's newer view no longer lists it");
     assert!(app.optimistic.is_empty(), "nothing is left to remember");
 }
@@ -1977,7 +1977,7 @@ fn a_changed_modal_waits_for_the_composer_and_never_takes_its_enter() {
 }
 
 fn open_question(app: &mut App) {
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     app.sel = Some(Key(question_id()));
     app.on_msg(Msg::ViewCard {
@@ -1991,7 +1991,7 @@ fn cancelling_a_composer_leaves_no_stale_stamp_for_the_next_action() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     app.sel = Some(Key(question_id()));
     let mut card = view_fixture("card-question.json");
@@ -2093,7 +2093,7 @@ fn assert_in_order(drawn: &str, texts: &[String]) {
 
 fn pr_card_fixture(app: &mut App) -> String {
     let id = "hf-weekly-2026-09-30";
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     app.sel = Some(Key(id.into()));
     let mut card = view_fixture("card-pr.json");
@@ -2118,10 +2118,10 @@ fn a_done_card_stays_away_and_comes_back_only_if_the_server_still_has_it() {
     assert!(!screen(&mut app, 120, 30).contains("Review the beta candidate"));
 
     let mut stale: ViewDocument = serde_json::from_value(view_fixture("home-tui.json")).unwrap();
-    app.on_msg(Msg::ViewHome(Ok(stale.clone())));
+    app.on_msg(Msg::home(Ok(stale.clone())));
     assert!(!app.inbox_keys().contains(&Key(origin.clone())), "a view rendered before the answer cannot bring it back");
     stale.version = "after-the-answer".into();
-    app.on_msg(Msg::ViewHome(Ok(stale)));
+    app.on_msg(Msg::home(Ok(stale)));
     assert!(app.inbox_keys().contains(&Key(origin)), "a newer view still has it, so it is still there");
     assert!(screen(&mut app, 120, 30).contains("Review the beta candidate"));
 }
@@ -2494,7 +2494,7 @@ fn a_card_leaves_the_list_only_when_its_action_says_it_takes_it_out() {
     for resolves in [true, false] {
         let (tx, _rx) = std::sync::mpsc::sync_channel(8);
         let mut app = App::new(tx);
-        app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+        app.on_msg(Msg::home(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
         app.reconcile();
         app.sel = Some(Key(question_id()));
         let mut card = view_fixture("card-question.json");
@@ -2520,7 +2520,7 @@ fn words_written_under_an_orchestrator_decide_answer_it_and_take_it_out() {
     home["sections"][0]["items"].as_array_mut().unwrap().insert(0, decide);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(home).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(home).unwrap())));
     app.reconcile();
     app.sel = Some(Key(id.clone()));
     app.on_msg(Msg::ViewCard { key: format!("card:{id}"), result: Ok(serde_json::from_value(card).unwrap()) });

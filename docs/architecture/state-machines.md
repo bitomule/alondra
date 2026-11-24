@@ -75,8 +75,8 @@ to its fix group and issue.
 | S2 | [F-CLIENTS-A2](#f-clients-a2--in-tasks-and-in-the-task-detail-iphone-the-optimistic-action-has-no-notice-at-30-s-withdrawing-a-request-deleting-completed-or-cancellingpausing-a-task-stays-hidden-while-the-mac-does-not-confirm) · In Tasks and in the task detail (iPhone) the optimistic action has no notice at 30 s: withdrawing a request, deleting Completed or cancelling/pausing a task stays hidden while the Mac does not confirm | medium | [G10](#g10--apple-apps-optimistic-actions-and-per-mac-state) · #527 |
 | S2 | [F-CLIENTS-A3](#f-clients-a3--qr-pairing-fails-halfway-if-the-access-token-expires-or-there-is-a-cut-while-waiting-for-the-macs-approval-the-mac-can-be-left-with-a-device-without-keys) · QR pairing fails halfway if the access token expires or there is a cut while waiting for the Mac's approval; the Mac can be left with a device without keys | medium | [G10](#g10--apple-apps-optimistic-actions-and-per-mac-state) · #527 |
 | S2 | [F-CLIENTS-A4](#f-clients-a4--after-switching-mac-the-live-activity-keeps-showing-the-previous-macs-frozen-numbers-as-just-measured-and-covers-the-sealed-reports-the-relay-brings-from-it) · After switching Mac, the Live Activity keeps showing the previous Mac's frozen numbers as "just measured" and covers the sealed reports the relay brings from it | medium | [G10](#g10--apple-apps-optimistic-actions-and-per-mac-state) · #527 |
-| S2 | [F-CLIENTS-R1](#f-clients-r1--the-tui-automatic-restart-throws-away-answers-not-yet-confirmed) · The TUI automatic restart throws away answers not yet confirmed | medium | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
-| S2 | [F-CLIENTS-R4](#f-clients-r4--a-terminal-whose-local-device-was-removed-stays-locked-out-forever) · A terminal whose local device was removed stays locked out forever | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
+| S2 | **FIXED** [F-CLIENTS-R1](#f-clients-r1--the-tui-automatic-restart-throws-away-answers-not-yet-confirmed) · The TUI automatic restart throws away answers not yet confirmed | medium | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 · fixed |
+| S2 | **FIXED** [F-CLIENTS-R4](#f-clients-r4--a-terminal-whose-local-device-was-removed-stays-locked-out-forever) · A terminal whose local device was removed stays locked out forever | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 · fixed |
 | S2 | [F-ENGINE-1](#f-engine-1--the-slot-of-an-admitted-start-expires-after-3-min-even-if-the-node-does-not-exist-yet-the-gate-admits-above-the-limit) · The slot of an admitted start expires after 3 min even if the node does not exist yet: the gate admits above the limit | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
 | S2 | [F-ENGINE-12](#f-engine-12--a-retake-in-progress-and-the-adoption-of-a-model-transition-take-the-same-host-at-once-a-false-host-lost-card-or-two-live-owners-for-one-agent-formerly-h-engine-1) · A retake in progress and the adoption of a model transition take the same host at once: a false "host lost" card, or two live `Owner`s for one agent | low | [G8](#g8--one-owner-per-host-and-provider-facts-in-order) · #525 |
 | S2 | [F-ENGINE-3](#f-engine-3--the-pause-of-a-queued-task-lives-in-admissionjson-apart-from-launch_queue-it-can-be-lost-duplicated-or-stay-forever) · The pause of a queued task lives in `admission.json`, apart from `launch_queue`: it can be lost, duplicated or stay forever | — | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
@@ -96,15 +96,15 @@ to its fix group and issue.
 | S2 | [F-ORCH-4](#f-orch-4--a-scheduled-launch-that-did-start-is-considered-failed-after-a-restart-and-answering-the-card-cancels-the-live-task) · A scheduled launch that did start is considered failed after a restart, and answering the card cancels the live task | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-PROV-1](#f-prov-1--a-usage-reading-measured-before-a-limit-erases-it-when-it-arrives-later-the-account-reads-as-having-margin-again) · A usage reading measured before a limit erases it when it arrives later: the account reads as having margin again | low | [G8](#g8--one-owner-per-host-and-provider-facts-in-order) · #525 |
 | S2 | [F-SERVER-D1](#f-server-d1--a-transient-failure-on-the-first-enrollment-permanently-revokes-a-devices-relay-access-while-it-still-shows-as-paired) · A transient failure on the first enrollment permanently revokes a device's relay access while it still shows as paired | medium-low | [G11](#g11--devices-relay-and-self-update) · #528 |
-| S2 | [F-SERVER-D4](#f-server-d4--if-the-macs-own-terminal-is-revoked-the-tui-stays-on-device-not-paired-forever) · If the Mac's own terminal is revoked, the TUI stays on «device not paired» forever | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
+| S2 | **FIXED** [F-SERVER-D4](#f-server-d4--if-the-macs-own-terminal-is-revoked-the-tui-stays-on-device-not-paired-forever) · If the Mac's own terminal is revoked, the TUI stays on «device not paired» forever | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 · fixed |
 | S2 | [F-SERVER-R4](#f-server-r4--if-live-activity-pruning-fails-after-a-revocation-the-removed-mac-keeps-the-live-activity-alive-indefinitely) · If Live Activity pruning fails after a revocation, the removed Mac keeps the Live Activity alive indefinitely | low | [G11](#g11--devices-relay-and-self-update) · #528 |
 | S2 | [F-STORE-1](#f-store-1--a-second-process-applies-restart-recovery-to-the-live-database) · A second process applies restart recovery to the live database | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-STORE-2](#f-store-2--alondrad---preflight-does-not-exercise-the-json-files-the-real-startup-requires) · `alondrad --preflight` does not exercise the JSON files the real startup requires | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S3 | [F-CARDS-6](#f-cards-6--createtask-and-setdependencies-accept-an-already-cancelled-dependency-the-task-is-born-waiting-for-something-that-will-not-come-issue-323) · `CreateTask` and `SetDependencies` accept an already cancelled dependency: the task is born waiting for something that will not come (issue #323) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
 | S3 | [F-CARDS-7](#f-cards-7--clear-completed-takes-a-closed-request-whose-last-task-is-still-ending-which-the-tasks-list-now-shows-as-active-536) · «Clear completed» takes a closed request whose last task is still ending, which the Tasks list now shows as active (#536) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 |
 | S3 | [F-CLIENTS-A5](#f-clients-a5--if-preparing-an-answer-fails-the-queue-iphone-and-the-sidebar-mac-leave-the-card-sending-forever) · If preparing an answer fails, the queue (iPhone) and the sidebar (Mac) leave the card "sending" forever | low | [G10](#g10--apple-apps-optimistic-actions-and-per-mac-state) · #527 |
-| S3 | [F-CLIENTS-R2](#f-clients-r2--direct-http-route-a-refusal-from-the-mac-is-read-as-cut-midway) · Direct HTTP route: a refusal from the Mac is read as "cut midway" | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
-| S3 | [F-CLIENTS-R3](#f-clients-r3--the-tui-accepts-an-old-home-that-arrives-late-and-overwrites-the-new-one) · The TUI accepts an old home that arrives late and overwrites the new one | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 |
+| S3 | **FIXED** [F-CLIENTS-R2](#f-clients-r2--direct-http-route-a-refusal-from-the-mac-is-read-as-cut-midway) · Direct HTTP route: a refusal from the Mac is read as "cut midway" | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 · fixed |
+| S3 | **FIXED** [F-CLIENTS-R3](#f-clients-r3--the-tui-accepts-an-old-home-that-arrives-late-and-overwrites-the-new-one) · The TUI accepts an old home that arrives late and overwrites the new one | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 · fixed |
 | S3 | [F-ENGINE-10](#f-engine-10--disk_room_for-decides-the-next-one-goes-alone-with-a-disk_working-that-pace-can-empty-mid-call) · `disk_room_for` decides "the next one goes alone" with a `disk_working` that `pace` can empty mid-call | very | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
 | S3 | [F-ENGINE-11](#f-engine-11--two-states-of-the-hook-transport-are-unreachable-and-their-documentation-describes-behaviour-that-does-not-exist) · Two states of the hook transport are unreachable and their documentation describes behaviour that does not exist | always | [G12](#g12--the-architecture-docs-match-the-code) · #529 |
 | S3 | [F-ENGINE-2](#f-engine-2--auto_launch-admissions-that-never-launch-hold-a-slot-for-up-to-3-min) · `auto_launch` admissions that never launch hold a slot for up to 3 min | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
@@ -403,6 +403,10 @@ refute with a test: H-ENGINE-8 · Depends on: coordination with the Codex recove
 
 ### G9 · Terminal client and local pairing recover by themselves
 
+**Status**: FIXED (issue #526). Each finding below carries its test and ablation. One part differs from the
+expected fix written here: over the direct HTTP path only a refusal the Mac seals to the device counts as the
+Mac's (F-CLIENTS-R2), because a bare HTTP status can come from whoever answers on that address.
+
 Issue: #526 · Severity: S2 · Findings: F-CLIENTS-R1, F-CLIENTS-R2, F-CLIENTS-R3,
 F-CLIENTS-R4, F-SERVER-D4 · Depends on: none.
 
@@ -415,6 +419,16 @@ F-CLIENTS-R4, F-SERVER-D4 · Depends on: none.
   `local.rs`, `crates/cli` (device commands), `crates/daemon-support/src/auth.rs`.
 - **Tests**: TUI state tests with transport doubles; a direct-client test with a refused response; a
   home ordering test.
+- **Final behaviour**: the restart hands every Mac's unconfirmed answers to the new process in the restore
+  file (`Restore::unconfirmed`), which sends them again at once with their own `command_id` and keeps their
+  cards out; quitting by hand with answers on their way asks «Answers still on their way» first, and a second
+  quit, or «quit anyway», quits. The Mac seals to the device the refusals it can prove (`busy`, `expired` for
+  an envelope the device signed that arrived late, `idempotency_conflict`, `rejected`) and the terminal reads
+  them over HTTP as it reads them over iroh; a bare status stays «no answer». Every request for the screen's
+  view takes a ticket and an answer to an older request than the last one taken is dropped, `Ok` or `Err`;
+  a view asked for before the daemon confirmed an answer cannot bring its card back. «device not paired»
+  pairs the terminal again once per process and the TUI says so once. The device list leaves out this
+  Mac's own terminal and `DELETE /devices/{id}` refuses it with `own_terminal`.
 
 ### G10 · Apple apps: optimistic actions and per-Mac state
 
@@ -4342,8 +4356,8 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
 - **States (client)**: `Unpaired` → (lock) code → `/pair` → deletes `tui-device` → writes the key → writes
   `tui-device` → `Paired`. A cut in the middle leaves «no device» and the next start pairs again
   (`local.rs:157-180`); the daemon keeps an orphan device «Terminal (…)» that expires by disuse.
-- **Recovery**: only «wrong signature» triggers a new pairing (`local.rs:273-280`); «device not paired» does not (on
-  purpose, test `an_unpaired_device_is_not_paired_again`, `local.rs:797`).
+- **Recovery**: «wrong signature» and, since G9, «device not paired» trigger one new pairing per process
+  (`Rejection`, `local.rs`); the TUI says so once (F-CLIENTS-R4).
 
 ### M-SERVER-D5 · Relay enrollment
 - **Kind**: explicit, SQLite. **Defined in**: `service.rs:2425-2430` (`EnrollmentDecision`), `:2638-2715`
@@ -4366,7 +4380,8 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
 
 ### M-SERVER-D6 · Composite revocation
 - **Kind**: implicit. **Defined in**: `domain_bootstrap.rs:102-109` (`revoke_device`), `:792-812` (route DELETE
-  `/devices/{id}`, local only); `device_expiry.rs:54-80` (sweep by disuse / the relay forgot the registration);
+  `/devices/{id}`, local only; since G9 it refuses this Mac's own terminal with `own_terminal`, F-SERVER-D4);
+  `device_expiry.rs:54-80` (sweep by disuse / the relay forgot the registration);
   `service/relay.rs:361-384` (account removals).
 - **Steps**: the daemon records the revocation locally (M-SERVER-D1, M-SERVER-D2), reloads its devices, and the
   relay loop propagates it to the relay (`sync_revocations`). The keys stay in `service.toml` on purpose.
@@ -4447,6 +4462,7 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
 
 #### F-SERVER-D4 · If the Mac's own terminal is revoked, the TUI stays on «device not paired» forever
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: low · **Overlap**: none known.
+**Status**: FIXED in group G9 (issue #526), with the default decision (not allowed). The device list (`GET /devices`, which the Mac app's Settings and the CLI's device list read) leaves out the device in `tui-device`, and `DELETE /devices/{id}` refuses it with `own_terminal` (409) before touching anything (`domain_bootstrap.rs`, `device_expiry::own_terminal`). A terminal already removed pairs again by itself (F-CLIENTS-R4). Test: `daemon-server` `domain_bootstrap::tests::this_macs_own_terminal_is_neither_listed_nor_unpaired`. Ablation: without the guard in `revoke_device` the test fails (200 and the terminal unpaired); restored, it passes.
 - **Invalid state/transition and broken invariant**: `tui-device` points to a revoked device; every signed request
   gets 401 and there is no way out from the interface.
 - **Evidence**:
@@ -4742,7 +4758,7 @@ Note on dead code: the TUI process never calls `select_relay` (only the delivery
 
 ### M-CLIENTS-R1 · TUI optimistic answers (`Optimistic`)
 - **Kind**: explicit (struct with two maps). **Defined in**: `crates/cli-tui/src/tui/optimistic.rs:24-171`; used in `crates/cli-tui/src/tui.rs:1605-1654` (send), `2356-2442` (answer), `2444-2483` (timer), `2075` (reconcile).
-- **Source of truth**: TUI process memory, one per Mac tab (`App.optimistic`, `tui.rs:759`). Not persisted: `Restore` (`restore.rs:17-35`) does not include it. **Copies and derivatives**: the daemon keeps a receipt per `command_id` (UUID v4, `client.rs:783-789`).
+- **Source of truth**: TUI process memory, one per Mac tab (`App.optimistic`, `tui.rs:759`). Since G9 (issue #526) the automatic restart carries the `Sending` entries of every tab to the new process in `Restore::unconfirmed` (`MacAnswers` per Mac id), and `take_over` resumes them due at once. **Copies and derivatives**: the daemon keeps a receipt per `command_id` (UUID v4, `client.rs:783-789`).
 - **States** per command: `Sending{failures, retry_at: None}` (attempt in flight or just created), `Sending{retry_at: Some}` (waiting for retry), `Sending{overdue: true}` (30 s without confirmation; the card comes back), then removed. Per card: `Applied{version, epoch}` (hidden until a view with another version arrives).
 - **Events, guards, effects**:
 
@@ -4760,15 +4776,16 @@ Note on dead code: the TUI process never calls `select_relay` (only the delivery
 
 - **Rejected**: a response for an already removed command makes `settle` return None and an empty `Settled` is used (`tui.rs:2374-2375`): only the text is shown.
 - **Terminals**: removed. There is no retry cap (by design: "Alondra keeps sending it").
-- **Invariants**: resending reuses the `command_id` (enforced in `due`/`same_action`). Assumed: nothing ends the process with live `Sending` entries (broken by F-CLIENTS-R1).
-- **Persistence and restart**: everything is lost when the TUI exits or restarts.
+- **Invariants**: resending reuses the `command_id` (enforced in `due`/`same_action`, and across a restart by `Optimistic::resume`). Nothing ends the process with live `Sending` entries unsaid: the restart carries them and a manual quit asks first (`quits`, `tui.rs`); a second quit quits.
+- **Applied entries** (since G9): `Applied` also keeps `asked_before`, the last view ticket issued when the daemon settled it; a view answering a ticket at or below it cannot bring the card back.
+- **Persistence and restart**: the automatic restart keeps the `Sending` entries (above); `Applied` entries are not carried (the new process reads a fresh view). A manual quit confirmed over them loses them.
 - **Concurrency**: only the main thread mutates; POSTs run in threads (`spawn`, `tui.rs:1799-1811`) and come back through a channel. Two POSTs of the same command can be in flight at once (equal submit during an attempt in flight); the daemon deduplicates by `command_id`.
 
 ### M-CLIENTS-R2 · Per-tab connection state of the TUI
 - **Kind**: implicit.
 - **Fields**: `connected`, `offline`, `loaded` (`tui.rs:737-739`), `view_status`, `home_view`, `screen_view_asked`, and, outside `App`, the live transport route `DirectMac::route_kind()` (`direct_client.rs:288-291`, `323-336`).
 - **Effective states**: Connecting (`!connected && !offline`), Connected (`connected && !offline`), Offline (`offline`). `connected && offline` is never built because both are always written together (`tui.rs:2086-2087`, `2100-2101`, `2191-2192`, `2196-2197`, `2211-2212`).
-- **Writers**: `ViewHome(Ok/Err)` (from `load_screen_view` and from the feed thread), `ViewFeed(Ok/Err)`, `Msg::Offline` (no sender: `background_sync_error` has no callers, `tui.rs:915-921`). Last write wins; there is no ordering between responses.
+- **Writers**: `ViewHome(ticket, Ok/Err)` (from `load_screen_view` and from the feed thread), `ViewFeed(Ok/Err)`, `Msg::Offline` (no sender: `background_sync_error` has no callers, `tui.rs:915-921`). Since G9 every screen view request takes a ticket from `App.view_tickets`, shared with the feed thread, and `home_ticket` keeps the newest answered: an answer to an older request is dropped (F-CLIENTS-R3).
 - **Derivatives read by the UI**: tab (`MacStatus`, `tui.rs:258-293`, `1398-1424`: uses `offline`, `connected` and `route_kind`), red header band (`draw.rs:350-363`: `offline` and `view_status`), waiting screen (`draw.rs:618-633`: `offline`, `loaded`), terminal title (`tui.rs:969`). Three sources: the two booleans and the transport route, which can be `None` with `connected=true` (see F-CLIENTS-R2).
 - **Persistence and restart**: none; there is no home cache on disk (overlap #387).
 
@@ -4781,7 +4798,7 @@ Note on dead code: the TUI process never calls `select_relay` (only the delivery
 - **Kind**: explicit. **Defined in**: `version_watch::decide` (`crates/cli-tui/src/tui/version_watch.rs:79-104`) over `Watch` (`updated.rs:16-32`); effect in `main_loop` (`tui.rs:1027-1031`) and `restart` (`tui.rs:1043-1062`).
 - **Decisions**: Nothing, CheckDisk, Warn(...), Countdown, Restart. Restart when the daemon is newer, the binary on disk is that version, no restart was already done for it, and (requested with R) or (idle >= 10 s and the 3 s countdown elapsed), provided it is not `busy` or `confirming`.
 - `busy` = `actions_out > 0` or an attachment uploading (`updated.rs:78-84`). `actions_out` counts only requests in flight: +1 in `action_sent`, -1 when the response arrives (`tui.rs:2066-2068`, `2202-2203`).
-- **Persistence and restart**: `Restore` in `$TMPDIR` (screen, selection, composer); nothing else.
+- **Persistence and restart**: `Restore` in `$TMPDIR` (screen, selection, composer, and since G9 the unconfirmed answers of every Mac tab, F-CLIENTS-R1). An unconfirmed answer between two attempts does not hold the restart; it travels.
 
 ### M-CLIENTS-R5 · Pairing notices in the TUI
 - **Kind**: implicit. **Defined in**: `pairing: Vec<PendingDevice>` plus `pairing_answered: HashSet` (`tui.rs:797`, `1426-1452`, `2230-2261`). Local feed every `PAIRING_POLL`, sends only on change.
@@ -4789,15 +4806,15 @@ Note on dead code: the TUI process never calls `select_relay` (only the delivery
 
 ### M-CLIENTS-R6 · Local terminal signature (pairing on first use)
 - **Kind**: explicit/composite. **Defined in**: `Pairing{signer cache, replaced}` plus files `tui-device`/`tui-key.pem` plus `tui-pairing.lock` (`crates/client-transport/src/local.rs:85-191`, `send` at `273-284`).
-- **States**: no pair, pairing (POST /pairing + /pair, device-last write), pair saved, pair cached. Repair: only if the daemon answers 401 `"wrong signature"` (once per process, `replace_rejected`).
+- **States**: no pair, pairing (POST /pairing + /pair, device-last write), pair saved, pair cached. Repair: when the daemon answers 401 `"wrong signature"` or, since G9, `"device not paired"` (`Rejection`), once per process (`replace_rejected`); the second one leaves a notice the TUI shows once (`Transport::local_notice`).
 - **Invariants**: enforced: the device file is deleted before the key is written and written last, so a cut never leaves the key of one pair with the device of another.
-- **Rejected**: untreated: 401 `"device not paired"` (see F-CLIENTS-R4).
+- **Rejected**: either reason above after the one repair of the process.
 
 ### M-CLIENTS-R7 · Direct connection to a Mac (`Connection`)
 - **Kind**: composite. **Defined in**: `direct_client.rs:252-600`; backoff in `iroh_client.rs:257-273`. Current HTTP route (`current: Mutex<Option<String>>`), iroh link `IrohLink{Untried, Open, Down}` plus `Backoff` plus `RelayWatch`, `learned`. **Persistence**: `direct-macs.json` (routes, keys) and the iroh "dial" per Mac, under `direct-macs.lock`.
 - **Main transitions**: Untried to Open (connects) or Down (+backoff); Open to Untried (send failure) or Down (`wrong_mac`, 60 s retention); Open stuck on relay to a new connection from a new endpoint. HTTP: a known route is used without `hello`; a new route is validated with `hello` (OtherMac is skipped, KeyChanged aborts).
 - **Idempotency**: the same sealed envelope (same `request_id`) goes over iroh and, if lost midway, over HTTP; the Mac executes a `request_id` once. Each new call seals a new `request_id`.
-- **Rejected**: HTTP response classification: anything other than 200 with an openable envelope counts as "sent without answer" (see F-CLIENTS-R2).
+- **Rejected**: HTTP response classification: a 200 with an openable envelope is the answer; since G9 a non-200 whose body opens as a refusal the Mac sealed (`refusal` field) is read as over iroh (`refused`: `unauthorized`, `expired`, `idempotency_conflict`, `busy` = not run, other = answered) and keeps the route; anything else counts as "sent without answer" (F-CLIENTS-R2).
 
 ### M-CLIENTS-R8 · Direct pairing with a Mac (`direct_client::Pairing`)
 - **Kind**: explicit by steps. **Defined in**: `direct_client.rs:645-790`, and `connect` (`824-865`).
@@ -4833,6 +4850,7 @@ Note on dead code: the TUI process never calls `select_relay` (only the delivery
 
 #### F-CLIENTS-R1 · The TUI automatic restart throws away answers not yet confirmed
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: medium. The path is correlated: the TUI only restarts by itself when the daemon has updated, which is exactly when answers fail; releases are frequent · **Overlap**: none in open issues; `git log` of `updated.rs`/`optimistic.rs` shows no later fixes.
+**Status**: FIXED in group G9 (issue #526), with the default decision D-R1. Still present on `main` (`e1d5ec2aa`): `busy()` ignores `optimistic` and `Restore` had no answers. `handover` puts every tab's unconfirmed answers in `Restore::unconfirmed`, `take_over` gives them back to the tab of the same Mac, due at once with their `command_id`, and their cards stay out; a manual quit over them asks first (`quits`). Tests (`//crates/cli-tui:cli_tui_test`): `updated::tests::answers_no_mac_confirmed_are_sent_again_by_the_restarted_terminal_with_their_commands` (the restore file goes through JSON, as on disk) and `updated::tests::quitting_with_an_answer_on_its_way_asks_first`. Ablation: with `handover` leaving `unconfirmed` empty the first fails (no answer due in the new process); with `quits` returning true at once the second fails; restored, both pass.
 - **Invalid state/transition and broken invariant**: an optimistic answer is retried until the daemon confirms or rejects it, and if it does not arrive in 30 s the card returns with a notice. The restart deletes it without notice.
 - **Evidence**:
   1. When an attempt fails (Unsent/Unanswered/Running) only the next one is scheduled: `tui.rs:2360-2362`, `optimistic.rs:120-125` (waits of 1, 2, 4, 8 and then 15 s).
@@ -4854,6 +4872,7 @@ Note on dead code: the TUI process never calls `select_relay` (only the delivery
 
 #### F-CLIENTS-R2 · Direct HTTP route: a refusal from the Mac is read as "cut midway"
 **Class**: CONFIRMED (client side) · **Severity**: S3 · **Probability**: low · **Overlap**: none. `git log` shows only #471 (iroh backoff), which does not touch `over_http`.
+**Status**: FIXED in group G9 (issue #526), with a different fix from the one expected below. Mapping bare HTTP statuses the iroh way would undo a guarantee `main` keeps on purpose (tests `only_a_sealed_answer_speaks_for_the_mac_over_http`, `a_bare_status_from_a_route_the_mac_already_answered_on_is_no_answer_either`): over HTTP anyone who answers on the Mac's address can send a bare status, while iroh is an authenticated channel. So the Mac now seals to the device every refusal it can prove (`DirectRefusal::Sealed`, `service.rs`): `busy` when the request's signature holds (`busy_proof`, checked only once the permits are gone), `expired` for an envelope the device signed that arrived after its deadline, `idempotency_conflict` and `rejected`; the HTTP status stays the same. The terminal opens a non-200 body as a sealed refusal and reads it through the same `refused` as iroh (`direct_client.rs`): `busy` is `Unsent` (nothing ran), `expired` says the clocks differ, and the route is kept. A bare status and a refusal to an unknown or forged sender stay «no answer», so a terminal the Mac does not know at all still sees «Connecting…». Over iroh, `expired` replaces the `unauthorized` it got before (H-CLIENTS-R4 stays listed for pairing). Tests: `client-transport` `direct_client::iroh_tests::a_refusal_the_mac_sealed_reads_over_http_as_a_refusal`; `daemon-server` `direct::tests::a_refusal_to_a_device_that_proves_who_it_is_is_sealed_to_it_and_to_nobody_else`. Ablation: without the sealed-refusal branch in `over_http` the client test fails (`Unanswered`); with `sealed_refusal` returning `None` the server test fails (bare body); restored, both pass.
 - **Invalid state/transition and broken invariant**: `Delivery` must distinguish "did not go out" / "went out without answer" / "the Mac answered". Over iroh it does; over HTTP it does not.
 - **Evidence**:
   1. The direct server answers in the clear 503 `busy`, 400 `invalid_envelope`/`rejected`, 421 `wrong_mac`, 401 `unauthorized`, 409 `idempotency_conflict` (`crates/daemon-server/src/direct.rs:185-207`); 401 comes from an invalid signature or expired envelope (`service.rs:1373-1375`, `crates/e2e/src/lib.rs:212-214`) and from an unknown sender with no revoked record (`service.rs:1416-1419`).
@@ -4870,6 +4889,7 @@ Note on dead code: the TUI process never calls `select_relay` (only the delivery
 
 #### F-CLIENTS-R3 · The TUI accepts an old home that arrives late and overwrites the new one
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: low · **Overlap**: #385 (design, requires protection against out-of-order responses), #387 (TUI implementation), #388. The evidence (two producers, `show()`, receiver without guard) is new for them. The criterion is that of #386/#387: a late response never overwrites newer data.
+**Status**: FIXED in group G9 (issue #526). Every request for the screen's view, from `load_screen_view` or from the feed thread, takes a ticket from a counter both share (`view_feed::ticket`); `Msg::ViewHome` carries it and the TUI drops an answer, `Ok` or `Err`, to a request older than the newest one it took (`home_ticket`). The variant: an applied answer keeps the last ticket issued when the daemon settled it (`Applied::asked_before`), and a view asked for at or before it cannot bring its card back, also with no view on screen. Tests (`//crates/cli-tui:cli_tui_test`): `views_tests::a_screen_view_asked_for_earlier_never_replaces_a_newer_one_that_arrived_first`, `optimistic::tests::a_view_asked_for_before_the_daemon_confirmed_the_answer_cannot_bring_its_card_back`. Ablation: without the ticket check in `on_msg` the first fails (the answered card is listed again); without `asked_before` in `reconcile` the second fails; restored, both pass.
 - **Invalid state/transition and broken invariant**: a late response overwrites newer data.
 - **Evidence**:
   1. Two producers of `Msg::ViewHome` for the same key: `load_screen_view` (`tui.rs:1528-1543`, own thread, 25 s deadline) and the feed thread on seeing the key obsolete (`view_feed.rs:89-99`).
@@ -4890,6 +4910,7 @@ Note on dead code: the TUI process never calls `select_relay` (only the delivery
 
 #### F-CLIENTS-R4 · A terminal whose local device was removed stays locked out forever
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: low (not a security hole: it closes access too much, it does not open it) · **Overlap**: none.
+**Status**: FIXED in group G9 (issue #526), with the default decision D-R3. `LocalRoute::send` treats 401 `"device not paired"` like `"wrong signature"` (`Rejection`, `local.rs`): it pairs again once per process and sends the request again; the TUI shows once «This Mac no longer had this terminal among its devices; it paired again as “Terminal (…)”» (`Transport::local_notice`). With F-SERVER-D4 the Mac no longer lets anyone remove this terminal, so this covers a device removed before that or by hand. Test: `client-transport` `local::signing_tests::a_terminal_whose_device_was_removed_pairs_again_once_and_says_so`, which replaces `an_unpaired_device_is_not_paired_again` (it pinned the old behaviour). Ablation: with `Rejection::of` knowing only `"wrong signature"` the test fails (the request is refused and nothing pairs); restored, it passes.
 - **Invalid state/transition and broken invariant**: the local signing pair is repaired by itself only when the daemon rejects it, and only for one rejection reason.
 - **Evidence**:
   1. The signed client presents a signature if a pair is saved (`local.rs:112-124`, `225-231`, `237-247`).
@@ -4917,7 +4938,7 @@ The `command_id` of non-card calls depends on the call (`mcp.rs:1137-1147`, `187
 They go through `domain_post` without a `command_id` (`mcp.rs:874-881`); the daemon only deduplicates by operation identity (`domain_bootstrap.rs:1058-1066`), which in Claude is `{instance, JSON-RPC id}`, different on each new call. Missing: checking whether `launch_replacing` prevents a second node for the same task.
 
 #### H-CLIENTS-R4 · Clock skew between terminal and direct Mac
-A skew larger than the envelope deadline (10-70 s) rejects everything as `Unauthorized`; over iroh the message says "ya no acepta este terminal; vuelve a emparejar" (no longer accepts this terminal; pair again) (`direct_client.rs:208-216`, `419-423`), and pairing again does not fix it. Missing: confirming how the Mac computes `envelope_now` and whether pairing (120 s) also fails.
+A skew larger than the envelope deadline (10-70 s) rejects everything as `Unauthorized`; over iroh the message says "ya no acepta este terminal; vuelve a emparejar" (no longer accepts this terminal; pair again) (`direct_client.rs:208-216`, `419-423`), and pairing again does not fix it. Missing: confirming how the Mac computes `envelope_now` and whether pairing (120 s) also fails. Since G9 (F-CLIENTS-R2) an envelope the device signed that arrives after its deadline gets a sealed `expired` refusal and the terminal says the clocks differ, over HTTP and iroh; a terminal whose clock is ahead and pairing under skew are untouched, so the hypothesis stays listed.
 
 ### Part 2 · Apple apps (iPhone and Mac)
 

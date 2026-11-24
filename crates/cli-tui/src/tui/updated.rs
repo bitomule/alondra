@@ -250,6 +250,7 @@ impl App {
             agent_detail_scroll: self.agent_detail_scroll,
             composer: self.composer.take().filter(|c| !matches!(c.target, super::Target::McpReturn { .. } | super::Target::AccountPosition | super::Target::ViewAction { secret: true, .. }))
                 .map(|c| OpenComposer { text: c.input.text(), chips: c.chips, target: c.target }),
+            unconfirmed: vec![],
         }
     }
 
@@ -507,6 +508,7 @@ mod tests {
             agent_scroll: 3,
             agent_detail_scroll: 0,
             composer: Some(OpenComposer { target: super::super::Target::General { send: false }, text: "still here".into(), chips: vec![] }),
+            unconfirmed: vec![],
         };
         app.restore(state);
         assert!(app.screen == Screen::Tasks);
@@ -516,6 +518,59 @@ mod tests {
         app.updated.countdown_until = Some(now_millis() - 1);
         app.version_tick();
         assert!(!app.updated.restart);
+    }
+
+    fn answering(app: &mut App, command: &str, card: &str, now: i64) {
+        let request = serde_json::json!({"command_id": command, "data_epoch": "e1", "action_id": format!("ans:{card}"), "option_id": "yes", "input": {}});
+        let answer = super::super::optimistic::Answer { card: card.into(), label: "Yes".into() };
+        app.optimistic.begin(request, Some(super::super::Key(card.into())), answer, now);
+        app.optimistic.failed(command, now);
+    }
+
+    fn macs() -> Vec<(App, std::sync::mpsc::Receiver<Msg>)> {
+        [super::super::MacTarget::Local, crate::test_mac("mac-studio", "Studio")]
+            .into_iter()
+            .map(|target| {
+                let (tx, rx) = std::sync::mpsc::sync_channel(8);
+                (App::with_target(tx, target), rx)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn answers_no_mac_confirmed_are_sent_again_by_the_restarted_terminal_with_their_commands() {
+        let now = now_millis();
+        let mut before = macs();
+        answering(&mut before[0].0, "c-here", "card-here", now);
+        answering(&mut before[1].0, "c-studio", "card-studio", now);
+        assert!(!before[0].0.holds_restart(), "between two attempts nothing is in flight");
+
+        let carried = serde_json::to_vec(&super::super::handover(&mut before)).unwrap();
+        let mut after = macs();
+        super::super::take_over(&mut after, serde_json::from_slice(&carried).unwrap(), now + 24_000);
+
+        for ((app, _), (command, card)) in after.iter_mut().zip([("c-here", "card-here"), ("c-studio", "card-studio")]) {
+            assert!(app.optimistic.hides(&super::super::Key(card.into())), "{card} stays out while its answer is on its way");
+            let due = app.optimistic.due(now + 24_000);
+            assert_eq!(due.len(), 1, "{card}");
+            assert_eq!(due[0]["command_id"], command, "the daemon sees the same command and runs it once");
+        }
+    }
+
+    #[test]
+    fn quitting_with_an_answer_on_its_way_asks_first() {
+        let mut macs = macs();
+        assert!(super::super::quits(&mut macs, 0), "nothing on its way: it quits at once");
+
+        answering(&mut macs[1].0, "c-studio", "card-studio", now_millis());
+        assert!(!super::super::quits(&mut macs, 0), "an answer to another Mac holds the quit too");
+        press(&mut macs[0].0, KeyCode::Esc);
+        assert!(macs[0].0.modal.is_none());
+
+        assert!(!super::super::quits(&mut macs, 0));
+        assert!(super::super::quits(&mut macs, 0), "asked already, quitting again quits");
+        let flow = macs[0].0.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(flow, Flow::QuitNow));
     }
 
     #[test]

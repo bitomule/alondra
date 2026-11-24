@@ -97,6 +97,10 @@ impl transport::Transport for Transport {
         let error = cause.downcast_ref::<ureq::Error>()?;
         Some(if local::never_left(error) { Delivery::Unsent } else { Delivery::Unanswered })
     }
+
+    fn local_notice(&self) -> Option<String> {
+        local::notice()
+    }
 }
 
 #[cfg(test)]
