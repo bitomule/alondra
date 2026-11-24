@@ -137,7 +137,10 @@ materialized locally.
   need a real host, a fake native Claude's scripted behaviour or a binary of the root. What the
   model plays is kept honest by
   the behaviour cases of `provider-claude/src/host_cases/`, which `sdk_worker_test` runs on the real
-  host and `claude_host_model_test` on the model.
+  host and `claude_host_model_test` on the model. The model's hosts journal every frame in their
+  folder's `outbox` before they send it, as the real host does, though they never compact it: a
+  test of what an ended host left for the next daemon runs on the model, and waits on
+  `ClaudeModel::until_journaled` for what the journal must hold.
 
 ## Programs a test runs
 

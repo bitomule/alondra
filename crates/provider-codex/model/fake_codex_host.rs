@@ -10,11 +10,18 @@
 //! What the real session does asynchronously runs here in its order: what needs no native round
 //! trip before the receipt of the command that caused it, the rest after it.
 //!
+//! A test kills the app-server (`kill_native`) or stops the host where it is (`freeze`), and a
+//! backend whose host is `LEGACY_HOST` gets the host of the release before, which lives on after
+//! its app-server exited.
+//!
 //! Gaps it leaves: no orchestrator host, no polling of a managed child that is still running, no
-//! code-cell control refusal, and the app-server never dies by itself.
+//! code-cell control refusal, the app-server never dies by itself, and a host whose app-server
+//! exited ends only once the daemon read it, never on the deadline the real host keeps when its
+//! owner does not read.
 
 use alondra_codex_protocol as protocol;
 use alondra_engine_doubles::agent_host::{Serve, Served, Stop};
+use alondra_process_group::Member;
 use fake_codex_native::{Native, Printed};
 use host_transport::{Bootstrap, Doubled, HostState, Identity, Wire, lock};
 use protocol::{Action, Command, Decision, DecisionKind};
@@ -25,6 +32,7 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -44,6 +52,9 @@ const ROLE_ENVIRONMENT: &[&str] = &[
     "ALONDRA_SANDBOX", "ALONDRA_BIN", "ALONDRA_PROVIDER",
 ];
 const APPROVED_PLAN: &str = "Implement the plan the user just approved. Continue the Alondra task and report its result through Alondra.";
+/// The file name of the Codex host of the release before (`agent-host/codex-legacy-fixture.ts`),
+/// which lives on after its app-server exited and keeps taking owners.
+pub const LEGACY_HOST: &str = "codex-legacy-fixture";
 
 pub type Host = host_transport::Host<Session>;
 type State = HostState<Session>;
@@ -54,6 +65,7 @@ pub struct CodexModel(Arc<Shared>);
 
 struct Shared {
     hosts: Mutex<Vec<Arc<Host>>>,
+    commands: Mutex<Vec<Member>>,
     activity: AtomicU64,
     starting: Arc<AtomicU64>,
     trouble: Mutex<Option<String>>,
@@ -66,6 +78,7 @@ impl Default for CodexModel {
     fn default() -> Self {
         Self(Arc::new(Shared {
             hosts: Mutex::default(),
+            commands: Mutex::default(),
             activity: AtomicU64::new(0),
             starting: Arc::new(AtomicU64::new(0)),
             trouble: Mutex::default(),
@@ -113,6 +126,33 @@ impl CodexModel {
         }
     }
 
+    /// The app-server of the host whose process goes by `process_id` is killed, as SIGKILL kills
+    /// it. The host says so unless it is frozen, and a host of this release ends once the daemon
+    /// read that.
+    pub fn kill_native(&self, process_id: u32) {
+        let Some(host) = self.host(process_id) else { return };
+        let mut state = lock(&host.state);
+        let HostState { wire, play } = &mut *state;
+        if host.frozen() {
+            return play.lose_native();
+        }
+        let mut out = Out { model: self, host: &host, wire };
+        play.native_killed(&mut out);
+    }
+
+    /// The host whose process goes by `process_id` stops where it is, as SIGSTOP stops it: it
+    /// reads, answers and says nothing more, and only a kill ends it.
+    pub fn freeze(&self, process_id: u32) {
+        if let Some(host) = self.host(process_id) {
+            host.freeze();
+        }
+    }
+
+    /// Every command an app-server left running after its turn, in the order they started.
+    pub fn commands(&self) -> Vec<Member> {
+        lock(&self.0.commands).clone()
+    }
+
     /// Ends every host and starts no other: once it returns, no host of the model writes anything.
     pub fn close(&self) {
         let hosts = {
@@ -145,6 +185,24 @@ impl CodexModel {
         });
     }
 
+    /// Once `command`, which the app-server of `served` left running, exits, the app-server says
+    /// so, unless its host ended or stopped first.
+    fn watch_command(&self, served: Served, command: Member) {
+        lock(&self.0.commands).push(command);
+        let model = self.clone();
+        self.spawn(move || {
+            let Some(status) = served.wait_descendant(&command) else { return };
+            let Some(host) = model.host(served.process_id()).filter(|host| served.alive() && !host.frozen()) else { return };
+            let mut state = lock(&host.state);
+            if state.wire.ended {
+                return;
+            }
+            let HostState { wire, play } = &mut *state;
+            let mut out = Out { model: &model, host: &host, wire };
+            play.command_ended(&mut out, &command, status);
+        });
+    }
+
     fn start(&self, served: &Served) -> io::Result<Arc<Host>> {
         let (bootstrap, secret) = Bootstrap::read(served.bootstrap())?;
         let Some(task) = bootstrap.task() else {
@@ -158,7 +216,9 @@ impl CodexModel {
             process_id: served.process_id(),
             task,
         };
-        let host = Arc::new(Host::new(identity, (bootstrap, secret), CAPABILITIES, Box::new(Doubled(served.clone())), self.0.starting.clone(), Session { process: Some(served.clone()), ..Session::default() }));
+        let legacy = bootstrap.manifest.artifact_path.file_name().is_some_and(|name| name == LEGACY_HOST);
+        let session = Session { process: Some(served.clone()), legacy, ..Session::default() };
+        let host = Arc::new(Host::new(identity, (bootstrap, secret), CAPABILITIES, Box::new(Doubled(served.clone())), self.0.starting.clone(), session));
         {
             let mut hosts = lock(&self.0.hosts);
             if self.0.closed.load(Ordering::SeqCst) {
@@ -231,9 +291,15 @@ impl Serve for CodexModel {
         self.spawn(move || host_transport::serve(&model, &host, stream));
     }
 
+    /// A frozen host only ends with a kill; the legacy host has no handler for SIGINT, which ends
+    /// it at once.
     fn stop(&self, served: &Served, stop: Stop) {
+        let host = self.host(served.process_id());
+        let legacy = host.as_ref().is_some_and(|host| lock(&host.state).play.legacy);
         match stop {
             Stop::Kill => served.end(stop.status()),
+            _ if host.as_ref().is_some_and(|host| host.frozen()) => {}
+            Stop::AfterInterrupt if legacy => served.end(stop.status()),
             Stop::Request | Stop::AfterInterrupt => self.stopped(served, stop),
         }
     }
@@ -367,6 +433,8 @@ enum Phase {
 pub struct Session {
     /// The doubled host, which says whether the app-server it started runs.
     process: Option<Served>,
+    /// The host of the release before: it lives on after its app-server exited.
+    legacy: bool,
     opened: bool,
     /// The session ended: the host takes no command any more.
     unavailable: bool,
@@ -450,6 +518,9 @@ impl Session {
     fn command(&mut self, out: &mut Out, command: &Command) {
         if self.unavailable {
             return out.receipt(command, rejected("host_reconciliation_required", "Prior native work and effects need positive reconciliation"));
+        }
+        if self.closed && !matches!(command.action, Action::Start { .. } | Action::Offer { .. } | Action::Respond { .. } | Action::Close) {
+            return out.troubled("the model plays no control of a legacy host whose app-server exited".into());
         }
         if let Some(required) = command.action.capability()
             && !CAPABILITIES.contains(&required)
@@ -621,7 +692,7 @@ impl Session {
         if Self::settings(bootstrap).get("initial_mode").and_then(Value::as_str) == Some("plan") {
             self.mode = Mode::Plan;
         }
-        let native = Native::new(&bootstrap.native.executable, &bootstrap.native.cwd, &bootstrap.native.env, out.host.process_id);
+        let native = Native::new(&bootstrap.native.executable, &bootstrap.native.cwd, &bootstrap.native.env, self.process.clone());
         if let Some(unplayed) = native.unplayed() {
             out.troubled(unplayed);
         }
@@ -881,7 +952,16 @@ impl Session {
     fn notify(&mut self, out: &mut Out, message: Value) {
         if let Some(native) = self.native.as_mut().filter(|_| !self.closed) {
             let printed = native.read(&message);
+            self.watch_commands(out);
             self.printed(out, printed, None);
+        }
+    }
+
+    /// Each command the app-server just left running is watched until it exits.
+    fn watch_commands(&mut self, out: &Out) {
+        let (Some(native), Some(served)) = (self.native.as_mut(), &self.process) else { return };
+        for command in native.started() {
+            out.model.watch_command(served.clone(), command);
         }
     }
 
@@ -894,6 +974,7 @@ impl Session {
         self.sequence += 1;
         let id = json!(format!("alondra:{}", self.sequence));
         let printed = native.read(&json!({"id": id, "method": method, "params": params}));
+        self.watch_commands(out);
         match self.printed(out, printed, Some(&id)) {
             Some(response) => match response.get("error") {
                 Some(error) => Err(Rpc::Refused(error["code"].as_i64().map_or_else(|| "failed".into(), |code| code.to_string()))),
@@ -967,12 +1048,13 @@ impl Session {
                 Work::CheckChild(child) => self.check_child(out, &child),
                 Work::Reply { id, result, key, epoch } => {
                     let printed = self.native.as_mut().filter(|_| !self.closed).map(|native| native.read(&json!({"id": id, "result": result})));
+                    self.watch_commands(out);
                     self.settled(out, &key, epoch, "answered");
                     if let Some(printed) = printed {
                         self.printed(out, printed, None);
                     }
                 }
-                Work::Exit => self.exited(out),
+                Work::Exit => self.exited(out, "SIGTERM"),
             }
         }
     }
@@ -999,9 +1081,34 @@ impl Session {
         self.drive(out, Phase::All);
     }
 
-    /// The app-server exited: every decision it waited on is cancelled, the host says how it ended,
-    /// and the host ends once the daemon read that.
-    fn exited(&mut self, out: &mut Out) {
+    /// The app-server was killed: the session reads its exit as the real one does.
+    fn native_killed(&mut self, out: &mut Out) {
+        if self.native.is_some() && !self.closed {
+            self.exited(out, "SIGKILL");
+        }
+    }
+
+    /// The app-server was killed while its host was stopped, which notices nothing.
+    fn lose_native(&mut self) {
+        self.native = None;
+        if let Some(process) = &self.process {
+            process.set_native(false);
+        }
+    }
+
+    /// The command `process` the app-server left running exited with `status`: the app-server says
+    /// so, if it still runs.
+    fn command_ended(&mut self, out: &mut Out, process: &Member, status: ExitStatus) {
+        let Some(native) = self.native.as_mut().filter(|_| !self.closed) else { return };
+        let printed = native.command_ended(process, status);
+        self.printed(out, printed, None);
+        self.drive(out, Phase::All);
+    }
+
+    /// The app-server exited on `signal`: every decision it waited on is cancelled and the host
+    /// says how it ended. A host of this release ends once the daemon read that; the legacy one
+    /// lives on.
+    fn exited(&mut self, out: &mut Out, signal: &str) {
         if self.closed {
             return;
         }
@@ -1021,9 +1128,11 @@ impl Session {
         if let Some(failure) = self.failure.clone() {
             self.emit(out, "alondra/transportFailed", json!({"code": failure}), "diagnostic");
         }
-        out.observe(json!({"type": "process_exited", "exit_code": null, "signal": "SIGTERM"}));
-        self.unavailable = true;
-        out.wire.closing = true;
+        out.observe(json!({"type": "process_exited", "exit_code": null, "signal": signal}));
+        if !self.legacy {
+            self.unavailable = true;
+            out.wire.closing = true;
+        }
     }
 
     /// The session hands the app-server the next input as a turn, once its account is checked.

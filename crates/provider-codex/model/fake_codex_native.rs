@@ -1,21 +1,23 @@
 //! The repository's fake native Codex app-server (`agent-host/fake-codex.py`), played in the test's
 //! process: it reads the same environment and the same sidecar file beside its executable, writes
 //! every message it gets to the same transcript, and answers each request with what that script
-//! prints. The turn modes that need real processes, FIFO barriers or a dying app-server are not
-//! played: a sidecar or mode that asks for one is reported as trouble.
+//! prints. A command the script leaves running after its turn (`ownedCommand`) is a process of the
+//! doubled host's group, which the test ends instead of writing its release. The turn modes that
+//! need FIFO barriers or a dying app-server are not played: a sidecar or mode that asks for one is
+//! reported as trouble.
 
+use alondra_engine_doubles::agent_host::Served;
+use alondra_process_group::Member;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::io::Write as _;
+use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 
 const FIRST_THREAD: &str = "00000000-0000-4000-8000-000000000001";
-const UNPLAYED_MODES: &[&str] = &[
-    "replace_plan_with_work", "session_command", "blocked_command", "close_stdout", "exit_with_descendant", "idle_with_descendant", "complete_then_exit",
-];
-const UNPLAYED_SIDECAR: &[&str] = &[
-    "threadOpenBarrier", "turnResponseBarrier", "checkpointRelease", "ownedCommand", "exitMcp", "exitMcpAfterFinal", "closeMcpStdout", "planImplementationRelease",
-];
+const UNPLAYED_MODES: &[&str] = &["replace_plan_with_work", "close_stdout", "exit_with_descendant", "idle_with_descendant", "complete_then_exit"];
+const UNPLAYED_SIDECAR: &[&str] = &["threadOpenBarrier", "turnResponseBarrier", "checkpointRelease", "exitMcp", "exitMcpAfterFinal", "closeMcpStdout", "planImplementationRelease"];
 
 pub struct Native {
     env: BTreeMap<String, String>,
@@ -29,13 +31,19 @@ pub struct Native {
     child_pending: bool,
     child_turn: String,
     mode: String,
+    /// The doubled host, whose group the commands left running join.
+    process: Option<Served>,
+    /// The commands started since the session last asked.
+    started: Vec<Member>,
+    /// Each command still running, with what the app-server prints once it exits.
+    commands: Vec<(Member, Value)>,
 }
 
 /// What the app-server printed for a message: notifications, responses and requests, in order.
 pub type Printed = Vec<Value>;
 
 impl Native {
-    pub fn new(executable: &Path, cwd: &Path, env: &BTreeMap<String, String>, process_id: u32) -> Self {
+    pub fn new(executable: &Path, cwd: &Path, env: &BTreeMap<String, String>, process: Option<Served>) -> Self {
         let mode = env.get("ALONDRA_FAKE_MODE_FILE")
             .and_then(|file| std::fs::read_to_string(file).ok())
             .map(|mode| mode.trim().to_owned())
@@ -51,9 +59,25 @@ impl Native {
             accepted_input: None,
             refused_turn_start: false,
             child_pending: false,
-            child_turn: format!("child-turn-{process_id}"),
+            child_turn: format!("child-turn-{}", process.as_ref().map_or(0, Served::process_id)),
             mode,
+            process,
+            started: Vec::new(),
+            commands: Vec::new(),
         }
+    }
+
+    /// The commands the app-server left running since the last time this was asked.
+    pub fn started(&mut self) -> Vec<Member> {
+        std::mem::take(&mut self.started)
+    }
+
+    /// What the app-server prints once the command `process` it left running exits with `status`.
+    pub fn command_ended(&mut self, process: &Member, status: ExitStatus) -> Printed {
+        let Some(at) = self.commands.iter().position(|(command, _)| command == process) else { return Vec::new() };
+        let (_, mut completed) = self.commands.remove(at);
+        completed["params"]["item"]["exitCode"] = json!(status.code().or_else(|| status.signal().map(|signal| -signal)));
+        vec![completed]
     }
 
     /// What in the script's world this model does not play, if `message` asks for it.
@@ -319,8 +343,36 @@ impl Native {
                 printed.push(question.clone());
                 printed.push(question);
             }
+            "blocked_command" | "session_command" if number == 1 => self.own_command(fixture, &turn_mode, printed),
             "hold" if !(self.env.get("ALONDRA_FAKE_FINISH_ON_MCP_STATUS").is_some_and(|on| on == "1") && number > 1) => {}
             _ => self.finish(printed),
         }
+    }
+
+    /// The turn starts a command that runs on after it, as `blocked_command` and `session_command`
+    /// do: its process id goes to the sidecar's `pidFile`, and the turn ends while it runs.
+    fn own_command(&mut self, fixture: &Map<String, Value>, turn_mode: &str, printed: &mut Printed) {
+        let Some(process) = self.process.as_ref().map(|host| host.start_descendant(None, false)) else { return };
+        if let Some(pid_file) = fixture.get("ownedCommand").and_then(|owned| owned["pidFile"].as_str()) {
+            let _ = std::fs::write(pid_file, json!({"pid": process.pid}).to_string());
+        }
+        let (thread, turn, pid) = (self.thread.clone(), self.turn.clone(), process.pid.to_string());
+        let (id, command, output) = if turn_mode == "session_command" {
+            ("session-command", "fixture session waits on its explicit barrier", "")
+        } else {
+            ("owned-command", "fixture command waits on its explicit barrier", "The explicit child barrier was released")
+        };
+        if turn_mode == "session_command" {
+            let started = json!({"type": "commandExecution", "id": id, "command": command, "cwd": self.cwd, "status": "inProgress", "aggregatedOutput": "", "exitCode": null});
+            Self::note(printed, "item/started", json!({"threadId": thread, "turnId": turn, "item": started}));
+            Self::note(printed, "item/commandExecution/terminalInteraction", json!({"threadId": thread, "turnId": turn, "itemId": id, "processId": pid, "stdin": ""}));
+        } else {
+            let started = json!({"type": "commandExecution", "id": id, "command": command, "cwd": self.cwd, "processId": pid, "status": "inProgress", "aggregatedOutput": "", "exitCode": null});
+            Self::note(printed, "item/started", json!({"threadId": thread, "turnId": turn, "item": started}));
+        }
+        Self::note(printed, "turn/completed", json!({"threadId": thread, "turn": {"id": turn, "status": "completed"}}));
+        let completed = json!({"type": "commandExecution", "id": id, "command": command, "cwd": self.cwd, "processId": pid, "status": "completed", "aggregatedOutput": output, "exitCode": null});
+        self.commands.push((process, json!({"method": "item/completed", "params": {"threadId": thread, "turnId": turn, "item": completed}})));
+        self.started.push(process);
     }
 }

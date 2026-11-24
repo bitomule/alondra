@@ -175,6 +175,8 @@ struct Life {
     native: bool,
     /// The host's socket is gone: it lives on and no owner can reach it again.
     stranded: bool,
+    /// The host is stopped where it is, as SIGSTOP stops a process: only a kill ends it.
+    frozen: bool,
 }
 impl Host {
     fn life(&self) -> MutexGuard<'_, Life> {
@@ -209,6 +211,9 @@ impl Host {
         }
     }
     fn ended_within(&self, timeout: Duration) -> bool {
+        if self.life().frozen {
+            return self.exit().is_some();
+        }
         let (life, _) = self.ended.wait_timeout_while(self.life(), timeout, |life| life.exit.is_none()).unwrap_or_else(PoisonError::into_inner);
         life.exit.is_some()
     }
@@ -251,6 +256,10 @@ impl Served {
     /// Waits until the host ends, however it ends, and returns how.
     pub fn wait(&self) -> ExitStatus {
         self.0.wait()
+    }
+    /// The host stops where it is, as SIGSTOP stops a process: no request ends it, only a kill.
+    pub fn freeze(&self) {
+        self.0.life().frozen = true;
     }
     /// The host started its native agent, or that agent exited.
     pub fn set_native(&self, runs: bool) {
@@ -350,6 +359,7 @@ impl Shared {
         }
         match stop {
             Stop::Kill => host.end(stop.status()),
+            Stop::Request | Stop::AfterInterrupt if host.life().frozen => {}
             Stop::Request | Stop::AfterInterrupt => self.serve().stop(&Served(host.clone()), stop),
         }
     }
@@ -877,6 +887,21 @@ mod tests {
         stop.end_tree(&tree, Duration::ZERO).unwrap();
         assert!(!hosts.descendant_runs(&shell) && !hosts.descendant_runs(&child), "ending what the host left ends it all");
         assert_eq!(served.wait_descendant(&child).and_then(|status| status.signal()), Some(libc::SIGTERM));
+    }
+
+    #[test]
+    fn a_frozen_host_answers_no_stop_request_at_once_and_only_a_kill_ends_it() {
+        let fixture = Fixture::new();
+        let state = private(&fixture.0);
+        let hosts = InProcessHosts::default();
+        let host = launch(&hosts, &fixture, &state);
+        hosts.served(&state).unwrap().freeze();
+        let stop = host.stopper();
+        let asked = Instant::now();
+        assert!(!stop.request_graceful_stop(Duration::from_secs(60)).unwrap(), "a frozen host does not stop on a request");
+        assert!(asked.elapsed() < Duration::from_secs(1), "nothing waits for a host that cannot answer");
+        stop.kill().unwrap();
+        assert_eq!(hosts.live(), Vec::<PathBuf>::new(), "a kill ends it");
     }
 
     #[test]

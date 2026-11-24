@@ -10,6 +10,8 @@ mod turns;
 mod arguments;
 #[path = "host_cases/decisions_tests.rs"]
 mod decisions;
+#[path = "host_cases/journal_tests.rs"]
+mod journal;
 
 use fixture_controller::WorkerController;
 use super::*;
@@ -105,6 +107,20 @@ struct Launched {
     decisions: Vec<Value>,
     /// The folder the native Claude worked in.
     cwd: PathBuf,
+    /// Each event the host sent, by its cursor and exact bytes.
+    sent: Vec<(u64, Vec<u8>)>,
+    /// What the journal the host left once it ended proves to the daemon that comes after it.
+    ended: Result<crate::EndedJournal, String>,
+}
+
+/// Reads the journal of the host that ended in `state` as a daemon taking its execution over
+/// reads it, bound to the fence, execution and instance its bootstrap names.
+fn ended_journal(state: &Path) -> Result<crate::EndedJournal, String> {
+    let bootstrap: Value = serde_json::from_slice(&fs::read(state.join("host.lock")).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+    let fence: alondra_agent_protocol::Fence = serde_json::from_value(bootstrap["fence"].clone()).map_err(|error| error.to_string())?;
+    let execution: alondra_agent_protocol::Execution = serde_json::from_value(bootstrap["execution"].clone()).map_err(|error| error.to_string())?;
+    let instance = bootstrap["host_instance_id"].as_str().ok_or("the bootstrap names no host instance")?;
+    crate::EndedJournal::read(state, &fence, &execution, instance, 0).map_err(|error| format!("{error:?}"))
 }
 
 fn private_directory(path: &Path) {
@@ -144,7 +160,7 @@ fn launch(prompt: &str, worker: Option<WorkerProfile>) -> Launched {
     connection.execute("INSERT INTO task_worktrees VALUES('case-task',?1,0)", [cwd.to_str().unwrap()]).unwrap();
     let configuration = ClaudeConfiguration {
         artifact: VerifiedArtifact::verify(&under.node, &under.bundle, &hash(&under.node), &hash(&under.bundle)).unwrap(),
-        state_directory: state,
+        state_directory: state.clone(),
         host_environment: test_support::fixture_environment(&home),
         native_executable: under.native.clone(),
         native_directory: cwd.clone(),
@@ -205,7 +221,8 @@ fn launch(prompt: &str, worker: Option<WorkerProfile>) -> Launched {
         _ => None,
     }).collect();
     let observations = events.iter().filter_map(summary).collect();
-    Launched { observations, arguments: (under.arguments)(), decisions, cwd: cwd.canonicalize().unwrap() }
+    let sent = received.lock().unwrap().iter().map(|batch| (batch.cursor, batch.evidence.clone())).collect();
+    Launched { observations, arguments: (under.arguments)(), decisions, cwd: cwd.canonicalize().unwrap(), sent, ended: ended_journal(&state) }
 }
 
 /// The real adapter, recording each batch it hands the controller and stopping its host when the
