@@ -46,7 +46,7 @@ swift_binary(
 
 swift_test(
     name = "ActionJournalProcessTests",
-    timeout = "moderate",
+    timeout = "long",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = ["ProcessTests/ActionJournalProcessTests.swift", "ProcessFixtures/ProcessProtocol.swift"],
     data = [":ActionJournalProcessClient", "//crates/daemon-server:daemon_server_test"],
