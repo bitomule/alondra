@@ -81,6 +81,7 @@ fn comparable(provider: Provider, model: &str) -> String {
     match provider {
         Provider::Claude => base.strip_prefix("claude-").map(str::to_owned).unwrap_or(base),
         Provider::Codex => base,
+        Provider::Antigravity => crate::antigravity_account::model_family(&base),
     }
 }
 

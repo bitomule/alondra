@@ -90,9 +90,12 @@ pub enum Verb {
     ProviderConnect,
     /// Add an account to the provider named as the subject, with the name given as text.
     AccountAdd,
+    /// Set the key of the account named as the subject (its provider as `extra`) to the text, or
+    /// clear it with the option `clear`. The key goes to the account's file, never to the domain.
+    AccountCredential,
 }
 impl Verb {
-    pub const ALL: [Self; 63] = [
+    pub const ALL: [Self; 64] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -156,6 +159,7 @@ impl Verb {
         Self::MoveTask,
         Self::ProviderConnect,
         Self::AccountAdd,
+        Self::AccountCredential,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -222,6 +226,7 @@ impl Verb {
             Self::MoveTask => "move_task",
             Self::ProviderConnect => "provider_connect",
             Self::AccountAdd => "account_add",
+            Self::AccountCredential => "account_credential",
         }
     }
     fn parse(value: &str) -> Option<Self> {

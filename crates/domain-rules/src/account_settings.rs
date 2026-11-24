@@ -20,7 +20,8 @@ impl DomainState {
             let billing = previous.filter(|previous| previous.billing == AccountBilling::PayPerUse).map_or_else(|| account.billing.clone(), |_| AccountBilling::PayPerUse);
             AccountStatus { provider: key.provider, id: key.account.clone(), name: account.name.clone(), billing,
                 state: if !account.enabled { AccountState::Disabled } else { previous.map_or(AccountState::Unchecked, |previous| if previous.state == AccountState::Disabled { AccountState::Unchecked } else { previous.state }) },
-                native_identity: previous.and_then(|previous| previous.native_identity.clone()), email: previous.and_then(|previous| previous.email.clone()), plan: previous.and_then(|previous| previous.plan.clone()), sign_ins: previous.map_or(0, |previous| previous.sign_ins), profile: previous.and_then(|previous| previous.profile.clone()) }
+                native_identity: previous.and_then(|previous| previous.native_identity.clone()), email: previous.and_then(|previous| previous.email.clone()), plan: previous.and_then(|previous| previous.plan.clone()), sign_ins: previous.map_or(0, |previous| previous.sign_ins), profile: previous.and_then(|previous| previous.profile.clone()),
+                antigravity: (key.provider == Provider::Antigravity).then(|| alondra_core::accounts::AntigravityStatus::of(&config.antigravity_settings(&key.account), previous.and_then(|previous| previous.antigravity.as_ref()).is_some_and(|status| status.key_set))) }
         }).collect();
         self.record_accounts(&statuses);
         self.account_order = ordered.into_iter().map(|(key, _)| key).collect();
@@ -85,8 +86,10 @@ impl DomainState {
                 AccountChange::SetMoveWhenExhausted { on } if *on == self.account_moves => fail("unchanged", "Moving nodes is already so"),
                 AccountChange::Connect if self.accounts.iter().any(|status| status.provider == provider) => fail("unchanged", "This provider is already connected"),
                 AccountChange::Add { .. } if !self.accounts.iter().any(|status| status.provider == provider) => fail("not_found", "Connect this provider before adding an account"),
-                AccountChange::Add { name } if name.trim().is_empty() || name.trim().chars().count() > 60 || name.chars().any(char::is_control) => fail("invalid_input", "An account name has 1 to 60 characters"),
-                AccountChange::Add { name } if self.accounts.iter().any(|other| other.provider == provider && other.name.trim().eq_ignore_ascii_case(name.trim())) => fail("invalid_input", "Another account already has this name"),
+                AccountChange::Add { antigravity: Some(_), .. } if provider != Provider::Antigravity => fail("invalid_input", "Only an Antigravity account says how it reaches Google"),
+                AccountChange::Add { antigravity: Some(settings), .. } if settings.check().is_err() => fail("invalid_input", &settings.check().unwrap_err()),
+                AccountChange::Add { name, .. } if name.trim().is_empty() || name.trim().chars().count() > 60 || name.chars().any(char::is_control) => fail("invalid_input", "An account name has 1 to 60 characters"),
+                AccountChange::Add { name, .. } if self.accounts.iter().any(|other| other.provider == provider && other.name.trim().eq_ignore_ascii_case(name.trim())) => fail("invalid_input", "Another account already has this name"),
                 _ => Ok(()),
             };
         };
@@ -108,7 +111,8 @@ impl DomainState {
                 fail("invalid_input", "The provider's own sign-in on this Mac stays").map_err(|e| e.because(Refusal::DefaultAccountStays { name: name() }))
             }
             AccountChange::Disable { .. } if status.state == AccountState::Disabled => fail("unchanged", "The account is already off"),
-            AccountChange::Disable { .. } if !self.accounts.iter().any(|other| (other.provider != provider || other.id != *account) && other.state != AccountState::Disabled) => {
+            AccountChange::Disable { .. } if provider != Provider::Antigravity && !self.accounts.iter().any(|other| (other.provider != provider || other.id != *account)
+                && other.provider != Provider::Antigravity && other.state != AccountState::Disabled) => {
                 fail("invalid_input", "One account stays on").map_err(|e| e.because(Refusal::LastAccountOn { name: name() }))
             }
             AccountChange::Remove { .. } if self.tasks_on_account_key(&key) > 0 => {
@@ -126,6 +130,27 @@ impl DomainState {
             },
             _ => Ok(()),
         }
+    }
+
+    /// The user set or cleared the key of a named Antigravity account: the daemon already wrote it
+    /// to the account's folder, and only that its credential changed is recorded. The account is
+    /// checked again on its next credential, so its models and usage of the old one go.
+    pub(super) fn record_account_credential(&mut self, actor: &Actor, account: &AccountKey, set: bool) -> Result<()> {
+        user(actor)?;
+        if account.provider != Provider::Antigravity { return fail("invalid_input", "Only an Antigravity account keeps a key of Alondra's"); }
+        if account.account.is_default() { return fail("invalid_input", "The default account is agy's own sign-in: add a named account for a key"); }
+        let Some(status) = self.accounts.iter_mut().find(|status| status.provider == account.provider && status.id == account.account) else {
+            return fail("not_found", "The account is no longer listed");
+        };
+        let Some(antigravity) = status.antigravity.as_mut().filter(|antigravity| !set || antigravity.access.takes_key()) else {
+            return fail("invalid_input", "This account signs in with Google and keeps no key");
+        };
+        antigravity.key_set = set;
+        status.sign_ins += 1;
+        if status.state != AccountState::Disabled { status.state = AccountState::Unchecked; }
+        self.model_catalogs.retain(|catalog| catalog.account != *account);
+        self.account_usage.retain(|usage| !(usage.provider == account.provider && usage.account == account.account));
+        Ok(())
     }
 
     /// Makes `change` in the recorded accounts, as the next check will see it.
@@ -183,3 +208,4 @@ impl DomainState {
         }
     }
 }
+

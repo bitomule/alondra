@@ -20,11 +20,11 @@ impl ModelKey {
     }
 }
 
-/// The connected providers a model named without its provider can belong to: those whose catalogs
+/// The connected providers that run nodes a model named without its provider can belong to: those whose catalogs
 /// advertise it, or whose model sheets or id family (`claude-…`) know it. One provider settles
 /// the name; two make it ambiguous.
 pub fn providers_offering(catalogs: &[AccountModelCatalog], connected: &[Provider], model: &str) -> Vec<Provider> {
-    connected.iter().copied().filter(|&provider| {
+    connected.iter().copied().filter(|provider| provider.runs_nodes()).filter(|&provider| {
         catalogs.iter().any(|catalog| catalog.account.provider == provider && catalog.models.iter().any(|entry| entry.model == model && !entry.hidden))
             || crate::model_sheets::sheet_for(provider, model).is_some()
             || (provider == Provider::Claude && model.starts_with("claude-"))
@@ -297,6 +297,10 @@ mod tests {
         assert_eq!(providers_offering(&catalogs, &both, "shared"), both, "only a name in two catalogs is ambiguous");
         assert!(providers_offering(&catalogs, &both, "nonsense").is_empty());
         assert!(providers_offering(&catalogs, &[Provider::Codex], "opus").is_empty(), "a provider that is not connected offers nothing");
+        let with_antigravity = [Provider::Claude, Provider::Codex, Provider::Antigravity];
+        let catalogs = [advertising(Provider::Claude, &["opus"]), advertising(Provider::Antigravity, &["opus", "gemini-4"])];
+        assert_eq!(providers_offering(&catalogs, &with_antigravity, "opus"), [Provider::Claude], "a provider that runs no nodes never makes a name ambiguous");
+        assert!(providers_offering(&catalogs, &with_antigravity, "gemini-4").is_empty(), "nor offers a model a node could not run");
     }
 
     #[test]

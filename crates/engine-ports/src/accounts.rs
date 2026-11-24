@@ -4,6 +4,7 @@
 //! decides of them (which account a node runs on, what the user sees) stays in the engine.
 use alondra_core::accounts::{AccountId, AccountKey};
 use alondra_core::codex_account::ProbeReport;
+use alondra_core::antigravity_account::{CheckReport, Probe as AntigravityProbe, Secret, UsageOutcome};
 use alondra_foundation::Millis;
 use std::collections::BTreeMap;
 use std::io;
@@ -24,6 +25,22 @@ pub trait Accounts: Send + Sync {
     fn prepare_codex(&self, home: &Path, key: &AccountKey) -> Result<Option<PathBuf>, String>;
     /// Deletes the private folder of a named Codex account.
     fn remove_codex(&self, home: &Path, key: &AccountKey) -> io::Result<()>;
+    /// Makes the private folder of a named Antigravity account, linked to what `shared_from` (the
+    /// user's `~/.gemini`) holds; none for the default account, which is `agy`'s own.
+    fn prepare_antigravity(&self, home: &Path, key: &AccountKey, shared_from: &Path) -> Result<Option<PathBuf>, String>;
+    /// Deletes a named Antigravity account's folder, and its key with it.
+    fn remove_antigravity(&self, home: &Path, key: &AccountKey) -> io::Result<()>;
+    /// Keeps `secret` as a named Antigravity account's key, in a `0600` file of its folder written
+    /// whole; `None` removes it.
+    fn set_antigravity_key(&self, home: &Path, key: &AccountKey, secret: Option<&Secret>) -> Result<(), String>;
+    /// The key a named Antigravity account's folder keeps, for its `agy` process alone.
+    fn antigravity_key(&self, home: &Path, key: &AccountKey) -> Result<Option<Secret>, String>;
+    /// Whether a named Antigravity account's folder keeps a key.
+    fn antigravity_key_set(&self, home: &Path, key: &AccountKey) -> bool;
+    /// Asks the account's `agy acp` whether it is signed in and which models it offers, without a prompt.
+    fn check_antigravity(&self, probe: &AntigravityProbe) -> CheckReport;
+    /// Reads the account's quota with `agy -p /usage`, which starts no turn.
+    fn antigravity_usage(&self, probe: &AntigravityProbe) -> Result<UsageOutcome, String>;
     /// Whether a session one Claude account started resumes with the other: both keep their
     /// conversations in the same `projects/` folder.
     fn shares_sessions(&self, home: &Path, user_home: &Path, default_profile: Option<&Path>, one: &AccountId, other: &AccountId) -> bool;

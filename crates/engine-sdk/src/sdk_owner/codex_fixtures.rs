@@ -12,7 +12,7 @@ pub fn configured(slice: &Slice, mode: &str) -> PathBuf {
     let state = slice.domain.state().unwrap();
     let mut accounts = state.accounts.clone();
     if !accounts.iter().any(|account| account.provider == Provider::Codex && account.id.is_default()) {
-        accounts.push(alondra_core::accounts::AccountStatus { provider: Provider::Codex, id: AccountId::default_account(), name: "Codex fixture".into(), state: alondra_core::accounts::AccountState::SignedIn, native_identity: Some("fixture-workspace".into()), email: Some("first@example.test".into()), plan: None, billing: Default::default(), sign_ins: 0, profile: None });
+        accounts.push(alondra_core::accounts::AccountStatus { antigravity: None, provider: Provider::Codex, id: AccountId::default_account(), name: "Codex fixture".into(), state: alondra_core::accounts::AccountState::SignedIn, native_identity: Some("fixture-workspace".into()), email: Some("first@example.test".into()), plan: None, billing: Default::default(), sign_ins: 0, profile: None });
     }
     slice.run(&system(), "codex-fixture-account", Command::RecordAccounts { accounts, reserve: state.account_reserve });
     slice.run(&system(), "codex-fixture-catalog", Command::RecordModelCatalog { catalog: AccountModelCatalog {

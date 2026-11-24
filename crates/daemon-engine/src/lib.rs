@@ -53,6 +53,7 @@ pub use alondra_engine_worktrees::{cancelled_worktrees, home_renames, task_workt
 pub use alondra_engine_github::github_world;
 
 pub mod accounts;
+pub mod antigravity_accounts;
 pub mod allow_always;
 pub mod api_failures;
 pub mod claude_access;

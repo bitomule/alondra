@@ -170,9 +170,10 @@ pub enum Cmd {
         command: AccountCmd,
     },
     #[command(about = tr!("The Claude accounts nodes may run on", "Las cuentas de Claude con las que pueden trabajar los nodos"),
-        after_help = examples(&["alondra accounts list", "alondra accounts add Work", "alondra accounts remove Work"]))]
+        after_help = examples(&["alondra accounts list", "alondra accounts add Work", "alondra accounts remove Work",
+            "alondra accounts add --provider antigravity --access api_key Studio", "alondra accounts set-key antigravity/studio"]))]
     Accounts {
-        #[arg(long, global = true, default_value = "claude", value_parser = ["claude", "codex"])]
+        #[arg(long, global = true, default_value = "claude", value_parser = ["claude", "codex", "antigravity"])]
         provider: String,
         #[command(subcommand)]
         command: AccountsCmd,
@@ -367,6 +368,24 @@ pub enum AccountsCmd {
     Add {
         #[arg(required = true)]
         name: Vec<String>,
+        #[arg(long, value_parser = ["google", "enterprise", "api_key", "cloud_project"],
+            help = tr!("How an Antigravity account reaches Google", "Cómo llega a Google una cuenta de Antigravity"))]
+        access: Option<String>,
+        #[arg(long, help = tr!("The Google Cloud project of an Enterprise or Cloud project account", "El proyecto de Google Cloud de una cuenta Enterprise o de proyecto de Cloud"))]
+        project: Option<String>,
+        #[arg(long, help = tr!("The Google Cloud location of an Enterprise or Cloud project account", "La ubicación de Google Cloud de una cuenta Enterprise o de proyecto de Cloud"))]
+        location: Option<String>,
+        #[arg(long, help = tr!("The service-account key file a Cloud project account's ADC reads; Alondra keeps only its path",
+            "El archivo de clave de cuenta de servicio que lee el ADC de una cuenta de proyecto de Cloud; Alondra solo guarda su ruta"))]
+        credentials_file: Option<std::path::PathBuf>,
+    },
+    #[command(about = tr!("Set an Antigravity account's API key, read without echo; --clear removes it",
+        "Pon la clave de API de una cuenta de Antigravity, leída sin mostrarla; --clear la quita"))]
+    SetKey {
+        #[arg(help = tr!("The account, as antigravity/<account> or by its name", "La cuenta, como antigravity/<cuenta> o por su nombre"))]
+        account: String,
+        #[arg(long, help = tr!("Remove the key instead of setting one", "Quitar la clave en vez de poner una"))]
+        clear: bool,
     },
     #[command(about = tr!("Let new work start on an account again", "Deja que el trabajo nuevo vuelva a empezar en una cuenta"))]
     Enable {
@@ -550,7 +569,14 @@ pub fn run(command: Cmd, json: bool, no_input: bool) -> Result<()> {
         },
         Cmd::Accounts { command, provider } => match command {
             AccountsCmd::List => provider_accounts::list_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, json),
-            AccountsCmd::Add { name } => provider_accounts::add(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" ")),
+            AccountsCmd::Add { name, access, project, location, credentials_file } => {
+                let antigravity = (access.is_some() || project.is_some() || location.is_some() || credentials_file.is_some()).then(|| -> Result<_> {
+                    let access = alondra_core::antigravity_account::Access::parse(access.as_deref().unwrap_or("google")).map_err(anyhow::Error::msg)?;
+                    Ok(alondra_core::antigravity_account::Settings { access, project, location, credentials_file })
+                }).transpose()?;
+                provider_accounts::add(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), antigravity)
+            }
+            AccountsCmd::SetKey { account, clear } => provider_accounts::set_key(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &account, clear, no_input),
             AccountsCmd::Enable { name } => provider_accounts::set_enabled_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), true),
             AccountsCmd::Disable { name } => provider_accounts::set_enabled_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" "), false),
             AccountsCmd::Remove { name } => provider_accounts::remove_for(alondra_core::accounts::Provider::parse(&provider).map_err(anyhow::Error::msg)?, &name.join(" ")),

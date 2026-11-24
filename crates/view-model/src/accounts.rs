@@ -52,7 +52,7 @@ pub fn decision_quota_summary(accounts: &[AccountStatus], usage: &[alondra_core:
 }
 
 pub fn provider_name(provider: Provider) -> &'static str {
-    match provider { Provider::Claude => "Claude", Provider::Codex => "Codex" }
+    provider.display_name()
 }
 
 pub fn window_label(provider: Provider, kind: &WindowKind, lang: Lang) -> String {
@@ -60,6 +60,7 @@ pub fn window_label(provider: Provider, kind: &WindowKind, lang: Lang) -> String
         WindowKind::Session if provider == Provider::Claude => "5 h".into(),
         WindowKind::Session => t!(lang, "Session", "Sesión").into(),
         WindowKind::Weekly => t!(lang, "week", "semana").into(),
+        WindowKind::Other(_) if kind.antigravity_pool().is_some() => kind.antigravity_pool().unwrap_or_default().to_owned(),
         WindowKind::Other(name) => {
             if kind.codex_window_label().is_none() { return name.clone(); }
             match kind.duration_minutes() {
@@ -97,9 +98,41 @@ pub fn state_label(state: AccountState, lang: Lang) -> &'static str {
     }
 }
 
-/// Email, plan and state, each when known: `me@example.org · max · signed in`.
+/// Email, plan and state, each when known: `me@example.org · max · signed in`. An Antigravity
+/// account also says how it reaches Google, whether it keeps a key and why it could not be checked.
 pub fn subtitle(account: &AccountStatus, lang: Lang) -> String {
-    [account.email.clone(), billing(account, lang), Some(state_label(account.state, lang).to_owned())].into_iter().flatten().collect::<Vec<_>>().join(" · ")
+    let antigravity = account.antigravity.as_ref();
+    let access = antigravity.map(|status| access_label(status.access, lang).to_owned());
+    let key = antigravity.filter(|status| status.access.takes_key() && !account.id.is_default()).map(|status| key_label(status.key_set, lang).to_owned());
+    let reason = antigravity.and_then(|status| status.unavailable).filter(|_| account.state == AccountState::Unavailable).map(|why| unavailable_label(why, lang).to_owned());
+    [access, account.email.clone(), billing(account, lang), key, Some(state_label(account.state, lang).to_owned()), reason].into_iter().flatten().collect::<Vec<_>>().join(" · ")
+}
+
+/// How an Antigravity account reaches Google, as a screen names it.
+pub fn access_label(access: alondra_core::antigravity_account::Access, lang: Lang) -> &'static str {
+    use alondra_core::antigravity_account::Access;
+    match access {
+        Access::Google => t!(lang, "Google account", "Cuenta de Google"),
+        Access::Enterprise => "Gemini Enterprise",
+        Access::ApiKey => t!(lang, "Gemini API key", "Clave de API de Gemini"),
+        Access::CloudProject => t!(lang, "Google Cloud project", "Proyecto de Google Cloud"),
+    }
+}
+
+/// Whether an Antigravity account keeps a key: never the key itself.
+pub fn key_label(set: bool, lang: Lang) -> &'static str {
+    if set { t!(lang, "Key set", "Clave puesta") } else { t!(lang, "No key", "Sin clave") }
+}
+
+/// What the user does when an Antigravity account could not be checked.
+pub fn unavailable_label(why: alondra_core::antigravity_account::Unavailable, lang: Lang) -> &'static str {
+    use alondra_core::antigravity_account::Unavailable;
+    match why {
+        Unavailable::NotInstalled => t!(lang, "Install Antigravity CLI", "Instala Antigravity CLI"),
+        Unavailable::TooOld | Unavailable::UnknownVersion => t!(lang, "Update Antigravity CLI with agy update", "Actualiza Antigravity CLI con agy update"),
+        Unavailable::OtherAgent => t!(lang, "The agy on this Mac is not Antigravity CLI", "El agy de este Mac no es Antigravity CLI"),
+        Unavailable::Failed => t!(lang, "agy did not answer", "agy no ha respondido"),
+    }
 }
 
 pub fn billing(account: &AccountStatus, lang: Lang) -> Option<String> {
@@ -110,7 +143,7 @@ pub fn billing(account: &AccountStatus, lang: Lang) -> Option<String> {
 }
 
 pub fn action_provider(action: &crate::action_id::ActionId) -> Option<Provider> {
-    match action.extra.as_deref() { None | Some("claude") => Some(Provider::Claude), Some("codex") => Some(Provider::Codex), _ => None }
+    match action.extra.as_deref() { None | Some("claude") => Some(Provider::Claude), Some("codex") => Some(Provider::Codex), Some("antigravity") => Some(Provider::Antigravity), _ => None }
 }
 
 /// How the user signs an account in with the provider's own tool on the Mac, the command whole.
@@ -122,18 +155,32 @@ pub fn sign_in_hint(provider: Provider, profile: Option<&str>, lang: Lang) -> St
 pub fn command_hint(provider: Provider, command: &str, lang: Lang) -> String {
     match provider {
         Provider::Claude => tf!(lang, "Open Terminal on the Mac, run {command} and sign in with /login", "Abre Terminal en el Mac, ejecuta {command} e inicia sesión con /login"),
-        Provider::Codex => tf!(lang, "On the Mac, run {command}", "En el Mac, ejecuta {command}"),
+        Provider::Codex | Provider::Antigravity => tf!(lang, "On the Mac, run {command}", "En el Mac, ejecuta {command}"),
     }
 }
 
 /// [`sign_in_hint`] for `account`. A named account whose profile folder is not known yet is named
 /// instead, never sent to the default profile.
 pub fn account_sign_in_hint(account: &AccountStatus, lang: Lang) -> String {
+    if account.provider == Provider::Antigravity {
+        return match account.sign_in_command() {
+            Some(command) => command_hint(account.provider, &command, lang),
+            None if account.profile.is_none() && !account.id.is_default() => named_hint(account.provider, &account.name, lang),
+            None => key_hint(account, lang),
+        };
+    }
     match &account.profile {
         _ if account.id.is_default() => sign_in_hint(account.provider, None, lang),
         Some(profile) => sign_in_hint(account.provider, Some(profile), lang),
         None => named_hint(account.provider, &account.name, lang),
     }
+}
+
+/// How an Antigravity account that takes a key gets one: in the account's settings in the app,
+/// or with `alondra accounts set-key`.
+pub fn key_hint(account: &AccountStatus, lang: Lang) -> String {
+    let command = format!("alondra accounts set-key antigravity/{}", account.id);
+    tf!(lang, "Set its key in the account's settings, or run {command} on the Mac", "Pon su clave en los ajustes de la cuenta, o ejecuta {command} en el Mac")
 }
 
 /// How a named account whose profile folder is not known yet is signed in: by its name.

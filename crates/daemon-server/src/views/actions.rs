@@ -309,7 +309,7 @@ fn resources_of(state: &alondra_domain_rules::DomainState, action: &ActionId) ->
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => add(LocalActionResource::OrchestratorDecision, true),
         Verb::SetLimit => add(LocalActionResource::NodeLimitSettings, true),
         Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp | Verb::AccountDown
-        | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::ProviderConnect | Verb::AccountAdd | Verb::ModelProfile => add(LocalActionResource::AccountSettings, true),
+        | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::ProviderConnect | Verb::AccountAdd | Verb::AccountCredential | Verb::ModelProfile => add(LocalActionResource::AccountSettings, true),
         Verb::TaskSelection | Verb::MoveTask => add(LocalActionResource::Task(action.subject.clone()), true),
         Verb::RemoveRule => add(LocalActionResource::AllowedRules, true),
         Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove => add(LocalActionResource::Mcp(action.subject.clone()), true),
@@ -328,7 +328,7 @@ fn is_external(verb: Verb) -> bool {
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::NewRequestSelection | Verb::ScheduleSelection | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule |
         Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove | Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp
-        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ProviderConnect | Verb::AccountAdd | Verb::ModelProfile | Verb::TaskSelection | Verb::MoveTask)
+        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ProviderConnect | Verb::AccountAdd | Verb::AccountCredential | Verb::ModelProfile | Verb::TaskSelection | Verb::MoveTask)
 }
 
 pub(crate) async fn execute_action(
@@ -467,6 +467,7 @@ async fn execute_external(
         Verb::AccountAdd => "Added",
         Verb::AccountCheck => "Accounts checked",
         Verb::AccountModels => "Models refreshed",
+        Verb::AccountCredential => "Key updated",
         Verb::AccountPolicy => "Updated",
         Verb::AccountMoves => "Updated",
         _ => return Ok(no_longer_available(lang, "This action is no longer available")),
@@ -483,7 +484,7 @@ async fn execute_external(
         Verb::McpSignOut => "Sesión cerrada", Verb::McpCheck => "Comprobando", Verb::McpRemove => "Borrado",
         Verb::AccountEnable => "Activada", Verb::AccountDisable => "Desactivada", Verb::AccountRemove => "Quitada",
         Verb::AccountUp | Verb::AccountDown => "Movida", Verb::AccountWeight => "Peso actualizado", Verb::AccountPolicy | Verb::AccountMoves => "Actualizado",
-        Verb::AccountRename => "Renombrada", Verb::AccountOrder => "Orden guardado", Verb::ProviderConnect => "Conectado", Verb::AccountAdd => "Añadida", Verb::AccountCheck => "Cuentas comprobadas", Verb::AccountModels => "Modelos actualizados", Verb::ModelProfile => "Perfil de modelos guardado", Verb::TaskSelection => "Cambio de selección solicitado", Verb::MoveTask => "Moviéndola", _ => stamp,
+        Verb::AccountRename => "Renombrada", Verb::AccountOrder => "Orden guardado", Verb::ProviderConnect => "Conectado", Verb::AccountAdd => "Añadida", Verb::AccountCheck => "Cuentas comprobadas", Verb::AccountModels => "Modelos actualizados", Verb::AccountCredential => "Clave actualizada", Verb::ModelProfile => "Perfil de modelos guardado", Verb::TaskSelection => "Cambio de selección solicitado", Verb::MoveTask => "Moviéndola", _ => stamp,
     }} else { stamp };
     let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
@@ -806,7 +807,17 @@ async fn execute_external(
                 let Some(name) = request.input.text.as_deref().map(str::trim).filter(|name| !name.is_empty()) else {
                     return Ok(rejected_field(lang, "text", "This option needs text"));
                 };
-                crate::accounts::change_for_provider_authorized(domain, home, &actor, provider, &alondra_core::accounts::AccountChange::Add { name: name.into() }, &authorize)
+                let antigravity = match provider {
+                    alondra_core::accounts::Provider::Antigravity => {
+                        let field = |name: &str| request.input.fields.get(name).and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
+                        let Ok(access) = alondra_core::antigravity_account::Access::parse(request.option_id.as_deref().unwrap_or("google")) else {
+                            return Ok(rejected_field(lang, "option_id", "Choose how the account reaches Google"));
+                        };
+                        Some(alondra_core::antigravity_account::Settings { access, project: field("project"), location: field("location"), credentials_file: None })
+                    }
+                    _ => None,
+                };
+                crate::accounts::change_for_provider_authorized(domain, home, &actor, provider, &alondra_core::accounts::AccountChange::Add { antigravity, name: name.into() }, &authorize)
             };
             match made {
                 Ok(()) => Ok(to_applied(200, json!({"accounts": action.subject}))),
@@ -814,9 +825,37 @@ async fn execute_external(
                 Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
             }
         }
+        Verb::AccountCredential => {
+            let Some(provider) = alondra_view_model::accounts::action_provider(action) else { return Ok(rejected_field(lang, "provider", "Choose an available provider")); };
+            let Ok(account) = alondra_core::accounts::AccountId::parse(&action.subject) else { return Ok(rejected_field(lang, "account", "Choose an account")); };
+            if account.is_default() { return Ok(rejected_field(lang, "account", "The default account is agy's own sign-in: add a named account for a key")); }
+            let secret = match (request.option_id.as_deref(), request.input.text.as_deref().map(str::trim)) {
+                (Some("clear"), _) => None,
+                (None, Some(text)) if !text.is_empty() => Some(alondra_core::antigravity_account::Secret::new(text.to_owned())),
+                _ => return Ok(rejected_field(lang, "text", "Write the key, or choose to remove it")),
+            };
+            if let Some(problem) = secret.as_ref().and_then(|secret| alondra_core::antigravity_account::key_problem(secret.expose())) {
+                return Ok(rejected_field(lang, "text", problem));
+            }
+            let takes_key = state.accounts.iter().find(|status| status.provider == provider && status.id == account)
+                .and_then(|status| status.antigravity.as_ref()).is_some_and(|status| status.access.takes_key());
+            if secret.is_some() && !takes_key { return Ok(rejected_field(lang, "account", "This account signs in with Google and keeps no key")); }
+            let cleared = secret.is_none();
+            let actor = Actor::User { user_id: user_id.clone() };
+            let key = alondra_core::accounts::AccountKey { provider, account };
+            match crate::accounts::set_credential_authorized(domain, home, &actor, &key, secret, &authorize) {
+                Ok(()) => {
+                    let (runtime, home) = (client.domain.clone(), home.to_path_buf());
+                    tokio::task::spawn_blocking(move || crate::accounts::check(&*runtime, &home)).await?;
+                    Ok(to_applied(200, json!({"credential": if cleared { "cleared" } else { "set" }})))
+                }
+                Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
+                Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
+            }
+        }
         Verb::AccountCheck => {
             let (runtime, home) = (client.domain.clone(), home.to_path_buf());
-            tokio::task::spawn_blocking(move || crate::accounts::check(&*runtime, &home)).await?;
+            tokio::task::spawn_blocking(move || crate::accounts::check_now(&*runtime, &home)).await?;
             Ok(to_applied(200, json!({"accounts_checked": true})))
         }
         Verb::AccountOrder => {
@@ -2119,6 +2158,11 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "invalid client" => "Cliente no válido",
         "device approval was revoked" => "Se ha revocado la aprobación del dispositivo",
         "text is required" | "This option needs text" => "Escribe un texto",
+        "Write the key, or choose to remove it" => "Escribe la clave, o elige quitarla",
+        "The default account is agy's own sign-in: add a named account for a key" => "La cuenta principal es la sesión propia de agy: añade una cuenta con nombre para usar una clave",
+        "Choose how the account reaches Google" => "Elige cómo llega la cuenta a Google",
+        "A key is 1 to 512 characters, with no spaces" => "Una clave tiene de 1 a 512 caracteres, sin espacios",
+        "This account signs in with Google and keeps no key" => "Esta cuenta inicia sesión con Google y no guarda ninguna clave",
         "command_id must be a supported operation ID" => "El identificador del comando no es válido",
         "An attachment is no longer available" => "Un archivo adjunto ya no está disponible",
         "Choose an option" => "Elige una opción",
@@ -4399,6 +4443,74 @@ for line in sys.stdin:
         let told = crate::domain_transport::render(&state, &message);
         assert!(told.ends_with("STRIPE_KEY written to .env") && !told.contains(SECRET), "{told}");
         assert_eq!(files_holding(&home.0, SECRET.as_bytes()), Vec::<std::path::PathBuf>::new(), "the value is in no file of Alondra's");
+    }
+
+    /// A Gemini API key typed in an app reaches the account's `0600` file and that account's `agy`
+    /// alone: the reply, the domain, every file of Alondra's home (its journal and logs among them)
+    /// and the accounts screen hold no trace of it. Removing it removes the file.
+    #[tokio::test]
+    async fn an_antigravity_key_goes_to_its_file_and_its_own_agy_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use alondra_core::accounts::{AccountId, AccountKey, Provider};
+        const SECRET: &str = "AIzaSy-never-anywhere-but-its-file-42";
+        let directory = crate::test_support::Directory::new();
+        let (home, user, bin) = (directory.join("alondra"), directory.join("user"), directory.join("bin"));
+        for folder in [&home, &user, &bin] { std::fs::create_dir_all(folder).unwrap(); }
+        std::fs::write(bin.join("agy"), "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(bin.join("agy"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(alondra_core::options::path_in(&home), alondra_core::accounts::AccountsConfig::fresh().to_toml()).unwrap();
+        let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
+        let mut environment = crate::test_support::fixture_environment(&user);
+        environment.insert("PATH".into(), format!("{}:/usr/bin:/bin", bin.display()));
+        domain.enable_sdk(alondra_daemon_engine::sdk_backend::SdkBackend { provider: Provider::Claude, origin: None, native: directory.join("unused-claude"),
+            node: directory.join("unused-node"), host: directory.join("unused-host"), node_sha256: String::new(), host_sha256: String::new(), native_sha256: String::new(),
+            host_environment: Default::default(), native_environment: environment,
+            confinement: None, state_root: directory.join("host-state"), io_timeout_seconds: 30, installed_native: false, release: alondra_daemon_engine::sdk_backend::this_release() });
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
+        let request = |verb: Verb, subject: &str, extra: Option<&str>, option: Option<&str>, text: Option<&str>| {
+            let state = domain.state().unwrap();
+            let mut request = ActionRequest { action_id: ActionId::new(verb, subject, state.revision, extra.map(Into::into)).unwrap().to_string(), option_id: option.map(Into::into),
+                ..pacing_request(&state, verb, subject, "", "en") };
+            request.input.text = text.map(str::to_owned);
+            request
+        };
+        let reply = execute_action(&domain, &client, &home, "test-device", request(Verb::ProviderConnect, "antigravity", None, None, None), None, || Ok(())).await.unwrap();
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        let reply = execute_action(&domain, &client, &home, "test-device", request(Verb::AccountAdd, "antigravity", None, Some("api_key"), Some("Studio")), None, || Ok(())).await.unwrap();
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        let studio = AccountKey::new(Provider::Antigravity, AccountId::parse("studio").unwrap());
+        let folder = alondra_core::accounts::provider_folder(&home, &studio).unwrap();
+        assert!(folder.is_dir(), "the named account has its folder");
+
+        let reply = execute_action(&domain, &client, &home, "test-device", request(Verb::AccountCredential, "studio", Some("antigravity"), None, Some(SECRET)), None, || Ok(())).await.unwrap();
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        assert!(!reply.to_string().contains(SECRET), "{reply}");
+        let file = folder.join(alondra_core::antigravity_account::KEY_FILE);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), SECRET);
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        let state = domain.state().unwrap();
+        let status = state.accounts.iter().find(|account| account.provider == Provider::Antigravity && account.id == studio.account).unwrap();
+        assert!(status.antigravity.as_ref().unwrap().key_set, "the screens only learn that a key is set");
+        assert_eq!(status.sign_ins, 1, "a new key is the credential's next generation");
+        assert!(!serde_json::to_string(&state).unwrap().contains(SECRET), "the domain never holds the key");
+        let probes = alondra_engine_doubles::accounts::of(domain.ports()).antigravity_probes();
+        let with_key: Vec<_> = probes.iter().filter(|probe| probe.launch.environment.values().any(|value| value == SECRET)).collect();
+        assert!(!with_key.is_empty(), "the account is checked with its key");
+        assert!(with_key.iter().all(|probe| probe.launch.environment.get("GEMINI_HOME").map(std::path::PathBuf::from) == Some(folder.clone())
+            && probe.launch.environment.get("GEMINI_API_KEY").map(String::as_str) == Some(SECRET)), "only its own agy gets the key");
+        let screen = serde_json::to_string(&crate::accounts::read(&*domain, &home, Lang::En).body).unwrap();
+        assert!(!screen.contains(SECRET), "the accounts reply never shows it");
+        assert_eq!(files_holding(&home, SECRET.as_bytes()), vec![file.clone()], "no other file of Alondra's holds the key");
+
+        let reply = execute_action(&domain, &client, &home, "test-device", request(Verb::AccountCredential, "studio", Some("antigravity"), Some("clear"), None), None, || Ok(())).await.unwrap();
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        assert!(!file.exists());
+        let state = domain.state().unwrap();
+        assert!(!state.accounts.iter().find(|account| account.id == studio.account).unwrap().antigravity.as_ref().unwrap().key_set);
+        let default = execute_action(&domain, &client, &home, "test-device", request(Verb::AccountCredential, "default", Some("antigravity"), None, Some(SECRET)), None, || Ok(())).await.unwrap();
+        assert_eq!(default["outcome"], "rejected", "the default account is agy's own sign-in: {default}");
+        assert!(!default.to_string().contains(SECRET), "{default}");
+        assert_eq!(files_holding(&home, SECRET.as_bytes()), Vec::<std::path::PathBuf>::new());
     }
 
     /// The file stopped being ignored after the card was asked: nothing is written and the card

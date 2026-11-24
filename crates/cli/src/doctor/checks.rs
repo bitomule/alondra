@@ -597,6 +597,24 @@ fn run_codex(env: &Env) -> Option<Outcome> {
         None => outcome("codex", "Codex", Group::Service, Status::Fail, tr!("The service cannot run Codex. Install the supported Codex CLI and run doctor again.", "El servicio no puede ejecutar Codex. Instala la CLI de Codex compatible y vuelve a ejecutar doctor."), manual("alondra doctor --fix")),
     })
 }
+fn run_antigravity(env: &Env) -> Option<Outcome> {
+    use alondra_core::antigravity_account::{MINIMUM_VERSION, Version};
+    if !connected(env, alondra_core::accounts::Provider::Antigravity) { return None; }
+    let printed = env.sys.agy_version();
+    Some(match printed.as_deref().map(Version::parse) {
+        Some(Some(version)) if version.supported() => outcome("antigravity", "Antigravity CLI", Group::Service, Status::Pass, version.to_string(), None),
+        Some(Some(version)) => outcome("antigravity", "Antigravity CLI", Group::Service, Status::Fail,
+            trf!("Antigravity CLI {version} is too old: Alondra needs {MINIMUM_VERSION} or later.", "Antigravity CLI {version} es demasiado antigua: Alondra necesita la {MINIMUM_VERSION} o posterior."),
+            Some(Fix::Person("agy update".into()))),
+        Some(None) => outcome("antigravity", "Antigravity CLI", Group::Service, Status::Fail,
+            tr!("agy printed no version: it may not be Antigravity CLI.", "agy no ha dado su versión: puede que no sea Antigravity CLI."),
+            manual(tr!("Install Antigravity CLI", "Instala Antigravity CLI"))),
+        None => outcome("antigravity", "Antigravity CLI", Group::Service, Status::Fail,
+            tr!("The service cannot find agy. Install Antigravity CLI and run doctor again.", "El servicio no encuentra agy. Instala Antigravity CLI y vuelve a ejecutar doctor."),
+            manual(tr!("Install Antigravity CLI", "Instala Antigravity CLI"))),
+    })
+}
+
 fn run_codex_signin(env: &Env) -> Option<Outcome> {
     if !connected(env, alondra_core::accounts::Provider::Codex) { return None; }
     let accounts = env.sys.native_accounts();
@@ -740,6 +758,7 @@ pub const CHECKS: &[Check] = &[
     Check { id: "mac", run: run_mac },
     Check { id: "providers", run: run_providers },
     Check { id: "codex", run: run_codex },
+    Check { id: "antigravity", run: run_antigravity },
     Check { id: "claude", run: run_claude },
     Check { id: "claude.profile", run: run_profile },
     Check { id: "claude.signin", run: run_signin },

@@ -8,7 +8,7 @@ use alondra_domain::{Capacity, LiveState};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn account(provider: Provider, id: &str, state: AccountState) -> AccountStatus {
-    AccountStatus { provider, id: AccountId::parse(id).unwrap(), name: format!("{id} name"), state, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }
+    AccountStatus { antigravity: None, provider, id: AccountId::parse(id).unwrap(), name: format!("{id} name"), state, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }
 }
 fn catalog(provider: Provider, id: &str, model: &str) -> AccountModelCatalog {
     AccountModelCatalog { account: AccountKey::new(provider, AccountId::parse(id).unwrap()), revision: format!("{id}-{model}"), measured_at: 1, native_default: Some(model.into()), models: vec![CatalogModel {
@@ -355,4 +355,49 @@ fn a_task_whose_account_used_up_its_session_is_out_of_quota_while_its_turn_still
     assert!(!s.out_of_quota(&t, 5_000), "the session reset");
     move_to(&mut s, claude()).unwrap();
     assert_eq!(s.moving_to(&t), Some(&claude()), "the open turn does not hold the move back");
+}
+
+/// Antigravity accounts are checked but run no node yet: a task never moves to one, and one never
+/// stands for the last account on, whatever it offers.
+#[test]
+fn no_task_moves_to_antigravity_and_it_never_keeps_the_last_account_on() {
+    let mut s = on_codex();
+    let mut statuses = s.accounts.clone();
+    let mut antigravity = account(Provider::Antigravity, "default", AccountState::SignedIn);
+    antigravity.antigravity = Some(alondra_core::accounts::AntigravityStatus::of(&Default::default(), false));
+    statuses.push(antigravity);
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: statuses, reserve: alondra_core::usage::default_reserve() });
+    must(&mut s, Actor::System, Command::RecordModelCatalog { catalog: catalog(Provider::Antigravity, "default", "gemini") });
+    let target = AccountKey::native(Provider::Antigravity);
+    let offered = s.move_task_action(&"t".into(), target.clone());
+    assert!(!offered.enabled);
+    assert_eq!(offered.disabled_reason.as_deref(), Some("provider_unavailable"));
+    let refused = move_to(&mut s, target).unwrap_err();
+    assert_eq!(refused.code, "provider_unavailable");
+    assert_eq!(refused.why(), Refusal::ProviderNotYet { provider: "Antigravity".into() });
+    for (provider, id) in [(Provider::Claude, "off"), (Provider::Codex, "default")] {
+        let _ = exec(&mut s, user(), Command::ChangeAccounts { provider, change: alondra_core::accounts::AccountChange::Disable { account: AccountId::parse(id).unwrap() } });
+    }
+    let last = exec(&mut s, user(), Command::ChangeAccounts { provider: Provider::Claude, change: alondra_core::accounts::AccountChange::Disable { account: AccountId::default_account() } });
+    assert!(last.is_err(), "an Antigravity account on does not let the last Claude or Codex account go off");
+    must(&mut s, user(), Command::ChangeAccounts { provider: Provider::Antigravity, change: alondra_core::accounts::AccountChange::Disable { account: AccountId::default_account() } });
+}
+
+/// The key of a named Antigravity account changes while other commits land: its record is judged
+/// on the domain as it stands, so it never fails as stale after the key was already written.
+#[test]
+fn a_credential_change_is_recorded_whatever_committed_since_it_was_read() {
+    let mut s = on_codex();
+    let mut statuses = s.accounts.clone();
+    let mut studio = account(Provider::Antigravity, "studio", AccountState::SignedIn);
+    studio.antigravity = Some(alondra_core::accounts::AntigravityStatus::of(&alondra_core::antigravity_account::Settings::of(alondra_core::antigravity_account::Access::ApiKey), false));
+    statuses.push(studio);
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: statuses, reserve: alondra_core::usage::default_reserve() });
+    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "credential".into(), expected_revision: 0,
+        command: Command::RecordAccountCredential { account: AccountKey::new(Provider::Antigravity, AccountId::parse("studio").unwrap()), set: true } };
+    must(&mut s, user(), Command::SetPriority { task_id: "t".into(), priority: TaskPriority::Low });
+    s.execute(&user(), &envelope).unwrap();
+    let recorded = s.accounts.iter().find(|status| status.id.as_str() == "studio").unwrap();
+    assert!(recorded.antigravity.as_ref().unwrap().key_set);
+    assert_eq!(recorded.sign_ins, 1);
 }

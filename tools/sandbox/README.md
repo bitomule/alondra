@@ -59,6 +59,11 @@ The daemons run with `$SANDBOX_DIR/fakes` first on their PATH, wake on and
 a busy Mac never holds the fake nodes' starts; only a
 sandbox daemon honours it). No model and no GitHub are involved, and nothing reads `~/.claude`.
 
+`SANDBOX_AGY=<path to agy>` gives Mac 1 that Antigravity CLI for Antigravity accounts: it is
+linked into `mac-1/agy-bin`, the only folder added to its nodes' PATH, and runs in the sandbox's
+synthetic HOME, so it sees none of your own `agy` sign-ins. Without it the sandbox has no `agy` and
+its Antigravity accounts read "Install Antigravity CLI".
+
 Startup connects the Claude provider and checks its accounts on each provisioned Mac before
 journeys or the TUI seed run. The fake Claude is already signed in inside the sandbox; no real
 login is needed. The extra `NEW_MAC=1` Mac stays unconfigured for the setup wizard.

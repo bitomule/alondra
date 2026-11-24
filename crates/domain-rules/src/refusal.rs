@@ -82,6 +82,8 @@ pub enum Refusal {
     LastAccountOn { name: String },
     /// Open tasks still run on the account.
     AccountInUse { name: String },
+    /// No node runs on this provider yet: its accounts are checked, but nodes come later.
+    ProviderNotYet { provider: String },
 }
 
 /// Every code the domain gives a refusal with no context of its own. The test of this module

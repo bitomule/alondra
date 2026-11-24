@@ -197,7 +197,7 @@ mod tests {
         use alondra_core::accounts::AccountStatus;
         use alondra_core::usage::{AccountUsage,UsageWindow,WindowReading,WindowKind,Share};
         let key=AccountKey::native(Provider::Codex); let mut state=alondra_domain_rules::DomainState::new("epoch");
-        state.accounts.push(AccountStatus {provider:key.provider,id:key.account.clone(),name:"Personal".into(),state:AccountState::SignedIn,email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None,native_identity:None});
+        state.accounts.push(AccountStatus { antigravity: None,provider:key.provider,id:key.account.clone(),name:"Personal".into(),state:AccountState::SignedIn,email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None,native_identity:None});
         assert!(!native_capacity_ready(&state,&key,100));
         let window=|name:&str|UsageWindow {measured_at:100,reading:WindowReading {kind:WindowKind::Other(format!("codex:account:{name}:300")),used:Share::NONE,resets_at:Some(200),exhausted:false}};
         state.account_usage.push(AccountUsage {provider:key.provider,account:key.account.clone(),plan:None,day_start:None,windows:vec![window("primary")]});
@@ -216,7 +216,7 @@ mod tests {
         use alondra_core::usage::{AccountUsage, Share, UsageWindow, WindowKind, WindowReading};
         let key = AccountKey::native(Provider::Codex);
         let mut state = alondra_domain_rules::DomainState::new("epoch");
-        state.accounts.push(AccountStatus { provider: key.provider, id: key.account.clone(), name: "Personal".into(),
+        state.accounts.push(AccountStatus { antigravity: None, provider: key.provider, id: key.account.clone(), name: "Personal".into(),
             state: AccountState::Disabled, email: Some("same@example.invalid".into()), plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None, native_identity: None });
         let window = |name: &str| UsageWindow { measured_at: 100, reading: WindowReading { kind: WindowKind::Other(format!("codex:account:{name}:300")),
             used: Share::NONE, resets_at: Some(200), exhausted: false } };

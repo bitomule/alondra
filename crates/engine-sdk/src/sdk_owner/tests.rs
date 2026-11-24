@@ -2129,7 +2129,7 @@ fn sessions_that_recorded_the_account_their_host_really_ran_on_go_on_under_their
     let mut driver = slice.launch();
     let instance = lifecycle(&*slice.domain).execution().unwrap().instance().as_str().to_owned();
     let folder = slice.backend.state_root.join(instance);
-    let account = |id: AccountId, email: &str| AccountStatus { provider: Provider::Claude, id, name: "Account".into(), state: AccountState::SignedIn, native_identity: None,
+    let account = |id: AccountId, email: &str| AccountStatus { antigravity: None, provider: Provider::Claude, id, name: "Account".into(), state: AccountState::SignedIn, native_identity: None,
         email: Some(email.into()), plan: None, billing: alondra_core::accounts::AccountBilling::default(), sign_ins: 0, profile: None };
     let (default, added) = (AccountId::default_account(), AccountId::parse("added").unwrap());
     let accounts = |own: &str, other: &str| vec![account(default.clone(), own), account(added.clone(), other)];

@@ -46,7 +46,7 @@ fn id(text: &str) -> AccountId {
 }
 
 fn status(text: &str, state: AccountState, billing: AccountBilling) -> AccountStatus {
-    AccountStatus { provider: Provider::Claude, id: id(text), name: text.into(), state, native_identity: None, email: None, plan: None, billing, sign_ins: 0, profile: None }
+    AccountStatus { antigravity: None, provider: Provider::Claude, id: id(text), name: text.into(), state, native_identity: None, email: None, plan: None, billing, sign_ins: 0, profile: None }
 }
 
 fn window(kind: WindowKind, used: f64, resets_at: Millis) -> WindowReading {
@@ -544,8 +544,9 @@ fn codex_windows_count_as_its_week_and_its_session_by_how_long_they_last() {
         window(WindowKind::Other("codex:account:secondary:10080".into()), 0.2, WEEK_RESET),
     ] };
     let usage = vec![record(None, Provider::Codex, &id("codex"), &windows, NOW, TODAY), measured("default")];
-    let providers = providers(&[claude, codex], &usage, default_reserve(), NOW, TODAY);
-    assert_eq!(providers.iter().map(|p| p.provider).collect::<Vec<_>>(), [Provider::Claude, Provider::Codex]);
+    let antigravity = AccountStatus { provider: Provider::Antigravity, ..status("default", AccountState::SignedOut, AccountBilling::default()) };
+    let providers = providers(&[claude, codex, antigravity], &usage, default_reserve(), NOW, TODAY);
+    assert_eq!(providers.iter().map(|p| p.provider).collect::<Vec<_>>(), [Provider::Claude, Provider::Codex], "a provider that runs no nodes never drives the usage gauge");
     let codex = &providers[1].accounts[0];
     assert_eq!((codex.week_percent.map(f64::round), codex.week_resets_at), (Some(20.0), Some(WEEK_RESET)));
     assert_eq!((codex.five_hour_percent.map(f64::round), codex.five_hour_resets_at), (Some(40.0), Some(SESSION_RESET)));

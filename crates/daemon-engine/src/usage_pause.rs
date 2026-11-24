@@ -501,7 +501,7 @@ pub mod fixtures {
         domain.execute_as_system(alondra_domain_rules::CommandEnvelope {
             protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "fixture-claude-account".into(),
             expected_revision: state.revision, command: alondra_domain_rules::Command::RecordAccounts {
-                accounts: vec![alondra_core::accounts::AccountStatus { provider: alondra_core::accounts::Provider::Claude,
+                accounts: vec![alondra_core::accounts::AccountStatus { antigravity: None, provider: alondra_core::accounts::Provider::Claude,
                     id: alondra_core::accounts::AccountId::default_account(), name: "Personal".into(), state: alondra_core::accounts::AccountState::SignedIn,
                     native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None }], reserve: alondra_core::usage::default_reserve(),
             },

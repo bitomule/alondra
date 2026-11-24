@@ -132,7 +132,7 @@ impl obligation_watch::World for Turns<'_> {
 const ACCOUNTS: [&str; 2] = ["default", "work"];
 
 fn account(id: &str) -> AccountStatus {
-    AccountStatus {
+    AccountStatus { antigravity: None,
         provider: Provider::Claude, id: AccountId::parse(id).expect("an account id"), name: id.into(), state: AccountState::SignedIn,
         native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }

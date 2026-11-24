@@ -52,7 +52,7 @@ impl Worker {
                 };
                 CodexWorker::configured(binding, configuration).map(Self::Codex)
             }
-            None => Err(AdapterError::Unsupported),
+            Some(Provider::Antigravity) | None => Err(AdapterError::Unsupported),
         }
     }
     pub fn state_directory(&self)->&std::path::Path{dispatch!(self,state_directory)}

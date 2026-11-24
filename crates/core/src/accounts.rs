@@ -21,6 +21,7 @@ pub enum Provider {
     #[default]
     Claude,
     Codex,
+    Antigravity,
 }
 
 pub fn config_version(config: &AccountsConfig) -> String {
@@ -34,6 +35,7 @@ impl Provider {
         match driver {
             "claude-agent-sdk" => Some(Self::Claude),
             "codex-app-server" => Some(Self::Codex),
+            "antigravity-acp" => Some(Self::Antigravity),
             _ => None,
         }
     }
@@ -42,6 +44,7 @@ impl Provider {
         match text {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
+            "antigravity" => Ok(Self::Antigravity),
             _ => Err(format!("unknown provider {text:?}")),
         }
     }
@@ -67,11 +70,25 @@ impl AccountKey {
 }
 
 impl Provider {
-    pub const ALL: [Provider; 2] = [Provider::Claude, Provider::Codex];
+    pub const ALL: [Provider; 3] = [Provider::Claude, Provider::Codex, Provider::Antigravity];
     pub fn as_str(self) -> &'static str {
         match self {
             Provider::Claude => "claude",
             Provider::Codex => "codex",
+            Provider::Antigravity => "antigravity",
+        }
+    }
+    /// Whether Alondra starts nodes on the provider's accounts: Antigravity's are only signed in,
+    /// checked and read for usage, so nothing that chooses where work runs offers them.
+    pub fn runs_nodes(self) -> bool {
+        self != Provider::Antigravity
+    }
+    /// The name a screen gives the provider.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Provider::Claude => "Claude",
+            Provider::Codex => "Codex",
+            Provider::Antigravity => "Antigravity",
         }
     }
 }
@@ -203,6 +220,43 @@ impl ProviderAccount {
     }
 }
 
+/// An Antigravity account as `options.toml` lists it: an account like any other, plus how it
+/// reaches Google. Its billing follows its access unless the user sets one.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AntigravityAccount {
+    pub id: AccountId,
+    pub name: String,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<AccountBilling>,
+    #[serde(default)]
+    pub access: crate::antigravity_account::Access,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_file: Option<PathBuf>,
+}
+
+impl AntigravityAccount {
+    pub fn new(account: ProviderAccount, settings: crate::antigravity_account::Settings) -> Self {
+        let billing = (account.billing != settings.access.default_billing()).then_some(account.billing);
+        let crate::antigravity_account::Settings { access, project, location, credentials_file } = settings;
+        AntigravityAccount { id: account.id, name: account.name, enabled: account.enabled, billing, access, project, location, credentials_file }
+    }
+
+    pub fn account(&self) -> ProviderAccount {
+        ProviderAccount { id: self.id.clone(), name: self.name.clone(), enabled: self.enabled, billing: self.billing.clone().unwrap_or_else(|| self.access.default_billing()) }
+    }
+
+    pub fn settings(&self) -> crate::antigravity_account::Settings {
+        crate::antigravity_account::Settings { access: self.access, project: self.project.clone(), location: self.location.clone(), credentials_file: self.credentials_file.clone() }
+    }
+}
+
 /// How new work is spread over the accounts: to the one with the most margin, or to the first in
 /// the list that has some.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -246,6 +300,8 @@ pub struct AccountsConfig {
     pub claude: Vec<ProviderAccount>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub codex: Vec<ProviderAccount>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub antigravity: Vec<AntigravityAccount>,
 }
 
 impl AccountsConfig {
@@ -269,6 +325,7 @@ impl AccountsConfig {
         if self.connected.is_none() && current.connected.is_some() {
             self.connected.clone_from(&current.connected);
             self.codex.clone_from(&current.codex);
+            self.antigravity.clone_from(&current.antigravity);
             self.distribution.order.clone_from(&current.distribution.order);
         }
     }
@@ -315,22 +372,42 @@ impl AccountsConfig {
         Ok(())
     }
 
+    /// Whether an account stays on. Antigravity's run no node yet: while an account of another
+    /// provider is listed, one of those stays on; with Antigravity alone, any of its accounts does.
     pub fn any_enabled_globally(&self) -> bool {
-        self.ordered_accounts().iter().any(|(_, account)| account.enabled)
-    }
-
-    pub fn listed(&self, provider: Provider) -> &[ProviderAccount] {
-        match provider {
-            Provider::Claude => &self.claude,
-            Provider::Codex => &self.codex,
+        let accounts = self.ordered_accounts();
+        let runs_nodes = |key: &AccountKey| key.provider != Provider::Antigravity;
+        if accounts.iter().any(|(key, _)| runs_nodes(key)) {
+            accounts.iter().any(|(key, account)| account.enabled && runs_nodes(key))
+        } else {
+            accounts.iter().any(|(_, account)| account.enabled)
         }
     }
 
-    pub fn listed_mut(&mut self, provider: Provider) -> &mut Vec<ProviderAccount> {
+    pub fn listed(&self, provider: Provider) -> std::borrow::Cow<'_, [ProviderAccount]> {
         match provider {
-            Provider::Claude => &mut self.claude,
-            Provider::Codex => &mut self.codex,
+            Provider::Claude => std::borrow::Cow::Borrowed(&self.claude),
+            Provider::Codex => std::borrow::Cow::Borrowed(&self.codex),
+            Provider::Antigravity => std::borrow::Cow::Owned(self.antigravity.iter().map(AntigravityAccount::account).collect()),
         }
+    }
+
+    /// Replaces the provider's list with `listed`; an Antigravity account keeps its own settings.
+    fn set_listed(&mut self, provider: Provider, listed: Vec<ProviderAccount>) {
+        match provider {
+            Provider::Claude => self.claude = listed,
+            Provider::Codex => self.codex = listed,
+            Provider::Antigravity => {
+                let settings = |id: &AccountId| self.antigravity_settings(id);
+                self.antigravity = listed.into_iter().map(|account| { let settings = settings(&account.id); AntigravityAccount::new(account, settings) }).collect();
+            }
+        }
+    }
+
+    /// How the Antigravity account `id` reaches Google; the default one, unlisted, is `agy`'s own
+    /// Google sign-in.
+    pub fn antigravity_settings(&self, id: &AccountId) -> crate::antigravity_account::Settings {
+        self.antigravity.iter().find(|account| account.id == *id).map(AntigravityAccount::settings).unwrap_or_default()
     }
 
     /// The provider's accounts in the user's order, the default one first when the file does not
@@ -376,7 +453,7 @@ impl AccountsConfig {
         for provider in Provider::ALL {
             let mut ids = std::collections::BTreeSet::new();
             let mut names = std::collections::BTreeSet::new();
-            for account in self.listed(provider) {
+            for account in self.listed(provider).iter() {
                 let name = account.name.trim();
                 if name.is_empty() || name.chars().count() > NAME_LIMIT || name.chars().any(char::is_control) {
                     return Err(format!("accounts {}: account {} needs a name of 1 to {NAME_LIMIT} characters", provider.as_str(), account.id));
@@ -386,6 +463,13 @@ impl AccountsConfig {
                 }
                 if !names.insert(name.to_lowercase()) {
                     return Err(format!("accounts {}: two accounts are called {name}", provider.as_str()));
+                }
+                if provider == Provider::Antigravity {
+                    let settings = self.antigravity_settings(&account.id);
+                    settings.check().map_err(|why| format!("accounts antigravity: account {}: {why}", account.id))?;
+                    if account.id.is_default() && settings.access == crate::antigravity_account::Access::ApiKey {
+                        return Err("accounts antigravity: the default account is agy's own sign-in: an API key account needs a name of its own".into());
+                    }
                 }
                 if let AccountBilling::Subscription { plan, weight } = &account.billing {
                     if plan.as_deref().is_some_and(|p| p.trim().is_empty()) {
@@ -438,8 +522,13 @@ pub enum AccountChange {
     /// Use the provider through its own sign-in on this Mac. Alondra never signs in for the user.
     Connect,
     /// A new account of the provider, named so: it stays signed out until the user signs it in
-    /// with the provider's own tool in Terminal.
-    Add { name: String },
+    /// with the provider's own tool in Terminal. An Antigravity account says how it reaches
+    /// Google; without it, it is a personal Google account.
+    Add {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        antigravity: Option<crate::antigravity_account::Settings>,
+    },
 }
 
 impl AccountChange {
@@ -477,16 +566,27 @@ impl AccountsConfig {
                 next.order_every_account()?;
                 return Ok(next);
             }
-            AccountChange::Add { name } => {
+            AccountChange::Add { name, antigravity } => {
                 let name = name.trim();
+                if antigravity.is_some() && provider != Provider::Antigravity {
+                    return Err(format!("A {} account has no Antigravity settings", provider.display_name()));
+                }
+                let settings = antigravity.clone().unwrap_or_default();
                 if next.accounts(provider).iter().any(|account| account.name.trim().eq_ignore_ascii_case(name)) {
                     return Err(format!("There is already an account called {name}"));
                 }
                 let first = !next.is_connected(provider);
                 next.connect(provider);
                 let taken: Vec<AccountId> = next.accounts(provider).into_iter().map(|account| account.id).collect();
-                let id = if first { AccountId::default_account() } else { AccountId::for_name(name, &taken) };
-                next.listed_mut(provider).push(ProviderAccount { id, name: name.into(), enabled: true, billing: AccountBilling::default() });
+                let named = provider == Provider::Antigravity && settings.access == crate::antigravity_account::Access::ApiKey;
+                let id = if first && !named { AccountId::default_account() } else { AccountId::for_name(name, &taken) };
+                let billing = if provider == Provider::Antigravity { settings.access.default_billing() } else { AccountBilling::default() };
+                let account = ProviderAccount { id, name: name.into(), enabled: true, billing };
+                match provider {
+                    Provider::Claude => next.claude.push(account),
+                    Provider::Codex => next.codex.push(account),
+                    Provider::Antigravity => next.antigravity.push(AntigravityAccount::new(account, settings)),
+                }
                 next.order_every_account()?;
                 next.check()?;
                 return Ok(next);
@@ -523,13 +623,13 @@ impl AccountsConfig {
             },
             AccountChange::SetPolicy { .. } | AccountChange::SetMoveWhenExhausted { .. } | AccountChange::Connect | AccountChange::Add { .. } => unreachable!("handled above"),
         }
-        let implicit = ProviderAccount::implicit_default();
+        let implicit = ProviderAccount { billing: self.antigravity_settings(&AccountId::default_account()).access.default_billing(), ..ProviderAccount::implicit_default() };
         let untouched_default = !self.listed(provider).iter().any(|a| a.id.is_default())
             && listed.first().is_some_and(|first| *first == implicit);
         if untouched_default {
             listed.remove(0);
         }
-        *next.listed_mut(provider) = listed;
+        next.set_listed(provider, listed);
         next.check()?;
         Ok(next)
     }
@@ -576,6 +676,49 @@ pub struct AccountStatus {
     /// for their home), so a screen can say which command signs it in; none for the default one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// How an Antigravity account reaches Google, and whether it keeps a key: never the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub antigravity: Option<AntigravityStatus>,
+}
+
+/// What a screen shows of an Antigravity account's access.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AntigravityStatus {
+    pub access: crate::antigravity_account::Access,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// Whether the account's folder keeps a key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub key_set: bool,
+    /// Why the last check could not tell whether the account is signed in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<crate::antigravity_account::Unavailable>,
+}
+
+impl AntigravityStatus {
+    /// What screens show of an account reaching Google with `settings`, with whether its folder
+    /// keeps a key.
+    pub fn of(settings: &crate::antigravity_account::Settings, key_set: bool) -> Self {
+        AntigravityStatus { access: settings.access, project: settings.project.clone(), location: settings.location.clone(), key_set: key_set && settings.access.takes_key(), unavailable: None }
+    }
+}
+
+impl AccountStatus {
+    /// What the user runs in Terminal on the Mac to sign the account in: none for a named account
+    /// whose folder is not known yet, or an Antigravity one that takes its key from the app.
+    pub fn sign_in_command(&self) -> Option<String> {
+        if !self.id.is_default() && self.profile.is_none() { return None; }
+        match (self.provider, &self.antigravity) {
+            (Provider::Antigravity, Some(status)) => {
+                let settings = crate::antigravity_account::Settings { access: status.access, project: status.project.clone(), location: status.location.clone(), credentials_file: None };
+                crate::antigravity_account::sign_in_command(&settings, self.profile.as_deref())
+            }
+            _ => Some(sign_in_command(self.provider, self.profile.as_deref())),
+        }
+    }
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -651,7 +794,7 @@ pub fn folder(home: &Path, id: &AccountId) -> Option<PathBuf> {
 pub fn provider_folder(home: &Path, key: &AccountKey) -> Option<PathBuf> {
     match key.provider {
         Provider::Claude => folder(home, &key.account),
-        Provider::Codex => (!key.account.is_default()).then(|| home.join(MANAGED_PROVIDER_FOLDER).join("codex").join(key.account.as_str())),
+        Provider::Codex | Provider::Antigravity => (!key.account.is_default()).then(|| home.join(MANAGED_PROVIDER_FOLDER).join(key.provider.as_str()).join(key.account.as_str())),
     }
 }
 
@@ -674,6 +817,10 @@ pub fn sign_in_command(provider: Provider, profile: Option<&str>) -> String {
     let (variable, command) = match provider {
         Provider::Claude => ("CLAUDE_CONFIG_DIR", "claude"),
         Provider::Codex => ("CODEX_HOME", "codex login"),
+        Provider::Antigravity => {
+            let settings = crate::antigravity_account::Settings::default();
+            return crate::antigravity_account::sign_in_command(&settings, profile).expect("a Google account signs in in Terminal");
+        }
     };
     match profile {
         Some(folder) => format!("{variable}={} {command}", shell_folder(folder)),
@@ -681,7 +828,7 @@ pub fn sign_in_command(provider: Provider, profile: Option<&str>) -> String {
     }
 }
 
-fn shell_folder(folder: &str) -> String {
+pub(crate) fn shell_folder(folder: &str) -> String {
     let plain = |text: &str| !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '+' | '@' | ':' | ','));
     let quoted = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
     match folder.strip_prefix("~/") {

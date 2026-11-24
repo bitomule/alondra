@@ -83,6 +83,7 @@ checks:
       - "crates/domain-rules/src/cited_file.rs"
       - "crates/core/src/claude_account.rs"
       - "crates/core/src/claude_code.rs"
+      - "crates/core/src/antigravity_account.rs"
       - "crates/core/src/codex_account.rs"
       - "crates/core/src/codex_login.rs"
       - "crates/core/src/config.rs"

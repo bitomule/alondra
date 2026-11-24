@@ -114,6 +114,8 @@ pub fn refusal_text(refusal: &Refusal, lang: Lang) -> String {
             "{name} es la única cuenta activada: activa otra antes.", name = name),
         Refusal::AccountInUse { name } => tf!(lang, "Open tasks still run on {name}: remove it once they are done.",
             "Aún hay tareas abiertas que trabajan con {name}: quítala cuando terminen.", name = name),
+        Refusal::ProviderNotYet { provider } => tf!(lang, "{provider} nodes are not available yet.",
+            "Los nodos de {provider} aún no están disponibles.", provider = provider),
         Refusal::AlreadyStopping => t!(lang, "Alondra is already stopping this node.", "Alondra ya está parando este nodo.").into(),
         Refusal::DeviceNotApproved => t!(lang, "This device is no longer approved. Approve it again from the Mac.",
             "Este dispositivo ya no está aprobado. Vuelve a aprobarlo desde el Mac.").into(),

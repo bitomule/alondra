@@ -267,6 +267,7 @@ mod tests {
         for code in refusals.chain(TOOL_REFUSALS) {
             assert!(!is_unconfirmed(&uncertain(code)), "{code} changed nothing");
         }
+        assert!(!is_unconfirmed(&uncertain("provider_unavailable")), "a launch on a provider that runs no nodes is refused before it starts anything");
     }
 
     #[test]

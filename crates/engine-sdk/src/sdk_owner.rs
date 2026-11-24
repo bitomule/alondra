@@ -466,6 +466,7 @@ fn native_recovery_status(domain: &dyn Runtime, backend: &SdkBackend, task: &Tas
     let Some(session) = metadata.as_deref().and_then(|metadata| match provider {
         Provider::Claude => alondra_provider_claude::conversation_session(metadata),
         Provider::Codex => alondra_provider_codex::conversation_session(metadata),
+        Provider::Antigravity => None,
     }) else { return unavailable(unproven.into()); };
     let selected = backend.for_provider(provider, domain.home()).map_err(|error| Failed::new(format!("Locating the original native account: {error:#}")))?;
     let selected = on_account_provider(domain, &selected, provider, account)?;

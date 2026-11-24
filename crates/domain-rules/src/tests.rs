@@ -3232,6 +3232,7 @@ fn variant_index(c: &Command) -> usize {
         Command::RevokeTaskGrant { .. } => 101,
         Command::SetAccountOrder { .. } => 103,
         Command::RecordAccountConfiguration { .. } => 104,
+        Command::RecordAccountCredential { .. } => 141,
         Command::RecordModelCatalog { .. } => 105,
         Command::RecordTaskSelection { .. } => 106,
         Command::RecordModelProfiles { .. } => 107,
@@ -3464,6 +3465,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             change: alondra_core::accounts::AccountChange::Remove { account: alondra_core::accounts::AccountId::default_account() } }, false),
         (Command::SetAccountOrder { order: vec![], expected_config_version: "fixture".into() }, false),
         (Command::RecordAccountConfiguration { order: vec![], version: "fixture".into() }, true),
+        (Command::RecordAccountCredential { account: alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Antigravity, alondra_core::accounts::AccountId::parse("studio").unwrap()), set: true }, false),
         (Command::RecordModelCatalog { catalog: alondra_core::model_selection::AccountModelCatalog {
             account: alondra_core::accounts::AccountKey::native(alondra_core::accounts::Provider::Codex), revision: "fixture".into(),
             models: vec![], native_default: None, measured_at: 1,
@@ -4877,7 +4879,7 @@ fn guards_refuse_what_the_commands_refuse() {
         Command::ReportFailure { task_id: "missing".into() },
     ]).collect();
     use alondra_core::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Policy, Provider};
-    let account = |id: &str, state| AccountStatus {
+    let account = |id: &str, state| AccountStatus { antigravity: None,
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, native_identity: None, email: None, plan: Some("max".into()),
         billing: if id == "api" { AccountBilling::PayPerUse } else { AccountBilling::default() }, sign_ins: 0, profile: None,
     };
@@ -4917,10 +4919,10 @@ fn guards_refuse_what_the_commands_refuse() {
         change(AccountChange::SetMoveWhenExhausted { on: false }),
         change(AccountChange::Connect),
         Command::ChangeAccounts { provider: Provider::Codex, change: AccountChange::Connect },
-        change(AccountChange::Add { name: "Side".into() }),
-        change(AccountChange::Add { name: "WORK".into() }),
-        change(AccountChange::Add { name: " ".into() }),
-        Command::ChangeAccounts { provider: Provider::Codex, change: AccountChange::Add { name: "Side".into() } },
+        change(AccountChange::Add { antigravity: None, name: "Side".into() }),
+        change(AccountChange::Add { antigravity: None, name: "WORK".into() }),
+        change(AccountChange::Add { antigravity: None, name: " ".into() }),
+        Command::ChangeAccounts { provider: Provider::Codex, change: AccountChange::Add { antigravity: None, name: "Side".into() } },
     ]).collect();
     let mut proposing = fixture();
     let mut proposal = crate::CardSpec::delivery("Approve the plan", &text(), true);
@@ -4969,14 +4971,14 @@ fn guards_refuse_what_the_commands_refuse() {
 fn connecting_a_provider_and_adding_an_account_follow_their_rules() {
     use alondra_core::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Provider};
     let mut state = fixture();
-    let claude = AccountStatus { provider: Provider::Claude, id: AccountId::default_account(), name: "Default".into(), state: AccountState::SignedOut,
+    let claude = AccountStatus { antigravity: None, provider: Provider::Claude, id: AccountId::default_account(), name: "Default".into(), state: AccountState::SignedOut,
         native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None };
     exec(&mut state, Actor::System, Command::RecordAccounts { accounts: vec![claude], reserve: alondra_core::usage::default_reserve() }).unwrap();
     assert!(state.account_action(Provider::Codex, AccountChange::Connect).enabled, "a provider not yet connected can be");
     assert!(!state.account_action(Provider::Claude, AccountChange::Connect).enabled, "a connected provider is not connected again");
-    assert!(state.account_action(Provider::Claude, AccountChange::Add { name: "Work".into() }).enabled);
-    assert!(!state.account_action(Provider::Claude, AccountChange::Add { name: "default".into() }).enabled, "two accounts never share a name");
-    assert!(!state.account_action(Provider::Codex, AccountChange::Add { name: "Work".into() }).enabled, "a provider is connected before an account is added to it");
+    assert!(state.account_action(Provider::Claude, AccountChange::Add { antigravity: None, name: "Work".into() }).enabled);
+    assert!(!state.account_action(Provider::Claude, AccountChange::Add { antigravity: None, name: "default".into() }).enabled, "two accounts never share a name");
+    assert!(!state.account_action(Provider::Codex, AccountChange::Add { antigravity: None, name: "Work".into() }).enabled, "a provider is connected before an account is added to it");
     let before = state.accounts.clone();
     exec(&mut state, user(), Command::ChangeAccounts { provider: Provider::Codex, change: AccountChange::Connect }).unwrap();
     assert_eq!(state.accounts, before, "the settings record the accounts; no sign-in is recorded");
@@ -5033,7 +5035,7 @@ fn cards_about_a_pr_named_by_its_repository_get_an_id_the_apps_can_open() {
 fn the_daemon_records_each_accounts_usage_and_the_index_reads_its_margin() {
     use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
     use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
-    let account = |id: &str| AccountStatus {
+    let account = |id: &str| AccountStatus { antigravity: None,
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
         native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     };
@@ -5067,7 +5069,7 @@ fn the_daemon_records_each_accounts_usage_and_the_index_reads_its_margin() {
 #[test]
 fn a_settings_change_to_the_accounts_is_recorded_as_the_file_will_hold_it() {
     use alondra_core::accounts::{AccountBilling, AccountChange, AccountId, AccountState, AccountStatus, Policy, Provider};
-    let account = |id: &str, state| AccountStatus {
+    let account = |id: &str, state| AccountStatus { antigravity: None,
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, native_identity: None, email: Some(format!("{id}@example.org")),
         plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0, profile: None,
     };
@@ -5110,7 +5112,7 @@ fn mixed_account_order_conflicts_only_with_configuration_and_qualified_tasks_do_
     use alondra_core::accounts::{AccountBilling, AccountChange, AccountKey, AccountState, AccountStatus, Provider};
     let mut s = fixture();
     let keys = [AccountKey::native(Provider::Claude), AccountKey::native(Provider::Codex)];
-    let accounts = keys.iter().map(|key| AccountStatus { provider: key.provider, id: key.account.clone(), name: key.provider.as_str().into(),
+    let accounts = keys.iter().map(|key| AccountStatus { antigravity: None, provider: key.provider, id: key.account.clone(), name: key.provider.as_str().into(),
         state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }).collect();
     exec(&mut s, Actor::System, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() }).unwrap();
     exec(&mut s, Actor::System, Command::RecordAccountConfiguration { order: keys.to_vec(), version: "settings-one".into() }).unwrap();
@@ -5151,7 +5153,7 @@ fn task_selection_is_committed_metadata_and_only_the_system_records_pending_swit
     assert!(index.task_selection(&"t".into()).unwrap().effective.is_none());
     intent.effective = Some(model.clone());
     assert_eq!(exec(&mut s, Actor::System, record(intent.clone(), None)).unwrap_err().code, "invalid_input", "the new model is not effective before its provider is admitted");
-    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![alondra_core::accounts::AccountStatus {
+    exec(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![alondra_core::accounts::AccountStatus { antigravity: None,
         provider: Provider::Codex, id: AccountKey::native(Provider::Codex).account, name: "Native".into(), state: alondra_core::accounts::AccountState::SignedIn,
         native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None,
     }], reserve: alondra_core::usage::default_reserve() }).unwrap();
@@ -5283,7 +5285,7 @@ fn a_user_selection_is_pending_until_admission_and_uses_the_same_action_guard() 
     exec(&mut state,orchestrator(),Command::CreateTask { priority: Default::default(),task_id:"t".into(),request_id:"r".into(),title:"Work".into(),agent_id:None,review_prs:false,dependencies:BTreeSet::new(),stack:None,launch:Some(LaunchPlan::new("node","/tmp")),plan_items: None, continues: None}).unwrap();
     exec(&mut state,Actor::System,Command::AdmitExecution {provider:Provider::Codex,task_id:"t".into(),agent_id:"a".into(),conversation:"code-session".into(),instance:"code-instance".into(),host:"alondra-host".into(),model:None,account:None,leaves_limit:None}).unwrap();
     let account = AccountKey::native(Provider::Codex);
-    exec(&mut state, Actor::System, Command::RecordAccounts { accounts: vec![AccountStatus {
+    exec(&mut state, Actor::System, Command::RecordAccounts { accounts: vec![AccountStatus { antigravity: None,
         provider: Provider::Codex, id: AccountId::default_account(), name: "Native account".into(), state: AccountState::SignedIn,
         native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }], reserve: alondra_core::usage::default_reserve() }).unwrap();

@@ -1170,7 +1170,7 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
         _ => alondra_core::accounts::Provider::Claude,
     };
     let status = account.as_ref().filter(|account| !account.is_default())
-        .map(|account| domain.accounts.iter().find(|status| status.provider == provider && status.id == *account).cloned().unwrap_or_else(|| alondra_core::accounts::AccountStatus {
+        .map(|account| domain.accounts.iter().find(|status| status.provider == provider && status.id == *account).cloned().unwrap_or_else(|| alondra_core::accounts::AccountStatus { antigravity: None,
             provider, id: account.clone(), name: account.to_string(), state: alondra_core::accounts::AccountState::SignedOut, native_identity: None, email: None, plan: None,
             billing: alondra_core::accounts::AccountBilling::default(), sign_ins: 0, profile: None,
         }));

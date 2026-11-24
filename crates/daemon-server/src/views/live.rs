@@ -1358,7 +1358,7 @@ mod cache_tests {
         let (_home, domain, client) = wait_fixture();
         let mut state = (*domain.state().unwrap()).clone();
         let account = AccountId::default_account();
-        state.accounts = vec![AccountStatus {
+        state.accounts = vec![AccountStatus { antigravity: None,
             provider: Provider::Codex, id: account.clone(), name: "Default".into(), state: AccountState::SignedIn,
             native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
         }];
@@ -2300,10 +2300,7 @@ fn usage_gauge(providers: &[ProviderUsage], lang: Lang, now: Millis) -> Option<G
 }
 
 fn provider_name(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Claude => "Claude",
-        Provider::Codex => "Codex",
-    }
+    provider.display_name()
 }
 
 fn state_word(state: UsageState, lang: Lang) -> &'static str {

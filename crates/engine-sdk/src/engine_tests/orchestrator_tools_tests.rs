@@ -1860,7 +1860,7 @@ pub fn with_work_account(f: &Fixture) -> PathBuf {
     std::fs::write(alondra_core::options::path_in(&f.home), "[[accounts.claude]]\nid = \"work\"\nname = \"Work\"\n").unwrap();
     let folder = f.home.join("accounts/work");
     std::fs::create_dir_all(&folder).unwrap();
-    let accounts = ["default", "work"].map(|id| AccountStatus {
+    let accounts = ["default", "work"].map(|id| AccountStatus { antigravity: None,
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
         native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }).to_vec();
@@ -1911,7 +1911,7 @@ async fn with_codex_connected_a_launch_still_starts_on_the_claude_account_with_t
     let folder = with_work_account(&f);
     std::fs::write(alondra_core::options::path_in(&f.home),
         "[accounts]\nconnected = [\"claude\", \"codex\"]\n\n[[accounts.claude]]\nid = \"work\"\nname = \"Work\"\n\n[[accounts.codex]]\nid = \"default\"\nname = \"Default\"\n").unwrap();
-    let status = |provider, id: &str| AccountStatus { provider, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
+    let status = |provider, id: &str| AccountStatus { antigravity: None, provider, id: AccountId::parse(id).unwrap(), name: id.into(), state: AccountState::SignedIn,
         native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None };
     let accounts = vec![status(Provider::Claude, "default"), status(Provider::Claude, "work"), status(Provider::Codex, "default")];
     command(&f.domain, Actor::System, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });

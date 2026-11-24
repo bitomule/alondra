@@ -52,7 +52,7 @@ pub struct UnfinishedBatch {
 pub const TOOL_REFUSALS: &[&str] = &[
     "node_paused", "task_closed", "model_is_binding", "task_moving", "usage_exhausted", "disk_low",
     "account_unavailable", "model_unavailable", "unsupported_capability", "workspace_untrusted", "main_checkout",
-    "session_unreachable", "native_session_required", "selection_transition_required", "turn_task_limit",
+    "session_unreachable", "native_session_required", "selection_transition_required", "turn_task_limit", "provider_unavailable",
 ];
 
 /// The domain's rules refuse before they commit, so such a call is settled and nothing is left to

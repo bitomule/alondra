@@ -618,7 +618,7 @@ mod credential_identity_tests {
     fn known_account_identity_or_billing_kind_changes_require_a_new_credential_generation() {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut state = DomainState::new("epoch");
-            let mut seen = AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
+            let mut seen = AccountStatus { antigravity: None, provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
                 native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 999, profile: None };
             state.record_accounts(&[seen.clone()]); assert_eq!(state.accounts[0].sign_ins,0);
             seen.email = Some("first@example.invalid".into());
@@ -638,7 +638,7 @@ mod credential_identity_tests {
     }
 
     fn account(provider: Provider, email: &str) -> AccountStatus {
-        AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
+        AccountStatus { antigravity: None, provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
             native_identity: None, email: Some(email.into()), plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }
     }
 
@@ -781,7 +781,7 @@ mod credential_identity_tests {
             assert_eq!(state.account_usage, quota, "email formatting alone does not prove a different native identity");
             assert_eq!(state.accounts[0].sign_ins, 0);
             let paid = alondra_core::accounts::ProviderAccount { billing: AccountBilling::PayPerUse, ..alondra_core::accounts::ProviderAccount::implicit_default() };
-            match provider { Provider::Claude => config.claude = vec![paid], Provider::Codex => config.codex = vec![paid] }
+            match provider { Provider::Claude => config.claude = vec![paid], Provider::Codex => config.codex = vec![paid], Provider::Antigravity => config.antigravity = vec![alondra_core::accounts::AntigravityAccount::new(paid, alondra_core::antigravity_account::Settings::default())] }
             let expected = state.account_config_version.clone();
             state.execute(&Actor::User { user_id: "user".into() }, &CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "explicit-paid-policy".into(), expected_revision: state.revision,

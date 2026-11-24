@@ -90,7 +90,7 @@ impl World {
     }
 
     fn accounts_seen(&self, id: &str, default: AccountState, work: AccountState) {
-        let accounts = [(AccountId::DEFAULT, default), (WORK, work)].map(|(id, state)| AccountStatus {
+        let accounts = [(AccountId::DEFAULT, default), (WORK, work)].map(|(id, state)| AccountStatus { antigravity: None,
             provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.into(), state, native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None,
         }).to_vec();
         run(&self.domain, &Actor::System, id, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() }).unwrap();

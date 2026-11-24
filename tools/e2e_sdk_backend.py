@@ -100,12 +100,24 @@ def fake(sandbox, mac, node, host, native):
     state = Path(tempfile.mkdtemp(prefix='as-sdk-', dir=os.path.realpath('/tmp')))
     (mac / 'sdk-state-root').write_text(str(state))
     synthetic = {'HOME': str(home), 'PATH': '/usr/bin:/bin'}
+    native_path = '/usr/bin:/bin:/usr/sbin:/sbin'
+    # SANDBOX_AGY names an Antigravity CLI for the sandbox's Antigravity accounts: only it, linked
+    # into a folder of the sandbox's own, joins the PATH, and it runs in the sandbox's HOME.
+    agy = os.environ.get('SANDBOX_AGY')
+    if agy:
+        tools = mac / 'agy-bin'
+        tools.mkdir(exist_ok=True)
+        link = tools / 'agy'
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(os.path.realpath(agy))
+        native_path = str(tools) + ':' + native_path
     backend = {
         'node': str(runtime / 'node'), 'node_sha256': checksum(runtime / 'node'),
         'host': str(runtime / 'persistent.cjs'), 'host_sha256': checksum(runtime / 'persistent.cjs'),
         'native': str(native), 'native_sha256': checksum(native),
         'host_environment': synthetic,
-        'native_environment': dict(synthetic, PATH='/usr/bin:/bin:/usr/sbin:/sbin', TMPDIR=str(tmp), LANG='C.UTF-8', TZ='UTC'),
+        'native_environment': dict(synthetic, PATH=native_path, TMPDIR=str(tmp), LANG='C.UTF-8', TZ='UTC'),
         'state_root': str(state), 'io_timeout_seconds': 120,
     }
     (mac / 'sdk-backend.json').write_text(json.dumps(backend, indent=2) + '\n')

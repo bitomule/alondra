@@ -124,6 +124,8 @@ pub trait System {
     fn relay(&self) -> bool;
     fn apns(&self) -> Option<String>;
     fn codex_version(&self) -> Option<String> { None }
+    /// What the service's `agy --version` prints; none when it has no `agy`.
+    fn agy_version(&self) -> Option<String> { None }
     fn native_accounts(&self) -> Option<Value> { None }
     fn claude(&self, args: &[&str], timeout: Duration) -> Option<(bool, String)>;
     fn update_claude(&self) -> alondra_host::claude_update::Outcome;
@@ -383,6 +385,16 @@ impl System for Real {
         let username = alondra_host::user::effective_username()?;
         let mut command = alondra_core::codex_account::command(&executable, &context.environment, &context.home, &context.path, &username, None);
         command.arg("--version");
+        command_output(command, Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, version)| version)
+    }
+    fn agy_version(&self) -> Option<String> {
+        let context = crate::claude_auth::installed_codex_context(&self.env_home).ok()?;
+        let executable = alondra_host::user::executable(&context.path, "agy")?;
+        let mut environment = context.environment.clone();
+        environment.insert("PATH".into(), context.path.clone());
+        let launch = alondra_core::antigravity_account::launch(&environment, &context.home, &Default::default(), None, None, false);
+        let mut command = std::process::Command::new(executable);
+        command.arg("--version").env_clear().envs(&launch.environment).current_dir(&context.home);
         command_output(command, Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, version)| version)
     }
     fn native_accounts(&self) -> Option<Value> {

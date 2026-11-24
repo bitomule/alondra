@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[test]
 fn the_daemon_records_the_accounts_and_the_index_and_its_view_read_them() {
     use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
-    let account = |id: &str, state| AccountStatus {
+    let account = |id: &str, state| AccountStatus { antigravity: None,
         provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: id.to_uppercase(), state,
         native_identity: None, email: Some(format!("{id}@example.org")), plan: Some("max".into()), billing: AccountBilling::default(), sign_ins: 0, profile: None,
     };

@@ -7,6 +7,7 @@
 use alondra_core::accounts::{self, AccountId, AccountKey, Provider};
 use alondra_core::claude_account::{SHARED, config_folder, profile};
 use alondra_core::codex_account::ProbeReport;
+use alondra_core::antigravity_account::{Check, CheckReport, KEY_FILE, Probe as AntigravityProbe, Secret, UsageOutcome, Version};
 use alondra_engine_ports::Registry;
 use alondra_engine_ports::accounts::{Accept, Accounts as Port};
 use alondra_core::Millis;
@@ -30,6 +31,9 @@ struct State {
     during_probe: Option<Box<dyn FnOnce() + Send>>,
     probed: Vec<Option<PathBuf>>,
     threads_lost: bool,
+    antigravity_checks: BTreeMap<Option<PathBuf>, CheckReport>,
+    antigravity_usage: BTreeMap<Option<PathBuf>, Result<UsageOutcome, String>>,
+    antigravity_probes: Vec<AntigravityProbe>,
     trust: Settings,
     refuse_trust: bool,
 }
@@ -78,6 +82,23 @@ impl Accounts {
         self.state().threads_lost = true;
     }
 
+    /// What a check of the Antigravity account whose folder is `folder` (none: the default one)
+    /// answers from now on. Until then every account is signed in, with `antigravity_fixture`'s models.
+    pub fn answer_antigravity(&self, folder: Option<&Path>, report: CheckReport) {
+        self.state().antigravity_checks.insert(folder.map(Path::to_path_buf), report);
+    }
+
+    /// What a usage reading of the Antigravity account whose folder is `folder` answers from now
+    /// on. Until then it reads no window.
+    pub fn answer_antigravity_usage(&self, folder: Option<&Path>, answer: Result<UsageOutcome, String>) {
+        self.state().antigravity_usage.insert(folder.map(Path::to_path_buf), answer);
+    }
+
+    /// Every `agy` the engine asked to start for a check or a usage reading, in order.
+    pub fn antigravity_probes(&self) -> Vec<AntigravityProbe> {
+        self.state().antigravity_probes.clone()
+    }
+
     /// Claude Code's settings for `profile` (none: the user's own) say whether each repository is trusted.
     pub fn set_trust(&self, profile: Option<&Path>, repositories: &[(&Path, bool)]) {
         let projects = repositories.iter().map(|(repository, accepted)| (repository.to_path_buf(), *accepted)).collect();
@@ -120,6 +141,19 @@ pub fn codex_fixture() -> ProbeReport {
             native_default: Some("fixture-model".into()), models, measured_at: 0 },
         catalog_error: None,
     }
+}
+
+/// What a test's Antigravity account check answers unless it says otherwise: signed in on
+/// `agy` 1.5.14, with one model, `fixture-gemini`, at medium or high thinking.
+pub fn antigravity_fixture() -> CheckReport {
+    let models = vec![alondra_core::model_selection::CatalogModel { model: "fixture-gemini".into(), display_name: "Fixture Gemini".into(),
+        reasoning_efforts: vec!["medium".into(), "high".into()], default_reasoning_effort: Some("medium".into()), context_window: None,
+        input_modalities: vec![], is_default: true, hidden: false }];
+    CheckReport { version: Some(Version(1, 5, 14)), check: Check::SignedIn { models, native_default: Some("fixture-gemini".into()) } }
+}
+
+fn gemini_home(probe: &AntigravityProbe) -> Option<PathBuf> {
+    probe.launch.environment.get("GEMINI_HOME").map(PathBuf::from)
 }
 
 /// The repository Claude Code keeps trust under for `cwd`: its root, or a linked worktree's main
@@ -174,6 +208,66 @@ impl Port for Accounts {
 
     fn remove_codex(&self, home: &Path, key: &AccountKey) -> std::io::Result<()> {
         accounts::provider_folder(home, key).filter(|folder| folder.exists()).map_or(Ok(()), std::fs::remove_dir_all)
+    }
+
+    fn prepare_antigravity(&self, home: &Path, key: &AccountKey, shared_from: &Path) -> Result<Option<PathBuf>, String> {
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+        if key.provider != Provider::Antigravity { return Err("The account is not an Antigravity account".into()); }
+        let Some(folder) = accounts::provider_folder(home, key) else { return Ok(None) };
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder).map_err(|error| error.to_string())?;
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).map_err(|error| error.to_string())?;
+        for name in alondra_core::antigravity_account::SHARED {
+            let (target, link) = (shared_from.join(name), folder.join(name));
+            if std::fs::symlink_metadata(&target).is_ok() && std::fs::symlink_metadata(&link).is_err() {
+                if let Some(parent) = link.parent() { std::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent).map_err(|error| error.to_string())?; }
+                std::os::unix::fs::symlink(&target, &link).map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(Some(folder))
+    }
+
+    fn remove_antigravity(&self, home: &Path, key: &AccountKey) -> std::io::Result<()> {
+        accounts::provider_folder(home, key).filter(|folder| folder.exists()).map_or(Ok(()), std::fs::remove_dir_all)
+    }
+
+    fn set_antigravity_key(&self, home: &Path, key: &AccountKey, secret: Option<&Secret>) -> Result<(), String> {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let folder = accounts::provider_folder(home, key).ok_or("The default account is agy's own sign-in: only a named account keeps a key")?;
+        if !folder.is_dir() { return Err("The account's folder is missing: add the account again".into()); }
+        let path = folder.join(KEY_FILE);
+        let Some(secret) = secret else {
+            return match std::fs::remove_file(&path) { Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()), _ => Ok(()) };
+        };
+        let staged = folder.join(format!(".{KEY_FILE}.staged"));
+        let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&staged).map_err(|error| error.to_string())?;
+        file.write_all(secret.expose().as_bytes()).map_err(|error| error.to_string())?;
+        std::fs::rename(&staged, &path).map_err(|error| error.to_string())
+    }
+
+    fn antigravity_key(&self, home: &Path, key: &AccountKey) -> Result<Option<Secret>, String> {
+        let Some(folder) = accounts::provider_folder(home, key) else { return Ok(None) };
+        match std::fs::read_to_string(folder.join(KEY_FILE)) {
+            Ok(text) => Ok(Some(Secret::new(text))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn antigravity_key_set(&self, home: &Path, key: &AccountKey) -> bool {
+        accounts::provider_folder(home, key).is_some_and(|folder| folder.join(KEY_FILE).is_file())
+    }
+
+    fn check_antigravity(&self, probe: &AntigravityProbe) -> CheckReport {
+        let mut state = self.state();
+        state.antigravity_probes.push(probe.clone());
+        state.antigravity_checks.get(&gemini_home(probe)).cloned().unwrap_or_else(antigravity_fixture)
+    }
+
+    fn antigravity_usage(&self, probe: &AntigravityProbe) -> Result<UsageOutcome, String> {
+        let mut state = self.state();
+        state.antigravity_probes.push(probe.clone());
+        state.antigravity_usage.get(&gemini_home(probe)).cloned().unwrap_or_else(|| Ok(UsageOutcome::Read(alondra_core::usage::UsageReading { windows: vec![], plan: None, complete: true })))
     }
 
     fn shares_sessions(&self, home: &Path, user_home: &Path, default_profile: Option<&Path>, one: &AccountId, other: &AccountId) -> bool {

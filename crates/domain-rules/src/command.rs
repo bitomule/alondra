@@ -807,6 +807,12 @@ pub enum Command {
         order: Vec<alondra_core::accounts::AccountKey>,
         version: String,
     },
+    /// The user set (`set`) or cleared the key of a named Antigravity account. The key itself went
+    /// to the account's folder and is never part of a command.
+    RecordAccountCredential {
+        account: alondra_core::accounts::AccountKey,
+        set: bool,
+    },
     ReplaceAccountConfiguration {
         accounts: String,
         expected_config_version: String,

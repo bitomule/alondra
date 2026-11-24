@@ -927,7 +927,7 @@ fn a_usage_observation_is_recorded_for_the_account_of_the_binding_that_produced_
     let (fixture, store, execution) = running_with(&native_binding);
     let runtime = runtime(&fixture, store);
     let state=runtime.read();
-    runtime.execute_as_system(envelope(state.state(),"native-account",Command::RecordAccounts {accounts:vec![alondra_core::accounts::AccountStatus {
+    runtime.execute_as_system(envelope(state.state(),"native-account",Command::RecordAccounts {accounts:vec![alondra_core::accounts::AccountStatus { antigravity: None,
         provider:alondra_core::accounts::Provider::Claude,id:alondra_core::accounts::AccountId::parse("fixture-credential-reference").unwrap(),name:"Native account".into(),state:alondra_core::accounts::AccountState::SignedIn,native_identity: None, email:None,plan:None,billing:Default::default(),sign_ins: 0, profile: None,
     }],reserve:alondra_core::usage::default_reserve()})).unwrap();
     drop(state);
@@ -960,7 +960,7 @@ fn a_previous_native_credentials_generation_cannot_change_the_new_accounts_auth_
     let native=ProviderBinding::new("composite-binding".into(),"claude-agent-sdk".into(),"fixture-instance".into(),"fixture-config".into(),1,1,BTreeSet::from([Capability::OfferInput]),"default".into(),1).unwrap();
     let (fixture,store,execution)=running_with(&native);let runtime=runtime(&fixture,store);
     let publish=|email:&str,signed_in:bool,id:&str|{
-        let state=runtime.read();let account=AccountStatus{provider:Provider::Claude,id:AccountId::default_account(),name:"Native default".into(),state:if signed_in{AccountState::SignedIn}else{AccountState::SignedOut},native_identity: None, email:Some(email.into()),plan:None,billing:Default::default(),sign_ins: 0, profile: None};
+        let state=runtime.read();let account=AccountStatus{ antigravity: None,provider:Provider::Claude,id:AccountId::default_account(),name:"Native default".into(),state:if signed_in{AccountState::SignedIn}else{AccountState::SignedOut},native_identity: None, email:Some(email.into()),plan:None,billing:Default::default(),sign_ins: 0, profile: None};
         runtime.execute_as_system(envelope(state.state(),id,Command::RecordAccounts{accounts:vec![account],reserve:alondra_core::usage::default_reserve()})).unwrap();
     };
     publish("first@example.test",true,"source-native-account");

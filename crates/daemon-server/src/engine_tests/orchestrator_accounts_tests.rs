@@ -56,7 +56,7 @@ fn attempts(domain: &DomainRuntime) -> Vec<(i64, String, Option<String>)> {
 
 fn accounts_seen(f: &Fixture, id: &str, state: alondra_core::accounts::AccountState) {
     use alondra_core::accounts::{AccountBilling, AccountId, AccountStatus, Provider};
-    let accounts = vec![AccountStatus {
+    let accounts = vec![AccountStatus { antigravity: None,
         provider: Provider::Claude, id: AccountId::default_account(), name: "default".into(), state,
         native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
     }];

@@ -648,7 +648,7 @@ fn disabled_codex_waiting_for_native_capacity() -> (Slice, Driver, PathBuf, alon
     let state = slice.domain.state().unwrap(); let mut accounts = state.accounts.clone();
     let account = accounts.iter_mut().find(|account| account.provider == Provider::Codex && account.id.is_default()).unwrap();
     account.email = Some("first@example.test".into()); account.native_identity = Some("fixture-workspace".into());
-    accounts.push(alondra_core::accounts::AccountStatus { provider: Provider::Codex, id: AccountId::parse("spare").unwrap(), name: "Spare".into(), state: AccountState::SignedOut,
+    accounts.push(alondra_core::accounts::AccountStatus { antigravity: None, provider: Provider::Codex, id: AccountId::parse("spare").unwrap(), name: "Spare".into(), state: AccountState::SignedOut,
         native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None });
     slice.run(&system(), "current-codex-known-identity", Command::RecordAccounts { accounts, reserve: state.account_reserve });
     slice.run(&system(), "current-codex-configuration", Command::RecordAccountConfiguration {

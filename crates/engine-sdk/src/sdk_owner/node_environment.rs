@@ -20,6 +20,7 @@ pub(super) fn granted(alondra_home: &Path, user_home: &Path, directory: &Path, p
     names.extend(match provider {
         Provider::Claude => claude_references(user_home, directory),
         Provider::Codex => codex_references(user_home, directory),
+        Provider::Antigravity => BTreeSet::new(),
     });
     names.into_iter()
         .filter(|name| alondra_core::config::is_variable_name(name) && !withheld(name))
