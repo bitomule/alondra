@@ -13,7 +13,11 @@ sh_test(
         "//crates/alondra:alondra",
         "//crates/alondrad:alondrad",
     ],
-    size = "small",
+    # Each daemon start creates its databases with about ten synchronous disk writes before it
+    # answers, and the readiness wait has no budget of its own: this limit is what bounds a daemon
+    # that neither answers nor exits. With every write delayed 3 s the test takes 42 s, past what
+    # `short` (60 s, for up to 20 s under load) leaves three times over; `moderate` (300 s) does.
+    timeout = "moderate",
     # Starts daemons on loopback outside Bazel's sandbox; unlike `local`, its result is still cached.
     tags = ["no-sandbox"],
 )
