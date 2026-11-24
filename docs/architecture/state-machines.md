@@ -545,7 +545,7 @@ with an outcome card; several Macs per client). Each can be changed in the revie
 | F-ORCH-2 · reminders of a replan the orchestrator does not decide | Remind only on rests caused by other work; after K reminders the task shows the factual state «waiting for a decision of the orchestrator» and no more batches until something changes. |
 | F-PROV-1 · a usage reading and a limit rejection disagree | The latest measurement wins, by measurement time (not arrival time). |
 | F-PROV-2 · an expired order the host never had | Typed `expired` rejection; the input goes back to the queue without a card. |
-| Engine deadlines outside `obligation_policy` (F-ENGINE-5, F-ENGINE-1) | `opening_deadline` and `SILENT_HOSTS` move into the policy, with measure and reason; `UNOWNED_TAKE_EVERY` stays a cadence; `IN_FLIGHT` stops deciding slots and only feeds the memory estimate. |
+| Engine deadlines outside `obligation_policy` (F-ENGINE-5, F-ENGINE-1) | `opening_deadline` moves into the policy, with measure and reason; `SILENT_HOSTS` stays in `sdk_owner.rs` as a documented exception, because it counts ended hosts and is not a time a step may take; `UNOWNED_TAKE_EVERY` stays a cadence; `IN_FLIGHT` stops deciding slots and only feeds the memory estimate. |
 | F-ENGINE-3 · pause of a queued task | A domain fact, like node pauses; cancelling the task clears it. |
 | Historical account moves left in `Admitted` (M-ENGINE-6) | Closed as `Undone` in a migration instead of retrying `finish` every 10 s. |
 | F-STORE-1 · `--test-service-push` while the daemon runs | Sent by the live daemon through its API. |
