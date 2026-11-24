@@ -86,20 +86,26 @@ def command(argv, env, log, timeout=90):
         process.stdout.close()
 
 
-def request(port, path):
+def request(port, path, timeout=2):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(f'http://127.0.0.1:{port}{path}', timeout=2) as response:
+    with opener.open(f'http://127.0.0.1:{port}{path}', timeout=timeout) as response:
         body = response.read(1024 * 1024 + 1)
         require(response.status == 200 and len(body) <= 1024 * 1024, 'invalid local response')
         return json.loads(body)
 
 
-def readiness(process, port, version):
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
+def readiness(process, port, version, within=None):
+    """Waits until the daemon answers `/daemon`, or fails when it exits first.
+
+    The daemon creates its databases before it serves, one synchronous disk write after another, so
+    how long that takes is the disk's, not the test's: with no `within` the wait has no budget of its
+    own and the caller's limit (Bazel's, for a test) bounds a daemon that neither answers nor exits.
+    A try that has connected waits for its answer for the same reason."""
+    deadline = None if within is None else time.monotonic() + within
+    while deadline is None or time.monotonic() < deadline:
         require(process.poll() is None, 'daemon exited before readiness')
         try:
-            daemon = request(port, '/daemon')
+            daemon = request(port, '/daemon', timeout=None if within is None else 2)
         except (OSError, ValueError):
             time.sleep(.1)
             continue
@@ -129,12 +135,13 @@ def stored_domain(state):
     return {'revision': revision, 'tasks': tasks, 'agents': agents}
 
 
-def local_daemon_checks(binary, daemon, env, port, state, version, logs, with_tui, owned):
+def local_daemon_checks(binary, daemon, env, port, state, version, logs, with_tui, owned, ready_within=20):
     """Two starts of the daemon on an empty home: it answers, reads the configuration a finished
     setup leaves, stays empty and writes nothing to the domain. That file is what makes `alondra`
     open the TUI rather than the setup wizard.
 
-    Every daemon started is appended to `owned`, so the caller can still stop it after a signal."""
+    Every daemon started is appended to `owned`, so the caller can still stop it after a signal.
+    `ready_within` is the seconds each start may take to answer; `None` leaves that to the caller's limit."""
     def bound_daemon_files():
         # This fixture is empty; limit every file to bound daemon log output too.
         resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_LOG, MAX_LOG))
@@ -149,7 +156,7 @@ def local_daemon_checks(binary, daemon, env, port, state, version, logs, with_tu
                 process = subprocess.Popen([str(daemon)], env=env, stdin=subprocess.DEVNULL, stdout=daemon_log,
                                            stderr=subprocess.STDOUT, preexec_fn=bound_daemon_files)
                 owned.append(process)
-                readiness(process, port, version)
+                readiness(process, port, version, ready_within)
                 blocks = status_blocks(command([str(binary), 'status'], env, logs / f'status-{cycle}.log'))
                 require(blocks.get('Waiting for You') == [] and 'Tasks' in blocks, 'expected an empty home view')
                 require(command([str(binary), 'config', 'get', 'home'], env, logs / f'home-{cycle}.log').strip() == str(state),
