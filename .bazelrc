@@ -74,7 +74,7 @@ test --test_timeout=60,300,600,900
 test --keep_going
 import %workspace%/tools/test-wrapper.bazelrc
 
-# musts: stamp every build with the scope hashes and keep the last test invocation for `musts record`.
+# Build workspace status for musts (a no-op in 0.11.0) and the test invocation kept for `tools/test_durations.py`.
 build --workspace_status_command=tools/musts-stamp.sh
 test --build_event_json_file=.musts/bep.json
 

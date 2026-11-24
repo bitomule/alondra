@@ -49,7 +49,7 @@ Bazel command of a checkout puts them on `PATH` as launchers in `~/.local/bin` (
 
 - `simpool`, which leases the iOS simulators the snapshot tests run on. The runner finds the pinned
   one through `SIMPOOL_BIN`, which the build sets, with no `simpool` of your own installed.
-- `musts`, which validates the checks of `MUSTS.yml`: `musts validate`, `musts run`, `musts record`.
+- `musts`, which validates the checks of `MUSTS.yml`: `musts validate`, `musts run`, `musts evidence`.
   Builds stamp themselves with it, so `tools/musts-stamp.sh` needs none installed.
 
 Their versions are in `bazel/env/tools.bzl`, the only place to change them.

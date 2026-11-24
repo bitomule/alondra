@@ -77,11 +77,11 @@ or in the private repository that keeps it, never here.
 - **Iterating on a failure: run the test, not the binary.** Pass the test's name or module path to
   the test binary, `bazelisk test //crates/daemon-engine:daemon_engine_test --test_arg=domain_merges::`
   (several `--test_arg` filters are allowed), instead of the whole target. Each crate has one test
-  target. A run you mean to record with `musts record` never has a filter.
-- After a `bazelisk test` that covers every target of the `bazel-test` check, `musts record
-  bazel-test-root` records it instead of rerunning (`musts` 0.9.0 or later). It says what is missing
-  when it answers "Not recorded". Never pass `--test_filter` or tag/size filters to a run you mean
-  to record.
+  target. A run you mean to record never has a filter.
+- `musts run bazel-test-root` runs `bazel test`, and Bazel serves unchanged tests from its own test cache
+  (`musts` 0.11.0 or later): after a `bazelisk test` of the same tree it finishes without rerunning, and
+  its output says how many tests came from the cache. Never pass `--test_filter` or tag/size filters to
+  a run you mean to record.
 - **One Bazel queue serves every checkout of the Mac, one pass at a time**: each pass, and each
   minute it runs, holds every other checkout back. Iterate without blocking it
   (`docs/running-tests.md`, "Iterating without blocking the queue"):
