@@ -1259,6 +1259,52 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/BUILD.bazel"
+      - "crates/codex-protocol/**"
+      - "crates/core/**"
+      - "crates/daemon-engine-machine/**"
+      - "crates/daemon-engine-model/**"
+      - "crates/store-sqlite/**"
+      - "crates/daemon-support/**"
+      - "crates/domain-rules/**"
+      - "crates/domain-store-schema/**"
+      - "crates/domain/**"
+      - "crates/e2e/**"
+      - "crates/engine-ports/**"
+      - "crates/engine-kernel/**"
+      - "crates/engine-doubles/**"
+      - "crates/engine-orchestrator/**"
+      - "crates/foundation/**"
+      - "crates/host/**"
+      - "crates/process-group/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-codex/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "crates/view-model/**"
+      - "MODULE.bazel"
+      - "tools/BUILD.bazel"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/engine-orchestrator:engine_orchestrator_test
+        - //crates/engine-orchestrator:production_inputs_test
+
+  crate-engine-orchestrator-host:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
       - "agent-host/*.ts"
       - "agent-host/BUILD.bazel"
       - "agent-host/bundle.mjs"
@@ -1308,7 +1354,7 @@ checks:
       - "version.bzl"
     with:
       targets:
-        - //crates/engine-orchestrator/...
+        - //crates/engine-orchestrator:engine_orchestrator_host_test
 
   crate-store-sqlite:
     uses: bazel/test

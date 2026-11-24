@@ -176,8 +176,11 @@ visibility on both).
   orchestrator's rests (a field of the runtime) and `auth::uuid` (`daemon-support`).
 - The orchestrator's own state (its host, its stop, its runs) is an extension of its crate
   (`engine.rs`), no longer a field of the engine's `Live`.
-- Its tests are `//crates/engine-orchestrator:engine_orchestrator_test`, one target with the real
-  hosts and fake Claude and Codex they run. They link neither `daemon-engine` nor `engine-sdk`: they
+- Its tests are `//crates/engine-orchestrator:engine_orchestrator_test`, on the doubled hosts the
+  orchestrator model of `//crates/provider-claude:claude_host_model` plays as the fake orchestrator
+  Claude plays them, with no program run, and `engine_orchestrator_host_test` (the feature
+  `real-hosts`), with the real hosts, fake Claude and Codex and processes the rest still need. They
+  link neither `daemon-engine` nor `engine-sdk`: they
   open a runtime with the doubles of `engine-doubles` registered for the ports they do not test. The
   tests that need the whole engine are in `alondrad` (`engine_tests/orchestrator_*_tests.rs`).
 - What only tests changed is set at run time on the orchestrator's extension (`Injected`): the

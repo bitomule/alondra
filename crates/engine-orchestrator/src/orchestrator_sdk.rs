@@ -240,5 +240,6 @@ fn profile(batch: &Batch) -> OrchestratorProfile {
 }
 
 #[cfg(test)]
+#[cfg(feature = "real-hosts")]
 #[path = "orchestrator_sdk/tests.rs"]
 mod tests;

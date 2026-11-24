@@ -235,5 +235,6 @@ impl Executor {
 }
 
 #[cfg(test)]
+#[cfg(feature = "real-hosts")]
 #[path = "tests/watchdog.rs"]
 mod tests;

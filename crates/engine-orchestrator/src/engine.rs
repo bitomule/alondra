@@ -30,14 +30,17 @@ pub struct Orchestrator {
 
 type Hook = Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>>;
 type Fault = Mutex<Option<Arc<dyn Fn(&'static str) -> std::io::Result<()> + Send + Sync>>>;
+type Births = Mutex<Option<Arc<dyn Fn(u32) -> Option<u64> + Send + Sync>>>;
 
 /// What a test injects into the orchestrator of one runtime, at run time: a failure at a named
-/// write, and a look at moments it cannot wait for otherwise. A daemon injects nothing.
+/// write, a look at moments it cannot wait for otherwise, and the birth of hosts that are no
+/// processes of the kernel. A daemon injects nothing.
 #[derive(Default)]
 pub struct Injected {
     write: Fault,
     spawned: Hook,
     draining: Hook,
+    births: Births,
 }
 
 impl Injected {
@@ -56,6 +59,17 @@ impl Injected {
     /// `hook` hears each run whose admitted operations the batch is about to wait for.
     pub fn on_drain(&self, hook: impl Fn(&str) + Send + Sync + 'static) {
         *self.draining.lock_or_recover("the injected drains") = Some(Arc::new(hook));
+    }
+
+    /// A batch's host the kernel does not know, as a test's doubled hosts, is born when `birth`
+    /// says.
+    pub fn date_hosts(&self, birth: impl Fn(u32) -> Option<u64> + Send + Sync + 'static) {
+        *self.births.lock_or_recover("the injected births") = Some(Arc::new(birth));
+    }
+
+    pub(crate) fn birth(&self, process: u32) -> Option<u64> {
+        let birth = self.births.lock_or_recover("the injected births").clone();
+        birth.and_then(|birth| birth(process))
     }
 
     pub(crate) fn write(&self, point: &'static str) -> std::io::Result<()> {

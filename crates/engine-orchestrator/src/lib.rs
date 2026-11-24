@@ -26,7 +26,8 @@ pub mod stall_context;
 
 use alondra_engine_kernel::domain_runtime::DomainRuntime;
 
-/// The runtime the orchestrator's tests open: the orchestrator's own port, the real agent hosts,
+/// The runtime the orchestrator's tests open: the orchestrator's own port, the agent hosts (the
+/// real ones with the feature real-hosts, the doubled ones the Claude host model plays without it),
 /// doubles of the rest of the engine, and the faults a test injects at its home failing the orchestrator's writes there.
 #[cfg(test)]
 mod wiring {
@@ -42,12 +43,44 @@ mod wiring {
         alondra_engine_doubles::machine::wire(domain.ports(), alondra_daemon_support::watcher::claude_home);
         domain.ports().provide::<dyn OrchestratorEngine>(Arc::new(alondra_engine_doubles::orchestrator::Engine));
         domain.ports().provide::<dyn SdkHosts>(Arc::new(alondra_engine_doubles::hosts::NoHosts));
-        alondra_agent_runtime::wire(domain.ports(), Default::default());
+        provide_hosts(&domain, home);
         let injected = &domain.orchestrator().injected;
         let at = home.to_owned();
         injected.fail_writes(move |point| faults::write(&at, point));
         let at = home.to_owned();
         injected.on_spawn(move |capability| faults::spawned(&at, capability));
         Ok(domain)
+    }
+
+    #[cfg(feature = "real-hosts")]
+    fn provide_hosts(domain: &super::DomainRuntime, _: &std::path::Path) {
+        alondra_agent_runtime::wire(domain.ports(), Default::default());
+    }
+
+    /// The doubled hosts a fixture serves at each home, held weakly so they end with the fixture.
+    #[cfg(not(feature = "real-hosts"))]
+    static SERVED: std::sync::Mutex<Vec<(std::path::PathBuf, std::sync::Weak<alondra_engine_doubles::agent_host::InProcessHosts>)>> = std::sync::Mutex::new(Vec::new());
+
+    /// Every runtime opened at `home` from now on gets `hosts`, as a restarted daemon finds the
+    /// hosts the one before left.
+    #[cfg(not(feature = "real-hosts"))]
+    pub fn serve(home: &std::path::Path, hosts: &Arc<alondra_engine_doubles::agent_host::InProcessHosts>) {
+        let mut served = SERVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        served.retain(|(at, kept)| at != home && kept.strong_count() > 0);
+        served.push((home.to_owned(), Arc::downgrade(hosts)));
+    }
+
+    /// The hosts a fixture serves at `home`, or doubled hosts of its own that nothing plays. No
+    /// doubled host is a process of the kernel: each is born at the same moment for the batch that
+    /// records it.
+    #[cfg(not(feature = "real-hosts"))]
+    fn provide_hosts(domain: &super::DomainRuntime, home: &std::path::Path) {
+        let served = SERVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter().find(|(at, _)| at == home).and_then(|(_, kept)| kept.upgrade());
+        match served {
+            Some(hosts) => hosts.provide(domain.ports()),
+            None => drop(alondra_engine_doubles::agent_host::wire(domain.ports())),
+        }
+        domain.orchestrator().injected.date_hosts(|_| Some(1));
     }
 }

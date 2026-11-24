@@ -34,12 +34,39 @@ application_crate(
     ],
 )
 
-# Most of the orchestrator's tests run a real Agent SDK host or a fake Claude or Codex, so its one
-# test target carries them; the few that need none take seconds next to them.
+# What every test target links besides the crate's own dependencies: the doubles of the engine's
+# other pieces and the store they open.
+TEST_DEPS = [
+    "//crates/codex-protocol:codex_protocol",
+    "//crates/daemon-engine-model:daemon_engine_model",
+    "//crates/daemon-support:daemon_support",
+    "//crates/engine-doubles:engine_doubles",
+    "//crates/engine-kernel:engine_kernel",
+    "//crates/provider-contract:provider_contract",
+    "//crates/store-sqlite:store_sqlite",
+]
+
+# The orchestrator's own tests on the doubled hosts of engine-doubles, which the orchestrator model
+# of the Claude host model plays: they run no program, and no host or fake is an input.
 low_opt_rust_test(
     name = "engine_orchestrator_test",
+    size = "medium",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondra_engine_orchestrator",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    env = {"HOME": "."},
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + TEST_DEPS + ["//crates/provider-claude:claude_host_model"],
+)
+
+# The tests that still need a real Agent SDK or Codex host, a fake native Claude or Codex, or real
+# processes: the same sources with the feature real-hosts, which compiles only them.
+low_opt_rust_test(
+    name = "engine_orchestrator_host_test",
     size = "large",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_features = ["real-hosts"],
     crate_name = "alondra_engine_orchestrator",
     crate_root = "src/lib.rs",
     data = [
@@ -62,16 +89,7 @@ low_opt_rust_test(
         "TEST_EXECS": "$(rootpath //agent-host:alondra-codex-host) $(rootpath //agent-host:alondra-host) /bin/cat /bin/sleep /usr/bin/git /usr/bin/id /usr/bin/mkfifo /usr/bin/pgrep /usr/bin/python3 /usr/bin/true /usr/sbin/lsof tmpdir",
     },
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/agent-runtime:agent_runtime",
-        "//crates/codex-protocol:codex_protocol",
-        "//crates/engine-doubles:engine_doubles",
-        "//crates/daemon-engine-model:daemon_engine_model",
-        "//crates/daemon-support:daemon_support",
-        "//crates/engine-kernel:engine_kernel",
-        "//crates/store-sqlite:store_sqlite",
-        "//crates/provider-contract:provider_contract",
-    ],
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + TEST_DEPS + ["//crates/agent-runtime:agent_runtime"],
 )
 
 rust_inputs_test(
