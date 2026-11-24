@@ -27,6 +27,9 @@ pub enum PrIdentity {
     Unresolvable {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<ProviderPrKey>,
+        /// What the adapter finds it with when another pull request took its address.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locator: Option<ProviderLocator>,
         reason: UnresolvableReason,
         since: Millis,
     },
@@ -52,7 +55,8 @@ impl PrIdentity {
     pub fn locator(&self) -> Option<&ProviderLocator> {
         match self {
             Self::Verified { locator, .. } => Some(locator),
-            _ => None,
+            Self::Unresolvable { locator, .. } => locator.as_ref(),
+            Self::Unverified => None,
         }
     }
 }

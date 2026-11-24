@@ -5,6 +5,7 @@ use super::*;
 
 /// What a user's action on a copy that joined another, or on a removed pull request, is told.
 pub const PR_SUPERSEDED: &str = "This card was another copy of the same pull request; use the one that remains";
+pub const PR_UNCHECKABLE: &str = "Alondra cannot check this pull request, so it cannot merge it";
 pub const PR_DETACHED: &str = "This pull request is no longer in Alondra";
 
 /// What the node of a task is told when the pull request it registered turns out to be the
@@ -58,8 +59,14 @@ impl DomainState {
             Ok(())
         };
         match command {
-            Command::AuthorizeMerge { pr_id, .. }
-            | Command::ObservePrState { pr_id, .. }
+            Command::AuthorizeMerge { pr_id, .. } => {
+                known(pr_id)?;
+                match self.pull_requests.get(pr_id) {
+                    Some(pr) if pr.identity.is_unresolvable() => fail("pr_uncheckable", PR_UNCHECKABLE),
+                    _ => Ok(()),
+                }
+            }
+            Command::ObservePrState { pr_id, .. }
             | Command::ObservePrMergeMethods { pr_id, .. }
             | Command::PublishStackReadiness { pr_id, .. }
             | Command::AdoptOpenPr { pr_id, .. }
@@ -95,14 +102,22 @@ impl DomainState {
                 if pr.identity.key().is_some_and(|known| known != key) {
                     return self.address_lost(pr_id, read, read_started_at, stale, effects);
                 }
+                let newer_miss = match &pr.identity {
+                    PrIdentity::Unresolvable { key: None, reason: UnresolvableReason::AddressReused, since, .. } if *since > read_started_at => Some(*since),
+                    _ => None,
+                };
                 self.confirm(pr_id, read, read_started_at, key, locator, current_repository);
+                if let Some(since) = newer_miss {
+                    effects.push(DomainEffect::Relocate { pr_id: pr_id.clone(), locator: self.pull_requests[pr_id].identity.locator().cloned().unwrap() });
+                    self.pull_requests.get_mut(pr_id).unwrap().relocation_asked_at = Some(since);
+                }
                 self.confirm_unverified_at_the_same_address(pr_id, read, current_repository);
                 self.join_same_pr(pr_id, effects)?;
                 self.one_record_per_address(pr_id, read_started_at, effects);
             }
             PrAddressVerdict::NamesAnotherPr if !stale && pr.identity.is_unverified() && matches!(read, PrRead::Address { .. }) => {
                 let pr = self.pull_requests.get_mut(pr_id).unwrap();
-                pr.identity = PrIdentity::Unresolvable { key: None, reason: UnresolvableReason::AddressReused, since: read_started_at };
+                pr.identity = PrIdentity::Unresolvable { key: None, locator: None, reason: UnresolvableReason::AddressReused, since: read_started_at };
             }
             PrAddressVerdict::NamesAnotherPr | PrAddressVerdict::NotFound => {
                 self.address_lost(pr_id, read, read_started_at, stale, effects)?;
@@ -132,7 +147,7 @@ impl DomainState {
             kept => kept,
         };
         if pr.missing.is_some_and(|m| m.strikes >= GONE_STRIKES) {
-            pr.identity = PrIdentity::Unresolvable { key: pr.identity.key().cloned(), reason: UnresolvableReason::Gone, since: at };
+            pr.identity = PrIdentity::Unresolvable { key: pr.identity.key().cloned(), locator: pr.identity.locator().cloned(), reason: UnresolvableReason::Gone, since: at };
         }
         Ok(())
     }
@@ -166,16 +181,17 @@ impl DomainState {
     }
 
     /// The read says which pull request its address and the current one are now, so a record
-    /// nobody checked yet that lives at either of them is that pull request too.
+    /// nobody checked yet that lives at either of them and stands at the same commit is that pull
+    /// request too. Another commit is evidence of another pull request, so it stays unchecked.
     fn confirm_unverified_at_the_same_address(&mut self, pr_id: &PrId, read: &PrRead, current: &str) {
         let pr = &self.pull_requests[pr_id];
-        let (host, number, identity) = (pr.host.clone(), pr.number, pr.identity.clone());
+        let (host, number, head, identity) = (pr.host.clone(), pr.number, pr.head.clone(), pr.identity.clone());
         let mut addresses = vec![current];
         if let PrRead::Address { repository } = read {
             addresses.push(repository);
         }
         for other in self.pull_requests.values_mut() {
-            if other.id != *pr_id && other.is_tracked() && other.identity.is_unverified()
+            if other.id != *pr_id && other.is_tracked() && other.identity.is_unverified() && other.head == head
                 && addresses.iter().any(|address| other.lives_at(&host, address, number))
             {
                 other.identity = identity.clone();
@@ -200,7 +216,7 @@ impl DomainState {
                 effects.push(DomainEffect::Relocate { pr_id: id.clone(), locator });
                 pr.relocation_asked_at = Some(at);
             }
-            pr.identity = PrIdentity::Unresolvable { key: pr.identity.key().cloned(), reason: UnresolvableReason::AddressReused, since: at };
+            pr.identity = PrIdentity::Unresolvable { key: pr.identity.key().cloned(), locator: pr.identity.locator().cloned(), reason: UnresolvableReason::AddressReused, since: at };
         }
     }
 
@@ -271,6 +287,11 @@ impl DomainState {
         pr.missing = missing;
         pr.review = review;
         let identity = pr.identity.clone();
+        for copy in self.pull_requests.values_mut() {
+            if matches!(&copy.tracking, PrTracking::Superseded { by } if by == loser) {
+                copy.tracking = PrTracking::Superseded { by: survivor.clone() };
+            }
+        }
         let lost = self.pull_requests.get_mut(loser).unwrap();
         lost.tracking = PrTracking::Superseded { by: survivor.clone() };
         lost.identity = identity;
@@ -412,8 +433,8 @@ impl DomainState {
             }
             PrTracking::Superseded { by } => {
                 let Some(survivor) = self.pull_requests.get(by) else { return bad("it joined a record that does not exist") };
-                if !pr.identity.is_verified() || !survivor.is_tracked() || survivor.identity.key() != pr.identity.key() || survivor.host != pr.host {
-                    return bad("it joined a record that is not the same tracked pull request");
+                if !pr.identity.is_verified() || matches!(survivor.tracking, PrTracking::Superseded { .. }) || survivor.identity.key() != pr.identity.key() || survivor.host != pr.host {
+                    return bad("it joined a record that is not the same pull request or that joined another");
                 }
             }
             PrTracking::Detached { .. } if !pr.identity.is_unresolvable() => return bad("only an unresolvable record is removed"),

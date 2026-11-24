@@ -91,7 +91,7 @@ async fn a_reused_old_name_is_not_an_alias_at_a_virtual_time() {
     let (_fixture, domain, pr) = registered("t9-unverified", &head);
     reconcile(&domain, &world, &mut ObservationFailures::default()).await.unwrap();
     let unverified = record(&domain, &pr);
-    assert!(matches!(unverified.identity, PrIdentity::Unresolvable { key: None, reason: UnresolvableReason::AddressReused, .. }), "{:?}", unverified.identity);
+    assert!(matches!(unverified.identity, PrIdentity::Unresolvable { key: None, locator: None, reason: UnresolvableReason::AddressReused, .. }), "{:?}", unverified.identity);
     assert!(unverified.aliases.is_empty(), "the reused name is no alias: {:?}", unverified.aliases);
     assert_eq!((unverified.repository.as_str(), unverified.base.as_str()), (OLD, "main"), "nothing of the other pull request becomes the record's");
 
