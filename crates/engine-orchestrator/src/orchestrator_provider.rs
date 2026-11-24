@@ -109,6 +109,7 @@ pub(crate) fn record_limit(domain: &crate::domain_runtime::DomainRuntime, select
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_core::accounts::{AccountId, AccountState, AccountStatus, Provider};

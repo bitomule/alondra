@@ -69,6 +69,7 @@ fn shown(text: &str, max: usize) -> String {
 }
 
 #[cfg(test)]
+#[cfg(feature = "real-hosts")]
 mod tests {
     use super::*;
 

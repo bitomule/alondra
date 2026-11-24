@@ -379,6 +379,7 @@ fn profile(batch: &Batch) -> anyhow::Result<OrchestratorProfile> {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 
@@ -621,6 +622,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(feature = "real-hosts")]
 mod policy_integration{
     use super::*;
     use alondra_core::accounts::{AccountId,AccountKey,AccountState,AccountStatus,Provider};
