@@ -17,6 +17,13 @@ The evidence is the ledger, one file per check under `.musts/ledger/`, committed
 change. Editing a file a check reads invalidates that check's entry, so a green `CI` means the
 author recorded passing runs for the tree that is being merged.
 
+`.mustsignore` keeps `Cargo.lock`, `MODULE.bazel.lock` and `version.bzl` out of every check's hash, so
+a merge only rewrites the ledger files of the checks whose code it touched and two pull requests
+conflict in the ledger only when they change the same code. A dependency change still reopens its
+checks through `Cargo.toml` and `MODULE.bazel`, which stay hashed; a change that touches only a lock
+file reopens nothing. A release's version bump still reopens every check, because the version is also
+in `Cargo.toml`.
+
 ### Limit
 
 The ledger cannot be verified from outside the author's machine: anyone who can push a branch

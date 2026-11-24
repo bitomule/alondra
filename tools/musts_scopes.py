@@ -81,12 +81,21 @@ def closure(targets):
     )
     if result.returncode != 0:
         raise SystemExit(f"bazel query failed for {targets}:\n{result.stderr}")
-    return {label_path(line) for line in result.stdout.splitlines() if line.startswith("//")}
+    return {label_path(line) for line in result.stdout.splitlines() if line.startswith("//")} - ignored_files()
+
+
+def ignored_files():
+    """Files `.mustsignore` keeps out of every check's hash, so no check lists them in its `paths`."""
+    listing = subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True).stdout.splitlines()
+    globs = [line.strip() for line in Path(".mustsignore").read_text().splitlines()
+             if line.strip() and not line.startswith("#")]
+    return {path for path in listing if matches(globs, path)}
 
 
 def tracked_files():
     listing = subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True)
-    return listing.stdout.splitlines()
+    ignored = ignored_files()
+    return [path for path in listing.stdout.splitlines() if path not in ignored]
 
 
 def propose(files, tracked):
