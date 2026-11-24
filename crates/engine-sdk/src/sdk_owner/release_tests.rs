@@ -465,7 +465,7 @@ async fn an_owner_that_reads_as_ended_no_longer_holds_its_task() {
     }));
     slice.domain.add_sdk_owner(Owner::spawn(driver));
     look_after_the_wait(&slice.domain);
-    at_the_end.recv_timeout(std::time::Duration::from_secs(60)).expect("the owner never closed its host");
+    at_the_end.recv().expect("the owner never closed its host");
     let state = slice.domain.state().unwrap();
     let task = TaskId::from(TASK);
     let held_by_the_ended_owner = !crate::sdk_owner::unowned(&*slice.domain, &state, &task);
