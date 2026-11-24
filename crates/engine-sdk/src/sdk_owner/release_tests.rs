@@ -394,6 +394,35 @@ async fn a_node_the_user_paused_closes_its_host_and_its_resume_goes_on_with_the_
 }
 
 #[cfg(not(feature = "real-hosts"))]
+// An owner that reads as ended has let go of its task already: a resume that finds it so takes the
+// task over at once, however long the owner's thread takes to finish dropping its driver. Under load
+// the resume of a paused node found the task still in the dead owner's hand, took nothing over, and
+// its message never reached Claude.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owner_that_reads_as_ended_no_longer_holds_its_task() {
+    let slice = Slice::new();
+    enable(&slice);
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let (reached, at_the_end) = std::sync::mpsc::channel();
+    let (finish, finishing) = std::sync::mpsc::channel::<()>();
+    driver.before_release_ends = Some(Box::new(move || {
+        reached.send(()).unwrap();
+        let _ = finishing.recv();
+    }));
+    slice.domain.add_sdk_owner(Owner::spawn(driver));
+    look_after_the_wait(&slice.domain);
+    at_the_end.recv_timeout(std::time::Duration::from_secs(60)).expect("the owner never closed its host");
+    let state = slice.domain.state().unwrap();
+    let task = TaskId::from(TASK);
+    let held_by_the_ended_owner = !crate::sdk_owner::unowned(&*slice.domain, &state, &task);
+    finish.send(()).unwrap();
+    until_released(&slice.domain, &[TASK]).await;
+    slice.domain.stop_sdk_owners();
+    assert!(!held_by_the_ended_owner, "the owner reads as ended while its task is still in its hand");
+}
+
+#[cfg(not(feature = "real-hosts"))]
 // 22 November: 65 hosts of releases before 0.3.65 stayed alive for days, each one of a node the user
 // had paused. Every daemon start adopted it again, since it rests on a host of the release before, and
 // the pause kept it from ever closing. A node paused on such a host must end up with no process, as
