@@ -286,6 +286,10 @@ impl GithubWorld {
     pub fn close_externally(&self, number: u64) {
         self.change(number, |pr| pr.state = PrState::Closed);
     }
+    /// Someone reopens the closed PR on GitHub.
+    pub fn reopen(&self, number: u64) {
+        self.change(number, |pr| pr.state = PrState::Open);
+    }
 
     /// The searches and branch reads the daemon made, in order: what a sweep of open PRs asks.
     pub fn sweep_reads(&self) -> Vec<String> {
@@ -367,7 +371,7 @@ impl PrMerger for GithubWorld {
         let world = self.world();
         let status = world.lookup(&pr.repository, pr.number).map(|(_, github)| Status {
             state: github.state, head: github.head.clone(), head_ref: github.head_ref.clone(), base: github.base.clone(), checks: github.checks.clone(),
-            passed: BTreeSet::new(), merge_state: github.merge_state, identity: world.identity(&pr.repository, pr.number).ok(),
+            passed: BTreeSet::new(), merge_state: github.merge_state, review_required: false, identity: world.identity(&pr.repository, pr.number).ok(),
         });
         Box::pin(async move { status })
     }

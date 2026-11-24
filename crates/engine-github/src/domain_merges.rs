@@ -149,6 +149,8 @@ pub struct Merger {
     merge_trouble: BTreeMap<PrId, Trouble>,
     queued: BTreeSet<PrId>,
     action: BTreeMap<PrId, InteractionId>,
+    /// The card asking for the approving review GitHub requires before the merge.
+    review: BTreeMap<PrId, InteractionId>,
     /// The authorization each PR was last looked at with: a new one is the user pressing again.
     pressed: BTreeMap<PrId, AuthorizationId>,
     /// PRs whose merge past their required checks GitHub refused: they wait for the checks.
@@ -164,7 +166,7 @@ impl Default for Merger {
 impl Merger {
     pub fn with(poll: Duration, give_up: Duration) -> Self {
         Self { poll, give_up, first_retry: FIRST_MERGE_RETRY, waited: BTreeMap::new(), transient: BTreeMap::new(),
-            trouble: BTreeMap::new(), merge_trouble: BTreeMap::new(), queued: BTreeSet::new(), action: BTreeMap::new(),
+            trouble: BTreeMap::new(), merge_trouble: BTreeMap::new(), queued: BTreeSet::new(), action: BTreeMap::new(), review: BTreeMap::new(),
             pressed: BTreeMap::new(), bypass_refused: BTreeSet::new() }
     }
 
@@ -321,8 +323,14 @@ impl Merger {
                 self.forget(domain, &pr.id);
                 return Ok(Step::Settled);
             }
-            PrState::Closed => return Ok(Step::Settled),
-            PrState::Open if status.head != item.head => return Ok(Step::Settled),
+            PrState::Closed => {
+                observe_status(domain, &pr.id, &status)?;
+                return Ok(Step::Settled);
+            }
+            PrState::Open if status.head != item.head => {
+                observe_status(domain, &pr.id, &status)?;
+                return Ok(Step::Settled);
+            }
             PrState::Open => {}
         }
         let Some(status) = self.retarget_stack(domain, github, item, key, status).await? else { return Ok(Step::Wait) };
@@ -397,6 +405,11 @@ impl Merger {
             },
             Checks::None | Checks::Passed => self.clear_action(domain, pr),
         }
+        if status.review_required && status.merge_state != MergeState::Clean {
+            self.ask_review(domain, pr);
+            return Ok(Step::Wait);
+        }
+        self.clear_review(domain, pr);
         let authorization = match &item.authorization {
             Some(authorization) => authorization.clone(),
             None => {
@@ -495,8 +508,13 @@ impl Merger {
             self.merge_troubled(domain, pr, failure);
             return Ok(Step::Wait);
         }
+        if failure.rate_limited() {
+            log!("GitHub's API limit is spent: merging {} waits for it ({failure})", pr.id);
+            return Ok(Step::Wait);
+        }
         let status = match github.status(pr).await {
             Ok(status) => status,
+            Err(read) if read.rate_limited() => return Ok(Step::Wait),
             Err(_) => return self.retry(domain, item, failure),
         };
         match status.state {
@@ -517,8 +535,13 @@ impl Merger {
             match github.required_checks(pr, &status.base).await {
                 Ok(required) if required.iter().any(|check| !status.passed.contains(check)) => return Ok(Step::Wait),
                 Ok(_) => {}
+                Err(read) if read.rate_limited() => return Ok(Step::Wait),
                 Err(_) => return self.retry(domain, item, failure),
             }
+        }
+        if status.review_required {
+            self.ask_review(domain, pr);
+            return Ok(Step::Wait);
         }
         if github.can_merge(pr).await == Ok(false) {
             self.merge_troubled(domain, pr, failure);
@@ -535,6 +558,9 @@ impl Merger {
     fn not_ready(&mut self, domain: &DomainRuntime, item: &Due, failure: &GhFailure) -> Result<Step> {
         if failure.needs_setup() {
             self.merge_troubled(domain, &item.pr, failure);
+            return Ok(Step::Wait);
+        }
+        if failure.rate_limited() {
             return Ok(Step::Wait);
         }
         if failure.timed_out() {
@@ -588,8 +614,13 @@ impl Merger {
     }
 
     /// Reading the PR failed. Only `gh` that needs installing or a sign-in counts toward the card
-    /// at once; anything else raises it once it has gone on for `give_up`.
+    /// at once; anything else raises it once it has gone on for `give_up`. GitHub's spent API
+    /// limit never does: it resets by itself.
     fn troubled(&mut self, domain: &DomainRuntime, pr: &PullRequest, failure: &GhFailure) {
+        if failure.rate_limited() {
+            log!("GitHub's API limit is spent: {} is read again later ({failure})", pr.id);
+            return;
+        }
         let trouble = self.trouble.entry(pr.id.clone()).or_insert_with(|| Trouble { count: 0, since: clock::instant(), card: None });
         raise_trouble(domain, pr, failure, failure.needs_setup(), trouble, self.give_up);
     }
@@ -608,7 +639,7 @@ impl Merger {
         self.queued.remove(pr);
         self.bypass_refused.remove(pr);
         let cards = [self.trouble.remove(pr).and_then(|t| t.card), self.merge_trouble.remove(pr).and_then(|t| t.card),
-            self.action.remove(pr)];
+            self.action.remove(pr), self.review.remove(pr)];
         for card in cards.into_iter().flatten() {
             let _ = domain.withdraw_problem(&card);
         }
@@ -617,7 +648,7 @@ impl Merger {
     fn forget_all_but(&mut self, domain: &DomainRuntime, due: &BTreeSet<PrId>) {
         let known: BTreeSet<PrId> = self.waited.keys().chain(self.pressed.keys()).chain(self.transient.keys()).chain(self.queued.iter())
             .chain(self.bypass_refused.iter()).chain(self.trouble.keys()).chain(self.merge_trouble.keys())
-            .chain(self.action.keys()).cloned().collect();
+            .chain(self.action.keys()).chain(self.review.keys()).cloned().collect();
         for pr in known.difference(due) {
             self.forget(domain, pr);
         }
@@ -625,7 +656,7 @@ impl Merger {
 
     pub fn tracked(&self) -> usize {
         self.waited.len() + self.pressed.len() + self.transient.len() + self.queued.len() + self.bypass_refused.len() + self.trouble.len()
-            + self.merge_trouble.len() + self.action.len()
+            + self.merge_trouble.len() + self.action.len() + self.review.len()
     }
 }
 
@@ -672,6 +703,30 @@ impl Merger {
             pr_url(&pr.host, &pr.repository, pr.number), names.join(", "));
         if domain.raise_problem(&id, None, Some(&format!("checks:{}", pr.slug())), Scope::Task { task_id: pr.task_id.clone() }, need, why, diagnosis, vec![]).is_ok() {
             self.action.insert(pr.id.clone(), id.into());
+        }
+    }
+
+    /// GitHub holds the merge until someone approves the PR: the acceptance stands and the node
+    /// has nothing to fix.
+    fn ask_review(&mut self, domain: &DomainRuntime, pr: &PullRequest) {
+        if self.review.contains_key(&pr.id) {
+            return;
+        }
+        let id = format!("problem-review-{}-{}", pr.slug(), crate::auth::random_hex(6));
+        let need = clip(&format!("Get PR #{} approved on GitHub", pr.number), CardSpec::NEED_MAX);
+        let why = clip(&format!("GitHub requires an approving review before PR #{} can be merged; Alondra merges it once it is approved.", pr.number),
+            CardSpec::WHY_MAX);
+        let diagnosis = format!("Open {} and approve it, or ask a reviewer to (GitHub does not let a PR's author approve it). \
+             Your acceptance stands: Alondra merges the PR as soon as GitHub reports the review.",
+            pr_url(&pr.host, &pr.repository, pr.number));
+        if domain.raise_problem(&id, None, Some(&format!("review:{}", pr.slug())), Scope::Task { task_id: pr.task_id.clone() }, need, why, diagnosis, vec![]).is_ok() {
+            self.review.insert(pr.id.clone(), id.into());
+        }
+    }
+
+    fn clear_review(&mut self, domain: &DomainRuntime, pr: &PullRequest) {
+        if let Some(card) = self.review.remove(&pr.id) {
+            let _ = domain.withdraw_problem(&card);
         }
     }
 
@@ -793,7 +848,7 @@ impl FakeGithub {
     }
     pub fn open(&self, number: u64, head: &str, checks: Checks) {
         self.statuses.lock_or_recover("a test's fixture").insert(number, Ok(Status { state: PrState::Open, head: head.into(), head_ref: String::new(), base: "main".into(), checks,
-            passed: BTreeSet::new(), merge_state: MergeState::Clean, identity: None }));
+            passed: BTreeSet::new(), merge_state: MergeState::Clean, review_required: false, identity: None }));
     }
     /// An open PR whose `mergeStateStatus` is BLOCKED.
     pub fn open_blocked(&self, number: u64, head: &str, checks: Checks) {

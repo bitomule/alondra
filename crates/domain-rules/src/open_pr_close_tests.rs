@@ -81,14 +81,35 @@ fn only_alondra_can_adopt_and_a_live_task_cannot_be_taken() {
     }).unwrap_err().code, "pr_owned_by_other_task");
 }
 
-/// The user cancelled `t`, GitHub closed its PR, and GitHub later reopened it: nothing closes it now.
-fn cancelled_with_its_pr_reopened() -> DomainState {
+/// The user cancelled `t` under an older build that left its PR open with nothing closing it.
+fn cancelled_with_its_pr_left_open() -> DomainState {
     let mut s = registered();
     must(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None });
+    s.tasks.get_mut(&TaskId::from("t")).unwrap().open_pr = None;
+    assert_eq!((task(&s).state, pr(&s).state), (TaskState::Cancelled, PrState::Open));
+    s
+}
+
+/// F-GH-1: the user cancelled `t`, Alondra closed its PR, and someone reopened it on GitHub.
+#[test]
+fn a_cancelled_tasks_pr_alondra_closed_once_and_someone_reopened_goes_to_the_user() {
+    let mut s = registered();
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
+    assert!(matches!(task(&s).open_pr, Some(OpenPrPending::Close { .. })));
     must(&mut s, Actor::System, Command::ObservePrState { pr_id: PR.into(), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
     must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None });
     assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::Cancelled, None));
-    s
+    let before = s.clone();
+    let reopened = status(PrState::Open, PrMergeable::Clean, PrChecks::Passed);
+    let refused = close_cancelled(&mut s, Actor::System, reopened.clone()).unwrap_err();
+    assert_eq!(refused.code, "open_pr_close");
+    assert!(refused.message.contains("reopened"), "{}", refused.message);
+    assert_eq!(s, before, "Alondra closes it once");
+    must(&mut s, Actor::System, Command::AdoptOpenPr { task_id: "t".into(), pr_id: PR.into(), branch: "feature".into(), status: reopened });
+    assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::ForYourReview, None), "the user decides what happens to it");
+    assert_eq!(alondras_delivery(&s).recipient, Recipient::User);
+    assert_aggregate_rules(&s);
 }
 fn close_cancelled(s: &mut DomainState, actor: Actor, status: OpenPrStatus) -> Result<CommandOutcome, DomainError> {
     exec(s, actor, Command::ClosePrOfCancelledTask { task_id: "t".into(), pr_id: PR.into(), branch: "feature".into(), status })
@@ -96,7 +117,7 @@ fn close_cancelled(s: &mut DomainState, actor: Actor, status: OpenPrStatus) -> R
 
 #[test]
 fn a_cancelled_tasks_open_pr_is_closed_with_the_cancels_reason() {
-    let mut s = cancelled_with_its_pr_reopened();
+    let mut s = cancelled_with_its_pr_left_open();
     close_cancelled(&mut s, Actor::System, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap();
     assert_eq!(task(&s).open_pr, Some(OpenPrPending::Close { comment: format!("Cancelled in Alondra: {}", task(&s).title) }));
     assert_eq!((pr(&s).state, pr(&s).head.as_str()), (PrState::Open, PUSHED), "Alondra holds the PR as GitHub reports it");
@@ -111,7 +132,7 @@ fn a_cancelled_tasks_open_pr_is_closed_with_the_cancels_reason() {
 
 #[test]
 fn only_alondra_closes_the_pr_of_a_cancelled_task_and_only_while_github_reports_it_open() {
-    let mut s = cancelled_with_its_pr_reopened();
+    let mut s = cancelled_with_its_pr_left_open();
     for actor in [user(), orchestrator(), node("a")] {
         assert_eq!(close_cancelled(&mut s, actor, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap_err().code, "forbidden");
     }

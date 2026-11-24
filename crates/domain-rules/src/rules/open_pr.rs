@@ -61,9 +61,10 @@ impl DomainState {
             "Task {task} delivered its pull request #{}, which waits for the user's review: only the user accepts or cancels it", pr.number))
     }
 
-    /// A cancelled task whose PR is open on GitHub, with no one closing it, ends up as if the
-    /// user's cancel had just closed it: Alondra closes the PR with the cancel's reason until
-    /// GitHub reports it closed.
+    /// A cancelled task whose PR Alondra still holds open, with no one closing it, ends up as if
+    /// the user's cancel had just closed it: Alondra closes the PR with the cancel's reason until
+    /// GitHub reports it closed. A PR Alondra knew closed is closed once only: reopened, it is the
+    /// user's to decide.
     pub(in crate) fn close_pr_of_cancelled_task(&mut self, actor: &Actor, task: &TaskId, pr_id: &PrId, branch: &str, status: &OpenPrStatus,
         effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
         system(actor)?;
@@ -81,6 +82,10 @@ impl DomainState {
         let Some(pr) = self.task_prs(t).find(|pr| pr.id == *pr_id).cloned() else {
             return refuse("open_pr_close", "pr_id", &format!("Task {task} has no pull request {pr_id}"));
         };
+        if pr.state != PrState::Open {
+            return refuse("open_pr_close", "pr_id", &format!(
+                "The pull request {pr_id} was closed and someone reopened it on GitHub: it goes to the user, Alondra does not close it again"));
+        }
         match &t.open_pr {
             Some(OpenPrPending::Close { .. }) => return Ok(()),
             Some(OpenPrPending::Deliver { .. }) => {
