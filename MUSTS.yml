@@ -2740,6 +2740,18 @@ checks:
       targets:
         - //tools:bazel_test_tmpdir_test
 
+  test-wrapper:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - "tools/BUILD.bazel"
+      - "tools/test-wrapper.bazelrc"
+      - "tools/test-tmpdir.sh"
+      - "tools/tests/test_test_wrapper.py"
+    with:
+      targets:
+        - //tools:test_wrapper_test
+
   reap-test-hosts:
     uses: bazel/test
     paths:
