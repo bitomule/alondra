@@ -136,6 +136,42 @@ fn the_actual_codex_metadata_check_keeps_external_auth_unavailable_and_api_keys_
     }
 }
 
+/// Codex refusing ordinary usage is what it reports while the account is out: each check records
+/// that reading, so the accounts show its current percentage and the hold lasts only until Codex
+/// allows usage again.
+#[test]
+fn a_codex_check_that_refuses_ordinary_usage_records_the_current_reading_and_its_limit() {
+    super::wired();
+    let f = fixture(); let domain = Arc::new(crate::engine_fixtures::open(&f.home).unwrap());
+    let _hosts = super::SdkLaunches::enable(&domain, &f.home);
+    let native = f._scratch.join("codex-native");
+    codex_native(&native);
+    std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut backend = domain.sdk().unwrap().0.clone(); backend.provider = Provider::Codex; backend.origin = None;
+    backend.native = native.clone(); backend.native_sha256 = crate::sdk_backend::digest(&native).unwrap();
+    std::fs::write(f.home.join("codex-backend.json"), serde_json::to_vec(&backend).unwrap()).unwrap();
+    let mut config = AccountsConfig::fresh(); config.connect(Provider::Codex);
+    std::fs::write(alondra_core::options::path_in(&f.home), config.to_toml()).unwrap();
+    let accounts = alondra_engine_doubles::accounts::of(domain.ports());
+    let answer = |allowed: serde_json::Value, used: u64| {
+        let mut report = alondra_engine_doubles::accounts::codex_fixture();
+        report.rate_limits = Some(json!({"accountId": "fixture-workspace", "ordinaryUsageAllowed": allowed, "rateLimits": {
+            "primary": {"usedPercent": used, "windowDurationMins": 10080, "resetsAt": 4102444800_i64}, "secondary": null}, "rateLimitsByLimitId": null}));
+        accounts.answer_every_codex(Ok(report));
+        check(&*domain, &f.home);
+        let read = domain.read();
+        let usage = read.state().account_usage.iter().find(|usage| usage.provider == Provider::Codex).cloned().expect("Codex usage recorded");
+        let eligible = alondra_core::usage::eligible_account_keys(&read.state().account_order, &read.state().accounts, &read.state().account_usage, alondra_core::now_millis())
+            .contains(&AccountKey::native(Provider::Codex));
+        let week = usage.windows.iter().find(|window| window.reading.kind.duration_minutes() == Some(10080)).expect("the week is read").reading.used;
+        (week, alondra_view_model::accounts::native_limit_reported(Some(&usage)), eligible)
+    };
+    assert_eq!(answer(json!(true), 99), (alondra_core::usage::Share::of(0.99), false, true));
+    assert_eq!(answer(json!(false), 100), (alondra_core::usage::Share::FULL, true, false), "a refusal replaces the older percentage and holds the account");
+    assert_eq!(answer(serde_json::Value::Null, 3), (alondra_core::usage::Share::FULL, true, false), "an unknown permission leaves the last reading and its limit");
+    assert_eq!(answer(json!(true), 2), (alondra_core::usage::Share::of(0.02), false, true), "Codex allowing usage again ends the limit");
+}
+
 #[tokio::test]
 async fn a_stale_startup_account_check_retries_and_releases_account_selection() {
     super::wired();

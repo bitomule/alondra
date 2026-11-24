@@ -8,7 +8,7 @@ use std::process::Command;
 use serde_json::Value;
 
 use crate::model_selection::{AccountModelCatalog, CatalogModel};
-use crate::usage::{Share, UsageReading, WindowKind, WindowReading};
+use crate::usage::{NATIVE_LIMIT_MARKER, Share, UsageReading, WindowKind, WindowReading};
 
 pub fn command(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, profile: Option<&Path>) -> Command {
     let mut command = Command::new(executable);
@@ -47,6 +47,19 @@ impl ProbeReport {
 
     pub fn ordinary_usage_allowed(&self) -> Option<bool> {
         self.rate_limits.as_ref()?.get("ordinaryUsageAllowed")?.as_bool()
+    }
+
+    /// What this probe says of the account's usage. A refusal of ordinary usage is a reading too:
+    /// its percentages replace older ones and the provider's limit holds until a later probe allows
+    /// usage again. An unknown permission says nothing, so the last reading stands.
+    pub fn usage_reading(&self) -> Result<Option<UsageReading>, String> {
+        let (Some(limits), Some(allowed)) = (&self.rate_limits, self.ordinary_usage_allowed()) else { return Ok(None) };
+        let mut reading = parse_rate_limits(limits, self.plan.clone())?;
+        if !allowed {
+            reading.windows.push(WindowReading { kind: WindowKind::Other(NATIVE_LIMIT_MARKER.into()), used: Share::NONE, resets_at: None, exhausted: true });
+            reading.check()?;
+        }
+        Ok((!reading.windows.is_empty()).then_some(reading))
     }
 }
 
@@ -109,6 +122,20 @@ mod tests {
         assert!(!latest.windows.iter().any(|window| window.reading.kind.duration_minutes() == Some(90)));
         assert!(latest.plan_exhausted_until(3).is_none());
         assert!(parse_rate_limits(&json!({}), None).unwrap().windows.is_empty());
+    }
+
+    #[test]
+    fn a_refusal_of_ordinary_usage_is_read_with_its_limit_and_an_unknown_permission_is_not_read() {
+        let report = |allowed: Value| ProbeReport { requires_auth: true, auth_method: None, account_type: None, workspace_id: None, signed_in: true,
+            email: None, plan: None, pay_per_use: false, catalog_error: None, catalog: AccountModelCatalog { account: AccountKey::native(Provider::Codex),
+                revision: String::new(), native_default: None, models: vec![], measured_at: 0 },
+            rate_limits: Some(json!({"ordinaryUsageAllowed": allowed, "rateLimits": {"primary": {"usedPercent": 100, "windowDurationMins": 10080, "resetsAt": 1000}}})) };
+        let refused = report(json!(false)).usage_reading().unwrap().unwrap();
+        assert!(refused.windows.iter().any(|window| window.kind.is_native_limit_marker() && window.exhausted));
+        assert!(refused.windows.iter().any(|window| window.kind.duration_minutes() == Some(10080) && window.used == Share::FULL));
+        let allowed = report(json!(true)).usage_reading().unwrap().unwrap();
+        assert!(!allowed.windows.iter().any(|window| window.kind.is_native_limit_marker()));
+        assert_eq!(report(Value::Null).usage_reading().unwrap(), None);
     }
 
     #[test]
