@@ -45,6 +45,28 @@ async fn until_released(domain: &DomainRuntime, tasks: &[&str]) {
     let_go.await;
 }
 
+/// The daemon's own looks, one a wait after the other, from the takeover of a closed node until its
+/// host closes again. An owner asked while it still settles what took its node over (a control it
+/// applied, an input not yet acknowledged) declines, and the daemon asks again at its next look: a
+/// single look finds that owner busy, closes nothing, and the wait for the release never ends.
+async fn look_until_released(domain: &DomainRuntime, task: &str) {
+    let released = |domain: &DomainRuntime| domain.read().state().lifecycle_of(&TaskId::from(task)).is_ok_and(|lifecycle| lifecycle.host_released());
+    let mut changed = domain.subscribe();
+    let taken_over = changed.wait_for(|_| !released(domain));
+    taken_over.await.unwrap();
+    let mut rests = Rests::default();
+    let mut now = alondra_core::now_millis();
+    loop {
+        pass(domain, &mut rests, now, now, &WAIT);
+        now += WAIT.wait;
+        if released(domain) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    until_released(domain, &[task]).await;
+}
+
 #[cfg(not(feature = "real-hosts"))]
 async fn until_working(slice: &Slice, count: usize) {
     let mut changed = slice.domain.subscribe();
@@ -287,9 +309,7 @@ async fn a_model_chosen_for_a_closed_node_reaches_it_and_stays_when_it_closes_ag
     let applied = changed.wait_for(|_| slice.control_rows().iter().any(|(kind, _, status)| kind == "set_model" && status != "requested"));
     applied.await.unwrap();
     assert!(slice.domain.read().state().last_model_asked(&TASK.into()).is_some_and(|model| model == "sonnet"));
-
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
+    look_until_released(&slice.domain, TASK).await;
     tell(&slice, TASK, "Go on.").await;
     until_last_prompt_ends_with(&slice.domain, &slice.hosts, "Go on.").await;
     slice.domain.stop_sdk_owners();
