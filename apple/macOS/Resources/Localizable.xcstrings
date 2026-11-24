@@ -132,6 +132,8 @@
     "Couldn’t load this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar"}}}},
     "Your Mac hasn’t confirmed your answer to “%@”.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac aún no ha confirmado tu respuesta a «%@»."}}}},
     "Your Mac hasn’t confirmed an answer.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac aún no ha confirmado una respuesta."}}}},
+    "Your Mac hasn’t confirmed an action.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac aún no ha confirmado una acción."}}}},
+    "Your Mac hasn’t confirmed “%@”.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac aún no ha confirmado «%@»."}}}},
     "Couldn’t send · Retrying…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo enviar · Reintentando…"}}}},
     "Your Mac hasn’t confirmed it yet · Retrying…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac aún no lo ha confirmado · Reintentando…"}}}},
     "Retry now": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentar ahora"}}}},

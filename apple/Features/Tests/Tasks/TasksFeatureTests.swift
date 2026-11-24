@@ -15,6 +15,7 @@ final class TasksFeatureTests: XCTestCase {
         TestStore(initialState: TasksFeature.State()) {
             TasksFeature()
         } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = ViewsClient.showing(document)
             $0.viewsClient.load = load
             $0.viewsClient.perform = { request in sent.record(request); return try respond(request) }
@@ -287,6 +288,69 @@ final class TasksFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testAWithdrawTheMacNeverConfirmsShowsTheRequestAgainWithANoticeAfterTheTimeout() async throws {
+        let gate = Gate()
+        let clock = TestClock<Duration>()
+        let document = try Samples.document("tasks-populated") { object in
+            var sections = object["sections"] as? [[String: Any]] ?? []
+            var items = sections[1]["items"] as? [[String: Any]] ?? []
+            items[2]["actions"] = [[
+                "id": "withdraw:r-2@4", "label": "Withdraw Request", "style": "destructive", "presentation": "button",
+                "input": ["kind": "none"], "attachments": false, "enabled": true,
+            ]]
+            sections[1]["items"] = items
+            object["sections"] = sections
+        }
+        let store = await loaded(document)
+        store.dependencies.continuousClock = clock
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            return try Responses.applied("Request withdrawn")
+        }
+        let withdraw = try XCTUnwrap(store.state.board?.active.requests.last?.withdraw)
+
+        await store.send(.perform(withdraw))
+        await store.receive(\.actions.sent)
+        XCTAssertFalse(store.state.board?.active.requests.contains { $0.id == "r-2" } ?? true, "it leaves at once")
+
+        await clock.advance(by: Optimistic.confirmationTimeout - .milliseconds(1))
+        XCTAssertFalse(store.state.board?.active.requests.contains { $0.id == "r-2" } ?? true, "nothing shows while it retries")
+
+        await clock.advance(by: .milliseconds(1))
+        await store.receive(\.actionOverdue, "withdraw:r-2@4")
+        await store.receive(\.delegate.failed, "Your Mac hasn’t confirmed “Withdraw Request”.")
+        XCTAssertTrue(store.state.board?.active.requests.contains { $0.id == "r-2" } ?? false, "the unconfirmed request shows again")
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertFalse(store.state.board?.active.requests.contains { $0.id == "r-2" } ?? true, "confirmed late, it leaves")
+    }
+
+    @MainActor
+    func testAWithdrawTheMacConfirmsInTimeNeverComesBack() async throws {
+        let clock = TestClock<Duration>()
+        let document = try Samples.document("tasks-populated") { object in
+            var sections = object["sections"] as? [[String: Any]] ?? []
+            var items = sections[1]["items"] as? [[String: Any]] ?? []
+            items[2]["actions"] = [[
+                "id": "withdraw:r-2@4", "label": "Withdraw Request", "style": "destructive", "presentation": "button",
+                "input": ["kind": "none"], "attachments": false, "enabled": true,
+            ]]
+            sections[1]["items"] = items
+            object["sections"] = sections
+        }
+        let store = await loaded(document, respond: { _ in try Responses.applied("Request withdrawn") })
+        store.dependencies.continuousClock = clock
+        let withdraw = try XCTUnwrap(store.state.board?.active.requests.last?.withdraw)
+
+        await store.send(.perform(withdraw))
+        await store.receive(\.actions.settled)
+        await clock.advance(by: Optimistic.confirmationTimeout)
+        XCTAssertFalse(store.state.board?.active.requests.contains { $0.id == "r-2" } ?? true)
+        XCTAssertTrue(store.state.sentLabels.isEmpty)
+    }
+
+    @MainActor
     func testPullToRefreshLoadsAFreshCopyAndAFailureIsReported() async throws {
         let document = try Samples.document("tasks-populated")
         let fresh = try Samples.document("tasks-populated") { $0["version"] = "vtasks-fresh" }
@@ -310,6 +374,7 @@ final class TasksFeatureTests: XCTestCase {
         let store = TestStore(initialState: TasksFeature.State()) {
             TasksFeature()
         } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = { _ in AsyncThrowingStream { $0.finish(throwing: ViewsClientError.missingView) } }
         }
         store.exhaustivity = .off

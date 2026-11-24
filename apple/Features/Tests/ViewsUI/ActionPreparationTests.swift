@@ -262,6 +262,7 @@ final class ActionPreparationTests: XCTestCase {
                 $0.pending = draft; $0.inFlight = true; $0.sends = 1
             }
             await store.receive(\.sending, draft)
+            await store.receive(\.settled)
             await store.receive(\.undelivered) {
                 $0.pending = nil; $0.inFlight = false; $0.stamp = nil
                 $0.error = message

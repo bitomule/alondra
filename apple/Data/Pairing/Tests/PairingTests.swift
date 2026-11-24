@@ -51,10 +51,14 @@ private final class MemoryStore: ApprovedPairingStore {
 private actor FakeRelay: HTTPTransport {
     enum ApprovalMode { case valid, wrongMacKey, wrongOwner, unsupportedProtocol }
     let mode: ApprovalMode
+    /// Answers an approval poll before the Mac approves: a status, a thrown cut, or nil to approve.
+    let beforeApproval: @Sendable (URLRequest) throws -> Int?
     var candidate: PairingCandidate?
     var requests: [URLRequest] = []
 
-    init(mode: ApprovalMode = .valid) { self.mode = mode }
+    init(mode: ApprovalMode = .valid, beforeApproval: @escaping @Sendable (URLRequest) throws -> Int? = { _ in nil }) {
+        self.mode = mode; self.beforeApproval = beforeApproval
+    }
 
     func send(_ request: URLRequest) async throws -> HTTPReply {
         requests.append(request)
@@ -70,6 +74,7 @@ private actor FakeRelay: HTTPTransport {
         }
         guard path.hasSuffix("/approval"), let candidate else { return answer(404, Data(), request) }
         try verifySignedHTTP(request, signingKey: candidate.signingKey)
+        if let status = try beforeApproval(request) { return answer(status, Data(), request) }
         let payload: [String: Any] = [
             "v": 1, "session_id": "pair-test",
             "owner_sub": mode == .wrongOwner ? "other-owner" : "owner-1",
@@ -179,6 +184,68 @@ private actor FakeRelay: HTTPTransport {
         $0.value(forHTTPHeaderField: "Authorization") == "Bearer oidc-token" &&
         $0.value(forHTTPHeaderField: "X-Device-Signature") != nil
     })
+}
+
+/// The phone's time, moved only by the waits the pairing asks for.
+private final class PairingClock: Sendable {
+    private let milliseconds = Mutex(fixedNow)
+    var now: UInt64 { milliseconds.withLock { $0 } }
+    var date: Date { Date(timeIntervalSince1970: Double(now) / 1_000) }
+    func advance(_ duration: Duration) { milliseconds.withLock { $0 += UInt64(duration.components.seconds * 1_000) } }
+}
+
+/// The account's access tokens: the first one until the relay refuses it, then a renewed one.
+private final class AccountTokens: Sendable {
+    private let renewed = Mutex(false)
+    var current: String { renewed.withLock { $0 } ? "renewed-token" : "first-token" }
+    func refused(_ token: String) { if token == "first-token" { renewed.withLock { $0 = true } } }
+}
+
+@Test func anAccessTokenThatExpiresWhileTheOwnerTypesTheCodeIsRenewedAndThePairingIsSaved() async throws {
+    let clock = PairingClock(), tokens = AccountTokens(), store = MemoryStore()
+    let relay = FakeRelay(beforeApproval: { request in
+        if request.value(forHTTPHeaderField: "Authorization") == "Bearer first-token", clock.now >= fixedNow + 60_000 { return 401 }
+        return clock.now < fixedNow + 90_000 ? 204 : nil
+    })
+    let client = PairingClient(transport: relay, store: store, now: { clock.date }, sleep: { clock.advance($0) })
+    let auth = try PairingAuthorization(ownerSub: "owner-1", bearer: { tokens.current }, refused: { tokens.refused($0) })
+    let pending = try await client.begin(qrPayload: invitation(), authorization: auth, displayName: "iPhone")
+
+    let approved = try await client.waitForApproval(pending.attemptID)
+    #expect(try store.load()?.deviceID == approved.deviceID, "the keys the Mac approved exist and are kept")
+    let polls = await relay.requests.filter { $0.url?.path.hasSuffix("/approval") == true }
+    #expect(polls.last?.value(forHTTPHeaderField: "Authorization") == "Bearer renewed-token")
+}
+
+@Test func aCutWhileWaitingForTheMacsApprovalIsAskedAgainInsteadOfGivingUp() async throws {
+    let clock = PairingClock(), store = MemoryStore()
+    let cuts = Mutex(2)
+    let relay = FakeRelay(beforeApproval: { _ in
+        let cut = cuts.withLock { left in
+            defer { left = max(0, left - 1) }
+            return left > 0
+        }
+        if cut { throw URLError(.networkConnectionLost) }
+        return nil
+    })
+    let client = PairingClient(transport: relay, store: store, now: { clock.date }, sleep: { clock.advance($0) })
+    let auth = try PairingAuthorization(bearerToken: "oidc-token", ownerSub: "owner-1")
+    let pending = try await client.begin(qrPayload: invitation(), authorization: auth, displayName: "iPhone")
+
+    let approved = try await client.waitForApproval(pending.attemptID)
+    #expect(try store.load()?.deviceID == approved.deviceID)
+    #expect(clock.now == fixedNow + 4_000, "it waited one poll interval after each cut")
+}
+
+@Test func aRelayThatKeepsRefusingStopsWhenTheQRExpires() async throws {
+    let clock = PairingClock(), store = MemoryStore()
+    let relay = FakeRelay(beforeApproval: { _ in 401 })
+    let client = PairingClient(transport: relay, store: store, now: { clock.date }, sleep: { clock.advance($0) })
+    let auth = try PairingAuthorization(bearerToken: "oidc-token", ownerSub: "owner-1")
+    let pending = try await client.begin(qrPayload: invitation(), authorization: auth, displayName: "iPhone")
+
+    await #expect(throws: PairingError.expired) { try await client.waitForApproval(pending.attemptID) }
+    #expect(try store.load() == nil)
 }
 
 @Test func comparisonMatchesTheTerminalVectorAndChangesWithEveryField() {

@@ -19,16 +19,22 @@ public actor PairingClient {
     private let transport: any HTTPTransport
     private let store: any ApprovedPairingStore
     private let now: @Sendable () -> Date
+    private let sleep: @Sendable (Duration) async throws -> Void
     private var attempts: [UUID: Attempt] = [:]
+
+    /// How long the approval poll waits between asks, and after a failure that may pass.
+    static let pollInterval = Duration.seconds(2)
 
     public init(
         transport: (any HTTPTransport)? = nil,
         store: any ApprovedPairingStore = KeychainApprovedPairingStore(),
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.transport = transport ?? AlondraAPIClient.makeHTTPTransport()
         self.store = store
         self.now = now
+        self.sleep = sleep
     }
 
     public func approvedPairings() throws -> ApprovedPairingCollection { try store.loadCollection() }
@@ -135,7 +141,10 @@ public actor PairingClient {
             expiresAtMs: invitation.expiresAtMs)
     }
 
-    /// Polls until the Mac approves or the QR expires. Cancellation stops the poll without saving keys.
+    /// Polls until the Mac approves or the QR expires. A cut, a relay that fails for a moment or an
+    /// access token the relay refused waits and asks again, with the token renewed, until the QR
+    /// expires: the Mac may still approve this phone, and its keys must still exist then.
+    /// Cancellation stops the poll without saving keys.
     public func waitForApproval(_ id: UUID) async throws -> ApprovedServicePairing {
         guard let attempt = attempts[id] else { throw PairingError.missingAttempt }
         let signing = try P256.Signing.PrivateKey(rawRepresentation: attempt.signingPrivateKey)
@@ -148,12 +157,18 @@ public actor PairingClient {
                 attempts.removeValue(forKey: id)
                 throw PairingError.expired
             }
-            _ = try await connection.bootstrap()
-            let response = try await connection.pairingRequest(method: "GET", target: route, body: Data())
+            let response: HTTPReply
+            do {
+                _ = try await connection.bootstrap()
+                response = try await connection.pairingRequest(method: "GET", target: route, body: Data())
+            } catch where Self.passes(error) {
+                try await sleep(Self.pollInterval)
+                continue
+            }
             let body = response.body
             switch response.status {
-            case 204:
-                try await Task.sleep(for: .seconds(2))
+            case 204, 401, 408, 429, 500...599:
+                try await sleep(Self.pollInterval)
             case 200:
                 let proof = try JSONDecoder().decode(PairingApprovalProof.self, from: body)
                 try proof.verify(invitation: attempt.invitation,
@@ -200,13 +215,23 @@ public actor PairingClient {
 
     public func discard(_ id: UUID) { attempts.removeValue(forKey: id) }
 
+    /// A failure the next ask may not meet: the network or a relay that cannot answer right now.
+    private static func passes(_ error: any Error) -> Bool {
+        switch error {
+        case let error as URLError: error.code != .cancelled
+        case RelayWireError.admissionFull: true
+        case RelayWireError.server(let status): status >= 500
+        default: false
+        }
+    }
+
     private func currentMs() -> UInt64 { UInt64(max(0, now().timeIntervalSince1970 * 1_000)) }
 
     private func connection(at base: URL, deviceID: String, signing: P256.Signing.PrivateKey,
                             authorization: PairingAuthorization) throws -> any Transport {
         let now = self.now
         return try AlondraAPIClient.makeTransport(base: base, deviceID: deviceID, signing: signing,
-            bearer: { authorization.bearerToken }, transport: transport,
+            bearer: authorization.bearer, bearerRefusedForToken: authorization.refused, transport: transport,
             now: { UInt64(max(0, now().timeIntervalSince1970 * 1_000)) })
     }
 }

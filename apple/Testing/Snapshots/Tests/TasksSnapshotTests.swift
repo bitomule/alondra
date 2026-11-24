@@ -176,6 +176,36 @@ final class TasksSnapshotTests: XCTestCase {
         assertScreen(language: .spanish) { TasksFrame(height: 1100) { TaskDetailView(store: task(document)) } }
     }
 
+    /// A cancel the Mac has not confirmed after thirty seconds: its button is back on the task and
+    /// the toast says which action the Mac has not confirmed, while it keeps being sent.
+    func test_taskDetail_anUnconfirmedCancelShowsItsButtonAgainAndTheToastSaysWhich() throws {
+        for spanish in [false, true] {
+            let document = try SampleViews.document(spanish ? "task-detail-es" : "task-detail")
+            let cancel = try XCTUnwrap(TaskDetail(document: document).cancel)
+            let request = ActionRequest(commandId: "00000000-0000-4000-8000-000000000001", dataEpoch: document.dataEpoch,
+                                        client: .ios, lang: spanish ? "es" : "en", actionId: try XCTUnwrap(cancel.id))
+            let key = ViewKey(rawValue: document.key)
+            var state = TaskDetailFeature.State(key: key)
+            state.screen = .showing(document, key: key)
+            state.optimistic.begin(request.actionId, request)
+            state.optimistic.expire(request.actionId)
+            let store = Store(initialState: state) { TaskDetailFeature() } withDependencies: {
+                $0.viewsClient.observe = ViewsClient.serving(document)
+            }
+            XCTAssertFalse(store.optimistic.hides(cancel.id))
+            let message = spanish ? "Tu Mac aún no ha confirmado «\(cancel.label)»." : Optimistic.actionNotConfirmed(cancel.label)
+            var app = AppFeature.State()
+            app.notice = WorkspaceNotice(event: .failure(message))
+            let notices = Store(initialState: app) { EmptyReducer<AppFeature.State, AppFeature.Action>() }
+            assertScreen(lightAndDark, language: spanish ? .spanish : .english, inWindow: true) {
+                ZStack(alignment: .bottom) {
+                    TasksFrame(height: 1500) { TaskDetailView(store: store) }
+                    NoticeToast(store: notices)
+                }
+            }
+        }
+    }
+
     func test_taskDetail_queuedWithItsPriority() throws {
         let document = try ScreenFixtures.document("task-pacing-ios")
         assertScreen([.light], inWindow: true) { TasksFrame(height: 1300) { TaskDetailView(store: task(document)) } }

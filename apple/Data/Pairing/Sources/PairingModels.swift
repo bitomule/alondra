@@ -36,16 +36,24 @@ public enum PairingError: LocalizedError, Equatable, Sendable {
 
 /// Issued by the OIDC login owner. The service never parses an unverified JWT to infer `ownerSub`.
 public struct PairingAuthorization: Sendable {
-    public let bearerToken: String
     public let ownerSub: String
+    /// The access token for each request: the account renews it while the Mac's approval is
+    /// awaited, which can take longer than one token lives.
+    let bearer: @Sendable () async throws -> String
+    /// The relay refused this access token; the next request asks for a new one.
+    let refused: @Sendable (String) async -> Void
 
     public init(bearerToken: String, ownerSub: String) throws {
-        guard !bearerToken.isEmpty, !bearerToken.contains(where: \.isNewline),
-              !ownerSub.isEmpty, ownerSub.utf8.count <= 256 else {
-            throw PairingError.invalidIdentity
-        }
-        self.bearerToken = bearerToken
+        guard !bearerToken.isEmpty, !bearerToken.contains(where: \.isNewline) else { throw PairingError.invalidIdentity }
+        try self.init(ownerSub: ownerSub, bearer: { bearerToken })
+    }
+
+    public init(ownerSub: String, bearer: @escaping @Sendable () async throws -> String,
+                refused: @escaping @Sendable (String) async -> Void = { _ in }) throws {
+        guard !ownerSub.isEmpty, ownerSub.utf8.count <= 256 else { throw PairingError.invalidIdentity }
         self.ownerSub = ownerSub
+        self.bearer = bearer
+        self.refused = refused
     }
 }
 

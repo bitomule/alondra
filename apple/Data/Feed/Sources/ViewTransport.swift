@@ -566,7 +566,8 @@ public actor ViewActionSender {
 
     /// An answer given where nothing can wait for the network, such as a notification button: one
     /// try. When the Mac cannot be asked, it is numbered from the journal generation this device
-    /// last knew, kept, and throws `AnswerKeptForLater`; it then goes on its own once the Mac answers.
+    /// last knew, kept, and throws `AnswerKeptForLater`; its own delivery then goes on in the
+    /// background, whether or not a screen of that Mac is open, until the Mac answers it.
     /// Without such a generation it throws `AnswerNotSent`.
     public func sendNow(_ request: ActionRequest) async throws -> ActionResponse {
         try Task.checkCancellation()
@@ -584,12 +585,14 @@ public actor ViewActionSender {
         var current = Pending(request: record.restoredRequest, body: record.body)
         pending[current.request.commandId] = current
         scheduleRetirement()
+        let wakes = signal.generation
         do {
             return try await attemptDelivery(&current)
         } catch where ActionDeliveryDisposition(error) == .final {
             await discard(current)
             throw error
         } catch {
+            _ = try? startDelivery(current, failedSince: wakes)
             throw AnswerKeptForLater()
         }
     }
@@ -631,20 +634,26 @@ public actor ViewActionSender {
         while let task = deliveries.values.first { _ = try? await task.value }
     }
 
+    /// `failedSince` is the wake count before a try that already failed: the delivery waits its
+    /// turn before going again, or goes at once if something woke it since.
     @discardableResult
-    private func startDelivery(_ value: Pending) throws -> Task<ActionResponse, any Error> {
+    private func startDelivery(_ value: Pending, failedSince: Int? = nil) throws -> Task<ActionResponse, any Error> {
         guard !stopped else { throw CancellationError() }
         let key = value.request.deliveryCorrelationID
         if let running = deliveries[key] { return running }
-        let task = Task { try await self.keepDelivering(value, key: key) }
+        let task = Task { try await self.keepDelivering(value, key: key, failedSince: failedSince) }
         deliveries[key] = task
         return task
     }
 
-    private func keepDelivering(_ start: Pending, key: String) async throws -> ActionResponse {
+    private func keepDelivering(_ start: Pending, key: String, failedSince: Int?) async throws -> ActionResponse {
         defer { deliveries[key] = nil }
         var current = start
         var attempt = 0
+        if let failedSince {
+            attempt = 1
+            await pause(attempt, since: failedSince)
+        }
         while true {
             try checkDelivering()
             let wakes = signal.generation

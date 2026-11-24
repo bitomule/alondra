@@ -20,6 +20,8 @@ public struct TaskDetailFeature: Sendable {
         public var optimistic = Optimistic()
         /// The option label chosen for each action sent with one, shown until the daemon answers.
         public var choices: [String: String] = [:]
+        /// The label of each action still waiting for the daemon, for the notice when it is late.
+        public var sentLabels: [String: String] = [:]
         public init(key: ViewKey) { screen = ScreenFeature.State(key: key) }
 
         public var detail: TaskDetail? { screen.document.map(TaskDetail.init) }
@@ -35,6 +37,8 @@ public struct TaskDetailFeature: Sendable {
         case open(AlondraContract.Link)
         case perform(WireAction)
         case choose(WireAction, ActionOption)
+        /// The daemon has not confirmed the action sent for this id in time.
+        case actionOverdue(String)
         case screen(ScreenFeature.Action)
         case actions(ActionFeature.Action)
         case composer(ActionFeature.Action)
@@ -47,6 +51,9 @@ public struct TaskDetailFeature: Sendable {
     private static func subject(of action: WireAction?) -> Substring? {
         action?.id?.split(separator: "@").first
     }
+
+    @Dependency(\.continuousClock) var clock
+    private enum CancelID: Hashable { case confirmation(String) }
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.screen, action: \.screen) { ScreenFeature() }
@@ -90,10 +97,19 @@ public struct TaskDetailFeature: Sendable {
                 return .send(.delegate(ScreenDelegate(outcome)))
             case .actions(.sent(let request)):
                 state.optimistic.begin(request.actionId, request, dataEpoch: state.screen.document?.dataEpoch)
-                return .none
+                guard state.optimistic.isSending(request.actionId) else { return .none }
+                state.sentLabels[request.actionId] = state.actions.action?.label
+                return Optimistic.confirmation(of: request.actionId, clock: clock,
+                                               cancelID: CancelID.confirmation(request.actionId), overdue: Action.actionOverdue)
             case .actions(.settled(let request, let applied)):
+                let target = state.optimistic.target(of: request)
                 state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)
-                return .none
+                guard let target, !state.optimistic.isSending(target) else { return .none }
+                state.sentLabels[target] = nil
+                return .cancel(id: CancelID.confirmation(target))
+            case .actionOverdue(let id):
+                guard state.optimistic.expire(id) else { return .none }
+                return .send(.delegate(.failed(Optimistic.actionNotConfirmed(state.sentLabels[id]))))
             case .open(let link):
                 return ScreenDelegate.opening(link).map { .send(.delegate($0)) } ?? .none
             case .perform(let action):
