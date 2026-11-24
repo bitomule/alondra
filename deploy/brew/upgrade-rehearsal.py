@@ -306,6 +306,7 @@ class Rehearsal:
             'ALONDRA_WAKE': '0',
             'ALONDRA_RESUME_DEAD_NODES': '0',
             'ALONDRA_BINARY_CHECK_SECS': '1',
+            'ALONDRA_REHEARSAL_MAC': '1',
         }
         if 'USER' in os.environ:
             env['USER'] = os.environ['USER']

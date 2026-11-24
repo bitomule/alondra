@@ -332,6 +332,11 @@ class PreviousDoctorTests(Fixture):
 
 
 class HandoverWorldTests(Fixture):
+    def test_every_daemon_of_the_rehearsal_reads_a_mac_with_room_instead_of_the_real_disk_and_memory(self):
+        home = self.work / 'daemon-home'
+        self.assertEqual(self.rehearsal.env(home).get('ALONDRA_REHEARSAL_MAC'), '1')
+        self.assertEqual(self.rehearsal.env(home, 49999).get('ALONDRA_REHEARSAL_MAC'), '1')
+
     def test_the_daemon_of_a_case_starts_nodes_whatever_the_macs_load(self):
         world = u.HandoverWorld(self.rehearsal, self.work / 'case', None)
         self.addCleanup(world.supervisor.close)
