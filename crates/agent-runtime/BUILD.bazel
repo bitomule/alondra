@@ -41,7 +41,9 @@ rust_binary(
 )
 low_opt_rust_test(
     name = "owned_host_test",
-    size = "small",
+    # 29 s of tests, 37 s whole, run alone with the Mac's load average at 208; in a full queue at load
+    # 253 it got through 4 of the 17 tests in 62 s. 300 s is over three times that worst reading.
+    timeout = "moderate",
     crate_root = "tests/owned_host.rs",
     srcs = ["tests/owned_host.rs", "tests/support/mod.rs", "//crates:test_support.rs"],
     compile_data = ["//crates/domain-store-schema:schema.sql"],
