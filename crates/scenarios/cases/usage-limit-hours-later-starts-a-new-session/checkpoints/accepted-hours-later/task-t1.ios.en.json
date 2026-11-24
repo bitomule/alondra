@@ -80,7 +80,7 @@
           "struck": false,
           "title": "Since",
           "trailing": {
-            "at": "2026-11-15T14:31:14.000+00:00",
+            "at": "2026-11-15T14:31:13.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -95,11 +95,11 @@
         {
           "depth": 0,
           "icon": "history",
-          "id": "2026-11-15T14:31:14.000+00:00",
+          "id": "2026-11-15T14:31:13.000+00:00",
           "struck": false,
           "title": "Working",
           "trailing": {
-            "at": "2026-11-15T14:31:14.000+00:00",
+            "at": "2026-11-15T14:31:13.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -125,7 +125,7 @@
           "struck": false,
           "title": "Last message",
           "trailing": {
-            "at": "2026-11-15T14:31:14.000+00:00",
+            "at": "2026-11-15T14:31:13.000+00:00",
             "format": "relative",
             "kind": "time"
           },
