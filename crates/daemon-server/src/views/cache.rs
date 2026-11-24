@@ -247,6 +247,7 @@ impl Cache {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_domain_rules::DomainState;

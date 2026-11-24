@@ -277,4 +277,5 @@ pub async fn run(direct: Arc<Direct>, sandbox: bool) {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests;

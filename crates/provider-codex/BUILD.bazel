@@ -44,7 +44,7 @@ rust_library(
     crate_root = "model/fake_codex_host.rs",
     edition = "2024",
     version = "0.1.0",
-    visibility = ["//crates/engine-sdk:__pkg__"],
+    visibility = ["//crates/daemon-server:__pkg__", "//crates/engine-sdk:__pkg__"],
     deps = [
         "//crates/codex-protocol:codex_protocol",
         "//crates/core:alondra_core",

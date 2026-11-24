@@ -145,6 +145,7 @@ impl Formatter for Components<'_> {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use serde_json::json;

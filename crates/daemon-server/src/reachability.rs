@@ -546,5 +546,6 @@ pub(crate) async fn watch(endpoint: Endpoint, port_fixed: bool, portmapper: &Por
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 #[path = "reachability_tests.rs"]
 mod tests;

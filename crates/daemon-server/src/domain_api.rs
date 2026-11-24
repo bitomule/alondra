@@ -1357,6 +1357,7 @@ fn store_error(error: StoreError) -> Response {
     }
 }
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use crate::domain_authority::Principal;
@@ -2472,6 +2473,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod domain_encrypted_tests {
     use super::*;
     use crate::auth::Auth;

@@ -571,6 +571,7 @@ fn remove_waiter(client: &crate::client_routes::Client, device: &str, generation
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_domain_rules::{

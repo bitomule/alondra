@@ -1482,8 +1482,9 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         }
 
         /// The orchestrator of `domain` through the SDK on `backend`, with Alondra's plugins
-        /// registered in `root`; it keeps `root` and `hosts` until it is dropped.
-        fn serving<R: AsRef<Path> + Send + 'static>(root: R, domain: Arc<DomainRuntime>, home: PathBuf, backend: crate::sdk_backend::SdkBackend, hosts: Box<dyn Send>) -> Self {
+        /// registered in `root`; it keeps `root` and `hosts` until it is dropped. A test crate whose
+        /// doubled hosts a model plays gives it the backend of that model.
+        pub fn serving<R: AsRef<Path> + Send + 'static>(root: R, domain: Arc<DomainRuntime>, home: PathBuf, backend: crate::sdk_backend::SdkBackend, hosts: Box<dyn Send>) -> Self {
             let (folder, owner) = (root.as_ref().to_owned(), root);
             let claude_home = registered_plugins(&folder);
             domain.enable_sdk(backend);

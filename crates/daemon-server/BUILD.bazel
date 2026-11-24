@@ -37,28 +37,83 @@ adapter_in_crate(
     ],
 )
 
-# The server's tests render with the real screens: they are the only test target here that
-# links `views`, and it takes about 25 s.
+# What every test target compiles besides the sources: the fixtures the server's tests read.
+TEST_COMPILE_DATA = [
+    "//crates/core:fixtures/ctrl_trivial_2.jsonl",
+    "//crates/core:fixtures/quill.jsonl",
+    "//crates/domain-rules:src/tests.rs",
+    "//crates/store-sqlite:src/schedule_acceptance_tests.rs",
+    "//crates/store-sqlite:src/tests.rs",
+    "//crates/daemon-support:src/domain_authority.rs",
+    "//crates/daemon-support:src/domain_cutover.rs",
+    "//fixtures/domain-v2:acceptance.json",
+    "//fixtures/client-v2",
+    "//fixtures/push",
+    "//fixtures/views:all",
+    "//fixtures/views:cards",
+    "//crates/alondrad:Info.plist",
+]
+
+TEST_SRCS = glob(["src/**/*.rs"]) + ["//crates/daemon-engine:src/wiring/owner_fixtures.rs", "//crates/engine-sdk:fixtures"]
+
+# What every test target links besides the crate's own dependencies.
+TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+    "//crates/views:views",
+    "//crates/daemon-engine:daemon_engine",
+    "//crates/daemon-engine-model:daemon_engine_model",
+    "//crates/store-sqlite:store_sqlite",
+    "//crates/daemon-support:daemon_support",
+    "//crates/engine-doubles:engine_doubles",
+    "//crates/engine-kernel:engine_kernel",
+    "//crates/engine-admission:engine_admission",
+    "//crates/engine-orchestrator:engine_orchestrator",
+    "//crates/engine-sdk:engine_sdk",
+    "//crates/agent-application:agent_application",
+    "//crates/process-group:process_group",
+    "//crates/provider-contract:provider_contract",
+    "//crates/store:store",
+]
+
+# The Apple process tests run this binary as a daemon that advertises on the local network, so it
+# carries the reason macOS shows for that permission, like `alondrad`.
+TEST_RUSTC_FLAGS = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath //crates/alondrad:Info.plist)"]
+
+# The server's tests render with the real screens: they are the only test targets here that link
+# `views`. These run on the doubled hosts of engine-doubles, which the Claude and Codex host models
+# and the orchestrator model play: no Agent SDK host, fake native Claude or binary of the root is an
+# input. The Apple packages run its fixture servers.
 low_opt_rust_test(
     name = "daemon_server_test",
     size = "large",
     visibility = ["//apple/Data/Feed:__pkg__", "//apple/Data/Iroh:__pkg__"],
-    compile_data = [
-        "//crates/core:fixtures/ctrl_trivial_2.jsonl",
-        "//crates/core:fixtures/quill.jsonl",
-        "//crates/domain-rules:src/tests.rs",
-        "//crates/store-sqlite:src/schedule_acceptance_tests.rs",
-        "//crates/store-sqlite:src/tests.rs",
-        "//crates/daemon-support:src/domain_authority.rs",
-        "//crates/daemon-support:src/domain_cutover.rs",
-        "//fixtures/domain-v2:acceptance.json",
+    compile_data = TEST_COMPILE_DATA,
+    srcs = TEST_SRCS,
+    crate_name = "alondra_daemon_server",
+    crate_root = "src/lib.rs",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {
+        "HOME": ".",
+        "TEST_EXECS": "/bin/cat /bin/ls /bin/sh /bin/sleep /usr/bin/defaults /usr/bin/git /usr/bin/head /usr/bin/id /usr/bin/python3 /usr/bin/touch /usr/bin/wc tmpdir",
+    },
+    deps = TEST_DEPS + ["//crates/provider-claude:claude_host_model", "//crates/provider-codex:codex_host_model"],
+    data = [
         "//fixtures/client-v2",
-        "//fixtures/push",
         "//fixtures/views:all",
-        "//fixtures/views:cards",
-        "//crates/alondrad:Info.plist",
     ],
-    srcs = glob(["src/**/*.rs"]) + ["//crates/daemon-engine:src/wiring/owner_fixtures.rs", "//crates/engine-sdk:fixtures"],
+    edition = "2024",
+    rustc_flags = TEST_RUSTC_FLAGS,
+    version = VERSION,
+)
+
+# The tests that still need a real Agent SDK host, a fake native Claude or Codex, or a binary of the
+# root (the real `alondra` and `alondrad`): the same sources with the feature real-hosts, which
+# compiles only them.
+low_opt_rust_test(
+    name = "daemon_server_host_test",
+    size = "medium",
+    compile_data = TEST_COMPILE_DATA,
+    srcs = TEST_SRCS,
+    crate_features = ["real-hosts"],
     crate_name = "alondra_daemon_server",
     crate_root = "src/lib.rs",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
@@ -75,29 +130,11 @@ low_opt_rust_test(
         "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
         "FIXTURE_CODEX_MODEL_DOUBLE": "$(rootpath //agent-host:codex-model-double.py)",
         "FIXTURE_CODEX_MCP_NATIVE": "$(rootpath //agent-host:fake-codex-mcp.py)",
-        "FIXTURE_ORCHESTRATOR_NATIVE": "$(rootpath //agent-host:orchestrator-fake-claude.py)",
-        "TEST_EXECS": "$(rootpath //crates/alondra:alondra) $(rootpath //crates/alondrad:alondrad) $(rootpath //agent-host:alondra-host) /bin/cat /bin/kill /bin/ls /bin/sh /bin/sleep /usr/bin/defaults /usr/bin/git /usr/bin/head /usr/bin/id /usr/bin/mkfifo /usr/bin/python3 /usr/bin/touch /usr/bin/wc /usr/sbin/lsof tmpdir",
+        "TEST_EXECS": "$(rootpath //crates/alondra:alondra) $(rootpath //crates/alondrad:alondrad) $(rootpath //agent-host:alondra-host) /usr/bin/git /usr/bin/python3 tmpdir",
     },
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/views:views",
-        "//crates/daemon-engine:daemon_engine",
-        "//crates/daemon-engine-model:daemon_engine_model",
-        "//crates/store-sqlite:store_sqlite",
-        "//crates/daemon-support:daemon_support",
-        "//crates/agent-runtime:agent_runtime",
-        "//crates/engine-doubles:engine_doubles",
-        "//crates/engine-kernel:engine_kernel",
-        "//crates/engine-admission:engine_admission",
-        "//crates/engine-orchestrator:engine_orchestrator",
-        "//crates/engine-sdk:engine_sdk",
-        "//crates/agent-application:agent_application",
-        "//crates/process-group:process_group",
-        "//crates/provider-contract:provider_contract",
-        "//crates/store:store",
-    ],
+    deps = TEST_DEPS + ["//crates/agent-runtime:agent_runtime"],
     data = [
         "//crates/alondrad:alondrad",
-        "//agent-host:orchestrator-fake-claude.py",
         "//agent-host:persistent-fake-claude.py",
         "//agent-host:alondra-host",
         "//agent-host:alondra-codex-host",
@@ -111,9 +148,7 @@ low_opt_rust_test(
     ],
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
-    # The Apple process tests run this binary as a daemon that advertises on the local network, so it
-    # carries the reason macOS shows for that permission, like `alondrad`.
-    rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath //crates/alondrad:Info.plist)"],
+    rustc_flags = TEST_RUSTC_FLAGS,
     version = VERSION,
 )
 

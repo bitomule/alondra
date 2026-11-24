@@ -19,7 +19,7 @@ pub(crate) mod owner_fixtures;
 /// What plays the hosts of `engine_fixtures::owner::Slice`: the model, or real processes in the
 /// target that runs them.
 #[cfg(not(feature = "real-hosts"))]
-pub use crate::model_fixture::ModelHosts as SliceHosts;
+pub use crate::engine_fixtures::model_hosts::ModelHosts as SliceHosts;
 #[cfg(feature = "real-hosts")]
 pub use crate::engine_fixtures::owner::ProcessHosts as SliceHosts;
 

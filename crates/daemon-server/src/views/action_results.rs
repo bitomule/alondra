@@ -450,6 +450,7 @@ pub(super) async fn read(
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_view_model::action_id::{ActionId, Verb};
@@ -976,6 +977,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod integrity_tests {
     use super::*;
     #[test]

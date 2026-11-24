@@ -588,6 +588,7 @@ fn parse(id: &str, number: u64, view: &Value) -> Details {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::{Details, PrDetails, hand_back_conflicts, parse};
     use alondra_domain_rules::{
@@ -1389,6 +1390,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod visible_projection_regression {
     use super::*;
 

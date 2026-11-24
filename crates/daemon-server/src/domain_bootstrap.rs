@@ -1460,6 +1460,7 @@ fn storage() -> Response {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use crate::auth::Auth;
@@ -3112,4 +3113,5 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod vertical_tests;

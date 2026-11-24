@@ -196,6 +196,7 @@ impl Drop for Scratch {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     fn machine_doubles(ports: &alondra_engine_ports::Registry) {
         alondra_engine_doubles::machine::wire(ports, alondra_daemon_support::watcher::claude_home);

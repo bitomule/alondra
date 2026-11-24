@@ -1130,6 +1130,7 @@ fn digest_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod cache_tests {
     use alondra_store_sqlite::AsSqlite as _;
     use super::*;
@@ -2509,6 +2510,7 @@ fn timestamp(millis: i64) -> String {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_domain_rules::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
@@ -2850,5 +2852,6 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 #[path = "node_row_equivalence_tests.rs"]
 mod node_row_equivalence_tests;

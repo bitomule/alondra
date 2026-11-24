@@ -170,4 +170,5 @@ fn store(home: &Path, user_home: &Path, value: &str) -> Result<(), Refused> {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests;
