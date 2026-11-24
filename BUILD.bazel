@@ -52,6 +52,11 @@ exports_files(
     visibility = ["//crates/domain-rules:__pkg__"],
 )
 
+exports_files(
+    ["docs/architecture/state-machines.md"],
+    visibility = ["//tools:__pkg__"],
+)
+
 # What Claude Code writes beside a mod it loads with --plugin-dir: never part of the plugin.
 MOD_TYPES = [
     "plugin/.gitignore",

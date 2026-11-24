@@ -1,0 +1,3 @@
+# What the state inventory guard fails on today and an open fix owns, with its finding.
+# rule<TAB>subject<TAB>finding. The list only shrinks: an entry that no longer fails is a failure.
+writer	options.toml	F-STORE-6

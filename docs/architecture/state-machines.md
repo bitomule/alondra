@@ -6,6 +6,17 @@ lists the invalid states and transitions the code can reach, through retries, du
 cancellations and concurrency, and the plan that fixes them. This is the single canonical file for
 it: whoever changes one of these machines updates its section here in the same pull request.
 
+Each section starts with a `toml state-machine` block: the code that defines the machine (`path::Symbol`, never a
+line), where its truth lives, and, when one enum is its state, that enum's variants and terminals. The `state-files`
+block in [M-STORE-12](#m-store-12--state-in-json-files-in-the-home-folder-implicit-machines-split-with-sqlite) names
+the one writer of every state file, and the `timers` block in
+[Timers that act on state](#timers-that-act-on-state-outside-obligation_policy) says of every time constant whether
+it decides state or only paces. `//tools:state_inventory_test` fails when the code and these blocks disagree (a
+section, symbol, variant, state file, table, timer or state enum the other side lacks); what is not state is in
+`tools/state_inventory_exempt.tsv` and what an open fix owns in `tools/state_inventory_known.tsv`. The judgment the
+test cannot make is the `state-machines-review` check of `MUSTS.yml`, with the questions of
+[state-machines-review.md](state-machines-review.md).
+
 - **Audited at**: commit `1567967b9` of `main` (2026-11-22).
 - **Re-checked**: PRs #505, #507 and #536 against commit `3fc0370ea` (2026-11-22): M-LIFE-1, M-LIFE-10,
   M-LIFE-14, M-CARDS-10, M-CARDS-13 (new), M-ENGINE-4, M-ENGINE-5, M-ENGINE-10, M-ENGINE-25, M-PROV-8 and the
@@ -567,6 +578,13 @@ with an outcome card; several Macs per client). Each can be changed in the revie
 Scope: the task lifecycle aggregate and the node it runs on, and everything the visible state derives from them. Real paths (the the Bazel layers work phases moved files): the aggregate is in `crates/domain/src/lifecycle*.rs`; the bridge to the rest of the domain is `crates/domain-rules/src/lifecycle.rs`; `Situation` is in `crates/domain-rules/src/situation.rs` (not in `crates/core`, as the doc says); the inherited "node state" lives in `crates/core/src/{states.rs,tasks.rs,tasks/derive.rs}` and is used in memory by `crates/daemon-engine/src/live.rs`. Audited commit: `1567967b9`. Read-only audit: no build or test was run.
 
 ### M-LIFE-1 · `TaskLifecycle`
+
+```toml state-machine
+id = "M-LIFE-1"
+code = ["crates/domain/src/lifecycle.rs::TaskLifecycle", "crates/domain/src/lifecycle/commands.rs::transition", "crates/domain/src/lifecycle/observations.rs::runtime_fact", "crates/domain/src/lifecycle.rs::advanced", "crates/domain/src/lifecycle.rs::CallbackState", "crates/domain/src/lifecycle.rs::State", "crates/domain/src/lifecycle.rs::TaskPhase"]
+truth = ["sqlite:lifecycle_events", "sqlite:lifecycle_cards", "sqlite:lifecycle_tasks", "sqlite:task_user_inputs"]
+```
+
 - **Kind**: explicit, composite. **Defined in**: `crates/domain/src/lifecycle.rs:1099-1196` (`Progress`, `DeliveryGate`, `Delivered`, `Finishing`, `State`, `TaskLifecycle`); transitions in `lifecycle/commands.rs:4-568` (`transition`) and `lifecycle/observations.rs:4-719` (`runtime_fact`); `advanced` in `lifecycle.rs:1668-1704` (copies, applies, bumps the revision, sets `owed_since`).
 - **Source of truth**: the task journal (`DomainState.lifecycle_journal: Vec<LifecycleRecord>`, persisted in `lifecycle_events`, `crates/store/src/schema.sql:13-19`). The aggregate is rebuilt by replay (`domain-rules/src/lifecycle.rs:1240-1247`, `lifecycle_of`) and cached in `DomainState.lifecycles` (Arc; used only if `revision+1 == journal.len()`).
 - **Copies and derivatives**: projections the store writes: `lifecycle_tasks.revision`, `lifecycle_current_execution`, `lifecycle_cards`, `lifecycle_dependencies`, `lifecycle_delivery` (`crates/store/src/persistence.rs:191-245`). Copies in the `tasks` row (see M-LIFE-6).
@@ -623,6 +641,13 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 - **Concurrency**: the aggregate is pure; only `DomainState::decide` mutates it, inside a command, and the store serializes commands (out of scope, see STORE).
 
 ### M-LIFE-2 · Execution (`Execution`)
+
+```toml state-machine
+id = "M-LIFE-2"
+code = ["crates/domain/src/lifecycle.rs::Execution", "crates/domain/src/lifecycle.rs::queue_input", "crates/domain/src/lifecycle/observations.rs::runtime_fact"]
+truth = ["derived", "sqlite:lifecycle_current_execution", "sqlite:lifecycle_execution_bindings", "sqlite:lifecycle_executions"]
+```
+
 - **Kind**: explicit, product. **Defined in**: `lifecycle.rs:921-1061`; mutations in `observations.rs` and helpers `queue_input`, `add/remove_callback_wake`, `replace_handoff` (`lifecycle.rs:1806-1876`, `commands.rs:1114-1132`).
 - **Components**: `Activity ∈ {Launching(input), InputPending(input), Turn{id, work, continuations, taken, stop}, OwnWork{work≠∅, continuations}, Continuation(wakes≠∅), Awaiting(Await), Resting}` × `ResourceEvidence ∈ {Reserved, Available, ObservationPending, Released}` × `Takeover ∈ {None, Pending, Unanswered}` × `host_released` × `callbacks: Vec<CallbackState{AwaitingAnswer, Answered, Decided}>` × `effects` × `inbox` × `held` × `cursor`.
 - **Facts** (`RuntimeFact`, `lifecycle.rs:775-871`) and key effects:
@@ -646,17 +671,40 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 - **Persistence and restart**: inside the journal (M-LIFE-1). `held`, `takeover`, `host_released` are rebuilt by replay.
 
 ### M-LIFE-3 · Root turn stop (`TurnStop`)
+
+```toml state-machine
+id = "M-LIFE-3"
+code = ["crates/domain/src/lifecycle.rs::TurnStop"]
+truth = ["derived"]
+states = "crates/domain/src/lifecycle.rs::TurnStop"
+variants = ["Running", "InterruptAccepted", "ForceRequested"]
+```
+
 - **Kind**: explicit. **Defined in**: `lifecycle.rs:311-316`.
 - **Transitions**: `Running → InterruptAccepted` by fact; `InterruptAccepted → ForceRequested` by `RequestControl{ForceStop}` (`commands.rs:534-546`).
 - **Rejected**: `ForceStop` on `Running` → `InvalidState`; repeated → `DuplicateObligation`.
 - **Persistence and restart**: lost when the turn ends (it is a field of `Activity::Turn`).
 
 ### M-LIFE-4 · Empty-turn counter
+
+```toml state-machine
+id = "M-LIFE-4"
+code = ["crates/domain/src/lifecycle.rs::wake_with", "crates/domain/src/lifecycle.rs::rest_wakes"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit. **Defined in**: `empty_turns: u8`, `woken: Option<InputId>` (`lifecycle.rs:1191-1194`); rises in `wake_with`, resets in `rest_wakes` except for the `keeps_wake` events (`lifecycle.rs:1707-1735`). Limit `EMPTY_TURN_WAKES = 3`.
 - Decides whether an empty turn end wakes the node or opens the orchestrator case (`hands_back_an_empty_turn`, `lifecycle.rs:1230-1242`; `domain-rules/src/lifecycle.rs:1598-1645`).
 - **Source of truth**: the aggregate alone (rule 4 of the doc holds for the count).
 
 ### M-LIFE-5 · Obligation (`obligation()`)
+
+```toml state-machine
+id = "M-LIFE-5"
+code = ["crates/domain/src/lifecycle/obligation.rs::obligation"]
+truth = ["derived", "sqlite:api_failures"]
+```
+
 - **Kind**: derived. **Defined in**: `lifecycle/obligation.rs:53-161`, `Party × Owed`, `since = owed_since` (revision at which it changed).
 - **Total**: for every non-terminal state it returns `Some`: `Waiting` carries non-empty `Decisions` and `waits_on` covers the three `Owner`s; `Delivered` falls to `gate`; `Executing` falls to `by_activity` (which covers every `Activity`). `Completed/Cancelled` → `None`. Checked, no gaps.
 - **Adjustments outside the aggregate**: `DomainState::obligation_with` (`ownership.rs:329-342`) changes the obligation to `Answer` (returned delivery waiting for the orchestrator) or `Replan` (cancelled dependency / rejected plan): the aggregate never produces `Owed::Replan`.
@@ -664,6 +712,16 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 - **Since #516** (at `68770a298`): `ANSWER` is gone; only `HandInput` and `Wake` have a deadline and are enforced (`domain-rules/src/obligation_policy.rs:10-27`). `Owed::Answer` and `Owed::Replan` stay as obligations (the task still reads as waiting for the orchestrator) but no clock acts on them: what the orchestrator owes is settled by the end of its handled turns (M-ORCH-5).
 
 ### M-LIFE-6 · Task row `tasks.state` and flags
+
+```toml state-machine
+id = "M-LIFE-6"
+code = ["crates/domain-rules/src/model.rs::TaskState", "crates/domain-rules/src/rules.rs::derive_states", "crates/core/src/tasks.rs::TaskState"]
+truth = ["sqlite:tasks", "sqlite:task_cancel_reason", "sqlite:task_history", "sqlite:task_projects"]
+states = "crates/domain-rules/src/model.rs::TaskState"
+variants = ["NotStarted", "Running", "NeedsYou", "AwaitingBlocker", "ForYourReview", "WaitingDependency", "Closing", "Done", "Cancelled"]
+terminals = ["Done", "Cancelled"]
+```
+
 - **Kind**: implicit, derived with validation. **Defined in**: `domain-rules/src/model.rs:123-145` (`TaskState` with 9 values), `Task` (`started`, `agent_id`, `final_presentation`, `ending`, `wrap_up`, `pending_user_inputs`, `waiting_for_tasks`, `dependencies`, …).
 - **How it is written**: (1) `materialize` after every lifecycle decision sets `agent_id`, `started`, `ending` and the phase's `TaskState` (`domain-rules/src/lifecycle.rs:1314-1336`); (2) `derive_states` / `state_within_phase` picks the attention state within the phase (`rules.rs:2614-2662`, `lifecycle.rs:2613-2650`); (3) `derive_loaded_states` keeps `WaitingDependency` on open (`rules.rs:2626-2636`).
 - **Validation**: `agrees` (`lifecycle.rs:1413-1480`) for every task "touched" in the commit (`rules.rs:3012`) and on load: node/start/ending equal to the execution; phase ↔ state compatible; required cards actionable.
@@ -671,21 +729,57 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 - **Terminals**: `Done`/`Cancelled` only from the phase; `derive_states` does not touch terminal rows.
 
 ### M-LIFE-7 · `Situation` and `Tally`
+
+```toml state-machine
+id = "M-LIFE-7"
+code = ["crates/domain-rules/src/situation.rs::Situation", "crates/domain-rules/src/situation.rs::Tally"]
+truth = ["derived"]
+states = "crates/domain-rules/src/situation.rs::Situation"
+variants = ["Working", "Waiting", "NeedsYou", "Paused", "Delivered", "Finished", "Cancelled"]
+terminals = ["Finished", "Cancelled"]
+```
+
 - **Kind**: derived. **Defined in**: `domain-rules/src/situation.rs:7-226`; computed by `ReadIndex::build` per task (`read_index.rs:614`) with `StartProblems::situation` → `situation_with`.
 - **Reads**: `task.state` (terminals), the inbox listing, `task_activity` (closed node), `node_closing`, `obligation_of` (M-LIFE-5), cards and `awaits` of the aggregate, `answered_wait`, `task_handed_back`, `finishing_intent`. `Tally` decides block and counters (`situation.rs:68-82`, `read_index.rs:99`, `views/src/lib.rs:85-93`, `views/src/tasks.rs:530-540`; `:545-555` at `3fc0370ea`). Which tasks enter those blocks at all is M-CARDS-13 (since #536 every task that has not ended does).
 - **Real precedence**: terminal row → inbox `needs_you` → closed node (`Waiting(Slot)`) → delivered and node closing → turn/work → user pause or `Await::Instruction` → user cards → delivered phase → cancellation in progress → wait for an obligation.
 
 ### M-LIFE-8 · `LiveState` / `TaskActivity` / node state in `/runtime`
+
+```toml state-machine
+id = "M-LIFE-8"
+code = ["crates/domain/src/lifecycle.rs::LiveState", "crates/domain-rules/src/node_machine.rs::TaskActivity", "crates/domain-rules/src/lifecycle.rs::live_state", "crates/core/src/model.rs::NodeState", "crates/core/src/model.rs::NodeStatus"]
+truth = ["derived"]
+states = "crates/domain/src/lifecycle.rs::LiveState"
+variants = ["Paused", "Working", "WaitingUser", "WaitingCapacity", "WaitingTask"]
+```
+
 - **Kind**: derived. **Defined in**: the aggregate's `LiveState` (`lifecycle.rs:1499-1530`), adjusted by `DomainState::live_state` (`domain-rules/src/lifecycle.rs:1848-1866`) and wrapped in `TaskActivity` (`node_machine.rs:226-270`).
 - **Copies and derivatives**: `ReadIndex` keeps `situation`, `activity` and `live` per task side by side (`read_index.rs:615-619`). `daemon-engine/src/live.rs:403-424` translates `sdk_live` into the inherited model's `NodeState`/`NodeStatus` for the node list: every `Working(Alondra(_))` (starting, delivering, waking, waiting for the orchestrator, merging, finishing) comes out as `Working`/`Busy`, while `Situation` treats it as waiting (see H-LIFE-3).
 
 ### M-LIFE-9 · Node phase (`NodePhase`) and node pause
+
+```toml state-machine
+id = "M-LIFE-9"
+code = ["crates/domain-rules/src/node_machine.rs::NodePhase", "crates/domain-rules/src/node_machine.rs::Pause", "crates/domain-rules/src/node_machine.rs::node_next"]
+truth = ["sqlite:agents", "sqlite:task_released_nodes"]
+states = "crates/domain-rules/src/node_machine.rs::NodePhase"
+variants = ["ThroughSdk", "Closed"]
+terminals = ["Closed"]
+```
+
 - **Kind**: explicit. **Defined in**: `node_machine.rs:104-190`, `node_next` (`:340-373`).
 - **States**: `NodePhase ∈ {ThroughSdk, Closed}` (any old value reads as `Closed`). `Pause{reason, since, cut, turn_since, cleanup ∈ {Pending, Terminated, Done}, released}`.
 - **Events**: `SessionClosed`, `Paused`, `PauseCleanup`, `PauseReleased`, `Resumed`. The node's pause is mirrored as a `Pause` card in the aggregate (`hold_node_pause`, `:607-613`); its end decides `PauseEnded` or, if the aggregate refuses or the task would be left stranded, `Resumed` with text (`end_of_pause`, `:579-589`).
 - **Terminals**: `Closed` is terminal for the node; `node_next` rejects everything except a repeated `SessionClosed`.
 
 ### M-LIFE-10 · Node closing / wrap-up
+
+```toml state-machine
+id = "M-LIFE-10"
+code = ["crates/domain-rules/src/model.rs::WrapUp", "crates/domain-rules/src/model.rs::NodeEnd", "crates/domain-rules/src/rules.rs::node_closing"]
+truth = ["sqlite:task_wrap_ups", "sqlite:node_last_words", "sqlite:task_stalls"]
+```
+
 - **Kind**: implicit. **Defined in**: `Task.wrap_up` (`asked_at`, `cleaned_at`, `node: Option<NodeEnd>`, `post_merge_work`, `close_cancelled`) + `node_closing()` (`rules.rs:2540-2546`: terminal, `wrap_up.node` or confirmed cleanup) + `in_cleanup`, `wraps_up`.
 - Governs rule 8 of the doc (nothing asks, nobody resumes it). `RecordNodeEnd` drains everything at once if the task ends (`rules.rs:5409-5414`), or releases the execution if not.
 - **Re-checked after #505** (at `3fc0370ea`): the domain side is unchanged (`node_closing` `rules.rs:2552-2554`,
@@ -698,19 +792,50 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
   and its card after `MAX_FAILURES` apply as before.
 
 ### M-LIFE-11 · Held plan review
+
+```toml state-machine
+id = "M-LIFE-11"
+code = ["crates/domain/src/lifecycle.rs::plan_revision", "crates/domain/src/lifecycle.rs::TaskLifecycle"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit, in the aggregate. **Defined in**: `plan_reviews: BTreeMap<InteractionId, u64>` + `plan_revision` (`lifecycle.rs:1178-1183`).
 - `HoldForPlanReview` only before admission; `Admit` is refused while any is held (`commands.rs:12-14`). Outside `state`: survives `Finish` and `Reopen`.
 
 ### M-LIFE-12 · Doubtful deliveries
+
+```toml state-machine
+id = "M-LIFE-12"
+code = ["crates/domain/src/lifecycle.rs::TaskLifecycle", "crates/domain/src/lifecycle.rs::Decisions"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit, in the aggregate. **Defined in**: `doubts: card → input`, `settled: set<input>` (`lifecycle.rs:1185-1189`).
 - Events `DoubtHandoff`, `SettleHandoff`, `ResendUntaken`, `ResendDoubtful`; `Finish{Cancel}` moves the doubts to `settled`.
 
 ### M-LIFE-13 · Inherited reducer of `crates/core`
+
+```toml state-machine
+id = "M-LIFE-13"
+code = ["crates/core/src/tasks.rs::TaskState"]
+truth = ["memory"]
+states = "crates/core/src/tasks.rs::TaskState"
+variants = ["NotStarted", "WaitingDependency", "Running", "NeedsYou", "InReview", "Closing", "Done", "Cancelled"]
+terminals = ["Done", "Cancelled"]
+```
+
 - **Kind**: explicit, in memory. **Defined in**: `core::tasks::TaskState` (8 values, `tasks.rs:74-122`) with the matrix `Board::apply_fact` (`tasks.rs:749-773`) and `core::states` (table `NODE_TABLE` of node states by hook evidence).
 - **Source of truth**: lives only in memory in `Live.view` (`daemon-engine/src/live.rs:31-37`) for nodes seen through hooks (`claude --bg`); SDK nodes are overwritten from the lifecycle (`from_lifecycle`). A parallel source of truth only for non-SDK nodes; `client-port/src/i18n.rs` still imports its enums.
 - **Persistence and restart**: not persisted; rebuilt from hooks after startup.
 
 ### M-LIFE-14 · `crates/machine-model` (model test; not a machine)
+
+```toml state-machine
+id = "M-LIFE-14"
+code = ["crates/machine-model/src/lib.rs"]
+truth = ["memory"]
+```
+
 - Models, with the real domain: deliveries, questions to the user and to the orchestrator, permissions, background work, PR, empty turns, host death and stop, late and repeated facts (deduplicated by the model's own cursor, `lib.rs:423-447`), restarts, slots, memory, disk, usage, account move, priority, cleanup.
 - **Does not model** (0 occurrences in `lib.rs`): interrupt and `ForceStop`, `ReopenTask`, `HostReleased/Retaken`, `InputDropped`, `InputHeld`, `Unprompted` turns, compaction (since #507 only the replay of an older `Compacted` record can produce it, see M-LIFE-1), held plan review (`SettlePlanReview`), `WaitForTasks`, Codex, `RecordClaudeHold`, `DecisionAborted`, work after the merge (`DeclarePostMergeWork`), merge authorization. Nor tasks created with unstarted dependencies except `history_with_a_dependency`, which checks neither block nor counter (see F-LIFE-1). `KNOWN_GAPS` is empty (`tests.rs:14`), and the doc says "no known gaps" while admitting that it reimplements the gate and the host owner.
 - **Since #516** (at `68770a298`): the model's orchestrator ends a handled turn every ten minutes of its clock unless the usage limit holds it, and reads every reminder (`orchestrator_inbox::owed(&state, &|_| true)`, `machine-model/src/lib.rs` `turn_ended`). It never models an orchestrator that cannot end a turn handled (failing launches, an ambiguous batch), so the gap of F-ORCH-3 is outside what it checks.
@@ -835,6 +960,13 @@ Execution model common to all machines in this area (stated once):
 - **Restart**: everything in this area is persisted state; nothing lives in memory except the orchestrator's clocks (M-ORCH-6). Effects (`NotifyUser/Agent/Orchestrator`, `RequestTasksOver`, `ReviewDependentPlans`) are written to the outbox in the same transaction and delivered once (M-STORE-1).
 
 ### M-CARDS-1 · Life of a card (`Interaction`)
+
+```toml state-machine
+id = "M-CARDS-1"
+code = ["crates/domain-rules/src/model.rs::Interaction", "crates/domain-rules/src/rules.rs::open", "crates/domain-rules/src/rules.rs::invalidate", "crates/domain-rules/src/rules.rs::retire"]
+truth = ["sqlite:interactions", "sqlite:interaction_attachments", "sqlite:interaction_holds", "sqlite:interaction_reads", "sqlite:interaction_subjects"]
+```
+
 - **Kind**: implicit, composite. State = `withdrawn: bool` × payload (`Information.read_by`, `Question/ActionRequest.answer`, `Delivery{acceptance, is_final, feedback}`) × `task.final_presentation` × `holds` × `snoozed_until` × `clarification`. **Defined in**: `model.rs:906-925` (payload), `:1296-1326` (`Interaction`). Opening: `open()` (`rules.rs:1006-1021`).
 - **Source of truth**: `DomainState.interactions` (table `interactions`). **Copies and derivatives**: read index (`read_index.rs`, checked equal in tests with `assert_index_matches`), inbox (`projection.rs:381-405` `inbox_pending`/`card_waits_for_user`), `attention` (`attention.rs:140-189`), apps. **Duplicate that diverges**: `open()` and `card_waits_for_user()` are two definitions of "open"; the inbox also requires an active task, not snoozed, not `out_of_sight`, and for deliveries that `attention` be that card. A system card of an ended task is still `open()` but is not listed (see H-CARDS-2).
 - **States**:
@@ -867,6 +999,13 @@ Execution model common to all machines in this area (stated once):
 - **Persistence and restart**: everything persisted; the Claude hook waiting on a `HoldHook` lives in the host process (out of scope).
 
 ### M-CARDS-2 · Final delivery, acceptance and merge (`acceptance_valid` × `MergeAuthorization`)
+
+```toml state-machine
+id = "M-CARDS-2"
+code = ["crates/domain-rules/src/model.rs::Acceptance", "crates/domain-rules/src/model.rs::MergeAuthorization", "crates/domain-rules/src/model.rs::MergeAttemptState"]
+truth = ["sqlite:merge_authorizations", "sqlite:stack_readiness", "sqlite:delivery_feedback", "sqlite:delivery_targets", "sqlite:lifecycle_delivery", "sqlite:pr_decisions"]
+```
+
 - **Kind**: explicit, composite. **Defined in**: `Acceptance{valid}` (`model.rs:834-838`), `MergeAuthorization{valid, attempt}` with `MergeAttemptState{Unclaimed, Claimed, Uncertain, Confirmed, Failed}` (`model.rs:1390-1414`), `Feedback{instruction}`, `stack_readiness`, lifecycle journal (`Presented`/`HandedBack`/`Accepted`).
 - **Source of truth**: `interactions.payload`, `merge_authorizations`, `pull_requests.review`, `stack_readiness`.
 - **Transitions** (summary):
@@ -888,36 +1027,94 @@ Execution model common to all machines in this area (stated once):
 - **Invariants**: enforced since #551: an approved plan is read-only. Its effects are irreversible (request created and orchestrator notified), and feedback on it no longer invalidates its acceptance: it becomes a request about the build (`feedback_on_approved_plan`) → F-CARDS-3.
 
 ### M-CARDS-3 · Question group (`QuestionGroup`)
+
+```toml state-machine
+id = "M-CARDS-3"
+code = ["crates/domain-rules/src/model.rs::QuestionGroup", "crates/domain-rules/src/rules.rs::group_complete", "crates/core/src/model.rs::QuestionStatus"]
+truth = ["sqlite:interactions"]
+```
+
 - **Kind**: implicit. **Defined in**: `card.group{id,index,total}` on each member; ids `<group>-q<n>` (`model.rs:1100-1129`, `rules.rs:204-221`). Complete = all non-withdrawn members answered (`group_complete`, `rules.rs:1069-1071`); `group_members` includes the withdrawn ones (`:1030-1037`).
 - **Events**: `AskQuestions`/`HoldQuestions` (create N), `AnswerQuestion` (one), `ReopenAnswer` (undoes one while the group is incomplete), `Withdraw` (withdraws all and deletes answers). `replaces` refuses a member of a group (`question_in_group`, since #551); questions hold no slot, so `slot_holders` never retires one → F-CARDS-2.
 - **Effect on completion**: `NotifyAgent` with all the answers; `hold_for_plan_review` (`plan_review.rs:76-106`).
 
 ### M-CARDS-4 · Snooze (`snoozed_until`, `resurfaced_at_revision`)
+
+```toml state-machine
+id = "M-CARDS-4"
+code = ["crates/domain-rules/src/rules/snooze.rs::snooze_guard", "crates/domain-rules/src/rules/snooze.rs::resurface_card", "crates/domain-rules/src/rules/snooze.rs::reconcile_snoozed_cards"]
+truth = ["sqlite:interactions"]
+```
+
 - **Kind**: implicit. **Defined in**: `rules/snooze.rs:4-128`.
 - **States and transitions**: visible → snoozed (`SnoozeCard`, guard: open, to the user, in the inbox, task not archived, `until > now`) → visible again by `ResurfaceDueCards{now}` (System), `UnsnoozeCard` (user), new activity of a node on the task, or replacement (`resurfaced_at_revision` on the new card, `rules.rs:808-821`). Cleared on withdrawal (`retire`) or on close; a task that ends → the snoozed card is withdrawn.
 - **Clock**: `now` is supplied by the adapter; nothing in the domain compares against a clock. No findings.
 
 ### M-CARDS-5 · Clarification (`clarification`, `answer_clarification`)
+
+```toml state-machine
+id = "M-CARDS-5"
+code = ["crates/domain-rules/src/model.rs::Interaction"]
+truth = ["sqlite:interactions"]
+```
+
 - **Kind**: implicit. `RequestClarification` (`rules.rs:4213-4246`) sets `clarification`; R7 (`clarification_answered`, `:1086-1108`) forces the author's next non-Know card to replace it (`replaces`); the MCP tool `answer_clarification` fills `replaces` and forwards to `ask`, `request_action`, `request_input`, `request_test` or `present_result` (`cli-mcp/src/mcp.rs:1195-1205`). It is also offered on open final deliveries (`projection.rs:592-611`). A delivery with a clarification holds its merge (`merge_held`, `projection.rs:246-249`). Issue #317 proposes withdrawing it whole. It is the main entry to F-CARDS-5.
 
 ### M-CARDS-6 · Slots and replacement (`replaces`, `CardSlot`)
+
+```toml state-machine
+id = "M-CARDS-6"
+code = ["crates/domain-rules/src/model.rs::CardSlot"]
+truth = ["derived"]
+states = "crates/domain-rules/src/model.rs::CardSlot"
+variants = ["Plan", "FinalResult", "Problem"]
+```
+
 - **Kind**: explicit, small. **Defined in**: `CardSlot{Plan, FinalResult, Problem{cause}}` (`model.rs:1078-1098`). In a task the slot belongs to the task whatever the author; outside, to the author (`rules.rs:1149-1160`). `replaces` requires same author, not hook, not answered, open (`:1129-1147`).
 - **Copies that diverge**: `replaces` rejects hook cards, `slot_holders` does not (H-CARDS-1); replacing the current delivery through either one now hands it back like `Withdraw` (`invalidate` + `hand_back`, sweep `hand_back_replaced_deliveries`, since #551) → F-CARDS-5.
 
 ### M-CARDS-7 · Plan review of dependents (`plan_reviews`)
+
+```toml state-machine
+id = "M-CARDS-7"
+code = ["crates/domain-rules/src/model.rs::PlanReview", "crates/domain-rules/src/rules/plan_review.rs::plan_review_pending"]
+truth = ["sqlite:plan_reviews"]
+```
+
 - **Kind**: explicit. **Defined in**: `PlanReview{task_id, decisions, dependents: BTreeMap<TaskId, Option<PlanReviewSettlement>>}` (`model.rs:791-832`), `rules/plan_review.rs`.
 - **Events**: opened when the user completes a decision (`Decide`, not permission/plan/elicitation) of a task with unstarted dependents: each dependent gets `HeldForPlanReview` and the orchestrator `ReviewDependentPlans`. Settled per dependent with `SettlePlanReview{Unchanged|PlanChanged|Cancelled}` (orchestrator; System only `Unchanged`, `Answer` deadline of M-ORCH-6) or in bulk with the problem card `keep_plans` (`KeptByUser`).
 - **Guards and invariants**: `not_held_for_plan_review` in `AssignTask`; `validate_plan_reviews` (`plan_review.rs:212-227`): no open dependent with a node. A cancelled dependent stays `None` forever but `plan_review_waiting` filters it. No finding of its own.
 
 ### M-CARDS-8 · Checklist of the approved plan (`checklists`, `checklist_marks`, `post_merge_work`)
+
+```toml state-machine
+id = "M-CARDS-8"
+code = ["crates/domain-rules/src/checklist.rs::Checklist", "crates/domain-rules/src/checklist.rs::ChecklistMark", "crates/domain-rules/src/rules.rs::take_plan_items"]
+truth = ["sqlite:task_checklists", "sqlite:delivery_checklists"]
+```
+
 - **Kind**: implicit. **Defined in**: `checklists: TaskId → Checklist{plan, items}` (tables `task_checklists`, `delivery_checklists`). Origin: approving a plan held by a hook (`AnswerQuestion` with `approve`, `rules.rs:4371-4376`), creating the task of a `request_plans` (`rules.rs:3676-3684`), `plan_items` (`take_plan_items`, `:1838-1863`) or `continues` (`:3664-3672`). Marks per final delivery (`checklist_marks_cover_the_plan`, `:600-662`); proof required to complete, confirm cleanup and finish post-merge work (`require_checklist_proof`, `:668`). `DeclarePostMergeWork` lets a PR be delivered with partial marks (`docs/architecture/cards.md`, "A PR review before publication").
 - **Invariants**: enforced (`validate`, `rules.rs:6226-6245`): each checklist belongs to a plan of its request; each item has a single task. Assumed: items moved with `plan_items` to a task that is later cancelled only come back through `continues` (no rule returns them). No confirmed finding.
 
 ### M-CARDS-9 · Documents and revisions
+
+```toml state-machine
+id = "M-CARDS-9"
+code = ["crates/domain-rules/src/model.rs::Document", "crates/domain-rules/src/model.rs::DocumentRevision", "crates/domain-rules/src/model.rs::DocumentReview"]
+truth = ["sqlite:documents", "sqlite:document_revisions", "sqlite:document_reviews", "sqlite:document_decisions", "sqlite:task_documents"]
+```
+
 - **Kind**: implicit. **Defined in**: `Document{current_revision}`, immutable `DocumentRevision{number}`, `DocumentReview{decisions}` per `(task, document)` (`model.rs:488-515`).
 - **Events**: `CreateDocument` (node), `ReviseDocument` (node; invalidates **all** tasks that link the document, `rules.rs:4502-4552`), `LinkTaskDocument` (manager; shares a document between tasks), `DecideDocumentReview` (user; current revision only). A final delivery with `DocumentRevision` is valid only while that revision is the current one (`targets`, `rules.rs:690-712`). Since #551 the sweep `withdraw_deliveries_behind_their_targets` returns such a delivery to its node, with a notice naming the document → F-CARDS-4.
 
 ### M-CARDS-10 · Requests (`Request`)
+
+```toml state-machine
+id = "M-CARDS-10"
+code = ["crates/domain-rules/src/model.rs::Request", "crates/domain-rules/src/request_outcome.rs", "crates/core/src/tasks.rs::RequestState"]
+truth = ["sqlite:requests", "sqlite:cleared_requests", "sqlite:maintenance_requests", "sqlite:message_requests", "sqlite:request_card_replies", "sqlite:request_folds", "sqlite:request_launch", "sqlite:request_origins", "sqlite:request_plans"]
+```
+
 - **Kind**: implicit. **Defined in**: `Request{closed, withdrawn, answer, message, maintenance, cleared, origin, folded_into, reply_to}` (`model.rs:41-88`) + the request's tasks + `request_plans` + cards `system:request_tasks`/`system:request_done`/`<id>-answer`.
 - **States**: being defined (open without tasks, `is_defining`), with live tasks, with all tasks ended and open (only the orchestrator moves it), closed with answer (Done/answer card), closed withdrawn (no card), folded into another task, cleared (`cleared`).
 - **Transitions**: `CreateRequest`/`CreateCardReply` (user), `TitleRequest`, `CloseRequest` (`rules.rs:3511`; `close_request` `:1342-1366`: Done card if it has tasks and the user asked for it, answer card if not), `close_delivered_plans` (automatic close only if all tasks are Done and marked every item of every plan, `:1368-1410`), `close_finished_messages` (messages, no card), `withdraw_cancelled_requests` (the user cancelled all unstarted tasks: closed withdrawn, no card), `AdoptOpenPr` (reopens the request, `rules.rs:5272-5277`), `ClearCompleted`. Effect `RequestTasksOver` (`:2961-2969`) **only once**, in the commit in which the last task ends.
@@ -951,15 +1148,38 @@ Execution model common to all machines in this area (stated once):
     refuses a cleared request that is open at `:5932-5934`.
 
 ### M-CARDS-11 · Task creation, dependencies and waits
+
+```toml state-machine
+id = "M-CARDS-11"
+code = ["crates/domain-rules/src/rules.rs::dependency_graph", "crates/domain-rules/src/rules.rs::blocks_graph"]
+truth = ["sqlite:task_dependencies", "sqlite:task_waits", "sqlite:lifecycle_dependencies", "sqlite:task_continuations", "sqlite:task_creations", "sqlite:task_launch_plans", "sqlite:task_relations"]
+```
+
 - **Kind**: implicit. **Defined in**: `Task.dependencies` (objective, "landed"), `delivered_dependencies` (reviewer waits for the delivery), `waiting_for_tasks` + `ended_task_waits` (wait declared by a node, ends with any final state), `stack` (`StackDependency`), `blocks` (reviewer). Acyclic graph (`dependency_graph`, `rules.rs:1865-1898`; `blocks_graph` `:1900-1934`). Derived state `WaitingDependency` (`lifecycle.rs:2613-2650` `state_within_phase`).
 - **Commands**: `CreateTask` (`rules.rs:3584-3697`, orchestrator only, with `launch` and `priority`, F-ORCH-8 fixed; refuses a cancelled dependency, F-CARDS-6 fixed), `SetDependencies` (`:3771`, refuses a cancelled dependency), `SetRelations` (`:3790`, rejects cancelled tasks), `WaitForTasks` (`:3747`), `DeclarePostMergeWork{waits_for}` (`wait_targets`, `:1778-1820`, rejects cancelled), `SetPriority` (`:3824`).
 - **Dependent of a cancelled task**: `cancelled_dependency` (`ownership.rs:320-326`) → `Owed::Replan` only if the task has not started and has no node (`ownership.rs:352-354`); the orchestrator gets a reminder at every rest caused by other work, at most `REPLAN_REMINDERS` (3) (M-ORCH-7, F-ORCH-2 fixed). `waiting_for_tasks` also ends with a cancelled one (`task_wait_finished = terminal`, `rules.rs:2007-2009`) and the node gets `dependencies_done_notice` with `cancelled`. A new dependency on a task already cancelled is refused (F-CARDS-6, fixed); a dependency cancelled afterwards still goes to the orchestrator.
 - **Cancellation** (`cancel`, `rules.rs:2191-2235`; `close_task`, `rules/open_pr.rs:29-52`): `invalidate`, withdraws closing/start problems, unanswered questions and cards held by the lifecycle; `Finished{Cancelling}`; `NotifyAgent`. It does not touch dependents (the orchestrator handles them).
 
 ### M-CARDS-12 · Stacks (`stack`, `stack_readiness`)
+
+```toml state-machine
+id = "M-CARDS-12"
+code = ["crates/domain-rules/src/model.rs::StackDependency", "crates/domain-rules/src/model.rs::StackReadiness", "crates/domain-rules/src/rules.rs::stack_ready"]
+truth = ["sqlite:stack_readiness", "sqlite:task_stacks"]
+```
+
 - **Kind**: implicit. **Defined in**: `StackDependency{upstream_task, presentation_id, pr_id, head}` + `StackReadiness{ready}` published by the upstream node (`PublishStackReadiness`, `rules.rs:5181-5211`); `stack_ready`/`stack_ready_for_merge` block start and merge. `invalidate` turns `ready` off. A cancelled upstream: `cancelled_dependency` treats it as a cancelled dependency. No finding of its own (the identity of moved PRs belongs to the stable pull request identity work).
 
 ### M-CARDS-13 · Section of the Tasks list for a request and each task (`Bucket`, derived; added after #536)
+
+```toml state-machine
+id = "M-CARDS-13"
+code = ["crates/views/src/tasks.rs::Bucket"]
+truth = ["derived"]
+states = "crates/views/src/tasks.rs::Bucket"
+variants = ["Active", "Finished", "Cleared"]
+```
+
 - **Kind**: derived, recomputed on every render; nothing stored. **Defined in** (at `3fc0370ea`): `enum Bucket { Active,
   Finished, Cleared }` (`views/src/tasks.rs:115-119`), `bucket` (`:121-131`), `task_bucket` (`:136-144`),
   `bucket_of` (`:146-148`), `request_buckets` (`:150-171`), `Forest::new` (`:204-212`), `listed_active` (`:594-598`),
@@ -1136,6 +1356,13 @@ Paths that are about to change (the Bazel layers work (phase 4d-runtime) / 5f): 
 them; the proposed tests use `Admission`, `Owners` and the test doubles, which do not move.
 
 ### M-ENGINE-1 · Admission gate (composite, implicit)
+
+```toml state-machine
+id = "M-ENGINE-1"
+code = ["crates/engine-admission/src/admission.rs::Inner", "crates/engine-admission/src/admission.rs::Saved", "crates/engine-ports/src/admission.rs::Pauses"]
+truth = ["memory", "file:admission.json", "sqlite:launch_queue", "sqlite:auto_launches", "sqlite:start_retries", "sqlite:launch_refusals", "sqlite:task_priorities"]
+```
+
 - **Kind**: composite, implicit. **Defined in**: `crates/engine-admission/src/admission.rs:139-169` (`Inner`),
   `:114-122` (`Saved`), `engine-ports/src/admission.rs:113-130` (`Pauses`).
 - **Source of truth, split over four places**:
@@ -1193,6 +1420,13 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
     `provider_transition::admitted` and `launch_from`.
 
 ### M-ENGINE-2 · Node pause, gate side (explicit in the domain, mirrored in the gate)
+
+```toml state-machine
+id = "M-ENGINE-2"
+code = ["crates/engine-ports/src/admission.rs::Reason", "crates/engine-ports/src/admission.rs::Cleanup", "crates/engine-ports/src/admission.rs::Paused", "crates/engine-admission/src/admission.rs::hand_pauses"]
+truth = ["derived"]
+```
+
 - **Kind**: explicit in the domain, with a mirror in the gate. **Defined in**: `Reason`
   (`engine-ports/src/admission.rs:48-67`), `Paused::returns` (`:101-109`), `Cleanup` (`:69-76`) and `pauses.rs`.
 - **Source of truth**: the domain (`NodeEvent::Paused/Resumed/PauseCleanup/PauseReleased`,
@@ -1217,6 +1451,13 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
 - **Timers**: `TERMINATE_AFTER` = 10 s and `KILL_AFTER` = 20 s (`pauses.rs:20-21`, `--bg` only).
 
 ### M-ENGINE-3 · Queued start paused by the user (implicit, across two stores)
+
+```toml state-machine
+id = "M-ENGINE-3"
+code = ["crates/engine-admission/src/admission.rs::hold_queued", "crates/engine-admission/src/admission.rs::release_queued"]
+truth = ["sqlite:launch_queue", "sqlite:task_queue_pauses", "file:admission.json"]
+```
+
 - **Kind**: implicit. **Defined in**: `hold_queued` (`admission.rs:1224-1256`), `release_queued` (`:1267-1278`)
   and `Pauses.held`.
 - **States**:
@@ -1231,6 +1472,13 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
   older daemon's file and handed to the domain once.
 
 ### M-ENGINE-4 · SDK host ownership per task (composite, implicit)
+
+```toml state-machine
+id = "M-ENGINE-4"
+code = ["crates/engine-sdk/src/sdk_owner.rs::Owners", "crates/engine-sdk/src/sdk_owner.rs::Driver", "crates/engine-sdk/src/sdk_owner.rs::take_over_unowned"]
+truth = ["memory", "sqlite:provider_execution_owners"]
+```
+
 - **Kind**: composite, implicit. **Defined in**: `Owners` (`sdk_owner.rs:2761-2797`), `Driver` (`:221-292`),
   `Owner` (`:2501-2758`) and the owner generation in the store (`store-sqlite/src/owner.rs:742-757`;
   `reserve_owner` does a compare-and-swap). Also the folder's `host.lock` and the `stopped-by-alondra` mark.
@@ -1272,6 +1520,13 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
   `Owner`, not per agent: two live `Owner`s of the same agent (F-ENGINE-12, branch 2) have two gates.
 
 ### M-ENGINE-5 · `Owner` thread loop (explicit in code)
+
+```toml state-machine
+id = "M-ENGINE-5"
+code = ["crates/engine-sdk/src/sdk_owner.rs::Owner", "crates/engine-sdk/src/sdk_owner.rs::Driver"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit. **Defined in**: `sdk_owner.rs:2535-2668`.
 - **States**: `Stepping`, `Releasing` (`release`/`releases`), `Replacing` (`replacement`, `relaunches`,
   `silent_hosts` with `RELAUNCH_WAITS` waits of 2 s to 300 s), `Lost` (with `lost()`), `Stopped`/`Crashed`.
@@ -1315,6 +1570,16 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
     the same agent (F-ENGINE-12).
 
 ### M-ENGINE-6 · Account move (explicit, disabled)
+
+```toml state-machine
+id = "M-ENGINE-6"
+code = ["crates/engine-ports/src/journal/account_move.rs::Step", "crates/engine-sdk/src/account_move.rs::advance", "crates/engine-sdk/src/account_move.rs::finish", "crates/engine-sdk/src/account_move.rs::undo"]
+truth = ["sqlite:account_move_steps", "sqlite:task_move_refusals"]
+states = "crates/engine-ports/src/journal/account_move.rs::Step"
+variants = ["Planned", "HostStopped", "Admitted", "Done", "Undone"]
+terminals = ["Done", "Undone"]
+```
+
 - **Kind**: explicit. **Defined in**: `AccountMoveStep` `Planned → HostStopped → Admitted → Done | Undone`
   (`account_move.rs:189-212`).
 - **Current state**: `enabled()` always returns `false` (`:34-36`) and `refused()` always returns `Some`
@@ -1327,6 +1592,15 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
   and an unreachable terminal.
 
 ### M-ENGINE-7 · Provider/model transition (explicit)
+
+```toml state-machine
+id = "M-ENGINE-7"
+code = ["crates/engine-sdk/src/provider_transition.rs::advance", "crates/engine-sdk/src/provider_transition.rs::pass", "crates/engine-sdk/src/provider_transition.rs::Transitions", "crates/engine-ports/src/journal/provider_transition.rs::Phase"]
+truth = ["sqlite:provider_transition_steps", "memory", "sqlite:task_models", "sqlite:task_providers", "sqlite:task_selections"]
+states = "crates/engine-ports/src/journal/provider_transition.rs::Phase"
+variants = ["Requested", "Draining", "SourceFenced", "ContextReady", "TargetAdmitted", "TargetReady", "Consumed", "Done", "Aborted", "Uncertain", "StartRefused"]
+```
+
 - **Kind**: explicit. **Defined in**: `Phase` validated in the store
   (`store-sqlite/src/provider_transition.rs:50-60`) and `advance` (`provider_transition.rs:418-505`).
 - **States**: `Requested → Draining → SourceFenced → ContextReady → TargetAdmitted → TargetReady → Consumed →
@@ -1339,6 +1613,13 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
   already running (F-ENGINE-12).
 
 ### M-ENGINE-8 · Obligation clock (implicit, in memory)
+
+```toml state-machine
+id = "M-ENGINE-8"
+code = ["crates/daemon-engine/src/obligation_watch.rs::Seen", "crates/daemon-engine/src/obligation_watch.rs::Action", "crates/daemon-engine/src/obligation_watch.rs::Overdue"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit. **Defined in**: `obligation_watch.rs:46-56` (`Seen`), with `step`, `observe` and `enforce`.
 - **States per task**: `(party, owed, since, first_seen, clock, reported)`. The policy lives in
   `domain-rules/src/obligation_policy.rs`.
@@ -1353,12 +1634,26 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
   log line of overdue steps, but nothing acts on it.
 
 ### M-ENGINE-9 · Global usage pause (implicit, in memory, legacy)
+
+```toml state-machine
+id = "M-ENGINE-9"
+code = ["crates/daemon-engine/src/usage_pause.rs::Record"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit. **Defined in**: `usage_pause.rs:41-53` (`Record`).
 - **States**: `exhausted`, `announced`, `resumed_at`, `strikes`, `by_margin` and `settled_cards`.
 - **Persistence and restart**: rebuilt with `usage_probe`. The gate's `Reason::Usage` pauses are only created for
   `--bg` nodes (`:428-445`); SDK nodes wait on `ClaudeHeld` cards of the domain, which belong to another audit (described as M-ENGINE-28 since #540).
 
 ### M-ENGINE-10 · Closing a task's SDK node (implicit)
+
+```toml state-machine
+id = "M-ENGINE-10"
+code = ["crates/engine-ports/src/journal.rs::TaskClosing", "crates/engine-sdk/src/task_closer.rs::due", "crates/engine-sdk/src/task_closer.rs::close_sdk_node"]
+truth = ["sqlite:task_closings"]
+```
+
 - **Kind**: implicit. **Defined in**: the `TaskClosing` row (`attempts`, `next_attempt`, `rm_started_at`,
   `attempted_cleaned_at`, `since`) plus `due()` (`task_closer.rs:113-123`) and `close_sdk_node` (`:458-530`).
 - **Deadlines outside the policy**: `Timing.wait` (cleanup wait), `RETRY` = 5 min and `MAX_FAILURES` = 3, which
@@ -1410,7 +1705,760 @@ that fix the design), `crates/engine-admission/src/disk_peaks.rs`, `crates/engin
 `machine_state.rs` (`MacState`, memory and swap) beyond its use. The `git log` of the four main files shows only crate
 and port moves (#298, #300, #363, #366, #406, #434, #445, #447, #478, #496), with no earlier fix for what follows.
 
+```toml timers
+[[timer]]
+name = "LOOK_AT_THE_CLOCK_EVERY"
+where = "crates/agent-runtime/src/owned_host.rs"
+decides = "pace"
+triggers = "how often an opening host's exit and the daemon's clock are looked at; the I/O timeout decides"
+[[timer]]
+name = "NO_CHECKS_GRACE"
+where = "crates/core/src/automerge.rs"
+decides = "state"
+machine = "M-GH-3"
+triggers = "a PR with no checks listed becomes mergeable once the grace ends"
+[[timer]]
+name = "STATUS_TIMEOUT"
+where = "crates/core/src/claude_account.rs"
+decides = "pace"
+[[timer]]
+name = "DEFAULT_CLOSE_FREE_NODES_AFTER"
+where = "crates/core/src/config.rs"
+decides = "state"
+machine = "M-LIFE-10"
+triggers = "closes a free node after it has been idle this long"
+[[timer]]
+name = "LAUNCH_TIMEOUT"
+where = "crates/core/src/lib.rs"
+decides = "pace"
+[[timer]]
+name = "LAUNCH_WINDOW"
+where = "crates/core/src/tasks/derive.rs"
+decides = "pace"
+[[timer]]
+name = "SAME_WEEK_MILLIS"
+where = "crates/core/src/usage.rs"
+decides = "pace"
+[[timer]]
+name = "KEEP_DAYS"
+where = "crates/daemon-engine-machine/src/machine_state.rs"
+decides = "pace"
+[[timer]]
+name = "ROOM_WINDOW"
+where = "crates/daemon-engine-machine/src/machine_state.rs"
+decides = "pace"
+[[timer]]
+name = "WARNING_SPACING"
+where = "crates/daemon-engine-machine/src/machine_state.rs"
+decides = "pace"
+[[timer]]
+name = "HORIZON"
+where = "crates/daemon-engine-machine/src/swap_disk.rs"
+decides = "pace"
+[[timer]]
+name = "MAX_GAP"
+where = "crates/daemon-engine-machine/src/swap_disk.rs"
+decides = "pace"
+[[timer]]
+name = "WINDOW"
+where = "crates/daemon-engine-machine/src/swap_disk.rs"
+decides = "pace"
+[[timer]]
+name = "FRESH_MS"
+where = "crates/daemon-engine-model/src/issues.rs"
+decides = "pace"
+[[timer]]
+name = "CHECK_EVERY"
+where = "crates/daemon-engine/src/accounts.rs"
+decides = "pace"
+[[timer]]
+name = "DAY"
+where = "crates/daemon-engine/src/antigravity_accounts.rs"
+decides = "pace"
+[[timer]]
+name = "HOUR"
+where = "crates/daemon-engine/src/antigravity_accounts.rs"
+decides = "pace"
+[[timer]]
+name = "STOPPED_FOR_MS"
+where = "crates/daemon-engine/src/cleanup.rs"
+decides = "state"
+machine = "M-LIFE-10"
+triggers = "a node whose session stopped a day ago with no task is cleaned up"
+[[timer]]
+name = "STOP_WAIT"
+where = "crates/daemon-engine/src/cleanup.rs"
+decides = "pace"
+[[timer]]
+name = "GRACE"
+where = "crates/daemon-engine/src/local_network_card.rs"
+decides = "state"
+machine = "M-ENGINE-22"
+triggers = "raises the local network card once access stays denied this long"
+[[timer]]
+name = "TICK"
+where = "crates/daemon-engine/src/local_network_card.rs"
+decides = "pace"
+[[timer]]
+name = "PASS"
+where = "crates/daemon-engine/src/obligation_watch.rs"
+decides = "pace"
+[[timer]]
+name = "SUMMARY_EVERY"
+where = "crates/daemon-engine/src/obligation_watch.rs"
+decides = "pace"
+[[timer]]
+name = "ONE_RUN"
+where = "crates/daemon-engine/src/report_held_card.rs"
+decides = "pace"
+[[timer]]
+name = "TICK"
+where = "crates/daemon-engine/src/report_held_card.rs"
+decides = "pace"
+[[timer]]
+name = "BACKOFF_BASE_MS"
+where = "crates/daemon-engine/src/usage_pause.rs"
+decides = "state"
+machine = "M-ENGINE-9"
+triggers = "sets when a pause after a flapping return lifts"
+[[timer]]
+name = "BACKOFF_CAP_MS"
+where = "crates/daemon-engine/src/usage_pause.rs"
+decides = "state"
+machine = "M-ENGINE-9"
+triggers = "caps when a pause after a flapping return lifts"
+[[timer]]
+name = "FLAP_WINDOW_MS"
+where = "crates/daemon-engine/src/usage_pause.rs"
+decides = "state"
+machine = "M-ENGINE-9"
+triggers = "a return inside it counts as a strike and lengthens the pause"
+[[timer]]
+name = "JITTER_MAX_MS"
+where = "crates/daemon-engine/src/usage_pause.rs"
+decides = "pace"
+[[timer]]
+name = "UNKNOWN_RESET_WAIT_MS"
+where = "crates/daemon-engine/src/usage_pause.rs"
+decides = "state"
+machine = "M-ENGINE-9"
+triggers = "an exhausted window with no reset time stops blocking"
+[[timer]]
+name = "EVERY"
+where = "crates/daemon-engine/src/usage_probe.rs"
+decides = "pace"
+[[timer]]
+name = "TIMEOUT"
+where = "crates/daemon-engine/src/usage_probe.rs"
+decides = "pace"
+[[timer]]
+name = "DORMANT"
+where = "crates/daemon-server/src/activity_push.rs"
+decides = "pace"
+[[timer]]
+name = "GRACE"
+where = "crates/daemon-server/src/activity_push.rs"
+decides = "state"
+machine = "M-SERVER-R6"
+triggers = "ends the Live Activity once everything has been at zero this long"
+[[timer]]
+name = "MAX_BACKOFF"
+where = "crates/daemon-server/src/activity_push.rs"
+decides = "pace"
+[[timer]]
+name = "REPEAT"
+where = "crates/daemon-server/src/activity_push.rs"
+decides = "pace"
+[[timer]]
+name = "SETTLE"
+where = "crates/daemon-server/src/activity_push.rs"
+decides = "pace"
+[[timer]]
+name = "RECHECK_EVERY"
+where = "crates/daemon-server/src/claude_check.rs"
+decides = "pace"
+[[timer]]
+name = "RETRY_UPDATE_AFTER"
+where = "crates/daemon-server/src/claude_check.rs"
+decides = "pace"
+[[timer]]
+name = "DETAILS_INTERVAL"
+where = "crates/daemon-server/src/client_routes.rs"
+decides = "pace"
+[[timer]]
+name = "CLEAN_CACHE_MILLIS"
+where = "crates/daemon-server/src/client_routes/pr_details.rs"
+decides = "pace"
+[[timer]]
+name = "HEAD_PAUSE"
+where = "crates/daemon-server/src/client_routes/pr_details.rs"
+decides = "pace"
+[[timer]]
+name = "PRESENT_PAUSE"
+where = "crates/daemon-server/src/client_routes/pr_details.rs"
+decides = "pace"
+[[timer]]
+name = "BUILD"
+where = "crates/daemon-server/src/client_routes/reports.rs"
+decides = "pace"
+[[timer]]
+name = "SEND"
+where = "crates/daemon-server/src/client_routes/reports.rs"
+decides = "pace"
+[[timer]]
+name = "KEPT"
+where = "crates/daemon-server/src/delivery_review.rs"
+decides = "pace"
+[[timer]]
+name = "FLUSH_EVERY"
+where = "crates/daemon-server/src/device_expiry.rs"
+decides = "pace"
+[[timer]]
+name = "IN_USE_MS"
+where = "crates/daemon-server/src/device_expiry.rs"
+decides = "state"
+machine = "M-SERVER-D1"
+triggers = "a device used within this span is not expired"
+[[timer]]
+name = "RELAY_FORGOT_SPAN_MS"
+where = "crates/daemon-server/src/device_expiry.rs"
+decides = "state"
+machine = "M-SERVER-D1"
+triggers = "a device the relay keeps forgetting for this long is expired"
+[[timer]]
+name = "CHECK"
+where = "crates/daemon-server/src/direct/bonjour.rs"
+decides = "pace"
+[[timer]]
+name = "RETRY"
+where = "crates/daemon-server/src/direct/bonjour.rs"
+decides = "pace"
+[[timer]]
+name = "APPROVAL_TTL_MS"
+where = "crates/daemon-server/src/direct/pairing.rs"
+decides = "state"
+machine = "M-SERVER-D3"
+triggers = "an approval not collected in time expires"
+[[timer]]
+name = "DECIDED_TTL_MS"
+where = "crates/daemon-server/src/direct/pairing.rs"
+decides = "state"
+machine = "M-SERVER-D3"
+triggers = "a decided pairing request is forgotten"
+[[timer]]
+name = "PENDING_TTL_MS"
+where = "crates/daemon-server/src/direct/pairing.rs"
+decides = "state"
+machine = "M-SERVER-D3"
+triggers = "a pairing request not decided in time expires"
+[[timer]]
+name = "START_WINDOW_MS"
+where = "crates/daemon-server/src/direct/pairing.rs"
+decides = "pace"
+[[timer]]
+name = "AT_DESK_FOR_MS"
+where = "crates/daemon-server/src/domain_delivery.rs"
+decides = "pace"
+[[timer]]
+name = "RETRY_BACKOFF"
+where = "crates/daemon-server/src/domain_delivery.rs"
+decides = "pace"
+[[timer]]
+name = "HELLO_TIMEOUT"
+where = "crates/daemon-server/src/iroh_endpoint.rs"
+decides = "pace"
+[[timer]]
+name = "RETRY"
+where = "crates/daemon-server/src/iroh_endpoint.rs"
+decides = "pace"
+[[timer]]
+name = "LIMIT"
+where = "crates/daemon-server/src/public_content.rs"
+decides = "pace"
+[[timer]]
+name = "SEND_PAUSE"
+where = "crates/daemon-server/src/push_gate.rs"
+decides = "pace"
+[[timer]]
+name = "UNKNOWN_MERGE_PATIENCE"
+where = "crates/daemon-server/src/push_gate.rs"
+decides = "pace"
+[[timer]]
+name = "MIN_INTERVAL"
+where = "crates/daemon-server/src/push_retract.rs"
+decides = "pace"
+[[timer]]
+name = "SETTLE"
+where = "crates/daemon-server/src/push_retract.rs"
+decides = "pace"
+[[timer]]
+name = "PROBE_EVERY"
+where = "crates/daemon-server/src/reachability.rs"
+decides = "pace"
+[[timer]]
+name = "PROBE_TIMEOUT"
+where = "crates/daemon-server/src/reachability.rs"
+decides = "pace"
+[[timer]]
+name = "REFRESH"
+where = "crates/daemon-server/src/reachability.rs"
+decides = "pace"
+[[timer]]
+name = "HEARTBEAT"
+where = "crates/daemon-server/src/service/relay.rs"
+decides = "pace"
+[[timer]]
+name = "IROH_BIND_RETRY"
+where = "crates/daemon-server/src/service/relay.rs"
+decides = "pace"
+[[timer]]
+name = "RETRY"
+where = "crates/daemon-server/src/service/relay.rs"
+decides = "pace"
+[[timer]]
+name = "STALE_READING_MS"
+where = "crates/daemon-server/src/views/live.rs"
+decides = "pace"
+[[timer]]
+name = "MAX_SKEW_MS"
+where = "crates/daemon-support/src/auth.rs"
+decides = "pace"
+[[timer]]
+name = "PAIRING_TTL"
+where = "crates/daemon-support/src/auth.rs"
+decides = "state"
+machine = "M-SERVER-D4"
+triggers = "a local pairing code expires"
+[[timer]]
+name = "EXPIRED_KEPT_MS"
+where = "crates/daemon-support/src/device_usage.rs"
+decides = "state"
+machine = "M-SERVER-D1"
+triggers = "the record of an expired device is forgotten"
+[[timer]]
+name = "RESULTS_KEPT_FOR"
+where = "crates/daemon-support/src/files_retention.rs"
+decides = "state"
+machine = "M-GH-13"
+triggers = "deletes a saved result after its task closed"
+[[timer]]
+name = "STORED_KEPT_FOR"
+where = "crates/daemon-support/src/files_retention.rs"
+decides = "state"
+machine = "M-GH-13"
+triggers = "deletes stored card files after the card and task ended"
+[[timer]]
+name = "AFTER_START"
+where = "crates/daemon-support/src/local_network.rs"
+decides = "pace"
+[[timer]]
+name = "FRESH"
+where = "crates/daemon-support/src/local_network.rs"
+decides = "pace"
+[[timer]]
+name = "EVERY"
+where = "crates/daemon-support/src/node_cost.rs"
+decides = "pace"
+[[timer]]
+name = "WINDOW"
+where = "crates/daemon-support/src/node_cost.rs"
+decides = "pace"
+[[timer]]
+name = "JWT_LIFETIME_MS"
+where = "crates/daemon-support/src/push.rs"
+decides = "pace"
+[[timer]]
+name = "EVERY"
+where = "crates/daemon-support/src/relaunch.rs"
+decides = "pace"
+[[timer]]
+name = "PREFLIGHT_TIMEOUT"
+where = "crates/daemon-support/src/relaunch.rs"
+decides = "pace"
+[[timer]]
+name = "RETRY_REJECTED"
+where = "crates/daemon-support/src/relaunch.rs"
+decides = "pace"
+[[timer]]
+name = "VERSION_TIMEOUT"
+where = "crates/daemon-support/src/relaunch.rs"
+decides = "pace"
+[[timer]]
+name = "EVERY"
+where = "crates/daemon-support/src/reports.rs"
+decides = "pace"
+[[timer]]
+name = "ONE_TRY"
+where = "crates/daemon-support/src/reports.rs"
+decides = "pace"
+[[timer]]
+name = "TTL"
+where = "crates/daemon-support/src/service_files.rs"
+decides = "pace"
+[[timer]]
+name = "EVERY"
+where = "crates/daemon-support/src/updates.rs"
+decides = "pace"
+[[timer]]
+name = "FETCH_TIMEOUT"
+where = "crates/daemon-support/src/updates.rs"
+decides = "pace"
+[[timer]]
+name = "UPGRADE_TIMEOUT"
+where = "crates/daemon-support/src/updates.rs"
+decides = "pace"
+[[timer]]
+name = "API_RETRIES"
+where = "crates/domain-rules/src/api_failure.rs"
+decides = "state"
+machine = "M-LIFE-5"
+triggers = "sends a node back by itself after an API error once the wait ends"
+[[timer]]
+name = "FRESH_TURN"
+where = "crates/domain-rules/src/api_failure.rs"
+decides = "state"
+machine = "M-LIFE-5"
+triggers = "a node that answered this long after an API error fails anew, not again"
+[[timer]]
+name = "OUTAGE_PROBE"
+where = "crates/domain-rules/src/api_failure.rs"
+decides = "state"
+machine = "M-LIFE-5"
+triggers = "one node is sent back to probe a down API"
+[[timer]]
+name = "QUIET_RETRY"
+where = "crates/domain-rules/src/api_failure.rs"
+decides = "state"
+machine = "M-LIFE-5"
+triggers = "a node past its retries is sent back without a card"
+[[timer]]
+name = "HAND_INPUT"
+where = "crates/domain-rules/src/obligation_policy.rs"
+decides = "state"
+machine = "M-LIFE-5"
+triggers = "gives up a node's process holding a handed input as hung"
+[[timer]]
+name = "WAKE"
+where = "crates/domain-rules/src/obligation_policy.rs"
+decides = "state"
+machine = "M-LIFE-5"
+triggers = "wakes a node that owes a wake"
+[[timer]]
+name = "STRIKE_GAP"
+where = "crates/domain-rules/src/pr_identity.rs"
+decides = "pace"
+[[timer]]
+name = "HOLD_LOG_EVERY"
+where = "crates/engine-admission/src/admission.rs"
+decides = "pace"
+[[timer]]
+name = "IN_FLIGHT"
+where = "crates/engine-admission/src/admission.rs"
+decides = "state"
+machine = "M-ENGINE-1"
+triggers = "frees the slot of an admitted start after it"
+[[timer]]
+name = "SPACING"
+where = "crates/engine-admission/src/admission.rs"
+decides = "pace"
+[[timer]]
+name = "TICK"
+where = "crates/engine-admission/src/admission.rs"
+decides = "pace"
+[[timer]]
+name = "TICK"
+where = "crates/engine-admission/src/machine_watch.rs"
+decides = "pace"
+[[timer]]
+name = "KILL_AFTER"
+where = "crates/engine-admission/src/pauses.rs"
+decides = "state"
+machine = "M-ENGINE-2"
+triggers = "kills the processes of a paused node that did not end"
+[[timer]]
+name = "TERMINATE_AFTER"
+where = "crates/engine-admission/src/pauses.rs"
+decides = "state"
+machine = "M-ENGINE-2"
+triggers = "terminates the processes of a paused node"
+[[timer]]
+name = "FIRST_BACKOFF"
+where = "crates/engine-github/src/domain_merges.rs"
+decides = "pace"
+[[timer]]
+name = "FIRST_MERGE_RETRY"
+where = "crates/engine-github/src/domain_merges.rs"
+decides = "pace"
+[[timer]]
+name = "LAST_BACKOFF"
+where = "crates/engine-github/src/domain_merges.rs"
+decides = "pace"
+[[timer]]
+name = "FIRST_SWEEP"
+where = "crates/engine-github/src/open_pr_sweep.rs"
+decides = "pace"
+[[timer]]
+name = "SWEEP_INTERVAL"
+where = "crates/engine-github/src/open_pr_sweep.rs"
+decides = "pace"
+[[timer]]
+name = "EVERY"
+where = "crates/engine-kernel/src/bg_sessions.rs"
+decides = "pace"
+[[timer]]
+name = "TURN_DEADLINE"
+where = "crates/engine-kernel/src/bg_sessions.rs"
+decides = "state"
+machine = "M-LIFE-3"
+triggers = "interrupts a claude --bg node turn that did not end"
+[[timer]]
+name = "EVERY"
+where = "crates/engine-kernel/src/retention.rs"
+decides = "pace"
+[[timer]]
+name = "FIRST_AFTER"
+where = "crates/engine-kernel/src/retention.rs"
+decides = "pace"
+[[timer]]
+name = "VERSION_TIMEOUT"
+where = "crates/engine-kernel/src/sdk_backend.rs"
+decides = "pace"
+[[timer]]
+name = "KEPT_MS"
+where = "crates/engine-live/src/contexts.rs"
+decides = "pace"
+[[timer]]
+name = "DEADLINE"
+where = "crates/engine-mcp/src/mcp_probe.rs"
+decides = "pace"
+[[timer]]
+name = "DEADLINE"
+where = "crates/engine-mcp/src/mcp_remove.rs"
+decides = "pace"
+[[timer]]
+name = "ANSWER"
+where = "crates/engine-mcp/src/mcp_waits.rs"
+decides = "pace"
+[[timer]]
+name = "LISTENER"
+where = "crates/engine-mcp/src/mcp_waits.rs"
+decides = "pace"
+[[timer]]
+name = "SIGN_IN_CACHE"
+where = "crates/engine-mcp/src/mcp_waits.rs"
+decides = "pace"
+[[timer]]
+name = "SWEEP_PAUSE"
+where = "crates/engine-orchestrator/src/domain_orchestrator.rs"
+decides = "pace"
+[[timer]]
+name = "CLAUDE_CACHE_MS"
+where = "crates/engine-orchestrator/src/orchestrator_conversation.rs"
+decides = "state"
+machine = "M-ORCH-1"
+triggers = "once the prompt cache lapsed, the orchestrator's next batch starts a new conversation instead of resuming"
+[[timer]]
+name = "STALLED_AFTER"
+where = "crates/engine-orchestrator/src/domain_orchestrator/watchdog.rs"
+decides = "state"
+machine = "M-ORCH-1"
+triggers = "declares the orchestrator stalled when its pending work made no progress"
+[[timer]]
+name = "WAKE"
+where = "crates/engine-orchestrator/src/orchestrator_codex.rs"
+decides = "pace"
+[[timer]]
+name = "WAKE"
+where = "crates/engine-orchestrator/src/orchestrator_sdk.rs"
+decides = "pace"
+[[timer]]
+name = "OUTAGE_WINDOW"
+where = "crates/engine-ports/src/api.rs"
+decides = "state"
+machine = "M-LIFE-5"
+triggers = "several failures inside it mean the API is down; outside it the health reads unknown"
+[[timer]]
+name = "ORCHESTRATOR_MESSAGE_TTL_MS"
+where = "crates/engine-ports/src/journal.rs"
+decides = "state"
+machine = "M-ORCH-2"
+triggers = "a message to the orchestrator older than this is dropped"
+[[timer]]
+name = "CHECK_LIMIT"
+where = "crates/engine-ports/src/worktrees.rs"
+decides = "pace"
+[[timer]]
+name = "EVERY"
+where = "crates/engine-sdk/src/account_move.rs"
+decides = "pace"
+[[timer]]
+name = "NO_RESET"
+where = "crates/engine-sdk/src/account_move.rs"
+decides = "state"
+machine = "M-ENGINE-6"
+triggers = "a task moved by a limit with no reset time stays on its account this long"
+[[timer]]
+name = "FIRST_BACKOFF"
+where = "crates/engine-sdk/src/auto_launch.rs"
+decides = "pace"
+[[timer]]
+name = "LAST_BACKOFF"
+where = "crates/engine-sdk/src/auto_launch.rs"
+decides = "pace"
+[[timer]]
+name = "TICK"
+where = "crates/engine-sdk/src/auto_launch.rs"
+decides = "pace"
+[[timer]]
+name = "LOOK_SPACING"
+where = "crates/engine-sdk/src/idle_release.rs"
+decides = "pace"
+[[timer]]
+name = "HALT_GRACE"
+where = "crates/engine-sdk/src/sdk_owner.rs"
+decides = "pace"
+[[timer]]
+name = "OPENING_TIMEOUT"
+where = "crates/engine-sdk/src/sdk_owner.rs"
+decides = "state"
+machine = "M-ENGINE-4"
+triggers = "replaces a host that did not open its native session"
+[[timer]]
+name = "RELAUNCH_WAITS"
+where = "crates/engine-sdk/src/sdk_owner.rs"
+decides = "state"
+machine = "M-ENGINE-4"
+triggers = "a new host is launched only after the wait for its failure count"
+[[timer]]
+name = "UNOWNED_TAKE_EVERY"
+where = "crates/engine-sdk/src/sdk_owner.rs"
+decides = "pace"
+[[timer]]
+name = "WAKE"
+where = "crates/engine-sdk/src/sdk_owner.rs"
+decides = "pace"
+[[timer]]
+name = "FIVE_MINUTES_MS"
+where = "crates/engine-sdk/src/sdk_owner/session_refresh.rs"
+decides = "state"
+machine = "M-ENGINE-25"
+triggers = "a task whose prompt cache lapsed starts a new session"
+[[timer]]
+name = "HOUR_MS"
+where = "crates/engine-sdk/src/sdk_owner/session_refresh.rs"
+decides = "state"
+machine = "M-ENGINE-25"
+triggers = "a task whose prompt cache lapsed starts a new session"
+[[timer]]
+name = "FIRST_BACKOFF"
+where = "crates/engine-sdk/src/task_closer.rs"
+decides = "pace"
+[[timer]]
+name = "LAST_BACKOFF"
+where = "crates/engine-sdk/src/task_closer.rs"
+decides = "pace"
+[[timer]]
+name = "RETRY"
+where = "crates/engine-sdk/src/task_closer.rs"
+decides = "pace"
+[[timer]]
+name = "TICK"
+where = "crates/engine-sdk/src/task_closer.rs"
+decides = "pace"
+[[timer]]
+name = "UPDATE_TIMEOUT"
+where = "crates/host/src/claude_update.rs"
+decides = "pace"
+[[timer]]
+name = "VERSION_TIMEOUT"
+where = "crates/host/src/claude_update.rs"
+decides = "pace"
+[[timer]]
+name = "FIRST_WAIT"
+where = "crates/host/src/startup.rs"
+decides = "pace"
+[[timer]]
+name = "LONGEST_WAIT"
+where = "crates/host/src/startup.rs"
+decides = "pace"
+[[timer]]
+name = "WINDOW_MILLIS"
+where = "crates/host/src/startup.rs"
+decides = "pace"
+[[timer]]
+name = "FIVE_MINUTES"
+where = "crates/provider-claude/src/context.rs"
+decides = "pace"
+[[timer]]
+name = "HOUR"
+where = "crates/provider-claude/src/context.rs"
+decides = "pace"
+[[timer]]
+name = "SAMPLES_MS"
+where = "crates/store-sqlite/src/metrics_fold.rs"
+decides = "state"
+machine = "M-STORE-13"
+triggers = "folds and deletes the samples of an ended task"
+[[timer]]
+name = "TASKS_MS"
+where = "crates/store-sqlite/src/metrics_fold.rs"
+decides = "state"
+machine = "M-STORE-13"
+triggers = "adds an ended task's row into its week and deletes it"
+[[timer]]
+name = "FRESH"
+where = "crates/store-sqlite/src/owner.rs"
+decides = "pace"
+[[timer]]
+name = "RECOVERY_WINDOW"
+where = "crates/store-sqlite/src/recovery_copies.rs"
+decides = "state"
+machine = "M-STORE-9"
+triggers = "deletes the old database kept as recovery copy"
+[[timer]]
+name = "WINDOW_MS"
+where = "crates/store-sqlite/src/retention.rs"
+decides = "state"
+machine = "M-STORE-13"
+triggers = "deletes journal rows older than the window"
+[[timer]]
+name = "LOCK_ABANDONED"
+where = "crates/system/src/claude_trust.rs"
+decides = "pace"
+[[timer]]
+name = "LOCK_WAIT"
+where = "crates/system/src/claude_trust.rs"
+decides = "pace"
+[[timer]]
+name = "PROBE_TIMEOUT"
+where = "crates/system/src/codex_account.rs"
+decides = "pace"
+[[timer]]
+name = "PROBE_TIMEOUT"
+where = "crates/system/src/antigravity_account.rs"
+decides = "pace"
+[[timer]]
+name = "VERSION_TIMEOUT"
+where = "crates/system/src/antigravity_account.rs"
+decides = "pace"
+[[timer]]
+name = "OWNER_ANSWERS_WITHIN"
+where = "crates/system/src/hook_socket.rs"
+decides = "pace"
+[[timer]]
+name = "EXCHANGE"
+where = "crates/system/src/sign_in_returns.rs"
+decides = "pace"
+```
+
 ### M-ENGINE-11 · Machine incident (explicit: `Option<Incident>` + `step_with_disk_measurement`)
+
+```toml state-machine
+id = "M-ENGINE-11"
+code = ["crates/engine-admission/src/machine_watch.rs::Incident", "crates/engine-admission/src/machine_watch.rs::step_with_disk_measurement", "crates/engine-admission/src/machine_watch.rs::look", "crates/engine-admission/src/machine_watch.rs::watch"]
+truth = ["memory", "file:machine-incident.json"]
+```
+
 - **Kind**: explicit. **Defined in**: `Incident` (`machine_watch.rs:45-53`), `step_with_disk_measurement`
   (`:279-316`), `open` (`:318-323`), `failing` (`:221-223`), orchestrated by `look` (`:987-1039`) and the `watch`
   loop (`:1050-1066`).
@@ -1471,6 +2519,13 @@ and port moves (#298, #300, #363, #366, #406, #434, #445, #447, #478, #496), wit
     `Machine`.
 
 ### M-ENGINE-12 · Waits declared for the machine (implicit, between the watch and the gate)
+
+```toml state-machine
+id = "M-ENGINE-12"
+code = ["crates/engine-admission/src/machine_watch.rs::Declared", "crates/engine-admission/src/machine_watch.rs::waiters"]
+truth = ["file:machine-incident.json", "file:admission.json"]
+```
+
 - **Kind**: implicit. **Defined in**: `Record.declared: BTreeMap<session, Declared{reason, resource, at, turn}>`
   (`machine_watch.rs:36-43`, `:61`); the entry comes in through `agent_waiting_machine`
   (`daemon-server/src/domain_bootstrap.rs:1262-1275`), which also calls `hold_back(.., Reason::Declared)`. The pause
@@ -1486,6 +2541,13 @@ and port moves (#298, #300, #363, #366, #406, #434, #445, #447, #478, #496), wit
     on their grace (M-ENGINE-2).
 
 ### M-ENGINE-13 · Disk stretches per volume and estimates per project (implicit)
+
+
+```toml state-machine
+id = "M-ENGINE-13"
+code = ["crates/engine-admission/src/disk_peaks.rs::Ledger", "crates/engine-admission/src/disk_peaks.rs::Stretch", "crates/engine-admission/src/disk_peaks.rs::Estimates"]
+truth = ["file:machine-incident.json", "memory"]
+```
 
 Since `e7b898c30` only the Mac's own disk has stretches: the build-volume ledgers below are removed
 (see M-ENGINE-15).
@@ -1520,6 +2582,13 @@ Since `e7b898c30` only the Mac's own disk has stretches: the build-volume ledger
 - **Concurrency**: under the `Mutex<Record>`. Only `pace` samples (the `look` thread).
 
 ### M-ENGINE-14 · Disk budget and reservations of the gate (implicit, in memory)
+
+```toml state-machine
+id = "M-ENGINE-14"
+code = ["crates/engine-admission/src/machine_watch.rs::Record", "crates/engine-admission/src/machine_watch.rs::reserve_admission", "crates/engine-admission/src/machine_watch.rs::disk_room_for"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit. **Defined in**:
   - `disk_working` and `disk_grants` (Mac disk), `volume_working` and `volume_grants` (per volume)
     (`machine_watch.rs:81-84`, `:118-121`);
@@ -1542,6 +2611,13 @@ Since `e7b898c30` only the Mac's own disk has stretches: the build-volume ledger
   between the first and the third. See F-ENGINE-10. Since `e7b898c30` it takes it once.
 
 ### M-ENGINE-15 · Lifecycle of an observed volume (implicit, composite)
+
+
+```toml state-machine
+id = "M-ENGINE-15"
+code = []
+removed = true
+```
 
 **Removed in `e7b898c30`** by the user's decision of 2026-11-23: Alondra watches only the Mac's own
 disk. `volumes`, `build_volumes`, the candidates, their stretches, grants and budgets, and the
@@ -1580,6 +2656,16 @@ What follows describes the machine as it was audited.
   learned volume is Mounted without budget until the first look (documented in `admission.md`).
 
 ### M-ENGINE-16 · Handover of a `claude --bg` node to the Agent SDK (explicit, legacy)
+
+```toml state-machine
+id = "M-ENGINE-16"
+code = ["crates/engine-sdk/src/bg_handover.rs::advance", "crates/engine-kernel/src/bg_sessions.rs::Handovers"]
+truth = ["sqlite:sdk_handover_steps"]
+states = "crates/engine-ports/src/journal/handover.rs::Step"
+variants = ["Planned", "BgStopped", "SdkAdmitted", "Done"]
+terminals = ["Done"]
+```
+
 - **Kind**: explicit. **Defined in**:
   - `Step = Planned → BgStopped → SdkAdmitted → Done` (`engine-ports/src/journal/handover.rs:7-34`);
   - insert-only table `sdk_handover_steps`, with triggers that prevent changing, deleting or skipping steps
@@ -1607,6 +2693,13 @@ What follows describes the machine as it was audited.
   its task has ended. See H-ENGINE-4.
 
 ### M-ENGINE-17 · Worktree ownership at launch (implicit, small)
+
+```toml state-machine
+id = "M-ENGINE-17"
+code = ["crates/engine-kernel/src/launches.rs::own_worktree"]
+truth = ["sqlite:task_worktrees", "sqlite:inherited_worktrees"]
+```
+
 - **Kind**: implicit. **Defined in**: `launches::own_worktree` (`engine-kernel/src/launches.rs:31-53`).
 - **Source of truth, in two places**:
   - a `task_worktree` row in the store (direct write);
@@ -1647,6 +2740,13 @@ publication), M-STORE-4 (dispatches/certainty), H-ENGINE-1 (concurrent takes of 
 F-ENGINE-12).
 
 ### M-ENGINE-18 · Serialized write and domain publication (`DomainRuntime`, composite)
+
+```toml state-machine
+id = "M-ENGINE-18"
+code = ["crates/engine-kernel/src/domain_runtime.rs::DomainRuntime", "crates/engine-kernel/src/domain_runtime.rs::commit", "crates/engine-kernel/src/domain_runtime.rs::own_projected", "crates/engine-kernel/src/domain_runtime.rs::publish"]
+truth = ["sqlite:command_audit", "memory"]
+```
+
 - **Kind**: composite. **Defined in**: `crates/engine-kernel/src/domain_runtime.rs:13-73` (fields), `:896-957`
   (`commit`), `:989-1055` (`execute_bearer_once`), `:371-397` (`own_projected`), `:417-438` (`publish`), `:439-454`
   (`publish_batch_report`); `domain_runtime/observers.rs:11-32` (`CommitObserver`).
@@ -1689,6 +2789,13 @@ F-ENGINE-12).
   (`lock_or_exit`).
 
 ### M-ENGINE-19 · Seal queue for SDK owners (`Seals`, implicit, memory only)
+
+```toml state-machine
+id = "M-ENGINE-19"
+code = ["crates/engine-kernel/src/domain_runtime/seals.rs::Seals"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit. **Defined in**: `domain_runtime/seals.rs:9-127`.
 - **Source of truth**: `clock::Monitor<Vec<Committed>>`. Each `Committed` carries dispatch and control permits,
   attempts, owner grants, recorded commands and observations (`seals.rs:96-105`).
@@ -1704,6 +2811,13 @@ F-ENGINE-12).
   owner: they stay until an owner takes them (see H-ENGINE-9).
 
 ### M-ENGINE-20 · Producer capability registry (`Authority` + `domain-capabilities.json`, explicit)
+
+```toml state-machine
+id = "M-ENGINE-20"
+code = ["crates/daemon-support/src/domain_authority.rs::Authority", "crates/engine-kernel/src/domain_runtime/capabilities.rs::load", "crates/engine-kernel/src/domain_runtime/capabilities.rs::persist"]
+truth = ["memory", "file:domain-capabilities.json"]
+```
+
 - **Kind**: explicit. **Defined in**: `domain_runtime.rs:497-680`; `domain_runtime/capabilities.rs:33-130`.
 - **Source of truth**: memory (`authority: RuntimeMutex<Authority>`) + file `domain-capabilities.json` (SHA-256
   digests only, `0600`, no links, atomic write with `fsync` of file and directory, `:98-130`).
@@ -1725,6 +2839,13 @@ F-ENGINE-12).
   is, whatever capability is current, whoever holds it (H-ENGINE-8).
 
 ### M-ENGINE-21 · Streak of rejected cards (`Rejections`, implicit, memory)
+
+```toml state-machine
+id = "M-ENGINE-21"
+code = ["crates/engine-kernel/src/domain_runtime/rejections.rs::Rejections"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit. **Defined in**: `domain_runtime/rejections.rs:7-102`.
 - **States**: `(owner, interaction_id) → n`. A domain rejection (except `no_effect`) adds; a success deletes the
   entry; on reaching exactly 3 it warns the orchestrator once with id `refused-{owner}-{card}` (`tell_orchestrator`,
@@ -1733,6 +2854,13 @@ F-ENGINE-12).
   never succeeds are never deleted (small growth).
 
 ### M-ENGINE-22 · Alondra's own cards (`problems.rs`, `inbox.rs`)
+
+```toml state-machine
+id = "M-ENGINE-22"
+code = ["crates/engine-ports/src/runtime.rs::raise_problem", "crates/engine-ports/src/runtime.rs::withdraw_problem", "crates/engine-ports/src/runtime.rs::tell_orchestrator"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit. **Defined in**: `domain_runtime/problems.rs:8-199`, `inbox.rs:6-39`.
 - **Idempotency**: the card id is the command id (`raise-{id}`, `tell-{id}`, `ask-{id}`, `notice-{id}`), so two
   concurrent raises of the same id resolve as a replay or an idempotency conflict in the store. `withdraw_problem`
@@ -1740,6 +2868,13 @@ F-ENGINE-12).
 - The prior `contains_key` check (`problems.rs:20-23` and equivalents) is only a shortcut: the store decides.
 
 ### M-ENGINE-23 · What is known live about a session (`Reported` in `Reports`, implicit, memory)
+
+```toml state-machine
+id = "M-ENGINE-23"
+code = ["crates/engine-live/src/node_reports.rs::Reported", "crates/engine-live/src/node_reports.rs::Reports"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit, composite. **Defined in**: `crates/engine-live/src/node_reports.rs:113-155` (state),
   `:256-335` (`record`), `:374-477` (`apply_on`, `apply_sdk`, `apply_codex`, `sdk_ended`, `connect`, `disconnect`).
 - **Source of truth**: memory only (`Mutex<HashMap<String, Reported>>`); the domain never records it (`:1-7`). Three
@@ -1766,6 +2901,13 @@ F-ENGINE-12).
   same mutex.
 
 ### M-ENGINE-24 · Work of a node (`NodeWork`: subagents, workflows, finished tasks, steps; implicit)
+
+```toml state-machine
+id = "M-ENGINE-24"
+code = ["crates/engine-live/src/node_work.rs::NodeWork", "crates/engine-live/src/node_work.rs::StepStatus"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit. **Defined in**: `engine-live/src/node_work.rs:91-271`.
 - **States per subagent/workflow**: running (`end: None`) → finished (`Finished|Failed|Stopped`); never reopened
   (`agent_started` on a finished one only updates the description, `:112-129`). Limits: 5 finished, 20 running
@@ -1774,6 +2916,13 @@ F-ENGINE-12).
 - Display only. No findings.
 
 ### M-ENGINE-25 · Context measure (`Contexts`, explicit; its idle compaction was removed by #507)
+
+```toml state-machine
+id = "M-ENGINE-25"
+code = ["crates/engine-live/src/contexts.rs::Contexts"]
+truth = ["memory", "file:context-readings.json"]
+```
+
 At the audited commit (kept for history; the current state is the last bullet):
 - **Kind**: explicit. **Defined in**: `engine-live/src/contexts.rs:57-247`; `daemon-engine/src/idle_compaction.rs:46-120`.
 - **Source of truth**: memory (`measured`) + `context-readings.json` (`last`: tokens, request time, cache,
@@ -1808,6 +2957,13 @@ At the audited commit (kept for history; the current state is the last bullet):
   - No invalid state found.
 
 ### M-ENGINE-26 · Hook transport and connection of the `claude --bg` mod (`domain_transport.rs`, composite, inherited)
+
+```toml state-machine
+id = "M-ENGINE-26"
+code = ["crates/daemon-engine/src/domain_transport.rs::node_connection", "crates/daemon-engine/src/domain_transport.rs::node_hold", "crates/daemon-engine/src/domain_transport.rs::hold_back", "crates/daemon-engine/src/domain_transport.rs::start_assigned"]
+truth = ["sqlite:domain_outbox", "sqlite:stop_blocks", "memory"]
+```
+
 - **Kind**: composite. **Defined in**: `daemon-engine/src/domain_transport.rs:42-532`.
 - **Sub-machines**:
   - **Node connection** (`node_connection :278-348`): hello → `connect_node` (number) → writes the pending outbox
@@ -1830,12 +2986,26 @@ At the audited commit (kept for history; the current state is the last bullet):
   threads, read only for `PreToolUse`).
 
 ### M-ENGINE-27 · Wait report of an SDK node (`wait.json`, implicit)
+
+```toml state-machine
+id = "M-ENGINE-27"
+code = ["crates/engine-live/src/sdk_live.rs::WaitReport", "crates/engine-live/src/sdk_live.rs::clear_ended_waits"]
+truth = ["file:wait.json"]
+```
+
 - **Kind**: implicit. **Defined in**: `engine-live/src/sdk_live.rs:22-78`, `:755-761` (`EndedWaits`).
 - **States**: absent → written by the node (`alondra report-wait`) → deleted on change of turn or execution
   (`clear_ended_waits`, in `published`, under the store lock) | ignored on read if its `pid` no longer exists.
 - Display only (`read_wait_file` says so: "never an input to admission or lifecycle decisions").
 
 ### M-ENGINE-28 · Holds of an SDK task on its provider and their probe (`ClaudeHold`, explicit; added after #540)
+
+```toml state-machine
+id = "M-ENGINE-28"
+code = ["crates/domain-rules/src/claude_access.rs::ClaudeHold", "crates/domain-rules/src/claude_access.rs::hold_on_claude", "crates/domain-rules/src/lifecycle.rs::hold_after_failure", "crates/daemon-engine/src/claude_access.rs::Schedule"]
+truth = ["derived"]
+```
+
 At `68770a298`; this machine was outside the audited scope (M-ENGINE-9 pointed at it) and is described here because
 #540 changed it.
 - **Defined in**: `ClaudeHold { SignedOut, Outage, Usage }` (`domain-rules/src/claude_access.rs:42`, owners `:58-64`:
@@ -2602,6 +3772,13 @@ durability used by tests. Audited at commit `1567967b9`. The overlap of each fin
 related-coverage notes and the open-issues list in a second pass, which also confirmed F-STORE-4.
 
 ### M-STORE-1 · Domain message outbox (`domain_outbox` + `delivery_attempts`)
+
+```toml state-machine
+id = "M-STORE-1"
+code = ["crates/domain-store-schema/schema.sql::domain_outbox", "crates/core/src/delivery.rs::State", "crates/store-sqlite/src/lib.rs::claim_in", "crates/store-sqlite/src/lib.rs::finish_message"]
+truth = ["sqlite:domain_outbox", "sqlite:delivery_attempts", "sqlite:domain_message_user_targets", "sqlite:domain_messages"]
+```
+
 - **Kind**: explicit in SQL (state CHECKs); transitions are implicit in code (no transition trigger).
   **Defined in**: `crates/domain-store-schema/schema.sql:71-74`; written in the command commit
   `crates/store-sqlite/src/command.rs:386-409`; claim/finish/resolve in `crates/store-sqlite/src/lib.rs:953-990`
@@ -2644,6 +3821,13 @@ related-coverage notes and the open-issues list in a second pass, which also con
 - **Concurrency**: everything under the store `Mutex` (`DomainRuntime.store`) and `IMMEDIATE` transactions.
 
 ### M-STORE-2 · Command commit and idempotency (`command_audit`, `semantic_receipts`, `local_command_results`, `command_bodies`)
+
+```toml state-machine
+id = "M-STORE-2"
+code = ["crates/store-sqlite/src/command.rs::stage", "crates/store-sqlite/src/retention.rs"]
+truth = ["sqlite:command_audit", "sqlite:semantic_receipts", "sqlite:local_command_results", "sqlite:command_bodies", "sqlite:legacy_schedule_receipts"]
+```
+
 - **Kind**: implicit (existence of rows). **Defined in**: `crates/store-sqlite/src/command.rs:42-450`,
   `lib.rs:898-922`, retention `crates/store-sqlite/src/retention.rs`.
 - **States per command**: not seen → committed (audit + body + receipt [+ local result]) → receipt expired (>7 days:
@@ -2656,6 +3840,13 @@ related-coverage notes and the open-issues list in a second pass, which also con
   invalid machine).
 
 ### M-STORE-3 · Read index publication (`ReadSnapshot`)
+
+```toml state-machine
+id = "M-STORE-3"
+code = ["crates/domain-rules/src/read_index.rs::ReadSnapshot", "crates/engine-kernel/src/domain_runtime.rs::publish"]
+truth = ["derived"]
+```
+
 - **Kind**: explicit (a state+index pair of one revision). **Defined in**:
   `crates/engine-kernel/src/domain_runtime.rs:417-437` (`publish`), `:880-942` (`commit`), `:368-389`
   (`own_projected`), `crates/domain-rules/src/read_index.rs:457` (`pair`, `stale_revision`).
@@ -2668,6 +3859,13 @@ related-coverage notes and the open-issues list in a second pass, which also con
   in commit order; a repeated command returns the same `Arc` (`ptr_eq`).
 
 ### M-STORE-4 · Host dispatches (`lifecycle_dispatches`) and certainty (`provider_receipt_proofs`)
+
+```toml state-machine
+id = "M-STORE-4"
+code = ["crates/store/src/lib.rs::DispatchPermit", "crates/store/src/lib.rs::recover_prepared", "crates/store/src/lib.rs::unresolved_commands", "crates/store/src/receipt_proofs.rs"]
+truth = ["sqlite:lifecycle_dispatches", "sqlite:provider_receipt_proofs"]
+```
+
 - **Kind**: explicit in SQL (trigger `lifecycle_dispatch_transition`, `crates/store/src/schema.sql:94-100`).
 - **States**: `prepared → claimed → handed | rejected | uncertain`; `prepared → revoked`. View
   `lifecycle_dispatch_certainty` (`crates/store/src/receipt_proofs.rs:4-27`): an `uncertain` with agreeing proofs
@@ -2682,6 +3880,13 @@ related-coverage notes and the open-issues list in a second pass, which also con
   `lib.rs:1547-1552`).
 
 ### M-STORE-5 · Provider observation journal
+
+```toml state-machine
+id = "M-STORE-5"
+code = ["crates/store/src/lib.rs::accept_observation", "crates/store-sqlite/src/discarded_observations.rs"]
+truth = ["sqlite:provider_observations", "sqlite:provider_observation_heads", "sqlite:provider_normalization_checkpoints", "sqlite:provider_discarded_observations", "sqlite:task_context_gaps", "sqlite:task_context_items", "sqlite:task_context_pins", "sqlite:task_context_usage"]
+```
+
 - **Kind**: explicit (gapless cursor + monotonicity triggers). **Defined in**: tables `provider_observations`,
   `provider_observation_heads`, `provider_normalization_checkpoints` (`crates/store/src/schema.sql:166-214`),
   `provider_discarded_observations` (`crates/store-sqlite/src/discarded_observations.rs`).
@@ -2693,12 +3898,26 @@ related-coverage notes and the open-issues list in a second pass, which also con
   `accept_observation` already rejects with `StalePermit` before looking at the cursor.
 
 ### M-STORE-6 · Orchestrator batches in the store (`orchestrator_batch_runs/effects/reports/tool_operations/decisions`, `orchestrator_deliveries`)
+
+```toml state-machine
+id = "M-STORE-6"
+code = ["crates/store-sqlite/src/batch_effects.rs::record_batch_report", "crates/store-sqlite/src/batch_effects.rs::finish_batch", "crates/store-sqlite/src/batch_recovery.rs"]
+truth = ["sqlite:orchestrator_batch_runs", "sqlite:orchestrator_batch_effects", "sqlite:orchestrator_batch_reports", "sqlite:orchestrator_tool_operations", "sqlite:orchestrator_batch_decisions", "sqlite:orchestrator_deliveries"]
+```
+
 - **Defined in**: `crates/store-sqlite/src/batch_effects.rs:6-12`, `batch_recovery.rs`.
 - **States**: run `ended 0|1`; tool operation `started → succeeded | uncertain`; reports with a gapless cursor
   (`record_batch_report`, `batch_effects.rs:168-188`); effects pin their receipts (`pinned`) until `finish_batch`.
 - The recovery logic (what the orchestrator does with these states on restart) belongs to the orchestrator area.
 
 ### M-STORE-7 · Local action journal (`action-results.sqlite`) and operation journal (`operation_journal`)
+
+```toml state-machine
+id = "M-STORE-7"
+code = ["crates/daemon-server/src/views/action_results.rs::recover_interrupted", "crates/daemon-server/src/operation_journal.rs"]
+truth = ["sqlite:action_results", "sqlite:operation_meta", "sqlite:operation_issuers", "sqlite:operation_retired"]
+```
+
 - **Defined in**: `crates/daemon-server/src/views/action_results.rs:46-51, 195-345`,
   `crates/daemon-server/src/operation_journal.rs:141-502`.
 - **Kind**: explicit (`state` column) in a SQLite database **different** from `domain.db`.
@@ -2711,12 +3930,26 @@ related-coverage notes and the open-issues list in a second pass, which also con
   gets "unrecorded" instead of the original rejection; S3).
 
 ### M-STORE-8 · Encrypted service receipts (`service-receipts.sqlite`)
+
+```toml state-machine
+id = "M-STORE-8"
+code = ["crates/daemon-server/src/service.rs::recover_interrupted"]
+truth = ["sqlite:service_receipts", "sqlite:attempts"]
+```
+
 - **Defined in**: `crates/daemon-server/src/service.rs:1190-1325, 2925-3020`.
 - **States**: `accepted → executing → completed`; `executing → interrupted` (startup); `interrupted` with the same
   digest → back to `executing` but answered "uncertain" (409) except reads; `retired`. Concurrent duplicates are
   filtered by the `inflight` map.
 
 ### M-STORE-9 · Opening and migrating `domain.db`
+
+```toml state-machine
+id = "M-STORE-9"
+code = ["crates/store-sqlite/src/domain_database_migration.rs::Phase", "crates/store-sqlite/src/domain_database_migration.rs::migrate_and_fence", "crates/store-sqlite/src/lifecycle_migration.rs"]
+truth = ["file:database-migration.json", "derived", "sqlite:domain_meta", "sqlite:lifecycle_journal_format"]
+```
+
 - **Defined in**: `crates/store-sqlite/src/lib.rs:605-759` (`open`), `lifecycle_migration.rs` (schema 4→5, all in one
   transaction with a prior copy), `domain_database_migration.rs` (rename `domain-v2.db`→`domain.db`, marker
   `database-migration.json` Prepared/Committed with digests and folder fsync).
@@ -2727,6 +3960,13 @@ related-coverage notes and the open-issues list in a second pass, which also con
   (`lib.rs:724-735`).
 
 ### M-STORE-10 · Startup sequence (composite)
+
+```toml state-machine
+id = "M-STORE-10"
+code = ["crates/alondrad/src/lib.rs::run", "crates/alondrad/src/assemble.rs", "crates/daemon-support/src/domain_cutover.rs::Phase"]
+truth = ["derived"]
+```
+
 `crates/alondrad/src/lib.rs:121-158` and `crates/alondrad/src/assemble.rs:180-300`:
 1. `home_renames::apply`, `refuse_legacy_home`, `migrate_and_fence` (exclusive lock only if there is a marker or a
    cutover), `retire_empty_older_sidecar`;
@@ -2740,6 +3980,13 @@ related-coverage notes and the open-issues list in a second pass, which also con
   `relaunch::wait_until_free`).
 
 ### M-STORE-11 · Append-only step journals
+
+```toml state-machine
+id = "M-STORE-11"
+code = ["crates/store-sqlite/src/provider_transition.rs", "crates/store-sqlite/src/account_move.rs", "crates/store-sqlite/src/handover.rs"]
+truth = ["sqlite:provider_transition_steps", "sqlite:account_move_steps", "sqlite:sdk_handover_steps"]
+```
+
 - `provider_transition_steps` (`crates/store-sqlite/src/provider_transition.rs:9-75`): phases
   `requested → draining → source_fenced → context_ready → target_admitted → target_ready → consumed → done`, with
   shortcuts, `aborted`/`uncertain` from any non-terminal, and **`done → start_refused → done`** (a terminal that
@@ -2748,6 +3995,13 @@ related-coverage notes and the open-issues list in a second pass, which also con
 - `sdk_handover_steps` (`handover.rs`): `planned → bg_stopped → sdk_admitted → done`, order by trigger.
 
 ### M-STORE-12 · State in JSON files in the home folder (implicit machines split with SQLite)
+
+```toml state-machine
+id = "M-STORE-12"
+code = ["crates/daemon-engine/src/live.rs", "crates/engine-admission/src/admission.rs"]
+truth = ["file:closed-sessions.json", "file:aborted-replaces.json", "file:orchestrator.json", "file:admission.json", "file:domain-capabilities.json"]
+```
+
 Inventory (helpers: `foundation/src/save.rs:9` `save::atomic` does fsync of the file, not of the folder;
 `durability::flush` is used by the hand-written writers):
 
@@ -2765,13 +4019,198 @@ Inventory (helpers: `foundation/src/save.rs:9` `save::atomic` does fsync of the 
 | `config.toml` | tmp+rename without fsync | No | unreadable → does not start |
 | `startup-failures.json`, `auto-update.json` (in-place write), several device files | without fsync | No | by default |
 
+```toml state-files
+[[file]]
+name = "aborted-replaces.json"
+writer = "crates/daemon-engine/src/live.rs"
+machine = "M-LIFE-9"
+[[file]]
+name = "admission.json"
+writer = "crates/engine-admission/src/admission.rs"
+readers = ["crates/engine-ports/src/admission.rs", "crates/daemon-server/src/preflight.rs"]
+machine = "M-ENGINE-1"
+[[file]]
+name = "apns.json"
+writer = "crates/cli/src/setup.rs"
+readers = ["crates/cli/src/doctor/system.rs", "crates/daemon-support/src/push.rs"]
+machine = "M-SERVER-D8"
+[[file]]
+name = "auto-update.json"
+writer = "crates/daemon-support/src/updates.rs"
+machine = "M-SERVER-D9"
+[[file]]
+name = "closed-sessions.json"
+writer = "crates/daemon-engine/src/live.rs"
+machine = "M-LIFE-9"
+[[file]]
+name = "config.toml"
+writer = "crates/core/src/config.rs"
+readers = ["crates/engine-sdk/src/sdk_owner/codex_fixtures.rs", "crates/engine-sdk/src/sdk_owner/node_environment.rs", "crates/system/src/codex_account.rs"]
+machine = "M-STORE-12"
+[[file]]
+name = "context-readings.json"
+writer = "crates/engine-live/src/contexts.rs"
+machine = "M-ENGINE-25"
+[[file]]
+name = "database-migration.json"
+writer = "crates/store-sqlite/src/domain_database_migration.rs"
+machine = "M-STORE-9"
+[[file]]
+name = "device-languages.json"
+writer = "crates/daemon-server/src/client_routes.rs"
+machine = "M-SERVER-D8"
+[[file]]
+name = "device-usage.json"
+writer = "crates/daemon-support/src/device_usage.rs"
+machine = "M-SERVER-D1"
+[[file]]
+name = "devices.json"
+writer = "crates/daemon-support/src/auth.rs"
+readers = ["crates/cli-report/src/report/private.rs", "crates/cli/src/service_pair.rs", "crates/daemon-server/src/preflight.rs"]
+offline_writers = ["crates/cli/src/service_setup/recovery.rs"]
+offline_why = "service recovery rewrites it under the home lock while the daemon is stopped"
+machine = "M-SERVER-D1"
+[[file]]
+name = "direct-denied.json"
+writer = "crates/daemon-server/src/direct/pairing.rs"
+machine = "M-SERVER-D3"
+[[file]]
+name = "direct-devices.json"
+writer = "crates/daemon-server/src/direct.rs"
+machine = "M-SERVER-D3"
+[[file]]
+name = "direct-iroh.json"
+writer = "crates/client-transport/src/iroh_client.rs"
+machine = "M-CLIENTS-R7"
+[[file]]
+name = "direct-macs.json"
+writer = "crates/client-transport/src/direct_client.rs"
+machine = "M-CLIENTS-R7"
+[[file]]
+name = "domain-capabilities.json"
+writer = "crates/engine-kernel/src/domain_runtime/capabilities.rs"
+readers = ["crates/daemon-server/src/preflight.rs", "crates/engine-sdk/src/domain_schedule_runner.rs"]
+machine = "M-ENGINE-20"
+[[file]]
+name = "iroh-terminals.json"
+writer = "crates/daemon-server/src/iroh_terminals.rs"
+machine = "M-SERVER-D7"
+[[file]]
+name = "launch-options.json"
+writer = "crates/daemon-engine-model/src/launch.rs"
+readers = ["crates/cli-report/src/report/collect.rs"]
+machine = "M-ENGINE-7"
+[[file]]
+name = "live-activity.json"
+writer = "crates/relay/src/activity.rs"
+machine = "M-SERVER-R6"
+[[file]]
+name = "machine-incident.json"
+writer = "crates/engine-admission/src/machine_watch.rs"
+readers = ["crates/cli-report/src/report/collect.rs"]
+machine = "M-ENGINE-11"
+[[file]]
+name = "native-account.json"
+writer = "crates/daemon-engine-model/src/account_identity.rs"
+readers = ["crates/engine-sdk/src/host_folders.rs"]
+machine = "M-PROV-12"
+[[file]]
+name = "native-auth-account.json"
+writer = "crates/daemon-engine-model/src/account_identity.rs"
+readers = ["crates/system/src/codex_account.rs"]
+machine = "M-PROV-12"
+[[file]]
+name = "options.pending"
+writer = "crates/daemon-engine-model/src/options.rs"
+readers = ["crates/daemon-server/src/preflight.rs"]
+machine = "M-PROV-12"
+[[file]]
+name = "options.toml"
+writer = ["crates/engine-kernel/src/settings_projection.rs", "crates/engine-admission/src/admission.rs"]
+readers = ["crates/core/src/options.rs", "crates/daemon-server/src/preflight.rs"]
+machine = "M-PROV-12"
+[[file]]
+name = "orchestrator.json"
+writer = "crates/engine-orchestrator/src/domain_orchestrator.rs"
+readers = ["crates/daemon-server/src/preflight.rs"]
+machine = "M-ORCH-1"
+[[file]]
+name = "owner.json"
+writer = "crates/engine-orchestrator/src/orchestrator_process.rs"
+readers = ["crates/engine-orchestrator/src/orchestrator_codex.rs", "crates/engine-orchestrator/src/orchestrator_sdk.rs"]
+machine = "M-ORCH-1"
+[[file]]
+name = "public.json"
+writer = "crates/cli/src/service_setup.rs"
+readers = ["crates/core/src/home_lock.rs"]
+machine = "M-SERVER-D1"
+[[file]]
+name = "revoked-devices.json"
+writer = "crates/daemon-support/src/revoked_devices.rs"
+machine = "M-SERVER-D2"
+[[file]]
+name = "service-keys/public.json"
+writer = "crates/cli/src/service_setup.rs"
+readers = ["crates/core/src/home_lock.rs"]
+machine = "M-SERVER-D1"
+[[file]]
+name = "service-pairing-pending.json"
+writer = "crates/cli/src/service_pair.rs"
+readers = ["crates/cli/src/service_setup/recovery.rs"]
+machine = "M-SERVER-D12"
+[[file]]
+name = "service-recovery.json"
+writer = "crates/cli/src/service_setup/recovery.rs"
+readers = ["crates/core/src/home_lock.rs"]
+machine = "M-SERVER-D1"
+[[file]]
+name = "sending.json"
+writer = "crates/cli-report/src/report/send.rs"
+readers = ["crates/cli-report/src/report/bundle.rs", "crates/daemon-support/src/reports.rs"]
+machine = "M-CLIENTS-R14"
+[[file]]
+name = "service.toml"
+writer = "crates/cli/src/service_setup.rs"
+readers = ["crates/cli-report/src/report/mod.rs", "crates/cli/src/commands.rs", "crates/cli/src/doctor/system.rs", "crates/cli/src/service_pair.rs", "crates/core/src/home_lock.rs", "crates/core/src/service_config.rs", "crates/daemon-server/src/domain_delivery.rs", "crates/daemon-server/src/service.rs"]
+offline_writers = ["crates/daemon-server/src/service/scenario_phone.rs"]
+offline_why = "the scenario phone writes it only in the end-to-end sandbox, never in an installed daemon"
+machine = "M-SERVER-D1"
+[[file]]
+name = "startup-failures.json"
+writer = "crates/host/src/startup.rs"
+machine = "M-SERVER-D10"
+[[file]]
+name = "terminal-service.json"
+writer = "crates/client-transport/src/service_client.rs"
+machine = "M-CLIENTS-R9"
+[[file]]
+name = "wait.json"
+writer = "crates/cli/src/report_wait.rs"
+readers = ["crates/engine-live/src/sdk_live.rs"]
+machine = "M-ENGINE-27"
+```
+
 ### M-STORE-13 · Retention
+
+```toml state-machine
+id = "M-STORE-13"
+code = ["crates/store-sqlite/src/retention.rs", "crates/store/src/retention.rs"]
+truth = ["derived", "sqlite:retention_marks"]
+```
+
 `crates/store-sqlite/src/retention.rs` (bodies and receipts 7 days, except receipts pinned by batches; message texts of
 finished tasks) and `crates/store/src/retention.rs` (observation bytes, commands of non-current executions, texts of
 inputs of finished tasks except `uncertain` dispatches). Each pass in its own transaction; none of it is domain state
 (the cache is kept).
 
 ### M-STORE-14 · Relaxed durability (`alondra_foundation::durability`, PR #493)
+
+```toml state-machine
+id = "M-STORE-14"
+code = ["crates/foundation/src/durability.rs"]
+truth = ["derived"]
+```
+
 `crates/foundation/src/durability.rs`: `relax()` does `assert!(under_test())` (`BAZEL_TEST` present,
 `foundation/src/lib.rs:21-24`). Callers: `engine-sdk/src/engine_tests.rs:27`
 (`#[cfg(all(test, feature="whole-engine"))]`, `engine-sdk/src/lib.rs:50`), `daemon-server/src/engine_tests.rs:35`
@@ -3026,13 +4465,25 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
 (M-STORE-13) is not repeated here. Audited at commit `1567967b9`.
 
 ### M-GH-1 · Pull request state (`PullRequest`)
+
+```toml state-machine
+id = "M-GH-1"
+code = ["crates/domain-rules/src/model.rs::PrState", "crates/domain-rules/src/model.rs::PullRequest", "crates/core/src/pr.rs::CheckState", "crates/core/src/pr.rs::PrState"]
+truth = ["sqlite:pull_requests", "sqlite:pull_request_tasks", "sqlite:pull_request_aliases", "sqlite:pr_notes_from_github", "sqlite:pull_request_reviews", "sqlite:merge_verdicts"]
+states = "crates/domain-rules/src/model.rs::PrState"
+variants = ["Open", "Closed", "Merged"]
+terminals = ["Merged"]
+```
+
 - **Kind**: explicit (enum `PrState {Open, Closed, Merged}`) plus the fields `head`, `base`, `merged_head`,
   `allowed_methods`, `review`. **Defined in**: `crates/domain-rules/src/model.rs:517-625`. Transitions in
   `rules.rs:5095-5180` (`ObservePrState`), `rules.rs:4597-4727` (`RegisterPr`, including the move between tasks) and
   `rules.rs:4728-4760` (`NotePrOpened`/`RecordOpenedPr`).
 - **Source of truth**: GitHub. **Copies and derivatives**: `DomainState.pull_requests` (table `pull_requests`; owners in
   `pull_request_tasks`; history in `pr_task_history`); `Task.pr_id`/`later_prs`; the server's in-memory PR details cache
-  (`daemon-server/src/client_routes/pr_details.rs`); the reads of `Merger` and of the watcher. Three writers of
+  (`daemon-server/src/client_routes/pr_details.rs`); whether GitHub would let each open PR merge, as last read
+  for the head it names (`DomainState.merge_verdicts`, `model.rs:1523`, table `merge_verdicts`, written only by
+  `ObserveMergeVerdict`, `rules.rs:5369`, which refuses a verdict for a PR that is not Open or for another head); the reads of `Merger` and of the watcher. Three writers of
   observations have no order between them: the watcher (`domain_github::reconcile`, every 60 s and whenever the watched
   set changes), the merger (`domain_merges::record_merged`/`observe_status`) and `catch_up_task` on delivery.
 - **Composite states that matter**: PR x the task's `OpenPrPending` (M-GH-4) x authorization (M-GH-2) x task state.
@@ -3045,6 +4496,8 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
 | Open | `ObservePrState` Closed | Closed; if no open PR is left and a `Close` was pending, `open_pr=None`; if the delivery was "discarded", `cancel`; otherwise a notice to the node |
 | Open/Closed | `ObservePrState` Merged [exact `merged_head`] | Merged; Claimed/Uncertain authorizations at the same head become Confirmed; notice to the node |
 | Closed | `ObservePrState` Open | Open (a closed PR can be reopened) |
+| Open | `ObserveMergeVerdict` (system) [same head] | Open; the merge verdict for that head replaces the previous one |
+| Closed/Merged, or Open at another head | `ObserveMergeVerdict` | **rejected** `stale_head` |
 | Merged | `ObservePrState` not Merged, or different head | **rejected** `invalid_input` ("Confirmed merge cannot be undone") |
 | PR of a terminal task | `RegisterPr` from another task | move: new owner, `state=Open` and `merged_head=None` **without looking at the previous state**, `old.open_pr=None` |
 | PR of a live task | `RegisterPr` from another task | **rejected** `pr_owned_by_other_task` |
@@ -3061,6 +4514,16 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   are taken on snapshots that can be seconds old (see F-GH-1).
 
 ### M-GH-2 · Merge attempt (`MergeAuthorization`)
+
+```toml state-machine
+id = "M-GH-2"
+code = ["crates/domain-rules/src/model.rs::MergeAttemptState", "crates/domain-rules/src/model.rs::MergeAuthorization"]
+truth = ["sqlite:merge_authorizations", "sqlite:merge_method"]
+states = "crates/domain-rules/src/model.rs::MergeAttemptState"
+variants = ["Unclaimed", "Claimed", "Uncertain", "Confirmed", "Failed"]
+terminals = ["Confirmed", "Failed"]
+```
+
 - **Kind**: explicit. **Defined in**: `model.rs:1408-1413`: `MergeAttemptState {Unclaimed, Claimed, Uncertain, Confirmed,
   Failed}` + `valid: bool` + `claimed_by: Option`. Transitions: `AuthorizeMerge`/`AcceptDelivery` (`rules.rs:4987-5030`),
   `ClaimMergeAuthorization` (`rules.rs:5031-5074`), `ObserveMergeAttempt` (`rules.rs:5075-5094`), `ObservePrState`
@@ -3084,6 +4547,13 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   is in the queue.
 
 ### M-GH-3 · Merge loop (`domain_merges::Merger`)
+
+```toml state-machine
+id = "M-GH-3"
+code = ["crates/engine-github/src/domain_merges.rs::Merger", "crates/engine-github/src/domain_merges.rs::due", "crates/engine-github/src/domain_merges.rs::run", "crates/engine-ports/src/github.rs::MergeState"]
+truth = ["memory", "sqlite:branch_update"]
+```
+
 - **Kind**: implicit, in memory. **Defined in**: `domain_merges.rs`. `due(state)` (`:38-74`) decides which PR is next. Per
   PR it keeps `waited`, `transient` (retries 30 s x 2^n, 6 attempts), `trouble`/`merge_trouble` (plus a problem card),
   `queued` (GitHub's merge queue), `action` (the "act on the checks" card), `pressed` and `bypass_refused`
@@ -3105,6 +4575,15 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   `gh pr merge` again (which GitHub resolves). The retry counters are lost (6 attempts again).
 
 ### M-GH-4 · Open PR of a closed task (`OpenPrPending`, table `task_open_prs`)
+
+```toml state-machine
+id = "M-GH-4"
+code = ["crates/domain-rules/src/model.rs::OpenPrPending", "crates/domain-rules/src/rules/open_pr.rs", "crates/engine-github/src/domain_github.rs::reconcile"]
+truth = ["sqlite:task_open_prs"]
+states = "crates/domain-rules/src/model.rs::OpenPrPending"
+variants = ["Deliver", "Close"]
+```
+
 - **Kind**: explicit. **Defined in**: `model.rs:263-272` (`Option<OpenPrPending>` with `Deliver{result}` /
   `Close{comment}`); rules in `rules/open_pr.rs`. Effectors in `domain_github.rs:117-201` (`reconcile`, `deliver_held`,
   `settle_status`) and their in-memory bookkeeping `ObservationFailures` (failed reads, rejected closes with doubled
@@ -3120,6 +4599,13 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   (the attempt is repeated).
 
 ### M-GH-5 · PRs seen opening and not yet read (`Task.opened_prs`)
+
+```toml state-machine
+id = "M-GH-5"
+code = ["crates/domain-rules/src/model.rs::Task"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit. A set on the task (column `opened_prs` of `task_relations`). `NotePrOpened` adds a PR if it is not
   registered and the task is not terminal; `RecordOpenedPr` removes it and registers/observes it; `RegisterPr` removes
   it. Read on every watcher round (`read_opened`) and on delivery (`catch_up_task`). A PR with no known merge methods
@@ -3137,6 +4623,13 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   (`:4815-4854`, owner check `:4823`, see H-GH-6); a final delivery is refused with `pr_being_read` while any note is left (`:4919-4921`).
 
 ### M-GH-6 · Stacked PRs (`Task.stack`, table `task_stacks`, `stack_readiness`)
+
+```toml state-machine
+id = "M-GH-6"
+code = ["crates/domain-rules/src/model.rs::StackDependency", "crates/domain-rules/src/model.rs::StackReadiness"]
+truth = ["sqlite:task_stacks", "sqlite:stack_readiness"]
+```
+
 - **Kind**: composite. `Task.stack {upstream_task, presentation_id, pr_id, head}` + `StackReadiness{ready}` published by
   the upstream node (`PublishStackReadiness`) + the state of the upstream PR. `stack_ready` (start/due) and
   `stack_ready_for_merge` (claim/merge: upstream PR Merged at that head and equal bases) in `rules.rs:2034-2070`.
@@ -3145,6 +4638,13 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
 - `invalidate_feedback` sets `ready=false`. No new findings: the guards reread GitHub and the domain at every step.
 
 ### M-GH-7 · Hourly sweep of PRs without an owner (`open_pr_sweep`)
+
+```toml state-machine
+id = "M-GH-7"
+code = ["crates/engine-github/src/open_pr_sweep.rs::sweep", "crates/engine-github/src/open_pr_sweep.rs::run"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit, no state of its own. Every hour (first run after 5 minutes) it looks for the user's open PRs in
   repos of the projects folder. For each PR registered by a terminal task with no pending `Close` and whose branch does
   not belong to a live task (`worktree-<id>`): `ClosePrOfCancelledTask` if the task is cancelled, otherwise
@@ -3155,6 +4655,13 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   a record still `Open` with nothing closing it, which only an older build leaves.
 
 ### M-GH-8 · Worktree record of a task (`task_worktree_records`, `task_worktrees`, `worktree_storage`)
+
+```toml state-machine
+id = "M-GH-8"
+code = ["crates/domain-rules/src/model.rs::TaskWorktree", "crates/engine-worktrees/src/task_worktrees.rs"]
+truth = ["sqlite:task_worktree_records", "sqlite:task_worktrees", "sqlite:worktree_storage"]
+```
+
 - **Kind**: explicit per worktree. **Defined in**: `model.rs:312-345` (`TaskWorktree {origin: Task|Inherited|Subagent|Entered,
   branch, discard, end: None|Removed|KeptByUser|UsersOwn|HandedOver}`), CHECK in `store-sqlite/src/lib.rs:284-291`.
   Commands `RecordTaskWorktree`, `ReleaseTaskWorktree`, `ConfirmCleanup{discard}`.
@@ -3170,6 +4677,13 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   enforces it.
 
 ### M-GH-9 · Deleting a worktree on disk and its branch (`crates/system/src/worktree.rs`)
+
+```toml state-machine
+id = "M-GH-9"
+code = ["crates/system/src/worktree.rs::discard_worktree", "crates/system/src/worktree.rs::release_task_worktree"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit in the file system. Folder -> `.<task>.removing` next to it (same volume) -> deleted. A cut-short
   delete resumes from the trash (`release`, `worktree.rs:316-345`). For links from `.claude/worktrees` to another volume,
   the target is deleted only if it is a worktree of the same repo (`release_linked`).
@@ -3184,6 +4698,13 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   (`task_closer.rs:176-185`, `:588-603`), `release_cancelled`/`apply_answers`/`sweep` (cancelled tasks), `sweep_shells`.
 
 ### M-GH-10 · Worktrees of cancelled tasks and their card (`cancelled_worktrees.rs`)
+
+```toml state-machine
+id = "M-GH-10"
+code = ["crates/engine-worktrees/src/cancelled_worktrees.rs::sweep", "crates/engine-worktrees/src/cancelled_worktrees.rs::release_cancelled"]
+truth = ["derived"]
+```
+
 - **Kind**: composite. A worktree x the system card `DiscardWorktrees` (question + form; open, answered "delete all" /
   "delete the marked" / "keep", or withdrawn).
 - `release_cancelled` (when a cancelled task closes): no uncommitted files -> `discard_worktree` (Removed); with them ->
@@ -3200,6 +4721,13 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   remote has (`Worktrees::unsaved`): those stay as they are, with no card; uncommitted files still go to the card.
 
 ### M-GH-11 · Task close: domain wrap-up + closer bookkeeping
+
+```toml state-machine
+id = "M-GH-11"
+code = ["crates/domain-rules/src/model.rs::WrapUp", "crates/domain-rules/src/model.rs::NodeEnd"]
+truth = ["sqlite:task_wrap_ups", "sqlite:task_closings"]
+```
+
 - **Domain** (`task_wrap_ups`): `asked_at`, `cleaned_at`, `close_cancelled`, `node_end: Closed|Gone|KeptByUser|UsersOwn`
   (`model.rs:425-458`). `wrap_up_step` asks for cleanup when the delivery settles (`rules.rs:2549-2575`); `ConfirmCleanup`
   (`rules.rs:5317-5344`); `RecordNodeEnd` (`rules.rs:5364-5420`, requires that no worktrees are left open for Closed/Gone).
@@ -3214,6 +4742,13 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   `claim_task_removal` prevents two closes at once.
 
 ### M-GH-12 · Work after the merge (`task_post_merge_work`, `task_post_merge_turns`, obligation `PostMerge`)
+
+```toml state-machine
+id = "M-GH-12"
+code = ["crates/domain-rules/src/lifecycle.rs::post_merge_owed", "crates/domain/src/lifecycle.rs::PostMergeFact"]
+truth = ["sqlite:task_post_merge_work", "sqlite:task_post_merge_turns", "sqlite:post_merge_checks"]
+```
+
 - **Kind**: composite. `WrapUp.post_merge_work` + the lifecycle obligation `DrainObligation::PostMerge`
   (`domain/src/lifecycle/commands.rs:384-403`) + the inherited `post_merge_checks` (only read to withdraw its card).
 - Declared with `DeclarePostMergeWork{reason}`. It ends **only** with a fact: `DeclarePostMergeWork` without a reason,
@@ -3224,6 +4759,13 @@ turn that began after the last declaration ending idle after the merge (`PostMer
   slot** (`holds_slot`, `domain/src/lifecycle.rs:1429-1440`). See F-GH-5.
 
 ### M-GH-13 · Retention of the files folder (`files_retention.rs`; since PR #503 it also deletes)
+
+```toml state-machine
+id = "M-GH-13"
+code = ["crates/daemon-support/src/files_retention.rs::sweep"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit, per folder. `tasks/<id>` (goes when the task is terminal; also in the closer's `finish`),
   `results/<id>` (14 days after close if its card is not in the inbox), `uploads|images|domain-v2|documents/<x>` (30 days
   from last modification if no open card, card of an open task, or document names them), and **any other top-level
@@ -3585,6 +5127,13 @@ the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer`
 no longer exist (M-ORCH-5, M-ORCH-6); `orchestrator_inbox.rs` was read whole at that commit.
 
 ### M-ORCH-1 · Orchestrator execution (`orchestrator.json`, `Runtime`)
+
+```toml state-machine
+id = "M-ORCH-1"
+code = ["crates/engine-orchestrator/src/domain_orchestrator.rs::Runtime", "crates/engine-orchestrator/src/domain_orchestrator.rs::Failure", "crates/engine-orchestrator/src/domain_orchestrator.rs::Run", "crates/engine-orchestrator/src/domain_orchestrator.rs::handled", "crates/core/src/model.rs::OrchestratorState"]
+truth = ["file:orchestrator.json", "sqlite:orchestrator_session"]
+```
+
 - **Kind**: implicit, composite. **Defined in**: `domain_orchestrator.rs:37-71` (`Runtime`), `:82-95` (`Failure`),
   `:97-104` (`Run`).
 - **Source of truth**: the file `HOME/orchestrator.json` (written as `.next` + rename), one writer at a time under
@@ -3634,6 +5183,13 @@ no longer exist (M-ORCH-5, M-ORCH-6); `orchestrator_inbox.rs` was read whole at 
   only writer while the batch runs besides those two.
 
 ### M-ORCH-2 · Delivery of each message to the orchestrator (outbox)
+
+```toml state-machine
+id = "M-ORCH-2"
+code = ["crates/store-sqlite/src/lib.rs::finish_message", "crates/store-sqlite/src/batch_recovery.rs::settle_orchestrator_batch", "crates/engine-ports/src/journal.rs::resolve_uncertain", "crates/core/src/delivery.rs::State"]
+truth = ["sqlite:domain_outbox", "sqlite:delivery_attempts", "sqlite:orchestrator_deliveries"]
+```
+
 - **Kind**: explicit in SQL (chains with a version CAS). **Defined in**: `store-sqlite/src/lib.rs:1697-1798`, `:1806-1891`;
   `batch_recovery.rs:65-110`.
 - **Source of truth**: `domain_outbox.state` + `delivery_attempts(state,version,reason)` +
@@ -3646,6 +5202,13 @@ no longer exist (M-ORCH-5, M-ORCH-6); `orchestrator_inbox.rs` was read whole at 
 - **Terminals**: handed and discarded; retryable goes back to pending for the purposes of `pending_messages`.
 
 ### M-ORCH-3 · Batch (run) in the database
+
+```toml state-machine
+id = "M-ORCH-3"
+code = ["crates/store-sqlite/src/batch_effects.rs", "crates/store-sqlite/src/batch_recovery.rs::unfinished_orchestrator_batches"]
+truth = ["sqlite:orchestrator_batch_runs", "sqlite:orchestrator_batch_decisions", "sqlite:orchestrator_tool_operations", "sqlite:orchestrator_batch_effects", "sqlite:orchestrator_batch_reports", "sqlite:orchestrator_batch"]
+```
+
 - **Kind**: implicit, composite. **Defined in**: `store-sqlite/src/batch_effects.rs:6-12` (schema).
 - **Source of truth**: `orchestrator_batch_runs(run, session, data_epoch, selection, ended)`,
   `orchestrator_batch_decisions(target)`, `orchestrator_tool_operations(state started|succeeded|uncertain)`,
@@ -3658,6 +5221,13 @@ no longer exist (M-ORCH-5, M-ORCH-6); `orchestrator_inbox.rs` was read whole at 
   entry point of recovery.
 
 ### M-ORCH-4 · In-memory state of the executor
+
+```toml state-machine
+id = "M-ORCH-4"
+code = ["crates/engine-orchestrator/src/engine.rs::Orchestrator", "crates/engine-orchestrator/src/domain_orchestrator.rs::Run"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit. `Orchestrator { host, stop, runs }` (`engine.rs:16-26`), `Watchdog { progress, since, fired,
   restart_pending }` (`watchdog.rs:49-58`), `DomainRuntime.orchestrator_progress`
   (`engine-kernel/src/domain_runtime.rs:126-132`), `orchestrator_rests`. All of it is lost on restart. The watchdog fires
@@ -3665,6 +5235,13 @@ no longer exist (M-ORCH-5, M-ORCH-6); `orchestrator_inbox.rs` was read whole at 
   executor (`:191-234`).
 
 ### M-ORCH-5 · Settling the inbox (`orchestrator_inbox::steps/settle`)
+
+```toml state-machine
+id = "M-ORCH-5"
+code = ["crates/engine-orchestrator/src/orchestrator_inbox.rs"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit (numbered letters keyed by id). **Defined in**: `orchestrator_inbox.rs:52-72`, `:207-252`, `:265-275`.
 - **Events and transitions, per request without a task**: message -> `Close`; request -> `UnsplitNotice-1` (to the
   orchestrator) -> `UnsplitProblem-n` (to the user) -> answer `close` -> `Close(withdrawn)`; `retry` -> a new round.
@@ -3698,6 +5275,13 @@ no longer exist (M-ORCH-5, M-ORCH-6); `orchestrator_inbox.rs` was read whole at 
   - **Consequence**: with no handled turn, nothing the orchestrator owes moves (see F-ORCH-3 and F-ORCH-1).
 
 ### M-ORCH-6 · `Answer` deadline (what the orchestrator owes a task) — removed by #516
+
+```toml state-machine
+id = "M-ORCH-6"
+code = []
+removed = true
+```
+
 Removed at `68770a298`: `ANSWER`, `Action::Answer`, `settle_answers`, the `OrchestratorAnswers` port and
 `orchestrator_inbox::overdue` no longer exist; what follows describes the audited commit. What replaced it is the
 state rule of M-ORCH-5.
@@ -3712,6 +5296,13 @@ state rule of M-ORCH-5.
 - **Overlap**: phase 4 of the stalled-node recovery work replaces this deadline with `AnswerSkipped`.
 
 ### M-ORCH-7 · Replanning (`Owed::Replan`)
+
+```toml state-machine
+id = "M-ORCH-7"
+code = ["crates/engine-orchestrator/src/orchestrator_inbox.rs::hand_replans"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit. **Defined in**: `orchestrator_inbox.rs:97-118`, `:286-301`, `:334-360`; the obligation in
   `domain-rules/src/ownership.rs:337-355`.
 - A task that waits for a cancelled one, or whose launch plan was refused: at every "rest" (`rests`) of the orchestrator a
@@ -3723,6 +5314,13 @@ per subject; a batch that carried only such letters (`Run.replans_only`) is no r
   hands them (`domain_orchestrator.rs:705-706`). The loop of F-ORCH-2 was closed in phase 5 (above).
 
 ### M-ORCH-13 · New Tasks per turn of the orchestrator (`TURN_TASK_LIMIT`, added by #516)
+
+```toml state-machine
+id = "M-ORCH-13"
+code = ["crates/domain-rules/src/orchestrator_batch.rs::TURN_TASK_LIMIT", "crates/store-sqlite/src/batch_effects.rs::within_task_limit", "crates/engine-orchestrator/src/domain_orchestrator.rs::go_on_after_the_task_limit"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit, counted from the store. **Defined in** (at `68770a298`): `TURN_TASK_LIMIT` = 10 and the code
   `turn_task_limit` (`domain-rules/src/orchestrator_batch.rs:12-13`); `tasks_created_in` and `within_task_limit`
   (`store-sqlite/src/batch_effects.rs:75-104`), checked before each batch command (`:68`);
@@ -3737,11 +5335,25 @@ per subject; a batch that carried only such letters (`Run.replans_only`) is no r
   back the settle of the same `handled` (see H-ORCH-4).
 
 ### M-ORCH-8 · Retention of announcements (rule 10)
+
+```toml state-machine
+id = "M-ORCH-8"
+code = ["crates/engine-orchestrator/src/domain_orchestrator.rs::handled", "crates/engine-kernel/src/domain_runtime.rs::announce_request_tasks"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit. `announce_request_tasks` runs only from `handled` (`domain_orchestrator.rs:681`); notices of the
   batch's cards are held while `orchestrator_batch_runs.ended=0` (`lib.rs:1576`, filter in
   `daemon-server/src/domain_delivery.rs:43-44`).
 
 ### M-ORCH-9 · Schedule (`Schedule`)
+
+```toml state-machine
+id = "M-ORCH-9"
+code = ["crates/domain-rules/src/schedule.rs::Schedule"]
+truth = ["sqlite:schedules", "sqlite:schedule_paid_accounts", "sqlite:schedule_request_tools"]
+```
+
 - **Kind**: explicit (a validated struct). **Defined in**: `domain-rules/src/schedule.rs:25-45`, `:186-259`.
 - **Source of truth**: table `schedules` (+ `schedule_paid_accounts` for the paid-account grant,
   `store-sqlite/src/provider_accounts.rs:15-24`).
@@ -3749,6 +5361,13 @@ per subject; a batch that carried only such letters (`Run.replans_only`) is no r
 - **Invariants**: enforced: `!enabled => next_run=None`; deleted => disabled; valid interval and anchor.
 
 ### M-ORCH-10 · Scheduled run (`ScheduleRun` x `ScheduleLaunch`)
+
+```toml state-machine
+id = "M-ORCH-10"
+code = ["crates/domain-rules/src/schedule.rs::ScheduleRun", "crates/domain-rules/src/schedule.rs::ScheduleLaunch", "crates/domain-rules/src/schedule.rs::claim_launch", "crates/engine-sdk/src/domain_schedule_runner.rs", "crates/domain-rules/src/schedule.rs::ScheduleLaunchState", "crates/domain-rules/src/schedule.rs::ScheduleRunState"]
+truth = ["derived", "sqlite:schedule_failed_launches", "sqlite:schedule_runs"]
+```
+
 - **Kind**: explicit, composite. **Defined in**: `schedule.rs:88-176`, transitions `:396-660`, commands in
   `domain-rules/src/rules.rs:3145-3311`, runner `engine-sdk/src/domain_schedule_runner.rs:303-690`.
 - **States**: run: Launching -> Sent | Failed | Interrupted. Launch: Pending -> Dispatching -> Handed | Failed;
@@ -3764,11 +5383,27 @@ per subject; a batch that carried only such letters (`Run.replans_only`) is no r
   (`alondrad/src/lib.rs:245-251`). See F-ORCH-5.
 
 ### M-ORCH-11 · Automatic launch (`auto_launches`)
+
+```toml state-machine
+id = "M-ORCH-11"
+code = ["crates/engine-sdk/src/auto_launch.rs::settle", "crates/engine-ports/src/journal.rs::claim_auto_launch", "crates/engine-ports/src/journal.rs::AutoLaunchState"]
+truth = ["sqlite:auto_launches"]
+```
+
 - **Kind**: implicit. `launching` -> `launched` | `blocked(reason)`; deleted to retry (`engine-sdk/src/auto_launch.rs:62-77,102-176`,
   `store-sqlite/src/lib.rs:255,1327-1431`). It belongs mostly to admission; its race with `create_task` is gone since
   the task carries its priority from its creation (F-ORCH-8, fixed).
 
 ### M-ORCH-12 · Legacy reducer `core::orchestrator`
+
+```toml state-machine
+id = "M-ORCH-12"
+code = ["crates/core/src/orchestrator.rs::Phase", "crates/core/src/orchestrator.rs::validate", "crates/core/src/orchestrator.rs::apply"]
+truth = ["derived"]
+states = "crates/core/src/orchestrator.rs::Phase"
+variants = ["Idle", "Starting", "Running", "Compacting", "Failed"]
+```
+
 - **Kind**: explicit. `Phase { Idle, Starting, Running, Compacting, Failed }` with `validate/apply`
   (`core/src/orchestrator.rs:13,80-200`). The current executor does not use it (only `NODE_ID`); it remains as an old view
   event (`core/src/event.rs:98`). It is a duplicate machine that no longer describes the real one: any read of
@@ -4093,6 +5728,13 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - the host model (`provider-claude/model/fake_claude_host.rs`)
 
 ### M-PROV-1 · Host folder and its `host.lock`
+
+```toml state-machine
+id = "M-PROV-1"
+code = ["crates/agent-runtime/src/owned_host.rs::launch_through", "crates/agent-runtime/src/owned_host.rs::claim", "crates/agent-runtime/src/owned_host.rs::end_holders", "agent-host/bootstrap.ts::loadBootstrap"]
+truth = ["file:host.lock"]
+```
+
 - **Kind**: implicit, on disk. **Defined in**: `crates/agent-runtime/src/owned_host.rs:196-328` (`launch_through`), `:855-891` (`claim`), `:896-932` (`end_holders`), `:935-959` (`connect_identity`); `agent-host/bootstrap.ts:56-108` (`loadBootstrap`, `assertBootstrap`, `prepareSocket`, `releaseBootstrap`); `agent-host/persistent-main.ts:24-32` and `codex-main.ts:21-29` ("unadoptable" watchdog); `crates/engine-sdk/src/host_folders.rs:128-151` (folder deletion).
 - **Source of truth**: the `flock` on the inode of `state_dir/host.lock` (alive = someone holds it) and its content (bootstrap JSON). **Copies and derivatives**: the `stopped-by-alondra` mark, the `uncertain` file, the socket `s`, `outbox`/`outbox.next`. The daemon keeps no copy in SQLite: it decides by the lock.
 - **States**:
@@ -4124,6 +5766,13 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Concurrency**: the `flock` is the barrier. `Claimed::drop` does an explicit `unlock` because a child forked by another thread could hold a copy of the descriptor (`owned_host.rs:845-853`).
 
 ### M-PROV-2 · Persistent host: session life inside the host process
+
+```toml state-machine
+id = "M-PROV-2"
+code = ["agent-host/persistent-core.ts"]
+truth = ["memory"]
+```
+
 - **Kind**: composite, implicit, in memory. **Defined in**: `agent-host/persistent-core.ts:64-446`.
 - **Source of truth**: in-memory fields `session?`, `unavailable`, `stopping`, `stopPromise`, `sessionEnd`, plus `journal.recovering` (derived from disk on open, `journal.ts:61`).
 - **States**:
@@ -4144,6 +5793,13 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Concurrency**: one JS thread. Orders are serialized in the `operations` promise (`:149-153`); ACKs and `attach` are not (processed on arrival).
 
 ### M-PROV-3 · Owner lane and generation
+
+```toml state-machine
+id = "M-PROV-3"
+code = ["agent-host/persistent-core.ts", "crates/provider-claude/src/wire.rs::check_owner"]
+truth = ["memory", "sqlite:provider_active_bindings", "sqlite:provider_binding_controls", "sqlite:provider_bindings"]
+```
+
 - **Kind**: explicit in the host, mirrored in Rust. **Defined in**: host `persistent-core.ts:114-169` (`current`, `connection`, `receive`, `attach`); Rust `crates/provider-claude/src/wire.rs:96-185` (`Connection::attach`), `:426-438` (`check_owner`); the generation is reserved in the store (`reserve_owner`, see M-ENGINE-4).
 - **Source of truth**: `journal.ownerGeneration` (fsynced `attached` record, `journal.ts:130-132`) and `this.owner` (live lane). In Rust: `Connection.failed` and `pending_attach.owner_generation`.
 - **States per lane**: Connected (hello and challenge sent, fresh `nonce`) to Owner (attach with generation greater than the journal's and a valid HMAC proof) to Revoked (socket closed, or another lane with a higher generation, `:165-167`). In Rust: Healthy to Failed (`failed = true` after any error in `submit`, `reconcile`, `next` or `acknowledge`; sticky, `wire.rs:192-196`).
@@ -4153,6 +5809,13 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Persistence and restart**: on daemon restart the host keeps running; the new daemon reserves a new generation and attaches.
 
 ### M-PROV-4 · Order and its receipt in the host journal
+
+```toml state-machine
+id = "M-PROV-4"
+code = ["agent-host/journal.ts", "agent-host/persistent-core.ts", "crates/agent-protocol/src/correlation.rs::CommandRegistry", "crates/agent-protocol/src/schema.rs::ReceiptPhase"]
+truth = ["memory", "sqlite:provider_commands", "sqlite:provider_control_commands"]
+```
+
 - **Kind**: explicit. **Defined in**: `agent-host/journal.ts:79-157` (`validateRecord`, `apply`, `settle`); `persistent-core.ts:170-307` (`command`), `:359-362` (`receipt`), `:382-411` (`flush`). Rust mirror: `crates/agent-protocol/src/correlation.rs` (`CommandRegistry`), `wire.rs:199-313` (`submit_inner`, `reconcile_inner`), and in the store the `lifecycle_dispatches` rows (M-STORE-4) and `lifecycle_controls` (M-PROV-6).
 - **States per `command_id`**:
 
@@ -4173,6 +5836,13 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Persistence and restart**: the host stays alive, so `commands`/`settled` remain. When the daemon restarts, it reconciles `claimed` rows by resending exact bytes (`sdk_owner.rs:971-982`). For an ended host, its outbox is read as `EndedJournal` (`provider-codex/src/ended.rs`, same in Claude) and yields `Offered/Refused/AdmittedOnly/Absent`.
 
 ### M-PROV-5 · Event outbox, cursor and ACK
+
+```toml state-machine
+id = "M-PROV-5"
+code = ["agent-host/journal.ts", "crates/provider-claude/src/wire.rs::LaneCursor", "crates/store/src/lib.rs::accept_observation"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit, composite with M-STORE-5. **Defined in**: host `journal.ts:44-63`, `:126-141`, `:158-177`; `persistent-core.ts:363-373` (`observe`), `:382-411` (`flush`); Rust `wire.rs:342-415` (`next_inner`, `acknowledge`), `:450-466` (`LaneCursor`); store `crates/store/src/lib.rs:1092-1134` (`accept_observation`).
 - **Source of truth**: the host outbox (events with `cursor` = previous + 1, starting at `journal_base` in a continued host) and, in SQLite, `provider_observation_heads` plus the normalization checkpoint.
 - **States per event**: Persisted, then Sent to the lane (`lane.sentCursor`), then Delivered to Rust (`LaneCursor.delivered`), then Committed in SQL (observation, checkpoint and facts in one transaction), then ACK sent, then ACK persisted in the host (the event leaves memory; the file on compaction).
@@ -4182,6 +5852,13 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Ordering between receipts and events**: on each turn `flush` sends receipts first and then events (`:391-406`). Rust queues events that arrive while waiting for a receipt (`wire.rs:252`) and ignores stray receipts in `next` (`:351-357`). Read end to end: no consumer depends on receipt/event order.
 
 ### M-PROV-6 · Permission decision
+
+```toml state-machine
+id = "M-PROV-6"
+code = ["agent-host/session.ts", "crates/store/src/controls.rs::put_decision_request", "crates/store/src/controls.rs::claim_control", "crates/store/src/controls.rs::record_control_receipt", "crates/engine-ports/src/journal/records.rs::RuleState"]
+truth = ["sqlite:lifecycle_decision_requests", "sqlite:lifecycle_controls", "sqlite:allowed_rules", "sqlite:task_permission_grants"]
+```
+
 - **Kind**: composite (host, normalizer, store, domain). **Defined in**:
   - Claude host `agent-host/session.ts:108-186` (`PermissionCallbacks`); Codex host `codex-session.ts` (`asked`, `answered`, plans);
   - Claude normalizer `crates/provider-claude/src/normalizer.rs:352-382` (`Checkpoint.asked`) and Codex `crates/provider-codex/src/normalizer.rs:140-153`;
@@ -4195,6 +5872,13 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Persistence and restart**: if the host dies, the domain empties the callbacks when it records `HostEnded`; a resumed Claude does not keep the question (see F-PROV-3 for what remains in the checkpoint). An `uncertain` answer is never reconciled (H-PROV-1).
 
 ### M-PROV-7 · Native session inside the host
+
+```toml state-machine
+id = "M-PROV-7"
+code = ["agent-host/session.ts", "agent-host/codex-session.ts"]
+truth = ["memory", "sqlite:provider_conversation_metadata", "sqlite:provider_conversations"]
+```
+
 - **Kind**: explicit in code, in memory.
 - **Claude** (`agent-host/session.ts:189-386`): `turnOpen`, set `inputs` (sends waiting for echo, max 64), `closing`, `seenResult`, `child`/`childEnded`. States: Opening (no `init`), Idle, Turn open (offer or root `assistant`), Idle (root `result`), Closing (`close()`), Finished (`finished` waits for the real exit of the native process, `:362-370`). `forceStop` = `close` + TERM + KILL with 2 s between steps (`:301-309`). Orchestrator: closes input after the first `result` with no pending sends (`:357`).
 - **Codex** (`agent-host/codex-session.ts:66-560`): `opening` (`initialize -> account -> thread_resume | thread_start`), `thread`, `turn`, `queue` (max 64), `starting`, `pumping`, `closed`/`closing`, `asked`/`answered` (plans), child states. Opening deadline is 90 s (`:14`, `:164`). A queued input starts only with no open turn (`pump`, `:424-458`).
@@ -4202,6 +5886,13 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Persistence and restart**: nothing survives a host restart (the session resumes through `resume`/`thread_resume`).
 
 ### M-PROV-8 · Life of each input
+
+```toml state-machine
+id = "M-PROV-8"
+code = ["agent-host/persistent-core.ts", "crates/provider-claude/src/wire.rs::submit_inner", "crates/provider-contract/src/lib.rs::Handoff"]
+truth = ["derived", "sqlite:lifecycle_inputs", "sqlite:provider_input_metadata"]
+```
+
 - **Kind**: composite (host, dispatch, normalizer, domain). **Defined in**: host `persistent-core.ts:200-218` (`start`/`offer`), `session.ts:281-289`, `codex-session.ts:416-458`; Rust `wire.rs:199-257`; dispatch M-STORE-4; normalizers (`taken`/`finished` in Claude, `input_starts`/`accepted` in Codex).
 - **States (observable)**:
 
@@ -4221,6 +5912,13 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Zero delivery**: "Offered" does not prove the native process received it (in-memory queue of the host). If the host dies first, the ended journal says `Offered` and the domain decides on recording `HostEnded` (`resume`). This gap is exactly point 10 of the provider adapters work (phase 3) (`accepted | started | discarded | refused` confirmed by the provider); it is not repeated as a finding.
 
 ### M-PROV-9 · Claude normalizer checkpoint
+
+```toml state-machine
+id = "M-PROV-9"
+code = ["crates/provider-claude/src/normalizer.rs::Checkpoint", "crates/provider-claude/src/normalizer.rs::normalize"]
+truth = ["sqlite:provider_normalization_checkpoints"]
+```
+
 - **Kind**: explicit, per run. **Defined in**: `crates/provider-claude/src/normalizer.rs:44-104` (`Checkpoint`), `:202-293` (`normalize`).
 - **Source of truth**: `provider_normalization_checkpoints` (one row per run, cursor = the observation's). It is rebuilt observation by observation; there is no cache.
 - **State**: `turn` (`LogicalTurn`), `work`, `woken`, `taken`, `finished`, `asked`, `isolated`, `pr_commands`, `pr_close_commands`, `mcp_calls`, `listed`, `running`, `limit_resets_at`, `seen_tasks`, `initialized`.
@@ -4230,6 +5928,13 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Since #537 and #540** (at `68770a298`): `pr_commands` is gone. An older checkpoint's set is read into `_pr_create_commands` and never written again (`normalizer.rs:58-61`), so a `gh pr create` result emits nothing; only a successful `gh pr close` still yields `PullRequestsChanged` (`note_pr_commands`, `pull_request_facts`, `:1014-1038`). `LogicalTurn` keeps `error_detail` and `error_said` next to `error` (`:122-151`); a root assistant message without `error` after one with it clears all three and emits `ModelAnswered` if not yet emitted (`:829-855`), so the turn ends `Completed` instead of `ApiFailed` (M-ENGINE-28). Turns that end at a new `init` or at `idle` build their failure the same way (`api_failure`, `:891-894`).
 
 ### M-PROV-10 · Codex normalizer checkpoint
+
+```toml state-machine
+id = "M-PROV-10"
+code = ["crates/provider-codex/src/normalizer.rs"]
+truth = ["sqlite:provider_normalization_checkpoints"]
+```
+
 - **Kind**: explicit, per run. **Defined in**: `crates/provider-codex/src/normalizer.rs:18-63`, `:120-188`.
 - **State**: `thread`, `process`, `turn`, `idled`, `work`, `asked`, `accepted`, `accepted_plans`, `input_starts`, `continuation(s)`, `child_*`, `model*`, `blocked_policy`.
 - **Special transitions**: first cursor of a continued host clears turn, work, starts and children (`:136`); `alondra/threadReady` with another `processGeneration` also clears `asked`, `accepted` and `accepted_plans` (`:166-170`).
@@ -4237,11 +5942,27 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Invariants**: facts from another run are refused as in M-PROV-9; it also ignores events of a thread that is not the root (`fold`, `:192`).
 
 ### M-PROV-11 · Codex host process and native life
+
+```toml state-machine
+id = "M-PROV-11"
+code = ["agent-host/codex-main.ts", "agent-host/persistent-core.ts"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit. **Defined in**: `agent-host/README.md` ("Codex process supervision"), `codex-main.ts:10-14` (`endsWithSession`, `endHostGroup`), `persistent-core.ts:313-344`; Rust `CodexWorker::native_liveness()` (`NotStarted | Alive(Member) | Lost`).
 - **States**: No app-server (opens on first input), Alive, Lost. The host ends when its native session ends, waits for the ACK of the last cursor (5 s without progress, 6 s watchdog) and kills its group with the lock still held.
 - **Overlap**: the Codex recovery work (phase 2), points 9-11 ("not started yet" versus "lost it", typed exit, adopted host pid).
 
 ### M-PROV-12 · State of each account
+
+```toml state-machine
+id = "M-PROV-12"
+code = ["crates/core/src/accounts.rs::AccountState", "crates/core/src/accounts.rs::AccountsConfig", "crates/daemon-engine/src/accounts.rs::check_current", "crates/domain-rules/src/account_login.rs::AccountLoginPhase"]
+truth = ["file:options.toml", "sqlite:account_configuration", "sqlite:account_distribution", "sqlite:account_logins", "sqlite:account_model_catalogs", "sqlite:accounts", "sqlite:model_profiles", "sqlite:task_accounts", "sqlite:settings_projection_receipts"]
+states = "crates/core/src/accounts.rs::AccountState"
+variants = ["Unchecked", "SignedIn", "SignedOut", "Unavailable", "Disabled"]
+```
+
 - **Kind**: derived, snapshot. **Defined in**: `crates/core/src/accounts.rs:541-561` (`AccountState`: `Unchecked | SignedIn | SignedOut | Unavailable | Disabled`), `:453-536` (`AccountsConfig::changed`); produced in `crates/daemon-engine/src/accounts.rs:134-176` (Claude), `:522-612` (`check_current`, Codex) and `:416-418`.
 - **Source of truth**: `options.toml` (`enabled`, order, policy) plus the native probe. The domain stores the snapshot (`RecordAccounts`) and each probe replaces it whole.
 - **Transitions**: any state to any other on each probe; `Disabled` if `enabled=false`; `Unavailable` if the probe fails (`:166`, `:559`); `Unchecked` at startup or on re-enable (`:895-897`).
@@ -4249,12 +5970,26 @@ Read only superficially, with no finding to report; this is pending coverage, no
 - **Missing**: no native error of a node (401, "login expired") changes the state; that is the scope of the expired provider login work.
 
 ### M-PROV-13 · Usage and limit of each account
+
+```toml state-machine
+id = "M-PROV-13"
+code = ["crates/core/src/usage.rs::AccountUsage", "crates/core/src/usage.rs::record", "crates/daemon-engine/src/usage_probe.rs::measure_account", "crates/core/src/usage.rs::UsageState"]
+truth = ["derived", "sqlite:account_usage"]
+```
+
 - **Kind**: implicit, derived from readings. **Defined in**: `crates/core/src/usage.rs:198-300` (`AccountUsage`, `ran_out`, `exhausted_until`), `:329-358` (`record`); `crates/domain-rules/src/rules.rs:3442-3453` (`RecordAccountUsage`).
 - **States per window**: Unmeasured, then With margin (`used < FULL`, not `exhausted`), then Exhausted until `resets_at` (`exhausted` or `used == FULL`, with a future reset), then Exhausted with no known time, then With margin again (`resets_at` passes, another reading arrives, or in Codex a working turn, `native_turn_worked`).
 - **Writers**: `usage_probe::measure_account` (full reading, always `exhausted:false`, `usage_probe.rs:100-121`), `usage_probe::record_limit` (orchestrator), turn observations (`store-sqlite/src/owner.rs:301-323`, `:486-497`), `accounts::check_current` (Codex). Codex's account check reads `account/rateLimits/read` through `ProbeReport::usage_reading` (`crates/core/src/codex_account.rs`): with `ordinaryUsageAllowed: true` it records the percentages; with `false` it records them too, plus the exhausted native-limit mark, so the account shows its current reading and stays held until a later check says `true`; with `null` (the provider does not know) it records nothing and the last reading stands. No reset time ends that hold: only Codex's answer does.
 - **Invariants**: enforced in `record`: an older reading does not overwrite a newer one. A window measured after the reading's `at` stays, and a complete reading removes only windows measured before it (F-PROV-1, fixed). Readings an ended host's journal commits on adoption still carry the commit time (see F-PROV-1).
 
 ### M-PROV-14 · Orchestrator batch over the host
+
+```toml state-machine
+id = "M-PROV-14"
+code = ["agent-host/persistent-core.ts", "agent-host/session.ts", "agent-host/codex-session.ts"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit, bounded. **Defined in**: `persistent-core.ts:189-191`, `session.ts:212-226`, `:357`; Codex `codex-session.ts` (`if (this.config.orchestrator) this.close()` when the turn ends).
 - **States**: one turn per host; any later input is rejected with `single_turn`; after the `result` with no pending sends the input is closed and the host ends. The batch machine itself belongs to ORCH (M-ORCH-1/3).
 
@@ -4368,6 +6103,13 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
 ### Part 1: daemon devices, pairing, self-update
 
 ### M-SERVER-D1 · Device approval
+
+```toml state-machine
+id = "M-SERVER-D1"
+code = ["crates/daemon-support/src/auth.rs::Device", "crates/daemon-support/src/auth.rs::Auth", "crates/daemon-support/src/auth.rs::approve_service", "crates/daemon-support/src/auth.rs::revoke"]
+truth = ["file:devices.json"]
+```
+
 - **Kind**: implicit. **Defined in**: `crates/daemon-support/src/auth.rs:36-44` (`Device`), `:96-121`
   (`PairedDevices`), `:129-150` (`Auth`), `:183-202` (`approved_devices` + `APPROVED` cache), `:264-344` (`save`,
   `pair`, `approve_service`), `:375-388` (`revoke`), `:402-454` (`verify_at`), `:475-495` (`guard`).
@@ -4398,6 +6140,13 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
   order (lease before mutex) is consistent in `pair`, `approve_service` and `revoke`.
 
 ### M-SERVER-D2 · Revocation tombstones
+
+```toml state-machine
+id = "M-SERVER-D2"
+code = ["crates/daemon-support/src/revoked_devices.rs::RevokedDevices", "crates/daemon-support/src/revoked_devices.rs::Tombstone"]
+truth = ["file:revoked-devices.json"]
+```
+
 - **Kind**: implicit. **Defined in**: `crates/daemon-support/src/revoked_devices.rs:13-110`; writer
   `service.rs:924-930`.
 - **Source of truth**: `revoked-devices.json` (FIFO of at most 64). **Copies**: in-memory `Service.revoked`;
@@ -4409,6 +6158,16 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
 - **Persistence**: tmp+rename.
 
 ### M-SERVER-D3 · Direct pairing request
+
+```toml state-machine
+id = "M-SERVER-D3"
+code = ["crates/daemon-server/src/direct/pairing.rs::PairingBook", "crates/daemon-server/src/direct/pairing.rs::Request", "crates/daemon-server/src/direct/pairing.rs::Status", "crates/daemon-server/src/lib.rs::direct_approval", "crates/daemon-server/src/direct/pairing.rs::State"]
+truth = ["memory", "file:direct-denied.json"]
+states = "crates/daemon-server/src/direct/pairing.rs::State"
+variants = ["Committed", "AwaitingApproval", "Approved", "Denied"]
+terminals = ["Approved", "Denied"]
+```
+
 - **Kind**: explicit. **Defined in**: `crates/daemon-server/src/direct/pairing.rs:92-125` (`State`, `Request`),
   `:186-295` (`start`), `:297-345` (`reveal`), `:347-360` (`status`), `:384-401` (`deny`), `:406-447` (`approve`);
   persistence on approval in `crates/daemon-server/src/lib.rs:143-167` (`direct_approval`).
@@ -4436,6 +6195,13 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
   so they can block a worker while an approval runs. This is an observation, not an invalid state.
 
 ### M-SERVER-D4 · Local terminal pairing
+
+```toml state-machine
+id = "M-SERVER-D4"
+code = ["crates/daemon-support/src/auth.rs::Auth", "crates/client-transport/src/local.rs::Pairing", "crates/daemon-server/src/domain_bootstrap.rs::revoke_device"]
+truth = ["memory", "file:tui-device"]
+```
+
 - **Kind**: implicit, two processes. **Defined in**: daemon `auth.rs:270-299` (codes in `Auth.pairing`, TTL 600 s),
   routes `domain_bootstrap.rs:621-673`; client `crates/client-transport/src/local.rs:85-196`.
 - **Source of truth**: codes in daemon memory; on the client `tui-device` plus the key file, serialized across
@@ -4447,6 +6213,16 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
   (`Rejection`, `local.rs`); the TUI says so once (F-CLIENTS-R4).
 
 ### M-SERVER-D5 · Relay enrollment
+
+```toml state-machine
+id = "M-SERVER-D5"
+code = ["crates/daemon-server/src/service.rs::reserve_enrollment", "crates/daemon-server/src/service.rs::activate_enrollment", "crates/daemon-server/src/service.rs::revoke_enrollment", "crates/daemon-server/src/service/relay.rs::enroll"]
+truth = ["sqlite:service_enrollments"]
+states = "crates/daemon-server/src/service.rs::EnrollmentDecision"
+variants = ["New", "Pending", "Active", "Revoked"]
+terminals = ["Revoked"]
+```
+
 - **Kind**: explicit, SQLite. **Defined in**: `service.rs:2425-2430` (`EnrollmentDecision`), `:2638-2715`
   (`reserve/activate/revoke_enrollment`), `:2906-2915` (`enrollment_active`); loop in `service/relay.rs:228-268`
   (`enroll`), `:386-420` (`sync_revocations`), `:443-470` (`keep_registered`).
@@ -4466,6 +6242,13 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
 - **Concurrency**: approval lease plus IMMEDIATE transaction.
 
 ### M-SERVER-D6 · Composite revocation
+
+```toml state-machine
+id = "M-SERVER-D6"
+code = ["crates/daemon-server/src/domain_bootstrap.rs::revoke_device", "crates/daemon-server/src/device_expiry.rs::sweep", "crates/daemon-server/src/service/relay.rs::sync_revocations"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit. **Defined in**: `domain_bootstrap.rs:102-109` (`revoke_device`), `:792-812` (route DELETE
   `/devices/{id}`, local only; since G9 it refuses this Mac's own terminal with `own_terminal`, F-SERVER-D4);
   `device_expiry.rs:54-80` (sweep by disuse / the relay forgot the registration);
@@ -4474,12 +6257,26 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
   relay loop propagates it to the relay (`sync_revocations`). The keys stay in `service.toml` on purpose.
 
 ### M-SERVER-D7 · iroh fingerprints
+
+```toml state-machine
+id = "M-SERVER-D7"
+code = ["crates/daemon-server/src/iroh_terminals.rs::IrohTerminals", "crates/daemon-server/src/service/relay.rs::keep_device_iroh_nodes_bound"]
+truth = ["file:iroh-terminals.json"]
+```
+
 - **Kind**: implicit. **Defined in**: `iroh_terminals.rs:20-89`; `service.rs:957-1027`; `service/relay.rs:300-350`.
 - **Source of truth**: `iroh-terminals.json` (device_id → node + hello signature); bindings already made on the
   relay are in memory (`relay.devices_bound`). Pruned on read (`hellos(keep)`) to the still-approved devices. Every
   iroh stream goes through `handle_direct`, which checks the approval again.
 
 ### M-SERVER-D8 · Push recipients
+
+```toml state-machine
+id = "M-SERVER-D8"
+code = ["crates/daemon-server/src/service.rs::activity_phones", "crates/daemon-support/src/push.rs::Push", "crates/daemon-server/src/activity_push.rs::Phone"]
+truth = ["derived", "sqlite:service_activity_keys", "sqlite:service_push_bindings", "sqlite:service_push_preference_revisions", "sqlite:service_push_preferences"]
+```
+
 - **Kind**: implicit.
 - **Encrypted (service)**: `service.rs:1797-1850`: for each device in `service.toml`, approved in memory plus
   enrollment `active` plus binding. Live Activity: `activity_push.rs:149-160` replaces the phone list on every
@@ -4488,6 +6285,13 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
   (`domain_delivery.rs:244-248`, `push_alerts.rs:40-42`).
 
 ### M-SERVER-D9 · Self-update
+
+```toml state-machine
+id = "M-SERVER-D9"
+code = ["crates/daemon-support/src/updates.rs::plan", "crates/daemon-support/src/updates.rs::Updater", "crates/daemon-support/src/updates.rs::record_attempt"]
+truth = ["file:auto-update.json"]
+```
+
 - **Kind**: implicit. **Defined in**: `daemon-support/src/updates.rs:17-118`; `alondra_core::update::{Attempt,
   Status}`.
 - **Source of truth**: `auto-update.json` (last `Attempt{version, at, ok, detail}`, written with a direct
@@ -4496,6 +6300,15 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
   two attempts for the same version, whether it succeeded or failed.
 
 ### M-SERVER-D10 · Relaunch after the binary is replaced
+
+```toml state-machine
+id = "M-SERVER-D10"
+code = ["crates/daemon-support/src/relaunch.rs::Watcher", "crates/daemon-support/src/relaunch.rs::watch", "crates/alondrad/src/lib.rs::relaunch_now"]
+truth = ["memory", "file:startup-failures.json"]
+states = "crates/daemon-support/src/relaunch.rs::Check"
+variants = ["Unchanged", "Relaunch", "Rejected"]
+```
+
 - **Kind**: explicit. **Defined in**: `daemon-support/src/relaunch.rs:113-232`; `alondrad/src/lib.rs:170-182`,
   `:329-347`.
 - **States**: `Running(identity)` → binary changed → preflight → `Relaunch` (exits with 75 via `exit::now`, without
@@ -4503,12 +6316,26 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
   discarded (`:147-149`). `startup-failures.json` (host crate) counts failed starts.
 
 ### M-SERVER-D11 · Service HTTP challenge verifier
+
+```toml state-machine
+id = "M-SERVER-D11"
+code = ["crates/e2e/src/lib.rs::HttpChallengeVerifier"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit. **Defined in**: `crates/e2e/src/lib.rs:488-612`; used in `auth.rs:347-369`
   (`/service/approve-device`).
 - **State**: random per-process `epoch`, nonces used until `timestamp+skew`, clock high-water mark (a clock that
   goes backwards stops accepting requests until it catches up). The nonce is recorded only with a valid signature.
 
 ### M-SERVER-D12 · Pending service pairing (CLI, context only)
+
+```toml state-machine
+id = "M-SERVER-D12"
+code = ["crates/cli/src/service_pair.rs::Pending", "crates/cli/src/service_pair.rs::complete_pending", "crates/cli/src/service_pair.rs::abandon_pending"]
+truth = ["file:service-pairing-pending.json"]
+```
+
 - `cli/src/service_pair.rs:390-538`: `service-pairing-pending.json` (≤10 min, `relay/src/pairing.rs:12`); continue
   or abandon (abandoning revokes through DELETE `/devices/{id}` on the daemon). A 410 from the daemon (tombstone)
   makes it discard the pending pairing.
@@ -4611,6 +6438,13 @@ already the latest) or an old keg not cleaned.
 ### Part 2: relay (`crates/relay`)
 
 ### M-SERVER-R1 · Pairing session per service (rendezvous mailbox)
+
+```toml state-machine
+id = "M-SERVER-R1"
+code = ["crates/relay/src/pairing.rs::Mailbox", "crates/relay/src/pairing.rs::Session"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit (`candidate: Option` + `approval: Option` + `expires_at_ms`). **Defined in**:
   `crates/relay/src/pairing.rs:105-112` (struct `Session`), `Mailbox` 114-301.
 - **Source of truth**: in-memory `HashMap` behind a `Mutex`. No persistence: a relay restart loses all sessions in
@@ -4636,6 +6470,13 @@ already the latest) or an old keg not cleaned.
   (`operator.rs:176-187`) and the accounts worker (`management/worker.rs:22-30, 45-48`).
 
 ### M-SERVER-R2 · Device registry (phones, Macs, closed accounts)
+
+```toml state-machine
+id = "M-SERVER-R2"
+code = ["crates/relay/src/auth.rs::DeviceRegistry", "crates/relay/src/auth.rs::persist_registry_at", "crates/relay/src/auth.rs::enroll_mac"]
+truth = ["file:registry.json"]
+```
+
 - **Kind**: implicit composite. **Defined in**: `DeviceRegistry` `auth.rs:86-106`; persistence `persist_registry_at`
   `auth.rs:1836-1881` (atomic write + directory fsync).
 - **Source of truth**: the registry JSON (single file) plus an in-memory copy behind a `Mutex`. **Copies that can
@@ -4666,6 +6507,13 @@ already the latest) or an old keg not cleaned.
   another task).
 
 ### M-SERVER-R3 · Per-phone push registration
+
+```toml state-machine
+id = "M-SERVER-R3"
+code = ["crates/relay/src/auth.rs::register_push", "crates/relay/src/auth.rs::unregister_push", "crates/relay/src/auth.rs::forget_dead_push"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit: `push[device]` + `push_sessions[device]` + `push_ended ∋ device`. `auth.rs:89-92`.
 - **States**: `None` (never registered) / `Registered(token, binding, session?)` / `Ended` (the relay ended it on
   purpose, so the Mac receives `410` and can forget the binding, `lib.rs:593-599`).
@@ -4676,6 +6524,15 @@ already the latest) or an old keg not cleaned.
 - **Invariant**: a revoked device keeps no push (every revocation route deletes it in the same write).
 
 ### M-SERVER-R4 · Account removal sequence from the account source
+
+```toml state-machine
+id = "M-SERVER-R4"
+code = ["crates/relay/src/auth.rs::RemovalsApplied", "crates/relay/src/auth.rs::apply_removals"]
+truth = ["derived"]
+states = "crates/relay/src/auth.rs::RemovalsApplied"
+variants = ["Through", "Gap", "Behind"]
+```
+
 - **Kind**: explicit (`RemovalsApplied::{Through,Gap,Behind}`), `auth.rs:162-170, 893-960`; `removals_pending:
   AtomicBool` (until the first reconciliation, every route that looks at the account answers unavailable,
   `auth.rs:968-974, 1436-1445`).
@@ -4685,12 +6542,26 @@ already the latest) or an old keg not cleaned.
   account is skipped and logged. Nothing is ever restored. Correct as read.
 
 ### M-SERVER-R5 · iroh endpoint binding
+
+```toml state-machine
+id = "M-SERVER-R5"
+code = ["crates/relay/src/auth.rs::bind_iroh_node", "crates/relay/src/auth.rs::store_iroh_node", "crates/relay/src/auth.rs::iroh_node_holder"]
+truth = ["derived"]
+```
+
 - **Kind**: implicit (`iroh_nodes[id]` + `proven_iroh_nodes ∋ id`), `auth.rs:97-99, 1010-1134`.
 - **States**: `Unbound` / `BoundOnMacWord` / `BoundProven`. A proof signed by the endpoint key replaces a binding
   made on the Mac's word; nothing removes a proven binding. `iroh_node_holder` returns a holder only if the Mac is
   still enrolled; then `require_live_route` applies (tombstones and account).
 
 ### M-SERVER-R6 · Live Activity per phone
+
+```toml state-machine
+id = "M-SERVER-R6"
+code = ["crates/relay/src/activity.rs::Phone", "crates/relay/src/activity.rs::State"]
+truth = ["file:live-activity.json"]
+```
+
 - **Kind**: composite. **Defined in**: `Phone` `activity.rs:146-172`, `State` 174-185, plan `Phone::plan` 266-279,
   `take` 549-576, `settle` 580-620.
 - **Source of truth**: `live-activity.json` plus memory behind a `Mutex`, separate from the registry. `scheduled`
@@ -4704,6 +6575,13 @@ already the latest) or an old keg not cleaned.
   pruning at startup (see F-SERVER-R4).
 
 ### M-SERVER-R7 · Web login flow (OIDC)
+
+```toml state-machine
+id = "M-SERVER-R7"
+code = ["crates/relay/src/web_session/store.rs::create_flow"]
+truth = ["postgres:web_login_flows"]
+```
+
 - **Kind**: `web_login_flows` rows (PostgreSQL), `web_session/store.rs:161-199`.
 - **States**: `Created` (10 min) → `Consumed` (atomic `DELETE … RETURNING` with the browser cookie **and** `state`,
   190-199) / `Expired` (deleted by `create_flow` and `reconcile`).
@@ -4711,6 +6589,13 @@ already the latest) or an old keg not cleaned.
   validated in the exchange (`oidc.rs:186`).
 
 ### M-SERVER-R8 · Web session
+
+```toml state-machine
+id = "M-SERVER-R8"
+code = ["crates/relay/src/web_session/store.rs::begin_refresh", "crates/relay/src/web_session/store.rs::retain_rotated", "crates/relay/src/web_session/store.rs::activate_rotated"]
+truth = ["postgres:web_sessions"]
+```
+
 - **Kind**: explicit in column `refresh_state ∈ {ready, refreshing, revoked}` (CHECK in
   `migrations/0002_web_sessions.sql:19`) + `revision` + row deletion. `store.rs:201-358`,
   `web_session/mod.rs:159-282`.
@@ -4725,6 +6610,13 @@ already the latest) or an old keg not cleaned.
   returned to the pool. See F-SERVER-R5 (hypothesis about cancellation).
 
 ### M-SERVER-R9 · Invitation
+
+```toml state-machine
+id = "M-SERVER-R9"
+code = ["crates/relay/src/management/mod.rs::Invitation", "crates/relay/src/management/mod.rs::reserve_acceptance", "crates/relay/src/management/mod.rs::reissue_invitation"]
+truth = ["postgres:management_invitations"]
+```
+
 - **Kind**: explicit `status ∈ {pending, provisioning, accepted, canceled}` (CHECK `0001_management.sql:21`),
   partial unique index on live email (28-29). `management/mod.rs:159-177, 482-516, 600-750, 753-822, 825-840`.
 - **Transitions**: `pending` →reserve_acceptance→ `provisioning` (+ account `provisioning`) →complete→ `accepted`
@@ -4739,6 +6631,13 @@ already the latest) or an old keg not cleaned.
   cannot be re-invited until then without canceling by hand.
 
 ### M-SERVER-R10 · Account
+
+```toml state-machine
+id = "M-SERVER-R10"
+code = ["crates/relay/src/management/mod.rs::Account", "crates/relay/src/management/mod.rs::change_account_access"]
+truth = ["postgres:management_accounts", "postgres:management_identities"]
+```
+
 - **Kind**: explicit `status ∈ {provisioning, active, disabled, deleting, deleted}` (CHECK
   `0001_management.sql:4`). `change_account_access` `mod.rs:536-597`, `reconciliation_complete` 863-871.
 - **Transitions**: `provisioning→active` (only `complete`); `active|provisioning→disabled|deleting`;
@@ -4746,6 +6645,13 @@ already the latest) or an old keg not cleaned.
   (`disabled→active`): terminal in practice. The last-admin invariant is protected by `ADMIN_LOCK` + `FOR UPDATE`.
 
 ### M-SERVER-R11 · Account reconciliation outbox
+
+```toml state-machine
+id = "M-SERVER-R11"
+code = ["crates/relay/src/management/mod.rs::Reconciliation", "crates/relay/src/management/mod.rs::reconciliation_complete", "crates/relay/src/management/worker.rs"]
+truth = ["postgres:management_outbox"]
+```
+
 - **Kind**: `management_outbox(state ∈ {pending, completed}, available_at, attempts)` rows, unique `(account_id,
   action)`. `mod.rs:207-211, 825-871`, worker `management/worker.rs`.
 - **Semantics**: claim with a 60 s lease (`FOR UPDATE SKIP LOCKED` + `available_at`), idempotent external
@@ -4754,6 +6660,13 @@ already the latest) or an old keg not cleaned.
   accounts. A design decision documented in the code.
 
 ### M-SERVER-R12 · Device revocation tombstones (account)
+
+```toml state-machine
+id = "M-SERVER-R12"
+code = ["crates/relay/src/management/devices.rs::DeviceRevocation", "crates/relay/src/management/devices.rs::require_live_device"]
+truth = ["postgres:management_device_revocations"]
+```
+
 - **Kind**: `management_device_revocations(state ∈ {pending, completed})` rows, PK `(kind, device_id)`.
   `management/devices.rs:17-122`.
 - **Semantics**: the tombstone is authority once confirmed (`require_live_device` consults it on every authenticated
@@ -4761,15 +6674,36 @@ already the latest) or an old keg not cleaned.
   activity, and marks `completed`; it is reviewed again every 5 min. Idempotent on reapply.
 
 ### M-SERVER-R13 · Waitlist
+
+```toml state-machine
+id = "M-SERVER-R13"
+code = ["crates/relay/src/management/waitlist.rs::WaitlistEntry", "crates/relay/src/management/waitlist.rs::invite_from_waitlist"]
+truth = ["postgres:management_waitlist"]
+```
+
 - Row present/absent (`management_waitlist`, unique email). `invite_from_waitlist` deletes the row and issues the
   invitation in the same admin transaction (`waitlist.rs:297-321`): a conflict leaves both as they were. Correct.
 
 ### M-SERVER-R14 · Admin request idempotency
+
+```toml state-machine
+id = "M-SERVER-R14"
+code = ["crates/relay/src/management/mod.rs::AdminRequest"]
+truth = ["postgres:management_admin_requests"]
+```
+
 - `management_admin_requests(actor_id, key_hash)` with the request hash (`mod.rs:213-274`). Reserved inside the
   operation's transaction: if the operation fails, the reservation is rolled back. Retry with the same key:
   `AlreadyApplied`, or `TokenAlreadyIssued` for those that issue a token (the token is not stored: it is lost).
 
 ### M-SERVER-R15 · JWKS cache
+
+```toml state-machine
+id = "M-SERVER-R15"
+code = ["crates/relay/src/jwt.rs::Verifier", "crates/relay/src/jwt.rs::refresh_for_unknown_kid"]
+truth = ["memory"]
+```
+
 - `jwt.rs:49-206`: fresh up to `JWKS_MAX_AGE`; an unknown `kid` forces a limited reload; reload every 5 min
   (`lib.rs:1029-1037`). No invalid states observed.
 
@@ -4844,6 +6778,13 @@ Scope: audited at commit `1567967b9`, read-only, nothing executed. Rust part: `c
 Note on dead code: the TUI process never calls `select_relay` (only the delivery command with `--mac` does, `crates/cli/src/delivery.rs:189`), so in the TUI `transport().relay()` and `relay_target()` are always `None`. The relay branches of `Client::for_tui` (`crates/client-port/src/client.rs:152-158`), of the local tab name (`crates/cli-tui/src/tui.rs:1398-1409`) and of `draw.rs:324` are dead code in the TUI. If revived, the "local" tab would mix views of the remote Mac with the pairing notices and daemon identity of the local daemon (`start_pairing_feed`/`start_identity_feed` always use the local daemon, `tui.rs:1346-1388`). Not reachable today.
 
 ### M-CLIENTS-R1 · TUI optimistic answers (`Optimistic`)
+
+```toml state-machine
+id = "M-CLIENTS-R1"
+code = ["crates/cli-tui/src/tui/optimistic.rs::Optimistic", "crates/cli-tui/src/tui/optimistic.rs::Sending", "crates/cli-tui/src/tui/optimistic.rs::Applied"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit (struct with two maps). **Defined in**: `crates/cli-tui/src/tui/optimistic.rs:24-171`; used in `crates/cli-tui/src/tui.rs:1605-1654` (send), `2356-2442` (answer), `2444-2483` (timer), `2075` (reconcile).
 - **Source of truth**: TUI process memory, one per Mac tab (`App.optimistic`, `tui.rs:759`). Since G9 (issue #526) the automatic restart carries the `Sending` entries of every tab to the new process in `Restore::unconfirmed` (`MacAnswers` per Mac id), and `take_over` resumes them due at once. **Copies and derivatives**: the daemon keeps a receipt per `command_id` (UUID v4, `client.rs:783-789`).
 - **States** per command: `Sending{failures, retry_at: None}` (attempt in flight or just created), `Sending{retry_at: Some}` (waiting for retry), `Sending{overdue: true}` (30 s without confirmation; the card comes back), then removed. Per card: `Applied{version, epoch}` (hidden until a view with another version arrives).
@@ -4869,6 +6810,13 @@ Note on dead code: the TUI process never calls `select_relay` (only the delivery
 - **Concurrency**: only the main thread mutates; POSTs run in threads (`spawn`, `tui.rs:1799-1811`) and come back through a channel. Two POSTs of the same command can be in flight at once (equal submit during an attempt in flight); the daemon deduplicates by `command_id`.
 
 ### M-CLIENTS-R2 · Per-tab connection state of the TUI
+
+```toml state-machine
+id = "M-CLIENTS-R2"
+code = ["crates/cli-tui/src/tui.rs::MacStatus", "crates/cli-tui/src/tui.rs::App"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit.
 - **Fields**: `connected`, `offline`, `loaded` (`tui.rs:737-739`), `view_status`, `home_view`, `screen_view_asked`, and, outside `App`, the live transport route `DirectMac::route_kind()` (`direct_client.rs:288-291`, `323-336`).
 - **Effective states**: Connecting (`!connected && !offline`), Connected (`connected && !offline`), Offline (`offline`). `connected && offline` is never built because both are always written together (`tui.rs:2086-2087`, `2100-2101`, `2191-2192`, `2196-2197`, `2211-2212`).
@@ -4877,61 +6825,160 @@ Note on dead code: the TUI process never calls `select_relay` (only the delivery
 - **Persistence and restart**: none; there is no home cache on disk (overlap #387).
 
 ### M-CLIENTS-R3 · Availability probe (`AvailabilityProbe` / `ResponseObserver`)
+
+```toml state-machine
+id = "M-CLIENTS-R3"
+code = ["crates/client-port/src/client/availability.rs::AvailabilityProbe", "crates/client-port/src/client/availability.rs::ResponseObserver"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit. **Defined in**: `crates/client-port/src/client/availability.rs:20-139`. State `{responded, finished}` per request and one shared slot per destination.
 - **Transitions**: `begin_request` sets responded=false; `received` (headers arrive before the deadline) sets responded=true; `finish` when the thread ends. `check` reuses the active probe if it has not expired and does not launch a second thread.
 - **Invariants**: a late response (after the deadline) does not count (`received` checks the deadline). Any HTTP response counts as "responds", including a 401/421/503 or the response of another Mac on the same IP.
 
 ### M-CLIENTS-R4 · Automatic TUI restart on a new daemon
+
+```toml state-machine
+id = "M-CLIENTS-R4"
+code = ["crates/cli-tui/src/tui/version_watch.rs::decide", "crates/cli-tui/src/tui/version_watch.rs::Decision", "crates/cli-tui/src/tui/updated.rs::Watch", "crates/cli-tui/src/tui.rs::restart"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit. **Defined in**: `version_watch::decide` (`crates/cli-tui/src/tui/version_watch.rs:79-104`) over `Watch` (`updated.rs:16-32`); effect in `main_loop` (`tui.rs:1027-1031`) and `restart` (`tui.rs:1043-1062`).
 - **Decisions**: Nothing, CheckDisk, Warn(...), Countdown, Restart. Restart when the daemon is newer, the binary on disk is that version, no restart was already done for it, and (requested with R) or (idle >= 10 s and the 3 s countdown elapsed), provided it is not `busy` or `confirming`.
 - `busy` = `actions_out > 0` or an attachment uploading (`updated.rs:78-84`). `actions_out` counts only requests in flight: +1 in `action_sent`, -1 when the response arrives (`tui.rs:2066-2068`, `2202-2203`).
 - **Persistence and restart**: `Restore` in `$TMPDIR` (screen, selection, composer, and since G9 the unconfirmed answers of every Mac tab, F-CLIENTS-R1). An unconfirmed answer between two attempts does not hold the restart; it travels.
 
 ### M-CLIENTS-R5 · Pairing notices in the TUI
+
+```toml state-machine
+id = "M-CLIENTS-R5"
+code = ["crates/cli-tui/src/tui.rs::App", "crates/cli-tui/src/tui.rs::PAIRING_POLL"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit. **Defined in**: `pairing: Vec<PendingDevice>` plus `pairing_answered: HashSet` (`tui.rs:797`, `1426-1452`, `2230-2261`). Local feed every `PAIRING_POLL`, sends only on change.
 - **Transitions**: answered, removed and marked; error, reinserted and unmarked; the feed removes the marks of devices no longer pending. Correct.
 
 ### M-CLIENTS-R6 · Local terminal signature (pairing on first use)
+
+```toml state-machine
+id = "M-CLIENTS-R6"
+code = ["crates/client-transport/src/local.rs::Pairing", "crates/client-transport/src/local.rs::send"]
+truth = ["file:tui-device"]
+```
+
 - **Kind**: explicit/composite. **Defined in**: `Pairing{signer cache, replaced}` plus files `tui-device`/`tui-key.pem` plus `tui-pairing.lock` (`crates/client-transport/src/local.rs:85-191`, `send` at `273-284`).
 - **States**: no pair, pairing (POST /pairing + /pair, device-last write), pair saved, pair cached. Repair: when the daemon answers 401 `"wrong signature"` or, since G9, `"device not paired"` (`Rejection`), once per process (`replace_rejected`); the second one leaves a notice the TUI shows once (`Transport::local_notice`).
 - **Invariants**: enforced: the device file is deleted before the key is written and written last, so a cut never leaves the key of one pair with the device of another.
 - **Rejected**: either reason above after the one repair of the process.
 
 ### M-CLIENTS-R7 · Direct connection to a Mac (`Connection`)
+
+```toml state-machine
+id = "M-CLIENTS-R7"
+code = ["crates/client-transport/src/direct_client.rs::Connection", "crates/client-transport/src/direct_client.rs::IrohLink", "crates/client-transport/src/iroh_client.rs::Backoff", "crates/client-transport/src/iroh_client.rs::RelayWatch"]
+truth = ["file:direct-macs.json"]
+```
+
 - **Kind**: composite. **Defined in**: `direct_client.rs:252-600`; backoff in `iroh_client.rs:257-273`. Current HTTP route (`current: Mutex<Option<String>>`), iroh link `IrohLink{Untried, Open, Down}` plus `Backoff` plus `RelayWatch`, `learned`. **Persistence**: `direct-macs.json` (routes, keys) and the iroh "dial" per Mac, under `direct-macs.lock`.
 - **Main transitions**: Untried to Open (connects) or Down (+backoff); Open to Untried (send failure) or Down (`wrong_mac`, 60 s retention); Open stuck on relay to a new connection from a new endpoint. HTTP: a known route is used without `hello`; a new route is validated with `hello` (OtherMac is skipped, KeyChanged aborts).
 - **Idempotency**: the same sealed envelope (same `request_id`) goes over iroh and, if lost midway, over HTTP; the Mac executes a `request_id` once. Each new call seals a new `request_id`.
 - **Rejected**: HTTP response classification: a 200 with an openable envelope is the answer; since G9 a non-200 whose body opens as a refusal the Mac sealed (`refusal` field) is read as over iroh (`refused`: `unauthorized`, `expired`, `idempotency_conflict`, `busy` = not run, other = answered) and keeps the route; anything else counts as "sent without answer" (F-CLIENTS-R2).
 
 ### M-CLIENTS-R8 · Direct pairing with a Mac (`direct_client::Pairing`)
+
+```toml state-machine
+id = "M-CLIENTS-R8"
+code = ["crates/client-transport/src/direct_client.rs::Pairing", "crates/client-transport/src/direct_client.rs::connect"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit by steps. **Defined in**: `direct_client.rs:645-790`, and `connect` (`824-865`).
 - **Steps**: start (POST /direct/pairing), reveal, wait (poll 1 s, up to 130 s), then approved (verifies the signature against `hello`) | denied | expired. `connect` saves with `remember` only after verifying.
 - **Half-done case**: any transient error in the poll (`.call()?`, `direct_client.rs:760`) aborts and discards the keys; see H-CLIENTS-R1.
 
 ### M-CLIENTS-R9 · Terminal relay profile and relay epoch
+
+```toml state-machine
+id = "M-CLIENTS-R9"
+code = ["crates/client-transport/src/service_client.rs::Profiles", "crates/client-transport/src/service_client.rs::EpochCache", "crates/client-transport/src/client_pair.rs::pair"]
+truth = ["file:terminal-service.json"]
+```
+
 - **Defined in**: `service_client.rs:29-201`; invitation pairing in `client_pair.rs:110-232` (candidate, approval poll, verification of the signed proof).
 - **State**: `Profiles` in `terminal-service.json` under `terminal-service.lock`; process target in `ACTIVE: OnceLock` (immutable per process); `EpochCache{generation, value}`.
 - **Retries**: only GET after a 401 with a proven new epoch; POST is never repeated (`service_client.rs:127-147`).
 - Used only by the Mac-connect command and by the delivery command with `--mac`.
 
 ### M-CLIENTS-R10 · Account session in the CLI
+
+```toml state-machine
+id = "M-CLIENTS-R10"
+code = ["crates/cli/src/account.rs::SessionState", "crates/cli/src/account.rs::AccountLock", "crates/cli/src/account.rs::SERVICE_TOKEN_CACHE"]
+truth = ["derived"]
+states = "crates/cli/src/account.rs::SessionState"
+variants = ["Active", "PendingRevocation"]
+```
+
 - **Kind**: explicit. **Defined in**: `SessionState{Active, PendingRevocation}` in the keychain plus `AccountLock` (per-user global flock) plus `SERVICE_TOKEN_CACHE` (`crates/cli/src/account.rs:69-83`, `464-535`, `596-656`, `896-1012`).
 - **Transitions**: login (revokes and deletes the previous one, then saves Active); refresh (persist the rotated refresh token before `userinfo`, `508-535`); logout: Active to PendingRevocation (persisted) to revocation to deletion; resumable.
 - **Rejected**: only `invalid_grant` (400/401) is treated as an expired session (`493-506`); network failures keep the session.
 - Keycloak with `revokeRefreshToken=false` (`apple/Data/Account/Sources/Auth/OIDCConfiguration.swift:37-41`): the predecessor stays valid, so two concurrent refreshes do not drop the session. No findings.
 
 ### M-CLIENTS-R11 · Device pairing from the Mac (device invite command)
+
+```toml state-machine
+id = "M-CLIENTS-R11"
+code = ["crates/cli/src/service_pair.rs::Pending", "crates/cli/src/service_pair.rs::complete_pending", "crates/cli/src/service_pair.rs::abandon_pending"]
+truth = ["file:service-pairing-pending.json"]
+```
+
 - **Kind**: composite and durable. **Defined in**: `service-pairing-pending.json` plus the device in `service.toml` plus local approval plus registration in the relay plus proof handover (`crates/cli/src/service_pair.rs:390-541`, `625-787`).
 - **Resumable**: if a non-expired pending exists, `complete_pending` repeats the idempotent steps; if it expired, `abandon_pending` revokes in the relay (tombstone first), removes it from config, deletes local state and deletes the pending. A 410 from local approval (device removed) abandons. No findings; the pending is only resumed when the command is run again.
 
 ### M-CLIENTS-R12 · Delivery of MCP calls from nodes and the orchestrator
+
+```toml state-machine
+id = "M-CLIENTS-R12"
+code = ["crates/cli-mcp/src/mcp.rs::submit", "crates/cli-mcp/src/mcp.rs::send_command", "crates/cli-mcp/src/mcp.rs::send_command_once"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit per call. **Defined in**: `crates/cli-mcp/src/mcp.rs:973-1104`. `submit` (waits while the daemon is older, up to 1 h, resending the same command) to `send_command` (cards: up to 3 sends 1 s apart; others: 1) to `send_command_once` (reads `data_epoch` from /capabilities and sends).
 - **`command_id`**: cards with `interaction_id` use `mcp-{tool}-{interaction_id}` (`1149-1160`); others use `mcp-native-sha256(operation, tool)`, with operation = hash of native `threadId/sessionId/callId` or of `{server instance, JSON-RPC id}` (`1137-1147`, `1873-1883`).
 - **Receipts** at the daemon per `(actor, command_id, data_epoch)` with a payload digest: same payload gives `replayed`; different gives `idempotency_conflict` (`crates/store-sqlite/src/command.rs:111-120`). A refusal leaves no receipt, so resending corrected with the same `interaction_id` works.
 - **Quoted images** are copied by SHA-256 (`crates/client-port/src/doc_images.rs:63-95`, `122-135`), so an identical resend produces the same payload. No confirmed findings; see H-CLIENTS-R2/R3.
 
 ### M-CLIENTS-R13 · Delivery failure classification (shared)
+
+```toml state-machine
+id = "M-CLIENTS-R13"
+code = ["crates/client-port/src/client.rs::Delivery", "crates/client-port/src/client.rs::CommandFailure", "crates/client-port/src/client.rs::delivery"]
+truth = ["derived"]
+states = "crates/client-port/src/client.rs::Delivery"
+variants = ["Unsent", "Unanswered", "Running", "Unknown", "Answered"]
+```
+
 - `Delivery{Unsent, Unanswered, Running, Unknown, Answered}` and `CommandFailure{Rejected, Uncertain}` (`crates/client-port/src/client.rs:698-766`), plus `transport.delivery` (`client-transport/src/lib.rs:98-101`, `local.rs:316-328`). The TUI, the CLI and the MCP use it to decide whether to retry.
+
+### M-CLIENTS-R14 · Sending a crash report (`sending.json`)
+
+```toml state-machine
+id = "M-CLIENTS-R14"
+code = ["crates/cli-report/src/report/send.rs::Sending", "crates/cli-report/src/report/send.rs::send_to", "crates/cli-report/src/report/send.rs::keep", "crates/cli-report/src/report/send.rs::postpone", "crates/daemon-support/src/reports.rs::retry_pending", "crates/daemon-engine/src/report_held_card.rs::check"]
+truth = ["file:sending.json"]
+states = "crates/cli-report/src/report/send.rs::State"
+variants = ["Pending", "Sent", "Kept"]
+terminals = ["Sent", "Kept"]
+```
+
+- **Kind**: explicit (enum `State {Pending, Sent, Kept}`) plus `held: Option<Held>` (`Held::RepoChanged {current, refused}`), `attempts`, `next_at` and the gist and issue it made. Added after the audit, when the state inventory test found the file with no machine.
+- **Source of truth**: `reports/<id>/sending.json`, one per report, written only by the CLI (`send.rs`, `write_sending`: temporary file and rename) under the report's `flock` (`.sending.lock`). The daemon reads it and never writes it: it runs the CLI.
+- **Transitions**: none → `Pending` or `Sent` at the first `alondra report send` (`send_to`); `Pending` → `Sent` when GitHub takes it; `Pending` → `Pending` with `next_at = now + backoff_ms(attempts)` (one minute, doubling up to 30 min) when GitHub answers "later"; `Pending` → `Pending` held (`RepoChanged`, longest backoff) when a daemon retry finds another report repository; `Pending` → `Kept` with `alondra report keep`; a refusal (`Blocked`) leaves it `Pending` with `next_at = i64::MAX`. `Sent` and `Kept` are terminal; sending again a `Sent` report with the same package returns the same issue.
+- **Who moves it**: the daemon's `retry_pending` loop (every `EVERY`) runs `alondra report send <id> --retry` for each `Pending` report whose `next_at` passed; a held report has a card (`report_held_card.rs`) whose "Send it" or "Keep it" runs the CLI, and a repository change in the settings retries it once (`nudged`).
+- **Restart**: the file is the whole state; a daemon restart reads it again. A crash between GitHub's answer and the rename leaves the previous state, and the next try finds the gist and issue the earlier try left (`deliver` looks first), so no second issue is made.
+- **Concurrency**: the CLI's `flock` serializes the user's send and the daemon's retry of one report.
 
 ### Findings (Rust part)
 
@@ -5038,6 +7085,13 @@ The Apple app is considerably better hardened than the TUI at the points where t
 - Direct pairing retries `URLError` until expiry (M-CLIENTS-A7).
 
 ### M-CLIENTS-A1 · Single connection state (`ConnectionMachine` / `ConnectionMonitor`)
+
+```toml state-machine
+id = "M-CLIENTS-A1"
+code = ["apple/Contract/Sources/ConnectionState.swift::ConnectionMachine", "apple/Data/Feed/Sources/ConnectionMonitor.swift::ConnectionMonitor", "apple/Data/Account/Sources/Connection/ConnectionClassifier.swift::ConnectionClassifier"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit. **Defined in**: `apple/Contract/Sources/ConnectionState.swift:4-100` (state and rules), `apple/Data/Feed/Sources/ConnectionMonitor.swift:7-162` (actor and `MonitoredOperations` wrapper that feeds every request), `apple/Data/Account/Sources/Connection/ConnectionClassifier.swift:8-95` (error to `ConnectionProblem`).
 - **Source of truth**: one `ConnectionMonitor` per `Connection` (one per paired Mac, `Connection.swift:199-203`), in memory. **Copies and derivatives**: `AppFeature.State.connection` / `MacAppFeature.State.connection` (copy by subscription, `AppFeature.swift:94-96,106-108`), environment `connectionState` (`AppScene.swift:168`, `MacServiceRoot.swift:165`), `ConnectionIndicators` (light, line and cover derived together, `ConnectionIndicators.swift:30-45`), the overlay (`ConnectionOverlay.swift:9-19`), Settings `MacStatus` (`AccountSession.swift:310-334`, reads `monitor.state`), the `live` flag of the Live Activity (`AppScene.swift:209-214`) and the failure report. There is no second connection source in the UI; `NetworkReachability` only enters as an event (`networkLost/networkBack`) or in classification.
 - **States**: `connecting`, `connected(route)`, `unreachable(problem)`. Internal counters: `issued` (tickets), `freshFrom` (from which ticket a failure counts), `passingFailures` (consecutive passing failures).
@@ -5061,6 +7115,13 @@ The Apple app is considerably better hardened than the TUI at the points where t
 - **Concurrency**: actor; `begin()` and `handle` in order of arrival at the actor. `MonitoredOperations.observe` takes the ticket before the request (`ConnectionMonitor.swift:127`).
 
 ### M-CLIENTS-A2 · Answer delivery (`ViewActionSender` and intent store)
+
+```toml state-machine
+id = "M-CLIENTS-A2"
+code = ["apple/Data/Feed/Sources/ViewTransport.swift::ViewActionSender", "apple/Data/Feed/Sources/ViewActionIntentStore.swift::ViewActionIntentStore", "apple/Data/Feed/Sources/ActionIntentDatabase.swift::ActionIntentDatabase"]
+truth = ["memory"]
+```
+
 - **Kind**: composite. **Defined in**: memory: `pending: [commandId: Pending]`, `deliveries: [nonce: Task]`, `activeEpoch`, `journalEpoch/journalDescriptor`, withdrawal (`ViewTransport.swift:444-861`). Disk: `ViewActionIntentStore` / `ActionIntentDatabase` encrypted per pairing (`Connection.swift:57-59,110-114`; `apple/Data/Feed/Sources/ActionIntentDatabase.swift`, `ViewActionIntentStore.swift`) with per-record states (created/pending/completed/acknowledged) and quarantine of unreadable stores (`ActionIntentQuarantine.swift`). Plus the sealed-envelope journal per Mac (`EnvelopeJournal`, `Connection.swift:54-56`).
 - **Copies and derivatives**: the daemon keeps a receipt per `command_id` and a journal of actions numbered by generation (`ActionOperationID`). Derived: `UndeliveredCards` (cards with an unconfirmed answer in the active epoch, `UndeliveredCards.swift:6-40`, `ViewTransport.swift:779-782`), which reads the queue to hide them after a relaunch.
 - **States** per answer: prepared (numbered with the Mac journal generation, `prepare`, `:478-504`), then delivering (`keepDelivering`, loop with a 1...60 s pause or wake by `retryNow`, `:637-662`), then applied (`applied`: complete on disk and leaves `pending`, `:806-810`) | discarded (final error or epoch change, `discard`, `:773-777`) | re-issued with a new id if the seal expired and the Mac says it never finished it (`recoverOrResend`, `:752-771`).
@@ -5070,6 +7131,13 @@ The Apple app is considerably better hardened than the TUI at the points where t
 - **Concurrency**: actor; deliveries are child `Task`s that return to the actor at each step.
 
 ### M-CLIENTS-A3 · Optimistic queue UI (`Optimistic` and `TriageFeature`, and `MacPresentationFeature`)
+
+```toml state-machine
+id = "M-CLIENTS-A3"
+code = ["apple/Features/Sources/Triage/TriageFeature.swift::TriageFeature", "apple/Features/Sources/Workspace/MacPresentationFeature.swift::MacPresentationFeature", "apple/Data/Feed/Sources/UndeliveredCards.swift::UndeliveredCards"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit (`apple/Features/Sources/Shared/Optimistic.swift:10-96`), used by `apple/Features/Sources/Triage/TriageFeature.swift` (iPhone) and by the Mac presentation.
 - **Source of truth**: TCA state in memory per screen. It relies on `UndeliveredCards` (M-CLIENTS-A2) to survive a relaunch.
 - **States** per card: `sending[nonce] = {target, epoch}` (hidden), `overdue` (30 s without confirmation: visible again, delivery continues), `applied[id] = {version, epoch}` (hidden until a view of another version arrives), and in the queue `answered` (applied, hidden until a view does not list it or 120 s pass, `TriageFeature.swift:159,402-408`).
@@ -5090,12 +7158,26 @@ The Apple app is considerably better hardened than the TUI at the points where t
 - **Persistence and restart**: no; after a relaunch the hiding comes from `undelivered` (from disk).
 
 ### M-CLIENTS-A4 · State of an on-screen action (`ActionFeature`)
+
+```toml state-machine
+id = "M-CLIENTS-A4"
+code = ["apple/Features/Sources/ViewsUI/ActionFeature.swift::ActionFeature"]
+truth = ["memory"]
+```
+
 - **Kind**: implicit (flags): `pending`, `inFlight`, `stamp`, `stalled`, `unsure`, `error`, `changed`, `confirmation`, `pendingAttachmentSubmit` (`apple/Features/Sources/ViewsUI/ActionFeature.swift:14-53`).
 - **Effective states**: idle; confirming; waiting for attachments; preparing (`inFlight && stamp == nil`); sent (`inFlight && stamp != nil`); stalled (`stalled`, at 10 s, `ViewsClient.swift:69`); answered (success with stamp, `changed` or `error`); doubtful (`unsure`: the same command is reused if repeated identically, `:438-452`).
 - **Guards**: `present` does not overwrite a preparation in progress (`:190`); `prepared`/`answered`/`undelivered` only apply if the epoch and `commandId` match `pending` (`:288-330`); changing epoch clears everything (`didSet`, `:45-53`).
 - **Effects**: `prepare` then `deliver` with `.cancellable(DeliveryID)`; the real delivery continues in the sender even if the screen goes away (`deliver` launches an unstructured `Task`, `:423-436`).
 
 ### M-CLIENTS-A5 · Paired Macs and selected Mac (`AccountSession` and `ApprovedSessionRegistry`)
+
+```toml state-machine
+id = "M-CLIENTS-A5"
+code = ["apple/Data/Account/Sources/Composition/AccountSession.swift::AccountSession", "apple/Data/Pairing/Sources/ApprovedSessionRegistry.swift::ApprovedSessionRegistry"]
+truth = ["memory"]
+```
+
 - **Kind**: composite. **Defined in**: `apple/Data/Account/Sources/Composition/AccountSession.swift` (`generation`, `selection`, `services`, `macs`, `choiceIDs`, `restoreTask`, `attempt`), `apple/Data/Pairing/Sources/ApprovedSessionRegistry.swift` (one live `Connection` per approved pairing and the selected one), pairings in the keychain (`PairingStore.swift`, `PairingCollection.swift`).
 - **Source of truth**: keychain (collection and selection) plus the in-memory registry. **Copies and derivatives**: `services` published to the UI (`publishChoices`, `:596-610`); the scene is rebuilt by `Connection` identity (`AppScene.swift:31-32`, `.id(ObjectIdentifier(services))`).
 - **Mac switch** (`selectMac`, `:570-628`): one selection at a time (`selection`); it checks that the stored keys match, does a signed round trip to the target Mac (`checkSettingsConnection`), persists the preference and calls `registry.select`; if something fails after persisting, it restores the live selection. `generation` invalidates everything started before a `login`/`logout`/`cancel`.
@@ -5103,23 +7185,58 @@ The Apple app is considerably better hardened than the TUI at the points where t
 - All connections stay alive in the background (`goLive` opens the iroh connection of all, `:369-372`); only the selected one has a feed (there is no other `viewsFeed` subscription).
 
 ### M-CLIENTS-A6 · Account session and token refresh (`AuthSession`)
+
+```toml state-machine
+id = "M-CLIENTS-A6"
+code = ["apple/Data/Account/Sources/Auth/AuthSession.swift::AuthSession", "apple/Data/Account/Sources/Auth/RefreshCredential.swift::RefreshCredential"]
+truth = ["memory"]
+```
+
 - **Kind**: explicit. **Defined in**: `apple/Data/Account/Sources/Auth/AuthSession.swift`. State in the keychain: `RefreshCredential{token, status: active | pendingRevocation | rotationUncertain | rejected}`; memory: `accessToken`, `expiresAt`, `refreshTask` (single flight), mutation lock (`reserveMutation`), `epoch`, `transitions`, `sessionSuspended`, `unpersistedCredential`.
 - **Refresh** (`refresh`, `:400-449`): marks `rotationUncertain` on disk before sending; `invalid_grant` ends the session (`sessionLost`, `endRejectedSession`); another OAuth error goes back to `active`; a network failure without sending goes back to `active`; a lost response stays `rotationUncertain` and, with `refreshReplay = predecessorStaysValid` (`OIDCConfiguration.swift:41-42`), the next attempt repeats the stored token. One refresh at a time (`refreshTask` plus lock). 401/403 from userinfo or the relay: a refresh is forced at most once a minute and the session is kept (`:240-277`).
 - **Classification**: `AuthError.rotationUncertain`/`pendingRevocation`/`noSession` give `sessionExpired` (asks to sign in), `oauth invalid_grant` gives `sessionExpired`; the rest are `accessNotConfirmed`/`serverUnreachable`/`unexpected` (passing) (`ConnectionClassifier.swift:83-94`). With the production configuration, `rotationUncertain` is never thrown (`activeCredential`, `:319-329`).
 
 ### M-CLIENTS-A7 · Pairing (QR through relay and direct on the local network)
+
+```toml state-machine
+id = "M-CLIENTS-A7"
+code = ["apple/Data/Pairing/Sources/PairingClient.swift::PairingClient", "apple/Data/Pairing/Sources/Direct/DirectPairingClient.swift::DirectPairingClient"]
+truth = ["memory"]
+```
+
 - **QR through relay**: `PairingClient` (`apple/Data/Pairing/Sources/PairingClient.swift`) with `attempts[UUID]` in memory: candidate sent (202), approval poll (204 wait 2 s, 200 verifies the signed proof and saves in the keychain, 404 expired, other is an error), then saved (replaces the local pairing of the same Mac and selects it). Orchestrated by `AccountSession.begin/approve` with `PairingAttemptLease` (one attempt per scope), `generation` and the expected session. See F-CLIENTS-A3.
 - **Direct**: `DirectPairingClient` (`apple/Data/Pairing/Sources/Direct/DirectPairingClient.swift:67-150`): hello, sealed open plus commitment, reveal, poll (retries `URLError` until expiry, unlike QR), verification of the signed approval against the transcript, then save. No findings.
 - **Save**: `KeychainApprovedPairingStore` with collection and selection; changes with atomic `modify`.
 
 ### M-CLIENTS-A8 · Live Activity
+
+```toml state-machine
+id = "M-CLIENTS-A8"
+code = ["apple/Data/LiveActivity/Sources/LiveActivityController.swift::LiveActivityController", "apple/Data/LiveActivity/Sources/ActivityRegistrar.swift::ActivityRegistrar"]
+truth = ["memory"]
+```
+
 - **Defined in**: `LiveActivityController` (`apple/Data/LiveActivity/Sources/LiveActivityController.swift`).
 - **State**: per Mac `{counts, live, heardAt, zeroSince}`; `knowsMacs`, `foreground`, `published`; serial `apply` queue (`tail`). Starts only in foreground with something pending; 15 min grace after reaching zero; expires at 30 min. Source: what the app loaded plus the sealed relay envelopes it reads from the activity itself. Token registration at the relay: `ActivityRegistrar`. See F-CLIENTS-A4.
 
 ### M-CLIENTS-A9 · Notifications and push linking
+
+```toml state-machine
+id = "M-CLIENTS-A9"
+code = ["apple/iOS/ViewsShipping/NotificationRuntime.swift::NotificationRuntime", "apple/Data/Notifications/Sources/Unregistration/PushUnregistrationLedger.swift::PushUnregistrationLedger"]
+truth = ["memory"]
+```
+
 - **Defined in**: `NotificationRuntime.prepare` (`apple/iOS/ViewsShipping/NotificationRuntime.swift:51-112`): for each pairing with relay, one link, one decryption context and one `NotificationClient`; they are published together in a single main-thread commit with `generation`. `deactivate` clears keychain and notifications; pending unregistrations go to a ledger on disk (`PushUnregistrationLedger`). Notification buttons answer through `sendNow` (M-CLIENTS-A2, F-CLIENTS-A1); a normal tap selects the Mac of the push.
 
 ### M-CLIENTS-A10 · View loads and feed (`FeedSession`)
+
+```toml state-machine
+id = "M-CLIENTS-A10"
+code = ["apple/Data/Feed/Sources/FeedSession.swift::FeedSession"]
+truth = ["memory"]
+```
+
 - **Defined in**: `apple/Data/Feed/Sources/FeedSession.swift`. Per key, `loadOwners`/`loadLifetimes`/`inFlightLoads` with shared waits; `epochGeneration` invalidates loads of a previous epoch; the feed (`runFeed`) keeps cursor and versions; `reconnect()` restarts capabilities and the poll; `scheduleRecovery` reconciles actions by (generation, epoch). Interactive priority over background (4 at a time, 3 in background).
 - **Rejected**: a response from a load that no longer owns the key is discarded or merged; one from another epoch is rejected. There is no on-disk home cache: covered by #386.
 

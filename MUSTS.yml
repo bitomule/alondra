@@ -2911,6 +2911,59 @@ checks:
       targets:
         - //tools:clock_guard_test
 
+  state-inventory:
+    uses: bazel/test
+    paths:
+      - "BUILD.bazel"
+      - "agent-host/**"
+      - "apple/**"
+      - "crates/**"
+      - "docs/architecture/state-machines.md"
+      - "tools/BUILD.bazel"
+      - "tools/bazel/BUILD.bazel"
+      - "tools/bazel/crate_layers.bzl"
+      - "tools/bazel/crates.bzl"
+      - "tools/clock_guard.py"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
+      - "tools/rust_test.bzl"
+      - "tools/shared.bzl"
+      - "tools/state_inventory.py"
+      - "tools/state_inventory_exempt.tsv"
+      - "tools/state_inventory_known.tsv"
+      - "tools/tests/test_state_inventory.py"
+      - "tools/tree.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //tools:state_inventory_test
+
+  state-machines-review:
+    uses: agent
+    paths:
+      - "crates/domain/src/**"
+      - "crates/domain-rules/src/**"
+      - "crates/domain-store-schema/**"
+      - "crates/core/src/tasks.rs"
+      - "crates/core/src/states.rs"
+      - "crates/engine-*/src/**"
+      - "crates/daemon-*/src/**"
+      - "crates/alondrad/src/**"
+      - "crates/store/src/**"
+      - "crates/store-sqlite/src/**"
+      - "crates/agent-*/src/**"
+      - "crates/provider-claude/src/**"
+      - "crates/provider-codex/src/**"
+      - "crates/codex-protocol/src/**"
+      - "crates/host/src/**"
+      - "crates/relay/src/**"
+      - "crates/relay/migrations/**"
+      - "agent-host/*.ts"
+    with:
+      facts:
+        - "Review the diff with docs/architecture/state-machines-review.md: for every changed piece of state, answer its seven questions (one source of truth, allowed transitions, no state without a way out, old answers not applied again, what survives a restart, concurrency, time decides nothing a fact should decide) with path:line in the changed tree, and fix any finding the change introduces in the same change."
+        - "Update docs/architecture/state-machines.md so the section, the state-machine block and the state-files and timers blocks of every machine the change touches say what the code now does; name the sections changed, or why none needed a change."
+
   scenarios:
     uses: bazel/test
     paths:
