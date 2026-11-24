@@ -478,6 +478,13 @@ pub trait Gh: Send + Sync {
         Box::pin(async { Err("viewed files are not available here".into()) })
     }
 
+    /// What GitHub's GraphQL answers to `query` for the repository `owner/name` and the PR `number`
+    /// on `host`, as the bytes GitHub sent. The adapter owns the deadline of the read.
+    fn pr_graphql<'a>(&'a self, host: &'a str, owner: &'a str, name: &'a str, number: u64, query: &'a str) -> Read<'a, Result<Vec<u8>, GhFailure>> {
+        let _ = (host, owner, name, number, query);
+        Box::pin(async { Err(GhFailure::Unreadable("GraphQL reads are not available here".into())) })
+    }
+
     /// `gh pr view --json` of the PR at `url`, or nothing when GitHub does not answer.
     fn view<'a>(&'a self, url: &'a str) -> Read<'a, Option<Value>>;
 
@@ -513,6 +520,7 @@ impl<T: Gh> Gh for Arc<T> {
     fn head_oid<'a>(&'a self, url: &'a str) -> Read<'a, Result<String, HeadError>> { (**self).head_oid(url) }
     fn diff<'a>(&'a self, url: &'a str) -> Read<'a, Result<PrDiff, DiffError>> { (**self).diff(url) }
     fn viewed_files<'a>(&'a self, pr: &'a PullRequest) -> Read<'a, Result<Marks, String>> { (**self).viewed_files(pr) }
+    fn pr_graphql<'a>(&'a self, host: &'a str, owner: &'a str, name: &'a str, number: u64, query: &'a str) -> Read<'a, Result<Vec<u8>, GhFailure>> { (**self).pr_graphql(host, owner, name, number, query) }
     fn view<'a>(&'a self, url: &'a str) -> Read<'a, Option<Value>> { (**self).view(url) }
     fn search_issues<'a>(&'a self, owners: &'a [String]) -> Read<'a, Result<Value, String>> { (**self).search_issues(owners) }
     fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> Read<'a, Result<Value, String>> { (**self).issue_view(repo, number) }

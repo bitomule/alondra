@@ -51,6 +51,13 @@ impl Gh for GhCli {
         Box::pin(crate::pr_viewed::read(self, pr))
     }
 
+    fn pr_graphql<'a>(&'a self, host: &'a str, owner: &'a str, name: &'a str, number: u64, query: &'a str) -> Read<'a, Result<Vec<u8>, alondra_engine_ports::github::GhFailure>> {
+        Box::pin(async move {
+            let (query, owner, name, number) = (format!("query={query}"), format!("owner={owner}"), format!("name={name}"), format!("number={number}"));
+            self.run(&["api", "graphql", "--hostname", host, "-f", &query, "-f", &owner, "-f", &name, "-F", &number], None, LIMIT).await
+        })
+    }
+
     fn view<'a>(&'a self, url: &'a str) -> Read<'a, Option<Value>> {
         Box::pin(async move { self.json(&["pr", "view", url, "--json", FIELDS]).await.ok() })
     }

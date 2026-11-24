@@ -2026,10 +2026,6 @@ name = "RETRY"
 where = "crates/daemon-server/src/iroh_endpoint.rs"
 decides = "pace"
 [[timer]]
-name = "LIMIT"
-where = "crates/daemon-server/src/public_content.rs"
-decides = "pace"
-[[timer]]
 name = "SEND_PAUSE"
 where = "crates/daemon-server/src/push_gate.rs"
 decides = "pace"
