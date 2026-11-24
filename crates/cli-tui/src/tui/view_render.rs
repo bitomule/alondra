@@ -468,8 +468,10 @@ pub fn card_reply(view: &View) -> Option<Action> {
 pub fn button_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for (index, action) in card.actions.iter().take(BUTTONS).enumerate() {
-        lines.extend(button_line(&(index + 1).to_string(), action));
-        if let Some(description) = &action.description {
+        lines.extend(button_line_with(&(index + 1).to_string(), action, false));
+        if let Some(reason) = action.disabled_reason.as_ref().filter(|_| !action.enabled) {
+            lines.extend(button_description(reason, width));
+        } else if let Some(description) = &action.description {
             lines.extend(button_description(description, width));
         }
     }
@@ -498,8 +500,13 @@ fn role_color(action: &Action) -> Color {
 }
 
 fn button_line(key: &str, action: &Action) -> Vec<Line<'static>> {
+    button_line_with(key, action, true)
+}
+
+/// A button's line; a disabled one says why beside it, or leaves the reason to the lines under it.
+fn button_line_with(key: &str, action: &Action, reason_inline: bool) -> Vec<Line<'static>> {
     if !action.enabled {
-        let why = action.disabled_reason.as_ref().map(|reason| format!(" — {reason}")).unwrap_or_default();
+        let why = action.disabled_reason.as_ref().filter(|_| reason_inline).map(|reason| format!(" — {reason}")).unwrap_or_default();
         let mut spans = vec![keycap_span(key, DIM), Span::styled(" ", Style::new().fg(DIM))];
         spans.extend(super::md::inline(&action.label, Style::new().fg(DIM)));
         spans.push(Span::styled(why, Style::new().fg(DIM)));

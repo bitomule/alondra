@@ -257,6 +257,16 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
+    // MARK: A merge GitHub does not allow yet
+
+    func test_aMergeGitHubDoesNotAllowYetIsDisabledAndSaysWhy() throws {
+        assertDetail(ScreenStores.cardDetail(try Fixtures.document("card-merge-blocked")))
+    }
+
+    func test_aMergeGitHubDoesNotAllowYetIsDisabledAndSaysWhy_es() throws {
+        assertDetail(ScreenStores.cardDetail(try Fixtures.document("card-merge-blocked-es")), language: .spanish)
+    }
+
     // MARK: A final delivery held to its approved plan
 
     func test_deliveryWithItsApprovedPlan() throws {

@@ -200,11 +200,12 @@ fn merge_waits(lang: crate::i18n::Lang, because: &alondra_domain_rules::Refusal)
     }
     let waits = alondra_views::refusal_text(because, if lang == crate::i18n::Lang::Es { ViewLang::Es } else { ViewLang::En });
     let item = &mut card["sections"][0]["items"][0];
-    item["actions"] = serde_json::json!([]);
+    let merge = item["actions"].as_array_mut().unwrap().iter_mut().find(|action| action["id"].as_str().is_some_and(|id| id.starts_with("merge:"))).unwrap();
+    merge["enabled"] = false.into();
+    merge["disabled_reason"] = waits.into();
     if *because == alondra_domain_rules::Refusal::PrNotCheckedYet {
         item["more"] = serde_json::json!([]);
     }
-    item["context"].as_array_mut().unwrap().push(serde_json::json!({"icon": "warning", "text": waits}));
     app.on_msg(Msg::ViewCard { key: format!("card:{CARD}"), result: Ok(serde_json::from_value(card).unwrap()) });
     app
 }

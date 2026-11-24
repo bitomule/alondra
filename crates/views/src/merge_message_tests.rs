@@ -219,8 +219,10 @@ impl World {
                         continue;
                     }
                     let shown = card_of(&view);
-                    let explained = shown.context.iter().any(|line| line.icon == Icon::Warning) || !shown.blocked_by.is_empty();
-                    if merge_action(&view).is_none() && !explained {
+                    let merge = merge_action(&view);
+                    let explained = shown.context.iter().any(|line| line.icon == Icon::Warning) || !shown.blocked_by.is_empty()
+                        || merge.as_ref().is_some_and(|merge| !merge.enabled && merge.disabled_reason.is_some());
+                    if merge.is_none() && !explained {
                         return Err(format!("{client:?} {lang:?}: {interaction_id} offers no merge and says nothing about why: {shown:?}"));
                     }
                 }

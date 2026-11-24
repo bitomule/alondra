@@ -3028,7 +3028,7 @@ fn merge_buttons_of(state: &DomainState, client: Client, lang: Lang) -> Vec<serd
 }
 
 #[test]
-fn a_merge_github_does_not_allow_yet_offers_no_merge_and_says_why_on_every_client() {
+fn a_merge_github_does_not_allow_yet_shows_the_merge_disabled_and_says_why_on_every_client() {
     use alondra_domain_rules::{MergeBlocker, MergeVerdict, ObservedVerdict};
     let mut state = golden_fixture();
     let open: Vec<(alondra_domain_rules::PrId, String)> = state.pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
@@ -3043,12 +3043,16 @@ fn a_merge_github_does_not_allow_yet_offers_no_merge_and_says_why_on_every_clien
         MergeBlocker::ReviewRequired, MergeBlocker::RequiredCheckFailing { name: "build".into() },
     ] }));
     for client in [Client::Ios, Client::Mac, Client::Tui] {
-        assert!(merge_buttons_of(&state, client, Lang::En).is_empty(), "{client:?}: nothing to press while GitHub blocks the merge");
+        let blocked = merge_buttons_of(&state, client, Lang::En);
+        assert_eq!(blocked.len(), 1, "{client:?}: the merge is on the card");
+        assert_eq!(blocked[0]["enabled"], false, "{client:?}: but nothing to press while GitHub blocks it");
+        assert_eq!(blocked[0]["disabled_reason"], "PR #12 can't merge yet: it needs a review on GitHub; check build is failing.", "{client:?}");
         assert!(card(&state, client, Lang::En).contains("PR #12 can't merge yet: it needs a review on GitHub; check build is failing."), "{client:?}");
         assert!(card(&state, client, Lang::Es).contains("La PR #12 aún no se puede mergear: falta una revisión en GitHub; el check build falla."), "{client:?}");
     }
     set(&mut state, None);
-    assert!(merge_buttons_of(&state, Client::Ios, Lang::En).is_empty());
+    let unknown = merge_buttons_of(&state, Client::Ios, Lang::En);
+    assert_eq!((unknown.len(), &unknown[0]["enabled"]), (1, &serde_json::Value::Bool(false)));
     assert!(card(&state, Client::Ios, Lang::En).contains("Checking with GitHub whether PR #12 can merge"));
     set(&mut state, Some(MergeVerdict::Mergeable { notes: vec![alondra_domain_rules::MergeNote::CheckFailingNotRequired { name: "lint".into() }] }));
     let allowed = merge_buttons_of(&state, Client::Ios, Lang::En);
@@ -3058,7 +3062,7 @@ fn a_merge_github_does_not_allow_yet_offers_no_merge_and_says_why_on_every_clien
 }
 
 #[test]
-fn a_pr_github_has_not_confirmed_offers_no_merge_nor_close_and_says_what_enables_them() {
+fn a_pr_github_has_not_confirmed_shows_the_merge_disabled_and_offers_no_close_and_says_what_enables_it() {
     use alondra_domain_rules::{MergeVerdict, ObservedVerdict, PrIdentity};
     let mut state = golden_fixture();
     let open: Vec<(alondra_domain_rules::PrId, String)> = state.pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
@@ -3072,7 +3076,9 @@ fn a_pr_github_has_not_confirmed_offers_no_merge_nor_close_and_says_what_enables
         state.pull_requests.get_mut(pr_id).unwrap().identity = PrIdentity::Unverified;
     }
     for client in [Client::Ios, Client::Mac, Client::Tui] {
-        assert!(merge_buttons_of(&state, client, Lang::En).is_empty(), "{client:?}: nothing to press until GitHub confirms the PR");
+        let unconfirmed = merge_buttons_of(&state, client, Lang::En);
+        assert_eq!(unconfirmed.len(), 1, "{client:?}: the merge is on the card");
+        assert_eq!(unconfirmed[0]["enabled"], false, "{client:?}: nothing to press until GitHub confirms the PR");
         let en = card(&state, client, Lang::En);
         assert!(en.contains("this unlocks when GitHub confirms it"), "{client:?}: {en}");
         assert!(!en.contains("Close without merging"), "{client:?}: closing is refused too");
@@ -3083,6 +3089,39 @@ fn a_pr_github_has_not_confirmed_offers_no_merge_nor_close_and_says_what_enables
     }
     assert!(!merge_buttons_of(&state, Client::Ios, Lang::En).is_empty(), "confirmed again, the merge is back");
     assert!(card(&state, Client::Ios, Lang::En).contains("Close without merging"));
+}
+
+fn blocked_merge_fixture() -> DomainState {
+    use alondra_domain_rules::{MergeBlocker, MergeVerdict, ObservedVerdict};
+    let mut state = golden_fixture();
+    let open: Vec<(alondra_domain_rules::PrId, String)> = state.pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
+    for (pr_id, head) in open {
+        let verdict = MergeVerdict::Blocked { blockers: vec![MergeBlocker::ReviewRequired, MergeBlocker::RequiredCheckFailing { name: "build".into() }] };
+        state.merge_verdicts.insert(pr_id, ObservedVerdict { head, verdict });
+    }
+    state
+}
+
+const BLOCKED_MERGE_GOLDENS: [(&str, Client, Lang); 4] = [
+    ("card-merge-blocked.json", Client::Ios, Lang::En),
+    ("card-merge-blocked-es.json", Client::Ios, Lang::Es),
+    ("card-merge-blocked-mac.json", Client::Mac, Lang::En),
+    ("card-merge-blocked-es-mac.json", Client::Mac, Lang::Es),
+];
+
+#[test]
+fn the_disabled_merge_matches_the_goldens_of_every_apple_client() {
+    let state = blocked_merge_fixture();
+    let expected = [
+        include_str!("../../../fixtures/views/cards/card-merge-blocked.json"),
+        include_str!("../../../fixtures/views/cards/card-merge-blocked-es.json"),
+        include_str!("../../../fixtures/views/cards/card-merge-blocked-mac.json"),
+        include_str!("../../../fixtures/views/cards/card-merge-blocked-es-mac.json"),
+    ];
+    for ((filename, client, lang), expected) in BLOCKED_MERGE_GOLDENS.into_iter().zip(expected) {
+        let view = render(&state, &golden_live(), client, lang, "card:hf-weekly-2026-09-30", "2026-09-30T10:00:00Z");
+        assert_golden(filename, &view, expected);
+    }
 }
 
 #[test]
@@ -3336,6 +3375,10 @@ fn generate_goldens() {
         ("card-information-mac.json", "card:f12d034b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::En),
         ("pull-request-mac.json", "pull_request:github.com/example/repo#12", Client::Mac, Lang::En),
     ];
+    let blocked = blocked_merge_fixture();
+    for (filename, client, lang) in BLOCKED_MERGE_GOLDENS {
+        write_golden_if_changed(&dir, filename, &render(&blocked, &live, client, lang, "card:hf-weekly-2026-09-30", "2026-09-30T10:00:00Z"));
+    }
     let mut with_pending = state.clone();
     let pending = Request::new("r-4b7e2c1d9a0f4e3b8c6d5a4f3e2b1c0d".into(), "Import lists from Notes".into());
     with_pending.requests.insert(pending.id.clone(), pending);

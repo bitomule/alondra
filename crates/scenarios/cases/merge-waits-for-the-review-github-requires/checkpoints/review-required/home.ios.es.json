@@ -15,6 +15,24 @@
           "id": "card",
           "items": [
             {
+              "actions": [
+                {
+                  "attachments": false,
+                  "disabled_reason": "La PR #7 aún no se puede mergear: falta una revisión en GitHub.",
+                  "enabled": false,
+                  "id": "merge:d1@<revision>~00000000-d1",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Squash and merge",
+                  "option_id": "squash",
+                  "presentation": "button",
+                  "resolves_card": true,
+                  "role": "advance",
+                  "stamp": "Haciendo merge…",
+                  "style": "primary"
+                }
+              ],
               "content_row": {
                 "icon": "notice",
                 "kind": "report",
@@ -33,10 +51,6 @@
                     "tone": "accent"
                   },
                   "text": "Add the CSV export"
-                },
-                {
-                  "icon": "warning",
-                  "text": "La PR #7 aún no se puede mergear: falta una revisión en GitHub."
                 }
               ],
               "detail": "included",

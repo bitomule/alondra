@@ -15,6 +15,24 @@
           "id": "card",
           "items": [
             {
+              "actions": [
+                {
+                  "attachments": false,
+                  "disabled_reason": "PR #7 can't merge yet: it needs a review on GitHub.",
+                  "enabled": false,
+                  "id": "merge:d1@<revision>~00000000-d1",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Squash and merge",
+                  "option_id": "squash",
+                  "presentation": "button",
+                  "resolves_card": true,
+                  "role": "advance",
+                  "stamp": "Merging…",
+                  "style": "primary"
+                }
+              ],
               "content_row": {
                 "icon": "notice",
                 "kind": "report",
@@ -33,10 +51,6 @@
                     "tone": "accent"
                   },
                   "text": "Add the CSV export"
-                },
-                {
-                  "icon": "warning",
-                  "text": "PR #7 can't merge yet: it needs a review on GitHub."
                 }
               ],
               "detail": "included",
