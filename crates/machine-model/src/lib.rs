@@ -10,6 +10,14 @@
 //! memory), the one clock (`obligation_watch`), and what every screen and the gate read
 //! (`ReadIndex`, `Situation`, `admission::working_tasks`). A rule the code does not apply yet would
 //! be in `tests::KNOWN_GAPS`, and the model would apply it itself while it is listed.
+//!
+//! What no history drives, so no property covers it: interrupting a turn and forcing a node to stop,
+//! reopening a task, a host released and retaken, an input the host drops or holds, a turn the
+//! provider starts on its own, compaction, Codex (every host here is Claude's), a held plan review,
+//! a node's wait for other tasks, work declared for after the merge, a hold of a task on its
+//! provider and an aborted decision. The gate's slots, the hosts and the in-flight starts are the
+//! model's own bookkeeping around the real decisions, so a fault in the daemon's bookkeeping of
+//! them is outside it too.
 mod tests;
 mod world;
 

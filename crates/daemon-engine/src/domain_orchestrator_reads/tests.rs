@@ -114,14 +114,12 @@ fn a_node_is_found_by_name_or_id_with_its_questions_results_and_undelivered_mess
     let f = world();
     ask(&f.1, "q", Recipient::User, Scope::Task { task_id: "t1".into() }, agent_a());
     run(&f.1, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(), option_id: "yes".into(), inputs: Default::default() });
-    f.1.held.lock().unwrap().entry("agent-a".into()).or_default().push("Use the new API".into());
     let by_name = node(&f.1, "Instance A").unwrap();
     assert_eq!(by_name, node(&f.1, "agent-a").unwrap());
     assert_eq!(by_name["node"]["name"], "Instance A");
     assert_eq!(by_name["node"]["model"], "claude-sonnet-5-5");
     assert_eq!(by_name["questions"][0]["status"], "answered");
     assert_eq!(by_name["messages"].as_array().unwrap().len(), 1, "the answer waits for its next turn");
-    assert_eq!(by_name["messages_held_for_turn_end"], 1);
     let offline = node(&f.1, "Instance B").unwrap();
     assert_eq!((offline["node"]["alive"].as_bool(), offline["node"]["name"].as_str()), (Some(false), Some("Instance B")));
     assert_eq!(node(&f.1, "nobody").unwrap_err().code, "not_found");

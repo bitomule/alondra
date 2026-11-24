@@ -42,10 +42,6 @@ pub struct DomainRuntime {
     changed: watch::Sender<Revision>,
     schedule_changed: watch::Sender<Revision>,
     pub stored_reads: Arc<crate::service_files::StoredReads>,
-    /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
-    /// A holder that panics leaves it whole, so it is recovered: one remove or lookup each.
-    pub held:
-        Mutex<std::collections::BTreeMap<alondra_domain_rules::AgentId, Vec<String>>>,
     rejections: rejections::Rejections,
     /// Store seals of commits whose state readers already see, for the SDK owners to claim,
     /// send and acknowledge.
@@ -167,10 +163,6 @@ impl alondra_engine_ports::Runtime for DomainRuntime {
 
     fn forget_sealed_observations(&self, task: &TaskId) {
         self.seals.forget_observations(task);
-    }
-
-    fn held(&self) -> &Mutex<std::collections::BTreeMap<AgentId, Vec<String>>> {
-        &self.held
     }
 
     fn system_command(&self, envelope: CommandEnvelope) -> Result<CommandOutcome, DomainError> {
@@ -302,7 +294,6 @@ impl DomainRuntime {
             changed,
             schedule_changed,
             stored_reads: Default::default(),
-            held: Default::default(),
             rejections: Default::default(),
             seals: Default::default(),
             full_disk: Default::default(),

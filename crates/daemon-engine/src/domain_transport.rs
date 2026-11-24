@@ -542,10 +542,6 @@ fn respond(domain: &dyn Runtime, payload: &Value) -> Result<Reply> {
             if let Some(said) = text(payload, "last_assistant_message") {
                 lifecycle::record_last_words(domain, &agent_id, &said)?;
             }
-            let held = crate::domain_messages::take_held(domain, &agent_id);
-            if !held.is_empty() {
-                return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": held.join("\n\n")}})));
-            }
             Ok(match undelivered(domain, &agent_id, payload)? {
                 Some(reason) => Reply::Block { reason, session: session_id },
                 None => {
@@ -583,14 +579,14 @@ fn start_assigned(domain: &dyn Runtime, agent_id: &AgentId) -> Result<()> {
     Ok(())
 }
 
-/// Turn ends Alondra holds back in a row for one Task before it lets the turn end, and the node
-/// machine puts the node's last words in a card for the user.
+/// Turn ends Alondra holds back in a row for one Task before it lets the turn end; the stopped
+/// node is then a case for the orchestrator (`start_failures`), never a card for the user.
 pub(crate) const STOP_BLOCKS: u32 = 3;
 
 /// A turn of a node Alondra launched may not end while its Task is open with neither a result
 /// for the user nor a question from it: Claude Code goes on with the reason. A turn the block
 /// itself continued (`stop_hook_active`) counts too, so the cap, not the flag, ends the loop:
-/// after `STOP_BLOCKS` turn ends in a row the node may stop, and its last words reach the user. A
+/// after `STOP_BLOCKS` turn ends in a row the node may stop, and the orchestrator settles it. A
 /// delivery or a question starts the count again; the count is kept in the domain store, so a
 /// restart does not reset it. A session the user drives (not a background node, or one whose
 /// terminal they attached to), work running in the background and a node the machine paused are
@@ -665,30 +661,20 @@ fn undelivered_task<'a>(state: &'a DomainState, agent_id: &AgentId) -> Option<(&
 }
 
 /// Counts one more turn end of the node's open Task without a result or a question, and gives the
-/// reason to send it back, or nothing once the cap let it stop and told the user.
+/// reason to send it back, or nothing once the cap let it stop.
 fn hold_back(domain: &dyn Runtime, agent_id: &AgentId) -> Result<Option<String>> {
     let state = domain.state();
     let Some((task, marker)) = undelivered_task(&state, agent_id) else { return Ok(None) };
     let stored = domain.store().lock_or_exit("the domain store").stop_blocks(&task.id)?;
     let blocks = match stored {
         Some((blocks, previous)) if previous == marker => blocks,
-        Some((blocks, previous)) => {
-            if blocks > STOP_BLOCKS {
-                let _ = domain.withdraw_problem(&undelivered_problem_id(&task.id, previous).into());
-            }
-            0
-        }
-        None => 0,
+        _ => 0,
     };
     if blocks >= STOP_BLOCKS {
         return Ok(None);
     }
     domain.store().lock_or_exit("the domain store").set_stop_blocks(&task.id, blocks + 1, marker)?;
     Ok(Some(block_text(&crate::domain_messages::user_name(), &task.title)))
-}
-
-fn undelivered_problem_id(task: &TaskId, marker: i64) -> String {
-    format!("problem-undelivered-{task}-{marker}")
 }
 
 pub(crate) fn block_text(user: &str, title: &str) -> String {
@@ -1532,24 +1518,6 @@ mod tests {
         assert!(attempts(&domain).is_empty());
     }
 
-    #[tokio::test]
-    async fn a_held_user_message_reaches_the_next_stop_hook_once() {
-        let fixture = Fixture::new();
-        let domain = fixture.open();
-        answered_question(&domain, "session-a");
-        domain.held().lock().unwrap().entry("session-a".into()).or_default().push("Use the new API".into());
-        let stop = json!({"session_id": "session-a", "hook_event_name": "Stop"});
-        let (body, result) = hook(&domain, stop.clone(), Some(6)).await;
-        result.unwrap();
-        assert_eq!(body["hookSpecificOutput"]["additionalContext"], "Use the new API");
-        assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "the outbox is not the Stop hook's");
-        domain.held().lock().unwrap().entry("session-a".into()).or_default().push("Only this".into());
-        let (body, _) = hook(&domain, stop.clone(), Some(6)).await;
-        assert_eq!(body["hookSpecificOutput"]["additionalContext"], "Only this");
-        let (body, _) = hook(&domain, stop, Some(6)).await;
-        assert!(reminder_only(&body), "a held message is handed once: {body}");
-    }
-
     fn reminder_only(reply: &Value) -> bool {
         reply["decision"] == "block" && reply["reason"].as_str()
             .is_some_and(|text| text.starts_with("[Alondra] Do not end your turn yet") && !text.contains("Yes.") && !text.contains("Only this"))
@@ -2111,7 +2079,6 @@ mod tests {
             assert_eq!(state.holds[&id], Hold::Permission);
             assert!(state.interactions[&id].body.contains("Bash: Clean the build"), "{}", state.interactions[&id].body);
             assert!(agent_outbox(&domain, "agent-a").is_empty());
-            assert!(crate::domain_messages::take_held(&*domain, &"agent-a".into()).is_empty(), "the denial carries the words");
         }
     }
 

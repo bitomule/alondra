@@ -106,10 +106,10 @@ to its fix group and issue.
 | S3 | **FIXED** [F-CLIENTS-R2](#f-clients-r2--direct-http-route-a-refusal-from-the-mac-is-read-as-cut-midway) · Direct HTTP route: a refusal from the Mac is read as "cut midway" | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 · fixed |
 | S3 | **FIXED** [F-CLIENTS-R3](#f-clients-r3--the-tui-accepts-an-old-home-that-arrives-late-and-overwrites-the-new-one) · The TUI accepts an old home that arrives late and overwrites the new one | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 · fixed |
 | S3 | [F-ENGINE-10](#f-engine-10--disk_room_for-decides-the-next-one-goes-alone-with-a-disk_working-that-pace-can-empty-mid-call) · `disk_room_for` decides "the next one goes alone" with a `disk_working` that `pace` can empty mid-call | very | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
-| S3 | [F-ENGINE-11](#f-engine-11--two-states-of-the-hook-transport-are-unreachable-and-their-documentation-describes-behaviour-that-does-not-exist) · Two states of the hook transport are unreachable and their documentation describes behaviour that does not exist | always | [G12](#g12--the-architecture-docs-match-the-code) · #529 |
+| S3 | **FIXED** [F-ENGINE-11](#f-engine-11--two-states-of-the-hook-transport-are-unreachable-and-their-documentation-describes-behaviour-that-does-not-exist) · Two states of the hook transport are unreachable and their documentation describes behaviour that does not exist | always | [G12](#g12--the-architecture-docs-match-the-code) · #529 · fixed in #624 |
 | S3 | [F-ENGINE-2](#f-engine-2--auto_launch-admissions-that-never-launch-hold-a-slot-for-up-to-3-min) · `auto_launch` admissions that never launch hold a slot for up to 3 min | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
 | S3 | [F-ENGINE-4](#f-engine-4--a-turn-with-a-granted-slot-loses-its-place-in-the-queue-after-a-restart) · A turn with a granted slot loses its place in the queue after a restart | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
-| S3 | [F-ENGINE-5](#f-engine-5--task-statesmd-describes-a-timer-that-no-longer-exists-and-omits-the-ones-that-do) · `task-states.md` describes a timer that no longer exists and omits the ones that do | not | [G12](#g12--the-architecture-docs-match-the-code) · #529 |
+| S3 | **FIXED** [F-ENGINE-5](#f-engine-5--task-statesmd-describes-a-timer-that-no-longer-exists-and-omits-the-ones-that-do) · `task-states.md` describes a timer that no longer exists and omits the ones that do | not | [G12](#g12--the-architecture-docs-match-the-code) · #529 · fixed in #624 (the part not referred) |
 | S3 | **FIXED** [F-ENGINE-8](#f-engine-8--own_worktree-does-not-delete-the-worktree-of-a-task-that-ended-while-starting-the-domain-command-rejects-it-before-reaching-that-branch) · `own_worktree` does not delete the worktree of a task that ended while starting: the domain command rejects it before reaching that branch | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S3 | **FIXED** [F-GH-6](#f-gh-6--an-attachment-of-a-user-message-to-an-open-task-is-deleted-after-30-days-even-though-the-task-is-still-open) · An attachment of a user message to an open task is deleted after 30 days even though the task is still open | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S3 | **FIXED** [F-GH-9](#f-gh-9--the-merger-rereads-github-on-every-domain-commit-for-a-pr-closed-outside-or-with-a-new-head-until-the-watcher-sees-it) · The merger rereads GitHub on every domain commit for a PR closed outside or with a new head, until the watcher sees it | medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
@@ -484,6 +484,15 @@ documents their final behaviour).
   claiming «no known gaps» for the model test; the hook transport's docs describe only reachable
   states; the model test covers interruptions, reopening and Codex, or lists them as gaps.
 - **Files**: `docs/architecture/task-states.md`, the hook transport docs, `crates/machine-model`.
+- **Status: fixed** in #624, checked against `main` at `b479c4f7c`, after G2 (#552), G4 (#556) and G5 (#553).
+  `task-states.md` lists the two deadlines of `obligation_policy` and every engine timer outside it with why it
+  is not there (F-ENGINE-5), places `Situation` in `crates/domain-rules/src/situation.rs` with its real
+  precedence, adds `Replan` and `obligation_of` to the obligation table, states rules 3 and 4 as the code holds
+  them, and lists what the model test does not drive (interruptions, reopening, Codex and the rest of
+  M-LIFE-14) instead of «no known gaps». The hook transport's unreachable held messages and capped-turn card are
+  removed from the code and the comments say where a capped node goes (F-ENGINE-11). Evidence: review against
+  the code at `b479c4f7c` (each item in [Docs that differ from the code](#docs-that-differ-from-the-code) says
+  what changed), and the Bazel build and tests of the changed crates.
 
 ## Referred to the tasks that own them
 
@@ -496,7 +505,7 @@ parallel fix is planned here.
 | F-PROV-4 · a continued host refuses `start` without a typed code | the Codex recovery work (phase 2), point 7 | No |
 | F-PROV-3 · Claude's checkpoint carries a dead host's open decisions and calls; at 64 a new decision is dropped | issue #328 and the stalled-node recovery work (phase 3) | Yes: the sets `forget_ended_host` keeps and the silent drop at the cap. Since #537 the `pr_commands` set is gone (read and dropped from older checkpoints); `pr_close_commands` and `asked` remain |
 | H-LIFE-1 · a repeated `TurnStarted` after its `TurnEnded` reopens the turn | the stalled-node recovery work | Yes: the sequence and the guard that swallows the end |
-| F-ENGINE-5 (part) · `opening_deadline` decides a host replacement outside the obligation policy | the stalled-node recovery work | Yes. Since #541 (at `68770a298`) it is a constant of its own, `OPENING_TIMEOUT` = 120 s (`engine-sdk/src/sdk_owner.rs:53`), no longer `io_timeout_seconds`, and past it the owner first reads what the host already wrote (`:2298-2306`). Still outside `obligation_policy` |
+| F-ENGINE-5 (part) · `opening_deadline` decides a host replacement outside the obligation policy | the stalled-node recovery work | Yes. Since #541 (at `68770a298`) it is a constant of its own, `OPENING_TIMEOUT` = 120 s (`engine-sdk/src/sdk_owner.rs:53`), no longer `io_timeout_seconds`, and past it the owner first reads what the host already wrote (`:2298-2306`). Still outside `obligation_policy`; since G12 `task-states.md` lists it as an exception owned by that work |
 | M-ORCH-6, H-ORCH-3 · the orchestrator's `Answer` deadline | the stalled-node recovery work (phase 4, `AnswerSkipped`) | Yes: #516 already removed that deadline (at `68770a298`); what the orchestrator owes is settled only after a turn of it ends handled (M-ORCH-5), so while it cannot end one (F-ORCH-3) nothing settles a node's question or a stopped node's case |
 | H-PROV-2 · an input "offered" to Codex is only queued in the host | the provider adapters work (phase 3), point 10 | No |
 | F-PROV-1 (variant) · usage readings an ended host's journal kept are committed on adoption with the commit time, so an old one can overwrite a newer reading | the provider adapters work: the host stamps each journal event with its time and the Claude and Codex adapters read it | Yes: `OrderedObservation` carries no event time; `store-sqlite/src/owner.rs` records `ObservedFact::Usage` with `at = now`. Referred by the user on 2026-11-24 |
@@ -536,7 +545,7 @@ with an outcome card; several Macs per client). Each can be changed in the revie
 | F-ORCH-2 · reminders of a replan the orchestrator does not decide | Remind only on rests caused by other work; after K reminders the task shows the factual state «waiting for a decision of the orchestrator» and no more batches until something changes. |
 | F-PROV-1 · a usage reading and a limit rejection disagree | The latest measurement wins, by measurement time (not arrival time). |
 | F-PROV-2 · an expired order the host never had | Typed `expired` rejection; the input goes back to the queue without a card. |
-| Engine deadlines outside `obligation_policy` (F-ENGINE-5, F-ENGINE-1) | `opening_deadline` and `SILENT_HOSTS` move into the policy, with measure and reason; `UNOWNED_TAKE_EVERY` stays a cadence; `IN_FLIGHT` stops deciding slots and only feeds the memory estimate. |
+| Engine deadlines outside `obligation_policy` (F-ENGINE-5, F-ENGINE-1) | `opening_deadline` moves into the policy, with measure and reason; `SILENT_HOSTS` stays in `sdk_owner.rs` as a documented exception, because it counts ended hosts and is not a time a step may take; `UNOWNED_TAKE_EVERY` stays a cadence; `IN_FLIGHT` stops deciding slots and only feeds the memory estimate. |
 | F-ENGINE-3 · pause of a queued task | A domain fact, like node pauses; cancelling the task clears it. |
 | Historical account moves left in `Admitted` (M-ENGINE-6) | Closed as `Undone` in a migration instead of retrying `finish` every 10 s. |
 | F-STORE-1 · `--test-service-push` while the daemon runs | Sent by the live daemon through its API. |
@@ -705,6 +714,12 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 - Models, with the real domain: deliveries, questions to the user and to the orchestrator, permissions, background work, PR, empty turns, host death and stop, late and repeated facts (deduplicated by the model's own cursor, `lib.rs:423-447`), restarts, slots, memory, disk, usage, account move, priority, cleanup.
 - **Does not model** (0 occurrences in `lib.rs`): interrupt and `ForceStop`, `ReopenTask`, `HostReleased/Retaken`, `InputDropped`, `InputHeld`, `Unprompted` turns, compaction (since #507 only the replay of an older `Compacted` record can produce it, see M-LIFE-1), held plan review (`SettlePlanReview`), `WaitForTasks`, Codex, `RecordClaudeHold`, `DecisionAborted`, work after the merge (`DeclarePostMergeWork`), merge authorization. Nor tasks created with unstarted dependencies except `history_with_a_dependency`, which checks neither block nor counter (see F-LIFE-1). `KNOWN_GAPS` is empty (`tests.rs:14`), and the doc says "no known gaps" while admitting that it reimplements the gate and the host owner.
 - **Since #516** (at `68770a298`): the model's orchestrator ends a handled turn every ten minutes of its clock unless the usage limit holds it, and reads every reminder (`orchestrator_inbox::owed(&state, &|_| true)`, `machine-model/src/lib.rs` `turn_ended`). It never models an orchestrator that cannot end a turn handled (failing launches, an ambiguous batch), so the gap of F-ORCH-3 is outside what it checks.
+- **At G12** (`b479c4f7c`): the model now drives merge authorization (`merge_authorized`: claim, confirm, observe
+  merged) and calls the pure decisions of the gate, the owners and the move (`admission::turns_to_grant`,
+  `admission::ordered`, `sdk_owner::due_unowned`, `provider_transition::ready_in`), still around its own slots and
+  hosts. Every other step above is still not driven. They are listed as what the model does not cover in the
+  module doc of `machine-model/src/lib.rs` and in `task-states.md` ([Rules](task-states.md#rules)), which no longer
+  says «no known gaps»: `KNOWN_GAPS` keeps its meaning, rules the code does not apply yet, and stays empty.
 
 ### Findings
 
@@ -786,6 +801,25 @@ Differences between `docs/architecture/task-states.md` and the code:
 6. Item 14 ("The model test … no known gaps"): the model does not cover interrupt/`ForceStop`, reopen, host release and recovery, `InputDropped`, `Unprompted` turns, held plan review, work after the merge, Codex (M-LIFE-14). F-LIFE-1 and F-LIFE-2 are outside what it checks.
 7. Deadlines/timers: see F-ENGINE-5 (already recorded by ENGINE); not duplicated here.
 8. The aggregate has branches production never reaches (`Progress::Dependency`, `DeliveryGate::Blocked/AwaitingMerge`, `RetireReleasedExecution`, `ConnectionLost`, `ResourceReleased`, `EffectAccepted/Observed`, `Notification`, `PlanApproved`, `Event::Ask`): the doc and the tests describe a bigger machine than the one that runs.
+
+**Status: fixed** in #624 (group G12), each checked again at `b479c4f7c` before the change, where all eight still held:
+1. `task-states.md` places `Situation` in `crates/domain-rules/src/situation.rs`, computed in the `ReadIndex` from the
+   lifecycle, the row and the listed cards; icons, detail lines and header counts read it (`classify`,
+   `activity_counts`), so the old note that some views still read the old state is gone.
+2. The obligation table has `Replan`, and says that `Situation` and the clock read `obligation_of`, which adds
+   `Answer` (a delivery sent back while its node waits on the orchestrator) and `Replan` to the lifecycle's.
+3. Rule 3 now says the generation, the store's cursor and `turn_end_recorded` turn down facts about another
+   execution or already recorded, and names the facts the aggregate refuses and that one refusal refuses the batch.
+4. Rule 4 names the two callers that still ask the aggregate before choosing an event (`end_of_pause`,
+   `record_host_ended`). Making them single-event is not part of G12.
+5. The precedence lists the closed node, the closing delivery, the unlisted card and the cancellation winding down.
+6. The model test lists what it does not drive (M-LIFE-14) and no longer claims «no known gaps».
+7. The deadlines section lists the two deadlines of the policy and every engine timer outside it (F-ENGINE-5).
+8. «Where the result differs from the plan» lists the unreachable branches. Re-checked: `ResourceReleased` is now
+   emitted by the Codex normalizer, and `WaitForDependencies`/`DependenciesLanded` are recorded since #553 but only for
+   a task that has not started, so `Progress::Dependency` (a started task that waits) is still unreachable, as are
+   `PlanApproved`, `BlockDelivery`, `DeliveryUnblocked`, `MergeObserved`, `DependenciesResolved`,
+   `RetireReleasedExecution` and `Event::Ask`. Removing them is not part of G12.
 
 ## Cards, plans, documents and requests (`CARDS`)
 
@@ -1341,14 +1375,15 @@ them; the proposed tests use `Admission`, `Owners` and the test doubles, which d
 
 ### Timers that act on state outside `obligation_policy`
 
-`task-states.md:66-67` says that policy is "the only place a deadline may exist".
+`task-states.md:66-67` said that policy is "the only place a deadline may exist". Since G12 (#624) it says the
+policy holds the deadlines on what a task owes and lists every timer of this table with why it is not one.
 
 | Constant | Where | What it triggers |
 |---|---|---|
 | `IN_FLIGHT` 3 min | `admission.rs:43` | Reserves the memory of recent admissions; frees the slot of a return, and of a start whose launch is no longer under way (F-ENGINE-1, fixed) |
-| `opening_deadline` = `io_timeout_seconds` 120 s | `sdk_owner.rs:1859, 1967` | Replaces a host that did not open its session (overlaps the stalled-node recovery work) |
-| `RELAUNCH_WAITS`, `SILENT_HOSTS` | `sdk_owner.rs:52-55` | Host retries and `lost()` |
-| `UNOWNED_TAKE_EVERY` 60 s | `sdk_owner.rs:1274` | Cadence of retaking tasks without an owner |
+| `OPENING_TIMEOUT` 120 s (was `opening_deadline` = `io_timeout_seconds`) | `sdk_owner.rs:52` at `b479c4f7c` | Replaces a host that did not open its session (overlaps the stalled-node recovery work) |
+| `RELAUNCH_WAITS`, `SILENT_HOSTS` | `sdk_owner.rs:56-59` at `b479c4f7c` | Waits before each replacement host; after 3 hosts in a row whose Claude never showed it ran, the task holds on the card that its session could not be resumed |
+| `UNOWNED_TAKE_EVERY` 60 s | `sdk_owner.rs:1352` at `b479c4f7c` | Cadence of retaking tasks without an owner |
 | idle_release 2 min | `idle_release.rs` | Closes the host of an idle node (documented in admission.md) |
 | `UNKNOWN_RESET_WAIT_MS` 30 min | `usage_pause.rs:31,485` | An exhausted window with no reset time stops blocking |
 | `TERMINATE_AFTER`/`KILL_AFTER` | `pauses.rs:20-21` | Signals to processes of paused `--bg` nodes |
@@ -1782,12 +1817,13 @@ At the audited commit (kept for history; the current state is the last bullet):
   - **Sustained card** (`node_hold :221-272`, `answer_after_recording :165-186`): published → waiting for answer |
     withdrawn if the hook goes away (per `withdraw_when_gone`) → answered.
   - **Held end of turn** (`hold_back :642-661`): counter `stop_blocks(task) = (n, marker)` in SQLite; reset when the
-    marker changes (order of the node's last card); at `n ≥ 3` it lets it stop.
+    marker changes (order of the node's last card); at `n ≥ 3` it lets it stop, and the stopped node is a case for
+    the orchestrator (`start_failures.rs`), never a card for the user.
   - **Task start by first activity** (`start_assigned :541-557`): `StartTask` with the read's `expected_revision`; a
     conflict is only logged and the next hook retries it.
-  - **Messages held for the next Stop** (`DomainRuntime.held`, `domain_messages::take_held`): no writer in
-    production (F-ENGINE-11).
-- **Source of truth**: outbox in SQLite (M-STORE-1), `stop_blocks` in SQLite, `Reports` in memory, `held` in memory.
+  - Messages held for the next Stop (`DomainRuntime.held`) had no writer in production and were removed in #624
+    (F-ENGINE-11).
+- **Source of truth**: outbox in SQLite (M-STORE-1), `stop_blocks` in SQLite, `Reports` in memory.
 - **Persistence and restart**: `stop_blocks` survives; connections and `Reports` are rebuilt when the mod
   reconnects; `release_orphans` releases at startup the sustained cards left without a hook (`:438-441`).
 - **Concurrency**: everything that touches the domain goes through `hook_work` (one thread) or `guard_work` (two
@@ -1998,6 +2034,15 @@ list of exceptions is unchanged.
     above) decide transitions.
 - **Expected fix and files**: update "Where the result differs from the plan" with the real list and decide, one by
   one, whether each deadline moves into `obligation_policy` or is documented as an exception.
+- **Status: fixed** in #624 for the part not referred (checked at `b479c4f7c`: `task-states.md` still described
+  `STRANDED_AFTER` and the `Answer` deadline, and claimed the policy was the only place with deadlines).
+  `task-states.md` now says the policy holds `HandInput` and `Wake` (both enforced), that what the orchestrator owes
+  has no deadline since #516, and lists every engine timer outside the policy with what it does and why it is not a
+  deadline on what a task owes: `IN_FLIGHT` (memory estimate; a start keeps its slot until its node exists or its
+  launch ends since #556), `OPENING_TIMEOUT` (owned by the stalled-node recovery work), `RELAUNCH_WAITS` and
+  `SILENT_HOSTS` (a back-off and a count of ended hosts, not a time a step may take; the one rule there that opens a card), `UNOWNED_TAKE_EVERY` (a cadence, as decided), idle release,
+  `UNKNOWN_RESET_WAIT_MS`, `TERMINATE_AFTER`/`KILL_AFTER`, the closer's wait and `RETRY`, and the handoff I/O timeout.
+  `STRANDED_AFTER` is gone from the doc (removed in #179).
 
 #### F-ENGINE-12 · A retake in progress and the adoption of a model transition take the same host at once: a false "host lost" card, or two live `Owner`s for one agent (formerly H-ENGINE-1)
 **Class**: CONFIRMED for the two branches described below (1 and 2). Branch 3 (the stale take ends the host that
@@ -2350,6 +2395,13 @@ The withdrawal branch survived the change that stopped raising the card. New evi
   the case goes (orchestrator). Files: `engine-kernel/src/domain_runtime.rs`,
   `daemon-engine/src/{domain_messages,domain_transport,domain_orchestrator_reads}.rs`. The other option is to decide
   that the held delivery must exist and write it.
+- **Status: fixed** in #624, commit `dfcca016a` (still held at `b479c4f7c`). Removed: `DomainRuntime.held` and the `held()` method of
+  the `Runtime` port and its doubles, `take_held` and the Stop branch that returned `additionalContext`, the
+  orchestrator read's `messages_held_for_turn_end` (and its display in `alondra mcp`), the `blocks > STOP_BLOCKS`
+  withdrawal and `undelivered_problem_id`. The comments of `STOP_BLOCKS` and `hold_back` now say the capped node is a
+  case for the orchestrator. The test that wrote into `held` by hand (`a_held_user_message_reaches_the_next_stop_hook_once`)
+  went with it. No ablation applies: the removed branches could not run, which the build proves (nothing outside tests
+  wrote `held`).
 
 ### Hypotheses
 

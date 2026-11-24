@@ -1761,9 +1761,6 @@ fn node_view(d: &Value, page: Page) -> Value {
         .collect();
 
     let mut out = json!({"node": node, "open_questions": open, "reports": shown_reports, "messages": shown_messages});
-    if let Some(held) = d.get("messages_held_for_turn_end").filter(|h| h.as_u64().unwrap_or(0) > 0) {
-        out["messages_held_for_turn_end"] = held.clone();
-    }
     if history {
         out["closed_questions"] =
             Value::Array(questions.iter().filter(|q| !is_open(q)).map(|q| pick(q, &["id", "title", "status", "answer", "asked_at"])).collect());
@@ -2360,12 +2357,11 @@ mod tests {
         let node = json!({"node": {"name": "Instance A", "state": "working", "alive": true},
             "questions": [{"id": "q", "title": "Ship?", "status": "open", "blocking": false}, {"id": "old", "title": "Before", "status": "answered"}],
             "reports": [{"id": "info", "title": "Found it", "kind": "notice", "read": false}],
-            "messages": [{"id": 4, "from": "alondra", "text": "Answer", "handed_at": null}], "messages_held_for_turn_end": 1, "timeline": []});
+            "messages": [{"id": 4, "from": "alondra", "text": "Answer", "handed_at": null}], "timeline": []});
         let view = node_view(&node, Page::Recent);
         assert_eq!(view["node"]["name"], "Instance A");
         assert_eq!(view["open_questions"].as_array().unwrap().len(), 1);
         assert_eq!(view["messages"][0]["id"], 4);
-        assert_eq!(view["messages_held_for_turn_end"], 1);
     }
 
     #[test]
@@ -2560,7 +2556,6 @@ mod tests {
                 {"id": 5, "from": "user", "text": "Start with phase 1 once the checks of the previous PR are green", "handed_at": 5},
                 {"id": 6, "from": "orchestrator", "text": "Report kind final when the PR is open, with its link in links", "handed_at": null}
             ],
-            "messages_held_for_turn_end": 0,
             "timeline": timeline
         })
     }

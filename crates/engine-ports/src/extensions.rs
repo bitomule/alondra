@@ -138,9 +138,6 @@ mod tests {
         }
         fn pause_for_seals(&self, _: std::time::Duration, _: &dyn Fn() -> bool) {}
         fn forget_sealed_observations(&self, _: &alondra_domain_rules::TaskId) {}
-        fn held(&self) -> &std::sync::Mutex<std::collections::BTreeMap<alondra_domain_rules::AgentId, Vec<String>>> {
-            unreachable!("no extension here holds messages")
-        }
         fn system_command(&self, _: CommandEnvelope) -> Result<CommandOutcome, DomainError> {
             unreachable!("no extension here commits")
         }
