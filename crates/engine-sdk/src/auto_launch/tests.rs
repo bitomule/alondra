@@ -734,6 +734,8 @@ async fn a_task_reopened_with_its_node_kept_by_the_user_gets_a_new_execution_tha
         pass(&*f.domain, &f.home).await.unwrap();
         crate::admission::pass_at(&*f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
     }
+    assert!(!f.domain.store.lock().unwrap().start_retries().unwrap().contains_key(&TaskId::from("f1")),
+        "the gate's own start of the reopened task took its grant: the kept node's owner never takes it");
     let state = f.domain.state().unwrap();
     let execution = state.lifecycle_of(&TaskId::from("f1")).unwrap().execution().cloned().expect("the reopened task runs an execution");
     assert_ne!(execution.host().as_str(), "claude-bg", "never an execution that no host runs");

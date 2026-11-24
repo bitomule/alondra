@@ -38,6 +38,10 @@ pub fn open(home: &Path) -> anyhow::Result<DomainRuntime> {
     Ok(runtime)
 }
 
+/// How long a test waits for the turns of a task before it fails: far past what the slowest run
+/// takes, so only a start nothing makes reaches it.
+const TURNS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// A domain whose launches start doubled hosts the model plays. Dropping it stops the domain's
 /// owners and ends every host left.
 pub struct SdkLaunches {
@@ -113,13 +117,29 @@ impl SdkLaunches {
     }
 
     /// Waits on the domain until `task`'s turns have ended on `turns` cards it rested on.
+    /// Past [`TURNS_DEADLINE`] it fails with what the task reads, so a start nothing makes is a
+    /// failure that says where the task stopped, never a test that hangs.
     pub async fn until_turns_ended(&self, task: &str, turns: usize) {
         let mut changed = self.domain.subscribe();
         let ended = |domain: &DomainRuntime| domain.read().state().interactions.keys()
             .filter(|card| rests_on(task, card)).count() >= turns;
-        while !ended(&self.domain) {
-            changed.changed().await.unwrap();
+        let waited = alondra_core::clock::timeout(TURNS_DEADLINE, async {
+            while !ended(&self.domain) {
+                changed.changed().await.unwrap();
+            }
+        }).await;
+        if waited.is_err() {
+            panic!("{task} did not end {turns} turns within {TURNS_DEADLINE:?}: {}", self.where_it_stopped(task));
         }
+    }
+
+    fn where_it_stopped(&self, task: &str) -> String {
+        let state = self.domain.state().unwrap();
+        let id = alondra_foundation::TaskId::from(task);
+        let cards: Vec<&str> = state.interactions.iter()
+            .filter(|(_, card)| matches!(&card.scope, alondra_domain_rules::Scope::Task { task_id } if task_id == &id))
+            .map(|(card, _)| card.0.as_str()).collect();
+        format!("task {:?}, lifecycle {:?}, cards {cards:?}, native starts {:?}", state.tasks.get(&id), state.lifecycle_of(&id), self.starts())
     }
 
     /// Waits on the domain until `task`'s first turn ended with Claude's answer.

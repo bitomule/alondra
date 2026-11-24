@@ -153,12 +153,12 @@ impl alondra_engine_ports::Runtime for DomainRuntime {
         DomainRuntime::own_projected(self, scope, stage, project).map(|((), outcomes)| outcomes)
     }
 
-    fn take_seals(&self, task: &TaskId) -> alondra_store::Committed {
-        self.seals.take(task)
+    fn take_seals(&self, task: &TaskId, node: &AgentId) -> alondra_store::Committed {
+        self.seals.take(task, node)
     }
 
-    fn wait_for_seals(&self, task: &TaskId, timeout: std::time::Duration, stopped: &dyn Fn() -> bool) -> alondra_store::Committed {
-        self.seals.wait_for(task, timeout, stopped)
+    fn wait_for_seals(&self, task: &TaskId, node: &AgentId, timeout: std::time::Duration, stopped: &dyn Fn() -> bool) -> alondra_store::Committed {
+        self.seals.wait_for(task, node, timeout, stopped)
     }
 
     fn pause_for_seals(&self, timeout: std::time::Duration, stopped: &dyn Fn() -> bool) {
@@ -1413,7 +1413,7 @@ mod snapshot_tests {
             let waiter_cleanup = cleanup.clone();
             let waiter = clock::spawn_thread(move || {
                 let first = std::cell::Cell::new(true);
-                let committed = waiter_domain.seals.wait_for(&"no-seals".into(), Duration::from_secs(60), || {
+                let committed = waiter_domain.seals.wait_for(&"no-seals".into(), &AgentId("no-seals".into()), Duration::from_secs(60), || {
                     let changed = waiter_changes.has_changed().unwrap();
                     if first.replace(false) {
                         ready.send(()).unwrap();

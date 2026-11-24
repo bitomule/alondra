@@ -63,11 +63,11 @@ impl Runtime for Forwarded {
     fn own_projected_with(&self, scope: AuthorityScope, stage: &mut dyn FnMut(&mut dyn OwnerJournal) -> Result<(), StoreError>, project: &mut dyn FnMut(&mut dyn Journal) -> Result<(), anyhow::Error>) -> Result<Vec<StagedOutcome>, StoreError> {
         self.0.own_projected_with(scope, stage, project)
     }
-    fn take_seals(&self, task: &TaskId) -> Committed {
-        self.0.take_seals(task)
+    fn take_seals(&self, task: &TaskId, node: &AgentId) -> Committed {
+        self.0.take_seals(task, node)
     }
-    fn wait_for_seals(&self, task: &TaskId, timeout: Duration, stopped: &dyn Fn() -> bool) -> Committed {
-        self.0.wait_for_seals(task, timeout, stopped)
+    fn wait_for_seals(&self, task: &TaskId, node: &AgentId, timeout: Duration, stopped: &dyn Fn() -> bool) -> Committed {
+        self.0.wait_for_seals(task, node, timeout, stopped)
     }
     fn pause_for_seals(&self, timeout: Duration, stopped: &dyn Fn() -> bool) {
         self.0.pause_for_seals(timeout, stopped);

@@ -852,7 +852,7 @@ pub(crate) fn launch_admitted(domain: Arc<dyn Runtime>, backend: &SdkBackend, ta
             Ok(adoption)
         })
         .map_err(failed("reserving the next owner"))?;
-    let mut sealed = domain.take_seals(&task);
+    let mut sealed = domain.take_seals(&task, &agent);
     let grant = sealed.owners.pop().ok_or_else(|| Failed::new("the reservation issued no owner grant".into()))?;
     let permit = sealed.permits.pop().ok_or_else(|| Failed::new("the reservation issued no launch permit".into()))?;
     let instance = adoption.stamp.instance().as_str().to_owned();
@@ -867,7 +867,7 @@ pub(crate) fn launch_admitted(domain: Arc<dyn Runtime>, backend: &SdkBackend, ta
     let identity=NativeAccountIdentity::load(worker.state_directory())?;
     domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref().map(|identity| identity as &dyn crate::domain_store::KnownIdentity))).map_err(failed("Alondra cannot resume this session"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
-    domain.take_seals(&task);
+    domain.take_seals(&task, &agent);
     worker.install_owner(grant, adapter_state).map_err(adapter("starting the SDK host"))?;
     unadmitted.admitted();
     let mut driver = Driver::new(domain, worker, scope, task.clone(), agent);
@@ -949,7 +949,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
         })
         .map_err(failed("reserving the next owner"))?;
     domain.owner_reserved();
-    let mut reserved = domain.take_seals(&task);
+    let mut reserved = domain.take_seals(&task, &agent);
     let grant = reserved.owners.pop().ok_or_else(|| Failed::new("the reservation issued no owner grant".into()))?;
     let owner_generation = grant.generation();
     let stamp = adoption.stamp;
@@ -963,7 +963,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
     let mut worker = Worker::configured(grant.binding().clone(), configuration(&*domain, on_account, grant.binding(), &adoption.directory, stamp.instance().as_str(), false, profile)?)
         .map_err(adapter("configuring the SDK worker"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
-    domain.take_seals(&task);
+    domain.take_seals(&task, &agent);
     let commands: Vec<&[u8]> = adoption.receipt_candidates.iter().map(|candidate| candidate.command.as_slice()).collect();
     let retain = |proofs: Vec<alondra_provider_contract::HandoffProof>| -> Result<(), Failed> {
         if proofs.is_empty() { return Ok(()) }
@@ -1844,7 +1844,7 @@ impl Driver {
 
     /// What the store issued for this task since the last look; its permits wait their turn.
     fn sealed(&mut self) -> Committed {
-        let mut sealed = self.domain.take_seals(&self.task);
+        let mut sealed = self.domain.take_seals(&self.task, &self.agent);
         self.receive_permits(std::mem::take(&mut sealed.permits));
         self.controls.extend(std::mem::take(&mut sealed.control_permits));
         sealed
@@ -2369,7 +2369,7 @@ impl Driver {
         if (!self.replacement || self.untaken) && self.worker.readable(Duration::ZERO).unwrap_or(true) {
             return self.observe().map(drop);
         }
-        let sealed = self.domain.wait_for_seals(&self.task, WAKE, &|| {
+        let sealed = self.domain.wait_for_seals(&self.task, &self.agent, WAKE, &|| {
             stopped() || self.pause.lock_or_recover("the SDK pause subscription").snapshots.has_changed().unwrap_or(false)
         });
         self.receive_permits(sealed.permits);

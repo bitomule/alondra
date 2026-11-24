@@ -48,6 +48,22 @@ fn unchanged_driver_pause_checks_do_not_query_the_domain() {
     assert_eq!(read, 0, "unchanged pause checks must not inspect tasks");
 }
 
+/// F-LIFE-2: the user kept a task's node when Alondra closed the task, so that node's owner still
+/// runs when the task reopens on a new node. It used to take the grant the store issued for the new
+/// execution, whose launch then failed for want of it and waited on a later takeover to start.
+#[cfg(not(feature = "real-hosts"))]
+#[test]
+fn what_the_store_issues_for_a_nodes_execution_is_never_taken_by_another_node_of_its_task() {
+    let slice = Slice::new();
+    let driver = slice.launch();
+    let task = TaskId::from(TASK);
+    slice.domain.own(driver.scope.clone(), |owner| owner.adopt(&task).map(drop)).unwrap();
+    let kept = AgentId("sdk-kept-by-the-user".into());
+    assert!(slice.domain.take_seals(&task, &kept).owners.is_empty(), "the kept node took the grant of another execution");
+    assert_eq!(slice.domain.take_seals(&task, &driver.agent).owners.len(), 1, "the execution's own node takes its grant");
+    drop(driver);
+}
+
 #[cfg(feature = "real-hosts")]
 // A1: a task launched through the SDK backend runs its first turn on the real host; the end of
 // that turn commits one card with the raw observation, and every acknowledgement leaves only
