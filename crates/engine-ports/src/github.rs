@@ -122,6 +122,9 @@ pub enum GhFailure {
     /// The address answered with another pull request than the one the action was for: nothing
     /// was done.
     IdentityMismatch(String),
+    /// GitHub's API limit for this account is spent: the same call works again once it resets,
+    /// with nothing for anyone to do.
+    RateLimited(String),
 }
 
 impl GhFailure {
@@ -142,6 +145,10 @@ impl GhFailure {
         matches!(self, Self::NotFound(_))
     }
 
+    pub fn rate_limited(&self) -> bool {
+        matches!(self, Self::RateLimited(_))
+    }
+
     pub fn unreadable(error: impl std::fmt::Display) -> Self {
         Self::Unreadable(error.to_string())
     }
@@ -151,7 +158,7 @@ impl std::fmt::Display for GhFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Launch(_, text) | Self::TimedOut(text) | Self::Exit(_, text) | Self::Unreadable(text) | Self::NotFound(text)
-                | Self::IdentityMismatch(text) => f.write_str(text),
+                | Self::IdentityMismatch(text) | Self::RateLimited(text) => f.write_str(text),
             Self::Http(status, text) => write!(f, "{text} (HTTP {status})"),
         }
     }
@@ -201,10 +208,20 @@ impl HttpAnswer {
             && (self.headers.get("x-ratelimit-remaining").is_some_and(|left| left == "0") || self.headers.contains_key("retry-after")))
     }
 
+    /// GitHub's GraphQL API answers its spent limit with a 200 and an error of type `RATE_LIMITED`.
+    pub fn graphql_rate_limited(&self) -> bool {
+        self.success() && serde_json::from_slice::<Value>(&self.body).ok()
+            .and_then(|value| value["errors"].as_array().map(|errors| errors.iter().any(|error| error["type"].as_str() == Some("RATE_LIMITED"))))
+            .unwrap_or(false)
+    }
+
     /// The answer as a failure, with GitHub's `message` for showing.
     pub fn failure(&self) -> GhFailure {
         let message = serde_json::from_slice::<Value>(&self.body).ok()
             .and_then(|value| value["message"].as_str().map(str::to_owned)).unwrap_or_default();
+        if self.rate_limited() {
+            return GhFailure::RateLimited(format!("{message} (HTTP {})", self.status));
+        }
         GhFailure::Http(self.status, message)
     }
 }
@@ -235,6 +252,8 @@ pub struct Status {
     /// The names of the checks that succeeded or need nothing more.
     pub passed: BTreeSet<String>,
     pub merge_state: MergeState,
+    /// GitHub's `reviewDecision` is REVIEW_REQUIRED: the base needs an approving review first.
+    pub review_required: bool,
     /// Which pull request answered, when GitHub said.
     pub identity: Option<ReadIdentity>,
 }

@@ -50,12 +50,15 @@ impl PrMerger for GhCli {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> {
         Box::pin(async move {
             let url = pr_url(&pr.host, &pr.repository, pr.number);
-            let out = self.run(&["pr", "view", &url, "--json", "state,headRefOid,headRefName,baseRefName,statusCheckRollup,mergeStateStatus,mergeable,fullDatabaseId,id,url"], None,
-                Duration::from_secs(30)).await?;
+            let out = match self.run(&["pr", "view", &url, "--json", "state,headRefOid,headRefName,baseRefName,statusCheckRollup,mergeStateStatus,mergeable,reviewDecision,fullDatabaseId,id,url"], None,
+                Duration::from_secs(30)).await {
+                Ok(out) => out,
+                Err(failure) => return Err(self.limit_failure(&pr.host, &pr.repository, pr.number, failure).await),
+            };
             let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
             let facts = crate::cli::parse(&value).map_err(GhFailure::Unreadable)?;
             Ok(Status { state: facts.state, head: facts.head, head_ref: value["headRefName"].as_str().unwrap_or_default().to_owned(), base: facts.base, checks: rollup(&value), passed: passed(&value),
-                merge_state: merge_state(&value), identity: facts.identity })
+                merge_state: merge_state(&value), review_required: value["reviewDecision"].as_str() == Some("REVIEW_REQUIRED"), identity: facts.identity })
         })
     }
     fn merge<'a>(&'a self, pr: &'a PullRequest, _expected: &'a ProviderPrKey, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {

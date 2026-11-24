@@ -103,6 +103,12 @@ pub fn missing(answer: &HttpAnswer) -> Option<String> {
     Some(found["message"].as_str().unwrap_or("GitHub has nothing at this address").to_owned())
 }
 
+/// GitHub's API limit is spent, as a GraphQL answer says it: by its status and headers, or by
+/// its error type.
+pub fn limited(answer: &HttpAnswer) -> bool {
+    answer.rate_limited() || answer.graphql_rate_limited()
+}
+
 /// What GitHub answered to `node(id:)`: the pull request it found, or for certain that none is
 /// there any more.
 pub fn located(answer: &HttpAnswer) -> Result<ReadIdentity, GhFailure> {
@@ -114,6 +120,8 @@ pub fn located(answer: &HttpAnswer) -> Result<ReadIdentity, GhFailure> {
     if node.is_null() {
         return Err(match missing(answer) {
             Some(message) => GhFailure::NotFound(message),
+            None if answer.graphql_rate_limited() =>
+                GhFailure::RateLimited(value["errors"][0]["message"].as_str().unwrap_or("GitHub's API rate limit is spent").to_owned()),
             None => GhFailure::Unreadable(value["errors"][0]["message"].as_str().unwrap_or("GitHub did not answer which pull request it is").to_owned()),
         });
     }
@@ -208,17 +216,32 @@ impl GhCli {
 
     /// What a failed `gh pr view` means for the pull request: `gh` prints GitHub's answer only as
     /// text, so the same lookup goes to GraphQL, whose `NOT_FOUND` says for certain nothing is
-    /// there. Anything else keeps the failure as it was. One more call, only after a failed read.
+    /// there and whose status, headers and error type say GitHub's API limit is spent. Anything
+    /// else keeps the failure as it was. One more call, only after a failed read.
     async fn view_failure(&self, host: &str, repository: &str, number: u64, failure: GhFailure) -> GhFailure {
-        let (GhFailure::Exit(..), Some((owner, name))) = (&failure, repository.split_once('/')) else {
-            return failure;
-        };
+        let GhFailure::Exit(..) = &failure else { return failure };
+        match self.address_answer(host, repository, number).await {
+            Some(answer) if limited(&answer) => GhFailure::RateLimited(failure.to_string()),
+            Some(answer) => missing(&answer).map_or(failure, GhFailure::NotFound),
+            None => failure,
+        }
+    }
+
+    /// A failed read is GitHub's spent API limit when the same lookup through GraphQL says so;
+    /// otherwise the failure stays as it was.
+    pub(crate) async fn limit_failure(&self, host: &str, repository: &str, number: u64, failure: GhFailure) -> GhFailure {
+        let GhFailure::Exit(..) = &failure else { return failure };
+        match self.address_answer(host, repository, number).await {
+            Some(answer) if limited(&answer) => GhFailure::RateLimited(failure.to_string()),
+            _ => failure,
+        }
+    }
+
+    async fn address_answer(&self, host: &str, repository: &str, number: u64) -> Option<HttpAnswer> {
+        let (owner, name) = repository.split_once('/')?;
         let host = alondra_domain_rules::normalize_pr_host(host);
         let (query, owner, name, number) = (format!("query={ADDRESS_QUERY}"), format!("owner={owner}"), format!("name={name}"), format!("number={number}"));
-        match self.api(&["graphql", "--hostname", &host, "-f", &query, "-f", &owner, "-f", &name, "-F", &number], Duration::from_secs(30)).await {
-            Ok(answer) => missing(&answer).map_or(failure, GhFailure::NotFound),
-            Err(_) => failure,
-        }
+        self.api(&["graphql", "--hostname", &host, "-f", &query, "-f", &owner, "-f", &name, "-F", &number], Duration::from_secs(30)).await.ok()
     }
 
     /// The open PR GitHub has for the branch checked out in `dir`, as host, `owner/repo` and number.

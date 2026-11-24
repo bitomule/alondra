@@ -1,11 +1,13 @@
 //! Find the open PRs a task of this daemon registered whose work no longer has a live owner.
-//! A PR no task registered is someone else's: the sweep never reads or adopts it.
+//! A PR no task registered is someone else's: the sweep never reads or adopts it. A cancelled
+//! task's PR Alondra knew closed and GitHub reports open again was reopened by someone: it goes to
+//! the user, never closed a second time.
 use alondra_core::clock;
 use crate::domain_github::execute_system;
 use crate::pr_identity::{identify, read_start};
 use alondra_engine_ports::github::{AuthoredPr, GitHub};
 use crate::domain_runtime::DomainRuntime;
-use alondra_domain_rules::{Command, DomainState, OpenPrPending, OpenedPr, PullRequest, TaskState};
+use alondra_domain_rules::{Command, DomainState, OpenPrPending, OpenedPr, PrState, PullRequest, TaskState};
 use alondra_core::options::OptionsFile;
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
@@ -89,7 +91,8 @@ pub async fn sweep(domain: &DomainRuntime, github: &GitHub, options: &OptionsFil
         };
         let state = domain.state()?;
         let (task_id, pr_id) = (known.task_id.clone(), known.id.clone());
-        let command = if state.tasks.get(&task_id).is_some_and(|task| task.state == TaskState::Cancelled) {
+        let reopened = state.pull_requests.get(&pr_id).is_none_or(|pr| pr.state != PrState::Open);
+        let command = if !reopened && state.tasks.get(&task_id).is_some_and(|task| task.state == TaskState::Cancelled) {
             Command::ClosePrOfCancelledTask { task_id, pr_id, branch, status: facts.status() }
         } else {
             Command::AdoptOpenPr { task_id, pr_id, branch, status: facts.status() }

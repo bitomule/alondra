@@ -83,11 +83,11 @@ to its fix group and issue.
 | S2 | [F-ENGINE-6](#f-engine-6--the-watch-advances-the-disk-incident-on-every-look-not-on-every-sample-with-watched-volumes-any-domain-change-restarts-the-recovery-and-without-them-one-sample-counts-twice) · The watch advances the disk incident on every look, not on every sample: with watched volumes any domain change restarts the recovery (and without them one sample counts twice) | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · fixed in `e7b898c30` |
 | S2 | [F-ENGINE-7](#f-engine-7--the-stretches-of-build-volumes-do-not-survive-a-restart-working-nodes-then-reserve-at-most-1-gb-there) · The stretches of build volumes do not survive a restart: working nodes then reserve at most 1 GB there | medium | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · no longer applies (`e7b898c30`) |
 | S2 | [F-ENGINE-9](#f-engine-9--a-volume-that-is-not-a-build-volume-can-stay-learned-forever-and-hold-every-start-and-the-turns) · A volume that is not a build volume can stay learned forever and hold every start and the turns | low | [G4](#g4--the-admission-gate-counts-what-is-really-running) · #521 · no longer applies (`e7b898c30`) |
-| S2 | [F-GH-1](#f-gh-1--the-watcher-closes-on-github-the-pr-of-a-task-the-user-just-reopened-or-that-another-task-just-took) · The watcher closes on GitHub the PR of a task the user just reopened (or that another task just took) | low-medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
+| S2 | **FIXED** [F-GH-1](#f-gh-1--the-watcher-closes-on-github-the-pr-of-a-task-the-user-just-reopened-or-that-another-task-just-took) · The watcher closes on GitHub the PR of a task the user just reopened (or that another task just took) | low-medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S2 | **FIXED** [F-GH-3](#f-gh-3--the-startup-sweep-of-cancelled-tasks-deletes-a-worktree-that-task-handed-to-another-if-the-other-is-already-closing-or-the-user-kept-it) · The startup sweep of cancelled tasks deletes a worktree that task handed to another, if the other is already closing or the user kept it | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S2 | [F-GH-5](#f-gh-5--post-merge-work-declared-and-the-node-idle-the-task-stays-working-forever-its-host-is-never-released-and-it-holds-a-slot) · Post-merge work declared and the node idle: the task stays "Working" forever, its host is never released and it holds a slot | medium-low | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
-| S2 | [F-GH-7](#f-gh-7--a-merge-that-github-blocks-for-a-required-review-goes-back-to-the-node-and-invalidates-the-users-acceptance-in-a-loop) · A merge that GitHub blocks for a required review goes back to the node and invalidates the user's acceptance, in a loop | medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
-| S2 | [F-GH-8](#f-gh-8--the-github-api-limit-still-raises-technical-cards-one-per-pr-in-the-watcher-and-another-per-pr-in-the-merger) · The GitHub API limit still raises technical cards: one per PR in the watcher and another per PR in the merger | low | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
+| S2 | **FIXED** [F-GH-7](#f-gh-7--a-merge-that-github-blocks-for-a-required-review-goes-back-to-the-node-and-invalidates-the-users-acceptance-in-a-loop) · A merge that GitHub blocks for a required review goes back to the node and invalidates the user's acceptance, in a loop | medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
+| S2 | **FIXED** [F-GH-8](#f-gh-8--the-github-api-limit-still-raises-technical-cards-one-per-pr-in-the-watcher-and-another-per-pr-in-the-merger) · The GitHub API limit still raises technical cards: one per PR in the watcher and another per PR in the merger | low | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S2 | [F-LIFE-1](#f-life-1--an-unstarted-task-that-waits-for-other-tasks-shows-as-queued-slot-wait-not-waiting-for-tasks) · An unstarted task that waits for other tasks shows as "Queued" (slot wait), not "Waiting for tasks" | high | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
 | S2 | [F-LIFE-2](#f-life-2--reopening-a-task-whose-sdk-node-the-user-left-open-creates-a-claude---bg-execution-nobody-runs) · Reopening a task whose SDK node the user left open creates a `claude --bg` execution nobody runs | low | [G2](#g2--a-released-task-always-has-a-way-back) · #519 · fixed in #552 |
 | S2 | [F-ORCH-1](#f-orch-1--a-daemon-restart-in-the-middle-of-a-batch-stops-the-orchestrator-until-the-user-answers-a-card) · A daemon restart in the middle of a batch stops the orchestrator until the user answers a card | medium | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
@@ -112,7 +112,7 @@ to its fix group and issue.
 | S3 | [F-ENGINE-5](#f-engine-5--task-statesmd-describes-a-timer-that-no-longer-exists-and-omits-the-ones-that-do) · `task-states.md` describes a timer that no longer exists and omits the ones that do | not | [G12](#g12--the-architecture-docs-match-the-code) · #529 |
 | S3 | **FIXED** [F-ENGINE-8](#f-engine-8--own_worktree-does-not-delete-the-worktree-of-a-task-that-ended-while-starting-the-domain-command-rejects-it-before-reaching-that-branch) · `own_worktree` does not delete the worktree of a task that ended while starting: the domain command rejects it before reaching that branch | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
 | S3 | **FIXED** [F-GH-6](#f-gh-6--an-attachment-of-a-user-message-to-an-open-task-is-deleted-after-30-days-even-though-the-task-is-still-open) · An attachment of a user message to an open task is deleted after 30 days even though the task is still open | low | [G1](#g1--never-delete-what-a-live-task-or-the-user-still-owns) · #518 |
-| S3 | [F-GH-9](#f-gh-9--the-merger-rereads-github-on-every-domain-commit-for-a-pr-closed-outside-or-with-a-new-head-until-the-watcher-sees-it) · The merger rereads GitHub on every domain commit for a PR closed outside or with a new head, until the watcher sees it | medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
+| S3 | **FIXED** [F-GH-9](#f-gh-9--the-merger-rereads-github-on-every-domain-commit-for-a-pr-closed-outside-or-with-a-new-head-until-the-watcher-sees-it) · The merger rereads GitHub on every domain commit for a PR closed outside or with a new head, until the watcher sees it | medium | [G7](#g7--github-no-closing-merging-or-reading-against-a-stale-picture) · #524 |
 | S3 | [F-ORCH-6](#f-orch-6--the-orchestrators-progress-marks-have-done-nothing-since-277) · The orchestrator's progress marks have done nothing since #277 | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S3 | [F-ORCH-7](#f-orch-7--an-accepted-cancellation-http-200-can-be-lost-orchestratorjson-is-written-without-a-lock-from-two-threads) · An accepted cancellation (HTTP 200) can be lost: `orchestrator.json` is written without a lock from two threads | very | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S3 | [F-ORCH-8](#f-orch-8--create_task-carries-no-priority-and-automatic-launch-wakes-in-the-same-commit-issue-352) · `create_task` carries no priority and automatic launch wakes in the same commit (issue #352) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
@@ -368,6 +368,11 @@ which fail without the fix and pass with it (ablation in the pull request).
 - **Tests**: domain tests, one per rule, each with the exact sequence of its finding.
 
 ### G7 · GitHub: no closing, merging or reading against a stale picture
+
+**Status**: FIXED (G7, PR #606, commit `eff59c21d`, from `main` at `93dbd23c8`). Each finding below carries its
+test and ablation. The race F-GH-1 describes in the watcher's round was already closed on `main` by #590
+(`9c599b4dc`), which reads the domain again after each PR's GitHub read; its test pins that. What still broke
+the user's decision of 2026-11-22 was the hourly sweep, which closed again a PR the user reopened.
 
 Issue: #524 · Severity: S2 · Findings: F-GH-1, F-GH-7, F-GH-8, F-GH-9 · Depends on: none.
 
@@ -2997,6 +3002,9 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   skipping; authorize (auto-merge) and claim; `still_due` right before `ready` and before `merge`; `merge` or
   `merge_bypassing`; `confirm` (Merged: record; otherwise `queued`).
 - **Rejected**: a command the domain rejects is logged and the step stays in `Wait` (`recorded`, `:658-669`).
+- **Since G7**: Closed or Open at another head is recorded before `Settled` (F-GH-9); a required review
+  (`Status.review_required`) waits with one card (`review`, F-GH-7); GitHub's rate limit (`GhFailure::RateLimited`)
+  waits and never counts toward a card or a hand-back (F-GH-8).
 - **Concurrency**: one loop only (the `Merger` in `views/actions.rs:3981` is test-only). `still_due` is evaluated with no
   `await` between it and `gh pr merge`; a cancellation that arrives during the `gh` call cannot be avoided.
 - **Persistence and restart**: `queued` is lost. A PR already in GitHub's merge queue goes through checks and
@@ -3012,7 +3020,8 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   when another task takes the PR (`RegisterPr`, `rules.rs:4664`) or on reopen (`ReopenTask`, `rules.rs:5300`).
   `Deliver` -> None with `SettleOpenPr` (Closed: `cancel`; Open/Merged: `OpenPrDelivery` delivery card).
 - **Effects**: `observer.close(...)` (comment plus close on GitHub) from `reconcile` when the PR is still Open and the
-  snapshot says `Close` (`domain_github.rs:131-146`). See F-GH-1.
+  snapshot says `Close` (`domain_github.rs:131-146`). See F-GH-1. Since G7 a close GitHub accepted is recorded as
+  `Closed` at once, which ends the `Close`: Alondra closes a cancelled task's PR once.
 - **Persistence and restart**: the pending value lives in SQLite; the failure counters and the doubled wait are lost
   (the attempt is repeated).
 
@@ -3046,7 +3055,10 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
   repos of the projects folder. For each PR registered by a terminal task with no pending `Close` and whose branch does
   not belong to a live task (`worktree-<id>`): `ClosePrOfCancelledTask` if the task is cancelled, otherwise
   `AdoptOpenPr` (reopens the task and its delivery) (`open_pr_sweep.rs:68-96`). The domain revalidates both
-  (`rules/open_pr.rs:66-103`, `rules.rs:5259-5296`).
+  (`rules/open_pr.rs:66-103`, `rules.rs:5259-5296`). Since G7 (the user's decision of 2026-11-22) a cancelled task's
+  PR whose record Alondra holds closed was reopened by someone: the sweep adopts it (the user gets it as an open PR)
+  and `ClosePrOfCancelledTask` refuses it, so it is never closed a second time. `ClosePrOfCancelledTask` is left for
+  a record still `Open` with nothing closing it, which only an older build leaves.
 
 ### M-GH-8 · Worktree record of a task (`task_worktree_records`, `task_worktrees`, `worktree_storage`)
 - **Kind**: explicit per worktree. **Defined in**: `model.rs:312-345` (`TaskWorktree {origin: Task|Inherited|Subagent|Entered,
@@ -3129,6 +3141,24 @@ turn that began after the last declaration ending idle after the merge (`PostMer
 ### Findings
 
 #### F-GH-1 · The watcher closes on GitHub the PR of a task the user just reopened (or that another task just took)
+**Status**: FIXED in G7 (PR #606). Two parts:
+- *The watcher's stale snapshot* no longer happens on `main` at `93dbd23c8`: since #590 (`9c599b4dc`) `reconcile`
+  reads `domain.state()` after each PR's GitHub read, so a reopen or a move during the reads of the PRs before it is
+  seen. Test `domain_github::tests::the_watcher_reads_the_task_again_before_closing_its_pr` (the minimal sequence
+  below: the reopen runs inside the read of the PR read first) passes on `93dbd23c8` unchanged; it stays as a
+  regression test. No code change for this part.
+- *Closed once, then the user's* (the user's decision of 2026-11-22) did not hold on `93dbd23c8`: the hourly sweep
+  (M-GH-7) sent `ClosePrOfCancelledTask` for a cancelled task's PR that Alondra had closed and the user reopened, and
+  the watcher closed it again within the next round; and a close GitHub accepted counted only once a read after it
+  succeeded, so a failed read left the `Close` pending and a reopen before the next round was closed again. Now:
+  `ClosePrOfCancelledTask` refuses (`open_pr_close`, field `pr_id`) a PR whose record is not `Open`
+  (`domain-rules/src/rules/open_pr.rs`), the sweep sends `AdoptOpenPr` for it, which delivers it to the user
+  (`open_pr_sweep.rs`), and the watcher records a close GitHub accepted as `Closed` at once, without a read after it
+  (`domain_github.rs`). Tests: `domain-rules` `open_pr_close_tests::a_cancelled_tasks_pr_alondra_closed_once_and_someone_reopened_goes_to_the_user`;
+  `engine-github` `open_pr_sweep::tests::a_cancelled_tasks_pr_reopened_after_alondra_closed_it_goes_to_the_user_and_is_never_closed_again`
+  and `domain_github::tests::a_close_github_accepted_is_recorded_even_when_the_read_after_it_fails`. Ablation in the PR.
+  The tests that asserted the old re-close (`the_sweep_closes_the_open_pr_of_a_cancelled_task_once_…`, and the
+  fixtures that reached a pending close through a reopened PR) were replaced.
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: low-medium · **Overlap**: none in the plans of related work; the stable pull request identity work covers PR moves, not this race.
 - **Invalid state/transition and broken invariant**: a live (reopened) task, or a PR with a new live owner, and the PR
   closed by Alondra with the comment "Cancelled in Alondra". It breaks "Alondra only closes the PR of a task the user
@@ -3299,6 +3329,13 @@ task. Tests: `answered_card_tests::after_the_merge_a_turn_that_ends_idle_without
   requests and scheduled launches. File: `crates/daemon-support/src/files_retention.rs`.
 
 #### F-GH-7 · A merge that GitHub blocks for a required review goes back to the node and invalidates the user's acceptance, in a loop
+**Status**: FIXED in G7 (PR #606). `Status` carries `review_required` (GitHub's `reviewDecision` is
+`REVIEW_REQUIRED`, read in the same `gh pr view`, `github-gh/src/merges.rs`). The merger checks it before claiming
+and merging when the PR is not `CLEAN`, and again in `merge_failed`: it raises one «Get PR #n approved on GitHub»
+card and waits, with the acceptance valid and nothing handed back; the card is withdrawn once the review is in
+(`domain_merges.rs`, `ask_review`/`clear_review`). `CHANGES_REQUESTED` still goes back to the node as before. Test:
+`domain_merges::tests::a_merge_github_holds_for_a_required_review_waits_for_it_with_the_acceptance_intact`.
+Ablation in the PR.
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: medium in repos with a mandatory review, none without one · **Overlap**: none.
 - **Invalid state/transition and broken invariant**: the node receives "fix and deliver again" for something only a person can
   give on GitHub, and the user's acceptance is invalidated. It breaks the distinction the merger itself makes for checks
@@ -3323,6 +3360,17 @@ task. Tests: `answered_card_tests::after_the_merge_a_turn_that_ends_idle_without
   `crates/engine-ports/src/github.rs` (`Status`), `crates/engine-github/src/domain_merges.rs`.
 
 #### F-GH-8 · The GitHub API limit still raises technical cards: one per PR in the watcher and another per PR in the merger
+**Status**: FIXED in G7 (PR #606). `GhFailure::RateLimited` is GitHub's spent limit, told by typed signals
+only, never by `gh`'s words: an `HttpAnswer` that `rate_limited()` (429, or 403 with no requests left or a
+`retry-after`), or a GraphQL answer with an error of type `RATE_LIMITED` (`graphql_rate_limited`). `gh pr view`
+only prints text, so a failed read of the watcher or of the merger asks the same address through
+`gh api graphql --include` once, the call the watcher already made to tell a missing PR (`view_failure`,
+`limit_failure`, `github-gh/src/cli.rs`, `merges.rs`). It counts toward no card: the watcher logs it and reads again next
+round (reads and closes); the merger's `troubled` ignores it, and a merge, a `ready` or a read after a failed merge
+that hit it waits for the next poll instead of a retry that ends in a hand-back. Showing «waiting for the GitHub
+API» on the task is not part of this fix. Tests: `domain_github::tests::githubs_api_limit_never_raises_a_card_in_the_watcher`,
+`domain_merges::tests::githubs_api_limit_never_raises_a_merge_card_or_hands_the_delivery_back`, and the
+classification in `github-gh` `cli_tests::githubs_rate_limit_is_told_apart_from_other_failures`. Ablation in the PR.
 **Class**: CONFIRMED (behavior; what exactly the earlier change that stopped GitHub rate-limit cards intended is not in this history) · **Severity**: S2 · **Probability**: low (only with the limit exhausted for more than 5 min) · **Overlap**: the earlier change that stopped GitHub rate-limit cards (done) did not reach these two paths; the evidence is new.
 - **Invalid state/transition and broken invariant**: a card to the user for a wait that resolves itself (product rules "no
   technical cards" and "cards only when actionable"). The only code that recognizes the limit is `HttpAnswer::rate_limited`
@@ -3343,6 +3391,10 @@ task. Tests: `answered_card_tests::after_the_merge_a_turn_that_ends_idle_without
   as a transient failure with a reset time; do not count it toward cards; space the reads until the reset.
 
 #### F-GH-9 · The merger rereads GitHub on every domain commit for a PR closed outside or with a new head, until the watcher sees it
+**Status**: FIXED in G7 (PR #606). `step` records what it read (`observe_status`) when GitHub reports the PR
+closed or open at another head, as it already did for a merge, so the PR stops being due at once. Test:
+`domain_merges::tests::a_pr_closed_or_pushed_outside_alondra_is_recorded_and_read_once` (10 merger passes, one
+GitHub read, for both cases). Ablation in the PR.
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: medium · **Overlap**: none stated; it brings the call volume close to the F-GH-8 limit.
 - **Evidence**:
   1. `step` returns `Settled` without recording anything when GitHub says Closed or Open with another head
