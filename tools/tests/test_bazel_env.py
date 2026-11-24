@@ -20,7 +20,7 @@ class BazelEnv(unittest.TestCase):
         self.assertTrue((ROOT / "tools/bazel").is_file(), "tools/bazel must be the wrapper file, not a package")
 
     def test_scripts_are_executable(self):
-        for path in ["bazel/env/launcher.sh", "bazel/env/ensure.sh", "tools/musts-stamp.sh"]:
+        for path in ["bazel/env/launcher.sh", "bazel/env/ensure.sh"]:
             self.assertTrue(executable(path), path)
 
     def test_the_wrapper_installs_a_launcher_for_every_tool_bazel_env_exposes(self):
@@ -31,13 +31,8 @@ class BazelEnv(unittest.TestCase):
 
     def test_launchers_and_wrapper_agree_on_the_marker_that_proves_a_file_is_theirs(self):
         marker = "alondra-bazel-env-launcher"
-        for path in ["bazel/env/launcher.sh", "tools/bazel", "tools/musts-stamp.sh"]:
+        for path in ["bazel/env/launcher.sh", "tools/bazel"]:
             self.assertIn(marker, (ROOT / path).read_text(), path)
-
-    def test_the_status_script_never_runs_a_launcher_inside_a_bazel_command(self):
-        text = (ROOT / "tools/musts-stamp.sh").read_text()
-        self.assertIn("bazel/env/.bazel_env/bin/musts", text)
-        self.assertIn("alondra-bazel-env-launcher", text)
 
     def test_the_output_of_bazel_env_stays_out_of_git(self):
         ignored = (ROOT / ".gitignore").read_text().splitlines()

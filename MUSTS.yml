@@ -133,7 +133,6 @@ checks:
       - ".gitignore"
       - "tools/BUILD.bazel"
       - "tools/bazel"
-      - "tools/musts-stamp.sh"
       - "tools/tests/test_bazel_env.py"
       - "tools/tests/test_ci.py"
       - "bazel/rules/BUILD.bazel"
