@@ -48,12 +48,42 @@ pub struct Status {
     pub rejected: Option<Rejected>,
 }
 
+/// A failed automatic update is tried again this many times for the same version.
+pub const RETRIES: u32 = 3;
+const FIRST_RETRY_AFTER_MS: Millis = 30 * 60_000;
+
+/// The last automatic update of a version: `attempts` counts every try of that version.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Attempt {
     pub version: String,
     pub at: Millis,
     pub ok: bool,
     pub detail: String,
+    #[serde(default = "one")]
+    pub attempts: u32,
+}
+
+fn one() -> u32 {
+    1
+}
+
+impl Attempt {
+    /// A new try of `version`: the count goes on from a failed try of the same version.
+    pub fn after(last: Option<&Attempt>, version: String, at: Millis, ok: bool, detail: String) -> Self {
+        let attempts = last.filter(|l| l.version == version && !l.ok).map_or(1, |l| l.attempts.saturating_add(1));
+        Self { version, at, ok, detail, attempts }
+    }
+
+    /// Every retry failed: this version waits for the next release or a manual `alondra update`.
+    pub fn gave_up(&self) -> bool {
+        !self.ok && self.attempts > RETRIES
+    }
+
+    /// When a failed try may run again: 30 min, 2 h and 8 h after the first, second and third.
+    pub fn retry_at(&self) -> Option<Millis> {
+        let wait = FIRST_RETRY_AFTER_MS.saturating_mul(4i64.saturating_pow(self.attempts.saturating_sub(1)));
+        (!self.ok && !self.gave_up()).then(|| self.at.saturating_add(wait))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

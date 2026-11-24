@@ -34,7 +34,14 @@ pub struct Direct {
     signing_key: String,
     agreement_key: String,
     permits: tokio::sync::Semaphore,
-    approve: Box<dyn Fn(&pairing::ApprovedDevice) -> Result<(), String> + Send + Sync>,
+    approval: DeviceApproval,
+}
+
+/// What this Mac does with a device a direct pairing asks for: whether it could ever approve
+/// it, and what approving it writes.
+pub struct DeviceApproval {
+    pub admit: Box<dyn Fn(&pairing::ApprovedDevice) -> Result<(), PairingError> + Send + Sync>,
+    pub persist: Box<dyn Fn(&pairing::ApprovedDevice) -> Result<(), String> + Send + Sync>,
 }
 
 impl Direct {
@@ -42,7 +49,7 @@ impl Direct {
         service: Arc<Service>,
         pairings: Arc<PairingBook>,
         name: String,
-        approve: Box<dyn Fn(&pairing::ApprovedDevice) -> Result<(), String> + Send + Sync>,
+        approval: DeviceApproval,
     ) -> Self {
         let signing_key = URL_SAFE_NO_PAD
             .encode(service.signing_key().verifying_key().to_sec1_point(false).as_bytes());
@@ -55,7 +62,7 @@ impl Direct {
             signing_key,
             agreement_key,
             permits: tokio::sync::Semaphore::new(MAX_CONCURRENT),
-            approve,
+            approval,
         }
     }
 
@@ -75,7 +82,7 @@ impl Direct {
 
     /// Approves a waiting request from this Mac: pins and approves the device, then signs.
     pub(crate) fn approve(&self, pairing_id: &str) -> Result<(), PairingError> {
-        self.pairings.approve(&self.identity(), pairing_id, now_ms(), |device| (self.approve)(device))
+        self.pairings.approve(&self.identity(), pairing_id, now_ms(), &self.approval.admit, &self.approval.persist)
     }
 }
 
@@ -244,7 +251,7 @@ async fn start_pairing(
     let Ok(body) = serde_json::from_slice::<StartBody>(&body) else {
         return refuse(StatusCode::BAD_REQUEST, "invalid_pairing");
     };
-    match direct.pairings.start(&direct.identity(), peer.ip(), body, now_ms()) {
+    match direct.pairings.start(&direct.identity(), peer.ip(), body, now_ms(), &direct.approval.admit) {
         Ok(started) => Json(started).into_response(),
         Err(error) => pairing_error(error),
     }

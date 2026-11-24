@@ -22,9 +22,12 @@ when the count drops ([push fields](push-fields.md)).
 - **The app** writes the Macs it is connected to in the clear, as `reports`. It keeps the sealed
   reports of every other Mac, so a foreground update never loses their counts.
 
-An activity stays known to the relay until APNs takes its end, and a sweep once a minute picks up
-what no report will: a push lost to a restart, or a failed end. One started for an app closed by
+An activity stays known to the relay until APNs takes its end, and a sweep at start and once a
+minute picks up what no report will: a push lost to a restart, a failed end, or the reports of a
+revoked Mac that could not be forgotten when it was revoked. One started for an app closed by
 force has no update token, so it cannot be ended; nothing starts on top of it until it rotates. A
+start the relay recorded but stopped before APNs answered counts as never sent when the relay
+starts again, so it does not hold the next start for hours. A
 Mac told a phone is gone asks again after an hour: Live Activities turned back on register the same
 phone with the same binding.
 

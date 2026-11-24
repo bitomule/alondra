@@ -214,13 +214,16 @@ impl PairingBook {
             .map_err(|e| PairingError::Internal(e.to_string()))
     }
 
-    /// Step one: the client's keys and commitment. The Mac answers with its own nonce.
+    /// Step one: the client's keys and commitment. The Mac answers with its own nonce. `admit`
+    /// says whether this Mac could approve the device at all: a revoked id or one it holds with
+    /// other keys is refused here, before it reaches the user.
     pub(crate) fn start(
         &self,
         mac: &MacIdentity<'_>,
         address: IpAddr,
         body: StartBody,
         now_ms: u64,
+        admit: impl FnOnce(&ApprovedDevice) -> Result<(), PairingError>,
     ) -> Result<Started, PairingError> {
         let envelope = &body.envelope;
         if envelope.kind != "pairing" || envelope.route != mac.mac_id || envelope.recipient != mac.mac_id {
@@ -248,6 +251,12 @@ impl PairingBook {
         if self.denied().contains(&fingerprint(&plain.signing_key)) {
             return Err(PairingError::Denied);
         }
+        admit(&ApprovedDevice {
+            device_id: plain.device_id.clone(),
+            name: plain.name.clone(),
+            signing_key: plain.signing_key.clone(),
+            agreement_key: plain.agreement_key.clone(),
+        })?;
         let mut book = self.book.lock_or_recover("the pairing book");
         book.requests.retain(|_, request| !request.stale(now_ms));
         if let Some((id, existing)) = book.requests.iter().find(|(_, r)| r.device_id == plain.device_id) {
@@ -404,12 +413,15 @@ impl PairingBook {
 
     /// Persists the device through `persist` (which pins its keys and approves it on this Mac),
     /// then signs the approval the client verifies. Persisting comes first: a signed approval
-    /// for a device the Mac does not know would leave the client paired to nothing.
+    /// for a device the Mac does not know would leave the client paired to nothing. A device
+    /// `admit` refuses now (revoked or given other keys since it started) ends denied, so the
+    /// client hears it instead of waiting for the request to expire.
     pub(crate) fn approve(
         &self,
         mac: &MacIdentity<'_>,
         pairing_id: &str,
         now_ms: u64,
+        admit: impl FnOnce(&ApprovedDevice) -> Result<(), PairingError>,
         persist: impl FnOnce(&ApprovedDevice) -> Result<(), String>,
     ) -> Result<(), PairingError> {
         let mut book = self.book.lock_or_recover("the pairing book");
@@ -423,13 +435,18 @@ impl PairingBook {
         let State::AwaitingApproval { client_nonce, .. } = request.state.clone() else {
             return Err(PairingError::Invalid("pairing not revealed"));
         };
-        persist(&ApprovedDevice {
+        let device = ApprovedDevice {
             device_id: request.device_id.clone(),
             name: request.name.clone(),
             signing_key: request.signing_key.clone(),
             agreement_key: request.agreement_key.clone(),
-        })
-        .map_err(PairingError::Internal)?;
+        };
+        if let Err(refused @ (PairingError::Denied | PairingError::Conflict)) = admit(&device) {
+            request.state = State::Denied;
+            request.decided_at_ms = Some(now_ms);
+            return Err(refused);
+        }
+        persist(&device).map_err(PairingError::Internal)?;
         let digest = transcript(mac, pairing_id, request, &client_nonce)
             .digest()
             .map_err(|e| PairingError::Internal(e.to_string()))?;
@@ -604,19 +621,23 @@ mod tests {
         crate::test_support::Owned::new(PairingBook::new(&home), home)
     }
 
+    fn admitted(_: &ApprovedDevice) -> Result<(), PairingError> {
+        Ok(())
+    }
+
     const LAN: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 20));
 
     #[test]
     fn both_sides_show_the_same_code_and_the_approval_verifies_against_hello() {
         let (mac, client, book) = (Mac::new(1), Client::new(30), book());
-        let started = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000).unwrap();
+        let started = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000, admitted).unwrap();
         assert!(book.pending(1_000).is_empty(), "the user sees nothing before the reveal");
         book.reveal(&mac.identity(), &started.pairing_id, client.reveal_body(&mac, &started.pairing_id), 1_100).unwrap();
         let pending = book.pending(1_100);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].code, client.code(&mac.signing_key, &mac.agreement_key, &started));
         let mut persisted = None;
-        book.approve(&mac.identity(), &started.pairing_id, 1_200, |device| {
+        book.approve(&mac.identity(), &started.pairing_id, 1_200, admitted, |device| {
             persisted = Some(device.device_id.clone());
             Ok(())
         })
@@ -644,7 +665,7 @@ mod tests {
     #[test]
     fn a_fake_mac_in_the_middle_shows_a_different_code() {
         let (real, fake, client, book) = (Mac::new(1), Mac::new(50), Client::new(30), book());
-        let started = book.start(&real.identity(), LAN, client.start_body(&real), 1_000).unwrap();
+        let started = book.start(&real.identity(), LAN, client.start_body(&real), 1_000, admitted).unwrap();
         book.reveal(&real.identity(), &started.pairing_id, client.reveal_body(&real, &started.pairing_id), 1_100).unwrap();
         let on_mac = &book.pending(1_100)[0].code;
         assert_ne!(on_mac, &client.code(&fake.signing_key, &fake.agreement_key, &started));
@@ -653,7 +674,7 @@ mod tests {
     #[test]
     fn a_reveal_that_does_not_match_the_commitment_is_refused() {
         let (mac, client, book) = (Mac::new(1), Client::new(30), book());
-        let started = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000).unwrap();
+        let started = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000, admitted).unwrap();
         let liar = Client { nonce: URL_SAFE_NO_PAD.encode([99u8; 32]), ..Client::new(30) };
         assert_eq!(
             book.reveal(&mac.identity(), &started.pairing_id, liar.reveal_body(&mac, &started.pairing_id), 1_100),
@@ -665,40 +686,66 @@ mod tests {
     #[test]
     fn a_request_expires_after_two_minutes() {
         let (mac, client, book) = (Mac::new(1), Client::new(30), book());
-        let started = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000).unwrap();
+        let started = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000, admitted).unwrap();
         book.reveal(&mac.identity(), &started.pairing_id, client.reveal_body(&mac, &started.pairing_id), 1_100).unwrap();
         let late = 1_000 + PENDING_TTL_MS;
         assert!(book.pending(late).is_empty());
         assert_eq!(book.status(&started.pairing_id, late).unwrap(), Status::Expired);
-        assert_eq!(book.approve(&mac.identity(), &started.pairing_id, late, |_| Ok(())), Err(PairingError::Expired));
+        assert_eq!(book.approve(&mac.identity(), &started.pairing_id, late, admitted, |_| Ok(())), Err(PairingError::Expired));
+    }
+
+    #[test]
+    fn a_device_this_mac_cannot_approve_never_reaches_the_user() {
+        let (mac, client, book) = (Mac::new(1), Client::new(30), book());
+        let revoked = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000, |_| Err(PairingError::Denied));
+        assert_eq!(revoked.err(), Some(PairingError::Denied));
+        let other_keys = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000, |_| Err(PairingError::Conflict));
+        assert_eq!(other_keys.err(), Some(PairingError::Conflict));
+        assert!(book.pending(1_000).is_empty());
+    }
+
+    #[test]
+    fn a_device_revoked_while_it_waits_ends_denied_instead_of_expiring() {
+        let (mac, client, book) = (Mac::new(1), Client::new(30), book());
+        let started = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000, admitted).unwrap();
+        book.reveal(&mac.identity(), &started.pairing_id, client.reveal_body(&mac, &started.pairing_id), 1_100).unwrap();
+        let persisted = std::cell::Cell::new(false);
+        let approved = book.approve(&mac.identity(), &started.pairing_id, 1_200, |_| Err(PairingError::Denied), |_| {
+            persisted.set(true);
+            Ok(())
+        });
+        assert_eq!(approved, Err(PairingError::Denied));
+        assert!(!persisted.get(), "nothing is written for it");
+        assert_eq!(book.status(&started.pairing_id, 1_000 + PENDING_TTL_MS).unwrap(), Status::Denied, "the client hears it, not «expired»");
+        assert!(book.pending(1_200).is_empty());
     }
 
     #[test]
     fn denied_keys_cannot_ask_again() {
         let (mac, client, book) = (Mac::new(1), Client::new(30), book());
-        let started = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000).unwrap();
+        let started = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000, admitted).unwrap();
         book.reveal(&mac.identity(), &started.pairing_id, client.reveal_body(&mac, &started.pairing_id), 1_100).unwrap();
         book.deny(&started.pairing_id, 1_200).unwrap();
         assert_eq!(book.status(&started.pairing_id, 1_200).unwrap(), Status::Denied);
         let again = PairingBook::new(book.denied_path.parent().unwrap());
-        assert_eq!(again.start(&mac.identity(), LAN, client.start_body(&mac), 2_000), Err(PairingError::Denied));
+        assert_eq!(again.start(&mac.identity(), LAN, client.start_body(&mac), 2_000, admitted), Err(PairingError::Denied));
     }
 
     #[test]
     fn limits_pending_requests_per_address_and_in_total() {
         let (mac, book) = (Mac::new(1), book());
-        book.start(&mac.identity(), LAN, Client::new(30).start_body(&mac), 1_000).unwrap();
+        book.start(&mac.identity(), LAN, Client::new(30).start_body(&mac), 1_000, admitted).unwrap();
         assert_eq!(
-            book.start(&mac.identity(), LAN, Client::new(32).start_body(&mac), 1_000),
+            book.start(&mac.identity(), LAN, Client::new(32).start_body(&mac), 1_000, admitted),
             Err(PairingError::Busy)
         );
         for last in 2..=4u8 {
             let address = IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, last));
-            book.start(&mac.identity(), address, Client::new(30 + 2 * last).start_body(&mac), 1_000).unwrap();
+            book.start(&mac.identity(), address, Client::new(30 + 2 * last).start_body(&mac), 1_000, admitted).unwrap();
         }
         let fifth = IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 9));
         assert_eq!(
-            book.start(&mac.identity(), fifth, Client::new(60).start_body(&mac), 1_000),
+            book.start(&mac.identity(), fifth, Client::new(60).start_body(&mac), 1_000, admitted),
             Err(PairingError::Busy)
         );
     }
@@ -708,22 +755,22 @@ mod tests {
         let (mac, book) = (Mac::new(1), book());
         for attempt in 0..STARTS_PER_ADDRESS as u64 {
             let started = book
-                .start(&mac.identity(), LAN, Client::new(30 + 2 * attempt as u8).start_body(&mac), 1_000 + attempt)
+                .start(&mac.identity(), LAN, Client::new(30 + 2 * attempt as u8).start_body(&mac), 1_000 + attempt, admitted)
                 .unwrap();
             book.deny(&started.pairing_id, 1_000 + attempt).unwrap();
         }
         assert_eq!(
-            book.start(&mac.identity(), LAN, Client::new(90).start_body(&mac), 2_000),
+            book.start(&mac.identity(), LAN, Client::new(90).start_body(&mac), 2_000, admitted),
             Err(PairingError::Busy)
         );
-        assert!(book.start(&mac.identity(), LAN, Client::new(90).start_body(&mac), 1_000 + START_WINDOW_MS).is_ok());
+        assert!(book.start(&mac.identity(), LAN, Client::new(90).start_body(&mac), 1_000 + START_WINDOW_MS, admitted).is_ok());
     }
 
     #[test]
     fn repeating_the_first_step_returns_the_same_request() {
         let (mac, client, book) = (Mac::new(1), Client::new(30), book());
-        let first = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000).unwrap();
-        let again = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_050).unwrap();
+        let first = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_000, admitted).unwrap();
+        let again = book.start(&mac.identity(), LAN, client.start_body(&mac), 1_050, admitted).unwrap();
         assert_eq!(first, again);
     }
 
@@ -731,7 +778,7 @@ mod tests {
     fn an_envelope_for_another_mac_is_refused() {
         let (mac, other, client, book) = (Mac::new(1), Mac::new(50), Client::new(30), book());
         assert_eq!(
-            book.start(&mac.identity(), LAN, client.start_body(&other), 1_000),
+            book.start(&mac.identity(), LAN, client.start_body(&other), 1_000, admitted),
             Err(PairingError::Invalid("envelope"))
         );
     }

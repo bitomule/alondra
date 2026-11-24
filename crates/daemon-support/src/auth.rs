@@ -47,6 +47,8 @@ pub struct Device {
 pub enum ServiceApprovalError {
     /// This Mac revoked that device ID; pairing again needs a new device ID.
     Revoked,
+    /// This Mac already holds that device ID with another key.
+    OtherKey,
     Refused(String),
 }
 
@@ -66,6 +68,7 @@ impl From<ServiceApprovalError> for String {
     fn from(error: ServiceApprovalError) -> Self {
         match error {
             ServiceApprovalError::Revoked => "device was revoked on this Mac; pair again with a new device ID".into(),
+            ServiceApprovalError::OtherKey => "device ID already has another key".into(),
             ServiceApprovalError::Refused(reason) => reason,
         }
     }
@@ -312,12 +315,7 @@ impl Auth {
             || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
             || name.len() > 80 || name.chars().any(char::is_control)
         { return Err("invalid service device".into()); }
-        let raw = URL_SAFE_NO_PAD.decode(signing_key).map_err(|_| "invalid service signing key")?;
-        let key = VerifyingKey::from_sec1_bytes(&raw).map_err(|_| "invalid service signing key")?;
-        if raw.len() != 65 || raw[0] != 4 || URL_SAFE_NO_PAD.encode(&raw) != signing_key {
-            return Err("noncanonical service signing key".into());
-        }
-        let public_key = B64.encode(key.to_sec1_bytes());
+        let public_key = service_public_key(signing_key)?;
         let home = self.path.parent().ok_or("approval home missing")?;
         let _lease = crate::approval_lease::ApprovalLease::exclusive(home)
             .map_err(|error| error.to_string())?;
@@ -329,7 +327,7 @@ impl Auth {
         if let Some(existing) = next.iter().find(|d| d.id == id) {
             let same_key = existing.public_key == public_key;
             *devices = devices.with_devices(next);
-            return if same_key { Ok(()) } else { Err("device ID already has another key".into()) };
+            return if same_key { Ok(()) } else { Err(ServiceApprovalError::OtherKey) };
         }
         next.push(Device { id: id.into(), name: name.into(), public_key,
             created_at: now_millis(), last_seen: None });
@@ -337,6 +335,21 @@ impl Auth {
         self.save(&prepared.devices).map_err(|e| e.to_string())?;
         *devices = prepared;
         Ok(())
+    }
+
+    /// What [`Auth::approve_service`] would answer for this device, read without the lease and
+    /// without writing: a request it would refuse never has to reach the user.
+    pub fn service_admits(&self, id: &str, signing_key: &str) -> Result<(), ServiceApprovalError> {
+        let public_key = service_public_key(signing_key)?;
+        let home = self.path.parent().ok_or("approval home missing")?;
+        if crate::revoked_devices::RevokedDevices::open(home).signing_key(id).is_some() {
+            return Err(ServiceApprovalError::Revoked);
+        }
+        let persisted = self.persisted().map_err(|error| error.to_string())?;
+        match persisted.iter().find(|d| d.id == id) {
+            Some(existing) if existing.public_key != public_key => Err(ServiceApprovalError::OtherKey),
+            _ => Ok(()),
+        }
     }
 
     pub fn service_epoch(&self) -> [u8; 16] {
@@ -458,6 +471,15 @@ pub struct Signed {
     pub name: String,
     /// Exact key verified by middleware; handler compares it with persisted approval.
     pub public_key: String,
+}
+
+fn service_public_key(signing_key: &str) -> Result<String, ServiceApprovalError> {
+    let raw = URL_SAFE_NO_PAD.decode(signing_key).map_err(|_| "invalid service signing key".to_string())?;
+    let key = VerifyingKey::from_sec1_bytes(&raw).map_err(|_| "invalid service signing key".to_string())?;
+    if raw.len() != 65 || raw[0] != 4 || URL_SAFE_NO_PAD.encode(&raw) != signing_key {
+        return Err("noncanonical service signing key".to_string().into());
+    }
+    Ok(B64.encode(key.to_sec1_bytes()))
 }
 
 pub fn is_local(peer: &SocketAddr, headers: &HeaderMap) -> bool {

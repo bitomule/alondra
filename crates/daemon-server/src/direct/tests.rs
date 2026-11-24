@@ -443,6 +443,30 @@ async fn a_denied_device_cannot_ask_again_over_the_network() {
 }
 
 #[tokio::test]
+async fn a_revoked_or_conflicting_id_is_refused_before_it_reaches_the_user() {
+    let f = fixture(&[]).await;
+    let revoked = Phone::new("client-revoked", 50);
+    crate::revoked_devices::RevokedDevices::open(&f.home)
+        .add(vec![crate::revoked_devices::Tombstone::new(&revoked.id, revoked.signing.verifying_key(), &revoked.agreement.public_key(), 1)])
+        .unwrap();
+    let (status, body) = send(&f.base, "/direct/pairing", &Pairing::new(&revoked).start()).await;
+    assert_eq!((status, String::from_utf8_lossy(&body).contains("pairing_denied")), (403, true), "{}", String::from_utf8_lossy(&body));
+
+    let pinned = Phone::new("client-pinned", 60);
+    let lock = alondra_core::service_config::ServiceConfigLock::exclusive(&f.home).unwrap();
+    alondra_core::service_config::add_device(&f.home, &lock, &alondra_core::service_config::NewDevice {
+        device_id: &pinned.id,
+        signing_key: &wire_signing(&pinned.signing),
+        agreement_key: &wire_agreement(&pinned.agreement),
+    })
+    .unwrap();
+    drop(lock);
+    let impostor = Phone::new("client-pinned", 70);
+    assert_eq!(send(&f.base, "/direct/pairing", &Pairing::new(&impostor).start()).await.0, 409);
+    assert!(f.direct.pairings().pending(now_ms()).is_empty(), "the user is never asked about either");
+}
+
+#[tokio::test]
 async fn a_signed_request_records_when_the_device_was_last_used() {
     let first = Phone::new("client-a", 30);
     let second = Phone::new("client-b", 40);

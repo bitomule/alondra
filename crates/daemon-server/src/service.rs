@@ -1072,6 +1072,12 @@ impl Service {
 
     /// How a paired device was paired, for the Mac app's device list: on the local network, or
     /// through the relay with an account. Unknown IDs are this Mac's own clients.
+    /// The relay refused this paired device for good: it reaches this Mac only on the local
+    /// network until it pairs again.
+    pub(crate) fn relay_refused(&self, id: &str) -> bool {
+        self.journal.enrollment_refused(id).unwrap_or(false)
+    }
+
     pub(crate) fn device_origin(&self, id: &str) -> &'static str {
         if self.devices.get(id).is_none() {
             return "mac";
@@ -2484,9 +2490,13 @@ enum Disposition {
 }
 enum EnrollmentDecision {
     New,
+    /// Sent before with no answer that settled it: sent again, which the relay takes as the
+    /// same enrollment when it already has it.
     Pending,
     Active,
     Revoked,
+    /// The relay refused this device for good; it pairs again with a new device ID.
+    Refused,
 }
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2713,6 +2723,7 @@ impl Journal {
                 "pending" => EnrollmentDecision::Pending,
                 "active" => EnrollmentDecision::Active,
                 "revoked" => EnrollmentDecision::Revoked,
+                "refused" => EnrollmentDecision::Refused,
                 _ => bail!("invalid stored enrollment state"),
             },
             Some(_) => bail!("device ID cannot be re-enrolled with another signing key"),
@@ -2737,6 +2748,27 @@ impl Journal {
         if n != 1 {
             bail!("enrollment no longer pending");
         }
+        Ok(())
+    }
+    fn refuse_enrollment(&self, id: &str) -> Result<()> {
+        let _lease = crate::approval_lease::ApprovalLease::exclusive(
+            self.path.parent().context("journal home missing")?,
+        )?;
+        self.db()?.execute(
+            "UPDATE service_enrollments SET state='refused' WHERE device_id=?1 AND state='pending'",
+            params![id],
+        )?;
+        Ok(())
+    }
+    /// A refused enrollment the relay never held: nothing to revoke there, so the row goes.
+    fn forget_refused_enrollment(&self, id: &str) -> Result<()> {
+        let _lease = crate::approval_lease::ApprovalLease::exclusive(
+            self.path.parent().context("journal home missing")?,
+        )?;
+        self.db()?.execute(
+            "DELETE FROM service_enrollments WHERE device_id=?1 AND state='refused'",
+            params![id],
+        )?;
         Ok(())
     }
     fn revoke_enrollment(&self, id: &str) -> Result<()> {
@@ -2962,6 +2994,16 @@ impl Journal {
         )
         .optional()?
         .is_some_and(|state| state == "pending"))
+    }
+    fn enrollment_refused(&self, id: &str) -> Result<bool> {
+        let c = self.db()?;
+        Ok(c.query_row(
+            "SELECT state FROM service_enrollments WHERE device_id=?1",
+            params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some_and(|state| state == "refused"))
     }
     fn enrollment_active(&self, id: &str) -> Result<bool> {
         let c = self.db()?;
@@ -5749,49 +5791,35 @@ agreement_key = "{}"
         );
     }
 
-    #[tokio::test]
-    async fn ambiguous_enrollment_is_deleted_and_never_retried() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let registered = Arc::new(AtomicBool::new(false));
+    /// A service whose fake relay answers each `POST /v1/devices` with the next status of
+    /// `answers` (the last one repeats) and counts the deletions.
+    async fn enrolling_service(
+        answers: Vec<StatusCode>,
+    ) -> (Service, Arc<AtomicUsize>, Arc<AtomicUsize>, tokio::task::JoinHandle<std::io::Result<()>>, crate::test_support::Directory) {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
         let posts = Arc::new(AtomicUsize::new(0));
-        let post_registered = registered.clone();
-        let post_count = posts.clone();
-        let delete_registered = registered.clone();
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let (post_count, delete_count) = (posts.clone(), deletes.clone());
         let relay = Router::new()
             .route(
                 "/v1/devices",
                 post(move || {
-                    let registered = post_registered.clone();
-                    let posts = post_count.clone();
-                    async move {
-                        registered.store(true, Ordering::SeqCst);
-                        posts.fetch_add(1, Ordering::SeqCst);
-                        (
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            axum::Json(json!({"error":"response_lost"})),
-                        )
-                    }
+                    let n = post_count.fetch_add(1, Ordering::SeqCst);
+                    let status = answers[n.min(answers.len() - 1)];
+                    async move { (status, axum::Json(json!({"ok": status.is_success()}))) }
                 }),
             )
             .route(
                 "/v1/devices/{id}",
                 delete(move || {
-                    let registered = delete_registered.clone();
-                    async move {
-                        registered.store(false, Ordering::SeqCst);
-                        StatusCode::NO_CONTENT
-                    }
+                    delete_count.fetch_add(1, Ordering::SeqCst);
+                    async { StatusCode::NO_CONTENT }
                 }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let task = tokio::spawn(axum::serve(listener, relay).into_future());
-        let home = scratch_directory.parent().unwrap().join(format!(
-            "alondra-pending-enrollment-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        std::fs::create_dir_all(&home).unwrap();
         let phone = SigningKey::from_slice(&[33u8; 32]).unwrap();
         let phone_agreement = SecretKey::from_slice(&[34u8; 32]).unwrap();
         std::fs::write(home.join("devices.json"),serde_json::to_vec(&json!([{
@@ -5822,7 +5850,7 @@ agreement_key = "{}"
                 },
             )])
             .into(),
-            home: home.clone(),
+            home: home.to_path_buf(),
             transfers: Arc::default(),
             inflight: Arc::default(),
             domain: None,
@@ -5832,28 +5860,39 @@ agreement_key = "{}"
             journal: Journal::open(home.join("service-receipts.sqlite")).unwrap(),
             local_port: 0,
         };
-        let epoch = [7u8; 16];
-        assert!(
-            service.enroll(&epoch).await.is_err(),
-            "relay committed but response was ambiguous"
-        );
-        assert!(registered.load(Ordering::SeqCst));
+        (service, posts, deletes, task, home)
+    }
+
+    #[tokio::test]
+    async fn a_first_enrollment_without_a_settling_answer_is_sent_again_until_the_relay_takes_it() {
+        let (service, posts, deletes, task, _home) =
+            enrolling_service(vec![StatusCode::SERVICE_UNAVAILABLE, StatusCode::CREATED]).await;
+        assert!(service.enroll(&[7u8; 16]).await.is_err(), "the relay may have kept it or not");
         assert!(service.journal.enrollment_pending("phone-pending").unwrap());
-        service
-            .sync_revocations(&epoch, &mut HashSet::new())
-            .await
-            .unwrap();
-        assert!(
-            !registered.load(Ordering::SeqCst),
-            "compensating DELETE removes ambiguous registration"
-        );
-        assert!(service.journal.enrollment_revoked("phone-pending").unwrap());
+        service.sync_revocations(&[8u8; 16], &mut HashSet::new()).await.unwrap();
+        assert!(service.journal.enrollment_pending("phone-pending").unwrap(), "a still approved device is not revoked for it");
         service.enroll(&[8u8; 16]).await.unwrap();
-        assert_eq!(
-            posts.load(Ordering::SeqCst),
-            1,
-            "no implicit re-enrollment after ambiguous outcome"
-        );
+        assert!(service.journal.enrollment_active("phone-pending").unwrap());
+        assert_eq!((posts.load(Ordering::SeqCst), deletes.load(Ordering::SeqCst)), (2, 0), "the same enrollment again, never a deletion");
+        assert!(!service.relay_refused("phone-pending"));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn an_enrollment_the_relay_refuses_says_to_pair_again_and_is_not_sent_again() {
+        let (service, posts, deletes, task, _home) = enrolling_service(vec![StatusCode::CONFLICT]).await;
+        service.enroll(&[7u8; 16]).await.unwrap();
+        assert!(service.relay_refused("phone-pending"), "the device list says to pair it again");
+        service.sync_revocations(&[8u8; 16], &mut HashSet::new()).await.unwrap();
+        service.enroll(&[8u8; 16]).await.unwrap();
+        assert_eq!((posts.load(Ordering::SeqCst), deletes.load(Ordering::SeqCst)), (1, 0));
+        assert!(service.relay_refused("phone-pending"));
+
+        assert!(service.auth.revoke("phone-pending").unwrap());
+        service.sync_revocations(&[9u8; 16], &mut HashSet::new()).await.unwrap();
+        assert_eq!(deletes.load(Ordering::SeqCst), 0, "the relay never held it");
+        assert!(!service.relay_refused("phone-pending"));
+        assert!(service.journal.enrollments().unwrap().is_empty());
         task.abort();
     }
 
