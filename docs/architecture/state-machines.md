@@ -369,7 +369,7 @@ which fail without the fix and pass with it (ablation in the pull request).
 
 ### G7 · GitHub: no closing, merging or reading against a stale picture
 
-**Status**: FIXED (G7, PR @PR@, commit @COMMIT@, from `main` at `93dbd23c8`). Each finding below carries its
+**Status**: FIXED (G7, PR #606, commit `48d7b959d`, from `main` at `93dbd23c8`). Each finding below carries its
 test and ablation. The race F-GH-1 describes in the watcher's round was already closed on `main` by #590
 (`9c599b4dc`), which reads the domain again after each PR's GitHub read; its test pins that. What still broke
 the user's decision of 2026-11-22 was the hourly sweep, which closed again a PR the user reopened.
@@ -3141,7 +3141,7 @@ turn that began after the last declaration ending idle after the merge (`PostMer
 ### Findings
 
 #### F-GH-1 · The watcher closes on GitHub the PR of a task the user just reopened (or that another task just took)
-**Status**: FIXED in G7 (PR @PR@). Two parts:
+**Status**: FIXED in G7 (PR #606). Two parts:
 - *The watcher's stale snapshot* no longer happens on `main` at `93dbd23c8`: since #590 (`9c599b4dc`) `reconcile`
   reads `domain.state()` after each PR's GitHub read, so a reopen or a move during the reads of the PRs before it is
   seen. Test `domain_github::tests::the_watcher_reads_the_task_again_before_closing_its_pr` (the minimal sequence
@@ -3329,7 +3329,7 @@ task. Tests: `answered_card_tests::after_the_merge_a_turn_that_ends_idle_without
   requests and scheduled launches. File: `crates/daemon-support/src/files_retention.rs`.
 
 #### F-GH-7 · A merge that GitHub blocks for a required review goes back to the node and invalidates the user's acceptance, in a loop
-**Status**: FIXED in G7 (PR @PR@). `Status` carries `review_required` (GitHub's `reviewDecision` is
+**Status**: FIXED in G7 (PR #606). `Status` carries `review_required` (GitHub's `reviewDecision` is
 `REVIEW_REQUIRED`, read in the same `gh pr view`, `github-gh/src/merges.rs`). The merger checks it before claiming
 and merging when the PR is not `CLEAN`, and again in `merge_failed`: it raises one «Get PR #n approved on GitHub»
 card and waits, with the acceptance valid and nothing handed back; the card is withdrawn once the review is in
@@ -3360,7 +3360,7 @@ Ablation in the PR.
   `crates/engine-ports/src/github.rs` (`Status`), `crates/engine-github/src/domain_merges.rs`.
 
 #### F-GH-8 · The GitHub API limit still raises technical cards: one per PR in the watcher and another per PR in the merger
-**Status**: FIXED in G7 (PR @PR@). `GhFailure::RateLimited` is GitHub's spent limit, told by typed signals
+**Status**: FIXED in G7 (PR #606). `GhFailure::RateLimited` is GitHub's spent limit, told by typed signals
 only, never by `gh`'s words: an `HttpAnswer` that `rate_limited()` (429, or 403 with no requests left or a
 `retry-after`), or a GraphQL answer with an error of type `RATE_LIMITED` (`graphql_rate_limited`). `gh pr view`
 only prints text, so a failed read of the watcher or of the merger asks the same address through
@@ -3391,7 +3391,7 @@ classification in `github-gh` `cli_tests::githubs_rate_limit_is_told_apart_from_
   as a transient failure with a reset time; do not count it toward cards; space the reads until the reset.
 
 #### F-GH-9 · The merger rereads GitHub on every domain commit for a PR closed outside or with a new head, until the watcher sees it
-**Status**: FIXED in G7 (PR @PR@). `step` records what it read (`observe_status`) when GitHub reports the PR
+**Status**: FIXED in G7 (PR #606). `step` records what it read (`observe_status`) when GitHub reports the PR
 closed or open at another head, as it already did for a merge, so the PR stops being due at once. Test:
 `domain_merges::tests::a_pr_closed_or_pushed_outside_alondra_is_recorded_and_read_once` (10 merger passes, one
 GitHub read, for both cases). Ablation in the PR.
