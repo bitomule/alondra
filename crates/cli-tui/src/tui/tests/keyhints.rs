@@ -265,7 +265,7 @@ fn states() -> Vec<State> {
         ("tasks, scheduled", false, Box::new(|| {
             let mut app = on(Screen::Tasks, "tasks-tui.json");
             app.on_key(plain(KeyCode::Char('s')));
-            app.on_msg(Msg::ViewHome(Ok(view("schedules-ios.json"))));
+            app.on_msg(Msg::home(Ok(view("schedules-ios.json"))));
             app.reconcile();
             app
         })),

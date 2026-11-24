@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, mpsc::SyncSender},
+    sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}, mpsc::SyncSender},
     thread,
     time::Duration,
 };
@@ -13,12 +13,18 @@ use crate::client::availability::AvailabilityProbe;
 pub(super) fn start(
     tx: SyncSender<Msg>,
     open_views: Arc<Mutex<HashMap<String, String>>>,
+    tickets: Arc<AtomicU64>,
     target: Target,
     probe: AvailabilityProbe,
 ) {
     let _ = thread::Builder::new()
         .name("alondra-views-feed".into())
-        .spawn(move || run(tx, open_views, &target, probe));
+        .spawn(move || run(tx, open_views, &tickets, &target, probe));
+}
+
+/// The ticket of a screen view request about to leave: a later request takes a higher one.
+pub(super) fn ticket(tickets: &AtomicU64) -> u64 {
+    tickets.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 /// The daemon's version and range reach the TUI from every answer that carries them; the client
@@ -38,10 +44,11 @@ fn refused(tx: &SyncSender<Msg>, client: Client, error: &anyhow::Error) -> Clien
     seen(tx, client, error.downcast_ref::<Incompatible>().and_then(|e| e.service.as_ref()))
 }
 
-fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, target: &Target, probe: AvailabilityProbe) {
+fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, tickets: &AtomicU64, target: &Target, probe: AvailabilityProbe) {
     let mut client = Client::for_target(target, Duration::from_secs(70));
     let mut cursor: Option<String> = None;
     loop {
+        let ticket = ticket(tickets);
         match client.checked(&probe, |client| client.views("home", None)) {
             Ok(view) => {
                 client = seen(&tx, client, view.service.as_ref());
@@ -49,12 +56,12 @@ fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, tar
                     .lock()
                     .unwrap_or_else(|poison| poison.into_inner())
                     .insert(view.key.clone(), view.version.clone());
-                let _ = tx.send(Msg::ViewHome(Ok(view)));
+                let _ = tx.send(Msg::ViewHome(ticket, Ok(view)));
                 break;
             }
             Err(error) => {
                 client = refused(&tx, client, &error.error);
-                let _ = tx.send(Msg::ViewHome(Err(error)));
+                let _ = tx.send(Msg::ViewHome(ticket, Err(error)));
                 thread::sleep(Duration::from_secs(2));
             }
         }
@@ -85,11 +92,12 @@ fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, tar
                 let _ = tx.send(Msg::ViewFeed(Ok(feed)));
                 for key in stale {
                     let known = snapshot.get(&key).map(String::as_str);
+                    let ticket = ticket(tickets);
                     match client.checked(&probe, |client| client.views(&key, known)) {
                         Ok(view)
                             if matches!(key.as_str(), "home" | "tasks" | "schedules") =>
                         {
-                            let _ = tx.send(Msg::ViewHome(Ok(view)));
+                            let _ = tx.send(Msg::ViewHome(ticket, Ok(view)));
                         }
                         Ok(view) => {
                             let _ = tx.send(Msg::ViewCard {
@@ -99,7 +107,7 @@ fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, tar
                         }
                         Err(error) => {
                             if matches!(key.as_str(), "home" | "tasks" | "schedules") {
-                                let _ = tx.send(Msg::ViewHome(Err(error)));
+                                let _ = tx.send(Msg::ViewHome(ticket, Err(error)));
                             } else {
                                 let _ = tx.send(Msg::ViewCard {
                                     key,

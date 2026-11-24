@@ -183,7 +183,7 @@ fn http_rejected_home_keeps_the_tui_connected_and_preserves_cached_view() {
             app.loaded = true;
             app.home_view = Some(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap());
             let cached_version = app.home_view.as_ref().unwrap().version.clone();
-            app.on_msg(Msg::ViewHome(Err(error)));
+            app.on_msg(Msg::home(Err(error)));
             assert!(!app.offline, "HTTP {status} proves that the daemon answered");
             assert!(app.connected);
             assert!(app.loaded);
@@ -197,7 +197,7 @@ fn a_failed_main_view_is_retried_when_the_feed_recovers() {
     let mut app = app();
     app.load_screen_view();
     assert_eq!(app.spawned.borrow().len(), 1);
-    app.on_msg(Msg::ViewHome(Err(crate::client::availability::ViewFailure {
+    app.on_msg(Msg::home(Err(crate::client::availability::ViewFailure {
         error: anyhow::anyhow!("unavailable"),
         availability: crate::client::availability::Availability::Unavailable,
     })));
@@ -214,9 +214,35 @@ fn a_failed_main_view_is_retried_when_the_feed_recovers() {
     assert!(!app.offline);
     assert_eq!(app.spawned.borrow().len(), 2);
     assert_eq!(app.screen_view_asked.as_deref(), Some("home"));
-    app.on_msg(Msg::ViewHome(Ok(view)));
+    app.on_msg(Msg::home(Ok(view)));
     assert!(app.loaded);
     assert!(app.home_view.is_some());
+}
+
+#[test]
+fn a_screen_view_asked_for_earlier_never_replaces_a_newer_one_that_arrived_first() {
+    let mut app = app();
+    let card = "hf-weekly-2026-09-30";
+    let earlier = super::view_feed::ticket(&app.view_tickets);
+    let later = super::view_feed::ticket(&app.view_tickets);
+    let with_card = super::parity::view_fixture("home-tui.json");
+    let mut answered = with_card.clone();
+    answered["version"] = "v-after-the-answer".into();
+    for section in answered["sections"].as_array_mut().unwrap() {
+        section["items"].as_array_mut().unwrap().retain(|item| item["id"] != card);
+    }
+
+    app.on_msg(Msg::ViewHome(later, Ok(serde_json::from_value(answered).unwrap())));
+    app.on_msg(Msg::ViewHome(earlier, Ok(serde_json::from_value(with_card).unwrap())));
+    app.reconcile();
+    assert!(!app.inbox_keys().contains(&Key(card.into())), "the late answer brought back a card already answered");
+    assert_eq!(app.home_view.as_ref().map(|home| home.version.as_str()), Some("v-after-the-answer"));
+
+    app.on_msg(Msg::ViewHome(earlier, Err(crate::client::availability::ViewFailure {
+        error: anyhow::anyhow!("unavailable"),
+        availability: crate::client::availability::Availability::Unavailable,
+    })));
+    assert!(!app.offline, "a late failure does not undo the newer answer");
 }
 
 fn direct_mac(id: &str) -> MacTarget {
@@ -325,7 +351,7 @@ fn an_item_kind_from_a_newer_daemon_shows_as_a_row_asking_to_update() {
 fn a_card_from_a_newer_daemon_loads_with_what_the_tui_cannot_use_disabled_or_left_out() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let mut app = app();
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     let card: ViewDocument = serde_json::from_str(&super::parity::newer_daemon_fixture("card.json")).unwrap();
     let key = card.key.clone();
@@ -389,7 +415,7 @@ const ALLOWS: &str = "Allows this now and stops asking in `alondra` for:\n· `ma
 fn a_button_shows_the_words_the_server_puts_under_it() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let mut app = app();
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     let mut card = super::parity::view_fixture("card-question.json");
     card["sections"].as_array_mut().unwrap().retain(|section| section["id"] != "content");
@@ -1156,7 +1182,7 @@ const FORM_CARD: &str = "a98d034b-249e-4487-a89b-57de38c26372";
 fn app_on_a_form_card() -> App {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let mut app = app();
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     let mut card = super::parity::view_fixture("card-elicitation-form-ios.json");
     card["key"] = json!(format!("card:{FORM_CARD}"));

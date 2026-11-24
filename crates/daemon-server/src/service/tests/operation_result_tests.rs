@@ -72,7 +72,7 @@ async fn a_fresh_read_recovers_expired_action_ciphertext_after_a_daemon_restart_
     f.clock.store(700_000, Ordering::Relaxed);
     assert!(historical.open(f.service.signing.verifying_key(), &f.phone,
         "mac-1","phone-1","mac-1",700_000).is_err(), "generic expired response verification must remain closed");
-    assert!(matches!(f.service.handle_direct(original.clone()).await, Err(DirectRefusal::Unauthorized)),
+    assert!(matches!(f.service.handle_direct(original.clone()).await, Err(DirectRefusal::Sealed { code: "expired", .. })),
         "expired original mutations cannot reach even an existing receipt");
     let domain = Arc::new(crate::engine_tests::open(&f.home).unwrap());
     let client = crate::client_routes::Client::open(domain.clone(), &f.home, Default::default());
