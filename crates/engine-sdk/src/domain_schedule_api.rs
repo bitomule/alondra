@@ -372,7 +372,8 @@ fn mutation_response(method: &str, path: &str, body: Option<&Value>, outcome: &d
     json!({"status":if method == "POST" {201} else {200},"body":body})
 }
 
-#[cfg(all(test, not(feature = "whole-engine")))]
+#[cfg(test)]
+#[cfg(not(feature = "whole-engine"))]
 mod tests {
     use super::*;
     use std::fs;

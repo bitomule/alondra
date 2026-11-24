@@ -1,18 +1,29 @@
 //! The tests of the engine's and the gate's modules that start nodes through the SDK, so they run
 //! with this crate: each file is named after the module it tests.
-#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
+#[cfg(not(feature = "real-hosts"))]
 mod accounts_tests;
-#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
+#[cfg(not(feature = "real-hosts"))]
 mod orchestrator_tools_tests;
-#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
+#[cfg(not(feature = "real-hosts"))]
 mod owner_tests;
-#[cfg(all(test, feature = "whole-engine"))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
 mod pauses_tests;
-#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
+#[cfg(not(feature = "real-hosts"))]
 mod system_command_tests;
 
 /// The SQLite-backed fixtures of an SDK node's owner, which the engine's tests share.
-#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
+#[cfg(not(feature = "real-hosts"))]
 #[path = "../../daemon-engine/src/wiring/owner_fixtures.rs"]
 pub(crate) mod owner_fixtures;
 

@@ -109,7 +109,7 @@ pub fn main() -> Result<()> {
                 .flatten()
                 .is_some_and(|marker| marker.phase == domain_cutover::Phase::Committed)
         });
-        if start_guard::wait(wait, std::time::Duration::from_secs(2), || {
+        if start_guard::wait(wait, relaunch::every().min(std::time::Duration::from_secs(2)), || {
             watcher.as_ref().is_some_and(|w| w.replaced()) || cut_over()
         }) {
             log!("the binary was replaced or HOME was cut over; exiting now so launchd starts it");

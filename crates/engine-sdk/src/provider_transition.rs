@@ -28,7 +28,7 @@ pub(crate) struct Transitions {
 }
 impl Transitions {
     /// What a daemon that dies lets go of: the ended hosts it held as proof.
-    pub(crate) fn die(&self){*self.crash_at.lock().unwrap()=None;self.fences.lock().unwrap().clear();}
+    pub(crate) fn die(&self){*self.crash_at.lock_or_recover("the transition's crash point")=None;self.fences.lock_or_recover("the transition fences").clear();}
 }
 fn failure(error:impl std::fmt::Display)->DomainError{DomainError::new("selection_transition",error.to_string())}
 fn store_failure(error:StoreError)->DomainError{match error{StoreError::Domain(error)=>error,StoreError::Storage(error)=>failure(error)}}
@@ -419,7 +419,7 @@ pub async fn advance(domain:&Arc<dyn Runtime>,task:&TaskId)->Result<Phase,Domain
     let _advance=domain.selection_changes().advancing.lock().await;
     loop{
         let change=current(&**domain,task)?.ok_or_else(||failure("No selection change is pending"))?;
-        if *domain.selection_changes().crash_at.lock().unwrap()==Some(change.phase){return Err(failure("the daemon died"))}
+        if *domain.selection_changes().crash_at.lock_or_recover("the transition's crash point")==Some(change.phase){return Err(failure("the daemon died"))}
         let plan=&change.plan;
         if plan.kind==Kind::Model && plan.target_account!=plan.source.account{return Err(failure("The account and provider of this native session cannot change; create a new node"))}
         if plan.kind==Kind::Model && matches!(change.phase,Phase::SourceFenced|Phase::ContextReady|Phase::TargetAdmitted|Phase::Consumed){return Err(failure("Session transfer is disabled; the node keeps its original account and native history"))}

@@ -297,4 +297,4 @@ the relay with the production account server, which the sandbox does not have, s
 covered by the synthetic phone. `tools/e2e_cards.py` with no `--client` keeps a seeded sandbox up
 for a person until Ctrl+C. None of these run in `musts validate`; the same flows without a client
 run there as `every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_returns`
-(`crates/daemon-server/src/domain_e2e_tests.rs`).
+(`crates/alondrad/tests/binary_smoke/cli_journeys.rs`).

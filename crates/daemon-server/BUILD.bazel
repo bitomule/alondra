@@ -105,9 +105,9 @@ low_opt_rust_test(
     version = VERSION,
 )
 
-# The tests that still need a real Agent SDK host, a fake native Claude or Codex, or a binary of the
-# root (the real `alondra` and `alondrad`): the same sources with the feature real-hosts, which
-# compiles only them.
+# The tests that still need a real Agent SDK host or a fake native Claude or Codex: the same sources
+# with the feature real-hosts, which compiles only them. No binary of the root is an input: the real
+# `alondra` and `alondrad` run in `//crates/alondrad:binary_smoke_test`.
 low_opt_rust_test(
     name = "daemon_server_host_test",
     size = "medium",
@@ -118,7 +118,6 @@ low_opt_rust_test(
     crate_root = "src/lib.rs",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {
-        "FIXTURE_DAEMON": "$(rootpath //crates/alondrad:alondrad)",
         "HOME": ".",
         # The host a release ships: Node, the SDK and the host in one executable, so every SDK test
         # of the daemon runs the bytes Brew installs.
@@ -130,11 +129,10 @@ low_opt_rust_test(
         "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
         "FIXTURE_CODEX_MODEL_DOUBLE": "$(rootpath //agent-host:codex-model-double.py)",
         "FIXTURE_CODEX_MCP_NATIVE": "$(rootpath //agent-host:fake-codex-mcp.py)",
-        "TEST_EXECS": "$(rootpath //crates/alondra:alondra) $(rootpath //crates/alondrad:alondrad) $(rootpath //agent-host:alondra-host) /usr/bin/git /usr/bin/python3 tmpdir",
+        "TEST_EXECS": "$(rootpath //agent-host:alondra-host) /usr/bin/git /usr/bin/python3 tmpdir",
     },
     deps = TEST_DEPS + ["//crates/agent-runtime:agent_runtime"],
     data = [
-        "//crates/alondrad:alondrad",
         "//agent-host:persistent-fake-claude.py",
         "//agent-host:alondra-host",
         "//agent-host:alondra-codex-host",
@@ -142,12 +140,10 @@ low_opt_rust_test(
         "//agent-host:fake-codex.py",
         "//agent-host:codex-model-double.py",
         "//agent-host:fake-codex-mcp.py",
-        "//crates/alondra:alondra",
         "//fixtures/client-v2",
         "//fixtures/views:all",
     ],
     edition = "2024",
-    rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
     rustc_flags = TEST_RUSTC_FLAGS,
     version = VERSION,
 )

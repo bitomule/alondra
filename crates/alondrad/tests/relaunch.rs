@@ -5,6 +5,7 @@ use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 const LABEL: &str = "test.alondra.relaunch";
@@ -13,12 +14,16 @@ const LABEL: &str = "test.alondra.relaunch";
 /// this limit, so a slow machine never fails a test.
 const HANG_LIMIT: Duration = Duration::from_secs(600);
 
+/// How often the daemons here look at their binary for an upgrade.
+const BINARY_CHECK: Duration = Duration::from_millis(200);
+
 struct Fixture {
     root: PathBuf,
     home: PathBuf,
     bin: PathBuf,
     port: u16,
     sandbox: bool,
+    _installed: Arc<Installed>,
 }
 
 impl Fixture {
@@ -29,13 +34,15 @@ impl Fixture {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();
         let bin = root.join("bin/alondrad");
-        install(&bin, Path::new(env!("CARGO_BIN_EXE_alondrad")));
+        let installed = Installed::shared(&temporary);
+        std::fs::hard_link(&installed.0, &bin).unwrap();
         Self {
             root,
             home,
             bin,
             port: free_port(),
             sandbox: false,
+            _installed: installed,
         }
     }
 
@@ -48,7 +55,7 @@ impl Fixture {
             .env("ALONDRA_LISTEN", "127.0.0.1")
             .env("ALONDRA_PORT", self.port.to_string())
             .env("ALONDRA_SERVICE_LABEL", LABEL)
-            .env("ALONDRA_BINARY_CHECK_SECS", "0.2")
+            .env("ALONDRA_BINARY_CHECK_SECS", BINARY_CHECK.as_secs_f64().to_string())
             .env("PATH", "/usr/bin:/bin")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -92,6 +99,37 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// The daemon binary written once under the test's temporary folder: every fixture links its launch
+/// path to it, so the first run of a freshly written executable, the slow one, is paid once for the
+/// fixtures alive together, not once per fixture. A test that replaces its binary moves a new file
+/// over its own link and leaves this one alone. Removed when the last fixture holding it drops.
+struct Installed(PathBuf);
+
+static INSTALLED: Mutex<Weak<Installed>> = Mutex::new(Weak::new());
+
+impl Installed {
+    fn shared(temporary: &Path) -> Arc<Self> {
+        let mut shared = INSTALLED.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(installed) = shared.upgrade() {
+            return installed;
+        }
+        let folder = temporary.join(format!("ad-bin-{}", nanos() % 1_000_000_000));
+        std::fs::create_dir_all(&folder).unwrap();
+        let installed = Arc::new(Self(folder.join("alondrad")));
+        install(&installed.0, Path::new(env!("CARGO_BIN_EXE_alondrad")));
+        *shared = Arc::downgrade(&installed);
+        installed
+    }
+}
+
+impl Drop for Installed {
+    fn drop(&mut self) {
+        if let Some(folder) = self.0.parent() {
+            let _ = std::fs::remove_dir_all(folder);
+        }
     }
 }
 
@@ -361,14 +399,18 @@ fn a_launchd_daemon_waits_for_one_started_by_hand_and_takes_over_when_it_leaves(
 fn a_daemon_started_by_hand_never_relaunches() {
     let mut fixture = Fixture::new("manual");
     let mut daemon = serve(&mut fixture, false);
-    install_script(&fixture.bin, "#!/bin/sh\nexit 0\n");
-    for _ in 0..20 {
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(
-            daemon.0.try_wait().unwrap().is_none(),
-            "only a launchd job restarts itself"
-        );
+    let mut log = std::io::BufReader::new(daemon.0.stderr.take().unwrap());
+    let mut line = String::new();
+    while !line.contains("launchd does not run this daemon") {
+        line.clear();
+        assert_ne!(log.read_line(&mut line).unwrap(), 0, "the daemon ended before saying launchd does not run it");
     }
+    install_script(&fixture.bin, "#!/bin/sh\nexit 0\n");
+    std::thread::sleep(BINARY_CHECK * 3);
+    assert!(
+        daemon.0.try_wait().unwrap().is_none(),
+        "only a launchd job restarts itself"
+    );
     assert!(fixture.health().is_some());
 }
 
@@ -393,6 +435,11 @@ fn repeated_failed_starts_stop_hot_looping_until_the_binary_changes() {
         );
     }
     let mut third = Running(fixture.command(true).spawn().unwrap());
+    let mut reader = std::io::BufReader::new(third.0.stderr.take().unwrap());
+    let mut log = String::new();
+    while !log.contains("before exiting so launchd does not restart it") {
+        assert_ne!(reader.read_line(&mut log).unwrap(), 0, "the third start ended without saying it waits: {log}");
+    }
     until(
         HANG_LIMIT,
         "the third start to record itself",
@@ -402,7 +449,6 @@ fn repeated_failed_starts_stop_hot_looping_until_the_binary_changes() {
                 .filter(|t| t.contains("\"failures\":3") && t.contains("config.toml unreadable"))
         },
     );
-    std::thread::sleep(Duration::from_secs(1));
     assert!(
         third.0.try_wait().unwrap().is_none(),
         "the third failure in a row waits instead of exiting at once"
@@ -414,7 +460,7 @@ fn repeated_failed_starts_stop_hot_looping_until_the_binary_changes() {
         "the waiting start to exit after the binary changed",
         || third.0.try_wait().unwrap(),
     );
-    let log = stderr(&mut third.0);
+    reader.read_to_string(&mut log).unwrap();
     assert!(!status.success());
     assert!(log.contains("3 times in a row"), "{log}");
     assert!(log.contains("the binary was replaced"), "{log}");

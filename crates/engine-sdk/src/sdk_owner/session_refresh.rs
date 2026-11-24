@@ -203,7 +203,8 @@ fn write_conversation(home: &std::path::Path, task: &TaskId, session: &str, tran
     Ok(file)
 }
 
-#[cfg(all(test, not(feature = "whole-engine")))]
+#[cfg(test)]
+#[cfg(not(feature = "whole-engine"))]
 mod tests {
     use super::*;
 

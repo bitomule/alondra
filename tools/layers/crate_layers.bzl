@@ -180,10 +180,6 @@ LAYER_EXCEPTIONS = {
 # every edit of the daemon. Any other test that reaches the root, through `deps` or `data`, fails
 # `crate_layers_test`; this list only shrinks.
 ROOT_TEST_CONSUMERS = [
-    # The server's tests that run the real daemon or the real CLI (`daemon_server_host_test`). Its
-    # tests on the host models, whose binary serves the apps' client process, reach no binary of
-    # the root.
-    "crates/daemon-server",
     # The sandbox journeys, run on request against the binaries.
     "tests/sandbox",
     # The binaries on an empty home.
