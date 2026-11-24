@@ -17,6 +17,7 @@ pub use host_transport::Process;
 use protocol::{Action, Command, Decision, DecisionKind};
 use alondra_engine_doubles::agent_host::{Serve, Served, Stop};
 use alondra_engine_ports::agent_host::{ProbeOutput, ProbeRun};
+use alondra_process_group::Member;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
@@ -190,6 +191,9 @@ struct Shared {
     /// Beside this path Claude writes the plan it asks about, as the fake native Claude does
     /// beside its capture.
     capture: Mutex<Option<PathBuf>>,
+    /// The processes Claude left running in the background, as the fake native Claude records
+    /// them beside its capture.
+    background: Mutex<Vec<Member>>,
 }
 
 pub struct StartupProbeGate(ClaudeModel);
@@ -235,6 +239,9 @@ pub struct Conversation {
     hung: bool,
     /// How the native Claude this host started takes its prompts, fixed when it started.
     turns: Option<Turns>,
+    /// The doubled host this host runs as, which runs the processes Claude leaves in the
+    /// background.
+    doubled: Option<Served>,
 }
 
 /// A decision Claude asked for and waits on: what the host announced, under the cursor that
@@ -337,6 +344,7 @@ impl ClaudeModel {
             decisions: Mutex::default(),
             controls: Mutex::default(),
             capture: Mutex::default(),
+            background: Mutex::default(),
         }))
     }
 
@@ -478,6 +486,13 @@ impl ClaudeModel {
     /// Every prompt Claude took, in order.
     pub fn prompts(&self) -> Vec<String> {
         lock(&self.0.prompts).clone()
+    }
+
+    /// The processes Claude left running in the background, in the order they started: a command
+    /// it waits on (`background-command`) replaces what was there, as the fake native Claude
+    /// records them.
+    pub fn background(&self) -> Vec<Member> {
+        lock(&self.0.background).clone()
     }
 
     /// Every host started for `task`, in the order they started.
@@ -872,6 +887,26 @@ impl ClaudeModel {
                 }
                 self.conclude(host, state, &input, &taken);
             }
+            "background" => {
+                self.consume(host, state, &input, &taken, consumed);
+                self.emit(host, state, "task", json!({"type": "system", "subtype": "task_started", "task_id": "fixture-background", "description": "Fixture owned work",
+                    "task_type": "local_agent", "uuid": "00000000-0000-4000-8000-000000000101", "session_id": session}));
+                state.turn = Some(taken);
+            }
+            _ if prompt.ends_with("background-group") => {
+                let Some(served) = self.doubled(host, state) else { return };
+                let shell = served.start_descendant(None, true);
+                let child = served.start_descendant(Some(&shell), false);
+                lock(&self.0.background).extend([shell, child]);
+                self.background_bash(host, state, &input, &taken, ("toolu_fixture_background_group", "stress.sh", "bfixture2"));
+            }
+            _ if prompt.ends_with("background-shell") || prompt.contains("background-shell\n") => {
+                let Some(served) = self.doubled(host, state) else { return };
+                lock(&self.0.background).push(served.start_descendant(None, false));
+                self.background_bash(host, state, &input, &taken, ("toolu_fixture_background_shell", "bazel test //app:snapshots", "bfixture1"));
+            }
+            _ if prompt.ends_with("background-command") => self.background_command(host, state, &input, &taken, true),
+            _ if prompt.ends_with("background-command-silent") => self.background_command(host, state, &input, &taken, false),
             "own-turn-later" | "own-turn-plan" => {
                 self.consume(host, state, &input, &taken, consumed);
                 self.conclude(host, state, &input, &taken);
@@ -886,6 +921,63 @@ impl ClaudeModel {
                 self.conclude(host, state, &input, &taken);
             }
         }
+    }
+
+    /// The doubled host `host` runs as, which a process Claude leaves running needs.
+    fn doubled(&self, host: &Host, state: &State) -> Option<Served> {
+        let served = state.doubled.clone();
+        if served.is_none() {
+            self.troubled(format!("the host of {} is no doubled host: nothing runs what Claude leaves in the background", host.task));
+        }
+        served
+    }
+
+    /// Claude ran `(tool_use_id, command, task_id)` as a Bash command in the background, as the
+    /// fake native Claude does: the task starts and the turn ends saying it goes on.
+    fn background_bash(&self, host: &Host, state: &mut State, input: &str, taken: &[String], (tool_use_id, command, task_id): (&str, &str, &str)) {
+        self.consume(host, state, input, taken, json!({"type": "tool_use", "id": tool_use_id, "name": "Bash", "input": {"command": command, "run_in_background": true}}));
+        let started = self.uuid();
+        self.emit(host, state, "task", json!({"type": "system", "subtype": "task_started", "task_id": task_id, "tool_use_id": tool_use_id, "description": command,
+            "task_type": "local_bash", "is_backgrounded": true, "uuid": started, "session_id": host.session.to_lowercase()}));
+        self.conclude(host, state, input, taken);
+    }
+
+    /// Claude left a command running in the background that ends once the test releases it
+    /// (`ClaudeModel::background`, `InProcessHosts::end_descendant`), as the fake native Claude
+    /// does for `background-command`. Its notification, which names no run, opens a turn of
+    /// Claude's own when `opens_turn`, and otherwise waits for the next turn to read it.
+    fn background_command(&self, host: &Host, state: &mut State, input: &str, taken: &[String], opens_turn: bool) {
+        let Some(served) = self.doubled(host, state) else { return };
+        let command = served.start_descendant(None, false);
+        *lock(&self.0.background) = vec![command];
+        self.background_bash(host, state, input, taken, ("toolu_fixture_background", "read line < release", "fixture-command"));
+        let (model, process_id) = (self.clone(), host.process_id);
+        self.spawn(move || {
+            let completed = served.wait_descendant(&command).is_some_and(|status| status.success());
+            let Some(host) = model.host(process_id) else { return };
+            let mut state = lock(&host.state);
+            if served.alive() && !state.wire.ended {
+                model.background_ended(&host, &mut state, completed, opens_turn);
+            }
+        });
+    }
+
+    fn background_ended(&self, host: &Host, state: &mut State, completed: bool, opens_turn: bool) {
+        let session = host.session.to_lowercase();
+        let notification = self.uuid();
+        self.emit(host, state, "task", json!({"type": "system", "subtype": "task_notification", "task_id": "fixture-command", "tool_use_id": "toolu_fixture_background",
+            "status": if completed { "completed" } else { "failed" }, "output_file": "fixture-output", "summary": "read line < release", "uuid": notification, "session_id": session}));
+        if !opens_turn {
+            return;
+        }
+        let (init, answer, result) = (self.uuid(), self.uuid(), self.uuid());
+        self.emit(host, state, "initialized", self.init(host, &init, "default"));
+        self.emit(host, state, "message", json!({"type": "assistant", "session_id": session, "uuid": answer, "parent_tool_use_id": null,
+            "message": {"id": format!("msg_{answer}"), "type": "message", "role": "assistant", "model": "fixture", "content": [{"type": "text", "text": "The command ended"}],
+                "stop_reason": null, "stop_sequence": null, "usage": SMALL_USAGE.clone()}}));
+        self.emit(host, state, "result", json!({"type": "result", "subtype": "success", "is_error": false, "session_id": session, "uuid": result,
+            "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1, "total_cost_usd": 0, "usage": {}, "modelUsage": {}, "permission_denials": [],
+            "result": "The command ended", "terminal_reason": "completed", "origin": {"kind": "task-notification", "producer": "session-task"}}));
     }
 
     fn lifecycle(&self, host: &Host, state: &mut State, input: &str, lifecycle: &str) {
@@ -1512,6 +1604,7 @@ impl Serve for ClaudeModel {
             None => match self.start(served.bootstrap(), served.process_id(), Box::new(Doubled(served.clone()))) {
                 Ok(host) => {
                     host_transport::ends_with(served, &host);
+                    lock(&host.state).doubled = Some(served.clone());
                     host
                 }
                 Err(error) => {

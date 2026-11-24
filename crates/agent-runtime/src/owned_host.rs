@@ -598,6 +598,9 @@ impl StopHandle for Stopper {
     fn tree(&self) -> io::Result<Vec<alondra_process_group::Member>> {
         self.process_group().map_or(Ok(vec![]), alondra_process_group::tree)
     }
+    fn end_tree(&self, tree: &[alondra_process_group::Member], grace: Duration) -> io::Result<()> {
+        alondra_process_group::end_tree(tree, grace)
+    }
     fn footprint(&self) -> io::Result<Option<u64>> {
         self.process_group().map(alondra_process_group::footprint).transpose()
     }

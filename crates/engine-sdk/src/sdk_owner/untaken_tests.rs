@@ -26,7 +26,6 @@ pub fn hand(slice: &Slice, text: &str) -> Driver {
     driver
 }
 
-#[cfg(not(feature = "real-hosts"))]
 fn dispatch_status(slice: &Slice, input: &str) -> Option<String> {
     slice.observer().query_row("SELECT status FROM lifecycle_dispatches WHERE task_id=?1 AND input_id=?2", [TASK, input], |row| row.get(0)).ok()
 }
@@ -35,7 +34,6 @@ pub fn journal(slice: &Slice) -> Vec<LifecycleRecord> {
     slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().cloned().collect()
 }
 
-#[cfg(feature = "real-hosts")]
 fn work_ended_told(slice: &Slice) -> usize {
     journal(slice).iter().filter(|record| matches!(record, LifecycleRecord::Told { text: Some(text), .. } if text == crate::untaken::WORK_ENDED)).count()
 }
@@ -46,7 +44,6 @@ fn work_ended_told(slice: &Slice) -> usize {
 // E1, 10 November: the host refused an input before offering it, the dispatch stayed `rejected`, and
 // no later input of the task went either; the task read «Waiting for Claude to start» until its host
 // died. The refusal is the event: the same text goes again in the same step, and what follows goes.
-#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_refused_input_is_prepared_again_at_once_and_later_inputs_still_go() {
     let slice = Slice::new();
@@ -82,7 +79,6 @@ pub fn wrote_at(slice: &Slice, at: Millis) {
 // its input waited issued a permit, and the owner took them oldest first. After a takeover that
 // committed thousands of events it claimed 4,876 stale permits, one owner transaction each, before
 // the input went 46 s later. Only the permit of the last commit can be claimed.
-#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_owner_claims_only_the_permit_the_last_commit_issued() {
     let slice = Slice::new();
@@ -104,7 +100,6 @@ fn an_owner_claims_only_the_permit_the_last_commit_issued() {
 // itself. A replacement the watch gives up is replaced, as a first host is.
 
 // A process that wrote recently is not hung, whatever the input did not get.
-#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_process_that_wrote_within_the_deadline_is_not_given_up() {
     let slice = Slice::new();
@@ -123,7 +118,6 @@ fn a_process_that_wrote_within_the_deadline_is_not_given_up() {
 // 10 November: Claude held what it was handed and started no turn on it. Claude Code said it had
 // the input (queued), so the provider owes the next step and no deadline of Alondra's ends it: the
 // input waits for the provider's own event however long it takes.
-#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_input_the_provider_holds_is_never_given_up() {
     let slice = Slice::new();
@@ -145,7 +139,6 @@ fn an_input_the_provider_holds_is_never_given_up() {
     driver.stop().unwrap();
 }
 
-#[cfg(not(feature = "real-hosts"))]
 // The deadline is on the session's own word that it took the input, not on its first message:
 // a session that says it runs at once and writes nothing for minutes is never given up.
 #[test]
@@ -165,7 +158,6 @@ fn a_session_that_is_running_is_not_reoffered() {
     driver.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
 // Claude's background command ended and Claude opened no turn to take up its notice: nothing woke
 // the node. Once the deadline passes with no such turn, Alondra tells the node, as it tells Codex
 // at once, and the turn that takes it up ends the wait. This deadline is enforced by default.
@@ -174,7 +166,7 @@ fn finished_work_wakes_a_claude_node_after_two_minutes() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("background-command-silent");
     until_own_work(&slice, &mut driver);
-    slice.release_background_command();
+    slice.hosts.release_background_command();
     while lifecycle(&*slice.domain).activity() != ActivityView::Continuation {
         driver.observe_written().unwrap();
     }
@@ -190,13 +182,12 @@ fn finished_work_wakes_a_claude_node_after_two_minutes() {
     driver.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
 #[test]
 fn a_notification_turn_that_opens_in_time_gets_no_second_wake() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("background-command");
     until_own_work(&slice, &mut driver);
-    slice.release_background_command();
+    slice.hosts.release_background_command();
     let mut watch = Watch::default();
     let mut seen = false;
     while !seen || matches!(lifecycle(&*slice.domain).activity(), ActivityView::Continuation | ActivityView::OwnWork) {
@@ -214,7 +205,6 @@ fn a_notification_turn_that_opens_in_time_gets_no_second_wake() {
     driver.stop().unwrap();
 }
 
-#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_input_the_provider_refuses_goes_again_and_a_second_refusal_goes_to_a_resuming_host() {
     let slice = Slice::new();
@@ -242,7 +232,6 @@ fn an_input_the_provider_refuses_goes_again_and_a_second_refusal_goes_to_a_resum
     queued.stop().unwrap();
 }
 
-#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_hung_process_that_wrote_nothing_is_given_up_for_a_host_that_resumes_the_session() {
     let slice = Slice::new();
@@ -268,7 +257,6 @@ fn a_hung_process_that_wrote_nothing_is_given_up_for_a_host_that_resumes_the_ses
     queued.stop().unwrap();
 }
 
-#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_replacement_the_watch_gives_up_is_replaced_with_no_card() {
     let slice = Slice::new();
@@ -289,7 +277,6 @@ fn a_replacement_the_watch_gives_up_is_replaced_with_no_card() {
     next.stop().unwrap();
 }
 
-#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_input_refused_twice_goes_back_to_the_queue() {
     let slice = Slice::new();
@@ -320,7 +307,6 @@ pub fn replaced_with_the_gate_full(slice: &Slice, mut driver: Driver) -> Driver 
     next
 }
 
-#[cfg(not(feature = "real-hosts"))]
 /// The task holds no slot and its input waits in the gate's queue like any other, with no card.
 pub fn assert_waits_for_a_slot(slice: &Slice, driver: &mut Driver) {
     assert_eq!(driver.pending_permits(), 1, "its input waits for the gate");
@@ -330,7 +316,6 @@ pub fn assert_waits_for_a_slot(slice: &Slice, driver: &mut Driver) {
     assert!(lifecycle(&*slice.domain).cards().is_empty(), "no card asks the user");
 }
 
-#[cfg(not(feature = "real-hosts"))]
 /// The gate has room again: the host that took the place of the old one gets the input, Claude
 /// starts on it, and every host resumed the session the first one opened.
 pub fn goes_on_when_the_gate_has_room(slice: &Slice, driver: &mut Driver, text: &str, times: usize) {

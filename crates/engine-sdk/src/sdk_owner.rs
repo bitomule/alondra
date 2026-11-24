@@ -2270,11 +2270,12 @@ impl Driver {
     /// Ends the host and every process under it, as a pause does, and records that the session
     /// waits with no host. Refused because the task moved on meanwhile, the caller replaces it.
     pub fn release_host(&mut self) -> Result<(), Failed> {
-        let tree = self.worker.stopper().map_or(Ok(vec![]), |host| host.tree())
+        let host = self.worker.stopper();
+        let tree = host.as_ref().map_or(Ok(vec![]), HostStop::tree)
             .map_err(|error| Failed::new(format!("listing the processes of the host: {error}")))?;
         mark_stopped_by_alondra(self.worker.state_directory());
         self.stop()?;
-        alondra_process_group::end_tree(&tree, HALT_GRACE).map_err(|error| Failed::new(format!("the processes of the host did not end: {error}")))?;
+        host.map_or(Ok(()), |host| host.end_tree(&tree, HALT_GRACE)).map_err(|error| Failed::new(format!("the processes of the host did not end: {error}")))?;
         let read = self.domain.read();
         let state = read.state();
         let generation = state.lifecycle_of(&self.task).ok().and_then(|lifecycle| lifecycle.execution().map(|stamp| stamp.generation()))
@@ -2865,9 +2866,10 @@ impl Owner {
     /// Stops the host as `close` does and ends every process under it. Each command Claude runs
     /// has a group of its own, so the end of the host's group leaves those running.
     pub fn halt(&mut self) -> Result<(), Failed> {
-        let tree = self.host().map_or(Ok(vec![]), |host| host.tree());
+        let host = self.host();
+        let tree = host.as_ref().map_or(Ok(vec![]), HostStop::tree);
         let closed = self.close();
-        let ended = tree.and_then(|tree| alondra_process_group::end_tree(&tree, HALT_GRACE));
+        let ended = tree.and_then(|tree| host.map_or(Ok(()), |host| host.end_tree(&tree, HALT_GRACE)));
         closed?;
         ended.map_err(|error| Failed::new(format!("the processes of the SDK host of {} did not end: {error}", self.agent)))
     }

@@ -6,7 +6,7 @@ use alondra_engine_ports::agent_host::{
     AdoptedEndpoint, AgentHost, DiagnosticCode, EndedHost, HostFolder, HostLaunch, HostStop, LaunchIdentity, LaunchedHost, ProbeOutput, ProbeRun, Retained, StopHandle,
 };
 use alondra_process_group::Member;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
@@ -73,12 +73,97 @@ pub struct Probed {
 
 type Probe = dyn Fn(&ProbeRun) -> io::Result<ProbeOutput> + Send + Sync;
 
+/// A process under a host, as a command its native agent left running: numbered as the hosts are,
+/// so it never names a real one.
+struct Descendant {
+    /// The host's process, or the descendant that started it.
+    parent: u32,
+    /// The host's group, unless it or a process above it moved to a session of its own.
+    group: u32,
+    exit: Option<ExitStatus>,
+}
+
+/// Every process the hosts of one `InProcessHosts` started, which may outlive its host.
+#[derive(Default)]
+struct Descendants {
+    processes: Mutex<BTreeMap<u32, Descendant>>,
+    ended: Condvar,
+}
+impl Descendants {
+    fn processes(&self) -> MutexGuard<'_, BTreeMap<u32, Descendant>> {
+        self.processes.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+    /// The live descendant `member` names.
+    fn live(processes: &BTreeMap<u32, Descendant>, member: &Member) -> Option<u32> {
+        let process = u32::try_from(member.pid).ok()?;
+        (descendant(process) == *member && processes.get(&process).is_some_and(|descendant| descendant.exit.is_none())).then_some(process)
+    }
+    fn runs(&self, member: &Member) -> bool {
+        Self::live(&self.processes(), member).is_some()
+    }
+    /// `roots` and the live processes under them by parentage, whatever their group: the children
+    /// of a process that ended are under it no more.
+    fn under(processes: &BTreeMap<u32, Descendant>, roots: BTreeSet<u32>) -> BTreeSet<u32> {
+        let mut found = roots;
+        loop {
+            let children: Vec<u32> = processes.iter()
+                .filter(|(process, descendant)| descendant.exit.is_none() && found.contains(&descendant.parent) && !found.contains(*process))
+                .map(|(process, _)| *process)
+                .collect();
+            if children.is_empty() {
+                return found;
+            }
+            found.extend(children);
+        }
+    }
+    fn tree(&self, host: u32) -> Vec<Member> {
+        Self::under(&self.processes(), BTreeSet::from([host])).into_iter().filter(|process| *process != host).map(descendant).collect()
+    }
+    /// Every live descendant `ends` picks exits with `status`.
+    fn end(&self, processes: &mut BTreeMap<u32, Descendant>, ends: &BTreeSet<u32>, status: ExitStatus) {
+        for process in ends {
+            if let Some(descendant) = processes.get_mut(process).filter(|descendant| descendant.exit.is_none()) {
+                descendant.exit = Some(status);
+            }
+        }
+        self.ended.notify_all();
+    }
+    /// The processes of `group` die with the host that leads it, as the real host's group is swept.
+    fn end_group(&self, group: u32) {
+        let mut processes = self.processes();
+        let ends: BTreeSet<u32> = processes.iter().filter(|(_, descendant)| descendant.group == group).map(|(process, _)| *process).collect();
+        self.end(&mut processes, &ends, Stop::Kill.status());
+    }
+    fn end_tree(&self, tree: &[Member]) {
+        let mut processes = self.processes();
+        let roots: BTreeSet<u32> = tree.iter().filter_map(|member| Self::live(&processes, member)).collect();
+        let ends = Self::under(&processes, roots);
+        self.end(&mut processes, &ends, Stop::Request.status());
+    }
+    fn wait(&self, member: &Member) -> Option<ExitStatus> {
+        let process = u32::try_from(member.pid).ok().filter(|process| descendant(*process) == *member)?;
+        let mut processes = self.processes();
+        loop {
+            if let Some(status) = processes.get(&process)?.exit {
+                return Some(status);
+            }
+            processes = self.ended.wait(processes).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+/// The process a descendant numbered `process` is.
+fn descendant(process: u32) -> Member {
+    Member { pid: i32::try_from(process).expect("a doubled process id fits a process id"), started: (u64::from(process), 0), zombie: false }
+}
+
 struct Host {
     process: u32,
     folder: HostFolder,
     bootstrap: Vec<u8>,
     life: Mutex<Life>,
     ended: Condvar,
+    descendants: Arc<Descendants>,
 }
 #[derive(Default)]
 struct Life {
@@ -108,6 +193,7 @@ impl Host {
                 return;
             }
             life.exit = Some(status);
+            self.descendants.end_group(self.process);
             std::mem::take(&mut life.held)
         };
         drop(closed);
@@ -170,6 +256,25 @@ impl Served {
     pub fn set_native(&self, runs: bool) {
         self.0.life().native = runs;
     }
+    /// The host's native agent starts a process that runs on after its turn, under `parent`, one
+    /// it started before, or under the host. It is in the group of what started it, which it dies
+    /// with, or in a session of its own when `own_session`, which outlives the host unless it is
+    /// ended.
+    pub fn start_descendant(&self, parent: Option<&Member>, own_session: bool) -> Member {
+        let process = NEXT_PROCESS.fetch_add(1, Ordering::Relaxed);
+        let mut processes = self.0.descendants.processes();
+        let (parent, group) = parent
+            .and_then(|parent| Descendants::live(&processes, parent))
+            .and_then(|parent| processes.get(&parent).map(|started| (parent, started.group)))
+            .unwrap_or((self.0.process, self.0.process));
+        processes.insert(process, Descendant { parent, group: if own_session { process } else { group }, exit: None });
+        descendant(process)
+    }
+    /// Waits until `process`, a descendant of a host, ends, and returns how; none for a process no
+    /// host started.
+    pub fn wait_descendant(&self, process: &Member) -> Option<ExitStatus> {
+        self.0.descendants.wait(process)
+    }
     /// Keeps the host's end of a connection open until the host ends.
     pub fn hold(&self, stream: UnixStream) {
         let mut life = self.0.life();
@@ -193,6 +298,7 @@ struct Shared {
     serve: Mutex<Arc<dyn Serve>>,
     probe: Mutex<Option<Arc<Probe>>>,
     probed: Mutex<Vec<Probed>>,
+    descendants: Arc<Descendants>,
 }
 impl Shared {
     fn folders(&self) -> MutexGuard<'_, BTreeMap<PathBuf, Folder>> {
@@ -255,7 +361,7 @@ pub struct InProcessHosts(Arc<Shared>);
 
 impl Default for InProcessHosts {
     fn default() -> Self {
-        Self(Arc::new(Shared { folders: Mutex::default(), serve: Mutex::new(Arc::new(Silent)), probe: Mutex::default(), probed: Mutex::default() }))
+        Self(Arc::new(Shared { folders: Mutex::default(), serve: Mutex::new(Arc::new(Silent)), probe: Mutex::default(), probed: Mutex::default(), descendants: Arc::default() }))
     }
 }
 
@@ -329,6 +435,19 @@ impl InProcessHosts {
     pub fn probed(&self) -> Vec<Probed> {
         self.0.probed.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
+
+    /// Whether `process`, a descendant of a host, still runs.
+    pub fn descendant_runs(&self, process: &Member) -> bool {
+        self.0.descendants.runs(process)
+    }
+
+    /// `process`, a descendant of a host, ends by itself with `status`.
+    pub fn end_descendant(&self, process: &Member, status: ExitStatus) {
+        let descendants = &self.0.descendants;
+        let mut processes = descendants.processes();
+        let ends: BTreeSet<u32> = Descendants::live(&processes, process).into_iter().collect();
+        descendants.end(&mut processes, &ends, status);
+    }
 }
 
 impl AgentHost for InProcessHosts {
@@ -359,6 +478,7 @@ impl AgentHost for InProcessHosts {
             bootstrap,
             life: Mutex::default(),
             ended: Condvar::new(),
+            descendants: self.0.descendants.clone(),
         });
         folder.host = Some(host.clone());
         folder.launches += 1;
@@ -568,7 +688,11 @@ impl StopHandle for Stopper {
         Ok(self.host().is_some_and(|host| !host.alive()))
     }
     fn tree(&self) -> io::Result<Vec<Member>> {
-        Ok(Vec::new())
+        Ok(self.running().map_or_else(Vec::new, |host| self.shared.descendants.tree(host.process)))
+    }
+    fn end_tree(&self, tree: &[Member], _: Duration) -> io::Result<()> {
+        self.shared.descendants.end_tree(tree);
+        Ok(())
     }
     fn native(&self) -> io::Result<Option<Member>> {
         Ok(self.running().filter(|host| host.native_runs()).map(|host| host.native()))
@@ -725,6 +849,34 @@ mod tests {
         stop.kill().unwrap();
         assert_eq!(host.wait().unwrap().signal(), Some(libc::SIGKILL));
         assert_eq!(hosts.stops(&state), [Stop::Request, Stop::Kill]);
+    }
+
+    #[test]
+    fn what_a_host_left_running_dies_with_its_group_unless_it_has_a_session_of_its_own() {
+        let fixture = Fixture::new();
+        let state = private(&fixture.0);
+        let hosts = InProcessHosts::default();
+        let mut host = launch(&hosts, &fixture, &state);
+        let served = hosts.served(&state).unwrap();
+        let command = served.start_descendant(None, false);
+        let released = served.start_descendant(None, false);
+        let shell = served.start_descendant(None, true);
+        let child = served.start_descendant(Some(&shell), false);
+        assert!(u32::try_from(command.pid).unwrap() >= FIRST_PROCESS && alondra_process_group::process(command.pid).unwrap().is_none(), "no process has its number");
+        hosts.end_descendant(&released, ExitStatus::from_raw(0));
+        assert_eq!(served.wait_descendant(&released), Some(ExitStatus::from_raw(0)), "it ended by itself");
+        let stop = host.stopper();
+        let tree = stop.tree().unwrap();
+        assert_eq!(tree, [command, shell, child], "what runs under the host, whatever its group");
+        stop.request().unwrap();
+        assert_eq!(host.wait().unwrap().signal(), Some(libc::SIGTERM));
+        assert!(!hosts.descendant_runs(&command), "the host's group is swept as it ends");
+        assert_eq!(served.wait_descendant(&command).and_then(|status| status.signal()), Some(libc::SIGKILL));
+        assert!(hosts.descendant_runs(&shell) && hosts.descendant_runs(&child), "a session of its own outlives the host");
+        assert_eq!(stop.tree().unwrap(), vec![], "nothing is under a host that ended");
+        stop.end_tree(&tree, Duration::ZERO).unwrap();
+        assert!(!hosts.descendant_runs(&shell) && !hosts.descendant_runs(&child), "ending what the host left ends it all");
+        assert_eq!(served.wait_descendant(&child).and_then(|status| status.signal()), Some(libc::SIGTERM));
     }
 
     #[test]

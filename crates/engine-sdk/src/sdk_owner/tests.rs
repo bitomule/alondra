@@ -416,7 +416,7 @@ fn the_orchestrators_node_and_tasks_in_progress_show_an_sdk_node_as_the_domain_h
     assert_eq!(shown["sdk_host"].as_bool(), Some(false), "no host runs it once its owner stopped: {shown}");
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn cancelling_an_sdk_task_with_background_work_stops_its_host_and_ends_the_task() {
     let slice = Slice::new();
@@ -424,9 +424,8 @@ async fn cancelling_an_sdk_task_with_background_work_stops_its_host_and_ends_the
     while !slice.domain.state().unwrap().lifecycle_journal[&TASK.into()].iter().any(|record| matches!(record, LifecycleRecord::WorkStarted { .. })) {
         driver.observe_written().unwrap();
     }
-    let group = driver.worker.host_group().unwrap();
-    let processes = alondra_process_group::members(group).unwrap();
-    assert!(processes.len() >= 2, "the host and its native Claude share the host's group: {processes:?}");
+    let host = slice.hosts.watch(driver.worker.host_group().unwrap());
+    assert!(host.runs(), "the host and its native Claude run");
     let agent = driver.agent().clone();
     slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
     slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
@@ -437,9 +436,7 @@ async fn cancelling_an_sdk_task_with_background_work_stops_its_host_and_ends_the
     let task = &state.tasks[&TaskId::from(TASK)];
     assert_eq!((task.state, task.wrap_up.node), (TaskState::Cancelled, Some(NodeEnd::Closed)), "the cancelled task with background work ended");
     assert!(!slice.domain.owns_sdk_host(&agent));
-    let left: Vec<String> =
-        processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect();
-    assert!(left.is_empty(), "SDK host processes survived the cancellation: {left:?}");
+    assert!(!host.runs(), "SDK host processes survived the cancellation");
 }
 
 #[cfg(feature = "real-hosts")]
@@ -834,29 +831,28 @@ fn a_running_daemon_ends_a_live_host_that_refuses_its_adoption_and_resumes_the_s
 }
 
 /// Ends what a test's background commands left, on success and on failure alike.
-pub struct BackgroundCommands(Vec<alondra_process_group::Member>);
+pub struct BackgroundCommands<'a>(&'a crate::engine_tests::SliceHosts, Vec<alondra_process_group::Member>);
 
-#[cfg(feature = "real-hosts")]
-impl BackgroundCommands {
-    pub fn of(slice: &Slice) -> Self {
-        Self(background_commands(slice).into_iter().filter_map(|pid| alondra_process_group::process(pid).unwrap()).collect())
+impl<'a> BackgroundCommands<'a> {
+    pub fn of(slice: &'a Slice) -> Self {
+        Self(&slice.hosts, slice.hosts.background())
     }
     pub fn running(&self) -> Vec<String> {
-        survivors(&self.0)
+        self.1.iter().filter(|process| self.0.background_runs(process)).map(ToString::to_string).collect()
     }
 }
 
-impl Drop for BackgroundCommands {
+impl Drop for BackgroundCommands<'_> {
     fn drop(&mut self) {
-        alondra_process_group::end_tree(&self.0, std::time::Duration::from_secs(5)).unwrap();
+        self.0.end_background(&self.1);
     }
 }
 
 
 #[cfg(feature = "real-hosts")]
-pub fn assert_stopped_whole(slice: &Slice, agent: &AgentId, commands: &BackgroundCommands, host: &[alondra_process_group::Member]) {
+pub fn assert_stopped_whole(slice: &Slice, agent: &AgentId, commands: &BackgroundCommands<'_>, host: &HostWatch) {
     assert_eq!(commands.running(), Vec::<String>::new(), "the background command and its child ended");
-    assert_eq!(survivors(host), Vec::<String>::new(), "the host and its Claude ended");
+    assert!(!host.runs(), "the host and its Claude ended");
     assert_eq!(slice.starts().len(), 1, "no Claude runs: nothing can wake a turn");
     assert_ne!(lifecycle(&*slice.domain).activity(), ActivityView::OwnWork, "nothing waits for the work that ended");
     assert!(slice.domain.owns_sdk_host(agent), "a host waits with no Claude for what the pause holds");
@@ -874,7 +870,7 @@ pub fn assert_stopped_whole(slice: &Slice, agent: &AgentId, commands: &Backgroun
 // A daemon that restarts with a node paused by the user adopts its live host: the gate stops it at
 // its next look.
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // t-parcel-open-issues-widget, 22 October: the session ended its turn on «I go on when it ends»
 // with `bazel test` running in the background, and the 0.3.5 daemon ended its 0.3.4 host, which
 // it would not adopt, and the command with it. A host's end is a fact: the resumed session is told
@@ -900,7 +896,7 @@ fn background_work_its_replaced_host_ended_is_reported_to_the_resumed_session_wh
 fn ending_on_a_read_notification(slice: &Slice) -> Driver {
     let mut driver = slice.launch_with("background-command-silent");
     until_own_work(slice, &mut driver);
-    slice.release_background_command();
+    slice.hosts.release_background_command();
     while slice.observations_with("\"subtype\":\"task_notification\"") == 0 {
         driver.observe_written().unwrap();
     }
@@ -3348,7 +3344,7 @@ async fn an_upgrade_keeps_the_background_command_of_a_host_of_the_release_before
     let (upgraded, adopted, session, old_host) = slice.upgraded_during_a_background_command();
     let mut changed = upgraded.subscribe();
     let owner = Owner::spawn(adopted);
-    slice.release_background_command();
+    slice.hosts.release_background_command();
     let reader = Arc::clone(&upgraded);
     let gone = |old: &[alondra_process_group::Member]| old.iter().all(|process| !alondra_process_group::alive(process).unwrap());
     changed.wait_for(|_| lifecycle(&*reader).activity() == ActivityView::Resting && gone(&old_host)).await.unwrap();
@@ -3476,6 +3472,7 @@ fn a_live_host_of_a_release_older_than_the_oldest_adoptable_is_replaced_as_befor
 #[path = "codex_tests.rs"]
 mod codex_tests;
 
+#[cfg(not(feature = "real-hosts"))]
 #[path = "untaken_tests.rs"]
 mod untaken;
 #[path = "release_tests.rs"]
@@ -4050,7 +4047,7 @@ async fn a_pause_by_the_user_stops_the_host_its_background_commands_and_every_tu
     assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn no_pause_but_the_users_kills_what_the_node_runs() {
     use alondra_engine_ports::admission::Reason;
@@ -4062,20 +4059,20 @@ async fn no_pause_but_the_users_kills_what_the_node_runs() {
         crate::admission::pass_at(&*slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
         slice.domain.join_retakes();
         assert_eq!(commands.running().len(), 2, "{reason:?}: the background command and its child go on");
-        assert_eq!(survivors(&host).len(), host.len(), "{reason:?}: the host and its Claude go on");
+        assert!(host.runs(), "{reason:?}: the host and its Claude go on");
         assert_eq!(slice.starts().len(), 1, "{reason:?}: the same Claude goes on");
         slice.domain.stop_sdk_owners();
     }
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_a_restarted_daemon_adopts_for_a_paused_node_stops_at_the_gates_next_look() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("background-group");
     until_own_work(&slice, &mut driver);
     let commands = BackgroundCommands::of(&slice);
-    let host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    let host = slice.hosts.watch(driver.worker.host_group().unwrap());
     let agent = driver.agent().clone();
     assert!(slice.domain.gate().hold_back(&agent.0, alondra_engine_ports::admission::Reason::ByUser, alondra_core::now_millis()));
     drop(driver);
@@ -4087,7 +4084,7 @@ async fn a_host_a_restarted_daemon_adopts_for_a_paused_node_stops_at_the_gates_n
     crate::admission::pass_at(&*restarted, &slice._home, alondra_core::now_millis()).await.unwrap();
     restarted.join_retakes();
     assert_eq!(commands.running(), Vec::<String>::new(), "the background command and its child ended");
-    assert_eq!(survivors(&host), Vec::<String>::new());
+    assert!(!host.runs(), "the host and its Claude ended");
     restarted.stop_sdk_owners();
 }
 
@@ -4390,10 +4387,9 @@ fn slots(domain: &DomainRuntime, limit: u32) {
     domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(limit)) });
 }
 
-#[cfg(feature = "real-hosts")]
 /// A node with a background command in a group of its own, a shell with a child of its own, under
 /// an owner that runs by itself, as a daemon's are.
-pub(super) fn node_with_a_background_group(slice: &Slice) -> (AgentId, String, BackgroundCommands, Vec<alondra_process_group::Member>) {
+pub(super) fn node_with_a_background_group(slice: &Slice) -> (AgentId, String, BackgroundCommands<'_>, HostWatch) {
     slice.domain.enable_sdk(slice.backend.clone());
     slice.domain.admission().ignore_mac();
     slice.domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(6)) });
@@ -4401,7 +4397,7 @@ pub(super) fn node_with_a_background_group(slice: &Slice) -> (AgentId, String, B
     until_own_work(slice, &mut driver);
     let commands = BackgroundCommands::of(slice);
     assert_eq!(commands.running().len(), 2, "the shell and its child run");
-    let host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
+    let host = slice.hosts.watch(driver.worker.host_group().unwrap());
     let agent = driver.agent().clone();
     let session = slice.starts().last().unwrap()["session"].as_str().unwrap().to_owned();
     slice.domain.add_sdk_owner(Owner::spawn(driver));
