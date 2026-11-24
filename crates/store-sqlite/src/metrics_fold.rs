@@ -242,21 +242,55 @@ struct Sampled {
 }
 
 /// The project a task's metrics count under: the one its request was launched in, or else the
-/// repository its pull request lives in now, also when the task's own record joined another.
-fn project(c: &Connection, task: &str) -> rusqlite::Result<Option<String>> {
-    let repository: Option<String> = c.query_row(
+/// repository its pull request lives in now, also when the task's own record joined another, and
+/// the one it had when the user removed the record from Alondra.
+fn repository_of(c: &Connection, task: &str) -> rusqlite::Result<Option<String>> {
+    c.query_row(
         "WITH RECURSIVE chain(origin,repository,tracking,superseded_by,depth) AS(
-           SELECT id,repository,tracking,superseded_by,0 FROM pull_requests WHERE task_id=?1 AND tracking<>'detached'
+           SELECT id,repository,tracking,superseded_by,0 FROM pull_requests WHERE task_id=?1
            UNION ALL SELECT chain.origin,p.repository,p.tracking,p.superseded_by,chain.depth+1 FROM chain JOIN pull_requests p ON p.id=chain.superseded_by WHERE chain.depth<64)
-         SELECT repository FROM chain WHERE tracking='tracked' ORDER BY origin IS (SELECT pr_id FROM tasks WHERE id=?1) DESC,depth,origin LIMIT 1",
+         SELECT repository FROM chain WHERE tracking<>'superseded' ORDER BY tracking='tracked' DESC,origin IS (SELECT pr_id FROM tasks WHERE id=?1) DESC,depth,origin LIMIT 1",
         [task],
         |row| row.get(0),
-    ).optional()?;
+    ).optional()
+}
+
+fn project(c: &Connection, task: &str) -> rusqlite::Result<Option<String>> {
+    let repository = repository_of(c, task)?;
     c.query_row(
         "SELECT COALESCE(lower(trim(l.project)),lower(replace(?2,rtrim(?2,replace(?2,'/','')),''))) FROM tasks t LEFT JOIN request_launch l ON l.request_id=t.request_id WHERE t.id=?1",
         params![task, repository],
         |row| row.get(0),
     )
+}
+
+fn project_of(c: &Connection, repository: &str) -> rusqlite::Result<String> {
+    c.query_row("SELECT lower(replace(?1,rtrim(?1,replace(?1,'/','')),''))", [repository], |row| row.get(0))
+}
+
+/// A task's pull request left the address `old` for another or joined another record: what weeks
+/// already counted under the project of its old name counts under the new one, added to what that
+/// week already holds for it. A task counted under the project its request was launched in is
+/// not renamed by a move.
+pub(super) fn follow_move_in_weeks(c: &Connection, task: &str, old: &str) -> rusqlite::Result<()> {
+    let new = repository_of(c, task)?.map(|repository| project_of(c, &repository)).transpose()?;
+    let old = project_of(c, old)?;
+    if new.is_none() || new == Some(old.clone()) || project(c, task)? != new {
+        return Ok(());
+    }
+    let new = new.unwrap_or_default();
+    let columns: Vec<&str> = WEEK_SUMS.iter().map(|(column, _)| *column).collect();
+    let added: Vec<String> = columns.iter().map(|column| format!("{column}={column}+excluded.{column}")).collect();
+    c.execute(
+        &format!(
+            "INSERT INTO metric_weeks(week,project,model,effort,approach,{cols}) SELECT week,?2,model,effort,approach,{cols} FROM metric_weeks WHERE project=?1 AND 1
+             ON CONFLICT(week,project,model,effort,approach) DO UPDATE SET {added}",
+            cols = columns.join(","), added = added.join(","),
+        ),
+        params![old, new],
+    )?;
+    c.execute("DELETE FROM metric_weeks WHERE project=?1", [old])?;
+    Ok(())
 }
 
 /// A pull request moved, so the folded rows of the tasks it stands for count under its new name.

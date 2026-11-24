@@ -27,7 +27,7 @@ BEGIN SELECT RAISE(ABORT,'a PR moves only from an address kept as its alias'); E
 WHEN OLD.provider_key IS NOT NULL AND NEW.provider_key IS NOT OLD.provider_key
 BEGIN SELECT RAISE(ABORT,'a PR provider key never changes once known'); END"),
     ("final_pr_tracking", "CREATE TRIGGER final_pr_tracking BEFORE UPDATE OF tracking,superseded_by,detached_at ON pull_requests
-WHEN OLD.tracking<>'tracked' AND (NEW.tracking IS NOT OLD.tracking OR NEW.superseded_by IS NOT OLD.superseded_by OR NEW.detached_at IS NOT OLD.detached_at)
+WHEN OLD.tracking<>'tracked' AND (NEW.tracking IS NOT OLD.tracking OR NEW.detached_at IS NOT OLD.detached_at OR (OLD.tracking<>'superseded' AND NEW.superseded_by IS NOT OLD.superseded_by))
 BEGIN SELECT RAISE(ABORT,'a joined or removed PR stays so'); END"),
     ("retained_pr", "CREATE TRIGGER retained_pr BEFORE DELETE ON pull_requests BEGIN SELECT RAISE(ABORT,'PR ownership is retained for Task lifetime'); END"),
     ("immutable_pr_alias", "CREATE TRIGGER immutable_pr_alias BEFORE UPDATE ON pull_request_aliases BEGIN SELECT RAISE(ABORT,'a PR alias never changes'); END"),
@@ -41,17 +41,25 @@ fn table() -> Result<String> {
     Ok(declared.query_row("SELECT sql FROM sqlite_schema WHERE type='table' AND name='pull_requests'", [], |row| row.get(0))?)
 }
 
-/// A table from before identities were kept is made again with its rows, which read as tracked
-/// records not checked yet at the address they were registered at; the other tables' references
-/// to it wait for the rows to be back, at the end of this transaction. Its indexes and triggers
-/// are then made as declared here, whatever shape it had.
+/// A table that is not the one the schema declares (from before identities were kept, or before a
+/// record Alondra cannot check kept its locator) is made again with the columns both have, which
+/// read as tracked records not checked yet at the address they were registered at; the other
+/// tables' references to it wait for the rows to be back, at the end of this transaction. Its
+/// indexes and triggers are then made as declared here, whatever shape it had.
 pub(crate) fn upgrade(tx: &rusqlite::Transaction<'_>) -> Result<()> {
-    let identified = tx.query_row("SELECT count(*) FROM pragma_table_info('pull_requests') WHERE name='provider_key'", [], |row| row.get::<_, i64>(0))? == 1;
-    if !identified {
-        const KEPT: &str = "id,task_id,host,repository,number,head,base,state,merged_head,allowed_methods";
+    let declared = table()?;
+    let stored: String = tx.query_row("SELECT sql FROM sqlite_schema WHERE type='table' AND name='pull_requests'", [], |row| row.get(0))?;
+    if stored != declared {
+        let kept: Vec<String> = tx.prepare("SELECT name FROM pragma_table_info('pull_requests')")?
+            .query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<_>>()?;
+        let wanted: BTreeSet<String> = Connection::open_in_memory().and_then(|memory| {
+            memory.execute_batch(&declared)?;
+            memory.prepare("SELECT name FROM pragma_table_info('pull_requests')")?.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<_>>()
+        })?;
+        let shared = kept.into_iter().filter(|name| wanted.contains(name)).collect::<Vec<_>>().join(",");
         tx.execute_batch("PRAGMA defer_foreign_keys=ON; CREATE TABLE pull_requests_copy AS SELECT * FROM pull_requests; DROP TABLE pull_requests;")?;
-        tx.execute_batch(&table()?)?;
-        tx.execute_batch(&format!("INSERT INTO pull_requests({KEPT}) SELECT {KEPT} FROM pull_requests_copy; DROP TABLE pull_requests_copy;"))?;
+        tx.execute_batch(&declared)?;
+        tx.execute_batch(&format!("INSERT INTO pull_requests({shared}) SELECT {shared} FROM pull_requests_copy; DROP TABLE pull_requests_copy;"))?;
     }
     tx.execute_batch(ALIASES)?;
     for (name, definition) in INDEXES {
@@ -70,7 +78,7 @@ pub(super) fn row(p: &PullRequest) -> Result<Map<String, Value>> {
     let (identity, key, locator, reason, since) = match &p.identity {
         PrIdentity::Unverified => ("unverified", None, None, None, None),
         PrIdentity::Verified { key, locator } => ("verified", Some(&key.0), Some(&locator.0), None, None),
-        PrIdentity::Unresolvable { key, reason, since, .. } => ("unresolvable", key.as_ref().map(|key| &key.0), None, Some(value(reason)?), Some(*since)),
+        PrIdentity::Unresolvable { key, locator, reason, since } => ("unresolvable", key.as_ref().map(|key| &key.0), locator.as_ref().map(|locator| &locator.0), Some(value(reason)?), Some(*since)),
     };
     let (tracking, by, at) = match &p.tracking {
         PrTracking::Tracked => ("tracked", None, None),
@@ -123,8 +131,13 @@ pub(super) fn decode_row(row: &mut Value, aliases: &mut BTreeMap<String, BTreeSe
     let identity = match take("identity").as_str() {
         Some("unverified") => json!({"kind": "unverified"}),
         Some("verified") => json!({"kind": "verified", "key": key, "locator": locator}),
-        Some("unresolvable") if key.is_null() => json!({"kind": "unresolvable", "reason": reason, "since": since}),
-        Some("unresolvable") => json!({"kind": "unresolvable", "key": key, "reason": reason, "since": since}),
+        Some("unresolvable") => {
+            let mut unresolvable = json!({"kind": "unresolvable", "reason": reason, "since": since});
+            for (name, found) in [("key", key), ("locator", locator)].into_iter().filter(|(_, found)| !found.is_null()) {
+                unresolvable[name] = found;
+            }
+            unresolvable
+        }
         other => anyhow::bail!("unknown pull request identity {other:?}"),
     };
     let (by, at) = (take("superseded_by"), take("detached_at"));
@@ -158,14 +171,17 @@ pub(super) fn handed_over(after: &DomainState, id: &PrId, lost: &[PrDecision]) -
 /// The tasks whose metrics name a project by a pull request that moved or joined another: its own
 /// task and those of every record that joined it.
 pub(super) fn refresh_projects(c: &Connection, after: &DomainState, changed: &[(&PullRequest, Option<&PullRequest>)]) -> Result<()> {
-    let moved: BTreeSet<&PrId> = changed.iter()
+    let moved_records: Vec<&(&PullRequest, Option<&PullRequest>)> = changed.iter()
         .filter(|(p, prior)| prior.is_some_and(|b| b.repository != p.repository || b.tracking != p.tracking))
-        .map(|(p, _)| after.surviving_pr(&p.id))
         .collect();
+    let moved: BTreeSet<&PrId> = moved_records.iter().map(|(p, _)| after.surviving_pr(&p.id)).collect();
     let tasks: BTreeSet<&str> = after.pull_requests.values()
         .filter(|pr| moved.contains(after.surviving_pr(&pr.id)))
         .map(|pr| pr.task_id.0.as_str())
         .collect();
+    for (p, prior) in moved_records.iter().filter_map(|(p, prior)| prior.map(|prior| (p, prior))) {
+        crate::metrics_fold::follow_move_in_weeks(c, &p.task_id.0, &prior.repository)?;
+    }
     for task in tasks {
         crate::metrics_fold::refresh_project(c, task)?;
     }
