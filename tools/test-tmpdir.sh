@@ -22,6 +22,40 @@ import errno
 import hashlib
 import os
 import sys
+import time
+
+# An invalid executable could not be examined afterwards, so a bounded copy is kept: at most
+# KEPT_FILES files, each cut at KEPT_BYTES, deleted after KEPT_DAYS days. ALONDRA_INVALID_EXECUTABLE_DIR
+# overrides the folder, which is otherwise Alondra home files/invalid-test-executables.
+KEPT_FILES = 3
+KEPT_DAYS = 7
+
+
+def kept_bytes():
+    return int(os.environ.get("ALONDRA_INVALID_EXECUTABLE_MAX_BYTES", 200 * 1024 * 1024))
+
+
+def keep_copy(resolved, digest):
+    folder = os.environ.get("ALONDRA_INVALID_EXECUTABLE_DIR") or os.path.join(
+        os.environ.get("ALONDRA_HOME") or os.path.expanduser("~/.alondra"), "files", "invalid-test-executables"
+    )
+    os.makedirs(folder, exist_ok=True)
+    now = time.time()
+    entries = sorted(
+        (os.path.getmtime(os.path.join(folder, name)), name) for name in os.listdir(folder)
+    )
+    fresh = []
+    for modified, name in entries:
+        if now - modified > KEPT_DAYS * 86400:
+            os.remove(os.path.join(folder, name))
+        else:
+            fresh.append(name)
+    for name in fresh[: max(0, len(fresh) - (KEPT_FILES - 1))]:
+        os.remove(os.path.join(folder, name))
+    target = os.path.join(folder, f"{int(now)}-{digest[:12]}-{os.path.basename(resolved)}")
+    with open(resolved, "rb") as source, open(target, "wb") as copy:
+        copy.write(source.read(kept_bytes()))
+    return target
 
 
 def describe(path):
@@ -32,10 +66,14 @@ def describe(path):
             head = file.read(16)
             digest = hashlib.sha256(head + file.read()).hexdigest()
         volume = "boot volume" if status.st_dev == os.stat("/").st_dev else "another volume"
-        return (
+        report = (
             f"Evidence: {resolved} on the {volume}, {status.st_size} bytes, sha256 {digest}, "
             f"first bytes {head.hex()}, modified {int(status.st_mtime)}"
         )
+        try:
+            return report + f"\nCopy kept at {keep_copy(resolved, digest)}"
+        except OSError as problem:
+            return report + f"\nNo copy kept: {problem}"
     except OSError as problem:
         return f"Evidence unavailable: {problem}"
 
@@ -213,8 +251,9 @@ except OSError as error:
             f"Invalid test executable: {sys.argv[1]} (errno {error.errno}). "
             "The operating system rejected its executable format; it may be corrupt.\n"
             "Rebuild the affected target in a fresh output base with "
-            "make test-fresh TARGET=<target> (it keeps the output base inside this checkout "
-            "and deletes it when it ends).",
+            "the same output base, bypassing the caches: bazelisk test <target> "
+            "--noremote_accept_cached --disk_cache= --noremote_upload_local_results "
+            "--run_under=//tools:test_tmpdir",
             file=sys.stderr,
         )
         print(describe(sys.argv[1]), file=sys.stderr)

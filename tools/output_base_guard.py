@@ -2,8 +2,8 @@
 """No file tells anyone to start Bazel with an output base of their own outside this checkout.
 
 An output base is about 20 GB. One started in ~/.cache or /tmp skips the shared output base and the
-build queue, fills the boot volume and is never removed. A scratch output base lives in the
-checkout's .scratch and is started by `make test-fresh`, which deletes it when it ends.
+build queue, fills the boot volume and is never removed. A scratch output base, if one is ever
+needed, lives in the checkout's .scratch and is deleted when its work ends.
 """
 import os
 import re

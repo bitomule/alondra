@@ -30,18 +30,12 @@ class OutputBaseGuardTest(unittest.TestCase):
                 'bazelisk --output_base="/tmp/ob" test //a:b\n'
                 'bazelisk --output_base="$PWD/.scratch/recovery" test //a:b\n'
             )
-            (Path(root) / "Makefile").write_text("test-fresh:\n\tbazelisk --output_base=~/ob test x\n")
+            (Path(root) / "Makefile").write_text("build:\n\tbazelisk --output_base=~/ob test x\n")
             found = guard.report(root)
         self.assertEqual(
             [line.rsplit(": starts", 1)[0] for line in found],
             ["Makefile:2", "docs/notes.md:1", "docs/notes.md:2"],
         )
-
-    def test_the_fresh_output_base_target_cleans_up_after_itself(self):
-        recipe = (checkout() / "Makefile").read_text().split("test-fresh:\n", 1)[1].split("\n\n", 1)[0]
-        self.assertIn("$(CURDIR)/.scratch/fresh-output-base", recipe)
-        self.assertIn("trap", recipe)
-        self.assertIn("rm -rf", recipe)
 
 
 if __name__ == "__main__":
