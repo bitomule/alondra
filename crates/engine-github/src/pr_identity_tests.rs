@@ -76,8 +76,12 @@ fn the_adapter_decides_which_pull_request_an_answer_is() {
 /// T9: the old name of a moved repository that another repository took is not an alias. A record
 /// read before only by its address cannot tell it is another pull request's, so nobody can check
 /// it; one whose key and locator are known is found again where its repository went.
-#[tokio::test]
-async fn a_reused_old_name_is_not_an_alias() {
+#[test]
+fn a_reused_old_name_is_not_an_alias() {
+    alondra_core::clock::VirtualRuntime::new(1_000_000).unwrap().block_on(a_reused_old_name_is_not_an_alias_at_a_virtual_time());
+}
+
+async fn a_reused_old_name_is_not_an_alias_at_a_virtual_time() {
     let world = GithubWorld::new();
     world.set_repository(OLD);
     let head = world.open_pr(42, "csv-export", "main");
@@ -100,6 +104,7 @@ async fn a_reused_old_name_is_not_an_alias() {
     world.move_repository(OLD, NEW);
     world.reuse_name(OLD);
     world.open_pr_in(OLD, 42, "unrelated", "develop");
+    alondra_core::clock::advance(std::time::Duration::from_secs(1)).await;
     reconcile(&domain, &world, &mut ObservationFailures::default()).await.unwrap();
     let found = record(&domain, &pr);
     assert_eq!((found.repository.as_str(), found.aliases.iter().map(String::as_str).collect::<Vec<_>>()), (NEW, vec![OLD]),
