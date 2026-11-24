@@ -149,7 +149,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -165,7 +164,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/agent-application/...
@@ -175,7 +173,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -194,7 +191,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -212,7 +208,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/agent-runtime/...
@@ -223,7 +218,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "clippy.toml"
       - "crates/agent-application/**"
@@ -287,7 +281,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/alondra/...
@@ -315,7 +308,6 @@ checks:
       - "agent-host/toolchain.bzl"
       - "agent-host/tsconfig.json"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "clippy.toml"
       - "crates/agent-application/**"
@@ -372,7 +364,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/alondrad/...
@@ -451,7 +442,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -471,7 +461,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -493,7 +482,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -517,7 +505,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -541,7 +528,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -581,7 +567,6 @@ checks:
       - "agent-host/toolchain.bzl"
       - "agent-host/tsconfig.json"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "clippy.toml"
       - "crates/agent-application/**"
@@ -626,7 +611,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/daemon-engine/...
@@ -637,7 +621,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "clippy.toml"
       - "crates/agent-application/**"
@@ -681,7 +664,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/machine-model:machine_model_test
@@ -692,7 +674,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "crates/BUILD.bazel"
@@ -723,7 +704,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/daemon-engine-machine/...
@@ -734,7 +714,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "crates/BUILD.bazel"
@@ -768,7 +747,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-github/...
@@ -779,7 +757,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "crates/BUILD.bazel"
@@ -812,7 +789,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-live/...
@@ -823,7 +799,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "crates/BUILD.bazel"
@@ -856,7 +831,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-mcp/...
@@ -867,7 +841,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "crates/BUILD.bazel"
@@ -900,7 +873,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-worktrees/...
@@ -911,7 +883,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -927,7 +898,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-ports/...
@@ -938,7 +908,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -960,7 +929,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/github-gh/...
@@ -971,7 +939,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -991,7 +958,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-doubles/...
@@ -1002,7 +968,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "agent-host/BUILD.bazel"
@@ -1025,7 +990,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/system/...
@@ -1036,7 +1000,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1050,7 +1013,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/host/...
@@ -1061,7 +1023,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "crates/BUILD.bazel"
@@ -1094,7 +1055,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-kernel/...
@@ -1105,7 +1065,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
@@ -1139,7 +1098,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-admission/...
@@ -1149,7 +1107,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "crates/agent-application/**"
@@ -1191,7 +1148,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-sdk:engine_sdk_test
@@ -1202,7 +1158,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "crates/agent-application/**"
@@ -1249,7 +1204,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-sdk:engine_sdk_engine_test
@@ -1259,7 +1213,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "crates/agent-application/**"
@@ -1318,7 +1271,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-sdk:engine_sdk_host_test
@@ -1385,7 +1337,6 @@ checks:
       - "agent-host/toolchain.bzl"
       - "agent-host/tsconfig.json"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
@@ -1420,7 +1371,6 @@ checks:
       - "tools/rust_sources.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/engine-orchestrator:engine_orchestrator_host_test
@@ -1430,7 +1380,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1464,7 +1413,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/store-sqlite/...
@@ -1475,7 +1423,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1503,7 +1450,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/daemon-engine-model/...
@@ -1514,7 +1460,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1541,7 +1486,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/daemon-support/...
@@ -1551,7 +1495,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1569,7 +1512,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1591,7 +1533,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1608,7 +1549,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1626,7 +1566,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "agent-host/*.ts"
@@ -1655,7 +1594,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
       - "crates/core/**"
       - "crates/domain-rules/**"
       - "crates/domain-store-schema/**"
@@ -1676,7 +1614,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1704,7 +1641,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/provider-codex/...
@@ -1714,7 +1650,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1729,7 +1664,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/provider-conformance/...
@@ -1739,7 +1673,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1758,7 +1691,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1782,7 +1714,6 @@ checks:
       - ".bazelrc"
       - ".bazelversion"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1797,7 +1728,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates/store/...
@@ -1807,7 +1737,6 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
       - "clippy.toml"
@@ -1826,7 +1755,6 @@ checks:
       - "*.bazel"
       - ".bazelrc"
       - ".bazelversion"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "LICENSE.md"
       - "MODULE.bazel"
@@ -1901,7 +1829,6 @@ checks:
       - "tools/prose_decisions.py"
       - "tools/prose_decisions_allowlist.tsv"
       - "tools/tests/test_prose_decisions.py"
-      - "version.bzl"
     with:
       targets:
         - //tools:prose_decisions_test
@@ -2005,7 +1932,6 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tests/test_module_cycles.py"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //tools:module_cycles_test
@@ -2055,7 +1981,6 @@ checks:
     paths:
       - "BUILD.bazel"
       - "MODULE.bazel"
-      - "MODULE.bazel.lock"
       - "tools/BUILD.bazel"
       - "tools/tests/test_module_lock.py"
     with:
@@ -2138,7 +2063,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //tests/system/macos:local_daemon_test
@@ -2298,12 +2222,10 @@ checks:
       - ".bazelversion"
       - ".claude-plugin/**"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "LICENSE.md"
       - "MODULE.bazel"
       - "THIRD_PARTY_NOTICES.md"
-      - "version.bzl"
       - "agent-host/BUILD.bazel"
       - "agent-host/codex-main.ts"
       - "agent-host/host-entitlements.plist"
@@ -2388,7 +2310,6 @@ checks:
       - "apple/Testing/BUILD.bazel"
       - "apple/Testing/TemporaryFiles.swift"
       - "BUILD.bazel"
-      - "Cargo.lock"
       - "Cargo.toml"
       - "clippy.toml"
       - "crates/agent-application/**"
@@ -2437,7 +2358,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //apple/Data/Feed:ActionJournalProcessTests
@@ -2753,7 +2673,6 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //crates:cargo_bazel_deps_test
@@ -2853,6 +2772,7 @@ checks:
   musts-scopes:
     uses: bazel/test
     paths:
+      - ".mustsignore"
       - "BUILD.bazel"
       - "MUSTS.yml"
       - "tools/BUILD.bazel"
@@ -2906,7 +2826,6 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tests/test_clock_guard.py"
       - "tools/tree.bzl"
-      - "version.bzl"
     with:
       targets:
         - //tools:clock_guard_test
@@ -3010,7 +2929,6 @@ checks:
       - "tools/public_data_guard.py"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
-      - "version.bzl"
       - "crates/engine-doubles/**"
       - "crates/provider-claude/**"
     with:

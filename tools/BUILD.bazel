@@ -120,9 +120,13 @@ sh_test(
     srcs = ["tests/test_musts_scopes.py"],
     data = [
         "musts_scopes.py",
+        "//:.mustsignore",
         "//:MUSTS.yml",
     ],
-    env = {"MUSTS_MANIFEST": "$(rootpath //:MUSTS.yml)"},
+    env = {
+        "MUSTS_IGNORE": "$(rootpath //:.mustsignore)",
+        "MUSTS_MANIFEST": "$(rootpath //:MUSTS.yml)",
+    },
     size = "small",
 )
 

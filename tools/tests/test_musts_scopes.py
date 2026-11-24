@@ -115,7 +115,9 @@ class MustsScopesTests(unittest.TestCase):
 
     def reopened_by(self, *changed):
         checks = scopes.parse_checks(Path(os.environ["MUSTS_MANIFEST"]).read_text())
-        return {name for name, check in checks.items() if any(scopes.matches(check["paths"], path) for path in changed)}
+        ignored = [line for line in Path(os.environ["MUSTS_IGNORE"]).read_text().splitlines() if line and not line.startswith("#")]
+        counted = [path for path in changed if not scopes.matches(ignored, path)]
+        return {name for name, check in checks.items() if any(scopes.matches(check["paths"], path) for path in counted)}
 
     def test_a_build_number_bump_reopens_only_the_checks_that_read_it(self):
         self.assertEqual(self.reopened_by("tools/shared.bzl"), {
@@ -127,6 +129,14 @@ class MustsScopesTests(unittest.TestCase):
         reopened = self.reopened_by("tools/shared.bzl", "apple/Features/BUILD.bazel")
         self.assertIn("apple-tests", reopened)
         self.assertIn("apple-app-build", reopened)
+
+    def test_a_lock_file_or_the_version_file_reopens_no_check(self):
+        self.assertEqual(self.reopened_by("Cargo.lock", "MODULE.bazel.lock", "version.bzl"), set())
+
+    def test_a_dependency_declaration_still_reopens_the_checks_that_build_with_it(self):
+        reopened = self.reopened_by("Cargo.toml")
+        self.assertIn("crate-agent-protocol", reopened)
+        self.assertIn("module-lock", self.reopened_by("MODULE.bazel"))
 
     def test_check_fails_once_a_path_is_taken_out(self):
         read = {"crates/relay/src/lib.rs", "fixtures/push/a.json", "Cargo.lock"}

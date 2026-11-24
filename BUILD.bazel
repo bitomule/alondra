@@ -31,7 +31,10 @@ exports_files(
 )
 
 exports_files(
-    ["MUSTS.yml"],
+    [
+        ".mustsignore",
+        "MUSTS.yml",
+    ],
     visibility = ["//tools:__pkg__"],
 )
 
