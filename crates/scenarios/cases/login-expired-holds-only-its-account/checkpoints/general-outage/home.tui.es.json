@@ -46,7 +46,7 @@
           "subtitle": "Claude Code dice: «API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}». Volvió a fallar cuando Alondra lo reintentó. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:04:48.000+00:00",
+              "at": "2026-11-15T09:04:46.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -117,7 +117,7 @@
           "subtitle": "Claude Code dice: «API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}». Volvió a fallar cuando Alondra lo reintentó. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:04:48.000+00:00",
+              "at": "2026-11-15T09:04:46.000+00:00",
               "format": "relative",
               "role": "created"
             }

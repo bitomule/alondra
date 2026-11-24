@@ -18,6 +18,7 @@ use alondra_core::{Millis, now_millis};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::watch;
 
 pub struct Timing {
     /// How long a node rests before its host closes. Of 6 521 recorded rests, the 36 % answered
@@ -97,26 +98,42 @@ pub async fn run(domain: Arc<dyn Runtime>, timing: &'static Timing) {
         return;
     }
     let mut rests = Rests::default();
-    let mut changes = domain.subscribe();
+    looks(domain.subscribe(), |since, now| pass(&*domain, &mut rests, since, now, timing)).await;
+}
+
+/// Calls `look` with when the first change it reads came and the time now, and again when it asks
+/// or a change comes. A host closes when its rest is due, at the instant `look` names: a look a
+/// change brings is spaced from the last one, a due rest is looked at on time, so when a host
+/// closes depends on when its task changed, never on how its changes were notified.
+async fn looks<T>(mut changes: watch::Receiver<T>, mut look: impl FnMut(Millis, Millis) -> Option<Millis>) {
     // When the first change the next look reads came: a rest it finds began then, whether the
-    // change was committed just before a look or just after it.
+    // change was committed just before a look, just after it, or while the look was spaced.
     let mut changed = None;
     loop {
         let now = now_millis();
-        let next = pass(&*domain, &mut rests, changed.take().unwrap_or(now), now, timing);
-        match next {
+        let next = look(changed.take().unwrap_or(now), now);
+        let woken_by_change = match next {
             Some(at) => tokio::select! {
-                _ = changes.changed() => changed = Some(now_millis()),
-                _ = clock::sleep(Duration::from_millis(u64::try_from(at - now).unwrap_or(0))) => {}
+                result = changes.changed() => result.is_ok(),
+                _ = clock::sleep(Duration::from_millis(u64::try_from(at - now).unwrap_or(0))) => false,
             },
-            None => {
-                if changes.changed().await.is_err() {
-                    return;
-                }
-                changed = Some(now_millis());
+            None => changes.changed().await.is_ok(),
+        };
+        if !woken_by_change {
+            if changes.has_changed().is_err() {
+                return;
+            }
+            continue;
+        }
+        changed = Some(now_millis());
+        let spaced = clock::sleep(LOOK_SPACING);
+        tokio::pin!(spaced);
+        loop {
+            tokio::select! {
+                () = &mut spaced => break,
+                result = changes.changed() => if result.is_err() { return },
             }
         }
-        clock::sleep(LOOK_SPACING).await;
     }
 }
 
@@ -167,5 +184,53 @@ mod tests {
         let mut rests = Rests::default();
         rests.due(vec![(task("t-1"), 1)], 1_000, 1_000, &TIMING);
         assert_eq!(rests.due(vec![(task("t-1"), 1), (task("t-2"), 1)], 1_100, 1_100, &TIMING), (vec![task("t-1")], Some(1_200)));
+    }
+
+    /// The instants a rest that begins at second 2 closes at, with the daemon also notifying a
+    /// change of another task at each second of `other_changes`.
+    fn closes(other_changes: &[u64]) -> Vec<Millis> {
+        let runtime = clock::VirtualRuntime::new(0).unwrap();
+        runtime.block_on(async {
+            let (notify, changes) = watch::channel(());
+            let resting = Arc::new(std::sync::Mutex::new(vec![]));
+            let closed = Arc::new(std::sync::Mutex::new(vec![]));
+            let (seen, released) = (resting.clone(), closed.clone());
+            let mut rests = Rests::default();
+            let looking = tokio::spawn(looks(changes, move |since, now| {
+                let (due, next) = rests.due(seen.lock().unwrap().clone(), since, now, &Timing::SANDBOX);
+                if !due.is_empty() {
+                    released.lock().unwrap().push(now);
+                    seen.lock().unwrap().clear();
+                }
+                next
+            }));
+            for second in 0..10 {
+                if second == 2 {
+                    *resting.lock().unwrap() = vec![(task("t-1"), 1)];
+                    notify.send_replace(());
+                }
+                if other_changes.contains(&second) {
+                    notify.send_replace(());
+                }
+                for _ in 0..16 {
+                    tokio::task::yield_now().await;
+                }
+                clock::advance(Duration::from_secs(1)).await;
+            }
+            drop(notify);
+            looking.await.unwrap();
+            closed.lock().unwrap().clone()
+        })
+    }
+
+    /// 23 November: on a loaded Mac a scenario's host closed a second earlier than on a calm one.
+    /// The daemon's changes reached the look in fewer notices, and a notice the look took while a
+    /// rest ran made it look at the second the rest was due, where a look woken by its timer waited
+    /// one more spacing. A rest closes the host when it is due, however the changes came.
+    #[test]
+    fn a_rest_closes_when_it_is_due_however_the_changes_were_notified() {
+        assert_eq!(closes(&[]), vec![5_000]);
+        assert_eq!(closes(&[3]), vec![5_000]);
+        assert_eq!(closes(&[4]), vec![5_000]);
     }
 }
