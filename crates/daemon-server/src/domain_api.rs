@@ -1700,7 +1700,7 @@ mod tests {
             "revocation returned before the recovery commit");
         resume_tx.send(()).unwrap();
         assert_eq!(writer.join().unwrap()["status"], 200);
-        assert!(revoked_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(revoked_rx.recv().unwrap(), "revocation ends once the recovery committed, however long the machine takes");
         revoker.join().unwrap();
         assert!(!crate::auth::Auth::open(&home).unwrap().list().iter()
             .any(|entry| entry.id == device.id));

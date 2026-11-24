@@ -63,8 +63,16 @@ struct Fixture {
     _endpoint: Endpoint,
 }
 
+/// How long the Mac waits for a hello unless a test is about that wait: a connection that is late
+/// because the machine is busy is still served.
+const PATIENT: Duration = Duration::from_secs(300);
+
 impl Fixture {
     async fn new() -> Self {
+        Self::waiting_for_hello(PATIENT).await
+    }
+
+    async fn waiting_for_hello(hello_timeout: Duration) -> Self {
         let (phone, other) = (Phone::new("phone-1", 33), Phone::new("phone-2", 43));
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
@@ -105,7 +113,7 @@ impl Fixture {
         };
         let endpoint = iroh_endpoint::bind(service.iroh_key().clone(), &config).await.unwrap();
         let mac = EndpointAddr::new(endpoint.id()).with_ip_addr(endpoint.bound_sockets()[0]);
-        tokio::spawn(iroh_endpoint::serve(endpoint.clone(), service.clone()));
+        tokio::spawn(iroh_endpoint::serve_waiting_for_hello(endpoint.clone(), service.clone(), hello_timeout));
         Self { service, domain, mac, phone, other, home, _endpoint: endpoint }
     }
 
@@ -222,7 +230,7 @@ async fn a_device_not_paired_here_is_refused_before_any_request() {
 
 #[tokio::test]
 async fn a_connection_that_never_says_hello_is_closed() {
-    let f = Fixture::new().await;
+    let f = Fixture::waiting_for_hello(Duration::from_millis(500)).await;
     let (_client, connection) = f.connect(55).await;
     assert_eq!(close_code(&connection).await, Some(VarInt::from_u32(close::HELLO_TIMEOUT)));
 }

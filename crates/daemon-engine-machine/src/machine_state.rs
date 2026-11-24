@@ -303,8 +303,23 @@ const KEEP_DAYS: Millis = 7 * 24 * 60 * 60_000;
 const SAMPLES_HEADER: &str = "at,memory_free_percent,load_1m,cpus,health,working,memory_pressure,compressor_share,margin_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s,node_cost_gb,disk_usable_gb,disk_reserved_gb";
 const GB: f64 = (1u64 << 30) as f64;
 
+/// One sample, with the header when it starts the day's file, in a single write: a row made of
+/// many small writes costs a system call each, and another writer's row could land between them.
+fn append_sample(out: &mut impl std::io::Write, new_day: bool, now: Millis, mac: &MacState, working: usize, disk: Option<(u64, u64)>) -> std::io::Result<()> {
+    let free = mac.free_percent.map(|free| free.to_string()).unwrap_or_default();
+    let room = if mac.room(0, now).is_ok() { "room" } else { "no_room" };
+    let pressure = mac.pressure.and_then(|pressure| serde_json::to_value(pressure).ok()).and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default();
+    let compressor = mac.compressor.map(|c| {
+        let swap = mac.swap_rates.map(|(ins, outs)| format!("{ins:.0},{outs:.0}")).unwrap_or_else(|| ",".into());
+        format!("{:.3},{:.2},{},{},{},{},{swap}", c.share(), c.margin() as f64 / GB, c.compressor_pages, c.uncompressed_pages, c.stored_pages, c.swap_used >> 20)
+    }).unwrap_or_else(|| ",,,,,,,".into());
+    let node_cost = mac.node_cost.map(|cost| format!("{:.2}", cost as f64 / GB)).unwrap_or_default();
+    let disk = disk.map(|(usable, reserved)| format!("{:.2},{:.2}", usable as f64 / 1e9, reserved as f64 / 1e9)).unwrap_or_else(|| ",".into());
+    let header = if new_day { format!("{SAMPLES_HEADER}\n") } else { String::new() };
+    out.write_all(format!("{header}{now},{free},{:.2},{},{room},{working},{pressure},{compressor},{node_cost},{disk}\n", mac.load, mac.cpus).as_bytes())
+}
+
 pub fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working: usize, disk: Option<(u64, u64)>) {
-    use std::io::Write;
     let day = alondra_daemon_engine_model::local_day(now);
     let file = dir.join(format!("{day}.csv"));
     let new_day = !file.exists();
@@ -313,19 +328,7 @@ pub fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working: usize
             rewrite_header(&file)?;
         }
         let mut out = std::fs::OpenOptions::new().create(true).append(true).open(&file)?;
-        if new_day {
-            writeln!(out, "{SAMPLES_HEADER}")?;
-        }
-        let free = mac.free_percent.map(|free| free.to_string()).unwrap_or_default();
-        let room = if mac.room(0, now).is_ok() { "room" } else { "no_room" };
-        let pressure = mac.pressure.and_then(|pressure| serde_json::to_value(pressure).ok()).and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default();
-        let compressor = mac.compressor.map(|c| {
-            let swap = mac.swap_rates.map(|(ins, outs)| format!("{ins:.0},{outs:.0}")).unwrap_or_else(|| ",".into());
-            format!("{:.3},{:.2},{},{},{},{},{swap}", c.share(), c.margin() as f64 / GB, c.compressor_pages, c.uncompressed_pages, c.stored_pages, c.swap_used >> 20)
-        }).unwrap_or_else(|| ",,,,,,,".into());
-        let node_cost = mac.node_cost.map(|cost| format!("{:.2}", cost as f64 / GB)).unwrap_or_default();
-        let disk = disk.map(|(usable, reserved)| format!("{:.2},{:.2}", usable as f64 / 1e9, reserved as f64 / 1e9)).unwrap_or_else(|| ",".into());
-        writeln!(out, "{now},{free},{:.2},{},{room},{working},{pressure},{compressor},{node_cost},{disk}", mac.load, mac.cpus)
+        append_sample(&mut out, new_day, now, mac, working, disk)
     });
     if let Err(error) = written {
         log!("could not record the machine sample in {}: {error}", file.display());
@@ -1085,5 +1088,41 @@ mod tests {
             "1,40,1.00,11,tight,2,normal,0.318,5.00,286160,613840,0,6700,30,0,,,",
             "1791500000000,40,5.00,11,room,6,normal,0.318,5.00,286160,613840,0,6700,30,0,0.38,,",
         ]);
+    }
+
+    /// A writer that keeps what it is given and how many writes it took.
+    #[derive(Default)]
+    struct Counted {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl std::io::Write for Counted {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_sample_reaches_its_file_in_one_write_with_the_header_of_a_new_day() {
+        let mut state = MacState::default();
+        state.step(&memory_sample(None), SAMPLE);
+        for new_day in [true, false] {
+            let mut out = Counted::default();
+            append_sample(&mut out, new_day, SAMPLE, &state, 2, Some((50_000_000_000, 1_000_000_000))).unwrap();
+            assert_eq!(out.writes, 1, "a row in pieces costs a system call each and can interleave with another writer's");
+            let text = String::from_utf8(out.bytes).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(lines.len(), if new_day { 2 } else { 1 }, "{text}");
+            assert_eq!(lines.first() == Some(&SAMPLES_HEADER), new_day);
+            let columns = SAMPLES_HEADER.split(',').count();
+            assert_eq!(lines.last().unwrap().split(',').count(), columns, "{text}");
+        }
     }
 }

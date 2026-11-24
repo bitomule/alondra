@@ -708,7 +708,7 @@ pub mod tests {
             *\"repo view\"*) printf '%s' '{{\"mergeCommitAllowed\":false,\"squashMergeAllowed\":true,\"rebaseMergeAllowed\":false}}' ;;\n\
             *) printf '%s' '{{\"state\":\"OPEN\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}' ;;\nesac\n")).unwrap();
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        let gh = GhCli::at(program).with_branch_pr_limit(Duration::from_secs(600));
+        let gh = GhCli::at(program).without_limits();
 
         catch_up_task(&domain, &github(gh.clone()), &"t".into(), false).await.unwrap();
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].later_prs.len(), 0, "only a final delivery looks at the branches");
@@ -723,7 +723,7 @@ pub mod tests {
         let program = fixture.0.join("gh");
         std::fs::write(&program, format!("#!/bin/sh\nprintf '%s' '{{\"fullDatabaseId\":\"7\",\"id\":\"PR_7\",\"url\":\"https://github.com/owner/repo/pull/7\",\"headRefName\":\"work\",\"state\":\"CLOSED\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}'\n")).unwrap();
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        catch_up_task(&domain, &github(GhCli::at(program)), &"t".into(), true).await.unwrap();
+        catch_up_task(&domain, &github(GhCli::at(program).without_limits()), &"t".into(), true).await.unwrap();
         assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Closed);
         assert!(alondra_domain_rules::ReadIndex::build(&domain.state().unwrap()).cards_of(&"d".into()).is_empty());
     }
@@ -754,7 +754,7 @@ pub mod tests {
         let program = fixture.0.join("gh");
         std::fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        assert!(catch_up_task(&domain, &github(GhCli::at(program)), &"t".into(), true).await.is_err());
+        assert!(catch_up_task(&domain, &github(GhCli::at(program).without_limits()), &"t".into(), true).await.is_err());
         assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Open);
     }
 

@@ -25,10 +25,7 @@ pub(crate) const ALPN: &[u8] = b"alondra/1";
 pub(crate) const KEY_FILE: &str = "iroh.key";
 /// The UDP port tried first, so a port forwarded on the router keeps working after a restart.
 pub(crate) const DEFAULT_PORT: u16 = 47811;
-#[cfg(not(test))]
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(test)]
-const HELLO_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_HELLO: usize = 4 * 1024;
 pub(crate) const MAX_REQUEST: usize = 256 * 1024;
 pub(crate) const MAX_STREAMS: u32 = 32;
@@ -229,6 +226,12 @@ pub(crate) async fn bind_preferring_port(key: &SecretKey, config: &IrohConfig) -
 
 /// Accepts connections until the endpoint closes.
 pub(crate) async fn serve(endpoint: Endpoint, service: Arc<Service>) {
+    serve_waiting_for_hello(endpoint, service, HELLO_TIMEOUT).await;
+}
+
+/// `serve`, giving each connection `hello_timeout` to say hello: a test that needs the Mac to wait
+/// for a hello that comes late on a busy machine, or to give up on one that never comes, chooses it.
+pub(crate) async fn serve_waiting_for_hello(endpoint: Endpoint, service: Arc<Service>, hello_timeout: Duration) {
     let permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     while let Some(incoming) = endpoint.accept().await {
         let permit = permits.clone().try_acquire_owned();
@@ -242,7 +245,7 @@ pub(crate) async fn serve(endpoint: Endpoint, service: Arc<Service>) {
             let Ok(_permit) = permit else {
                 return connection.close(VarInt::from_u32(close::BUSY), b"busy");
             };
-            serve_connection(&service, connection).await;
+            serve_connection(&service, connection, hello_timeout).await;
         });
     }
 }
@@ -284,8 +287,8 @@ struct Hello {
     signature: String,
 }
 
-async fn serve_connection(service: &Arc<Service>, connection: Connection) {
-    let device_id = match alondra_core::clock::timeout(HELLO_TIMEOUT, hello(service, &connection)).await {
+async fn serve_connection(service: &Arc<Service>, connection: Connection, hello_timeout: Duration) {
+    let device_id = match alondra_core::clock::timeout(hello_timeout, hello(service, &connection)).await {
         Ok(Some(device_id)) => device_id,
         Ok(None) => return connection.close(VarInt::from_u32(close::UNAUTHORIZED), b"unauthorized"),
         Err(_) => return connection.close(VarInt::from_u32(close::HELLO_TIMEOUT), b"no hello"),

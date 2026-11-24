@@ -42,6 +42,19 @@ async fn a_branch_gh_does_not_name_within_the_limit_is_left_out() {
     assert_eq!(gh.branch_pr_within(&fixture, Duration::ZERO).await, None);
 }
 
+/// A Mac so loaded that starting `gh` outlasts the limit a call asked for: a `gh` without limits
+/// still answers, where the default one gives the call up.
+#[tokio::test]
+async fn a_gh_without_limits_answers_however_long_the_limit_a_call_asked_for_is_overrun() {
+    let fixture = directory();
+    let program = fixture.join("gh");
+    std::fs::write(&program, "#!/bin/sh\nprintf '%s' '{\"url\":\"https://github.com/owner/site/pull/6\",\"state\":\"OPEN\"}'\n").unwrap();
+    std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    assert_eq!(GhCli::at(program.clone()).branch_pr_within(&fixture, Duration::ZERO).await, None, "the default gh gives up at the limit");
+    let unbounded = GhCli::at(program).without_limits();
+    assert_eq!(unbounded.branch_pr_within(&fixture, Duration::ZERO).await, Some(("github.com".into(), "owner/site".into(), 6)));
+}
+
 #[tokio::test]
 async fn gh_reports_the_repository_merge_methods_and_stays_silent_when_it_fails() {
     let fixture = directory();
