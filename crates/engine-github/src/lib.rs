@@ -17,7 +17,10 @@ use alondra_engine_kernel::{domain_runtime, domain_store};
 #[cfg(test)]
 fn unwired(home: &std::path::Path) -> anyhow::Result<domain_runtime::DomainRuntime> {
     #[cfg(test)]
-    alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    {
+        alondra_foundation::durability::relax();
+        alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    }
     let runtime = domain_runtime::DomainRuntime::open_unwired_at(home, &alondra_engine_ports::journal::active_path(home))?;
     alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
     Ok(runtime)
