@@ -36,6 +36,17 @@ low_opt_rust_test(
 # The Codex host, its session and the fake native app-server played in a test's own process, on the
 # transport the Claude host model speaks too: the doubled hosts of engine-doubles serve with it.
 # Tests only.
+_HOST_MODEL_DEPS = [
+    "//crates/codex-protocol:codex_protocol",
+    "//crates/core:alondra_core",
+    "//crates/engine-doubles:engine_doubles",
+    "//crates/process-group:process_group",
+    "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:sha2-0.10.9",
+    "@crates//:tokio",
+]
+
 rust_library(
     name = "codex_host_model",
     testonly = True,
@@ -45,16 +56,20 @@ rust_library(
     edition = "2024",
     version = "0.1.0",
     visibility = ["//crates/daemon-server:__pkg__", "//crates/engine-sdk:__pkg__"],
-    deps = [
-        "//crates/codex-protocol:codex_protocol",
-        "//crates/core:alondra_core",
-        "//crates/engine-doubles:engine_doubles",
-        "//crates/process-group:process_group",
-        "@crates//:serde",
-        "@crates//:serde_json",
-        "@crates//:sha2-0.10.9",
-        "@crates//:tokio",
-    ],
+    deps = _HOST_MODEL_DEPS,
+)
+
+# The transport both host models speak, tried on its own: `host_transport.rs` is compiled into the
+# Codex model, so its tests run with it.
+low_opt_rust_test(
+    name = "codex_host_model_test",
+    size = "small",
+    srcs = glob(["model/**/*.rs"]) + ["//crates/provider-claude:model/host_transport.rs"],
+    crate_name = "alondra_codex_host_model",
+    crate_root = "model/fake_codex_host.rs",
+    edition = "2024",
+    version = "0.1.0",
+    deps = _HOST_MODEL_DEPS,
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

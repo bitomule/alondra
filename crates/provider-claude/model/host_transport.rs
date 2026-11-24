@@ -181,6 +181,9 @@ fn framed(payload: &[u8]) -> Result<Vec<u8>, String> {
 #[derive(Default)]
 pub struct Wire {
     lane: Option<FramedWriter<UnixStream>>,
+    /// The connection `lane` belongs to, so the end of an older one never closes a newer one's.
+    lane_connection: u64,
+    connections_served: u64,
     /// The host's end of every connection, closed when the host ends.
     connections: Vec<UnixStream>,
     outbox: Option<Outbox>,
@@ -233,6 +236,23 @@ impl Wire {
         if let Some(lane) = self.lane.as_mut()
             && lane.write(frame).is_err()
         {
+            self.lane = None;
+        }
+    }
+
+    /// Makes `writer` the lane, in place of any older connection's: the daemon that adopts a host
+    /// attaches while the one it replaces may still be closing its own connection. Returns what
+    /// `detach` takes to close this lane and no other.
+    fn attach(&mut self, writer: FramedWriter<UnixStream>) -> u64 {
+        self.connections_served += 1;
+        self.lane_connection = self.connections_served;
+        self.lane = Some(writer);
+        self.lane_connection
+    }
+
+    /// The connection `connection` ended: its lane closes unless a newer connection took its place.
+    fn detach(&mut self, connection: u64) {
+        if self.lane_connection == connection {
             self.lane = None;
         }
     }
@@ -474,11 +494,12 @@ pub fn serve<M: Model>(model: &M, host: &Arc<Host<M::Play>>, stream: UnixStream)
         Err(why) if why.is_empty() => return,
         Err(why) => return model.troubled(format!("the attach of the host of {}: {why}", host.task)),
     }
+    let connection;
     {
         let mut state = lock(&host.state);
         let wire = &mut state.wire;
         let unacknowledged: Vec<Frame> = wire.journal.iter().filter(|(cursor, _)| *cursor > wire.acknowledged).map(|(_, frame)| frame.clone()).collect();
-        wire.lane = Some(writer);
+        connection = wire.attach(writer);
         for frame in &unacknowledged {
             wire.send(frame);
         }
@@ -523,7 +544,7 @@ pub fn serve<M: Model>(model: &M, host: &Arc<Host<M::Play>>, stream: UnixStream)
             other => model.troubled(format!("the daemon sent the host of {} a frame it never sends: {other:?}", host.task)),
         }
     }
-    lock(&host.state).wire.lane = None;
+    lock(&host.state).wire.detach(connection);
     model.tick();
 }
 
@@ -545,4 +566,119 @@ pub fn ends_with<P: Send + 'static>(served: &Served, host: &Arc<Host<P>>) {
         watched.wait();
         ended.end(false);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::owner_proof;
+    use std::sync::mpsc;
+    use std::thread::JoinHandle;
+
+    struct Ticks(Mutex<mpsc::Sender<()>>);
+
+    impl Model for Ticks {
+        type Play = ();
+        fn tick(&self) {
+            let _ = lock(&self.0).send(());
+        }
+        fn troubled(&self, why: String) {
+            panic!("{why}");
+        }
+        fn command(&self, _: &Host<()>, _: &mut HostState<()>, _: Command) {}
+    }
+
+    struct Running;
+
+    impl Process for Running {
+        fn alive(&self) -> bool {
+            true
+        }
+        fn end(&self, _: bool) {}
+    }
+
+    const SECRET: &str = "0101010101010101010101010101010101010101010101010101010101010101";
+
+    fn host() -> Arc<Host<()>> {
+        let bootstrap = json!({
+            "host_instance_id": "host-1",
+            "control_secret": SECRET,
+            "fence": {"profile_id": "default", "account_id": "default", "data_epoch": "epoch", "host_id": "host"},
+            "execution": {"task_id": "t", "agent_id": "sdk-t", "conversation_id": "conversation", "process_instance_id": "process", "generation": 1},
+            "manifest": {"host_release": "0.0.0", "host_sha256": "a".repeat(64), "executable_sha256": "b".repeat(64), "sdk_version": "sdk"},
+            "native": {"session_id": "session"},
+        });
+        let identity = Identity { task: "t".into(), account: "default".into(), session: "session".into(), capability: String::new(), resumes: false, process_id: 1 };
+        let bootstrap = Bootstrap::read(&serde_json::to_vec(&bootstrap).unwrap()).unwrap();
+        Arc::new(Host::new(identity, bootstrap, &[], Box::new(Running), Arc::default(), ()))
+    }
+
+    /// A daemon's connection to `host`, attached, and the thread that serves it.
+    struct Daemon {
+        stream: UnixStream,
+        served: JoinHandle<()>,
+    }
+
+    fn attach(host: &Arc<Host<()>>, ticks: &Arc<Ticks>, moved: &mpsc::Receiver<()>) -> Daemon {
+        let (stream, host_end) = UnixStream::pair().unwrap();
+        let (served_host, model) = (host.clone(), ticks.clone());
+        let served = std::thread::spawn(move || serve(&*model, &served_host, host_end));
+        let mut reader = FramedReader::new(stream.try_clone().unwrap());
+        let mut writer = FramedWriter::new(stream.try_clone().unwrap());
+        let Some(Body::Hello(_)) = reader.read().unwrap().map(|frame| frame.body) else { panic!("the host speaks first") };
+        let Some(Body::Challenge(challenge)) = reader.read().unwrap().map(|frame| frame.body) else { panic!("then it challenges") };
+        let mut attach = Attach {
+            fence: challenge.fence,
+            execution: challenge.execution,
+            host_instance_id: challenge.host_instance_id,
+            nonce: challenge.nonce,
+            owner_generation: 1,
+            host_release: "0.0.0".into(),
+            host_sha256: "a".repeat(64),
+            executable_sha256: "b".repeat(64),
+            sdk_version: "sdk".into(),
+            proof: String::new(),
+        };
+        attach.proof = owner_proof(&decode_secret(SECRET).unwrap(), &attach).unwrap();
+        writer.write(&Frame::new(Body::Attach(attach))).unwrap();
+        let Some(Body::Attached(_)) = reader.read().unwrap().map(|frame| frame.body) else { panic!("the host attaches the daemon") };
+        moved.recv().unwrap();
+        Daemon { stream, served }
+    }
+
+    impl Daemon {
+        fn goes(self) {
+            self.stream.shutdown(std::net::Shutdown::Both).unwrap();
+            self.served.join().unwrap();
+        }
+    }
+
+    fn lane_open(host: &Host<()>) -> bool {
+        lock(&host.state).wire.lane.is_some()
+    }
+
+    #[test]
+    fn the_daemon_that_goes_leaves_no_lane() {
+        let (sender, moved) = mpsc::channel();
+        let (host, ticks) = (host(), Arc::new(Ticks(Mutex::new(sender))));
+        let daemon = attach(&host, &ticks, &moved);
+        assert!(lane_open(&host));
+        daemon.goes();
+        assert!(!lane_open(&host));
+    }
+
+    /// The daemon that adopts a host attaches while the one it replaces is still closing its
+    /// connection: whichever thread of the host sees its connection end last, the new daemon keeps
+    /// its lane, and its commands get their receipts.
+    #[test]
+    fn a_daemon_that_took_over_keeps_its_lane_when_the_one_it_replaced_goes_after_it_attached() {
+        let (sender, moved) = mpsc::channel();
+        let (host, ticks) = (host(), Arc::new(Ticks(Mutex::new(sender))));
+        let replaced = attach(&host, &ticks, &moved);
+        let adopting = attach(&host, &ticks, &moved);
+        replaced.goes();
+        assert!(lane_open(&host), "the connection that ended is not the one the lane belongs to");
+        adopting.goes();
+        assert!(!lane_open(&host));
+    }
 }
