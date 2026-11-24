@@ -1772,6 +1772,14 @@ name = "CHECK_EVERY"
 where = "crates/daemon-engine/src/accounts.rs"
 decides = "pace"
 [[timer]]
+name = "DAY"
+where = "crates/daemon-engine/src/antigravity_accounts.rs"
+decides = "pace"
+[[timer]]
+name = "HOUR"
+where = "crates/daemon-engine/src/antigravity_accounts.rs"
+decides = "pace"
+[[timer]]
 name = "STOPPED_FOR_MS"
 where = "crates/daemon-engine/src/cleanup.rs"
 decides = "state"
@@ -2424,6 +2432,14 @@ decides = "pace"
 [[timer]]
 name = "PROBE_TIMEOUT"
 where = "crates/system/src/codex_account.rs"
+decides = "pace"
+[[timer]]
+name = "PROBE_TIMEOUT"
+where = "crates/system/src/antigravity_account.rs"
+decides = "pace"
+[[timer]]
+name = "VERSION_TIMEOUT"
+where = "crates/system/src/antigravity_account.rs"
 decides = "pace"
 [[timer]]
 name = "OWNER_ANSWERS_WITHIN"

@@ -7,6 +7,8 @@ enum	crates/daemon-server/src/direct/pairing.rs::Status	response projection of t
 enum	crates/daemon-support/src/job_state.rs::Phase	read of what Claude Code reports about a job; Alondra never keeps or changes it
 enum	crates/domain-rules/src/mcp.rs::McpStatus	how Claude reports an MCP server, parsed on read; not kept by a machine
 enum	crates/engine-sdk/src/sdk_owner.rs::NativeRecoveryStatus	result of one lookup of a recoverable native session; holds no state
+file	antigravity-cli/settings.json	the user's own Antigravity settings, linked read-only from ~/.gemini into a named account's folder; Alondra never owns its state
+file	config/mcp_config.json	the user's own Antigravity MCP servers, linked read-only from ~/.gemini into a named account's folder; Alondra never owns its state
 file	announced.json	cache of the relay announcement kept inside the report folder for when the relay cannot be asked; no lifecycle
 file	auth.json	a provider's own credential file (Codex profile) and its test fixture; Alondra only checks it exists or moves it, never owns its state
 file	capture.json	file a test fixture host writes to record what it received; not production state
