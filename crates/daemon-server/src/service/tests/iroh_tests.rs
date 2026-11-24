@@ -177,7 +177,7 @@ async fn exchange(connection: &Connection, body: &impl serde::Serialize) -> Valu
 }
 
 async fn close_code(connection: &Connection) -> Option<VarInt> {
-    match tokio::time::timeout(Duration::from_secs(5), connection.closed()).await.expect("connection closed") {
+    match connection.closed().await {
         ConnectionError::ApplicationClosed(close) => Some(close.error_code),
         _ => None,
     }
@@ -230,9 +230,19 @@ async fn a_device_not_paired_here_is_refused_before_any_request() {
 
 #[tokio::test]
 async fn a_connection_that_never_says_hello_is_closed() {
-    let f = Fixture::waiting_for_hello(Duration::from_millis(500)).await;
+    let f = Fixture::waiting_for_hello(Duration::from_millis(1)).await;
     let (_client, connection) = f.connect(55).await;
     assert_eq!(close_code(&connection).await, Some(VarInt::from_u32(close::HELLO_TIMEOUT)));
+}
+
+#[tokio::test]
+async fn a_hello_after_the_timeout_finds_the_connection_closed_however_well_it_is_signed() {
+    let f = Fixture::waiting_for_hello(Duration::from_millis(1)).await;
+    let (client, connection) = f.connect(61).await;
+    assert_eq!(close_code(&connection).await, Some(VarInt::from_u32(close::HELLO_TIMEOUT)));
+    let signature = f.hello_signature(&f.phone.signing, f.phone.id, &client);
+    let hello = serde_json::to_vec(&json!({"device_id": f.phone.id, "signature": signature})).unwrap();
+    assert!(send(&connection, &hello).await.is_err(), "a hello that arrives late is never answered");
 }
 
 #[tokio::test]
