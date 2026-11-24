@@ -61,6 +61,7 @@ timer	crates/daemon-server/src/device_expiry.rs::DAY_MS	unit: milliseconds in a 
 timer	crates/daemon-server/src/views/actions.rs::SCHEDULE_DATE_LIMIT_MILLIS	latest date a schedule accepts (year 2100), not a duration
 timer	crates/daemon-server/src/views/reset_time.rs::FIVE_HOURS	length of the 5-hour usage window, used only to format a reset time
 timer	crates/daemon-support/src/files_retention.rs::DAY	unit: one day as a duration, not a limit
+timer	crates/engine-sdk/src/model_fixture.rs::TURNS_DEADLINE	how long a test waits for a task's turns before it fails; test fixture, not a limit of the engine
 timer	crates/engine-sdk/src/sdk_owner/session_refresh.rs::AT_MS	fixed timestamp of a test fixture, not a limit
 timer	crates/engine-sdk/src/sdk_owner/session_refresh.rs::HOUR	test-only unit: one hour
 timer	crates/store-sqlite/src/metrics_fold.rs::DAY_MS	unit: milliseconds in a day, not a limit
