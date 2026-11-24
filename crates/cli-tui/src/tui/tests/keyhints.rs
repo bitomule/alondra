@@ -109,9 +109,15 @@ fn universe() -> Vec<KeyEvent> {
     keys
 }
 
+/// The audit compares screens built at different moments, and a screen shows the time of day of its
+/// rows, so the audit runs on a clock that does not move.
+const AUDIT_EPOCH_MILLIS: i64 = 1_795_000_019_900;
+
 /// What one state shows that does not hold, or nothing. `typing` states send letters to a text box,
 /// so only their shown keys are checked.
 fn audit(state: &str, make: &dyn Fn() -> App, typing: bool) -> Vec<String> {
+    let clock = alondra_core::clock::VirtualRuntime::new(AUDIT_EPOCH_MILLIS).unwrap();
+    let _frozen = clock.enter();
     let mut app = make();
     let _ = draw_text(&mut app);
     let table = app.bindings();
@@ -499,4 +505,19 @@ fn a_cards_documents_are_lines_of_their_own_and_f_lists_them_to_open_one() {
     assert_eq!(opens.len(), 4);
     assert_eq!(opens[2], ("How other apps index a library", Some(&alondra_views::Link::View { key: "document:result-1.file-1".into() })));
     assert!(menu.entries.iter().all(|(action, _)| action.id.is_empty()), "picking one opens it, never acts on the card");
+}
+
+#[test]
+fn the_audit_builds_every_screen_at_the_same_moment() {
+    let (state, typing, make) = states().into_iter().find(|(state, ..)| *state == "tasks, a working task").unwrap();
+    let readings = std::cell::RefCell::new(Vec::new());
+    let slow = || {
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        readings.borrow_mut().push(alondra_core::now_millis());
+        make()
+    };
+    let problems = audit(state, &slow, typing);
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    let readings = readings.into_inner();
+    assert!(readings.windows(2).all(|pair| pair[0] == pair[1]), "the clock moved while the audit ran");
 }
