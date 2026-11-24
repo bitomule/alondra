@@ -11,6 +11,26 @@ fn directory() -> crate::test_support::Directory {
     directory
 }
 
+#[test]
+fn githubs_rate_limit_is_told_apart_from_other_failures() {
+    let spent = HttpAnswer { status: 403, headers: [("x-ratelimit-remaining".to_owned(), "0".to_owned())].into(),
+        body: br#"{"message":"API rate limit exceeded for user ID 1."}"#.to_vec() };
+    assert!(spent.failure().rate_limited());
+    let refused = HttpAnswer { status: 403, headers: [("x-ratelimit-remaining".to_owned(), "4999".to_owned())].into(),
+        body: br#"{"message":"Resource not accessible by integration"}"#.to_vec() };
+    assert!(!refused.failure().rate_limited());
+    let graphql = HttpAnswer { status: 200, headers: Default::default(),
+        body: br#"{"data":{"node":null},"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for user ID 1."}]}"#.to_vec() };
+    assert!(located(&graphql).unwrap_err().rate_limited());
+    assert!(limited(&graphql) && limited(&spent) && limited(&secondary_limit()) && !limited(&refused));
+    let found = HttpAnswer { status: 200, headers: Default::default(), body: br#"{"data":{"repository":{"pullRequest":{"id":"PR_1"}}}}"#.to_vec() };
+    assert!(!limited(&found));
+}
+
+fn secondary_limit() -> HttpAnswer {
+    HttpAnswer { status: 429, headers: [("retry-after".to_owned(), "60".to_owned())].into(), body: br#"{"message":"You have exceeded a secondary rate limit."}"#.to_vec() }
+}
+
 #[tokio::test]
 async fn a_branch_gh_does_not_name_within_the_limit_is_left_out() {
     let fixture = directory();

@@ -153,7 +153,9 @@ pub async fn reconcile(
             Ok(facts) => facts,
             Err(reason) => {
                 identify(domain, &pr, &pr.repository, started, Err(&reason))?;
-                if !reason.not_found() {
+                if reason.rate_limited() {
+                    log!("GitHub's API limit is spent: {}#{} is read again next round ({reason})", pr.repository, pr.number);
+                } else if !reason.not_found() {
                     failures.failed(domain, &pr, &reason.to_string());
                 }
                 continue;
@@ -174,12 +176,10 @@ pub async fn reconcile(
             match observer.close(&pr.host, &pr.repository, pr.number, &key, comment).await {
                 Ok(()) => {
                     failures.closed(domain, &pr);
-                    if let Ok(closed) = observer.observe(&pr.host, &pr.repository, pr.number).await
-                        && closed.identity.as_ref().is_some_and(|read| read.key == key)
-                    {
-                        apply(domain, &*domain.state()?, &pr, &closed)?;
-                    }
+                    let closed = PrFacts { state: PrState::Closed, merged_head: None, ..facts.clone() };
+                    apply(domain, &*domain.state()?, &pr, &closed)?;
                 }
+                Err(reason) if reason.rate_limited() => log!("GitHub's API limit is spent: closing {}#{} waits for the next round ({reason})", pr.repository, pr.number),
                 Err(reason) => failures.close_failed(domain, &pr, &reason.to_string()),
             }
         }
@@ -452,9 +452,9 @@ pub async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, pol
 /// GitHub from memory: the facts of each PR, the closes it took, the ones it was asked for, and
 /// the error it refuses closes with, if any. A close it takes leaves the PR closed.
 pub struct FakeObserver(
-    pub std::sync::Mutex<std::collections::BTreeMap<u64, Result<PrFacts, String>>>,
+    pub std::sync::Mutex<std::collections::BTreeMap<u64, Result<PrFacts, GhFailure>>>,
     pub std::sync::Mutex<Vec<(u64, String)>>,
-    pub std::sync::Mutex<Option<String>>,
+    pub std::sync::Mutex<Option<GhFailure>>,
     pub std::sync::atomic::AtomicUsize,
 );
 #[cfg(test)]
@@ -462,7 +462,7 @@ impl FakeObserver {
     pub fn new() -> Self {
         Self(Default::default(), Default::default(), Default::default(), Default::default())
     }
-    pub fn set(&self, number: u64, facts: Result<PrFacts, String>) {
+    pub fn set(&self, number: u64, facts: Result<PrFacts, GhFailure>) {
         self.0.lock().unwrap().insert(number, facts);
     }
 }
@@ -476,8 +476,7 @@ impl PrObserver for FakeObserver {
             .map(|mut facts| {
                 facts.identity.get_or_insert_with(|| fake_identity(repository, number));
                 facts
-            })
-            .map_err(|reason| GhFailure::Exit(Some(1), reason));
+            });
         Box::pin(async move { facts })
     }
     fn close<'a>(&'a self, _: &'a str, _: &'a str, number: u64, expected: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str) -> Closed<'a> {
@@ -487,7 +486,7 @@ impl PrObserver for FakeObserver {
         if answered != *expected {
             return Box::pin(async move { Err(GhFailure::IdentityMismatch(format!("PR {number} is {} here", answered.0))) });
         }
-        let refused = self.2.lock().unwrap().clone().map(|reason| GhFailure::Exit(Some(1), reason));
+        let refused = self.2.lock().unwrap().clone();
         if refused.is_none() {
             self.1.lock().unwrap().push((number, comment.to_owned()));
             if let Some(Ok(facts)) = self.0.lock().unwrap().get_mut(&number) {
@@ -1184,25 +1183,18 @@ pub mod tests {
         assert_eq!(problems(&domain), 0, "the close went through");
     }
 
-    /// The task `t` the user cancelled, whose PR GitHub closed and later reopened: no close is pending.
-    fn cancelled_with_its_pr_reopened(domain: &DomainRuntime) {
+    /// The task `t` the user cancelled with its PR open, whose node has ended: Alondra is to close the PR.
+    fn cancelled_with_its_pr_open(domain: &DomainRuntime) {
         registered(domain);
         command(domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
         command(domain, Actor::System, "node-end", Command::RecordNodeEnd { task_id: "t".into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: None });
-        command(domain, Actor::System, "closed", Command::ObservePrState { pr_id: "pr".into(), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
-        assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, None);
-    }
-
-    fn close_cancelled(domain: &DomainRuntime) {
-        command(domain, Actor::System, "close-cancelled", Command::ClosePrOfCancelledTask {
-            task_id: "t".into(), pr_id: "pr".into(), branch: "feature".into(), status: facts(HEAD, PrState::Open).status() });
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].state, TaskState::Cancelled);
     }
 
     #[tokio::test]
     async fn the_pending_close_of_a_cancelled_tasks_pr_survives_a_restart_and_closes_it_on_github() {
         let (fixture, domain) = open("cancelled-close-restart");
-        cancelled_with_its_pr_reopened(&domain);
-        close_cancelled(&domain);
+        cancelled_with_its_pr_open(&domain);
         drop(domain);
         let domain = crate::unwired(&fixture.0).unwrap();
         let state = domain.state().unwrap();
@@ -1223,8 +1215,7 @@ pub mod tests {
     #[tokio::test]
     async fn a_close_github_refuses_for_a_cancelled_task_is_retried_across_a_restart_until_it_goes_through() {
         let (fixture, domain) = open("cancelled-close-retry");
-        cancelled_with_its_pr_reopened(&domain);
-        close_cancelled(&domain);
+        cancelled_with_its_pr_open(&domain);
         let observer = FakeObserver::new();
         observer.set(7, Ok(facts(HEAD, PrState::Open)));
         *observer.2.lock().unwrap() = Some("HTTP 502".into());
@@ -1246,4 +1237,103 @@ pub mod tests {
         assert!(state.tasks[&"t".into()].final_presentation.is_none());
     }
 
+
+    /// GitHub from memory that runs `hook` as the watcher reads PR `on`, or fails every read once
+    /// it has closed a PR.
+    struct Hooked {
+        github: FakeObserver,
+        on: u64,
+        hook: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        unreadable_after_close: bool,
+    }
+    impl PrObserver for Hooked {
+        fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
+            if number == self.on && let Some(hook) = self.hook.lock().unwrap().take() {
+                hook();
+            }
+            if self.unreadable_after_close && self.github.3.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+                return Box::pin(async { Err(GhFailure::from("error connecting to api.github.com")) });
+            }
+            self.github.observe(host, repository, number)
+        }
+        fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str) -> Closed<'a> {
+            self.github.close(host, repository, number, expected, comment)
+        }
+    }
+
+    /// F-GH-1: the user reopens the cancelled task while the watcher reads the PR it reads first.
+    #[tokio::test]
+    async fn the_watcher_reads_the_task_again_before_closing_its_pr() {
+        let (_fixture, domain) = open("reopened-mid-round");
+        let domain = Arc::new(domain);
+        cancelled_with_its_pr_open(&domain);
+        command(&domain, Actor::System, "agent-2", Command::RegisterAgent { agent_id: "b".into(), name: "B".into(), at: 0 });
+        command(&domain, Actor::User { user_id: "u".into() }, "request-2", Command::CreateRequest { request_id: "r2".into(), body: "Other".into(), auto_merge: false, maintenance: false, message: false });
+        command(&domain, Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+            task_id: "t2".into(), request_id: "r2".into(), title: "Other".into(), agent_id: Some("b".into()),
+            review_prs: true, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
+        command(&domain, Actor::Agent { agent_id: "b".into() }, "pr-2", Command::RegisterPr {
+            task_id: "t2".into(), pr_id: "a-pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
+            number: 1, head: OTHER.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
+        let reopening = domain.clone();
+        let observer = Hooked { github: FakeObserver::new(), on: 1, unreadable_after_close: false,
+            hook: std::sync::Mutex::new(Some(Box::new(move || command(&reopening, Actor::User { user_id: "u".into() }, "reopen",
+                Command::ReopenTask { task_id: "t".into() })))) };
+        observer.github.set(1, Ok(facts(OTHER, PrState::Open)));
+        observer.github.set(7, Ok(facts(HEAD, PrState::Open)));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert!(!domain.state().unwrap().tasks[&"t".into()].state.terminal(), "the reopen went through");
+        assert!(observer.github.1.lock().unwrap().is_empty(), "a reopened task's PR stays open");
+    }
+
+    /// A close GitHub accepted is Alondra's one close, even when the read after it fails: a
+    /// reopen after it is never closed again.
+    #[tokio::test]
+    async fn a_close_github_accepted_is_recorded_even_when_the_read_after_it_fails() {
+        let (_fixture, domain) = open("closed-unread");
+        cancelled_with_its_pr_open(&domain);
+        let observer = Hooked { github: FakeObserver::new(), on: 0, hook: Default::default(), unreadable_after_close: true };
+        observer.github.set(7, Ok(facts(HEAD, PrState::Open)));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        let state = domain.state().unwrap();
+        assert_eq!((state.pull_requests[&"pr".into()].state, state.tasks[&"t".into()].open_pr.clone()), (PrState::Closed, None));
+        drop(state);
+        let reopened = Hooked { unreadable_after_close: false, ..observer };
+        reopened.github.set(7, Ok(facts(HEAD, PrState::Open)));
+        for _ in 0..3 {
+            reconcile(&domain, &reopened, &mut ObservationFailures::default()).await.unwrap();
+        }
+        assert_eq!(reopened.github.3.load(std::sync::atomic::Ordering::Relaxed), 1, "closed once");
+    }
+
+    /// F-GH-8: GitHub's spent API limit resets by itself: no read and no close raises a card.
+    #[tokio::test]
+    async fn githubs_api_limit_never_raises_a_card_in_the_watcher() {
+        let limit = GhFailure::RateLimited("API rate limit exceeded for user ID 1.".into());
+        let problems = |domain: &DomainRuntime| domain.state().unwrap().interactions.values()
+            .filter(|card| card.card.kind == alondra_domain_rules::CardKind::Problem).count();
+        let (_fixture, domain) = open("rate-limited-read");
+        presented(&domain, false);
+        let observer = FakeObserver::new();
+        observer.set(7, Err(limit.clone()));
+        let mut failures = ObservationFailures::default();
+        for _ in 0..10 {
+            reconcile(&domain, &observer, &mut failures).await.unwrap();
+        }
+        assert_eq!(problems(&domain), 0, "reads");
+        let (_fixture, domain) = open("rate-limited-close");
+        cancelled_with_its_pr_open(&domain);
+        let observer = FakeObserver::new();
+        observer.set(7, Ok(facts(HEAD, PrState::Open)));
+        *observer.2.lock().unwrap() = Some(limit);
+        let mut failures = ObservationFailures::default();
+        for _ in 0..25 {
+            reconcile(&domain, &observer, &mut failures).await.unwrap();
+        }
+        assert_eq!(problems(&domain), 0, "closes");
+        assert_eq!(observer.3.load(std::sync::atomic::Ordering::Relaxed), 25, "tried again every round, not less and less often");
+        *observer.2.lock().unwrap() = None;
+        reconcile(&domain, &observer, &mut failures).await.unwrap();
+        assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Closed);
+    }
 }

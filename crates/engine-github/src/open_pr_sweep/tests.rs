@@ -109,6 +109,13 @@ fn closing(f: &Fixture, id: &str) -> bool {
     matches!(f.domain.state().unwrap().tasks[&id.into()].open_pr, Some(OpenPrPending::Close { .. }))
 }
 
+/// Alondra handed task `id`'s open PR to the user as a delivery.
+fn handed_to_user(f: &Fixture, id: &str) -> bool {
+    let state = f.domain.state().unwrap();
+    let task = &state.tasks[&id.into()];
+    task.state == TaskState::ForYourReview && task.final_presentation.is_some() && task.open_pr.is_none()
+}
+
 #[tokio::test]
 async fn release_branches_are_excluded_and_prefixes_are_configurable() {
     let mut f = Fixture::new();
@@ -116,9 +123,10 @@ async fn release_branches_are_excluded_and_prefixes_are_configurable() {
     f.result(117, "owner/repo", "release-plz-2026");
     f.sweep().await;
     assert!(!closing(&f, "closed"));
+    assert!(!handed_to_user(&f, "closed"));
     f.options.pr_sweep_ignore_branch_prefixes = vec!["ship-".into()];
     f.sweep().await;
-    assert!(closing(&f, "closed"));
+    assert!(handed_to_user(&f, "closed"));
 }
 
 #[tokio::test]
@@ -139,7 +147,7 @@ async fn a_live_tasks_worktree_branch_is_skipped() {
     task(&f.domain, "live", None);
     f.result(7, "owner/repo", "worktree-live");
     f.sweep().await;
-    assert!(!closing(&f, "closed"));
+    assert!(!closing(&f, "closed") && !handed_to_user(&f, "closed"));
 }
 
 /// A PR opened from another Mac or by hand is not this daemon's: the sweep never reads its branch,
@@ -159,9 +167,11 @@ async fn a_pr_no_task_registered_is_never_read_or_adopted() {
     sweep(&domain, &f.gh, &f.options, &f.root).await.unwrap();
     let state = domain.state().unwrap();
     assert_eq!(state.requests, before.requests, "no request asks to adopt it");
-    assert_eq!(state.interactions.len(), before.interactions.len(), "no card offers it");
+    let new: Vec<_> = state.interactions.values().filter(|card| !before.interactions.contains_key(&card.id)).collect();
+    assert!(!new.is_empty() && new.iter().all(|card| !card.body.contains("pull/7") && !card.body.contains("#7")),
+        "only the registered PR reaches the user: {new:?}");
     assert!(state.pull_requests.values().all(|p| p.number != 7), "no task takes it");
-    assert!(matches!(state.tasks[&"closed".into()].open_pr, Some(OpenPrPending::Close { .. })), "the registered PR is still handled");
+    assert_eq!(state.tasks[&"closed".into()].state, TaskState::ForYourReview, "the registered PR is still handled");
     let calls = f.github.calls.lock().unwrap().join("\n");
     assert!(!calls.contains("pull/7") && !calls.contains("pr view 7"), "nothing about PR 7 is read beyond the search: {calls}");
     assert_eq!(calls.lines().filter(|c| c.contains("pull/8 headRefName")).count(), 1);
@@ -202,34 +212,32 @@ async fn adopting_a_closed_tasks_open_pr_reopens_and_delivers_it() {
     assert!(task.open_pr.is_none());
 }
 
+/// F-GH-1 and the user's decision of 2026-11-22: Alondra closes a cancelled task's PR once; when
+/// someone reopens it on GitHub, the sweep hands it to the user and nothing closes it again, also
+/// after a restart.
 #[tokio::test]
-async fn the_sweep_closes_the_open_pr_of_a_cancelled_task_once_and_the_close_survives_a_restart() {
+async fn a_cancelled_tasks_pr_reopened_after_alondra_closed_it_goes_to_the_user_and_is_never_closed_again() {
     let f = Fixture::new();
-    let pr_id = hosted_pr_id("github.com", "owner/repo", 7);
     task(&f.domain, "closed", Some(7));
+    f.result(7, "owner/repo", "feature");
     command(&f.domain, user(), Command::CancelTask { task_id: "closed".into(), reason: None });
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "closed".into(), end: NodeEnd::Closed, agent_id: None });
-    command(&f.domain, Actor::System, Command::ObservePrState { pr_id: pr_id.clone(),
-        head: "1".repeat(40), base: "main".into(), state: PrState::Closed, merged_head: None });
-    f.result(7, "owner/repo", "feature");
+    let mut failures = crate::domain_github::ObservationFailures::default();
+    crate::domain_github::reconcile(&f.domain, &*f.github, &mut failures).await.unwrap();
+    assert_eq!(f.github.world.closes(), [(7, "Cancelled in Alondra: Work".to_owned())]);
+    f.github.world.reopen(7);
     f.sweep().await;
-    let state = f.domain.state().unwrap();
-    let task = &state.tasks[&"closed".into()];
-    assert_eq!(task.open_pr, Some(OpenPrPending::Close { comment: "Cancelled in Alondra: Work".into() }));
-    assert_eq!((task.state, state.pull_requests[&pr_id].state), (TaskState::Cancelled, PrState::Open));
-    assert!(task.final_presentation.is_none(), "it is closed, not delivered");
-    drop(state);
+    assert!(handed_to_user(&f, "closed"), "{:?}", f.domain.state().unwrap().tasks[&"closed".into()]);
+    crate::domain_github::reconcile(&f.domain, &*f.github, &mut failures).await.unwrap();
     f.sweep().await;
     let home = f.root.join("home");
     drop(f.domain);
     let domain = crate::unwired(&home).unwrap();
-    assert!(matches!(domain.state().unwrap().tasks[&"closed".into()].open_pr, Some(OpenPrPending::Close { .. })));
-    let before = domain.state().unwrap();
+    crate::domain_github::reconcile(&domain, &*f.github, &mut failures).await.unwrap();
     sweep(&domain, &f.gh, &f.options, &f.root).await.unwrap();
-    assert_eq!(domain.state().unwrap(), before, "another sweep after restart leaves the pending close alone");
-    let calls = f.github.calls.lock().unwrap().join("\n");
-    assert_eq!(calls.lines().filter(|call| call.starts_with("pr view")).count(), 2,
-        "only the first sweep reads the branch and status");
+    assert_eq!(f.github.world.closes().len(), 1, "closed once");
+    assert_eq!(f.github.world.state_of(7), PrState::Open);
+    assert_eq!(domain.state().unwrap().tasks[&"closed".into()].state, TaskState::ForYourReview);
 }
 
 #[tokio::test]

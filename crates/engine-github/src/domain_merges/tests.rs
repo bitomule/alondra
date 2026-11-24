@@ -258,7 +258,7 @@ async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_app
 #[tokio::test]
 async fn an_auto_merge_goes_through_the_claims_checks() {
     let (_home, domain, github) = presented("auto-base", true);
-    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), head_ref: String::new(), base: "develop".into(), checks: Checks::Passed, passed: BTreeSet::new(), merge_state: MergeState::Clean, identity: None }));
+    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), head_ref: String::new(), base: "develop".into(), checks: Checks::Passed, passed: BTreeSet::new(), merge_state: MergeState::Clean, review_required: false, identity: None }));
     assert!(now().merge_due(&domain, &github).await.unwrap());
     assert!(github.merged.lock().unwrap().is_empty(), "GitHub's base differs from the registered one: the claim refuses");
     assert_eq!(domain.state().unwrap().merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Unclaimed);
@@ -840,7 +840,7 @@ async fn required_checks_are_read_from_githubs_http_status_and_its_rate_limit() 
     let none = api_gh(&home, "HTTP/2.0 200 OK", "HTTP/2.0 404 Not Found\\r\\nX-Ratelimit-Remaining: 4999");
     assert_eq!(none.required_checks(&pr, "main").await, Ok(vec![]));
     let limited = api_gh(&home, "HTTP/2.0 200 OK", "HTTP/2.0 403 Forbidden\\r\\nX-Ratelimit-Remaining: 0");
-    assert!(matches!(limited.required_checks(&pr, "main").await, Err(GhFailure::Http(403, _))), "a rate limit is not «no rules»");
+    assert!(matches!(limited.required_checks(&pr, "main").await, Err(GhFailure::RateLimited(_))), "a rate limit is not «no rules»");
     let failing = api_gh(&home, "HTTP/2.0 502 Bad Gateway", "HTTP/2.0 404 Not Found");
     assert!(matches!(failing.required_checks(&pr, "main").await, Err(GhFailure::Http(502, _))));
 }
@@ -1374,4 +1374,81 @@ async fn a_required_check_that_failed_still_goes_back_to_the_node() {
     now().merge_due(&domain, &github).await.unwrap();
     assert!(github.merged.lock().unwrap().is_empty());
     assert!(feedback(&domain).iter().any(|text| text.contains("its checks failed (build)")), "{:?}", feedback(&domain));
+}
+
+const OTHER_HEAD: &str = "89abcdef0123456789abcdef0123456789abcdef";
+
+/// F-GH-9: what GitHub reported is recorded, so the PR stops being due and nothing reads it again
+/// on the next domain commit.
+#[tokio::test]
+async fn a_pr_closed_or_pushed_outside_alondra_is_recorded_and_read_once() {
+    for (tag, closed) in [("closed-outside", true), ("pushed-outside", false)] {
+        let (_home, domain, github) = presented(tag, false);
+        crate::domain_github::tests::verified(&domain, 7);
+        accept(&domain);
+        if closed {
+            github.statuses.lock().unwrap().get_mut(&7).unwrap().as_mut().unwrap().state = PrState::Closed;
+        } else {
+            github.open(7, OTHER_HEAD, Checks::Passed);
+        }
+        let mut merger = Merger::with(Duration::from_secs(3600), Duration::from_secs(3600));
+        for _ in 0..10 {
+            merger.merge_due(&domain, &github).await.unwrap();
+        }
+        assert_eq!(github.reads.load(std::sync::atomic::Ordering::SeqCst), 1, "{tag}");
+        let state = domain.state().unwrap();
+        let pr = &state.pull_requests[&PrId::from("pr")];
+        assert_eq!((pr.state, pr.head.as_str()), if closed { (PrState::Closed, HEAD) } else { (PrState::Open, OTHER_HEAD) }, "{tag}");
+        assert!(github.calls.lock().unwrap().is_empty(), "{tag}: nothing is merged");
+    }
+}
+
+/// F-GH-7: only a person can give the review, so the node is not asked to fix anything and the
+/// user's acceptance stands until GitHub has it.
+#[tokio::test]
+async fn a_merge_github_holds_for_a_required_review_waits_for_it_with_the_acceptance_intact() {
+    let (_home, domain, github) = presented("review-required", false);
+    github.open_blocked(7, HEAD, Checks::None);
+    github.statuses.lock().unwrap().get_mut(&7).unwrap().as_mut().unwrap().review_required = true;
+    github.merges.lock().unwrap().insert(7, Err("Pull request #7 is not mergeable: the base branch policy prohibits the merge. A review is required".into()));
+    accept(&domain);
+    let mut merger = now();
+    for _ in 0..3 {
+        assert!(merger.merge_due(&domain, &github).await.unwrap(), "it waits");
+    }
+    assert!(feedback(&domain).is_empty() && accepted(&domain), "nothing goes back to the node: {:?}", feedback(&domain));
+    let raised = problems(&domain);
+    assert_eq!(raised.len(), 1, "one card however long it waits");
+    assert_eq!(raised[0].card.effective_title(), "Get PR #7 approved on GitHub");
+    github.merges.lock().unwrap().remove(&7);
+    github.open(7, HEAD, Checks::None);
+    assert!(!merger.merge_due(&domain, &github).await.unwrap());
+    assert_eq!(github.merged.lock().unwrap().len(), 1, "approved, it merges");
+    assert!(problems(&domain).iter().all(|card| card.withdrawn));
+}
+
+/// F-GH-8: GitHub's API limit resets by itself, so neither reading nor merging raises a card or
+/// hands the delivery back, however long it lasts.
+#[tokio::test]
+async fn githubs_api_limit_never_raises_a_merge_card_or_hands_the_delivery_back() {
+    let limit = || GhFailure::RateLimited("API rate limit exceeded for user ID 1.".into());
+    let (_home, domain, github) = presented("rate-limited", false);
+    accept(&domain);
+    github.statuses.lock().unwrap().insert(7, Err(limit()));
+    let mut merger = Merger::with(Duration::ZERO, Duration::ZERO);
+    merger.first_retry = Duration::ZERO;
+    for _ in 0..8 {
+        merger.merge_due(&domain, &github).await.unwrap();
+    }
+    assert!(problems(&domain).is_empty(), "reads");
+    github.open(7, HEAD, Checks::Passed);
+    github.merges.lock().unwrap().insert(7, Err(limit()));
+    for _ in 0..8 {
+        merger.merge_due(&domain, &github).await.unwrap();
+    }
+    assert!(problems(&domain).is_empty(), "merges");
+    assert!(feedback(&domain).is_empty() && accepted(&domain), "{:?}", feedback(&domain));
+    github.merges.lock().unwrap().remove(&7);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(github.merged.lock().unwrap().len(), 1, "once the limit resets it merges");
 }
