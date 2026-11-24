@@ -184,7 +184,7 @@ class BazelTestTmpdirTest(unittest.TestCase):
         self.assertEqual(result.returncode, 126)
         self.assertFalse(marker.exists())
         self.assertIn(b"Invalid test executable", result.stderr)
-        self.assertIn(b"--noremote_accept_cached --disk_cache=", result.stderr)
+        self.assertIn(b"make test-fresh TARGET=<target>", result.stderr)
 
     def test_a_truncated_native_executable_is_rejected(self):
         result = self.run_executable(Path("/bin/ls").read_bytes()[:16])

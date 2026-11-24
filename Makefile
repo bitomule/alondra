@@ -20,7 +20,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: clean-incremental action-outcomes worktree-volume-bench connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record tui-shots mac-snapshots-record mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-explore skill-evals
+.PHONY: test-fresh clean-incremental action-outcomes worktree-volume-bench connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record tui-shots mac-snapshots-record mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-explore skill-evals
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -478,6 +478,15 @@ reap-test-hosts:
 # and a rebuild keeps it because Bazel's action cache holds it: drop this checkout's outputs and state.
 clean-incremental:
 	@base=$$(bazelisk info output_base) && test -d "$$base" && bazelisk clean && rm -rf "$$base/rustc-incremental" "$$base/rustc-incremental-clippy"
+
+# Rebuilds one test target in a throwaway output base inside this checkout's .scratch (an invalid cached
+# executable, see docs/running-tests.md). The output base is shut down and deleted when the command ends.
+test-fresh:
+	@test -n "$(TARGET)" || { echo "usage: make test-fresh TARGET=<bazel test target>" >&2; exit 2; }
+	@mkdir -p .scratch && printf '*\n' > .scratch/.gitignore
+	@base="$(CURDIR)/.scratch/fresh-output-base"; \
+	trap 'bazelisk --output_base="$(CURDIR)/.scratch/fresh-output-base" shutdown >/dev/null 2>&1; chmod -R u+w "$$base" 2>/dev/null; rm -rf "$$base"' EXIT INT TERM; \
+	bazelisk --output_base="$(CURDIR)/.scratch/fresh-output-base" test $(TARGET) --noremote_accept_cached --disk_cache= --noremote_upload_local_results --run_under=//tools:test_tmpdir
 
 musts-scopes:
 	python3 tools/musts_scopes.py check $(CHECKS)

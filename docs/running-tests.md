@@ -90,13 +90,11 @@ and scripts with a shebang keep their arguments and exit status.
 
 When the wrapper rejects an executable it prints its size, SHA-256, first bytes, modification time and whether it sits on the boot volume or another one: keep that line from the test log before rebuilding.
 Rebuild only the affected target in a new output base, without accepting or uploading cached
-results:
-
-```sh
-bazelisk --output_base="$PWD/.scratch/recovery" test <target> \
-  --noremote_accept_cached --disk_cache= --noremote_upload_local_results \
-  --run_under=//tools:test_tmpdir
-```
+results, with `make test-fresh TARGET=<target>`. It keeps the output base in this checkout's
+`.scratch/` and shuts it down and deletes it when the command ends. Never start Bazel with an
+`--output_base` of your own anywhere else (`~/.cache`, `/tmp`, another volume): that skips the
+shared output base and the build queue, an output base is about 20 GB, and nothing removes it
+when you stop. `tools/output_base_guard.py` fails on it.
 
 Do not purge a shared cache to recover one target. Bazel 8.4.2 verifies downloaded digests by
 default; a matching digest proves identity with the recorded output, not that a compiler produced

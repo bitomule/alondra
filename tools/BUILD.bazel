@@ -94,6 +94,16 @@ sh_test(
 )
 
 sh_test(
+    name = "output_base_guard_test",
+    srcs = ["tests/test_output_base_guard.py"],
+    data = [
+        "output_base_guard.py",
+        "//:tree",
+    ],
+    size = "small",
+)
+
+sh_test(
     name = "load_bench_test",
     srcs = ["tests/test_load_bench.py"],
     data = ["load_bench.py"],

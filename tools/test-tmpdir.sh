@@ -212,10 +212,9 @@ except OSError as error:
         print(
             f"Invalid test executable: {sys.argv[1]} (errno {error.errno}). "
             "The operating system rejected its executable format; it may be corrupt.\n"
-            "Rebuild the affected target in a fresh output base: "
-            "bazelisk --output_base=<fresh-directory> test <target> "
-            "--noremote_accept_cached --disk_cache= "
-            "--noremote_upload_local_results --run_under=//tools:test_tmpdir",
+            "Rebuild the affected target in a fresh output base with "
+            "make test-fresh TARGET=<target> (it keeps the output base inside this checkout "
+            "and deletes it when it ends).",
             file=sys.stderr,
         )
         print(describe(sys.argv[1]), file=sys.stderr)
