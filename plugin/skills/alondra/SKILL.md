@@ -271,6 +271,12 @@ Pick the tool by what you need:
   this session is not a delivery. Commit and push everything first: Alondra refuses a final result
   while your worktree has uncommitted files, unpushed commits, or work that is neither on the
   default branch nor in your registered PR, and says what is left.
+  Validate the exact tree you push before you deliver it: the checks the repository's own
+  instructions name as its done-check, run on the final commit, after the last rebase, merge or
+  conflict fix. A result validated before a rebase or a conflict fix is not validated: run them
+  again on the new tree. Never delete, reset or skip a repository's validation records to get past
+  a conflict: resolve it and validate again. A delivery whose pushed tree fails or has checks
+  pending is not ready: fix it first.
   When the work found nothing for the user to look at (a scheduled review with no open PRs or
   issues, a check where nothing changed), deliver with `nothing_to_review: true` and only `text`
   targets: Alondra creates no card and closes the task in silence. Never send a review card that
@@ -516,14 +522,14 @@ card) is a delivery guarantee Alondra handles; this section is about their conte
   back to you with the reason: fix it, push, and present the result again with the new head.
 - Updating your branch with its base (conflicts, or you need what landed there): use the method
   Alondra's message names, which the user picks in Settings («Update a PR's branch with main»).
-  - Rebase, the default: `git fetch origin <base>`, `git rebase origin/<base>`, resolve, run the
-    tests, then `git push --force-with-lease` to your own task's branch only. That push is part
+  - Rebase, the default: `git fetch origin <base>`, `git rebase origin/<base>`, resolve, validate the
+    rebased tree as above, then `git push --force-with-lease` to your own task's branch only. That push is part
     of the rebase: do it without asking the user. Never force-push `main`, the base, or any
     branch that is not your task's.
   - If the rebase gets hard (many conflicts across intermediate commits), `git rebase --abort`,
     merge `origin/<base>` into your branch instead this once, push normally, and say in your
     delivery that you merged instead of rebasing and why.
-  - Merge: `git fetch origin <base>`, `git merge origin/<base>`, resolve, run the tests, push.
+  - Merge: `git fetch origin <base>`, `git merge origin/<base>`, resolve, validate the merged tree as above, push.
 - When the user requests changes or asks about the PR, or Alondra asks you to resolve its
   conflicts, its card leaves the user's queue and the task shows what Alondra asked of you. Do
   it (put the answer to a question in the report), then present the result again with
