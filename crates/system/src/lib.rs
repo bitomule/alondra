@@ -20,6 +20,7 @@ pub mod hook_socket;
 pub mod launch_worktree;
 pub mod machine;
 pub mod plugins;
+pub mod rehearsal;
 pub mod secret_files;
 pub mod sign_in_returns;
 pub mod worktree;
@@ -45,9 +46,19 @@ use std::sync::Arc;
 /// Gives the registry the Mac's disks, gauges, accounts, processes, plugins, sign-in listeners and
 /// its git, which finds the sessions' worktrees in the Claude folder `claude_home` names.
 pub fn wire(registry: &Registry, claude_home: fn() -> PathBuf) {
+    wire_with(registry, claude_home, rehearsal::requested());
+}
+
+/// `wire`, with the Mac of an upgrade rehearsal (`rehearsal`) in place of the real disk and gauges.
+pub fn wire_with(registry: &Registry, claude_home: fn() -> PathBuf, rehearsal: bool) {
     registry.provide::<dyn Worktrees>(Arc::new(GitWorktrees { claude_home }));
-    registry.provide::<dyn Disk>(Arc::new(Disks));
-    registry.provide::<dyn MachineProbe>(Arc::new(machine::Mac::new(Arc::new(Disks))));
+    if rehearsal {
+        registry.provide::<dyn Disk>(Arc::new(rehearsal::RoomyDisk));
+        registry.provide::<dyn MachineProbe>(Arc::new(rehearsal::RoomyMac));
+    } else {
+        registry.provide::<dyn Disk>(Arc::new(Disks));
+        registry.provide::<dyn MachineProbe>(Arc::new(machine::Mac::new(Arc::new(Disks))));
+    }
     registry.provide::<dyn Accounts>(Arc::new(MacAccounts));
     registry.provide::<dyn Processes>(Arc::new(MacProcesses));
     registry.provide::<dyn Plugins>(Arc::new(MacPlugins));
