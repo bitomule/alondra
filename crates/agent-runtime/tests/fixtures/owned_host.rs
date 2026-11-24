@@ -2,14 +2,23 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsFd;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::{Command, Stdio};
 #[path = "../support/mod.rs"]
 mod support;
+/// The socket is private from the moment it exists: the daemon refuses an endpoint that is not,
+/// and it connects as soon as the file appears, so a mode set after the bind lets a daemon that
+/// connects in between refuse a healthy host. With `ALONDRA_FIXTURE_BOUND` set, the fixture says
+/// "bound" and waits for a byte on its input before it goes on, so a test reads the socket there.
 fn bind(path: &std::path::Path) -> UnixListener {
+    let previous = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o177));
     let listener = UnixListener::bind(path).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    rustix::process::umask(previous);
+    if std::env::var_os("ALONDRA_FIXTURE_BOUND").is_some() {
+        println!("bound");
+        std::io::stdout().flush().unwrap();
+        let _ = std::io::stdin().read(&mut [0]);
+    }
     listener
 }
 fn main() {

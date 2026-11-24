@@ -166,6 +166,41 @@ fn a_released_claim_leaves_the_host_ended_while_a_child_forked_meanwhile_waits_t
     drop(forked);
     assert!(matches!(again, Retained::Ended(_)), "the host that ended read as alive once its claim was released");
 }
+/// The daemon connects as soon as the host's socket exists and refuses one that is not private, so
+/// a socket that is private only after a later `chmod` fails a launch the instant it is read in
+/// between: under load, the launch of a healthy host. The fixture stops once bound and the test
+/// reads the socket there, with the loosest umask a parent may hand down.
+#[test]
+fn the_host_socket_is_private_from_the_moment_it_is_bound() {
+    struct Killed(Child);
+    impl Drop for Killed {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let directory = support::directory();
+    let mut command = Command::new(support::fixture());
+    command
+        .env_clear()
+        .envs(support::environment(&directory))
+        .env("ALONDRA_FIXTURE_BOUND", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    // SAFETY: the closure runs in the forked child before its exec and only calls umask.
+    unsafe {
+        command.pre_exec(|| {
+            libc::umask(0o022);
+            Ok(())
+        });
+    }
+    let mut host = Killed(command.spawn().unwrap());
+    let mut line = String::new();
+    BufReader::new(host.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    assert_eq!(line, "bound\n");
+    assert_eq!(fs::symlink_metadata(directory.join("s")).unwrap().mode() & 0o777, 0o600);
+}
 #[test]
 fn retained_bootstrap_and_live_lock_never_authorize_a_replacement_host() {
     let directory = support::directory();
