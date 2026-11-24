@@ -186,8 +186,8 @@ async fn a_host_that_dies_under_a_disk_hold_of_a_delivery_sent_back_goes_on_once
 }
 
 #[cfg(not(feature = "real-hosts"))]
-/// A host stopped on purpose while its node worked on what the user sent back leaves the delivery
-/// with nothing that starts a turn. The end of the host owes the start at once: no clock decides it.
+/// A host stopped on purpose right after its node's turn on what the user sent back leaves the
+/// next start owed by Alondra at once: no clock decides it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_stopped_on_purpose_while_the_node_worked_on_a_delivery_sent_back_owes_its_start_at_once() {
     super::wired();
@@ -197,18 +197,14 @@ async fn a_host_stopped_on_purpose_while_the_node_worked_on_a_delivery_sent_back
     node.deliver();
     node.get_it_back();
     node.tell(SDK_TASK, "Pass the MCP variables too");
-    for _ in 0..50 {
-        if node.pending_inputs() == 0 {
-            break;
-        }
-        node.step();
-    }
-    assert_eq!(node.pending_inputs(), 0, "the node took what the user sent back");
+    node.step_until(SdkNode::turn_ended);
+    assert!(node.domain.read().state().lifecycle_journal[&alondra_domain_rules::TaskId::from(SDK_TASK)].iter()
+        .any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::InputConsumed { .. })), "the node took what the user sent back");
 
     node.lose_host();
     let generation = node.lifecycle().execution().unwrap().generation();
     run(&domain, Actor::System, Command::RecordHostEnded { task_id: SDK_TASK.into(), generation, resumes: false, ended_work: vec![], by_alondra: true });
-    assert_eq!(node.pending_inputs(), 1, "the end of the host queued what the node goes on with");
+    assert_eq!(node.pending_inputs(), 1, "what the node goes on with waits for it");
     assert_eq!(node.lifecycle().obligation().map(|obligation| obligation.party), Some(alondra_domain::Party::Alondra), "Alondra owes the start");
 
     node.gate_look().await;
