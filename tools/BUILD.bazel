@@ -305,12 +305,10 @@ sh_test(
 )
 
 # Fails when this run's tests ran under another wrapper than :test_tmpdir, so without the guard.
-# `manual` until the maintainers' own bazelrc import tools/test-wrapper.bazelrc; the release runs it.
 sh_test(
     name = "test_wrapper_test",
     srcs = ["tests/test_test_wrapper.py"],
     size = "small",
-    tags = ["manual"],
 )
 
 # `bazel run //tools:test_execs -- write`: the table of the programs tests run, in
