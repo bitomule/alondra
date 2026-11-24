@@ -127,6 +127,7 @@ impl Refusal {
             "pr_superseded" => Self::PrSuperseded,
             "pr_detached" => Self::PrDetached,
             "pr_not_checked_yet" => Self::PrNotCheckedYet,
+            "pr_uncheckable" => Self::PrUncheckable,
             "pr_not_unresolvable" => Self::Changed,
             _ => Self::NoLongerAvailable,
         }

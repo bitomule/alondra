@@ -70,7 +70,7 @@ pub(super) fn row(p: &PullRequest) -> Result<Map<String, Value>> {
     let (identity, key, locator, reason, since) = match &p.identity {
         PrIdentity::Unverified => ("unverified", None, None, None, None),
         PrIdentity::Verified { key, locator } => ("verified", Some(&key.0), Some(&locator.0), None, None),
-        PrIdentity::Unresolvable { key, reason, since } => ("unresolvable", key.as_ref().map(|key| &key.0), None, Some(value(reason)?), Some(*since)),
+        PrIdentity::Unresolvable { key, reason, since, .. } => ("unresolvable", key.as_ref().map(|key| &key.0), None, Some(value(reason)?), Some(*since)),
     };
     let (tracking, by, at) = match &p.tracking {
         PrTracking::Tracked => ("tracked", None, None),

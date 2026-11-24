@@ -4862,7 +4862,8 @@ impl DomainState {
                 let opened = OpenedPr { host: host.clone(), repository: repository.clone(), number: *number };
                 self.task(task_id)?;
                 self.tasks.get_mut(task_id).unwrap().opened_prs.remove(&opened);
-                let known = self.known_pr(host, repository, *number, true);
+                let by_alias = self.known_pr(host, repository, *number, true).filter(|p| p.task_id == *task_id && !p.lives_at(host, repository, *number));
+                let known = self.known_pr(host, repository, *number, false).or(by_alias);
                 if let Some(p) = known {
                     if p.task_id != *task_id {
                         if !self.task(&p.task_id)?.state.terminal() {
@@ -4910,7 +4911,7 @@ impl DomainState {
                     return Ok(());
                 };
                 let pr_id = match self.pull_requests.get(pr_id) {
-                    Some(earlier) if earlier.lives_at(host, repository, *number) || !earlier.is_tracked() || earlier.identity.is_unresolvable() => self.fresh_pr_id(pr_id),
+                    Some(earlier) if earlier.answers_to(host, repository, *number) || !earlier.is_tracked() || earlier.identity.is_unresolvable() => self.fresh_pr_id(pr_id),
                     Some(_) => return refuse(
                         "invalid_input",
                         "pr_id",

@@ -3106,7 +3106,7 @@ fn each_pr_of_a_delivery_matches_the_goldens_of_its_own_card_in_every_apple_clie
 fn uncheckable_fixture(reason: alondra_domain_rules::UnresolvableReason) -> DomainState {
     let mut state = golden_fixture();
     state.pull_requests.get_mut(&"github.com/example/repo#12".into()).unwrap().identity =
-        alondra_domain_rules::PrIdentity::Unresolvable { key: None, reason, since: 0 };
+        alondra_domain_rules::PrIdentity::Unresolvable { key: None, locator: None, reason, since: 0 };
     state
 }
 

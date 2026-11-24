@@ -110,6 +110,8 @@ mod open_pr_close_tests;
 #[cfg(test)]
 mod pr_identity_tests;
 #[cfg(test)]
+mod pr_identity_review_tests;
+#[cfg(test)]
 mod answered_card_tests;
 #[cfg(test)]
 mod system_card_tests;

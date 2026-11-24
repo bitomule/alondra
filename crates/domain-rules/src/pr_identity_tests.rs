@@ -166,7 +166,7 @@ fn a_record_never_shares_its_address_with_another_pr() {
     let renamed = must(&mut s, Actor::System, observe(&site, SITE, 2_000, confirmed("key-b", OLD)));
     assert_eq!(s.pull_requests[&site].repository, OLD, "the repository renamed into the old name took the address");
     assert_eq!(s.pull_requests[&lumo].identity,
-        PrIdentity::Unresolvable { key: Some(ProviderPrKey("key-a".into())), reason: UnresolvableReason::AddressReused, since: 2_000 });
+        PrIdentity::Unresolvable { key: Some(ProviderPrKey("key-a".into())), locator: Some(ProviderLocator("locator-key-a".into())), reason: UnresolvableReason::AddressReused, since: 2_000 });
     assert_eq!(renamed.effects.iter().filter(|e| matches!(e, DomainEffect::Relocate { .. })).cloned().collect::<Vec<_>>(),
         [DomainEffect::Relocate { pr_id: lumo.clone(), locator: ProviderLocator("locator-key-a".into()) }]);
 
@@ -380,7 +380,7 @@ fn an_unresolvable_pr_offers_only_removal_and_removal_touches_nothing() {
     let pr = id(OLD, 42);
     let mut s = unresolvable();
     assert_eq!(s.pull_requests[&pr].identity,
-        PrIdentity::Unresolvable { key: None, reason: UnresolvableReason::AddressReused, since: 1_000 });
+        PrIdentity::Unresolvable { key: None, locator: None, reason: UnresolvableReason::AddressReused, since: 1_000 });
     assert!(s.pull_requests[&pr].aliases.is_empty(), "an address that names another PR is never an alias");
     assert_eq!(exec(&mut s, node(), Command::DetachPr { pr_id: pr.clone(), at: 2_000 }).unwrap_err().code, "forbidden");
     let outcome = must(&mut s, user(), Command::DetachPr { pr_id: pr.clone(), at: 2_000 });
@@ -424,7 +424,7 @@ fn gone_needs_three_definitive_answers_an_hour_apart() {
     assert!(gone(&[start, start + 10 * 60 * 1000, start + 20 * 60 * 1000]).is_unverified(), "three answers within an hour count once");
     assert!(gone(&[start, start + 30 * 60 * 1000, start + HOUR, start + HOUR + 59 * 60 * 1000]).is_unverified());
     assert_eq!(gone(&[start, start + HOUR, start + 2 * HOUR]),
-        PrIdentity::Unresolvable { key: None, reason: UnresolvableReason::Gone, since: start + 2 * HOUR });
+        PrIdentity::Unresolvable { key: None, locator: None, reason: UnresolvableReason::Gone, since: start + 2 * HOUR });
 
     let mut s = at_work();
     register(&mut s, OLD, 42, HEAD).unwrap();
@@ -436,7 +436,7 @@ fn gone_needs_three_definitive_answers_an_hour_apart() {
             verdict: PrAddressVerdict::NotFound });
     }
     assert_eq!(s.pull_requests[&pr].identity, PrIdentity::Unresolvable {
-        key: Some(ProviderPrKey("key-a".into())), reason: UnresolvableReason::Gone, since: start + 5 * HOUR });
+        key: Some(ProviderPrKey("key-a".into())), locator: Some(ProviderLocator("locator-key-a".into())), reason: UnresolvableReason::Gone, since: start + 5 * HOUR });
 }
 
 /// The domain names no provider in the identity of a pull request: the key and the locator are
@@ -456,7 +456,7 @@ fn the_pr_identity_names_no_provider() {
     s.pull_requests.get_mut(&id(NEW, 42)).unwrap().missing = Some(PrMissing { strikes: 1, last: 1 });
     let values = [
         serde_json::to_value(s.pull_requests.values().collect::<Vec<_>>()).unwrap(),
-        serde_json::to_value(PrIdentity::Unresolvable { key: Some(ProviderPrKey("k".into())), reason: UnresolvableReason::Gone, since: 1 }).unwrap(),
+        serde_json::to_value(PrIdentity::Unresolvable { key: Some(ProviderPrKey("k".into())), locator: None, reason: UnresolvableReason::Gone, since: 1 }).unwrap(),
         serde_json::to_value(PrTracking::Detached { at: 1 }).unwrap(),
         serde_json::to_value(reading(&Read::Old(1))).unwrap(),
         serde_json::to_value(Command::ObservePrAddress { pr_id: id(OLD, 42), read: PrRead::Locator, read_started_at: 1, verdict: PrAddressVerdict::NamesAnotherPr }).unwrap(),
