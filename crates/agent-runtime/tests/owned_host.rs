@@ -489,6 +489,18 @@ impl Drop for Daemon<'_> {
         }
     }
 }
+/// Ends a process group's leader with TERM and reaps it. A group whose every member already exited
+/// is refused with `EPERM` by macOS, not `ESRCH`, so that answer means the leader had already ended
+/// on its own: the same reading the host's sweep gives it.
+fn terminate(leader: &mut Child) {
+    let group = rustix::process::Pid::from_child(leader);
+    match rustix::process::kill_process_group(group, rustix::process::Signal::TERM) {
+        Ok(()) => {}
+        Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => {}
+        Err(error) => panic!("signalling group {group:?} failed: {error}"),
+    }
+    leader.wait().unwrap();
+}
 struct ResumeParent(rustix::process::Pid);
 impl Drop for ResumeParent {
     fn drop(&mut self) {
@@ -632,12 +644,7 @@ fn actual_host_survives_only_its_owned_fake_daemon_group_death() {
     assert_ne!(fields[2], rustix::process::getpgrp().as_raw_pid());
     let bootstrap = fs::read(directory.join("host.lock")).unwrap();
     let inode = fs::metadata(directory.join("host.lock")).unwrap().ino();
-    rustix::process::kill_process_group(
-        rustix::process::Pid::from_child(&daemon.child),
-        rustix::process::Signal::TERM,
-    )
-    .unwrap();
-    daemon.child.wait().unwrap();
+    terminate(&mut daemon.child);
     assert_eq!(fs::read(directory.join("host.lock")).unwrap(), bootstrap);
     assert_eq!(
         fs::metadata(directory.join("host.lock")).unwrap().ino(),
@@ -704,6 +711,22 @@ fn only_a_lock_no_process_holds_makes_an_ended_host_and_retiring_it_frees_its_fo
     assert!(lock.try_lock().is_ok(), "retiring released the lock");
 }
 #[test]
+fn a_group_whose_leader_ended_before_the_signal_is_ended_not_failed() {
+    let mut leader = Command::new("/usr/bin/true").process_group(0).spawn().unwrap();
+    let group = rustix::process::Pid::from_child(&leader);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while rustix::process::test_kill_process_group(group).is_ok() {
+        assert!(Instant::now() < deadline, "the leader never ended");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        rustix::process::kill_process_group(group, rustix::process::Signal::TERM),
+        Err(rustix::io::Errno::PERM),
+        "macOS refuses a group of only unreaped processes with EPERM"
+    );
+    terminate(&mut leader);
+}
+#[test]
 fn a_live_host_no_owner_can_adopt_is_ended_with_its_group_by_the_lock_it_holds() {
     use alondra_agent_runtime::owned_host::{Retained, claim, end_holders};
     let directory = support::directory();
@@ -730,12 +753,7 @@ fn a_live_host_no_owner_can_adopt_is_ended_with_its_group_by_the_lock_it_holds()
     BufReader::new(daemon.child.stdout.take().unwrap())
         .read_line(&mut line)
         .unwrap();
-    rustix::process::kill_process_group(
-        rustix::process::Pid::from_child(&daemon.child),
-        rustix::process::Signal::TERM,
-    )
-    .unwrap();
-    daemon.child.wait().unwrap();
+    terminate(&mut daemon.child);
     let (leader, group) = identity(&directory);
     let host = alondra_process_group::process(leader).unwrap().expect("the host outlived its daemon");
     let mut running = Running {
