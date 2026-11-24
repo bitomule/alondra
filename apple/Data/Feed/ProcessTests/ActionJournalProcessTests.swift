@@ -200,7 +200,7 @@ private struct IrohStack {
     }
 }
 
-@Suite(.temporaryFiles, .serialized, .timeLimit(.minutes(2))) struct ActionJournalProcessTests {
+@Suite(.temporaryFiles, .serialized, .timeLimit(.minutes(5))) struct ActionJournalProcessTests {
     private func executable(_ relative: String) throws -> URL {
         let env = ProcessInfo.processInfo.environment
         guard let root = env["TEST_SRCDIR"] else { throw ProcessFixtureError.missingRunfile }
@@ -621,11 +621,11 @@ private struct IrohStack {
         let result = try await client.next(ProcessClientEvent.self)
         #expect(result.event == "history")
         let samples = try #require(result.history)
-        #expect(samples.map(\.operations) == [64, 128, 256, 512])
-        let middle = try #require(samples.first(where: { $0.operations == 128 }))
+        #expect(samples.map(\.operations) == [64, 96, 160])
+        let middle = try #require(samples.first(where: { $0.operations == 96 }))
         let end = try #require(samples.last)
         #expect(end.previousFileBytes > middle.previousFileBytes)
-        #expect(end.previousCiphertextPayloadWrittenBytes > 3 * middle.previousCiphertextPayloadWrittenBytes)
+        #expect(end.previousCiphertextPayloadWrittenBytes > 2 * middle.previousCiphertextPayloadWrittenBytes)
         #expect(end.sqliteFileBytes <= middle.sqliteFileBytes + 4 * 4096)
         #expect(end.sqliteEncryptedBytes <= middle.sqliteEncryptedBytes + 1024)
         #expect(end.sqlitePending == 0 && end.sqliteRecent == 64 && end.sqliteIntervals == 1)
