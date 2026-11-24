@@ -2256,6 +2256,8 @@ impl Driver {
         }
         if self.worker.readable(Duration::ZERO).unwrap_or(true) {
             self.observe()?;
+        } else if self.work_waits_for_the_merge() && self.may_release_host() {
+            self.releases = true;
         } else {
             self.moves_to_this_release = true;
         }
@@ -2279,10 +2281,23 @@ impl Driver {
             self.control(permit)?;
             return Ok(false);
         }
-        let held = crate::provider_transition::holds_execution(&*self.domain, &self.task) || crate::account_move::holds_execution(&*self.domain, &self.task);
-        self.releases = !held && self.awaiting.is_none() && self.results.is_empty() && self.permits.is_empty() && self.controls.is_empty()
-            && self.domain.read().state().host_releasable(&self.task);
+        self.releases = self.may_release_host();
         Ok(true)
+    }
+
+    /// Whether the node declared work after its merge and its delivery is still in review: that
+    /// work has not started, so ending this host would read as a session cut mid-way and ask the
+    /// user, where closing it lets the session wait for its next input.
+    fn work_waits_for_the_merge(&self) -> bool {
+        self.domain.read().state().lifecycle_of(&self.task).is_ok_and(|lifecycle| lifecycle.in_review() && lifecycle.post_merge().is_some())
+    }
+
+    /// Whether nothing of the task is in this host or in the owner's hands: the host may close and
+    /// its session wait for its next input.
+    fn may_release_host(&self) -> bool {
+        let held = crate::provider_transition::holds_execution(&*self.domain, &self.task) || crate::account_move::holds_execution(&*self.domain, &self.task);
+        !held && self.awaiting.is_none() && self.results.is_empty() && self.permits.is_empty() && self.controls.is_empty()
+            && self.domain.read().state().host_releasable(&self.task)
     }
 
     /// Ends the host and every process under it, as a pause does, and records that the session

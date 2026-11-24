@@ -352,6 +352,33 @@ fn a_node_with_work_owed_after_its_merge_keeps_its_host() {
 }
 
 #[cfg(not(feature = "real-hosts"))]
+// 24 November: two nodes had declared work after their merge and rested on a delivery still in
+// review. They never closed their host, so an update ended it as a session cut mid-way and a card
+// asked the user how each went on. Nothing runs after a merge that has not happened.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_resting_on_a_delivery_in_review_with_work_declared_after_the_merge_closes_its_host_without_asking() {
+    let slice = Slice::new();
+    enable(&slice);
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let agent = driver.agent().clone();
+    slice.run(&Actor::Agent { agent_id: agent.clone() }, "post-merge", Command::DeclarePostMergeWork { task_id: TASK.into(), reason: Some("Publishing".into()), waits_for: vec![] });
+    let targets = vec![DeliveryTarget::Text { text: "The notes".into() }];
+    slice.run(&Actor::Agent { agent_id: agent }, "deliver-notes", Command::PresentResult {
+        checklist: vec![], attachments: vec![], task_id: TASK.into(), interaction_id: "notes".into(), body: "The notes are written.".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &targets, true),
+    });
+    assert!(slice.domain.read().state().host_releasable(&TASK.into()), "{:?}", lifecycle(&*slice.domain));
+    let host = slice.hosts.watch(driver.worker.host_group().unwrap());
+    slice.domain.add_sdk_owner(Owner::spawn(driver));
+    look_after_the_wait(&slice.domain);
+    until_released(&slice.domain, &[TASK]).await;
+    assert!(!host.runs());
+    slice.domain.stop_sdk_owners();
+    assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
+}
+
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_node_resting_on_a_pause_closes_its_host_like_any_resting_node() {
     let slice = Slice::new();

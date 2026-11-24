@@ -1450,7 +1450,9 @@ impl TaskLifecycle {
                 if pending.iter().all(|wake| matches!(wake, Wake::Callback(callback) if allowed.contains(callback))))
     }
     /// Nothing of the execution lives in its host: no turn, work, callback, effect or input, and no
-    /// work after the merge that only the running session can report. The inputs a pause holds
+    /// work after the merge that only the running session can report: a delivery still in review
+    /// has not started it, and the session that resumes goes on with it once the merge lands. The
+    /// inputs a pause holds
     /// wait for the pause's end, not for the host, unless the host said it holds one.
     pub fn can_release_host(&self) -> bool {
         let Some(execution) = self.session() else { return false };
@@ -1467,7 +1469,7 @@ impl TaskLifecycle {
             && !execution.host_released
             && execution.callbacks.is_empty()
             && execution.effects.is_empty()
-            && self.post_merge().is_none()
+            && (self.post_merge().is_none() || self.in_review())
     }
     /// Whether no host runs the execution and its session waits to be resumed.
     pub fn host_released(&self) -> bool {

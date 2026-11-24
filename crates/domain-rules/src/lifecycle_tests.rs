@@ -1989,6 +1989,29 @@ fn a_host_that_ends_on_a_delivery_the_node_rests_on_tells_it_nothing() {
     assert_aggregate_rules(&s);
 }
 
+// 24 Nov, two tasks: each had declared work after the
+// merge, delivered, and rested with the delivery still in review. A resting node's host closes by
+// itself when a new release takes over, but this one was never releasable, so the update ended it
+// as a session cut mid-way and a card asked the user how it goes on. Work after a merge that has not
+// happened is not running: its host may close, and the resumed session goes on with it later.
+#[test]
+fn a_node_resting_on_a_delivery_in_review_with_work_declared_after_the_merge_may_close_its_host() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, node("a"), Command::RegisterPr {
+        task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
+        head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    must(&mut s, node("a"), Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("release.sh publishes 0.3.0".into()), waits_for: vec![] });
+    must(&mut s, node("a"), Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }], is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
+    });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    assert!(s.host_releasable(&"t".into()), "the host of a node resting on a delivery in review closes: {:?}", last(&s, "t"));
+    assert_aggregate_rules(&s);
+}
+
 // A session that ends again before a turn of it ended would only end the same way: the second
 // time the task asks the user, and says why.
 #[test]
