@@ -22,7 +22,13 @@ fn card(app: &mut App, row: &str, name: &str) {
     app.on_msg(Msg::ViewCard { key: document.key.clone(), result: Ok(document) });
 }
 
+thread_local! {
+    static DRAWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PRESSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn draw_text(app: &mut App) -> String {
+    DRAWS.with(|draws| draws.set(draws.get() + 1));
     let backend = ratatui::backend::TestBackend::new(150, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|frame| draw::draw(frame, app)).unwrap();
@@ -57,14 +63,21 @@ fn observed(app: &mut App) -> String {
     )
 }
 
-/// Whether `key` changed something the user can tell, other than a flash saying it could not.
-/// A key reaches a screen that was already drawn, as in the terminal: the first frame lays out the
-/// panes that the bar of the next one depends on.
-fn works(make: &dyn Fn() -> App, key: KeyEvent) -> bool {
+/// What a state shows once drawn and before any key: the same for every key pressed on it, so a
+/// state computes it once.
+fn at_rest(make: &dyn Fn() -> App) -> String {
     let mut app = make();
     let _ = draw_text(&mut app);
-    let before = observed(&mut app);
-    app.flash = None;
+    observed(&mut app)
+}
+
+/// Whether `key` changed something the user can tell from `before`, other than a flash saying it
+/// could not. A key reaches a screen that was already drawn, as in the terminal: the first frame
+/// lays out the panes that the bar of the next one depends on.
+fn works(make: &dyn Fn() -> App, before: &str, key: KeyEvent) -> bool {
+    PRESSES.with(|presses| presses.set(presses.get() + 1));
+    let mut app = make();
+    let _ = draw_text(&mut app);
     let flow = app.on_key(key);
     let after = observed(&mut app);
     !matches!(flow, Flow::Go)
@@ -102,6 +115,7 @@ fn audit(state: &str, make: &dyn Fn() -> App, typing: bool) -> Vec<String> {
     let mut app = make();
     let _ = draw_text(&mut app);
     let table = app.bindings();
+    let before = at_rest(make);
     let mut problems = Vec::new();
     if typing {
         for (hint, label) in draw::footer_keys(&app) {
@@ -111,7 +125,7 @@ fn audit(state: &str, make: &dyn Fn() -> App, typing: bool) -> Vec<String> {
                 "Tab" => plain(KeyCode::Tab),
                 _ => continue,
             };
-            if !works(make, key) {
+            if !works(make, &before, key) {
                 problems.push(format!("{state}: shows «{hint} {label}» but it does nothing"));
             }
         }
@@ -124,7 +138,7 @@ fn audit(state: &str, make: &dyn Fn() -> App, typing: bool) -> Vec<String> {
                 problems.push(format!("{state}: «{} {}» is shadowed by another entry", binding.hint, binding.label));
             }
         }
-        let worked: Vec<bool> = binding.keys.iter().map(|key| works(make, *key)).collect();
+        let worked: Vec<bool> = binding.keys.iter().map(|key| works(make, &before, *key)).collect();
         let ok = match binding.act {
             Act::Move => worked.iter().any(|worked| *worked),
             _ => worked.iter().all(|worked| *worked),
@@ -138,7 +152,7 @@ fn audit(state: &str, make: &dyn Fn() -> App, typing: bool) -> Vec<String> {
         problems.push(format!("{state}: the key bar is empty"));
     }
     for key in universe() {
-        if table.find(&key).is_none() && works(make, key) {
+        if table.find(&key).is_none() && works(make, &before, key) {
             problems.push(format!("{state}: {:?} {:?} works but no help lists it", key.code, key.modifiers));
         }
     }
@@ -331,16 +345,48 @@ fn states() -> Vec<State> {
     ]
 }
 
-#[test]
-fn every_key_the_bar_shows_works_and_every_working_key_is_listed() {
-    let mut problems = Vec::new();
-    for (state, typing, make) in states() {
-        let mut app = make();
-        let _ = draw_text(&mut app);
-        println!("== {state}: {:?}", draw::footer_keys(&app));
-        problems.extend(audit(state, make.as_ref(), typing));
-    }
+fn audit_state(index: usize) {
+    let (state, typing, make) = states().swap_remove(index);
+    let mut app = make();
+    let _ = draw_text(&mut app);
+    println!("== {state}: {:?}", draw::footer_keys(&app));
+    let problems = audit(state, make.as_ref(), typing);
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+macro_rules! audited_states {
+    ($($name:ident: $index:expr),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                audit_state($index);
+            }
+        )*
+
+        #[test]
+        fn every_state_has_its_own_audit() {
+            assert_eq!(states().len(), [$($index),*].len(), "a state was added without its audit test");
+        }
+    };
+}
+
+audited_states!(
+    audit_state_00: 0, audit_state_01: 1, audit_state_02: 2, audit_state_03: 3, audit_state_04: 4,
+    audit_state_05: 5, audit_state_06: 6, audit_state_07: 7, audit_state_08: 8, audit_state_09: 9,
+    audit_state_10: 10, audit_state_11: 11, audit_state_12: 12, audit_state_13: 13, audit_state_14: 14,
+    audit_state_15: 15, audit_state_16: 16, audit_state_17: 17, audit_state_18: 18, audit_state_19: 19,
+    audit_state_20: 20,
+);
+
+#[test]
+fn a_state_draws_twice_for_each_key_it_presses_and_nothing_per_key_beyond_that() {
+    let (state, typing, make) = states().into_iter().find(|(state, ..)| *state == "tasks, a working task").unwrap();
+    let (draws, presses) = (DRAWS.with(|draws| draws.get()), PRESSES.with(|presses| presses.get()));
+    let problems = audit(state, make.as_ref(), typing);
+    let (draws, presses) = (DRAWS.with(|draws| draws.get()) - draws, PRESSES.with(|presses| presses.get()) - presses);
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    assert!(presses > 100, "the audit pressed only {presses} keys");
+    assert!(draws <= 2 * presses + 4, "{draws} draws for {presses} key presses");
 }
 
 #[test]
