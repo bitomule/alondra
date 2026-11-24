@@ -3058,6 +3058,34 @@ fn a_merge_github_does_not_allow_yet_offers_no_merge_and_says_why_on_every_clien
 }
 
 #[test]
+fn a_pr_github_has_not_confirmed_offers_no_merge_nor_close_and_says_what_enables_them() {
+    use alondra_domain_rules::{MergeVerdict, ObservedVerdict, PrIdentity};
+    let mut state = golden_fixture();
+    let open: Vec<(alondra_domain_rules::PrId, String)> = state.pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
+    for (pr_id, head) in &open {
+        state.merge_verdicts.insert(pr_id.clone(), ObservedVerdict { head: head.clone(), verdict: MergeVerdict::mergeable() });
+    }
+    let card = |state: &DomainState, client, lang| serde_json::to_string(&render(state, &golden_live(), client, lang, "card:hf-weekly-2026-09-30", "2026-09-30T10:00:00Z")).unwrap();
+    assert!(!merge_buttons_of(&state, Client::Ios, Lang::En).is_empty(), "confirmed, it offers the merge");
+    let confirmed = state.pull_requests.values().map(|pr| (pr.id.clone(), pr.identity.clone())).collect::<Vec<_>>();
+    for (pr_id, _) in &confirmed {
+        state.pull_requests.get_mut(pr_id).unwrap().identity = PrIdentity::Unverified;
+    }
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        assert!(merge_buttons_of(&state, client, Lang::En).is_empty(), "{client:?}: nothing to press until GitHub confirms the PR");
+        let en = card(&state, client, Lang::En);
+        assert!(en.contains("this unlocks when GitHub confirms it"), "{client:?}: {en}");
+        assert!(!en.contains("Close without merging"), "{client:?}: closing is refused too");
+        assert!(card(&state, client, Lang::Es).contains("se activará cuando GitHub lo confirme"), "{client:?}");
+    }
+    for (pr_id, identity) in confirmed {
+        state.pull_requests.get_mut(&pr_id).unwrap().identity = identity;
+    }
+    assert!(!merge_buttons_of(&state, Client::Ios, Lang::En).is_empty(), "confirmed again, the merge is back");
+    assert!(card(&state, Client::Ios, Lang::En).contains("Close without merging"));
+}
+
+#[test]
 fn each_pr_of_a_delivery_matches_the_goldens_of_its_own_card_in_every_apple_client() {
     let state = crate::domain_fixtures::two_open_prs();
     let live = LiveSnapshot::default();

@@ -181,7 +181,8 @@ impl GithubWorld {
     fn open_at(&self, repository: &str, number: u64, head_ref: &str, base: &str, head: &str) {
         let mut world = self.world();
         world.keys += 1;
-        let key = format!("{}", 9000 + world.keys);
+        let by_number = number.to_string();
+        let key = if world.prs.values().any(|pr| pr.key == by_number) { format!("{}", 9000 + world.keys) } else { by_number };
         let repository = normalize_pr_repository(repository);
         world.prs.insert((repository, number), Pr {
             locator: format!("PR_node{key}"), key,
@@ -436,8 +437,8 @@ impl PrMerger for GithubWorld {
     }
 
     fn verdict<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, MergeVerdict> {
-        let verdict = self.world().prs.get(&pr.number).map(|github| github.verdict.clone());
-        Box::pin(async move { verdict.ok_or_else(unknown) })
+        let verdict = self.world().lookup(&pr.repository, pr.number).map(|(_, github)| github.verdict.clone());
+        Box::pin(async move { verdict })
     }
 
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {

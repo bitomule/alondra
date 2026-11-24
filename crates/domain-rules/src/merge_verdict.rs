@@ -77,10 +77,31 @@ impl crate::DomainState {
             let head = if head.is_empty() { self.pull_requests.get(&pr_id).map(|pr| pr.head.clone()).unwrap_or_default() } else { head };
             (pr_id, head)
         });
-        wanted.filter(|(pr_id, head)| {
-            let open = self.pull_requests.get(pr_id).is_some_and(|pr| pr.state == PrState::Open && &pr.head == head);
-            open && !self.merge_verdicts.get(pr_id).is_some_and(|observed| &observed.head == head)
-        }).map(|(pr_id, head)| Command::ObserveMergeVerdict { pr_id, head, verdict: MergeVerdict::mergeable() }).collect()
+        let mut claimed = std::collections::BTreeSet::new();
+        let mut observations = vec![];
+        for (pr_id, head) in wanted.filter(|(pr_id, head)| self.pull_requests.get(pr_id).is_some_and(|pr| pr.state == PrState::Open && &pr.head == head)) {
+            let pr = &self.pull_requests[&pr_id];
+            if pr.identity.is_unverified() {
+                let key = self.confirmation_key(pr, &claimed);
+                claimed.insert(key.clone());
+                observations.push(Command::ObservePrAddress {
+                    pr_id: pr_id.clone(), read: crate::PrRead::Address { repository: pr.repository.clone() }, read_started_at: 1_000,
+                    verdict: crate::PrAddressVerdict::Confirmed { key, locator: crate::ProviderLocator(format!("PR_{}", pr.number)),
+                        current_repository: pr.repository.clone() },
+                });
+            }
+            if !self.merge_verdicts.get(&pr_id).is_some_and(|observed| observed.head == head) {
+                observations.push(Command::ObserveMergeVerdict { pr_id, head, verdict: MergeVerdict::mergeable() });
+            }
+        }
+        observations
+    }
+
+    /// The key a test's provider answers for `pr`: its number, unless another record holds it.
+    fn confirmation_key(&self, pr: &crate::PullRequest, claimed: &std::collections::BTreeSet<crate::ProviderPrKey>) -> crate::ProviderPrKey {
+        let by_number = crate::ProviderPrKey(pr.number.to_string());
+        let taken = claimed.contains(&by_number) || self.pull_requests.values().any(|other| other.id != pr.id && other.identity.key() == Some(&by_number));
+        if taken { crate::ProviderPrKey(pr.id.0.clone()) } else { by_number }
     }
 
     /// `mergeable_observations`, recorded straight into the state without moving its revision.
@@ -102,14 +123,27 @@ impl crate::DomainState {
         let open: Vec<(crate::PrId, String)> = self.pull_requests.values()
             .filter(|pr| pr.state == crate::PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
         for (pr_id, head) in open {
+            if self.pull_requests[&pr_id].identity.is_unverified() {
+                let key = self.confirmation_key(&self.pull_requests[&pr_id], &Default::default());
+                let pr = self.pull_requests.get_mut(&pr_id).expect("the pull request was just read");
+                pr.identity = crate::PrIdentity::Verified { key, locator: crate::ProviderLocator(format!("PR_{}", pr.number)) };
+            }
             self.merge_verdicts.insert(pr_id, ObservedVerdict { head, verdict: MergeVerdict::mergeable() });
         }
     }
 
     fn seed(&mut self, command: &crate::Command, presenting: bool) {
         for observation in self.observations_for(command, presenting) {
-            if let crate::Command::ObserveMergeVerdict { pr_id, head, verdict } = observation {
-                self.merge_verdicts.insert(pr_id, ObservedVerdict { head, verdict });
+            match observation {
+                crate::Command::ObserveMergeVerdict { pr_id, head, verdict } => {
+                    self.merge_verdicts.insert(pr_id, ObservedVerdict { head, verdict });
+                }
+                crate::Command::ObservePrAddress { pr_id, verdict: crate::PrAddressVerdict::Confirmed { key, locator, .. }, .. } => {
+                    if let Some(pr) = self.pull_requests.get_mut(&pr_id) {
+                        pr.identity = crate::PrIdentity::Verified { key, locator };
+                    }
+                }
+                _ => {}
             }
         }
     }

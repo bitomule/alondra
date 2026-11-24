@@ -223,6 +223,14 @@ fn absorb(into: &mut DomainState, unit: &DomainState, number: usize) {
         document_revisions, document_reviews, pull_requests, mut interactions, merge_authorizations, stack_readiness, schedule,
         holds, checklists, checklist_marks, last_words, request_plans, plan_reviews, lifecycle_journal, mcp, ..
     } = copy;
+    let mut pull_requests = pull_requests;
+    for pr in pull_requests.values_mut() {
+        let id = pr.id.0.clone();
+        if let alondra_domain_rules::PrIdentity::Verified { key, locator } = &mut pr.identity {
+            key.0 = format!("{}@{id}", key.0);
+            locator.0 = format!("{}@{id}", locator.0);
+        }
+    }
     let next = into.interactions.values().map(|i| i.order).max().unwrap_or(0);
     for interaction in interactions.values_mut() {
         interaction.order += next;

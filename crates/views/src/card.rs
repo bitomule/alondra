@@ -523,6 +523,9 @@ fn detach_action(pr: &PullRequest, context: &RenderContext<'_>) -> Option<Action
 fn merge_unavailable(item: &InboxItem, context: &RenderContext<'_>) -> Option<String> {
     let interaction = interaction_of(item, context.domain)?;
     let pr = card_pr(item, interaction, context.domain).filter(|pr| pr.state == PrState::Open && !pr.identity.is_unresolvable())?;
+    if pr.identity.is_unverified() {
+        return Some(super::messages::refusal_text(&alondra_domain_rules::Refusal::PrNotCheckedYet, context.lang));
+    }
     let live = live_pr(pr, context);
     if blocked_reason(item, context).is_some() || live.is_some_and(|detail| detail.conflicts || detail.stacked_on.is_some()) {
         return None;
@@ -1962,7 +1965,7 @@ fn delivery_actions(
         action.comments = Some(CommentSpec { kind: super::CommentKind::DiffLines });
         action.link = Some(Link::View { key: format!("pull_request:{}", pr.id) });
     }
-    if pr.state == PrState::Open {
+    if pr.state == PrState::Open && !pr.identity.is_unverified() {
         let subject = if own_pr(item).is_some() { &pr.id.0 } else { &interaction.id.0 };
         more.extend(close_unmerged_action(pr, subject, interaction.revision, context));
     }

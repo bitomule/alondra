@@ -314,6 +314,7 @@ impl DomainState {
             return fail("invalid_input", "Merge method not allowed")
                 .map_err(|e| e.because(Refusal::MethodNotAllowed { method, allowed: pr.allowed_methods.clone() }));
         };
+        self.identity_confirmed(pr_id)?;
         match self.merge_verdicts.get(pr_id).filter(|observed| observed.head == expected_head).map(|observed| &observed.verdict) {
             Some(MergeVerdict::Mergeable { .. }) => {}
             Some(MergeVerdict::Blocked { blockers }) => {

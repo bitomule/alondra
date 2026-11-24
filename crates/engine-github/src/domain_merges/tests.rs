@@ -73,6 +73,10 @@ fn presented_unread(_tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, 
         task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
         number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash, MergeMethod::Merge],
     });
+    command(&domain, Actor::System, "checked", Command::ObservePrAddress { pr_id: "pr".into(),
+        read: alondra_domain_rules::PrRead::Address { repository: "owner/repo".into() }, read_started_at: 1_000,
+        verdict: alondra_domain_rules::PrAddressVerdict::Confirmed { key: fake_key(7), locator: alondra_domain_rules::ProviderLocator("PR_7".into()),
+            current_repository: "owner/repo".into() } });
     command(&domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
         checklist: Vec::new(),
         attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
