@@ -2362,3 +2362,67 @@ async fn a_delivery_moved_while_reviewed_waits_for_the_user_and_starts_on_the_ne
     assert!(!crate::provider_transition::moving(&*restarted,&task));
     restarted.stop_sdk_owners();
 }
+
+#[cfg(not(feature = "real-hosts"))]
+// A retake of a node whose live host no owner held reserved its owner; the user changed the model
+// right then, and the change adopted the same host with a newer owner. The retake, now stale, read
+// the provider state, failed and put a «could not resume» card while the change's owner worked with
+// the host. The change takes the host in its turn: it waits for the retake and goes on with its owner.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_model_change_during_a_retake_waits_for_it_and_never_reads_the_host_as_lost() {
+    use crate::domain_store::provider_transition::Phase;
+    use std::sync::mpsc::channel;
+    let slice = Slice::new();
+    let trace = configured(&slice, "complete");
+    let backend_path = slice._home.join("codex-backend.json");
+    let mut backend: SdkBackend = serde_json::from_slice(&std::fs::read(&backend_path).unwrap()).unwrap();
+    backend.native_environment.insert("ALONDRA_FAKE_MODELS".into(), "fixture-model,fixture-second".into());
+    std::fs::write(backend_path, serde_json::to_vec(&backend).unwrap()).unwrap();
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut driver = launch(&slice);
+    slice.settle(&mut driver);
+    let agent = driver.agent.clone();
+    drop(driver);
+    assert!(!slice.domain.owns_sdk_host(&agent));
+
+    let (pulse, mut changed) = tokio::sync::watch::channel(0_u64);
+    slice.domain.before_owner_publish(move || pulse.send_modify(|count| *count += 1));
+    let (reserved, retake_reserved) = channel();
+    let (go, gone) = channel::<()>();
+    slice.domain.after_owner_reserved(move || {
+        reserved.send(()).unwrap();
+        gone.recv().unwrap();
+    });
+    let (settled, change_settled) = channel();
+    let waits = settled.clone();
+    slice.domain.on_takeover_wait(move || drop(waits.send("waits")));
+    crate::sdk_owner::retake(&*slice.domain, TASK.into());
+    tokio::task::block_in_place(|| retake_reserved.recv()).expect("the retake never reserved its owner");
+    let (intent, target, stamp) = transition_target(&slice, "fixture-second", "high");
+    native_transition_request(&slice, intent, target.clone(), &stamp);
+    let runtime = slice.domain.clone() as Arc<dyn alondra_engine_ports::Runtime>;
+    let handle = tokio::runtime::Handle::current();
+    let advanced = std::thread::scope(|scope| {
+        let change = scope.spawn(|| {
+            let advanced = handle.block_on(crate::provider_transition::advance(&runtime, &TASK.into()));
+            drop(settled.send("advanced"));
+            advanced
+        });
+        tokio::task::block_in_place(|| change_settled.recv()).expect("the model change neither adopted nor waited");
+        go.send(()).unwrap();
+        change.join().unwrap()
+    });
+    slice.domain.join_retakes();
+
+    let lost = open_card(&slice.domain, HOST_LOST_PREFIX);
+    assert!(lost.is_none(), "no card says the session could not be resumed: {lost:?}");
+    assert!(!slice.domain.sdk_owners().host_losses_told.lock().unwrap().contains(&TaskId::from(TASK)), "the retake took the host: it was never given up as lost");
+    assert_eq!(advanced.unwrap(), Phase::Draining);
+    assert!(slice.domain.owns_sdk_host(&agent), "the retake's owner carries the host");
+    assert_eq!(crate::provider_transition::advance(&runtime, &TASK.into()).await.unwrap(), Phase::Draining);
+    while !slice.control_rows().iter().any(|(kind, _, status)| kind == "set_model" && status == "handed") { changed.changed().await.unwrap(); }
+    assert_eq!(crate::provider_transition::advance(&runtime, &TASK.into()).await.unwrap(), Phase::Done);
+    assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].selection.as_ref().unwrap().effective, Some(target));
+    assert_eq!(transcript(&trace).iter().filter(|message| message["method"] == "initialize").count(), 1, "one native process ran the node throughout");
+    slice.domain.stop_sdk_owners();
+}

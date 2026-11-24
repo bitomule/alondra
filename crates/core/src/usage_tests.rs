@@ -111,6 +111,22 @@ fn a_partial_reading_changes_only_its_windows_and_a_complete_one_replaces_them_a
 }
 
 #[test]
+fn a_probe_measured_before_a_limit_and_recorded_after_it_leaves_the_limit_standing() {
+    let usage = measured("default");
+    let rejected = UsageReading { windows: vec![WindowReading { kind: WindowKind::Session, used: Share::FULL, resets_at: Some(SESSION_RESET), exhausted: true }], plan: None, complete: false };
+    let limited = record(Some(&usage), Provider::Claude, &id("default"), &rejected, NOW + 200, TODAY);
+    let late = UsageReading { windows: vec![window(WindowKind::Session, 0.97, SESSION_RESET), window(WindowKind::Weekly, 0.6, WEEK_RESET)], plan: None, complete: true };
+    let probed = record(Some(&limited), Provider::Claude, &id("default"), &late, NOW + 100, TODAY);
+    assert!(probed.plan_exhausted(NOW + 150), "the session the provider refused stays out until it resets");
+    assert_eq!(probed.window(&WindowKind::Session), limited.window(&WindowKind::Session));
+    assert_eq!(probed.window(&WindowKind::Weekly).unwrap().reading.used, Share::of(0.6), "a window measured before the probe takes its reading");
+    let limited_week = UsageReading { windows: vec![WindowReading { kind: WindowKind::Other("weekly_opus".into()), used: Share::FULL, resets_at: Some(WEEK_RESET), exhausted: true }], plan: None, complete: false };
+    let with_model_limit = record(Some(&usage), Provider::Claude, &id("default"), &limited_week, NOW + 200, TODAY);
+    let without_it = record(Some(&with_model_limit), Provider::Claude, &id("default"), &late, NOW + 100, TODAY);
+    assert!(without_it.window(&WindowKind::Other("weekly_opus".into())).is_some(), "a complete probe measured before a window was reported does not remove it");
+}
+
+#[test]
 fn a_native_limit_without_reset_requires_fresh_positive_account_capacity_to_clear() {
     let provider = Provider::Codex; let account = AccountId::default_account();
     let marker = UsageReading { plan: None, complete: false, windows: vec![WindowReading { kind: WindowKind::Other("codex:account:limit".into()), used: Share::NONE, resets_at: None, exhausted: true }] };
@@ -240,15 +256,16 @@ proptest! {
     fn the_margin_is_0_when_the_account_is_blocked(readings in proptest::collection::vec(arbitrary_reading(), 0..4), reserve in 0.01..0.99f64, over in 0.0..1.0f64) {
         let usage = usage_after(&readings);
         prop_assert_eq!(own_margin(AccountState::SignedOut, Some(&usage), Share::of(reserve), NOW, TODAY), Some(0.0));
+        let latest = usage.measured_at().unwrap_or(NOW).max(NOW);
         let exhausted = record(Some(&usage), Provider::Claude, &id("default"), &UsageReading {
             windows: vec![WindowReading { kind: WindowKind::Other("seven_day_opus".into()), used: Share::of(0.4), resets_at: Some(NOW + 60_000), exhausted: true }],
             plan: None, complete: false,
-        }, NOW, TODAY);
+        }, latest, TODAY);
         prop_assert_eq!(own_margin(AccountState::SignedIn, Some(&exhausted), Share::of(reserve), NOW, TODAY), Some(0.0));
         let session = reserve + (1.0 - reserve) * over;
         let past_reserve = record(Some(&usage), Provider::Claude, &id("default"), &UsageReading {
             windows: vec![window(WindowKind::Session, session, NOW + 60_000)], plan: None, complete: false,
-        }, NOW, TODAY);
+        }, latest, TODAY);
         if Share::of(session) > Share::of(reserve) {
             prop_assert_eq!(own_margin(AccountState::SignedIn, Some(&past_reserve), Share::of(reserve), NOW, TODAY), Some(0.0));
         }

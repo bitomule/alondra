@@ -826,7 +826,18 @@ pub(crate) async fn launch_prepared(domain: &dyn Runtime, launch: Launch, reopen
 /// the evidence its journal kept is committed, each unresolved dispatch is resolved from it, and a
 /// fresh host is launched that resumes the same native session on the next input. `plugin` is
 /// Alondra's node plugin, which that fresh host's Claude loads.
-pub(crate) fn adopt_for_transition(domain: Arc<dyn Runtime>, backend:&SdkBackend,task:TaskId,plugin:Option<&std::path::Path>)->Result<Option<Driver>,Failed>{take_host(domain,backend,task,plugin,true,false,false)}
+/// A model change takes the host in its turn, like any other takeover of the task: one under way
+/// finishes first, and an owner it left carries the change. Whether an owner of this daemon now
+/// holds the host: none when the host ended and was not replaced.
+pub(crate) fn adopt_for_transition(domain: Arc<dyn Runtime>, backend:&SdkBackend,task:TaskId,plugin:Option<&std::path::Path>)->Result<bool,Failed>{
+    let _turn = TakeoverTurn::wait(&*domain, &task);
+    if owned_now(&*domain, &task) {
+        return Ok(true);
+    }
+    let Some(driver) = take_host(Arc::clone(&domain),backend,task,plugin,true,false,false)? else { return Ok(false) };
+    domain.add_sdk_owner(Owner::spawn(driver));
+    Ok(true)
+}
 
 pub fn adopt(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>) -> Result<Driver, Failed> {
     let mut driver = take(domain, backend, task, plugin, true)?.ok_or_else(|| Failed::new("the ended host was not replaced".into()))?;

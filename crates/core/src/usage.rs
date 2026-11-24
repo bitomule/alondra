@@ -325,18 +325,21 @@ pub fn native_turn_worked() -> UsageReading {
 }
 
 /// `usage` after `reading` came for `account` at `at`, on the local `day`. The week's share at the
-/// day's first reading of the week anchors today's slice; a new day or a new week moves it.
+/// day's first reading of the week anchors today's slice; a new day or a new week moves it. A
+/// window measured after `at` stays as it is: a reading that took long to arrive never undoes a
+/// limit the provider reported since.
 pub fn record(usage: Option<&AccountUsage>, provider: Provider, account: &AccountId, reading: &UsageReading, at: Millis, day: &str) -> AccountUsage {
     let mut next = usage.cloned().unwrap_or_else(|| AccountUsage { provider, account: account.clone(), windows: vec![], plan: None, day_start: None });
     if provider == Provider::Codex && clears_native_limit(&reading.windows, at) {
         next.windows.retain(|window| !window.reading.kind.is_native_limit_marker() || window.measured_at >= at);
     }
     if reading.complete {
-        next.windows.retain(|window| window.reading.kind.is_native_limit_marker() || reading.windows.iter().any(|read| read.kind.same_dimension(&window.reading.kind, provider)));
+        next.windows.retain(|window| window.reading.kind.is_native_limit_marker() || window.measured_at > at || reading.windows.iter().any(|read| read.kind.same_dimension(&window.reading.kind, provider)));
     }
     for read in reading.windows.iter().filter(|read| !(read.kind.is_native_limit_marker() && !read.exhausted)) {
         let kept = UsageWindow { reading: read.clone(), measured_at: at };
         match next.windows.iter_mut().find(|window| window.reading.kind.same_dimension(&read.kind, provider)) {
+            Some(window) if window.measured_at > at => {}
             Some(window) => *window = kept,
             None => next.windows.push(kept),
         }
