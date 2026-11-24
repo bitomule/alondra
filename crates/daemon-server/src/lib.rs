@@ -97,6 +97,7 @@ pub mod domain_bootstrap;
 pub mod delivery_review;
 pub mod domain_delivery;
 #[cfg(test)]
+#[cfg(feature = "real-hosts")]
 mod domain_e2e_tests;
 pub mod iroh_endpoint;
 pub mod reachability;
@@ -116,6 +117,12 @@ pub mod client_routes;
 pub mod views;
 #[cfg(test)]
 mod engine_tests;
+/// The SDK's launches on the doubled hosts the host models play, which the engine's fixtures name
+/// `crate::model_fixture` as in the SDK's crate.
+#[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
+#[path = "../../engine-sdk/src/model_fixture/launch_fixture.rs"]
+mod model_fixture;
 
 pub mod screens;
 

@@ -671,4 +671,5 @@ pub(crate) fn router(client: Arc<Client>) -> Router {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 pub(crate) mod tests;

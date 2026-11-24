@@ -144,6 +144,7 @@ fn payload(index: &ReadIndex, left: &BTreeSet<String>) -> Value {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

@@ -66,6 +66,7 @@ pub(super) fn task(fields: &Map<String, Value>, mut intent: TaskSelection, curre
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_core::accounts::Provider;

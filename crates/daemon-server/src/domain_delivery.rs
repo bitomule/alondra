@@ -358,6 +358,7 @@ pub(crate) fn user_push_payload(read: &ReadSnapshot, interaction_id: Option<&str
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_domain_rules::*;

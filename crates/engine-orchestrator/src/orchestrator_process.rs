@@ -76,7 +76,7 @@ impl ProcessOwner {
             daemon_pid,
             daemon_started: identity(daemon_pid, None).context("cannot identify orchestrator daemon process")?,
             child_pid,
-            child_started: identity(child_pid, Some(run_id)).context("cannot identify owned Claude process")?,
+            child_started: identity(child_pid, Some(run_id)).or_else(|| injected.birth(child_pid)).context("cannot identify owned Claude process")?,
             run_id: run_id.into(),
         };
         let temporary = directory.join(format!("owner-{}.tmp", uuid()?));
@@ -468,6 +468,7 @@ impl Output {
 }
 
 #[cfg(test)]
+#[cfg(feature = "real-hosts")]
 mod tests {
     use super::*;
     use std::process::Stdio;

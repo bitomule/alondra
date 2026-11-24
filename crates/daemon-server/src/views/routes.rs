@@ -541,6 +541,7 @@ fn error_lang(lang: Lang, code: &str, message: &'static str) -> Response {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

@@ -518,6 +518,7 @@ pub(crate) fn control(method: &str, path: &str, has_body: bool) -> bool {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_core::operation_id::epoch_tag;
@@ -850,5 +851,6 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 #[path = "operation_journal/process_fixture.rs"]
 mod process_fixture;

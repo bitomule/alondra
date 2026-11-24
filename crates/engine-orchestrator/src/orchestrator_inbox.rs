@@ -627,6 +627,7 @@ fn card_id(step: &Step) -> &str {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_domain_rules::{Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION};

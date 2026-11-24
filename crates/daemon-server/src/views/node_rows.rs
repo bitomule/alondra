@@ -166,5 +166,6 @@ impl Cache {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 #[path = "node_rows_tests.rs"]
 mod tests;

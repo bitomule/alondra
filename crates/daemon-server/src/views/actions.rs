@@ -2180,6 +2180,7 @@ fn head_prefix(head: &str) -> &str {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

@@ -140,6 +140,7 @@ async fn check(plugin: Option<&Path>) -> Status {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

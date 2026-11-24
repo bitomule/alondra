@@ -3022,10 +3022,12 @@ impl Journal {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 #[path = "service/domain_parity_tests.rs"]
 mod domain_parity_tests;
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     mod relay_heartbeat_tests;
     mod journal_admission_tests;

@@ -10,15 +10,16 @@ use crate::domain_runtime::DomainRuntime;
 use std::os::unix::fs::DirBuilderExt;
 use std::sync::Arc;
 
-/// A daemon home of its own, with every piece of the daemon, whose orchestrator runs through the SDK.
-fn fixture() -> Fixture {
+/// A daemon home of its own, with every piece of the daemon, whose orchestrator runs through the SDK
+/// on hosts the orchestrator model plays.
+fn fixture() -> super::PlayedOrchestrator {
     super::wired();
     let root = crate::test_support::Directory::new();
     std::fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let domain = Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
-    Fixture::over(root, domain, home, crate::engine_tests::engine_fixtures::owner::HostRoot::new())
+    super::PlayedOrchestrator::over(root, domain, home)
 }
 
 fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {

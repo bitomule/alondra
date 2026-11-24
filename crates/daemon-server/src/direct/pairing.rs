@@ -478,6 +478,7 @@ fn transcript<'a>(
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_e2e::Context;

@@ -17,11 +17,19 @@ import xml.etree.ElementTree as ElementTree
 EXCEPTION_CEILING = 53
 
 # The number of packages in ROOT_TEST_CONSUMERS, which only goes down too.
-ROOT_TEST_CONSUMER_CEILING = 5
+ROOT_TEST_CONSUMER_CEILING = 3
 
 # Tests split from the crates they do not need, so an edit of those does not rerun them, with those
 # crates (docs/architecture/build-graph.md).
 TESTS_KEPT_APART = {
+    "//crates/daemon-server:daemon_server_test": [
+        "//crates/agent-runtime:agent_runtime",
+        "//crates/alondra:alondra",
+        "//crates/alondrad:alondrad",
+    ],
+    "//crates/engine-orchestrator:engine_orchestrator_test": [
+        "//crates/agent-runtime:agent_runtime",
+    ],
     "//crates/engine-sdk:engine_sdk_test": [
         "//crates/daemon-engine:daemon_engine",
         "//crates/engine-admission:engine_admission",

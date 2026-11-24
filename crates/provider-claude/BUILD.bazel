@@ -92,7 +92,7 @@ rust_library(
     crate_root = "model/fake_claude_host.rs",
     edition = "2024",
     version = "0.1.0",
-    visibility = ["//crates/engine-sdk:__pkg__", "//crates/scenarios:__pkg__"],
+    visibility = ["//crates/daemon-server:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/scenarios:__pkg__"],
     deps = [
         "//crates/agent-protocol:agent_protocol",
         "//crates/core:alondra_core",

@@ -9,7 +9,8 @@
 //! (`Ignored`).
 //!
 //! The model reaches its hosts through `Process`: the doubled hosts of `engine-doubles` (`Serve`),
-//! or a process a test started for each host.
+//! or a process a test started for each host. The orchestrator's hosts have a model of their own
+//! (`OrchestratorModel`), which plays the fake orchestrator Claude.
 
 use alondra_agent_protocol as protocol;
 use host_transport::{Bootstrap, Doubled, HostState, Identity, lock};
@@ -27,6 +28,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 mod host_transport;
+mod fake_orchestrator;
+pub use fake_orchestrator::OrchestratorModel;
 
 /// What the Claude host announces in its hello: every action the protocol carries.
 const CAPABILITIES: &[&str] = &[

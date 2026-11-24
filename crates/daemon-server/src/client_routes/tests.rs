@@ -467,7 +467,7 @@ async fn closing_an_interactive_session_only_closes_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_a_node_that_runs_through_the_sdk_is_refused_because_it_ends_with_its_task() {
     let fixture = Fixture::start().await;
-    let sdk = crate::engine_tests::engine_fixtures::owner::SdkLaunches::enable(&fixture.domain, &fixture.home);
+    let sdk = crate::engine_tests::SdkLaunches::enable(&fixture.domain, &fixture.home);
     let worktree = fixture.home.join("worktree");
     std::fs::create_dir(&worktree).unwrap();
     fixture.user("request-sdk", Command::CreateRequest { request_id: "request-sdk".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });
@@ -774,7 +774,7 @@ async fn a_new_request_reaches_the_orchestrators_next_batch() {
 
     let root = crate::test_support::Directory::new();
     std::fs::create_dir(&root).unwrap();
-    let orchestrator = crate::domain_orchestrator::testing::Fixture::over(root, fixture.domain.clone(), fixture.home.to_path_buf(), crate::engine_tests::engine_fixtures::owner::HostRoot::new());
+    let orchestrator = crate::engine_tests::PlayedOrchestrator::over(root, fixture.domain.clone(), fixture.home.to_path_buf());
     orchestrator.tick().await;
     let prompt = orchestrator.prompts().pop().expect("the batch reached Claude");
     assert!(prompt.contains("The user created Request request-1") && prompt.contains("(no task of its own): Make the editor readable"), "{prompt}");

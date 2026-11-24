@@ -99,6 +99,7 @@ pub async fn run(daemon: Arc<DomainDaemon>, home: std::path::PathBuf, days: Opti
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use crate::device_usage::Streak;

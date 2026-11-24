@@ -229,6 +229,7 @@ pub fn handoff(previous: &Conversation, why: Migration, file: Option<&Path>) -> 
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_core::accounts::AccountId;

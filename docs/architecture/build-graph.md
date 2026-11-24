@@ -176,8 +176,11 @@ visibility on both).
   orchestrator's rests (a field of the runtime) and `auth::uuid` (`daemon-support`).
 - The orchestrator's own state (its host, its stop, its runs) is an extension of its crate
   (`engine.rs`), no longer a field of the engine's `Live`.
-- Its tests are `//crates/engine-orchestrator:engine_orchestrator_test`, one target with the real
-  hosts and fake Claude and Codex they run. They link neither `daemon-engine` nor `engine-sdk`: they
+- Its tests are `//crates/engine-orchestrator:engine_orchestrator_test`, on the doubled hosts the
+  orchestrator model of `//crates/provider-claude:claude_host_model` plays as the fake orchestrator
+  Claude plays them, with no program run, and `engine_orchestrator_host_test` (the feature
+  `real-hosts`), with the real hosts, fake Claude and Codex and processes the rest still need. They
+  link neither `daemon-engine` nor `engine-sdk`: they
   open a runtime with the doubles of `engine-doubles` registered for the ports they do not test. The
   tests that need the whole engine are in `alondrad` (`engine_tests/orchestrator_*_tests.rs`).
 - What only tests changed is set at run time on the orchestrator's extension (`Injected`): the
@@ -729,9 +732,11 @@ Measured with `edit_bench`, one run each on the shared Mac under load (load aver
 
 - The owner's slice (`engine_fixtures::owner::Slice`) takes its hosts from the crate that compiles
   it, `crate::engine_tests::SliceHosts`: `ProcessHosts` (the pinned Node host and the fake native
-  Claude, read back from its capture files) in `engine_sdk_host_test`, `daemon_server_test` and
-  `codex_adoption_process_test`; `model_fixture::ModelHosts` (the doubled hosts of `engine-doubles`
-  playing the Claude host model) in `engine_sdk_engine_test`. What a test reads of the hosts (the
+  Claude, read back from its capture files) in `engine_sdk_host_test`, `daemon_server_host_test` and
+  `codex_adoption_process_test`; `engine_fixtures::model_hosts::ModelHosts` (the doubled hosts of
+  `engine-doubles` playing the Claude host model) in `engine_sdk_engine_test` and
+  `daemon_server_test`, which compiles the launches it builds on (`model_fixture/launch_fixture.rs`) by
+  path as `crate::model_fixture`. What a test reads of the hosts (the
   starts, the prompts, the control requests and the decisions) goes through the trait `Hosts`, and
   so does killing a test's host (`Slice::kill_host`).
 - A test that passes on the model is `#[cfg(not(feature = "real-hosts"))]` and runs only in
