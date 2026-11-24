@@ -713,7 +713,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
             let run = runtime.last_run_id.clone();
             f.tick().await;
             let after = crate::domain_orchestrator::load(&f.executor.home).unwrap(); assert_eq!(after.last_run_id, run); assert!(after.retry_at.is_none());
-            let events: Vec<Value> = std::fs::read_to_string(&trace).unwrap().lines().map(|line|serde_json::from_str(line).unwrap()).collect();
+            let events: Vec<Value> = std::fs::read_to_string(&trace).unwrap().split_inclusive('\n').filter_map(|line|line.strip_suffix('\n')).map(|line|serde_json::from_str(line).unwrap()).collect();
             assert_eq!(events.iter().filter(|event|event["method"] == "thread/start").count(), 1);
             assert_eq!(events.iter().filter(|event|event["method"] == "turn/start").count(), 1);
         }
@@ -776,7 +776,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
             assert!(reports.is_empty());assert!(acknowledged<cursor,"failed durable report must leave native refusal unacknowledged");
             }
             f.tick().await;
-            let calls:Vec<Value>=std::fs::read_to_string(&trace).unwrap().lines().map(|line|serde_json::from_str(line).unwrap()).collect();assert_eq!(calls.iter().filter(|request|request["method"]=="initialize").count(),1);assert!(!calls.iter().any(|request|matches!(request["method"].as_str(),Some("thread/start"|"thread/resume"|"turn/start"))));assert!(f.starts().is_empty(),"a Codex-only denial never starts the disconnected Claude backend");
+            let calls:Vec<Value>=std::fs::read_to_string(&trace).unwrap().split_inclusive('\n').filter_map(|line|line.strip_suffix('\n')).map(|line|serde_json::from_str(line).unwrap()).collect();assert_eq!(calls.iter().filter(|request|request["method"]=="initialize").count(),1);assert!(!calls.iter().any(|request|matches!(request["method"].as_str(),Some("thread/start"|"thread/resume"|"turn/start"))));assert!(f.starts().is_empty(),"a Codex-only denial never starts the disconnected Claude backend");
         }
     }
 }

@@ -390,6 +390,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
             window.close()
             return XCTFail("no alert was presented", file: file, line: line)
         }
+        sheet.colorSpace = .displayP3
         frame.layoutSubtreeIfNeeded()
         let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
         frame.cacheDisplay(in: frame.bounds, to: rep)

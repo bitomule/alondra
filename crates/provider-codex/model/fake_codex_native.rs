@@ -141,7 +141,7 @@ impl Native {
 
     fn record(&self, message: &Value, fixture: &Map<String, Value>) {
         let append = |path: PathBuf| {
-            let written = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut file| writeln!(file, "{message}"));
+            let written = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut file| file.write_all(format!("{message}\n").as_bytes()));
             drop(written);
         };
         if let Some(transcript) = self.env.get("ALONDRA_FAKE_TRANSCRIPT") {

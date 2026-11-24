@@ -11,6 +11,7 @@ import socket
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cli  # noqa: E402
@@ -41,13 +42,63 @@ class LocalDaemonTest(unittest.TestCase):
         daemons = []
         try:
             result = cli.local_daemon_checks(BINARY, DAEMON, self.env, self.port, self.state, version.group(1),
-                                             self.logs, False, daemons)
+                                             self.logs, False, daemons, ready_within=None)
         finally:
             for process in daemons:
                 cli.stop(process)
         self.assertEqual(len(daemons), 2)
         self.assertTrue(all(process.poll() is not None for process in daemons))
         self.assertIsInstance(result['persisted_revision'], int)
+
+
+class ReadinessTest(unittest.TestCase):
+    """The readiness wait ends on the daemon's answer or exit, never on a budget of its own: a
+    disk that makes the first start slow must not fail the test. The clock is fake, so the wait
+    that outlasts any budget costs nothing."""
+
+    class Clock:
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    def wait(self, process, answers_at, version='1.0.0'):
+        clock = self.Clock()
+        process.clock = clock
+
+        def request(port, path, timeout=2):
+            if clock.now < answers_at:
+                raise ConnectionRefusedError()
+            return {'version': version}
+
+        with mock.patch.object(cli, 'time', clock), mock.patch.object(cli, 'request', request):
+            return cli.readiness(process, 1, '1.0.0'), clock.now
+
+    def test_waits_for_an_answer_that_comes_after_any_budget(self):
+        answer, waited = self.wait(self.process(), answers_at=600)
+        self.assertEqual(answer['version'], '1.0.0')
+        self.assertGreaterEqual(waited, 600)
+
+    def test_fails_when_the_daemon_exits_before_answering(self):
+        with self.assertRaisesRegex(RuntimeError, 'daemon exited before readiness'):
+            self.wait(self.process(exits_at=5), answers_at=600)
+
+    def test_fails_when_the_daemon_answers_another_version(self):
+        with self.assertRaisesRegex(RuntimeError, 'daemon version mismatch'):
+            self.wait(self.process(), answers_at=0, version='0.0.1')
+
+    def process(self, exits_at=None):
+        class Daemon:
+            clock = None
+
+            def poll(self):
+                return None if exits_at is None or self.clock.now < exits_at else 1
+
+        return Daemon()
 
 
 if __name__ == '__main__':
