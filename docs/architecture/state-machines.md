@@ -1776,6 +1776,10 @@ name = "LAUNCH_WINDOW"
 where = "crates/core/src/tasks/derive.rs"
 decides = "pace"
 [[timer]]
+name = "FIRST_RETRY_AFTER_MS"
+where = "crates/core/src/update.rs"
+decides = "pace"
+[[timer]]
 name = "SAME_WEEK_MILLIS"
 where = "crates/core/src/usage.rs"
 decides = "pace"
@@ -6256,11 +6260,11 @@ truth = ["memory", "file:tui-device"]
 
 ```toml state-machine
 id = "M-SERVER-D5"
-code = ["crates/daemon-server/src/service.rs::reserve_enrollment", "crates/daemon-server/src/service.rs::activate_enrollment", "crates/daemon-server/src/service.rs::revoke_enrollment", "crates/daemon-server/src/service/relay.rs::enroll"]
+code = ["crates/daemon-server/src/service.rs::reserve_enrollment", "crates/daemon-server/src/service.rs::activate_enrollment", "crates/daemon-server/src/service.rs::refuse_enrollment", "crates/daemon-server/src/service.rs::revoke_enrollment", "crates/daemon-server/src/service/relay.rs::enroll"]
 truth = ["sqlite:service_enrollments"]
 states = "crates/daemon-server/src/service.rs::EnrollmentDecision"
-variants = ["New", "Pending", "Active", "Revoked"]
-terminals = ["Revoked"]
+variants = ["New", "Pending", "Active", "Revoked", "Refused"]
+terminals = ["Revoked", "Refused"]
 ```
 
 - **Kind**: explicit, SQLite. **Defined in**: `service.rs:2425-2430` (`EnrollmentDecision`), `:2638-2715`
