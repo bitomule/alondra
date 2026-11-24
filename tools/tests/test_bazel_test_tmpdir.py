@@ -209,6 +209,24 @@ class BazelTestTmpdirTest(unittest.TestCase):
         self.assertEqual(copies[-1].read_bytes(), contents + bytes([3]))
         self.assertIn(str(copies[-1]).encode(), result.stderr)
 
+    def test_by_default_the_copy_stays_in_the_checkouts_scratch_folder(self):
+        checkout = self.root / "checkout"
+        (checkout / "tools").mkdir(parents=True)
+        copied = checkout / "tools" / "test-tmpdir.sh"
+        copied.write_bytes(wrapper.read_bytes())
+        copied.chmod(0o755)
+        executable = self.root / "test-executable"
+        executable.write_bytes(b"\x00" * 64)
+        executable.chmod(0o755)
+        environment = self.environment()
+        del environment["ALONDRA_INVALID_EXECUTABLE_DIR"]
+        result = subprocess.run([str(copied), str(executable)], env=environment, capture_output=True)
+        self.assertEqual(result.returncode, 126)
+        [copy] = (checkout / ".scratch" / "invalid-test-executables").iterdir()
+        self.assertEqual(copy.read_bytes(), b"\x00" * 64)
+        self.assertEqual((checkout / ".scratch" / ".gitignore").read_text(), "*\n")
+        self.assertIn(b"scratch folder of this checkout", result.stderr)
+
     def test_a_kept_copy_is_cut_at_the_size_limit(self):
         result = self.run_executable(b"\x00" * 5000, ALONDRA_INVALID_EXECUTABLE_MAX_BYTES="1000")
         self.assertEqual(result.returncode, 126)

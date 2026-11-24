@@ -16,6 +16,7 @@
 # when a test runs under any other wrapper, through ALONDRA_TEST_WRAPPER.
 root=${BAZEL_TEST_TMPDIR_ROOT:-/tmp}
 export ALONDRA_TEST_WRAPPER=1
+export ALONDRA_TEST_WRAPPER_PATH=$0
 # Python's execvpe reports invalid formats instead of interpreting them as shell commands.
 launcher='
 import errno
@@ -25,8 +26,8 @@ import sys
 import time
 
 # An invalid executable could not be examined afterwards, so a bounded copy is kept: at most
-# KEPT_FILES files, each cut at KEPT_BYTES, deleted after KEPT_DAYS days. ALONDRA_INVALID_EXECUTABLE_DIR
-# overrides the folder, which is otherwise Alondra home files/invalid-test-executables.
+# KEPT_FILES files, each cut at KEPT_BYTES, deleted after KEPT_DAYS days, in the git-ignored
+# .scratch/invalid-test-executables of the checkout, never in the state of the installed product. ALONDRA_INVALID_EXECUTABLE_DIR overrides it.
 KEPT_FILES = 3
 KEPT_DAYS = 7
 
@@ -35,10 +36,19 @@ def kept_bytes():
     return int(os.environ.get("ALONDRA_INVALID_EXECUTABLE_MAX_BYTES", 200 * 1024 * 1024))
 
 
+def kept_folder():
+    if os.environ.get("ALONDRA_INVALID_EXECUTABLE_DIR"):
+        return os.environ["ALONDRA_INVALID_EXECUTABLE_DIR"]
+    checkout = os.path.dirname(os.path.dirname(os.path.realpath(os.environ["ALONDRA_TEST_WRAPPER_PATH"])))
+    scratch = os.path.join(checkout, ".scratch")
+    os.makedirs(scratch, exist_ok=True)
+    with open(os.path.join(scratch, ".gitignore"), "w") as ignore:
+        ignore.write("*\n")
+    return os.path.join(scratch, "invalid-test-executables")
+
+
 def keep_copy(resolved, digest):
-    folder = os.environ.get("ALONDRA_INVALID_EXECUTABLE_DIR") or os.path.join(
-        os.environ.get("ALONDRA_HOME") or os.path.expanduser("~/.alondra"), "files", "invalid-test-executables"
-    )
+    folder = kept_folder()
     os.makedirs(folder, exist_ok=True)
     now = time.time()
     entries = sorted(
@@ -71,7 +81,7 @@ def describe(path):
             f"first bytes {head.hex()}, modified {int(status.st_mtime)}"
         )
         try:
-            return report + f"\nCopy kept at {keep_copy(resolved, digest)}"
+            return report + f"\nCopy kept in the scratch folder of this checkout at {keep_copy(resolved, digest)}"
         except OSError as problem:
             return report + f"\nNo copy kept: {problem}"
     except OSError as problem:
@@ -250,8 +260,7 @@ except OSError as error:
         print(
             f"Invalid test executable: {sys.argv[1]} (errno {error.errno}). "
             "The operating system rejected its executable format; it may be corrupt.\n"
-            "Rebuild the affected target in a fresh output base with "
-            "the same output base, bypassing the caches: bazelisk test <target> "
+            "Rebuild the affected target in the same output base, bypassing the caches: bazelisk test <target> "
             "--noremote_accept_cached --disk_cache= --noremote_upload_local_results "
             "--run_under=//tools:test_tmpdir",
             file=sys.stderr,

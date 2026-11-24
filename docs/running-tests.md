@@ -90,8 +90,9 @@ and scripts with a shebang keep their arguments and exit status.
 
 When the wrapper rejects an executable it prints its size, SHA-256, first bytes, modification time and whether it sits on the boot volume or another one: keep that line from the test log before rebuilding.
 The wrapper also keeps a bounded copy of the rejected executable for later study: at most 3
-files, each cut at 200 MB, deleted after 7 days, in `files/invalid-test-executables/` of Alondra's
-home (`ALONDRA_INVALID_EXECUTABLE_DIR` overrides the folder). Its log line says where.
+files, each cut at 200 MB, deleted after 7 days, in `.scratch/invalid-test-executables/` of this
+checkout (git-ignored, never in Alondra's own state; `ALONDRA_INVALID_EXECUTABLE_DIR` overrides the
+folder). Its log line says where.
 
 Recover in the same output base, through the build queue, by rebuilding only the affected target
 without accepting or uploading cached results:
