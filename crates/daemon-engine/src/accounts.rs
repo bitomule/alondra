@@ -430,10 +430,10 @@ pub fn probe_current_codex(domain: &dyn Runtime, task_id: &alondra_domain_rules:
     *statuses.iter_mut().find(|account| account.provider == key.provider && account.id == key.account).expect("original account checked") = observed;
     let mut commands = vec![Command::RecordAccounts { accounts: statuses, reserve: fence.state.account_reserve }];
     if refusal.is_none() {
+        let reading = report.usage_reading()?;
         if report.catalog_error.is_none() { commands.push(Command::RecordModelCatalog { catalog: report.catalog }); }
-        if let Some(limits) = report.rate_limits {
-            let reading = alondra_core::codex_account::parse_rate_limits(&limits, report.plan)?;
-            if !reading.windows.is_empty() { commands.push(Command::RecordAccountUsage { provider: key.provider, account: key.account.clone(), reading, at: now, day: alondra_daemon_engine_model::local_day(now) }); }
+        if let Some(reading) = reading {
+            commands.push(Command::RecordAccountUsage { provider: key.provider, account: key.account.clone(), reading, at: now, day: alondra_daemon_engine_model::local_day(now) });
         }
     }
     publish_probe_with(domain, domain.home(), fence, commands, |transaction| {
@@ -571,16 +571,14 @@ pub fn check_current(domain: &dyn Runtime, home: &Path) -> crate::native_probe::
             for report in reports {
                 if !report.signed_in { continue; }
                 let key = report.catalog.account.clone();
-                let ordinary_allowed = report.ordinary_usage_allowed() == Some(true);
-                if !ordinary_allowed { log!("Codex account {} has no confirmed ordinary-usage permission; previous quota evidence is retained", key.account); }
+                if report.ordinary_usage_allowed().is_none() { log!("Codex account {} did not say whether ordinary usage is allowed; previous quota evidence is retained", key.account); }
+                let reading = report.usage_reading();
                 if let Some(why) = report.catalog_error { log!("Codex model metadata could not be refreshed: {why}"); }
                 else { commands.push(Command::RecordModelCatalog { catalog: report.catalog }); }
-                if let Some(limits) = report.rate_limits.filter(|_| ordinary_allowed) {
-                    match alondra_core::codex_account::parse_rate_limits(&limits, report.plan) {
-                        Ok(reading) if !reading.windows.is_empty() => commands.push(Command::RecordAccountUsage { provider: key.provider, account: key.account, reading, at: now, day: alondra_daemon_engine_model::local_day(now) }),
-                        Ok(_) => {}
-                        Err(why) => log!("Codex quota could not be read: {why}"),
-                    }
+                match reading {
+                    Ok(Some(reading)) => commands.push(Command::RecordAccountUsage { provider: key.provider, account: key.account, reading, at: now, day: alondra_daemon_engine_model::local_day(now) }),
+                    Ok(None) => {}
+                    Err(why) => log!("Codex quota could not be read: {why}"),
                 }
             }
             if let Err(why) = publish_current_probe(domain, home, fence, commands) {
