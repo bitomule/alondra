@@ -2061,6 +2061,16 @@ mod tests {
     }
 
     #[test]
+    fn the_node_validates_the_exact_tree_it_pushes_after_any_rebase_and_keeps_validation_records() {
+        let skill = skill_text(Role::Node);
+        assert!(skill.contains("Validate the exact tree you push before you deliver it"));
+        assert!(skill.contains("A result validated before a rebase or a conflict fix is not validated"));
+        assert!(skill.contains("Never delete, reset or skip a repository's validation records to get past a conflict"));
+        assert!(skill.contains("resolve, validate the rebased tree as above"));
+        assert!(skill.contains("resolve, validate the merged tree as above, push."));
+    }
+
+    #[test]
     fn the_node_leaves_a_usage_limit_to_alondra_instead_of_waiting_it_out() {
         assert!(instructions(Role::Node, "Ana").contains("Never wait out a usage limit yourself: end your turn."));
         let catalog = tools(Role::Node, "Ana");
