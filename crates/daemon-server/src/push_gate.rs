@@ -77,6 +77,7 @@ fn same_kind(earlier: &InteractionPayload, card: &InteractionPayload) -> bool {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::{Gate, UNKNOWN_MERGE_PATIENCE, check};
     use crate::domain_runtime::DomainRuntime;

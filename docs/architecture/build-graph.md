@@ -732,9 +732,11 @@ Measured with `edit_bench`, one run each on the shared Mac under load (load aver
 
 - The owner's slice (`engine_fixtures::owner::Slice`) takes its hosts from the crate that compiles
   it, `crate::engine_tests::SliceHosts`: `ProcessHosts` (the pinned Node host and the fake native
-  Claude, read back from its capture files) in `engine_sdk_host_test`, `daemon_server_test` and
-  `codex_adoption_process_test`; `model_fixture::ModelHosts` (the doubled hosts of `engine-doubles`
-  playing the Claude host model) in `engine_sdk_engine_test`. What a test reads of the hosts (the
+  Claude, read back from its capture files) in `engine_sdk_host_test`, `daemon_server_host_test` and
+  `codex_adoption_process_test`; `engine_fixtures::model_hosts::ModelHosts` (the doubled hosts of
+  `engine-doubles` playing the Claude host model) in `engine_sdk_engine_test` and
+  `daemon_server_test`, which compiles the launches it builds on (`model_fixture/launch_fixture.rs`) by
+  path as `crate::model_fixture`. What a test reads of the hosts (the
   starts, the prompts, the control requests and the decisions) goes through the trait `Hosts`, and
   so does killing a test's host (`Slice::kill_host`).
 - A test that passes on the model is `#[cfg(not(feature = "real-hosts"))]` and runs only in

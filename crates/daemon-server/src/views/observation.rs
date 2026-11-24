@@ -330,6 +330,7 @@ pub(crate) fn window(seconds: Option<&str>, delay: Option<&str>) -> Option<Windo
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

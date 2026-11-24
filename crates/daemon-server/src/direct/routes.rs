@@ -117,6 +117,7 @@ pub(crate) async fn current(port: u16, listen: IpAddr) -> Routes {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

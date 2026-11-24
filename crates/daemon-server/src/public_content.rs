@@ -363,4 +363,5 @@ pub(crate) async fn check(
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests;

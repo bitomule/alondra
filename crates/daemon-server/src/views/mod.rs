@@ -14,6 +14,7 @@ pub(crate) mod routes;
 #[cfg(test)]
 mod serialization;
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod projection_tests;
 
 pub(crate) const VIEW_BUDGET_BYTES: usize = {
@@ -74,4 +75,5 @@ pub(crate) fn this_service() -> alondra_view_model::Service {
     alondra_view_model::service(env!("CARGO_PKG_VERSION"))
 }
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod measure_tests;

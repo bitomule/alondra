@@ -336,6 +336,7 @@ pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>, client: Arc<
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

@@ -88,6 +88,7 @@ impl IrohTerminals {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

@@ -77,4 +77,5 @@ pub(crate) fn notices(domain: &DomainRuntime, lang: Lang) -> anyhow::Result<Valu
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests;

@@ -103,6 +103,7 @@ pub(crate) fn five_hour_reset(
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

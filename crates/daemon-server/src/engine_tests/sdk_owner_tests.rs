@@ -5,14 +5,17 @@ use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_domain::ActivityView;
 use crate::domain_store::StoreError;
+#[cfg(feature = "real-hosts")]
 use crate::engine_tests::engine_fixtures::owner::codex::*;
 use crate::engine_tests::engine_fixtures::owner::*;
 use alondra_engine_sdk::sdk_owner::*;
 use crate::domain_runtime::DomainRuntime;
+#[cfg(feature = "real-hosts")]
 use alondra_core::accounts::{AccountId, Provider};
 use alondra_domain_rules::*;
 use std::sync::Arc;
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_the_list() {
     super::wired();
@@ -53,6 +56,7 @@ fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_th
 
 // The node asks the user during its turn and the turn ends: the turn waits on that question and no
 // card says it stopped; the user's answer reaches Claude as its next input and ends the wait.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_the_answer_reaches_claude() {
     super::wired();
@@ -88,6 +92,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_th
 // The node delivers inside its turn and the user accepts: Alondra's request to clean up, a message
 // of its outbox, is what the node's Claude is told next. A node of `claude --bg` takes it through its
 // mod; nothing took it for a node of the SDK.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn alondras_cleanup_request_reaches_the_sdk_node_as_its_next_input() {
     super::wired();
@@ -118,6 +123,7 @@ async fn alondras_cleanup_request_reaches_the_sdk_node_as_its_next_input() {
 // The node was asked to clean up and its turn with that request ended: its host stays until the
 // node says it cleaned up. Before, the closer stopped it as soon as the task rested, while the node
 // was still answering the request.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_sdk_node_asked_to_clean_up_is_closed_only_once_it_says_it_did() {
     super::wired();
@@ -153,6 +159,7 @@ async fn an_sdk_node_asked_to_clean_up_is_closed_only_once_it_says_it_did() {
 // The same, with the task delivered: the user replied to the result and the node's turn on the
 // reply left the command running. A delivery under review asked nothing of a resumed session, so
 // nothing ever woke it: the task read «Answering you» for 12 hours.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_to_the_resumed_session() {
     super::wired();
@@ -189,6 +196,7 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
 // «Answering you» although no turn ran, and then «Waiting for Claude to start» with no end, holding
 // its slot. While Claude holds the reply it reads that Alondra delivers it, in both languages, and
 // no deadline gives the host up.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
     super::wired();
@@ -267,6 +275,7 @@ fn press(slice: &Slice, verb: alondra_view_model::action_id::Verb, agent: &Agent
 // accepted, its task offers «Force stop» instead of «Interrupt»; pressing it ends Claude's process,
 // which ends the turn as the user's interrupt, and «Carry on» reaches the same session in a new
 // host. Before, the node stayed «working» with nothing that could stop it.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_turn_claude_keeps_running_after_its_interrupt_is_force_stopped_and_resumed() {
     super::wired();
@@ -314,6 +323,7 @@ fn a_turn_claude_keeps_running_after_its_interrupt_is_force_stopped_and_resumed(
 
 // The domain refuses to record that Claude accepted an interrupt: the owner goes on, and the turn
 // Claude ends waits for another instruction without a card.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_accepted_interrupt_alondra_cannot_record_leaves_the_owner_going() {
     super::wired();
@@ -330,6 +340,7 @@ fn an_accepted_interrupt_alondra_cannot_record_leaves_the_owner_going() {
     driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn cancelling_from_the_turn_end_card_after_a_failure_ends_the_task() {
     super::wired();
@@ -342,6 +353,7 @@ fn cancelling_from_the_turn_end_card_after_a_failure_ends_the_task() {
 }
 
 /// The user cancels the task from its open turn-end card, through the action path the clients use.
+#[cfg(not(feature = "real-hosts"))]
 fn cancel_from_turn_end_card(slice: &Slice) -> serde_json::Value {
     let (card, _) = Slice::read_cards(&*slice.domain).into_iter().find(|(card, answered)| !answered && card.starts_with(TURN_ENDED_PREFIX)).expect("an open turn-end card");
     let state = slice.domain.state().unwrap();
@@ -364,6 +376,7 @@ fn cancel_from_turn_end_card(slice: &Slice) -> serde_json::Value {
 
 // The user interrupts from the task while such a command runs: Claude Code stops it, and the turn
 // that waited for it pauses without a card.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn interrupting_a_command_claude_code_tracks_as_work_pauses_without_a_card() {
     super::wired();
@@ -390,6 +403,7 @@ fn interrupting_a_command_claude_code_tracks_as_work_pauses_without_a_card() {
 // C1: the user presses Interrupt on the task of a working SDK node. The control commits with the
 // domain's decision, the owner sends it, the host hands it to Claude, and the interrupted turn
 // pauses without a card.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn interrupting_a_working_sdk_node_from_its_task_reaches_claude_and_pauses_without_a_card() {
     super::wired();
@@ -422,6 +436,7 @@ fn interrupting_a_working_sdk_node_from_its_task_reaches_claude_and_pauses_witho
 }
 
 /// The context the live view shows for the SDK task's node, launched told `prompt`.
+#[cfg(not(feature = "real-hosts"))]
 fn shown_context(prompt: &str) -> (Option<u32>, Option<u64>) {
     let slice = Slice::new();
     let mut driver = slice.launch_with(prompt);
@@ -438,6 +453,7 @@ fn shown_context(prompt: &str) -> (Option<u32>, Option<u64>) {
 
 // The node of an SDK task shows how much of its model's window its last answer used: 250 403
 // tokens of the million Claude said its model has.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_sdk_node_shows_the_context_its_last_answer_used_of_its_models_window() {
     super::wired();
@@ -446,6 +462,7 @@ fn an_sdk_node_shows_the_context_its_last_answer_used_of_its_models_window() {
 
 // Without a window Claude gave for the conversation's own model, the node shows no percent rather
 // than one against a window nobody said.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_sdk_node_without_its_models_window_shows_no_context() {
     super::wired();
@@ -453,6 +470,7 @@ fn an_sdk_node_without_its_models_window_shows_no_context() {
     assert_eq!(shown_context("Write the release notes"), (None, None), "Claude sized no model");
 }
 
+#[cfg(feature = "real-hosts")]
 #[tokio::test(flavor="multi_thread",worker_threads=4)]
 #[ignore="opt-in: real pinned Codex, real Alondra MCP CLI and authenticated loopback daemon; no credentials or external inference"]
 async fn an_actual_codex_cli_asks_enters_native_plan_and_presents_the_result_through_alondra(){
@@ -522,6 +540,7 @@ async fn an_actual_codex_cli_asks_enters_native_plan_and_presents_the_result_thr
 
 // 3 November: the user answered a node's card in words only, and the node read
 // «[From Alondra · 19:55] <text>» with nothing saying it answered its card.
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_answer_reaches_the_sdk_node_from_the_user_with_its_card() {
     super::wired();
@@ -550,6 +569,7 @@ fn an_answer_reaches_the_sdk_node_from_the_user_with_its_card() {
     driver.stop().unwrap();
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_refused_interrupted_turn_end_keeps_the_host_without_waking_another_turn() {
     super::wired();
@@ -575,6 +595,7 @@ fn a_refused_interrupted_turn_end_keeps_the_host_without_waking_another_turn() {
 
 /// The node presents its PR #7 and its turn ends; the user accepts it; every slot of the gate is
 /// taken; GitHub then reports the PR conflicting with main and Alondra hands it back.
+#[cfg(not(feature = "real-hosts"))]
 async fn accepted_then_conflicting(slice: &Slice, driver: &mut Driver) {
     use alondra_engine_admission::admission::{Limit, Tuning};
     use alondra_daemon_engine::domain_merges::{Checks, FakeGithub, MergeState, Merger};
@@ -602,6 +623,7 @@ async fn accepted_then_conflicting(slice: &Slice, driver: &mut Driver) {
     assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].state, TaskState::Running, "the task is its node's again");
 }
 
+#[cfg(not(feature = "real-hosts"))]
 fn conflict_prompts(slice: &Slice) -> Vec<String> {
     slice.prompts().into_iter().filter(|prompt| prompt.contains("conflicts with main: rebase its branch on main")).collect()
 }
@@ -610,6 +632,7 @@ fn conflict_prompts(slice: &Slice) -> Vec<String> {
 /// conflicting with main while every slot of the gate was taken. Alondra handed the PR back, but the
 /// node's turn to resolve it waited for a slot for over an hour, and the task read as waiting for
 /// capacity. The work the user already accepted goes on at once.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_accepted_pr_that_turns_conflicting_goes_back_to_its_node_with_a_conflict_turn() {
     super::wired();
@@ -633,6 +656,7 @@ async fn an_accepted_pr_that_turns_conflicting_goes_back_to_its_node_with_a_conf
 
 /// The same, with the node's host gone before GitHub reports the conflict: a host that resumes the
 /// node's session takes the conflict turn.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_accepted_pr_that_turns_conflicting_after_its_host_died_reaches_a_host_that_resumes_the_session() {
     super::wired();
@@ -673,6 +697,7 @@ fn node_offers(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> {
     offers
 }
 
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_task_launched_through_the_sdk_ends_its_turn_with_one_card_readers_see_before_the_host_is_acknowledged() {
     super::wired();
@@ -701,6 +726,7 @@ fn a_task_launched_through_the_sdk_ends_its_turn_with_one_card_readers_see_befor
 
 // Claude Code tracks a foreground command that runs for seconds as its own work, which ends
 // inside the turn that waits for it: that turn goes on with it and ends on one card.
+#[cfg(feature = "real-hosts")]
 #[test]
 fn a_command_claude_code_tracks_as_work_ends_inside_its_turn_and_the_turn_ends_with_one_card() {
     super::wired();
