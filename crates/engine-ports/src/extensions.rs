@@ -130,10 +130,10 @@ mod tests {
         fn own_projected_with(&self, _: alondra_store::AuthorityScope, _: &mut dyn FnMut(&mut dyn crate::journal::OwnerJournal) -> Result<(), crate::journal::StoreError>, _: &mut dyn FnMut(&mut dyn crate::journal::Journal) -> anyhow::Result<()>) -> Result<Vec<crate::journal::owner::StagedOutcome>, crate::journal::StoreError> {
             unreachable!("no extension here commits")
         }
-        fn take_seals(&self, _: &alondra_domain_rules::TaskId) -> alondra_store::Committed {
+        fn take_seals(&self, _: &alondra_domain_rules::TaskId, _: &alondra_domain_rules::AgentId) -> alondra_store::Committed {
             unreachable!("no extension here takes seals")
         }
-        fn wait_for_seals(&self, _: &alondra_domain_rules::TaskId, _: std::time::Duration, _: &dyn Fn() -> bool) -> alondra_store::Committed {
+        fn wait_for_seals(&self, _: &alondra_domain_rules::TaskId, _: &alondra_domain_rules::AgentId, _: std::time::Duration, _: &dyn Fn() -> bool) -> alondra_store::Committed {
             unreachable!("no extension here takes seals")
         }
         fn pause_for_seals(&self, _: std::time::Duration, _: &dyn Fn() -> bool) {}

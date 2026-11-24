@@ -1,9 +1,12 @@
 //! What the store issued with commits whose state readers already see: dispatch and control
 //! permits, claimed attempts, owner grants, recorded commands and observations. Each SDK owner takes only those
-//! of its own task; a commit of the normal command path hands its permits here too.
+//! of its own execution: its task and its node. A node the user kept when its task closed still has
+//! an owner after the task reopens, and the new execution's grant and permits are never its own.
+//! A commit of the normal command path hands its permits here too.
 use alondra_core::clock;
 use crate::locks::{Poisonable as _, AfterPanic as _};
-use alondra_domain_rules::TaskId;
+use alondra_domain_rules::{AgentId, TaskId};
+use alondra_foundation::ExecutionStamp;
 use alondra_store::Committed;
 
 #[derive(Default)]
@@ -23,16 +26,17 @@ impl Seals {
         self.queued.notify_all();
     }
 
-    pub fn take(&self, task: &TaskId) -> Committed {
-        take_of(&mut self.queued.lock_or_exit("the SDK seals"), task)
+    pub fn take(&self, task: &TaskId, node: &AgentId) -> Committed {
+        take_of(&mut self.queued.lock_or_exit("the SDK seals"), task, node)
     }
 
-    /// Blocks until something of `task` arrives, `stopped` says the owner ends, or `timeout` passes.
-    pub fn wait_for(&self, task: &TaskId, timeout: std::time::Duration, stopped: impl Fn() -> bool) -> Committed {
+    /// Blocks until something of `node`'s execution of `task` arrives, `stopped` says the owner
+    /// ends, or `timeout` passes.
+    pub fn wait_for(&self, task: &TaskId, node: &AgentId, timeout: std::time::Duration, stopped: impl Fn() -> bool) -> Committed {
         let deadline = clock::instant() + timeout;
         let mut queued = self.queued.lock_or_exit("the SDK seals");
         loop {
-            let taken = take_of(&mut queued, task);
+            let taken = take_of(&mut queued, task, node);
             let left = deadline.saturating_duration_since(clock::instant());
             if !empty(&taken) || stopped() || left.is_zero() {
                 return taken;
@@ -101,22 +105,23 @@ pub fn empty(committed: &Committed) -> bool {
         && committed.control_commands.is_empty()
 }
 
-fn take_of(queued: &mut Vec<Committed>, task: &TaskId) -> Committed {
+fn take_of(queued: &mut Vec<Committed>, task: &TaskId, node: &AgentId) -> Committed {
     fn split<T>(items: &mut Vec<T>, into: &mut Vec<T>, mine: impl Fn(&T) -> bool) {
         let (taken, kept): (Vec<T>, Vec<T>) = std::mem::take(items).into_iter().partition(|item| mine(item));
         *items = kept;
         into.extend(taken);
     }
+    let ours = |execution: &ExecutionStamp| execution.task() == task && execution.node() == node;
     let mut taken = Committed::default();
     for committed in queued.iter_mut() {
-        split(&mut committed.permits, &mut taken.permits, |permit| permit.execution().task() == task);
-        split(&mut committed.attempts, &mut taken.attempts, |attempt| attempt.execution().task() == task);
-        split(&mut committed.owners, &mut taken.owners, |owner| owner.execution().task() == task);
-        split(&mut committed.commands, &mut taken.commands, |command| command.attempt().execution().task() == task);
-        split(&mut committed.observations, &mut taken.observations, |observation| observation.execution().task() == task);
-        split(&mut committed.control_permits, &mut taken.control_permits, |permit| permit.execution().task() == task);
-        split(&mut committed.control_attempts, &mut taken.control_attempts, |attempt| attempt.execution().task() == task);
-        split(&mut committed.control_commands, &mut taken.control_commands, |command| command.attempt().execution().task() == task);
+        split(&mut committed.permits, &mut taken.permits, |permit| ours(permit.execution()));
+        split(&mut committed.attempts, &mut taken.attempts, |attempt| ours(attempt.execution()));
+        split(&mut committed.owners, &mut taken.owners, |owner| ours(owner.execution()));
+        split(&mut committed.commands, &mut taken.commands, |command| ours(command.attempt().execution()));
+        split(&mut committed.observations, &mut taken.observations, |observation| ours(observation.execution()));
+        split(&mut committed.control_permits, &mut taken.control_permits, |permit| ours(permit.execution()));
+        split(&mut committed.control_attempts, &mut taken.control_attempts, |attempt| ours(attempt.execution()));
+        split(&mut committed.control_commands, &mut taken.control_commands, |command| ours(command.attempt().execution()));
     }
     queued.retain(|committed| !empty(committed));
     taken

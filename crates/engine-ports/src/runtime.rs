@@ -78,10 +78,13 @@ pub trait Runtime: Any + Send + Sync + AsRuntime {
         stage: &mut dyn FnMut(&mut dyn OwnerJournal) -> Result<(), StoreError>,
         project: &mut dyn FnMut(&mut dyn Journal) -> anyhow::Result<()>,
     ) -> Result<Vec<StagedOutcome>, StoreError>;
-    /// What the journal issued for `task` with commits readers already see.
-    fn take_seals(&self, task: &TaskId) -> Committed;
-    /// Blocks until something of `task` arrives, `stopped` says the owner ends, or `timeout` passes.
-    fn wait_for_seals(&self, task: &TaskId, timeout: Duration, stopped: &dyn Fn() -> bool) -> Committed;
+    /// What the journal issued for the execution `node` runs for `task`, with commits readers
+    /// already see. A node the user kept after its task closed never takes what a later execution
+    /// of the same task was issued.
+    fn take_seals(&self, task: &TaskId, node: &AgentId) -> Committed;
+    /// Blocks until something of `node`'s execution of `task` arrives, `stopped` says the owner
+    /// ends, or `timeout` passes.
+    fn wait_for_seals(&self, task: &TaskId, node: &AgentId, timeout: Duration, stopped: &dyn Fn() -> bool) -> Committed;
     /// Blocks for `timeout`, or until `stopped` says the owner ends, taking nothing.
     fn pause_for_seals(&self, timeout: Duration, stopped: &dyn Fn() -> bool);
     /// Drops the sealed observations of `task` no host is left to acknowledge.
