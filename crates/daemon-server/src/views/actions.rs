@@ -3632,6 +3632,9 @@ for line in sys.stdin:
             is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
         checked_on_github(domain);
+        apply_seed_command(domain, Actor::System, "merge-verdict", Command::ObserveMergeVerdict {
+            pr_id: "pr".into(), head: "0123456789abcdef".into(), verdict: alondra_domain_rules::MergeVerdict::mergeable(),
+        });
     }
 
     fn waits_for_the_user(domain: &crate::domain_runtime::DomainRuntime) -> bool {
@@ -3904,6 +3907,9 @@ for line in sys.stdin:
             is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
         checked_on_github(domain);
+        apply_seed_command(domain, Actor::System, "merge-verdict", Command::ObserveMergeVerdict {
+            pr_id: site.clone(), head: "fedcba9876543210".into(), verdict: alondra_domain_rules::MergeVerdict::mergeable(),
+        });
         (alondra_domain_rules::hosted_pr_id("github.com", "me/app", 7), site)
     }
 
@@ -4120,8 +4126,8 @@ for line in sys.stdin:
         let pr = alondra_domain_rules::hosted_pr_id("github.com", "me/app", 7);
         let unread = state_after(task_with_prs(&[(&pr, "me/app", 7)]));
         let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_rules::PrState::Open));
-        for (lang, said) in [(Lang::En, "Alondra is still checking on GitHub which pull request this is. Nothing was changed; try again in a minute."),
-            (Lang::Es, "Alondra aún está comprobando en GitHub qué PR es. No se cambió nada; vuelve a intentarlo en un minuto.")] {
+        for (lang, said) in [(Lang::En, "Alondra is still checking on GitHub which pull request this is. Nothing was changed; this unlocks when GitHub confirms it."),
+            (Lang::Es, "Alondra aún está comprobando en GitHub qué PR es. No se cambió nada; se activará cuando GitHub lo confirme.")] {
             let refused = close_on_github(&unread, &github, pr.0.as_str(), lang).await.unwrap_err();
             assert_eq!((refused["outcome"].as_str(), refused["message"].as_str()), (Some("rejected"), Some(said)), "{refused}");
         }
@@ -4133,7 +4139,7 @@ for line in sys.stdin:
         let read = state_after(commands);
         let elsewhere = AnotherPrThere(Default::default());
         let refused = close_on_github(&read, &elsewhere, pr.0.as_str(), Lang::En).await.unwrap_err();
-        assert_eq!(refused["message"], "Alondra is still checking on GitHub which pull request this is. Nothing was changed; try again in a minute.");
+        assert_eq!(refused["message"], "Alondra is still checking on GitHub which pull request this is. Nothing was changed; this unlocks when GitHub confirms it.");
         assert_eq!(*elsewhere.0.lock().unwrap(), [7], "asked once, and GitHub closed nothing");
     }
 

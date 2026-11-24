@@ -19,6 +19,7 @@ fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, Dom
         expected_revision: s.revision,
         command: c,
     };
+    s.seed_mergeable_for_presented(&envelope.command);
     s.execute(&a, &envelope)
 }
 fn ok(s: &mut DomainState, a: Actor, c: Command) {
@@ -26,6 +27,7 @@ fn ok(s: &mut DomainState, a: Actor, c: Command) {
 }
 /// The rejection's code and message; the state must not move.
 fn refused(s: &mut DomainState, a: Actor, c: Command) -> (String, String) {
+    s.seed_mergeable_for_presented(&c);
     let before = s.clone();
     let error = exec(s, a, c).unwrap_err();
     assert_eq!(*s, before, "a rejected command changed state");

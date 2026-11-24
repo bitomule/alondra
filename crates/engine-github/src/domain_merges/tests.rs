@@ -15,6 +15,13 @@ impl Drop for Home {
 }
 
 fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
+    for (n, observation) in domain.state().unwrap().mergeable_observations(&command).into_iter().enumerate() {
+        let seen = domain.state().unwrap();
+        domain.execute(&Actor::System, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: seen.data_epoch.clone(), command_id: format!("{}-merge-verdict-{n}", id).into(),
+            expected_revision: seen.revision, command: observation,
+        }, None, || Ok(())).unwrap();
+    }
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
@@ -44,7 +51,14 @@ fn now() -> Merger {
 
 /// A node's Task with its PR #7 presented as the final result, which GitHub reports open with
 /// its checks passed.
-fn presented(_tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGithub) {
+fn presented(tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGithub) {
+    let (home, domain, github) = presented_unread(tag, auto_merge);
+    observe_verdict(&domain, "pr", HEAD, MergeVerdict::mergeable());
+    (home, domain, github)
+}
+
+/// `presented`, before Alondra has asked GitHub whether the PR can merge.
+fn presented_unread(_tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGithub) {
     let home = Home(crate::test_support::Directory::new());
     std::fs::create_dir(&home.0).unwrap();
     let domain = Arc::new(crate::unwired(&home.0).unwrap());
@@ -59,6 +73,10 @@ fn presented(_tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGit
         task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
         number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash, MergeMethod::Merge],
     });
+    command(&domain, Actor::System, "checked", Command::ObservePrAddress { pr_id: "pr".into(),
+        read: alondra_domain_rules::PrRead::Address { repository: "owner/repo".into() }, read_started_at: 1_000,
+        verdict: alondra_domain_rules::PrAddressVerdict::Confirmed { key: fake_key(7), locator: alondra_domain_rules::ProviderLocator("PR_7".into()),
+            current_repository: "owner/repo".into() } });
     command(&domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
         checklist: Vec::new(),
         attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
@@ -67,6 +85,11 @@ fn presented(_tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGit
     let github = FakeGithub::new();
     github.open(7, HEAD, Checks::Passed);
     (home, domain, github)
+}
+
+fn observe_verdict(domain: &DomainRuntime, pr: &str, head: &str, verdict: MergeVerdict) {
+    command(domain, Actor::System, &format!("verdict-{pr}-{}", head.len() + domain.state().unwrap().revision as usize),
+        Command::ObserveMergeVerdict { pr_id: pr.into(), head: head.into(), verdict });
 }
 
 fn accept(domain: &DomainRuntime) {
@@ -571,6 +594,7 @@ async fn cards_and_state_go_once_the_pr_is_no_longer_due() {
 async fn failing_checks_go_back_once_and_cancelled_or_skipped_ones_do_not() {
     let (_home, domain, github) = presented("auto-red", true);
     github.open(7, HEAD, Checks::Failed(vec!["lint".into()]));
+    github.verdicts.lock().unwrap().insert(7, Ok(blocked(vec![MergeBlocker::RequiredCheckFailing { name: "lint".into() }])));
     let mut merger = now();
     merger.merge_due(&domain, &github).await.unwrap();
     merger.merge_due(&domain, &github).await.unwrap();
@@ -1236,6 +1260,7 @@ async fn conflicts_and_failing_checks_go_back_to_the_node_whatever_the_user_may_
     let (_home, domain, _) = presented("bypass-red", false);
     let world = bypass_world(Checks::Failed(vec!["CI".into()]), &["CI"]);
     accept(&domain);
+    observe_verdict(&domain, "pr", HEAD, blocked(vec![MergeBlocker::RequiredCheckFailing { name: "CI".into() }]));
     now().merge_due(&domain, &world).await.unwrap();
     assert!(world.gh_calls().is_empty(), "{:?}", world.gh_calls());
     let feedback = feedback(&domain);
@@ -1261,6 +1286,94 @@ async fn a_bypass_github_refuses_waits_for_the_checks_instead_of_handing_back() 
     github.statuses.lock().unwrap().get_mut(&7).unwrap().as_mut().unwrap().passed.insert("build".into());
     assert!(!merger.merge_due(&domain, &github).await.unwrap());
     assert_eq!(github.calls.lock().unwrap().last().map(String::as_str), Some("merge 7"));
+}
+
+fn blocked(blockers: Vec<MergeBlocker>) -> MergeVerdict {
+    MergeVerdict::Blocked { blockers }
+}
+
+fn try_accept(domain: &DomainRuntime) -> Result<(), StoreError> {
+    let state = domain.state().unwrap();
+    domain.execute(&user(), &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "try-accept".into(),
+        expected_revision: state.revision, command: Command::AcceptDelivery { presentation_id: "d".into(), targets: targets() },
+    }, None, || Ok(())).map(|_| ())
+}
+
+fn refused_with<T: std::fmt::Debug>(result: Result<T, StoreError>) -> String {
+    match result {
+        Err(StoreError::Domain(error)) => error.code,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn what_github_says_of_merging_is_recorded_and_decides_whether_the_delivery_can_be_accepted() {
+    let (_home, domain, github) = presented("verdict", false);
+    github.verdicts.lock().unwrap().insert(7, Ok(blocked(vec![MergeBlocker::ReviewRequired])));
+    crate::domain_verdicts::refresh(&domain, &github, true).await.unwrap();
+    assert_eq!(domain.state().unwrap().merge_verdicts[&PrId::from("pr")].verdict, blocked(vec![MergeBlocker::ReviewRequired]));
+    assert_eq!(refused_with(try_accept(&domain)), "merge_blocked");
+    github.verdicts.lock().unwrap().insert(7, Ok(MergeVerdict::mergeable()));
+    crate::domain_verdicts::refresh(&domain, &github, true).await.unwrap();
+    try_accept(&domain).unwrap();
+}
+
+#[tokio::test]
+async fn a_merge_nobody_has_asked_github_about_is_unknown_and_stays_closed_while_github_does_not_answer() {
+    let (_home, domain, github) = presented_unread("verdict-unknown", false);
+    assert_eq!(refused_with(try_accept(&domain)), "merge_unknown");
+    github.verdicts.lock().unwrap().insert(7, Err("error connecting to api.github.com".into()));
+    crate::domain_verdicts::refresh(&domain, &github, false).await.unwrap();
+    assert_eq!(domain.state().unwrap().merge_verdicts[&PrId::from("pr")].verdict, MergeVerdict::Unknown);
+    assert_eq!(refused_with(try_accept(&domain)), "merge_unknown");
+}
+
+#[tokio::test]
+async fn a_verdict_about_an_older_head_is_refused() {
+    let (_home, domain, _github) = presented("verdict-old-head", false);
+    let state = domain.state().unwrap();
+    let result = domain.execute(&Actor::System, &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "old".into(), expected_revision: state.revision,
+        command: Command::ObserveMergeVerdict { pr_id: "pr".into(), head: "1".repeat(40), verdict: MergeVerdict::mergeable() },
+    }, None, || Ok(()));
+    assert_eq!(refused_with(result), "stale_head");
+}
+
+#[tokio::test]
+async fn a_merge_github_refuses_for_a_required_review_waits_and_keeps_the_acceptance() {
+    let (_home, domain, github) = presented("review-required", false);
+    github.open_blocked(7, HEAD, Checks::Passed);
+    github.merges.lock().unwrap().insert(7, Err("Pull request #7 is not mergeable: the base branch policy prohibits the merge. A review is required".into()));
+    accept(&domain);
+    github.verdicts.lock().unwrap().insert(7, Ok(blocked(vec![MergeBlocker::ReviewRequired])));
+    assert!(now().merge_due(&domain, &github).await.unwrap(), "it waits for the review");
+    assert!(feedback(&domain).is_empty(), "the node is told nothing: only a person gives a review");
+    assert!(accepted(&domain), "and the user's acceptance stands");
+    assert_eq!(domain.state().unwrap().merge_verdicts[&PrId::from("pr")].verdict, blocked(vec![MergeBlocker::ReviewRequired]),
+        "the card learns why the merge waits");
+}
+
+#[tokio::test]
+async fn a_failing_check_github_does_not_require_does_not_stop_the_merge() {
+    let (_home, domain, github) = presented("not-required", false);
+    github.open(7, HEAD, Checks::Failed(vec!["lint".into()]));
+    observe_verdict(&domain, "pr", HEAD, MergeVerdict::Mergeable { notes: vec![MergeNote::CheckFailingNotRequired { name: "lint".into() }] });
+    accept(&domain);
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Squash)]);
+    assert!(feedback(&domain).is_empty());
+}
+
+#[tokio::test]
+async fn a_required_check_that_failed_still_goes_back_to_the_node() {
+    let (_home, domain, github) = presented("required-red", false);
+    github.open(7, HEAD, Checks::Failed(vec!["build".into()]));
+    accept(&domain);
+    observe_verdict(&domain, "pr", HEAD, blocked(vec![MergeBlocker::RequiredCheckFailing { name: "build".into() }]));
+    now().merge_due(&domain, &github).await.unwrap();
+    assert!(github.merged.lock().unwrap().is_empty());
+    assert!(feedback(&domain).iter().any(|text| text.contains("its checks failed (build)")), "{:?}", feedback(&domain));
 }
 
 const OTHER_HEAD: &str = "89abcdef0123456789abcdef0123456789abcdef";

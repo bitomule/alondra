@@ -434,6 +434,9 @@ pub fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
     if !metadata.is_empty() {
         out.extend(super::md::wrap(metadata, width, vec![], vec![]));
     }
+    for warning in card.context.iter().filter(|line| line.icon == Icon::Warning) {
+        out.extend(super::md::wrap(vec![Span::styled(warning.text.clone(), Style::new().fg(Color::Yellow))], width, vec![], vec![]));
+    }
     for chip in card.blocked_by.iter().chain(&card.blocks) {
         out.push(Line::from(chip.label.clone().fg(ACCENT)));
     }

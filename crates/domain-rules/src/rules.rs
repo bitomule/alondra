@@ -3043,6 +3043,7 @@ impl DomainState {
                     .map_or(0, |t| t.revision),
             ),
             Command::ObservePrState { pr_id, .. }
+            | Command::ObserveMergeVerdict { pr_id, .. }
             | Command::ObservePrMergeMethods { pr_id, .. }
             | Command::ObservePrAddress { pr_id, .. }
             | Command::DetachPr { pr_id, .. } => Some(
@@ -5364,6 +5365,18 @@ impl DomainState {
                     let notice = if newly_merged { merged_notice(number, left) } else { closed_notice(number, left) };
                     self.notify(&task, None, &notice, effects)?;
                 }
+            }
+            Command::ObserveMergeVerdict { pr_id, head: sha, verdict } => {
+                system(actor)?;
+                head(sha)?;
+                let p = self
+                    .pull_requests
+                    .get(pr_id)
+                    .ok_or_else(|| DomainError::new("not_found", "PR missing"))?;
+                if p.state != PrState::Open || &p.head != sha {
+                    return fail("stale_head", "The verdict is about another head");
+                }
+                self.merge_verdicts.insert(pr_id.clone(), ObservedVerdict { head: sha.clone(), verdict: verdict.clone() });
             }
             Command::ObservePrMergeMethods {
                 pr_id,

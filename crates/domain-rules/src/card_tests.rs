@@ -23,6 +23,7 @@ fn assert_cards_usable(s: &DomainState) {
     }
 }
 fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, DomainError> {
+    s.seed_mergeable_for(&c);
     let outcome = s.execute(&a, &CommandEnvelope {
         protocol_version: 2,
         data_epoch: s.data_epoch.clone(),
@@ -38,6 +39,7 @@ fn ok(s: &mut DomainState, a: Actor, c: Command) -> CommandOutcome {
 }
 /// The rejection's code and field; the state must not move.
 fn refused(s: &mut DomainState, a: Actor, c: Command) -> (String, Option<String>) {
+    s.seed_mergeable_for(&c);
     let before = s.clone();
     let error = exec(s, a, c).unwrap_err();
     assert_eq!(*s, before, "a rejected command changed state");
@@ -475,6 +477,25 @@ fn merge_waits_for_what_blocks_it() {
     assert_eq!(refused(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_target() }).0, "blocked");
     ok(&mut s, user(), answer("q"));
     assert!(s.blocked_by(&"d".into()).is_empty());
+    ok(&mut s, user(), authorize());
+}
+
+#[test]
+fn merge_waits_for_the_provider_to_confirm_which_pull_request_it_is() {
+    let mut s = fixture();
+    register_pr(&mut s);
+    ok(&mut s, agent(), present("d", pr_target(), true, review()));
+    s.pull_requests.get_mut(&"pr".into()).unwrap().identity = PrIdentity::Unverified;
+    let authorize = || Command::AuthorizeMerge {
+        authorization_id: "auth".into(), presentation_id: "d".into(), pr_id: "pr".into(),
+        expected_head: "head1".into(), method: MergeMethod::Squash, despite_pending_message: false,
+    };
+    let before = s.clone();
+    let refusal = s.execute(&user(), &CommandEnvelope {
+        protocol_version: 2, data_epoch: s.data_epoch.clone(), command_id: "unconfirmed".into(), expected_revision: s.revision, command: authorize(),
+    }).unwrap_err();
+    assert_eq!((refusal.code.as_str(), refusal.refusal), ("pr_not_checked_yet", Some(Refusal::PrNotCheckedYet)));
+    assert_eq!(s, before, "nothing changed");
     ok(&mut s, user(), authorize());
 }
 

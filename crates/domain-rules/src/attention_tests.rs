@@ -10,6 +10,7 @@ fn agent(id: &str) -> Actor {
     Actor::Agent { agent_id: id.into() }
 }
 fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, DomainError> {
+    s.seed_mergeable_for(&c);
     s.execute(&a, &CommandEnvelope {
         protocol_version: 2,
         data_epoch: s.data_epoch.clone(),
@@ -22,6 +23,7 @@ fn ok(s: &mut DomainState, a: Actor, c: Command) -> CommandOutcome {
     exec(s, a, c).unwrap()
 }
 fn refused(s: &mut DomainState, a: Actor, c: Command) -> String {
+    s.seed_mergeable_for(&c);
     let before = s.clone();
     let error = exec(s, a, c).unwrap_err();
     assert_eq!(*s, before, "a rejected command changed state");

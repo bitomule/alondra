@@ -350,6 +350,7 @@ pub(crate) async fn assemble_with(
     } else {
         (domain_merges::Merger::default(), std::time::Duration::from_secs(60))
     };
+    tasks.spawn(alondra_daemon_engine::domain_verdicts::run(merges_domain.clone(), Arc::new(seams.github.merger.clone()), pr_poll));
     tasks.spawn(domain_merges::run(merges_domain, Arc::new(seams.github.merger.clone()), merger));
     tasks.spawn(alondra_daemon_engine::open_pr_sweep::run(domain.clone(), config.home.clone(), seams.user_home.clone()));
     let github = tasks.spawn(domain_github::run(

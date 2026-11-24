@@ -1,0 +1,89 @@
+name = "a PR whose base requires a review shows its merge disabled with that reason, and offers the merge once GitHub lets it"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "csv-export"
+base = "main"
+
+[[step]]
+do = "github"
+event = "require_review"
+number = 7
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The CSV export is ready"
+
+[[step]]
+do = "advance"
+by = "10s"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "review-required"
+screens = ["home"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "it needs a review on GitHub"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Squash and merge"
+present = false
+
+[[step.expect]]
+check = "gh_calls"
+calls = []
+
+[[step]]
+do = "github"
+event = "approve_review"
+number = 7
+
+[[step]]
+do = "advance"
+by = "10s"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "review-given"
+screens = ["home"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Squash and merge"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "it needs a review on GitHub"
+present = false

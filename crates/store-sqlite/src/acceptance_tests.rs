@@ -356,6 +356,23 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
     } else if name == "authorized-pr" {
         setup_variant(store, variants, string(field(variant, "extends")));
         let authorization = field(variant, "authorization");
+        let confirmed = string(field(authorization, "pr_id")).to_owned();
+        let pr = store.load().unwrap().pull_requests[&confirmed.as_str().into()].clone();
+        setup_command(store, &format!("setup-identity-{name}"), Actor::System, Command::ObservePrAddress {
+            pr_id: pr.id.clone(), read: alondra_domain_rules::PrRead::Address { repository: pr.repository.clone() }, read_started_at: 1_000,
+            verdict: alondra_domain_rules::PrAddressVerdict::Confirmed { key: alondra_domain_rules::ProviderPrKey(pr.id.0.clone()),
+                locator: alondra_domain_rules::ProviderLocator(format!("PR_{}", pr.id)), current_repository: pr.repository.clone() },
+        });
+        setup_command(
+            store,
+            &format!("setup-verdict-{name}"),
+            Actor::System,
+            Command::ObserveMergeVerdict {
+                pr_id: string(field(authorization, "pr_id")).into(),
+                head: string(field(authorization, "head")).into(),
+                verdict: alondra_domain_rules::MergeVerdict::mergeable(),
+            },
+        );
         setup_command(
             store,
             &format!("setup-authorize-{name}"),
@@ -686,6 +703,19 @@ fn shared_catalog_domain_and_sql_cases() {
             } else {
                 panic!("{case_id}: unsupported arrangement {arrangement}");
             }
+        }
+        let open: Vec<_> = store.load().unwrap().pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
+        for (pr_id, head) in open {
+            let pr = store.load().unwrap().pull_requests[&pr_id].clone();
+            if pr.identity.is_unverified() {
+                run(&mut store, &format!("{case_id}-identity-{pr_id}"), Actor::System, Command::ObservePrAddress {
+                    pr_id: pr_id.clone(), read: alondra_domain_rules::PrRead::Address { repository: pr.repository.clone() }, read_started_at: 1_000,
+                    verdict: alondra_domain_rules::PrAddressVerdict::Confirmed { key: alondra_domain_rules::ProviderPrKey(pr_id.0.clone()),
+                        locator: alondra_domain_rules::ProviderLocator(format!("PR_{pr_id}")), current_repository: pr.repository.clone() },
+                }).unwrap();
+            }
+            run(&mut store, &format!("{case_id}-verdict-{pr_id}"), Actor::System,
+                Command::ObserveMergeVerdict { pr_id, head, verdict: alondra_domain_rules::MergeVerdict::mergeable() }).unwrap();
         }
         let before = baseline(&mut store);
         let mut last_error = None;

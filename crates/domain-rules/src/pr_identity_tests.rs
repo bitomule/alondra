@@ -16,6 +16,7 @@ const SITE_HEAD: &str = "2222222222222222222222222222222222222222";
 const HOUR: Millis = 60 * 60 * 1000;
 
 fn exec(s: &mut DomainState, actor: Actor, command: Command) -> Result<CommandOutcome, DomainError> {
+    s.seed_mergeable_for(&command);
     s.execute(&actor, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: format!("c-{}", s.revision).into(),
         expected_revision: s.revision, command,
@@ -244,6 +245,7 @@ fn an_action_on_a_joined_card_is_refused_and_touches_nothing() {
             instruction: Instruction::default(), merge_failure: None },
         Command::AcceptDelivery { presentation_id: "final".into(), targets: copy_target.clone() },
     ] {
+        s.seed_mergeable_for(&command);
         let before = s.clone();
         let error = exec(&mut s, user(), command.clone()).unwrap_err();
         assert_eq!((error.code.as_str(), error.message.as_str()), ("pr_superseded", PR_SUPERSEDED), "{command:?}");

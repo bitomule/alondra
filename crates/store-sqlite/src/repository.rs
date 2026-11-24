@@ -731,6 +731,7 @@ fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<(
     kept("interaction", &before.interactions, &after.interactions)?;
     kept("merge authorization", &before.merge_authorizations, &after.merge_authorizations)?;
     kept("stack readiness", &before.stack_readiness, &after.stack_readiness)?;
+    kept("merge verdict", &before.merge_verdicts, &after.merge_verdicts)?;
     kept("hook hold", &before.holds, &after.holds)?;
     for (source, checklist) in before.checklists.iter().filter(|(id, _)| !after.checklists.contains_key(*id)) {
         let mut recipients = after.tasks.values().filter(|task|
@@ -979,6 +980,12 @@ pub(super) fn save_changes(
     }
     for (a, _) in changed(&before.merge_authorizations, &after.merge_authorizations) {
         upsert(c, "merge_authorizations", &["id"], object(a)?)?;
+    }
+    for (pr, observed) in &after.merge_verdicts {
+        if before.merge_verdicts.get(pr) != Some(observed) {
+            exec(c, "INSERT INTO merge_verdicts(pr_id,head,verdict) VALUES(?1,?2,?3) ON CONFLICT(pr_id) DO UPDATE SET head=excluded.head, verdict=excluded.verdict",
+                params![pr.0, observed.head, serde_json::to_string(&observed.verdict)?])?;
+        }
     }
     for (t, prior) in &tasks {
         save_task_stack(c, t, *prior)?;
@@ -1444,6 +1451,15 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         let x: MergeAuthorization = decode(row)?;
         state.merge_authorizations.insert(x.id.clone(), x);
     }
+    let mut verdicts = c.prepare("SELECT pr_id, head, verdict FROM merge_verdicts")?;
+    let mut stored = verdicts.query([])?;
+    while let Some(row) = stored.next()? {
+        let pr: String = row.get(0)?;
+        let verdict: String = row.get(2)?;
+        state.merge_verdicts.insert(pr.into(), alondra_domain_rules::ObservedVerdict { head: row.get(1)?, verdict: serde_json::from_str(&verdict)? });
+    }
+    drop(stored);
+    drop(verdicts);
     let mut models = c.prepare("SELECT task_id, model, chosen_by FROM task_models")?;
     let mut stored = models.query([])?;
     while let Some(row) = stored.next()? {

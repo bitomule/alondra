@@ -9,7 +9,7 @@ use alondra_daemon_support::locks::Poisonable as _;
 use crate::domain_github::{Closed, GhFailure, Located, Observed, PrFacts, PrObserver, ReadIdentity};
 use crate::domain_merges::{Checks, MergeState, Pending, PrMerger, Status};
 use crate::pr_images::{Failure, Fetch, GitHubImages};
-use alondra_domain_rules::{MergeMethod, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey, PullRequest, normalize_pr_repository};
+use alondra_domain_rules::{MergeMethod, MergeVerdict, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey, PullRequest, normalize_pr_repository};
 use alondra_engine_ports::github::{AuthoredPr, Gh, Read};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,6 +30,7 @@ struct Pr {
     body: String,
     required: Vec<String>,
     bypassable: Vec<String>,
+    verdict: MergeVerdict,
     merge_failure: Option<GhFailure>,
     no_access: bool,
     methods: Vec<MergeMethod>,
@@ -180,13 +181,14 @@ impl GithubWorld {
     fn open_at(&self, repository: &str, number: u64, head_ref: &str, base: &str, head: &str) {
         let mut world = self.world();
         world.keys += 1;
-        let key = format!("{}", 9000 + world.keys);
+        let by_number = number.to_string();
+        let key = if world.prs.values().any(|pr| pr.key == by_number) { format!("{}", 9000 + world.keys) } else { by_number };
         let repository = normalize_pr_repository(repository);
         world.prs.insert((repository, number), Pr {
             locator: format!("PR_node{key}"), key,
             head_ref: head_ref.into(), head: head.to_owned(), base: base.into(), state: PrState::Open, merged_into: None,
             draft: false, checks: Checks::Passed, merge_state: MergeState::Clean, title: format!("Pull request {number}"),
-            body: String::new(), required: Vec::new(), bypassable: Vec::new(), merge_failure: None, no_access: false,
+            body: String::new(), required: Vec::new(), bypassable: Vec::new(), verdict: MergeVerdict::mergeable(), merge_failure: None, no_access: false,
             methods: vec![MergeMethod::Squash, MergeMethod::Merge, MergeMethod::Rebase],
         });
     }
@@ -250,6 +252,10 @@ impl GithubWorld {
     }
     pub fn set_merge_state(&self, number: u64, state: MergeState) {
         self.change(number, |pr| pr.merge_state = state);
+    }
+    /// What GitHub says of merging the PR: a PR is mergeable until a scenario says otherwise.
+    pub fn set_verdict(&self, number: u64, verdict: MergeVerdict) {
+        self.change(number, |pr| pr.verdict = verdict);
     }
     pub fn set_draft(&self, number: u64, draft: bool) {
         self.change(number, |pr| pr.draft = draft);
@@ -432,6 +438,11 @@ impl PrMerger for GithubWorld {
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, _base: &'a str) -> Pending<'a, Vec<String>> {
         let required = self.world().lookup(&pr.repository, pr.number).map(|(_, github)| github.required.clone());
         Box::pin(async move { required })
+    }
+
+    fn verdict<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, MergeVerdict> {
+        let verdict = self.world().lookup(&pr.repository, pr.number).map(|(_, github)| github.verdict.clone());
+        Box::pin(async move { verdict })
     }
 
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {

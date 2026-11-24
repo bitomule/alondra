@@ -89,6 +89,7 @@ impl Seed {
             expected_revision: self.0.revision,
             command,
         };
+        self.0.seed_mergeable_for_presented(&envelope.command);
         if let Err(error) = self.0.execute(&actor, &envelope) {
             panic!("seeding the synthetic domain: {error:?}");
         }
@@ -222,6 +223,14 @@ fn absorb(into: &mut DomainState, unit: &DomainState, number: usize) {
         document_revisions, document_reviews, pull_requests, mut interactions, merge_authorizations, stack_readiness, schedule,
         holds, checklists, checklist_marks, last_words, request_plans, plan_reviews, lifecycle_journal, mcp, ..
     } = copy;
+    let mut pull_requests = pull_requests;
+    for pr in pull_requests.values_mut() {
+        let id = pr.id.0.clone();
+        if let alondra_domain_rules::PrIdentity::Verified { key, locator } = &mut pr.identity {
+            key.0 = format!("{}@{id}", key.0);
+            locator.0 = format!("{}@{id}", locator.0);
+        }
+    }
     let next = into.interactions.values().map(|i| i.order).max().unwrap_or(0);
     for interaction in interactions.values_mut() {
         interaction.order += next;
@@ -573,6 +582,7 @@ fn every_action_of_the_user_fits_its_budget_on_a_live_size_domain() {
     println!("copy of the state: {:.2} ms CPU, read index: {:.2} ms CPU",
         median_of(&|| drop(std::hint::black_box(state.clone()))), median_of(&|| drop(std::hint::black_box(ReadSnapshot::build(Arc::new(state.clone())))))
             - median_of(&|| drop(std::hint::black_box(state.clone()))));
+    state.seed_every_open_pr_mergeable();
     let mut over = vec![];
     for (name, actor, command) in actions(&mut state) {
         let envelope = envelope_on(&state, &format!("budget-{name}"), command);

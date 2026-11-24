@@ -903,6 +903,10 @@ impl DomainRuntime {
     /// producer does. Client tests use `execute_with` to exercise their optimistic revision.
     pub fn execute_fixture(&self, actor: &Actor, envelope: CommandEnvelope) -> Result<CommandOutcome, StoreError> {
         let envelope = CommandEnvelope { expected_revision: 0, ..envelope };
+        for (n, observation) in self.state()?.mergeable_observations(&envelope.command).into_iter().enumerate() {
+            let verdict = CommandEnvelope { command: observation, command_id: format!("{}-merge-verdict-{n}", envelope.command_id).into(), ..envelope.clone() };
+            self.commit(&Actor::System, &verdict, None, None, true, || Ok(()))?;
+        }
         self.commit(actor, &envelope, None, None, true, || Ok(()))
     }
 
@@ -1195,7 +1199,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
             .merge_authorizations
             .get(authorization_id)
             .map(|authorization| authorization.task_id.clone()),
-        Command::ObservePrState { pr_id, .. } | Command::ObservePrMergeMethods { pr_id, .. }
+        Command::ObservePrState { pr_id, .. } | Command::ObservePrMergeMethods { pr_id, .. } | Command::ObserveMergeVerdict { pr_id, .. }
         | Command::ObservePrAddress { pr_id, .. } | Command::DetachPr { pr_id, .. } => {
             state.pull_requests.get(pr_id).map(|pr| pr.task_id.clone())
         }

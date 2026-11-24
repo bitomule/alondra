@@ -440,6 +440,11 @@ impl super::Client {
             if !missing.is_empty() {
                 return Err(DomainError::new("pr_images_missing", missing_images_text(pr, &missing)));
             }
+            if let Some(github) = self.domain.ports().port::<alondra_engine_ports::github::GitHub>() {
+                if let Ok(verdict) = github.merger.verdict(pr).await {
+                    let _ = alondra_daemon_engine::domain_verdicts::record(&self.domain, pr, verdict);
+                }
+            }
         }
         Ok(())
     }

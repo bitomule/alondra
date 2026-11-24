@@ -42,6 +42,15 @@ impl DomainState {
         }
     }
 
+    /// A pull request is acted on remotely only once the provider confirmed which one it is.
+    pub fn identity_confirmed(&self, pr_id: &PrId) -> Result<()> {
+        let Some(pr) = self.pull_requests.get(pr_id) else { return Ok(()) };
+        if pr.identity.is_unverified() {
+            return fail("pr_not_checked_yet", "The provider has not confirmed which pull request this is").map_err(|e| e.because(Refusal::PrNotCheckedYet));
+        }
+        Ok(())
+    }
+
     /// Every known pull request a command names, by its id or as a target, is still tracked.
     pub(super) fn refuse_untracked_prs(&self, command: &Command) -> Result<()> {
         let known = |pr_id: &PrId| -> Result<()> {
@@ -68,6 +77,7 @@ impl DomainState {
             }
             Command::ObservePrState { pr_id, .. }
             | Command::ObservePrMergeMethods { pr_id, .. }
+            | Command::ObserveMergeVerdict { pr_id, .. }
             | Command::PublishStackReadiness { pr_id, .. }
             | Command::AdoptOpenPr { pr_id, .. }
             | Command::ClosePrOfCancelledTask { pr_id, .. }

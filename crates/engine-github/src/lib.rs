@@ -25,6 +25,7 @@ fn unwired(home: &std::path::Path) -> anyhow::Result<domain_runtime::DomainRunti
 
 pub mod domain_github;
 pub mod domain_merges;
+pub mod domain_verdicts;
 pub mod github_world;
 pub mod open_pr_sweep;
 pub mod pr_identity;

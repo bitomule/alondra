@@ -3350,6 +3350,7 @@ card and waits, with the acceptance valid and nothing handed back; the card is w
 (`domain_merges.rs`, `ask_review`/`clear_review`). `CHANGES_REQUESTED` still goes back to the node as before. Test:
 `domain_merges::tests::a_merge_github_holds_for_a_required_review_waits_for_it_with_the_acceptance_intact`.
 Ablation in the PR.
+Merge-button task: on top of that, GitHub's verdict on merging (`MergeVerdict`, read through `gh` and recorded by `ObserveMergeVerdict`) tells the delivery card why the merge waits. Test: `a_merge_github_refuses_for_a_required_review_waits_and_keeps_the_acceptance`; scenario `merge-waits-for-the-review-github-requires`.
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: medium in repos with a mandatory review, none without one · **Overlap**: none.
 - **Invalid state/transition and broken invariant**: the node receives "fix and deliver again" for something only a person can
   give on GitHub, and the user's acceptance is invalidated. It breaks the distinction the merger itself makes for checks

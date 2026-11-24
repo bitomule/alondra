@@ -71,6 +71,8 @@ const TASK_MODELS: &str = "CREATE TABLE IF NOT EXISTS task_models(task_id TEXT P
 /// The provider account each Task's current execution runs on, when it is not the provider's own
 /// sign-in; created on every open like task_models.
 const TASK_ACCOUNTS: &str = "CREATE TABLE IF NOT EXISTS task_accounts(task_id TEXT PRIMARY KEY REFERENCES tasks(id), account TEXT NOT NULL CHECK(length(account)>0));";
+/// What GitHub last said of merging each PR, for the head it names; created on every open like task_models.
+const MERGE_VERDICTS: &str = "CREATE TABLE IF NOT EXISTS merge_verdicts(pr_id TEXT PRIMARY KEY, head TEXT NOT NULL CHECK(length(head)>0), verdict TEXT NOT NULL CHECK(json_valid(verdict)));";
 const TASK_USER_INPUTS: &str = "CREATE TABLE IF NOT EXISTS task_user_inputs(task_id TEXT PRIMARY KEY REFERENCES tasks(id), inputs TEXT NOT NULL CHECK(json_valid(inputs)));";
 /// The project each Task belongs to, set when it was created; created on every open like task_models.
 /// The task each task carries on, in the same request.
@@ -672,6 +674,7 @@ impl DomainStore {
         tx.execute_batch(TASK_CONTINUATIONS)?;
         tx.execute_batch(TASK_CREATIONS)?;
         tx.execute_batch(TASK_USER_INPUTS)?;
+        tx.execute_batch(MERGE_VERDICTS)?;
         tx.execute_batch(NODE_LAST_WORDS)?;
         tx.execute_batch(STOPPED_NODES)?;
         tx.execute_batch(MODEL_METRICS)?;

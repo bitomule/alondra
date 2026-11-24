@@ -16,6 +16,7 @@ const PATHS: [&str; 3] = [
 const ORIGINS: [WorktreeOrigin; 3] = [WorktreeOrigin::Task, WorktreeOrigin::Subagent, WorktreeOrigin::Entered];
 
 fn exec(s: &mut DomainState, actor: Actor, command: Command) -> Result<CommandOutcome, DomainError> {
+    s.seed_mergeable_for(&command);
     s.execute(&actor, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: format!("c-{}", s.revision).into(),
         expected_revision: s.revision, command,

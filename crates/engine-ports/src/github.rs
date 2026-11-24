@@ -1,7 +1,7 @@
 //! GitHub as the engine sees it: observing, merging and reading pull requests, and the images their
 //! descriptions cite. `github-gh` implements it with the Mac's `gh`; a scenario registers a GitHub
 //! of its own in its place.
-use alondra_domain_rules::{MergeMethod, OpenPrStatus, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey, PullRequest};
+use alondra_domain_rules::{MergeMethod, MergeVerdict, OpenPrStatus, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey, PullRequest};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -295,9 +295,13 @@ pub trait PrMerger: Send + Sync + 'static {
     fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>>;
     /// Whether the signed-in account may merge into the PR's repository (`viewerPermission` WRITE or above).
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
+    /// Whether GitHub would let the PR merge now, and what stops it: its merge state, review decision,
+    /// required checks and the rules the signed-in account may bypass, reduced to the domain's verdict.
+    fn verdict<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, MergeVerdict>;
 }
 
 impl PrMerger for Arc<dyn PrMerger> {
+    fn verdict<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, MergeVerdict> { (**self).verdict(pr) }
     fn default_branch<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, String> { (**self).default_branch(pr) }
     fn retarget<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, base: &'a str) -> Pending<'a, ()> { (**self).retarget(pr, expected, base) }
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> { (**self).status(pr) }
@@ -318,6 +322,7 @@ impl PrMerger for Arc<dyn PrMerger> {
 }
 
 impl<T: PrMerger> PrMerger for Arc<T> {
+    fn verdict<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, MergeVerdict> { (**self).verdict(pr) }
     fn default_branch<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, String> { (**self).default_branch(pr) }
     fn retarget<'a>(&'a self, pr: &'a PullRequest, expected: &'a ProviderPrKey, base: &'a str) -> Pending<'a, ()> { (**self).retarget(pr, expected, base) }
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> { (**self).status(pr) }

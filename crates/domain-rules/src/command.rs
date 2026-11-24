@@ -504,6 +504,12 @@ pub enum Command {
         state: PrState,
         merged_head: Option<String>,
     },
+    /// What the provider says of merging a pull request at `head`.
+    ObserveMergeVerdict {
+        pr_id: PrId,
+        head: String,
+        verdict: crate::MergeVerdict,
+    },
     ObservePrMergeMethods {
         pr_id: PrId,
         allowed_methods: Vec<MergeMethod>,

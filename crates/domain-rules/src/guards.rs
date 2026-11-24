@@ -314,6 +314,18 @@ impl DomainState {
             return fail("invalid_input", "Merge method not allowed")
                 .map_err(|e| e.because(Refusal::MethodNotAllowed { method, allowed: pr.allowed_methods.clone() }));
         };
+        self.identity_confirmed(pr_id)?;
+        match self.merge_verdicts.get(pr_id).filter(|observed| observed.head == expected_head).map(|observed| &observed.verdict) {
+            Some(MergeVerdict::Mergeable { .. }) => {}
+            Some(MergeVerdict::Blocked { blockers }) => {
+                return fail("merge_blocked", "The provider would not let this PR merge yet")
+                    .map_err(|e| e.because(Refusal::MergeBlocked { number, blockers: blockers.clone() }));
+            }
+            Some(MergeVerdict::Unknown) | None => {
+                return fail("merge_unknown", "The provider has not said whether this PR can merge")
+                    .map_err(|e| e.because(Refusal::MergeVerdictUnknown { number }));
+            }
+        }
         if self.merge_authorizations.contains_key(authorization_id) {
             return fail("invalid_input", "Authorization ID already exists");
         };

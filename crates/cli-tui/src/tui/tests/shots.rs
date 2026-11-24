@@ -177,12 +177,36 @@ fn tui_shots() {
         }
         let html = page(&mut crash_report_refused(lang));
         std::fs::write(out.join(format!("12-crash-report-refused-{name}.html")), html).unwrap();
+        let review = alondra_domain_rules::Refusal::MergeBlocked { number: 12, blockers: vec![alondra_domain_rules::MergeBlocker::ReviewRequired] };
+        let html = page(&mut merge_waits(lang, &review));
+        std::fs::write(out.join(format!("13-merge-waits-for-review-{name}.html")), html).unwrap();
+        let html = page(&mut merge_waits(lang, &alondra_domain_rules::Refusal::PrNotCheckedYet));
+        std::fs::write(out.join(format!("14-merge-waits-for-identity-{name}.html")), html).unwrap();
         let html = page(&mut task_on_another_model(lang));
         std::fs::write(out.join(format!("9-task-model-{name}.html")), html).unwrap();
         let unknown = alondra_views::unknown_outcome(alondra_views::action_outcome::UnknownReason::Interrupted, view_lang);
         let html = page(&mut answered(lang, unknown));
         std::fs::write(out.join(format!("8-outcome-unknown-{name}.html")), html).unwrap();
     }
+}
+
+/// The PR card while GitHub requires a review before the PR can merge: no merge is offered and the card says why.
+fn merge_waits(lang: crate::i18n::Lang, because: &alondra_domain_rules::Refusal) -> App {
+    let mut app = app_with_the_pr_card(lang);
+    let mut card = view_fixture("card-pr.json");
+    card["key"] = format!("card:{CARD}").into();
+    if lang == crate::i18n::Lang::Es {
+        in_spanish(&mut card["sections"]);
+    }
+    let waits = alondra_views::refusal_text(because, if lang == crate::i18n::Lang::Es { ViewLang::Es } else { ViewLang::En });
+    let item = &mut card["sections"][0]["items"][0];
+    item["actions"] = serde_json::json!([]);
+    if *because == alondra_domain_rules::Refusal::PrNotCheckedYet {
+        item["more"] = serde_json::json!([]);
+    }
+    item["context"].as_array_mut().unwrap().push(serde_json::json!({"icon": "warning", "text": waits}));
+    app.on_msg(Msg::ViewCard { key: format!("card:{CARD}"), result: Ok(serde_json::from_value(card).unwrap()) });
+    app
 }
 
 fn task_on_another_model(lang: crate::i18n::Lang) -> App {

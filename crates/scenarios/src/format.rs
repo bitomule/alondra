@@ -224,6 +224,10 @@ pub enum GithubChange {
     /// Someone creates the repository `repository`, the old name of a moved one, and opens a pull
     /// request `number` there: the old name no longer redirects.
     ReuseName { repository: String, number: u64, head: String, base: String },
+    /// The base asks for a review the PR has not got: GitHub blocks its merge.
+    RequireReview { number: u64 },
+    /// The review arrives: GitHub lets the PR merge.
+    ApproveReview { number: u64 },
 }
 
 #[derive(Debug, Deserialize)]
