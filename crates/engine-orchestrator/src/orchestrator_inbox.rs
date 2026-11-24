@@ -1230,6 +1230,17 @@ mod tests {
         ]
     }
 
+    /// Every commit of a fixture waits for the disk unless the fixture relaxes durability, and the
+    /// property below opens a runtime and commits hundreds of times for each of its cases: on a Mac
+    /// whose disk other test runs keep busy, that wait is the whole cost of the test.
+    #[test]
+    fn the_runtimes_the_tests_open_do_not_wait_for_the_disk() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let _domain = crate::wiring::open(&home).unwrap();
+        assert!(alondra_foundation::durability::relaxed());
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig { cases: 48, ..proptest::prelude::ProptestConfig::default() })]
 

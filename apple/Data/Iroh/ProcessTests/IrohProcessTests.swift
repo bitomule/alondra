@@ -22,8 +22,9 @@ struct IrohProcessTests {
         let server = try IrohFixtureServer()
         defer { server.stop() }
         let ready = try await server.next()
-        let (session, carrier) = try Self.session(deviceID: "phone-1", seed: 33, ready: ready)
+        let (session, carrier, connection) = try await Self.session(deviceID: "phone-1", seed: 33, ready: ready)
         await carrier.start()
+        await connection.established()
 
         let clock = ContinuousClock()
         let started = clock.now
@@ -55,7 +56,7 @@ struct IrohProcessTests {
         let server = try IrohFixtureServer()
         defer { server.stop() }
         let ready = try await server.next()
-        let (session, carrier) = try Self.session(deviceID: "phone-9", seed: 70, ready: ready)
+        let (session, carrier, _) = try await Self.session(deviceID: "phone-9", seed: 70, ready: ready)
         await carrier.start()
         let read = try APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["capabilities"]), operationID: "read")
         await #expect(throws: IrohCarrierError.unavailable) { try await session.perform(read) }
@@ -63,16 +64,33 @@ struct IrohProcessTests {
         await carrier.shutdown()
     }
 
-    private static func session(deviceID: String, seed: UInt8, ready: IrohFixtureServer.Event) throws -> (DirectSession, IrohCarrier) {
+    /// Resolves once the carrier has connected. A read waits for a connection only up to `connectWait`
+    /// and is told `.unavailable` when the first attempt fails, so a Mac that is slow to answer the
+    /// first dial would fail the first read: the tests read once the connection is there.
+    struct Connection: Sendable {
+        let events: AsyncStream<IrohCarrier.Event>
+
+        func established() async {
+            for await event in events {
+                if case .connected = event { return }
+            }
+        }
+    }
+
+    private static func session(deviceID: String, seed: UInt8, ready: IrohFixtureServer.Event) async throws -> (DirectSession, IrohCarrier, Connection) {
         let signing = try P256.Signing.PrivateKey(rawRepresentation: Data(repeating: seed, count: 32))
         let agreement = try P256.KeyAgreement.PrivateKey(rawRepresentation: Data(repeating: seed + 1, count: 32))
         let endpoint = try #require(ready.endpoint)
         let socket = try #require(ready.address)
         let address = try #require(IrohMacAddress(endpointID: endpoint, relay: nil, directAddresses: [socket]))
-        let carrier = IrohCarrier(dialer: IrohEndpointDialer(identity: IrohIdentity(pairingSigning: signing, macID: "mac-1")),
-            macID: "mac-1", deviceID: deviceID, signing: signing, address: { address }, connectWait: .seconds(10))
+        let carrier = IrohCarrier(
+            dialer: IrohEndpointDialer(identity: IrohIdentity(pairingSigning: signing, macID: "mac-1")),
+            macID: "mac-1", deviceID: deviceID, signing: signing, address: { address }, connectWait: .seconds(10),
+            retryDelays: [.milliseconds(100)])
+        let (events, observer) = AsyncStream.makeStream(of: IrohCarrier.Event.self)
+        await carrier.observe { observer.yield($0) }
         let session = DirectSession(macID: "mac-1", deviceID: deviceID, signing: signing, agreement: agreement,
             macSigning: macSigning.publicKey, macAgreement: macAgreement.publicKey, iroh: carrier)
-        return (session, carrier)
+        return (session, carrier, Connection(events: events))
     }
 }

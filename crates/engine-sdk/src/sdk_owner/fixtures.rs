@@ -422,6 +422,9 @@ pub struct Slice<H: Hosts = crate::engine_tests::SliceHosts> {
     pub backend: SdkBackend,
     /// Every raw host event the daemon committed for the task, by cursor, as it was committed.
     pub kept: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
+    /// The runtimes `restart` opened on this home: they stop their owners with the slice, before the
+    /// folder their hosts and database live in goes.
+    restarted: Mutex<Vec<Arc<DomainRuntime>>>,
     /// Before `_home`: the hosts write in the HOME they get, so they end before it is removed.
     pub hosts: H,
     pub _home: Directory,
@@ -430,6 +433,9 @@ pub struct Slice<H: Hosts = crate::engine_tests::SliceHosts> {
 impl<H: Hosts> Drop for Slice<H> {
     fn drop(&mut self) {
         self.domain.stop_sdk_owners();
+        for restarted in self.restarted.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter() {
+            restarted.stop_sdk_owners();
+        }
     }
 }
 
@@ -531,7 +537,7 @@ impl<H: Hosts> Slice<H> {
         let domain = Arc::new(super::open_at(&home, &database).unwrap());
         hosts.serve(&domain);
         measure_healthy_machine(&domain);
-        let slice = Self { domain, database, worktree, plugin, backend, kept: Arc::default(), _home: home, hosts };
+        let slice = Self { domain, database, worktree, plugin, backend, kept: Arc::default(), restarted: Mutex::default(), _home: home, hosts };
         slice.on_acknowledge(|| {});
         slice.run(&Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "sdk-slice-request".into(),
@@ -831,6 +837,7 @@ impl<H: Hosts> Slice<H> {
         let domain = Arc::new(super::open_at(&self._home, &self.database).unwrap());
         self.hosts.serve(&domain);
         measure_healthy_machine(&domain);
+        self.restarted.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Arc::clone(&domain));
         domain
     }
 
