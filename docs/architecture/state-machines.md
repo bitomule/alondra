@@ -4453,7 +4453,7 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
 ```toml state-machine
 id = "M-GH-1"
 code = ["crates/domain-rules/src/model.rs::PrState", "crates/domain-rules/src/model.rs::PullRequest", "crates/core/src/pr.rs::CheckState", "crates/core/src/pr.rs::PrState"]
-truth = ["sqlite:pull_requests", "sqlite:pull_request_tasks", "sqlite:pull_request_aliases", "sqlite:pr_notes_from_github", "sqlite:pull_request_reviews"]
+truth = ["sqlite:pull_requests", "sqlite:pull_request_tasks", "sqlite:pull_request_aliases", "sqlite:pr_notes_from_github", "sqlite:pull_request_reviews", "sqlite:merge_verdicts"]
 states = "crates/domain-rules/src/model.rs::PrState"
 variants = ["Open", "Closed", "Merged"]
 terminals = ["Merged"]
@@ -4465,7 +4465,9 @@ terminals = ["Merged"]
   `rules.rs:4728-4760` (`NotePrOpened`/`RecordOpenedPr`).
 - **Source of truth**: GitHub. **Copies and derivatives**: `DomainState.pull_requests` (table `pull_requests`; owners in
   `pull_request_tasks`; history in `pr_task_history`); `Task.pr_id`/`later_prs`; the server's in-memory PR details cache
-  (`daemon-server/src/client_routes/pr_details.rs`); the reads of `Merger` and of the watcher. Three writers of
+  (`daemon-server/src/client_routes/pr_details.rs`); whether GitHub would let each open PR merge, as last read
+  for the head it names (`DomainState.merge_verdicts`, `model.rs:1523`, table `merge_verdicts`, written only by
+  `ObserveMergeVerdict`, `rules.rs:5369`, which refuses a verdict for a PR that is not Open or for another head); the reads of `Merger` and of the watcher. Three writers of
   observations have no order between them: the watcher (`domain_github::reconcile`, every 60 s and whenever the watched
   set changes), the merger (`domain_merges::record_merged`/`observe_status`) and `catch_up_task` on delivery.
 - **Composite states that matter**: PR x the task's `OpenPrPending` (M-GH-4) x authorization (M-GH-2) x task state.
@@ -4478,6 +4480,8 @@ terminals = ["Merged"]
 | Open | `ObservePrState` Closed | Closed; if no open PR is left and a `Close` was pending, `open_pr=None`; if the delivery was "discarded", `cancel`; otherwise a notice to the node |
 | Open/Closed | `ObservePrState` Merged [exact `merged_head`] | Merged; Claimed/Uncertain authorizations at the same head become Confirmed; notice to the node |
 | Closed | `ObservePrState` Open | Open (a closed PR can be reopened) |
+| Open | `ObserveMergeVerdict` (system) [same head] | Open; the merge verdict for that head replaces the previous one |
+| Closed/Merged, or Open at another head | `ObserveMergeVerdict` | **rejected** `stale_head` |
 | Merged | `ObservePrState` not Merged, or different head | **rejected** `invalid_input` ("Confirmed merge cannot be undone") |
 | PR of a terminal task | `RegisterPr` from another task | move: new owner, `state=Open` and `merged_head=None` **without looking at the previous state**, `old.open_pr=None` |
 | PR of a live task | `RegisterPr` from another task | **rejected** `pr_owned_by_other_task` |
