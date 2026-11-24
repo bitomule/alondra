@@ -1740,6 +1740,17 @@ fn an_ended_host_whose_observation_cannot_be_settled_is_taken_over() {
     resumed.stop().unwrap();
 }
 
+/// Waits until the host's journal holds `events` events. The host journals each event before it
+/// sends it, so reading one says nothing of the next: a host killed then leaves only what it
+/// journaled by that moment for the next daemon to find.
+#[cfg(feature = "real-hosts")]
+fn until_journaled(outbox: &Path, events: usize) {
+    let journaled = || std::fs::read(outbox).map(|bytes| String::from_utf8_lossy(&bytes).matches("\"type\":\"event\"").count()).unwrap_or(0);
+    while journaled() < events {
+        std::thread::yield_now();
+    }
+}
+
 #[cfg(feature = "real-hosts")]
 // Production, 2026-11-13 (t-message-not-lost-on-close): a takeover committed the journal its ended
 // host left and kept the seal of every observation queued. Each SDK owner scans that queue on every
@@ -1749,9 +1760,8 @@ fn an_ended_host_whose_observation_cannot_be_settled_is_taken_over() {
 fn a_takeover_keeps_no_seal_of_what_its_ended_host_observed() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("consume-and-hold");
-    for _ in 0..3 {
-        driver.worker.poll().unwrap().expect("the host reports what its Claude does");
-    }
+    driver.worker.poll().unwrap().expect("the host reports what its Claude does");
+    until_journaled(&slice.backend.state_root.join(&driver.agent().0).join("outbox"), 2);
     slice.kill_host_and_daemon(driver);
     let restarted = slice.restart();
     let most = Arc::new(std::sync::atomic::AtomicUsize::new(0));
