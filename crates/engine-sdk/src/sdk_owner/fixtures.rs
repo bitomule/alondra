@@ -195,6 +195,20 @@ pub trait Hosts: Default {
     /// native writes every request it gets to the transcript its environment names, and reads its
     /// account answers from the sidecar beside it, as the repository's fake native Codex does.
     fn codex_executables(&self, home: &Path) -> (PathBuf, PathBuf);
+    /// The Codex host of the release before (`agent-host/codex-legacy-fixture.ts`), which lives on
+    /// after its app-server exited and keeps taking owners.
+    fn codex_legacy_host(&self, home: &Path) -> PathBuf;
+    /// The native Codex app-server `native` is killed, as SIGKILL kills it, and is gone once this
+    /// returns; its host goes on.
+    fn kill_native(&self, native: &alondra_process_group::Member);
+    /// The host of `group` stops where it is, as SIGSTOP stops it: it reads, answers and says
+    /// nothing more, and only a kill ends it.
+    fn freeze(&self, group: i32);
+    /// Whether a host runs in `folder` and holds it.
+    fn runs_in(&self, folder: &Path) -> bool;
+    /// The commands a native Codex left running after its turn (`ownedCommand`, whose `release` is
+    /// a FIFO) end by themselves.
+    fn release_codex_commands(&self, release: &Path);
     /// The socket of the host in `folder` goes: the host lives on, holds its lock, and no owner can
     /// reach it again.
     fn strand(&self, folder: &Path);
@@ -325,6 +339,39 @@ impl Hosts for ProcessHosts {
         std::fs::copy(runfile("FIXTURE_CODEX_NATIVE"), &native).unwrap();
         std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
         (runfile("FIXTURE_CODEX_HOST"), native)
+    }
+
+    fn codex_legacy_host(&self, _: &Path) -> PathBuf {
+        runfile("FIXTURE_CODEX_LEGACY_HOST")
+    }
+
+    fn kill_native(&self, native: &alondra_process_group::Member) {
+        let mut exits = alondra_process_group::Exits::new().unwrap();
+        exits.watch(native).unwrap();
+        // SAFETY: the test signals only the app-server its own fixture launched.
+        assert_eq!(unsafe { libc::kill(native.pid, libc::SIGKILL) }, 0, "{}", std::io::Error::last_os_error());
+        exits.wait().unwrap();
+    }
+
+    fn freeze(&self, group: i32) {
+        // SAFETY: the test stops only the host its own fixture launched.
+        assert_eq!(unsafe { libc::kill(group, libc::SIGSTOP) }, 0, "{}", std::io::Error::last_os_error());
+        let mut status = 0;
+        // SAFETY: status is writable, and the host is this test process's child; WUNTRACED consumes no exit.
+        assert_eq!(unsafe { libc::waitpid(group, &mut status, libc::WUNTRACED) }, group);
+        assert!(libc::WIFSTOPPED(status));
+    }
+
+    fn runs_in(&self, folder: &Path) -> bool {
+        match std::fs::File::open(folder.join("host.lock")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => panic!("the host lock in {}: {error}", folder.display()),
+            Ok(lock) => matches!(lock.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+        }
+    }
+
+    fn release_codex_commands(&self, release: &Path) {
+        std::fs::write(release, "").unwrap();
     }
 
     fn strand(&self, folder: &Path) {

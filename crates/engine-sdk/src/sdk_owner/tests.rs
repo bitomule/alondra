@@ -906,7 +906,7 @@ fn background_work_its_replaced_host_ended_is_reported_to_the_resumed_session_wh
 }
 
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 /// A host whose failed turn read the notification of its background command, with the end of that
 /// turn still unread by its owner: a turn end that moves the task's runtime twice.
 fn ending_on_a_read_notification(slice: &Slice) -> Driver {
@@ -918,14 +918,11 @@ fn ending_on_a_read_notification(slice: &Slice) -> Driver {
     }
     slice.run(&system(), "tell-after-notification", Command::TellNode { task_id: TASK.into(), text: "max-turns".into(), from_user: false, answers: None });
     driver.step(&|| false).unwrap();
-    let outbox = slice.backend.state_root.join(&driver.agent().0).join("outbox");
-    while !String::from_utf8_lossy(&std::fs::read(&outbox).unwrap()).contains("error_max_turns") {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    slice.hosts.model().until_journaled(&slice.backend.state_root.join(&driver.agent().0), |journal| journal.contains("error_max_turns"));
     driver
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // Production, 2026-11-07 (t-main-red-accounts-email-lowercase): a host stopped at the end of a turn
 // that read a notification, cancelled. The cancel applies, and taking the execution over commits
 // what the task no longer waits for.
@@ -1677,7 +1674,7 @@ fn a_turn_cut_by_the_end_of_its_host_goes_on_by_itself_in_the_resumed_session() 
     resumed.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn unknown_native_commands_recover_after_rollback_unacknowledged_commit_and_host_exit() {
     let slice = Slice::new();
@@ -1755,15 +1752,12 @@ fn an_ended_host_whose_observation_cannot_be_settled_is_taken_over() {
 /// Waits until the host's journal holds `events` events. The host journals each event before it
 /// sends it, so reading one says nothing of the next: a host killed then leaves only what it
 /// journaled by that moment for the next daemon to find.
-#[cfg(feature = "real-hosts")]
-fn until_journaled(outbox: &Path, events: usize) {
-    let journaled = || std::fs::read(outbox).map(|bytes| String::from_utf8_lossy(&bytes).matches("\"type\":\"event\"").count()).unwrap_or(0);
-    while journaled() < events {
-        std::thread::yield_now();
-    }
+#[cfg(not(feature = "real-hosts"))]
+fn until_journaled(slice: &Slice, driver: &Driver, events: usize) {
+    slice.hosts.model().until_journaled(&slice.backend.state_root.join(&driver.agent().0), |journal| journal.matches("\"type\":\"event\"").count() >= events);
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // Production, 2026-11-13 (t-message-not-lost-on-close): a takeover committed the journal its ended
 // host left and kept the seal of every observation queued. Each SDK owner scans that queue on every
 // commit, so the takeover slowed down with each event it committed: hours later it had committed
@@ -1773,7 +1767,7 @@ fn a_takeover_keeps_no_seal_of_what_its_ended_host_observed() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("consume-and-hold");
     driver.worker.poll().unwrap().expect("the host reports what its Claude does");
-    until_journaled(&slice.backend.state_root.join(&driver.agent().0).join("outbox"), 2);
+    until_journaled(&slice, &driver, 2);
     slice.kill_host_and_daemon(driver);
     let restarted = slice.restart();
     let most = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2240,7 +2234,7 @@ async fn a_turn_claude_starts_while_its_task_rests_is_read_as_it_comes() {
 // finds the disk full now waits with no card; a sample of the machine that still measures it full
 // takes nothing over, and the first that measures space again takes it over with the same session.
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // The task of 2026-10-21 as its «Try again» card left it: its host ended with Claude's request to
 // leave plan mode with 41 points in its journal, unread, asked from a turn Claude opened by itself
 // while what the user told it waited. «Try again» reads that journal: the plan is refused with

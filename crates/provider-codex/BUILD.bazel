@@ -49,6 +49,7 @@ rust_library(
         "//crates/codex-protocol:codex_protocol",
         "//crates/core:alondra_core",
         "//crates/engine-doubles:engine_doubles",
+        "//crates/process-group:process_group",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:sha2-0.10.9",

@@ -500,13 +500,13 @@ fn a_codex_node_with_a_child_agent_keeps_its_host() {
     driver.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_codex_node_with_a_command_running_after_its_turn_keeps_its_host() {
     keeps_its_host_while_its_command_runs("blocked_command");
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // A native exec_command returned a session id and the turn ended while the process lived, as
 // write_stdin confirmed: that session is the node's own work, so its host stays.
 #[test]
@@ -514,7 +514,7 @@ fn a_codex_node_whose_exec_session_runs_on_after_its_turn_keeps_its_host() {
     keeps_its_host_while_its_command_runs("session_command");
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 fn keeps_its_host_while_its_command_runs(mode: &str) {
     let slice = Slice::new();
     configured(&slice, "complete");
@@ -531,7 +531,7 @@ fn keeps_its_host_while_its_command_runs(mode: &str) {
     assert!(!slice.domain.read().state().host_releasable(&TASK.into()));
     while !driver.settle_release().unwrap() {}
     assert!(!driver.releases);
-    std::fs::write(&release, "").unwrap();
+    slice.hosts.release_codex_commands(&release);
     driver.stop().unwrap();
 }
 

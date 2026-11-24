@@ -168,6 +168,8 @@ struct Shared {
     hosts: Mutex<Vec<Arc<Host>>>,
     /// Every frame either side wrote: a test waits for it to stop moving.
     activity: AtomicU64,
+    /// Told of each frame either side wrote, after the host journaled it.
+    moved: (Mutex<()>, std::sync::Condvar),
     /// Hosts started that no daemon attached to yet.
     starting: Arc<AtomicU64>,
     trouble: Mutex<Option<Trouble>>,
@@ -332,6 +334,7 @@ impl ClaudeModel {
             world: Mutex::default(),
             hosts: Mutex::default(),
             activity: AtomicU64::new(0),
+            moved: (Mutex::new(()), std::sync::Condvar::new()),
             starting: Arc::new(AtomicU64::new(0)),
             trouble: Mutex::default(),
             leaks,
@@ -663,6 +666,19 @@ impl ClaudeModel {
 
     fn tick(&self) {
         self.0.activity.fetch_add(1, Ordering::SeqCst);
+        let _moved = lock(&self.0.moved.0);
+        self.0.moved.1.notify_all();
+    }
+
+    /// Waits until the journal the host in `state_dir` keeps in its outbox `holds` what a test
+    /// looks for, read again each time a host journals an event or a receipt: a host journals each
+    /// frame before it sends it, so the daemon reading one says nothing of the next.
+    pub fn until_journaled(&self, state_dir: &Path, holds: impl Fn(&str) -> bool) {
+        let outbox = state_dir.join("outbox");
+        let mut moved = lock(&self.0.moved.0);
+        while !holds(&String::from_utf8_lossy(&std::fs::read(&outbox).unwrap_or_default())) {
+            moved = self.0.moved.1.wait(moved).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
     }
 
     fn troubled(&self, why: String) {

@@ -140,6 +140,32 @@ impl super::owner::Hosts for ModelHosts {
     fn codex_executables(&self, home: &Path) -> (PathBuf, PathBuf) {
         (model_file(&home.join("model-host"), "codex-host.cjs"), model_file(home, "codex-native"))
     }
+
+    fn codex_legacy_host(&self, home: &Path) -> PathBuf {
+        model_file(&home.join("model-host"), alondra_codex_host_model::LEGACY_HOST)
+    }
+
+    fn kill_native(&self, native: &alondra_process_group::Member) {
+        self.codex.kill_native(u32::try_from(native.pid).expect("a host's number is positive"));
+    }
+
+    fn freeze(&self, group: i32) {
+        let process = u32::try_from(group).expect("a host's number is positive");
+        self.codex.freeze(process);
+        let served = self.hosts.live().iter().filter_map(|folder| self.hosts.served(folder)).find(|served| served.process_id() == process);
+        served.expect("a doubled host runs under that number").freeze();
+    }
+
+    fn runs_in(&self, folder: &Path) -> bool {
+        self.hosts.live().iter().any(|live| live == folder)
+    }
+
+    fn release_codex_commands(&self, _: &Path) {
+        use std::os::unix::process::ExitStatusExt as _;
+        for command in self.codex.commands() {
+            self.hosts.end_descendant(&command, std::process::ExitStatus::from_raw(0));
+        }
+    }
 }
 
 impl Drop for ModelHosts {

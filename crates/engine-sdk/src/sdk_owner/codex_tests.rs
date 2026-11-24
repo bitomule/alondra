@@ -835,13 +835,13 @@ pub fn resumed_threads(trace: &Path) -> Vec<serde_json::Value> {
 }
 
 /// How many times the fake app-servers received `method`, counted on complete lines of their trace.
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 fn traced(trace: &Path, method: &str) -> usize {
     std::fs::read_to_string(trace).unwrap_or_default().lines()
         .filter(|line| serde_json::from_str::<serde_json::Value>(line).is_ok_and(|message| message["method"] == method)).count()
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 fn until_traced(trace: &Path, method: &str, times: usize) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while traced(trace, method) < times {
@@ -850,7 +850,6 @@ fn until_traced(trace: &Path, method: &str, times: usize) {
     }
 }
 
-#[cfg(feature = "real-hosts")]
 pub fn native_process(driver: &mut Driver) -> alondra_process_group::Member {
     match driver.worker.native_liveness().unwrap() {
         Some(alondra_provider_codex::NativeLiveness::Alive(native)) => native,
@@ -877,14 +876,14 @@ fn an_unopened_codex_replacement_remains_unopened_after_reconciling_a_control() 
     adopted.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn adopting_a_legacy_codex_host_with_a_dead_native_replaces_it_before_reconciling_a_control() {
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let path = slice._home.join("codex-backend.json");
     let mut backend: SdkBackend = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    let host = runfile("FIXTURE_CODEX_LEGACY_HOST");
+    let host = slice.hosts.codex_legacy_host(&slice._home);
     backend.node = host.clone(); backend.node_sha256 = backend::digest(&host).unwrap();
     backend.host = host; backend.host_sha256 = backend.node_sha256.clone();
     std::fs::write(&path, serde_json::to_vec(&backend).unwrap()).unwrap();
@@ -893,7 +892,7 @@ fn adopting_a_legacy_codex_host_with_a_dead_native_replaces_it_before_reconcilin
     slice.run(&system(), "legacy-mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
     assert!(driver.claim_and_record_control_without_sending());
     let old_host = driver.worker.stopper().unwrap();
-    kill_native(&native_process(&mut driver));
+    slice.hosts.kill_native(&native_process(&mut driver));
     assert!(old_host.process().unwrap().is_some(), "the legacy host stays alive after native exit");
     drop(driver);
     let mut adopted = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
@@ -904,27 +903,19 @@ fn adopting_a_legacy_codex_host_with_a_dead_native_replaces_it_before_reconcilin
     adopted.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
-pub fn kill_native(native: &alondra_process_group::Member) {
-    let mut exits = alondra_process_group::Exits::new().unwrap();
-    exits.watch(native).unwrap();
-    signal_codex_process(native.pid, libc::SIGKILL);
-    exits.wait().unwrap();
-}
-
 // 2026-10-27, 0.3.9, t-corrupt-journal-detail-codex: the app-server of a working Codex node went
 // away and its host said so with alondra/transportFailed. The adapter normalizes that notice to a
 // lost transport, which the domain does not record, and the owner stopped on «provider observation
 // refused: RequiresDomainCommand». The owner takes the notice as the end of the Codex before it
 // commits anything, and a host that resumes the same thread takes its place.
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_codex_transport_failure_ends_the_host_and_the_same_thread_goes_on_in_a_new_one() {
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let mut driver = launch(&slice);
     while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
-    kill_native(&native_process(&mut driver));
+    slice.hosts.kill_native(&native_process(&mut driver));
     let error = loop {
         if let Err(error) = driver.observe() { break error; }
     };
@@ -936,14 +927,14 @@ fn a_codex_transport_failure_ends_the_host_and_the_same_thread_goes_on_in_a_new_
     resumed.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken_for_an_unopened_host() {
     let slice = Slice::new();
     let trace = configured(&slice, "hold");
     let path = slice._home.join("codex-backend.json");
     let mut backend: SdkBackend = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    let host = runfile("FIXTURE_CODEX_LEGACY_HOST");
+    let host = slice.hosts.codex_legacy_host(&slice._home);
     backend.node = host.clone(); backend.node_sha256 = backend::digest(&host).unwrap();
     backend.host = host; backend.host_sha256 = backend.node_sha256.clone();
     std::fs::write(&path, serde_json::to_vec(&backend).unwrap()).unwrap();
@@ -967,7 +958,7 @@ fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken
     // The native dies once it verified its account and started the turn: a death during the check
     // reads as a refused account.
     until_traced(&trace, "turn/start", turns + 1);
-    kill_native(&native_process(&mut replacement));
+    slice.hosts.kill_native(&native_process(&mut replacement));
     assert!(old_host.process().unwrap().is_some(), "the legacy host stays available for attachment");
     drop(replacement);
     let mut adopted = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
@@ -998,7 +989,7 @@ async fn a_codex_app_server_killed_mid_turn_resumes_the_same_thread_without_a_se
     let group = driver.worker.host_group().unwrap();
     let old_host = driver.worker.stopper().unwrap();
     stop_codex_host(group);
-    kill_native(&native_process(&mut driver));
+    slice.hosts.kill_native(&native_process(&mut driver));
     let detected = driver.step(&|| false);
     if detected.is_ok() { old_host.kill().unwrap(); }
     assert!(detected.is_err(), "native loss is detected mid-turn even if the host cannot report its child's exit");
@@ -1014,7 +1005,7 @@ async fn a_codex_app_server_killed_mid_turn_resumes_the_same_thread_without_a_se
 
 // Stop the host before killing its app-server: it cannot process the exit or close its socket.
 // This reproduces a legacy host left alive without its native process, including after adoption.
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 async fn idle_codex_without_app_server_receives_its_later_message(adopted: bool) {
     let slice = Slice::new();
     let trace = configured(&slice, "complete");
@@ -1027,8 +1018,9 @@ async fn idle_codex_without_app_server_receives_its_later_message(adopted: bool)
     let native = native_process(&mut driver);
     let old_host = driver.worker.stopper().unwrap();
     let group = old_host.process_group().unwrap();
-    stop_codex_host(group);
-    kill_native(&native);
+    slice.hosts.freeze(group);
+    let stopped = slice.hosts.watch(group);
+    slice.hosts.kill_native(&native);
     slice.run(&system(), "message-after-native-loss", Command::TellNode { task_id: TASK.into(), text: "Deliver this after replacing the dead app-server".into(), from_user: true, answers: None });
     let result = driver.step(&|| false);
     if result.is_ok() { old_host.kill().unwrap(); }
@@ -1043,17 +1035,17 @@ async fn idle_codex_without_app_server_receives_its_later_message(adopted: bool)
     assert!(!owner.ended());
     let messages: Vec<_> = transcript(&trace).into_iter().filter(|request| request["method"] == "turn/start" && request["params"]["input"][0]["text"].as_str().is_some_and(|text| text.contains("Deliver this after replacing"))).collect();
     assert_eq!(messages.len(), 1, "the later message is delivered exactly once");
-    assert!(alondra_process_group::members(group).unwrap().iter().all(|member| member.zombie), "the stopped old host cannot still serve");
+    assert!(!stopped.runs(), "the stopped old host cannot still serve");
     owner.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_live_codex_host_without_an_app_server_is_replaced_before_delivering_a_later_message() {
     idle_codex_without_app_server_receives_its_later_message(false).await;
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_adopted_codex_host_without_an_app_server_is_replaced_before_delivering_a_later_message() {
     idle_codex_without_app_server_receives_its_later_message(true).await;
@@ -1234,9 +1226,11 @@ fn archive(folder: &Path, name: &str) -> PathBuf {
     PathBuf::from(format!("{}.ended-{name}", folder.display()))
 }
 
-#[cfg(feature = "real-hosts")]
-fn host_runs(folder: &Path) -> bool {
-    matches!(alondra_agent_runtime::owned_host::claim(folder).unwrap(), alondra_agent_runtime::owned_host::Retained::Held)
+/// Ends the host left running in `folder`, through the hosts `domain` runs on.
+#[cfg(not(feature = "real-hosts"))]
+fn end_host_in(domain: &DomainRuntime, folder: &Path) {
+    let hosts = alondra_engine_ports::agent_host::of(domain.ports()).unwrap();
+    alondra_engine_ports::agent_host::AgentHost::end_holders(&*hosts, folder).unwrap();
 }
 
 /// A Codex node is mid-turn when the Mac goes down; `meanwhile` changes its host's folder before
@@ -1305,7 +1299,7 @@ async fn a_codex_node_stranded_without_its_identity_recovers_it_from_its_ended_h
 // 2026-11-06, 0.3.21, t-security-audit-cloud: a takeover launched a host and then failed to write
 // the account identity in its folder. The host it launched went on with no owner until another
 // takeover adopted it as if it were a live one.
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_codex_takeover_that_fails_after_launching_its_host_leaves_no_host_running() {
     let slice = Slice::new();
@@ -1320,16 +1314,16 @@ fn a_codex_takeover_that_fails_after_launching_its_host_leaves_no_host_running()
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
     let taken = adopt(restarted.clone(), &slice.backend, TASK.into(), Some(&slice.plugin));
-    let (refused, ran) = (taken.is_err(), host_runs(&folder));
+    let (refused, ran) = (taken.is_err(), slice.hosts.runs_in(&folder));
     drop(taken);
-    if ran { alondra_agent_runtime::owned_host::end_holders(&folder).unwrap(); }
+    if ran { end_host_in(&restarted, &folder); }
     assert!(refused, "the new host's folder holds another account's proof");
     assert!(!ran, "the host the takeover launched was ended");
 }
 
 // A host the domain already counts as ended still runs: its task ended, so no takeover will ever
 // claim it, and without the sweep at the daemon's start it would run for good with no owner.
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[test]
 fn a_host_left_running_for_a_task_that_ended_is_ended_when_the_daemon_starts() {
     let slice = Slice::new();
@@ -1344,12 +1338,12 @@ fn a_host_left_running_for_a_task_that_ended_is_ended_when_the_daemon_starts() {
     slice.run(&system(), "ended-ownerless-codex", Command::RecordHostEnded { task_id: TASK.into(), generation, resumes: false, ended_work: vec![], by_alondra: true });
     slice.run(&system(), "gone-ownerless-codex", Command::RecordNodeEnd { task_id: TASK.into(), end: NodeEnd::Gone, agent_id: Some(agent) });
     assert_eq!(Slice::lifecycle(&*slice.domain).phase(), alondra_domain::TaskPhase::Cancelled);
-    assert!(host_runs(&folder), "the fixture leaves the host of the cancelled task running with no owner");
+    assert!(slice.hosts.runs_in(&folder), "the fixture leaves the host of the cancelled task running with no owner");
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
     adopt_all(&(restarted.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &slice.backend);
-    let ran = host_runs(&folder);
-    if ran { alondra_agent_runtime::owned_host::end_holders(&folder).unwrap(); }
+    let ran = slice.hosts.runs_in(&folder);
+    if ran { end_host_in(&restarted, &folder); }
     assert!(!ran, "the daemon that starts ends it");
 }
 
@@ -2181,7 +2175,7 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
     slice.domain.stop_sdk_owners();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_paused_codex_session_loses_its_app_server_and_delivers_resume_and_message_to_its_replacement() {
     let slice = Slice::new();
@@ -2198,7 +2192,7 @@ async fn a_paused_codex_session_loses_its_app_server_and_delivers_resume_and_mes
         driver.step(&|| true).unwrap();
     }
     std::fs::write(slice._home.join("codex-native.account.json"), r#"{"turnMode":"complete"}"#).unwrap();
-    kill_native(&native);
+    slice.hosts.kill_native(&native);
     assert!(driver.step(&|| true).is_err());
     let mut replacement = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
     crate::domain_messages::tell_sdk_node(&*slice.domain, &TASK.into(), crate::node_push::ALONDRA, "Keep this message through the paused host replacement", "tell-paused-codex", false).unwrap();

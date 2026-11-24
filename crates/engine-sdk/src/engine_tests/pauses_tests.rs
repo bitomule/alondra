@@ -411,7 +411,7 @@ async fn a_host_that_dies_under_a_disk_hold_while_its_turn_runs_never_leaves_its
     domain.stop_sdk_owners();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 /// Production, 2026-11-08 (t-agents-md-review-public-audit, t-security-audit-local-daemon and
 /// t-usage-limit-no-cards): each read as working with no host, and every gate pass tried to take it
 /// over and failed on the same observation of its ended host, for good. Here the host ends its turn
@@ -424,10 +424,7 @@ async fn a_working_task_whose_ended_host_left_an_observation_no_owner_can_settle
     let domain = Arc::clone(&node.domain);
     run(&domain, Actor::System, Command::TellNode { task_id: SDK_TASK.into(), text: "Carry on".into(), from_user: false, answers: None });
     node.driver.step(&|| false).unwrap();
-    let outbox = node.backend.state_root.join(node.agent()).join("outbox");
-    while !String::from_utf8_lossy(&std::fs::read(&outbox).unwrap()).contains("\"type\":\"result\"") {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    node.hosts.model().until_journaled(&node.backend.state_root.join(node.agent()), |journal| journal.contains("\"type\":\"result\""));
     node.lose_host();
     crate::domain_store::refuse_next(crate::domain_store::Refuse::Observation);
     crate::sdk_owner::take_working_unowned(&*domain, &domain.state().unwrap(), alondra_core::now_millis());

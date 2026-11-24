@@ -1,22 +1,25 @@
 //! The daemon↔host transport every host model speaks, as the persistent host speaks it: the hello
 //! and challenge, the daemon's proof and the host's, the journal of events the daemon has not
-//! acknowledged, and one receipt per command, sent again for a copy of it. The model that compiles
-//! this names its protocol crate `crate::protocol`; what a host does with each command is the
-//! model's (`Model::command`).
+//! acknowledged, and one receipt per command, sent again for a copy of it. The host keeps that
+//! journal in `<state_dir>/outbox` as the persistent host does, so the daemon that comes after it
+//! reads what it left. The model that compiles this names its protocol crate `crate::protocol`;
+//! what a host does with each command is the model's (`Model::command`).
 
 use crate::protocol::{
-    Attach, Attached, Body, Challenge, Command, Execution, Fence, Frame, FramedReader, FramedWriter, Hello, PROTOCOL_VERSION, command_digest, host_proof,
-    verify_owner_proof,
+    Attach, Attached, Body, Challenge, Command, Execution, Fence, Frame, FramedReader, FramedWriter, Hello, PROTOCOL_VERSION, command_digest, encode,
+    host_proof, verify_owner_proof,
 };
 use alondra_engine_doubles::agent_host::Served;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, VecDeque};
-use std::io;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fs::File;
+use std::io::{self, Write as _};
 use std::ops::{Deref, DerefMut};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -56,6 +59,9 @@ pub struct Bootstrap {
 
 #[derive(Deserialize)]
 pub struct Manifest {
+    /// The host executable the daemon launched.
+    #[serde(default)]
+    pub artifact_path: PathBuf,
     pub host_release: String,
     pub host_sha256: String,
     pub executable_sha256: String,
@@ -123,6 +129,53 @@ fn decode_secret(hex: &str) -> Option<[u8; 32]> {
     Some(secret)
 }
 
+/// The journal the persistent host keeps in `<state_dir>/outbox` (`agent-host/journal.ts`): each
+/// command and acknowledgement as the daemon sent it, each grant, receipt and event as the host
+/// sends it, every one framed as on the wire and appended before the host acts on it or sends it.
+/// A write that fails leaves `uncertain` beside it, and the host keeps and sends nothing more.
+struct Outbox {
+    file: File,
+    folder: PathBuf,
+    /// The commands it holds: a copy the daemon sends again is not kept twice.
+    commands: BTreeSet<String>,
+    uncertain: bool,
+}
+
+impl Outbox {
+    /// The journal in `folder`, created when the host starts; none for a host with no folder.
+    fn open(folder: &Path) -> Option<Self> {
+        if folder.as_os_str().is_empty() {
+            return None;
+        }
+        let file = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(folder.join("outbox")).ok()?;
+        Some(Self { file, folder: folder.to_path_buf(), commands: BTreeSet::new(), uncertain: false })
+    }
+
+    fn append(&mut self, framed: &[u8]) -> Result<(), String> {
+        if self.uncertain {
+            return Err("the host's journal is uncertain: it keeps nothing more".into());
+        }
+        match self.file.write_all(framed) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.uncertain = true;
+                let _ = std::fs::write(self.folder.join("uncertain"), "Technical evidence storage uncertain\n");
+                Err(format!("the host could not journal a frame: {error}"))
+            }
+        }
+    }
+}
+
+/// `payload` framed as the wire and the journal frame it: its length in four big-endian bytes,
+/// then the payload.
+fn framed(payload: &[u8]) -> Result<Vec<u8>, String> {
+    let length = u32::try_from(payload.len()).map_err(|_| "a frame longer than the wire carries".to_owned())?;
+    let mut bytes = Vec::with_capacity(4 + payload.len());
+    bytes.extend_from_slice(&length.to_be_bytes());
+    bytes.extend_from_slice(payload);
+    Ok(bytes)
+}
+
 /// A host's side of the wire: the lane to the attached daemon, every event it has not acknowledged
 /// and the receipt of every command.
 #[derive(Default)]
@@ -130,6 +183,7 @@ pub struct Wire {
     lane: Option<FramedWriter<UnixStream>>,
     /// The host's end of every connection, closed when the host ends.
     connections: Vec<UnixStream>,
+    outbox: Option<Outbox>,
     journal: VecDeque<(u64, Frame)>,
     pub cursor: u64,
     pub acknowledged: u64,
@@ -140,8 +194,39 @@ pub struct Wire {
 }
 
 impl Wire {
-    fn at(base: u64) -> Self {
-        Self { cursor: base, acknowledged: base, ..Self::default() }
+    fn at(base: u64, folder: &Path) -> Self {
+        Self { cursor: base, acknowledged: base, outbox: Outbox::open(folder), ..Self::default() }
+    }
+
+    /// Journals `frame` as the host sends it, before it goes on the lane.
+    fn keep(&mut self, frame: &Frame) -> Result<(), String> {
+        let bytes = encode(frame).map_err(|error| format!("the host made a frame it cannot send: {error}"))?;
+        self.keep_framed(&bytes)
+    }
+
+    /// Journals what the daemon sent, by its exact bytes, before the host acts on it.
+    fn keep_received(&mut self, payload: &[u8]) -> Result<(), String> {
+        self.keep_framed(&framed(payload)?)
+    }
+
+    /// Journals a command the host never answered, before it acts on it: once, however many copies
+    /// of it come.
+    fn keep_command(&mut self, command: &Command, payload: &[u8]) -> Result<(), String> {
+        if self.outbox.as_mut().is_some_and(|outbox| !outbox.commands.insert(command.command_id.to_string())) {
+            return Ok(());
+        }
+        self.keep_received(payload)
+    }
+
+    /// A journal that cannot keep a frame closes the lane, as the persistent host closes its
+    /// owner's.
+    fn keep_framed(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let Some(outbox) = self.outbox.as_mut() else { return Ok(()) };
+        let kept = outbox.append(bytes);
+        if kept.is_err() {
+            self.lane = None;
+        }
+        kept
     }
 
     fn send(&mut self, frame: &Frame) {
@@ -159,11 +244,13 @@ impl Wire {
 
     /// Journals an observation under the next cursor and sends it on the lane, if one is open.
     pub fn event(&mut self, bootstrap: &Bootstrap, observation: Value) -> Result<(), String> {
-        self.cursor += 1;
+        let cursor = self.cursor + 1;
         let frame = json!({"protocol_version": PROTOCOL_VERSION, "body": {"type": "event", "fence": bootstrap.fence, "execution": bootstrap.execution,
-            "cursor": self.cursor, "observation": observation}});
+            "cursor": cursor, "observation": observation}});
         let frame: Frame = serde_json::from_value(frame).map_err(|error| format!("the host wrote an event that is not a frame: {error}"))?;
-        self.journal.push_back((self.cursor, frame.clone()));
+        self.keep(&frame)?;
+        self.cursor = cursor;
+        self.journal.push_back((cursor, frame.clone()));
         self.send(&frame);
         Ok(())
     }
@@ -182,6 +269,7 @@ impl Wire {
         let receipt = json!({"protocol_version": PROTOCOL_VERSION, "body": {"type": "receipt", "fence": bootstrap.fence, "execution": bootstrap.execution,
             "command_id": id, "command_sha256": digest, "outcome": outcome}});
         let receipt: Frame = serde_json::from_value(receipt).map_err(|error| format!("the host wrote a receipt that is not a frame: {error}"))?;
+        self.keep(&receipt)?;
         self.receipts.insert(id, receipt.clone());
         self.send(&receipt);
         Ok(())
@@ -230,6 +318,8 @@ pub struct Host<P> {
     pub process_id: u32,
     /// No daemon attached to this host yet, counted in the model's hosts starting.
     unattached: AtomicBool,
+    /// The host's process is stopped, as SIGSTOP stops it.
+    frozen: AtomicBool,
     starting: Arc<AtomicU64>,
     process: Box<dyn Process>,
     pub bootstrap: Bootstrap,
@@ -243,7 +333,7 @@ impl<P> Host<P> {
     pub fn new(identity: Identity, (bootstrap, secret): (Bootstrap, [u8; 32]), capabilities: &'static [&'static str], process: Box<dyn Process>, starting: Arc<AtomicU64>, play: P) -> Self {
         starting.fetch_add(1, Ordering::SeqCst);
         let Identity { task, account, session, capability, resumes, process_id } = identity;
-        let wire = Wire::at(bootstrap.journal_base.unwrap_or_default());
+        let wire = Wire::at(bootstrap.journal_base.unwrap_or_default(), &bootstrap.state_dir);
         Self {
             task,
             account,
@@ -252,6 +342,7 @@ impl<P> Host<P> {
             resumes,
             process_id,
             unattached: AtomicBool::new(true),
+            frozen: AtomicBool::new(false),
             starting,
             process,
             bootstrap,
@@ -272,6 +363,16 @@ impl<P> Host<P> {
         !lock(&self.state).wire.ended && self.process.alive()
     }
 
+    /// The host's process stops where it is, as SIGSTOP stops it: from now on it reads, answers and
+    /// writes nothing, and only a kill ends it.
+    pub fn freeze(&self) {
+        self.frozen.store(true, Ordering::SeqCst);
+    }
+
+    pub fn frozen(&self) -> bool {
+        self.frozen.load(Ordering::SeqCst)
+    }
+
     /// Whether the host is past what a daemon must still read: ended, or attached with nothing
     /// unacknowledged.
     pub fn settled(&self) -> bool {
@@ -287,6 +388,7 @@ impl<P> Host<P> {
         }
         self.attached();
         state.wire.lane = None;
+        state.wire.outbox = None;
         let connections = std::mem::take(&mut state.wire.connections);
         drop(state);
         self.process.end(closed);
@@ -335,15 +437,15 @@ impl<P> Host<P> {
         };
         verify_owner_proof(&self.secret, &attach).map_err(|e| format!("the daemon's proof: {e}"))?;
         let proof = host_proof(&self.secret, &attach).map_err(|e| e.to_string())?;
-        writer
-            .write(&Frame::new(Body::Attached(Attached {
-                fence: attach.fence,
-                execution: attach.execution,
-                host_instance_id: attach.host_instance_id,
-                owner_generation: attach.owner_generation,
-                proof,
-            })))
-            .map_err(wire)
+        let attached = Frame::new(Body::Attached(Attached {
+            fence: attach.fence,
+            execution: attach.execution,
+            host_instance_id: attach.host_instance_id,
+            owner_generation: attach.owner_generation,
+            proof,
+        }));
+        lock(&self.state).wire.keep(&attached)?;
+        writer.write(&attached).map_err(wire)
     }
 }
 
@@ -359,8 +461,12 @@ pub trait Model {
 }
 
 /// Serves one daemon's connection to `host`: the attach, what it had not acknowledged, then every
-/// frame it sends, until it goes. It returns once the connection closes.
+/// frame it sends, until it goes. It returns once the connection closes. A frozen host leaves the
+/// connection open and unread.
 pub fn serve<M: Model>(model: &M, host: &Arc<Host<M::Play>>, stream: UnixStream) {
+    if host.frozen() {
+        return;
+    }
     let Ok(clone) = stream.try_clone() else { return };
     let (mut reader, mut writer) = (FramedReader::new(stream), FramedWriter::new(clone));
     match host.handshake(&mut reader, &mut writer) {
@@ -378,14 +484,22 @@ pub fn serve<M: Model>(model: &M, host: &Arc<Host<M::Play>>, stream: UnixStream)
         }
     }
     model.tick();
-    while let Ok(Some(frame)) = reader.read() {
+    while let Ok(Some(received)) = reader.read_received() {
         model.tick();
+        if host.frozen() {
+            continue;
+        }
         let mut state = lock(&host.state);
         if state.wire.ended {
             return;
         }
+        let (frame, payload, _) = received.into_parts();
         match frame.body {
             Body::Acknowledge(acknowledge) => {
+                if let Err(why) = state.wire.keep_received(&payload) {
+                    model.troubled(format!("the host of {}: {why}", host.task));
+                    break;
+                }
                 let wire = &mut state.wire;
                 wire.acknowledged = wire.acknowledged.max(acknowledge.cursor);
                 let acknowledged = wire.acknowledged;
@@ -399,6 +513,10 @@ pub fn serve<M: Model>(model: &M, host: &Arc<Host<M::Play>>, stream: UnixStream)
             Body::Command(command) => {
                 if state.wire.answered_before(&command) {
                     continue;
+                }
+                if let Err(why) = state.wire.keep_command(&command, &payload) {
+                    model.troubled(format!("the host of {}: {why}", host.task));
+                    break;
                 }
                 model.command(host, &mut state, command);
             }
