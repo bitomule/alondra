@@ -66,6 +66,10 @@ or in the private repository that keeps it, never here.
   Iterate with `bazelisk test <target>`, then `musts run` once when the change is done, never right
   after a `bazelisk test` of the same tree. Commit `.musts/ledger/` (one file per check, `musts` 0.10.1 or later
   migrates the old `ledger.lock.yaml` itself) and any `MODULE.bazel.lock` change with the code.
+  A conflict in `.musts/ledger/` is resolved by taking the base's files and validating again, never
+  by deleting the ledger. `musts validate` also trusts the checkout's own `.musts/state.sqlite`, so
+  after a rebase or merge it can report clean while the committed ledger is stale: move that file
+  aside first, then `musts validate` must be empty on the exact commit you push, as CI sees it.
 - **Iterating on a failure: run the test, not the binary.** Pass the test's name or module path to
   the test binary, `bazelisk test //crates/daemon-engine:daemon_engine_test --test_arg=domain_merges::`
   (several `--test_arg` filters are allowed), instead of the whole target. Each crate has one test
