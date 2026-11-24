@@ -80,6 +80,31 @@ async fn git(dir: &Path, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// How many uncommitted files a summary lists.
+const SUMMARY_STATUS_LINES: usize = 30;
+
+/// The worktree at `dir` as the orchestrator reads it with the case of a stopped node: its branch
+/// against its upstream, what is not committed, and its last commits.
+pub fn summary(dir: &Path) -> String {
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let Some(status) = git(&["status", "--porcelain=v1", "--branch"]) else {
+        return format!("{} (not a readable git worktree)", dir.display());
+    };
+    let mut lines = status.lines();
+    let branch = lines.next().unwrap_or_default().trim_start_matches("## ").to_owned();
+    let changes: Vec<&str> = lines.collect();
+    let uncommitted = match changes.len() {
+        0 => "nothing uncommitted".to_owned(),
+        n if n <= SUMMARY_STATUS_LINES => format!("{n} uncommitted:\n{}", changes.join("\n")),
+        n => format!("{n} uncommitted, the first {SUMMARY_STATUS_LINES}:\n{}", changes[..SUMMARY_STATUS_LINES].join("\n")),
+    };
+    let commits = git(&["log", "--oneline", "-5"]).unwrap_or_default();
+    format!("{}\nbranch {branch}\n{uncommitted}\nlast commits:\n{}", dir.display(), commits.trim_end())
+}
+
 /// Where the commits of `dir`'s HEAD already live without a push.
 #[derive(Debug, PartialEq)]
 enum LocalHome {
@@ -816,6 +841,26 @@ mod tests {
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         run(&dir, &["config", "core.fsmonitor", hook.to_str().unwrap()]);
         dir
+    }
+
+    #[test]
+    fn the_worktree_state_names_its_branch_what_is_uncommitted_and_its_last_commits() {
+        let dir = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&dir).unwrap();
+        run(&dir, &["init", "-q", "-b", "work"]);
+        run(&dir, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "Half the fix"]);
+        std::fs::write(dir.join("left.txt"), "x").unwrap();
+        let state = summary(&dir);
+        assert!(state.contains("branch work"), "{state}");
+        assert!(state.contains("1 uncommitted:\n?? left.txt"), "{state}");
+        assert!(state.contains("Half the fix"), "{state}");
+    }
+
+    #[test]
+    fn a_folder_that_is_not_a_worktree_says_so() {
+        let dir = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(summary(&dir).ends_with("(not a readable git worktree)"));
     }
 
     #[tokio::test]

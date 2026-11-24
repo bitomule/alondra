@@ -22,6 +22,16 @@ impl Sessions for Machine {
     fn leftovers<'a>(&'a self, session_id: &'a str) -> Answer<'a, Option<String>> {
         self.0.leftovers(session_id)
     }
+
+    fn discard_unlisted<'a>(&'a self, dir: &'a Path, branch: &'a str) -> Answer<'a, Result<bool, String>> {
+        Box::pin(async move {
+            if registered(dir).await? {
+                return Ok(false);
+            }
+            discard_if_identical(dir, branch).await?;
+            Ok::<bool, String>(true)
+        })
+    }
 }
 
 /// Real risks a close must not paper over: the session still doing something (busy or a live
@@ -108,13 +118,10 @@ async fn remove(domain: &dyn Runtime, sessions: &dyn Sessions, agent_id: &str, s
             let (Some(dir), Some(branch)) = (worktree.as_ref().filter(|dir| !cleared_broken && dir.exists()), branch.as_deref()) else {
                 return Ok(failed(StatusCode::CONFLICT, text));
             };
-            match registered(dir).await {
-                Ok(false) => {}
-                Ok(true) => return Ok(failed(StatusCode::CONFLICT, text)),
+            match sessions.discard_unlisted(dir, branch).await {
+                Ok(true) => {}
+                Ok(false) => return Ok(failed(StatusCode::CONFLICT, text)),
                 Err(why) => return Ok(failed(StatusCode::CONFLICT, format!("{text}\n\nAlondra did not delete it: {why}"))),
-            }
-            if let Err(why) = discard_if_identical(dir, branch).await {
-                return Ok(failed(StatusCode::CONFLICT, format!("{text}\n\nAlondra did not delete it: {why}")));
             }
             cleared_broken = true;
             continue;

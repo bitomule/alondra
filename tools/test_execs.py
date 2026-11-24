@@ -22,7 +22,7 @@ from pathlib import Path
 
 # Entries of every TEST_EXECS but `own-sandbox` and `e2e`. It only goes down: lower it with every
 # program a test stops running.
-EXEC_CEILING = 218
+EXEC_CEILING = 215
 # Targets whose tests start their own sandbox and so run without the guard. Only goes down too.
 OWN_SANDBOX_CEILING = 5
 

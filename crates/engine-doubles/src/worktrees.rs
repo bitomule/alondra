@@ -451,6 +451,24 @@ impl Port for Worktrees {
         })
     }
 
+    fn summary(&self, dir: &Path) -> String {
+        let Some(top) = linked_top(dir).or_else(|| main_top(dir)) else {
+            return format!("{} (not a readable git worktree)", dir.display());
+        };
+        let checked_out = self.state().checked_out.get(&top).cloned();
+        let branch = checked_out.unwrap_or_else(|| match top.join(".git").is_dir() {
+            true => "main".into(),
+            false => format!("worktree-{}", top.file_name().unwrap_or_default().to_string_lossy()),
+        });
+        let changed = self.uncommitted(&top);
+        let uncommitted = match changed.len() {
+            0 => "nothing uncommitted".to_owned(),
+            n => format!("{n} uncommitted:\n{}", changed.join("\n")),
+        };
+        let commits: Vec<String> = self.state().commits.get(&top).into_iter().flatten().rev().take(5).cloned().collect();
+        format!("{}\nbranch {branch}\n{uncommitted}\nlast commits:\n{}", dir.display(), commits.join("\n"))
+    }
+
     fn leftovers<'a>(&'a self, session_id: &'a str) -> Git<'a, Option<String>> {
         answer(async move {
             self.left(&self.worktree_of(session_id)?)

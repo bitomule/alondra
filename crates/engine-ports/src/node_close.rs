@@ -2,6 +2,7 @@
 //! it, and a test stands in for Claude Code and git.
 use serde::Serialize;
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 
 pub type Answer<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -34,6 +35,14 @@ pub trait Sessions: Send + Sync + 'static {
     /// Err when `claude` could not run or did not answer in time.
     fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<Ran, String>>;
     fn leftovers<'a>(&'a self, session_id: &'a str) -> Answer<'a, Option<String>>;
+
+    /// After a failed `claude rm`: deletes by hand the worktree `dir` of the branch `branch` once
+    /// git no longer lists it and its files are that branch, with every commit of it pushed or no
+    /// remote to push to. `Ok(false)` while git still lists it; why it stays otherwise. Only the
+    /// Mac's git deletes one: a stand-in that does not override this keeps every worktree.
+    fn discard_unlisted<'a>(&'a self, _dir: &'a Path, _branch: &'a str) -> Answer<'a, Result<bool, String>> {
+        Box::pin(async { Ok::<bool, String>(false) })
+    }
 
     /// The JSON of `claude agents --json --all`, only when it exited with 0.
     fn agents<'a>(&'a self) -> Answer<'a, Result<String, String>> {

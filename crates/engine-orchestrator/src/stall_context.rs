@@ -4,11 +4,9 @@ use crate::engine::OrchestratorOf as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_domain_rules::{DomainState, Interaction, Scope, Task, WorktreeOrigin};
 use std::path::Path;
-use std::process::Command;
 
 const MISSION_SHOWN: usize = 4_000;
 const WORDS_SHOWN: usize = 2_000;
-const STATUS_LINES: usize = 30;
 
 /// The case's context, or nothing for a message that is not a case.
 pub(crate) fn context(domain: &DomainRuntime, state: &DomainState, case: &Interaction) -> String {
@@ -29,7 +27,7 @@ pub(crate) fn context(domain: &DomainRuntime, state: &DomainState, case: &Intera
         "\nIts mission:\n{}\n\nIts last words:\n{}\n\nIts worktree:\n{}",
         shown(&mission, MISSION_SHOWN),
         words.map_or_else(|| "(none recorded)".to_owned(), |words| shown(&words, WORDS_SHOWN)),
-        worktree.map_or_else(|| "(unknown)".to_owned(), |path| worktree_state(Path::new(&path))))
+        worktree.map_or_else(|| "(unknown)".to_owned(), |path| domain.ports().worktrees().summary(Path::new(&path))))
 }
 
 fn own_worktree(task: &Task) -> Option<String> {
@@ -38,63 +36,10 @@ fn own_worktree(task: &Task) -> Option<String> {
         .map(|(path, _)| path.clone())
 }
 
-/// Its branch against its upstream, what is not committed, and its last commits.
-pub(crate) fn worktree_state(dir: &Path) -> String {
-    let Some(status) = git(dir, &["status", "--porcelain=v1", "--branch"]) else {
-        return format!("{} (not a readable git worktree)", dir.display());
-    };
-    let mut lines = status.lines();
-    let branch = lines.next().unwrap_or_default().trim_start_matches("## ").to_owned();
-    let changes: Vec<&str> = lines.collect();
-    let uncommitted = match changes.len() {
-        0 => "nothing uncommitted".to_owned(),
-        n if n <= STATUS_LINES => format!("{n} uncommitted:\n{}", changes.join("\n")),
-        n => format!("{n} uncommitted, the first {STATUS_LINES}:\n{}", changes[..STATUS_LINES].join("\n")),
-    };
-    let commits = git(dir, &["log", "--oneline", "-5"]).unwrap_or_default();
-    format!("{}\nbranch {branch}\n{uncommitted}\nlast commits:\n{}", dir.display(), commits.trim_end())
-}
-
-fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
 fn shown(text: &str, max: usize) -> String {
     let text = text.trim();
     match text.char_indices().nth(max) {
         Some((end, _)) => format!("{}…", &text[..end]),
         None => text.to_owned(),
-    }
-}
-
-#[cfg(test)]
-#[cfg(feature = "real-hosts")]
-mod tests {
-    use super::*;
-
-    fn run(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    }
-
-    #[test]
-    fn the_worktree_state_names_its_branch_what_is_uncommitted_and_its_last_commits() {
-        let dir = crate::test_support::Directory::new();
-        std::fs::create_dir_all(&dir).unwrap();
-        run(&dir, &["init", "-q", "-b", "work"]);
-        run(&dir, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "Half the fix"]);
-        std::fs::write(dir.join("left.txt"), "x").unwrap();
-        let state = worktree_state(&dir);
-        assert!(state.contains("branch work"), "{state}");
-        assert!(state.contains("1 uncommitted:\n?? left.txt"), "{state}");
-        assert!(state.contains("Half the fix"), "{state}");
-    }
-
-    #[test]
-    fn a_folder_that_is_not_a_worktree_says_so() {
-        let dir = crate::test_support::Directory::new();
-        std::fs::create_dir_all(&dir).unwrap();
-        assert!(worktree_state(&dir).ends_with("(not a readable git worktree)"));
     }
 }

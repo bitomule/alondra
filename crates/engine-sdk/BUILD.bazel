@@ -133,9 +133,9 @@ low_opt_rust_test(
 
 # The tests that open the whole engine on the doubled hosts: the engine's own tests that live here,
 # the automatic launches and the close of tasks end to end. No host starts and no host executable is
-# an input; the only program they run is the git the close asks about a worktree after a failed
-# `claude rm`. It never carries a binary of the root: they link every crate, so an edit anywhere
-# would rerun these tests.
+# an input; the only program they run is the git «allow always» asks which repository keeps a
+# node's rules, which the engine runs itself rather than through the port Worktrees. It never
+# carries a binary of the root: they link every crate, so an edit anywhere would rerun these tests.
 low_opt_rust_test(
     name = "engine_sdk_engine_test",
     size = "large",
@@ -166,7 +166,7 @@ low_opt_rust_test(
     crate_root = "src/lib.rs",
     data = SDK_TEST_DATA,
     edition = "2024",
-    env = SDK_TEST_ENV | {"TEST_EXECS": "$(rootpath //agent-host:alondra-codex-host) $(rootpath //agent-host:alondra-codex-plan-legacy-fixture-host) $(rootpath //agent-host:alondra-host) $(rootpath //agent-host:codex-legacy-fixture) /bin/kill /bin/sleep /usr/bin/git /usr/bin/id /usr/bin/mkfifo /usr/bin/pgrep /usr/bin/python3 /usr/sbin/lsof tmpdir"},
+    env = SDK_TEST_ENV | {"TEST_EXECS": "$(rootpath //agent-host:alondra-codex-host) $(rootpath //agent-host:alondra-codex-plan-legacy-fixture-host) $(rootpath //agent-host:alondra-host) $(rootpath //agent-host:codex-legacy-fixture) /bin/kill /bin/sleep /usr/bin/id /usr/bin/mkfifo /usr/bin/pgrep /usr/bin/python3 /usr/sbin/lsof tmpdir"},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS + WHOLE_ENGINE_DEPS,
 )

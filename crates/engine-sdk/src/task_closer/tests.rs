@@ -26,6 +26,9 @@ struct FakeSessions {
     watch_while_removing: Mutex<Option<(Arc<DomainRuntime>, Option<bool>)>>,
     during_rm: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     rm_answers: Mutex<std::collections::VecDeque<crate::node_close::Ran>>,
+    /// Whether git still lists a worktree a failed `claude rm` left; one it no longer lists is
+    /// deleted by hand.
+    listed_worktree: Mutex<bool>,
 }
 
 impl FakeSessions {
@@ -37,6 +40,7 @@ impl FakeSessions {
             watch_while_removing: Mutex::new(None),
             during_rm: Mutex::new(None),
             rm_answers: Default::default(),
+            listed_worktree: Mutex::new(true),
         })
     }
     fn removals(&self) -> usize {
@@ -70,6 +74,16 @@ impl Sessions for FakeSessions {
 
     fn leftovers<'a>(&'a self, _: &'a str) -> Answer<'a, Option<String>> {
         Box::pin(async move { self.leftovers.lock().unwrap().clone() })
+    }
+
+    fn discard_unlisted<'a>(&'a self, dir: &'a std::path::Path, _: &'a str) -> Answer<'a, Result<bool, String>> {
+        Box::pin(async move {
+            if *self.listed_worktree.lock().unwrap() {
+                return Ok(false);
+            }
+            std::fs::remove_dir_all(dir).map_err(|error| error.to_string())?;
+            Ok::<bool, String>(true)
+        })
     }
 }
 
@@ -998,30 +1012,6 @@ fn job_with_worktree(dir: &std::path::Path) -> crate::test_support::Directory {
     claude_home
 }
 
-/// A repository with a remote and the worktree a `claude --bg` job made for `slug`, its branch
-/// pushed, made with git itself: after a failed `claude rm` the close asks git directly whether it
-/// still lists the worktree and whether its files are its branch's.
-fn git_task_worktree(root: &std::path::Path, slug: &str) -> std::path::PathBuf {
-    let git = |dir: &std::path::Path, args: &[&str]| {
-        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    };
-    std::fs::create_dir_all(root).unwrap();
-    git(root, &["init", "-q", "--bare", "remote.git"]);
-    git(root, &["init", "-q", "repo"]);
-    let repo = root.join("repo");
-    git(&repo, &["config", "user.email", "test@example.invalid"]);
-    git(&repo, &["config", "user.name", "Test"]);
-    git(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
-    git(&repo, &["remote", "add", "origin", root.join("remote.git").to_str().unwrap()]);
-    let dir = repo.join(".claude/worktrees").join(slug);
-    let branch = format!("worktree-{slug}");
-    git(&repo, &["worktree", "add", "-q", "-b", &branch, dir.to_str().unwrap()]);
-    git(&dir, &["commit", "-q", "--allow-empty", "-m", "work"]);
-    git(&dir, &["push", "-q", "origin", &branch]);
-    dir
-}
-
 // D-03: the close decides on the exit status of `claude rm`, the listing of `claude agents --json`
 // and `git worktree list --porcelain -z`, never on what `claude rm` printed.
 #[tokio::test]
@@ -1038,9 +1028,9 @@ async fn claude_rm_exiting_with_zero_closes_the_node_whatever_it_prints() {
 async fn a_failed_claude_rm_whose_worktree_git_no_longer_knows_deletes_it_if_identical_and_closes() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let dir = git_task_worktree(&root, "job");
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "job");
     let _claude_home = job_with_worktree(&dir);
-    std::fs::remove_dir_all(root.join("repo/.git/worktrees/job")).unwrap();
+    *rig.sessions.listed_worktree.lock().unwrap() = false;
     rig.sessions.rm_answers.lock().unwrap().push_back(crate::node_close::Ran::failed("something went wrong"));
     rig.confirm();
     rig.pass(T0).await;
@@ -1053,7 +1043,7 @@ async fn a_failed_claude_rm_whose_worktree_git_no_longer_knows_deletes_it_if_ide
 async fn a_failed_claude_rm_whose_worktree_git_still_lists_fails_and_deletes_nothing() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let dir = git_task_worktree(&root, "job");
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "job");
     let _claude_home = job_with_worktree(&dir);
     rig.sessions.rm_answers.lock().unwrap().push_back(crate::node_close::Ran::failed("Git couldn't remove it"));
     rig.confirm();

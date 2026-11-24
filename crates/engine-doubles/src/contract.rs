@@ -102,7 +102,10 @@ pub fn worktrees(worktrees: &dyn Worktrees, repository: &dyn Fn(&Path)) {
     assert_eq!(ready(worktrees.unsaved(&dir)).unwrap(), None, "a worktree just made holds nothing unsaved");
     assert_eq!(ready(worktrees.release_task_worktree(&dir, "other", true)).unwrap(), TaskWorktree::NotAlondras, "only the worktree of the task's own name");
     assert_eq!(ready(worktrees.release_task_worktree(&plain, "plain", true)).unwrap(), TaskWorktree::NotAlondras, "never the user's folder");
+    assert_eq!(worktrees.summary(&plain), format!("{} (not a readable git worktree)", plain.display()), "a folder outside git says so");
+    let clean = worktrees.summary(&dir);
     std::fs::write(dir.join("notes.txt"), "not committed\n").unwrap();
+    assert_ne!(worktrees.summary(&dir), clean, "what is not committed shows in the summary");
     assert!(ready(worktrees.unsaved(&dir)).unwrap().is_some(), "a new file is work not saved");
     assert_eq!(ready(worktrees.uncommitted_files_of_alondras_worktree(&dir)).unwrap(), Some(1));
     assert!(matches!(ready(worktrees.release_task_worktree(&dir, "t", true)).unwrap(), TaskWorktree::Unsaved(_)), "work not saved keeps it");
