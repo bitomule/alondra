@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The edit loop compiles incrementally, with clippy's state apart from rustc's; a release and CI never do."""
+"""Only `--config=incremental` compiles incrementally, with clippy's state apart from rustc's, and only its results skip the cache; the default, a release and CI compile from scratch and cache."""
 import os
 from pathlib import Path
 import re
@@ -53,31 +53,35 @@ def plain(flags):
 class ReleaseConfigTests(unittest.TestCase):
     def setUp(self):
         root = checkout()
-        self.loop = settings((root / ".bazelrc").read_text(), "build")
+        self.loop = settings((root / ".bazelrc").read_text(), "build:incremental")
+        self.default = settings((root / ".bazelrc").read_text(), "build")
         self.release = settings((root / ".bazelrc").read_text(), "build:release")
         self.ci = settings((root / ".bazelrc").read_text(), "build:ci")
         self.rc = (root / ".bazelrc").read_text()
         self.script = (root / "deploy/brew/local-release.py").read_text()
 
-    def test_rustc_and_clippy_compile_incrementally_into_different_directories(self):
+    def test_the_incremental_config_compiles_into_different_directories(self):
         rustc = incremental_dirs(self.loop[EXTRA])
         clippy = incremental_dirs(self.loop[CLIPPY])
         self.assertEqual(len(rustc), 1)
         self.assertEqual(len(clippy), 1)
         self.assertNotEqual(rustc, clippy, "clippy would discard rustc's state on every check")
 
-    def test_a_release_and_ci_compile_from_scratch_with_the_same_lints(self):
+    def test_the_default_a_release_and_ci_compile_from_scratch_with_the_same_lints(self):
+        self.assertNotIn(EXTRA, self.default)
+        self.assertEqual(incremental_dirs(self.default[CLIPPY]), [])
+        self.assertEqual(self.default[CLIPPY], plain(self.loop[CLIPPY]))
         for config in (self.release, self.ci):
             self.assertEqual(config.get(EXTRA), [])
-            self.assertEqual(config.get(CLIPPY), plain(self.loop[CLIPPY]))
+            self.assertEqual(config.get(CLIPPY), self.default[CLIPPY])
 
-    def test_incremental_results_never_reach_the_shared_cache(self):
-        loop = execution_info(self.rc, "common")
-        self.assertEqual(loop.get(INCREMENTAL_ACTIONS), "+no-cache")
-        others = {rule: tags for rule, tags in loop.items() if rule != INCREMENTAL_ACTIONS}
-        for config in ("common:release", "common:ci"):
+    def test_only_incremental_results_skip_the_shared_cache(self):
+        incremental = execution_info(self.rc, "common:incremental")
+        self.assertEqual(incremental.get(INCREMENTAL_ACTIONS), "+no-cache")
+        others = {rule: tags for rule, tags in incremental.items() if rule != INCREMENTAL_ACTIONS}
+        for config in ("common", "common:release", "common:ci"):
             self.assertEqual(execution_info(self.rc, config), others,
-                             f"{config} compiles from scratch, keeps the other rules and may cache rustc")
+                             f"{config} keeps the other rules and lets rustc and clippy be cached")
 
     def test_every_bazel_call_of_a_release_uses_the_release_config(self):
         self.assertIn("RELEASE_CONFIG = '--config=release'", self.script)
