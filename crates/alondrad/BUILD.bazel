@@ -5,6 +5,7 @@ load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 
 exports_files(["Info.plist"], visibility = ["//crates/daemon-server:__pkg__", "//deploy/brew:__pkg__"])
 
@@ -144,6 +145,15 @@ low_opt_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True),
 )
 
+# The release runs codex_adoption_process_test, which no wildcard runs: this builds it with every
+# validation of this package, so a change to the engine's fixtures it compiles cannot break the
+# release unseen.
+build_test(
+    name = "codex_adoption_process_build_test",
+    size = "small",
+    targets = [":codex_adoption_process_test"],
+)
+
 # A real alondrad, killed and started again twice, adopts the live Codex host of a task with what
 # it held. It starts the daemon three times under Seatbelt, so no wildcard runs it: the release's
 # tests name it (deploy/brew/local-release.py).
@@ -151,6 +161,7 @@ low_opt_rust_test(
     name = "codex_adoption_process_test",
     timeout = "moderate",
     srcs = ["tests/codex_adoption.rs", "//crates/engine-sdk:fixtures"],
+    crate_features = ["real-hosts"],
     crate_root = "tests/codex_adoption.rs",
     data = [
         ":alondrad",
