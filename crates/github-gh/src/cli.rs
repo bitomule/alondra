@@ -86,6 +86,17 @@ impl PrObserver for GhCli {
             self.run(&["pr", "close", &url, "--comment", comment], None, Duration::from_secs(30)).await.map(drop)
         })
     }
+    fn read_identity<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Located<'a> {
+        Box::pin(async move {
+            let url = pr_url(host, repository, number);
+            let out = match self.run(&["pr", "view", &url, "--json", IDENTITY_FIELDS], None, Duration::from_secs(30)).await {
+                Ok(out) => out,
+                Err(failure) => return Err(self.view_failure(host, repository, number, failure).await),
+            };
+            let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
+            identity(&value).ok_or_else(|| GhFailure::Unreadable("GitHub did not say which pull request it is".into()))
+        })
+    }
     fn relocate<'a>(&'a self, host: &'a str, locator: &'a ProviderLocator) -> Located<'a> {
         Box::pin(async move {
             let host = alondra_domain_rules::normalize_pr_host(host);
@@ -93,6 +104,16 @@ impl PrObserver for GhCli {
             let answer = self.api(&["graphql", "--hostname", &host, "-f", &query, "-f", &id], Duration::from_secs(30)).await?;
             located(&answer)
         })
+    }
+}
+
+/// What a failed `gh pr view` is, given what GitHub's own lookup of the same address answered:
+/// its spent API limit, a pull request that is not there for certain, or the failure as it was.
+pub fn after_failed_view(failure: GhFailure, answer: Option<&HttpAnswer>) -> GhFailure {
+    match answer {
+        Some(answer) if limited(answer) => GhFailure::RateLimited(failure.to_string()),
+        Some(answer) => missing(answer).map_or(failure, GhFailure::NotFound),
+        None => failure,
     }
 }
 
@@ -209,21 +230,9 @@ impl GhCli {
         }
     }
 
-    /// Closes the PR at this address with `comment` only after a read of it there answers with
-    /// `expected`: a moved repository whose old name another one took never gets its pull
-    /// request closed. One more read, only when the user closes from a card.
+    /// `close` after a read of the address answered with `expected`: the card's close.
     pub async fn close_checked(&self, host: &str, repository: &str, number: u64, expected: &ProviderPrKey, comment: &str) -> Result<(), GhFailure> {
-        let url = pr_url(host, repository, number);
-        let out = match self.run(&["pr", "view", &url, "--json", IDENTITY_FIELDS], None, Duration::from_secs(30)).await {
-            Ok(out) => out,
-            Err(failure) => return Err(self.view_failure(host, repository, number, failure).await),
-        };
-        let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
-        let read = identity(&value).ok_or_else(|| GhFailure::Unreadable("GitHub did not say which pull request it is".into()))?;
-        if read.key != *expected {
-            return Err(GhFailure::IdentityMismatch(format!("{repository}#{number} is another pull request now")));
-        }
-        PrObserver::close(self, host, repository, number, expected, comment).await
+        alondra_engine_ports::github::close_checked(self, host, repository, number, expected, comment).await
     }
 
     /// What a failed `gh pr view` means for the pull request: `gh` prints GitHub's answer only as
@@ -232,11 +241,8 @@ impl GhCli {
     /// else keeps the failure as it was. One more call, only after a failed read.
     async fn view_failure(&self, host: &str, repository: &str, number: u64, failure: GhFailure) -> GhFailure {
         let GhFailure::Exit(..) = &failure else { return failure };
-        match self.address_answer(host, repository, number).await {
-            Some(answer) if limited(&answer) => GhFailure::RateLimited(failure.to_string()),
-            Some(answer) => missing(&answer).map_or(failure, GhFailure::NotFound),
-            None => failure,
-        }
+        let answer = self.address_answer(host, repository, number).await;
+        after_failed_view(failure, answer.as_ref())
     }
 
     /// A failed read is GitHub's spent API limit when the same lookup through GraphQL says so;

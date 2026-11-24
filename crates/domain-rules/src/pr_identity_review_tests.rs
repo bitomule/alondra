@@ -247,3 +247,21 @@ fn registering_by_address_prefers_the_record_living_there_over_an_alias() {
 
     assert_eq!((s.pull_requests[&lumo].head.as_str(), s.pull_requests[&site].head.as_str()), (HEAD, PUSHED));
 }
+
+/// Two records of one repository are siblings even when one still has the name the repository had
+/// before it moved; two repositories that only share a host are not.
+#[test]
+fn records_of_a_moved_repository_are_in_the_same_repository_by_alias() {
+    let record = |repository: &str, aliases: &[&str]| {
+        let mut pr = PullRequest::registered(PrId::from("pr"), TaskId::from("t"), "github.com".into(), repository.into(), 1, "1".repeat(40), "main".into(),
+            PrState::Open, None, vec![]);
+        pr.aliases = aliases.iter().map(|alias| (*alias).to_owned()).collect();
+        pr
+    };
+    let (merged_before_the_move, moved, elsewhere) = (record("ana/lumo", &[]), record("lumo-org/lumo", &["ana/lumo"]), record("ana/site", &[]));
+    assert!(moved.same_repository_as(&merged_before_the_move) && merged_before_the_move.same_repository_as(&moved));
+    assert!(!moved.same_repository_as(&elsewhere) && !elsewhere.same_repository_as(&merged_before_the_move));
+    let mut other_host = record("lumo-org/lumo", &[]);
+    other_host.host = "ghe.example.com".into();
+    assert!(!moved.same_repository_as(&other_host));
+}

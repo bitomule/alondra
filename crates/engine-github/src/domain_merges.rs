@@ -241,7 +241,7 @@ impl Merger {
         };
         if state.stack_ready(&state.tasks[&item.pr.task_id]).is_err() { return Ok(None); }
         let Some(upstream) = state.pull_requests.get(state.surviving_pr(&stack.pr_id)).filter(|upstream| upstream.is_tracked()) else { return Ok(None) };
-        if upstream.host != item.pr.host || upstream.repository != item.pr.repository { return Ok(None); }
+        if !upstream.same_repository_as(&item.pr) { return Ok(None); }
         let started = read_start();
         let remote = match github.status(upstream).await {
             Ok(remote) => remote,
@@ -278,7 +278,7 @@ impl Merger {
     async fn retarget_sibling(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, key: &ProviderPrKey, status: Status) -> Result<Option<Status>> {
         let state = domain.state()?;
         let siblings: Vec<_> = state.pull_requests.values().filter(|other| other.id != item.pr.id && other.task_id == item.pr.task_id
-            && other.is_tracked() && other.host == item.pr.host && other.repository == item.pr.repository).cloned().collect();
+            && other.is_tracked() && other.same_repository_as(&item.pr)).cloned().collect();
         if siblings.is_empty() { return Ok(Some(status)); }
         let default = match github.default_branch(&item.pr).await {
             Ok(base) => base,

@@ -74,6 +74,7 @@ pub use alondra_daemon_engine::{
     node_work,
     obligation_watch,
     options,
+    pr_identity,
     pr_images,
     retention,
     sdk_handover,

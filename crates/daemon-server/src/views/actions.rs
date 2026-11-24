@@ -543,12 +543,13 @@ async fn execute_external(
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
         Verb::CloseUnmerged => {
-            let (pr, task_id, was_open) = match close_on_github(&state, client.github().as_ref(), &action.subject, lang).await {
+            let looks_elsewhere = |pr: &alondra_domain_rules::PullRequest| look_for_by_locator(domain, pr);
+            let Closing { pr, task_id, was_open, deferred } = match close_on_github(&state, client.github().as_ref(), &action.subject, lang, &looks_elsewhere).await {
                 Ok(closed) => closed,
                 Err(refused) => return Ok(refused),
             };
             let number = pr.number;
-            if pr.state == alondra_domain_rules::PrState::Open {
+            if pr.state == alondra_domain_rules::PrState::Open && !deferred {
                 let closed = Command::ObservePrState { pr_id: pr.id.clone(), head: pr.head.clone(), base: pr.base.clone(),
                     state: alondra_domain_rules::PrState::Closed, merged_head: None };
                 if let Err(error) = crate::domain_github::execute_system(domain, closed) {
@@ -578,11 +579,12 @@ async fn execute_external(
             let mut request = request.clone();
             request.action_id = cancel.to_string();
             let mut reply = execute_value(domain, device, request, attachments, identity, authorize)?;
-            if !was_open && reply["outcome"] == "applied" {
-                reply["result"] = json!(Outcome::done(if lang == Lang::Es {
-                    format!("La PR #{number} ya estaba cerrada. Tarea cancelada.")
-                } else {
-                    format!("PR #{number} was already closed. Task cancelled.")
+            if reply["outcome"] == "applied" && (deferred || !was_open) {
+                reply["result"] = json!(Outcome::done(match (deferred, lang) {
+                    (true, Lang::Es) => format!("La PR #{number} se cerrará en GitHub en cuanto Alondra compruebe qué PR es. Tarea cancelada."),
+                    (true, _) => format!("PR #{number} will be closed on GitHub as soon as Alondra checks which pull request it is. Task cancelled."),
+                    (false, Lang::Es) => format!("La PR #{number} ya estaba cerrada. Tarea cancelada."),
+                    (false, _) => format!("PR #{number} was already closed. Task cancelled."),
                 }));
             }
             Ok(reply)
@@ -1363,11 +1365,33 @@ fn current_delivery<'a>(
         .unwrap_or(interaction)
 }
 
+/// What "Close without merging" settled before the task is cancelled.
+#[derive(Debug)]
+struct Closing {
+    pr: alondra_domain_rules::PullRequest,
+    task_id: TaskId,
+    was_open: bool,
+    /// Nobody has read yet which pull request this is: the task is cancelled with the close
+    /// pending, and Alondra closes it on GitHub as soon as a read says which one it is.
+    deferred: bool,
+}
+
+/// Asks the engine to find `pr` again by its locator: its address answered with another pull request.
+fn look_for_by_locator(domain: &crate::domain_runtime::DomainRuntime, pr: &alondra_domain_rules::PullRequest) {
+    let command = Command::ObservePrAddress { pr_id: pr.id.clone(), read: alondra_domain_rules::PrRead::Address { repository: pr.repository.clone() },
+        read_started_at: crate::pr_identity::read_start(), verdict: alondra_domain_rules::PrAddressVerdict::NamesAnotherPr };
+    if let Err(error) = crate::domain_github::execute_system(domain, command) {
+        log!("could not ask for {}#{} by its locator: {error}", pr.repository, pr.number);
+    }
+}
+
 /// "Close without merging" on GitHub, before Alondra records it: the PR its card names, whether
 /// it was still open there, and its task. A copy that joined another record, a removed PR or one
-/// Alondra cannot check is refused without reaching GitHub.
-async fn close_on_github(state: &alondra_domain_rules::DomainState, github: &dyn crate::client_routes::Github, subject: &str, lang: Lang)
-    -> Result<(alondra_domain_rules::PullRequest, TaskId, bool), Value> {
+/// Alondra cannot check is refused without reaching GitHub. A PR nobody has read yet is accepted
+/// when it is the only one its task has open, and closed once a read says which one it is.
+/// `looks_elsewhere` runs when GitHub answers that the address is another pull request now.
+async fn close_on_github(state: &alondra_domain_rules::DomainState, github: &dyn crate::client_routes::Github, subject: &str, lang: Lang,
+    looks_elsewhere: &dyn Fn(&alondra_domain_rules::PullRequest)) -> Result<Closing, Value> {
     let Some(pr) = closed_pr(state, subject) else { return Err(refused_value(&Refusal::NoLongerAvailable, lang)); };
     if let Err(error) = state.tracked_pr(&pr.id) {
         return Err(domain_refusal_value(&error, lang));
@@ -1382,7 +1406,13 @@ async fn close_on_github(state: &alondra_domain_rules::DomainState, github: &dyn
     let mut was_open = pr.state == alondra_domain_rules::PrState::Open;
     let expected = match (&pr.identity, was_open) {
         (alondra_domain_rules::PrIdentity::Verified { key, .. }, _) => Some(key),
-        (_, true) => return Err(refused_value(&Refusal::PrNotCheckedYet, lang)),
+        (_, true) => {
+            let alone = state.open_prs(task).all(|other| other.id == pr.id) && state.merged_pr(task).is_none();
+            if !alone {
+                return Err(refused_value(&Refusal::PrNotCheckedYet, lang));
+            }
+            return Ok(Closing { pr: pr.clone(), task_id: task.id.clone(), was_open, deferred: true });
+        }
         (_, false) => None,
     };
     if was_open && let Some(expected) = expected
@@ -1390,6 +1420,7 @@ async fn close_on_github(state: &alondra_domain_rules::DomainState, github: &dyn
     {
         log!("could not close PR #{number} on GitHub: {detail}");
         if matches!(detail, crate::domain_github::GhFailure::IdentityMismatch(_)) {
+            looks_elsewhere(pr);
             return Err(refused_value(&Refusal::PrNotCheckedYet, lang));
         }
         match github.pr_state(&pr.host, &pr.repository, number).await {
@@ -1398,7 +1429,7 @@ async fn close_on_github(state: &alondra_domain_rules::DomainState, github: &dyn
             Ok(alondra_domain_rules::PrState::Open) | Err(_) => return Err(refused_value(&Refusal::GithubUnreachable, lang)),
         }
     }
-    Ok((pr.clone(), task.id.clone(), was_open))
+    Ok(Closing { pr: pr.clone(), task_id: task.id.clone(), was_open, deferred: false })
 }
 
 /// The PR "Close without merging" is about: the one its card names, or its delivery's.
@@ -1459,7 +1490,7 @@ fn map_merge(
     if pr.state != alondra_domain_rules::PrState::Open { return Err(Refusal::PrClosed { number: pr.number }); }
     if let Some(upstream) = state.pull_requests.values().find(|upstream| upstream.id != pr.id
         && upstream.state == alondra_domain_rules::PrState::Open
-        && upstream.host == pr.host && upstream.repository == pr.repository && upstream.head == pr.base) {
+        && upstream.same_repository_as(pr) && upstream.head == pr.base) {
         return Err(Refusal::UpstreamPrOpen { number: upstream.number });
     }
     let method = match (request.option_id.as_deref().filter(|id| !id.is_empty()), pr.allowed_methods.as_slice()) {
@@ -4102,7 +4133,7 @@ for line in sys.stdin:
         let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_rules::PrState::Open));
         for (lang, said) in [(Lang::En, "This card was another copy of the same pull request; use the one that remains"),
             (Lang::Es, "Esta tarjeta era otra copia del mismo PR; usa la que queda")] {
-            let refused = close_on_github(&state, &github, &copy.0, lang).await.unwrap_err();
+            let refused = close_on_github(&state, &github, &copy.0, lang, &|_| {}).await.unwrap_err();
             assert_eq!((refused["outcome"].as_str(), refused["code"].as_str()), (Some("rejected"), Some("pr_superseded")), "{refused}");
             assert_eq!(refused["message"], said);
             for verb in [Verb::Merge, Verb::Changes, Verb::DetachPr] {
@@ -4125,7 +4156,7 @@ for line in sys.stdin:
         assert!(state.pull_requests[&pr].identity.is_unresolvable());
         let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_rules::PrState::Open));
         for subject in [pr.0.as_str(), "result"] {
-            let refused = close_on_github(&state, &github, subject, Lang::Es).await.unwrap_err();
+            let refused = close_on_github(&state, &github, subject, Lang::Es, &|_| {}).await.unwrap_err();
             assert_eq!(refused["outcome"], "rejected", "{refused}");
             assert_eq!(refused["message"], "Alondra no puede comprobar qué PR es, así que no hace nada en GitHub. Quítalo de Alondra.");
         }
@@ -4162,17 +4193,24 @@ for line in sys.stdin:
         fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> crate::node_close::Answer<'a, Result<(), String>> { Box::pin(async { Err("not used".into()) }) }
     }
 
-    /// "Close without merging" acts only on a pull request a read confirmed: one nobody has read
-    /// yet is refused without reaching GitHub, and one whose address answers with another pull
-    /// request is left open, saying Alondra is still checking it.
+    /// "Close without merging" acts on GitHub only on a pull request a read confirmed. One nobody
+    /// has read yet is accepted when it is its task's only open one, and closed once a read says
+    /// which it is, without reaching GitHub now; with other open ones it is refused. One whose
+    /// address answers with another pull request is left open and looked for by its locator.
     #[tokio::test]
     async fn close_without_merging_needs_the_pull_request_a_read_confirmed() {
         let pr = alondra_domain_rules::hosted_pr_id("github.com", "me/app", 7);
         let unread = state_after(task_with_prs(&[(&pr, "me/app", 7)]));
         let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_rules::PrState::Open));
+        let closing = close_on_github(&unread, &github, pr.0.as_str(), Lang::En, &|_| panic!("nothing to look for")).await.unwrap_or_else(|refused| panic!("{refused}"));
+        assert!((closing.deferred, closing.was_open) == (true, true) && closing.pr.id == pr, "accepted, to be closed when a read says which PR it is");
+        assert!(github.0.lock().unwrap().is_empty(), "nothing reached GitHub");
+
+        let other = alondra_domain_rules::hosted_pr_id("github.com", "me/app", 8);
+        let two = state_after(task_with_prs(&[(&pr, "me/app", 7), (&other, "me/app", 8)]));
         for (lang, said) in [(Lang::En, "Alondra is still checking on GitHub which pull request this is. Nothing was changed; this unlocks when GitHub confirms it."),
             (Lang::Es, "Alondra aún está comprobando en GitHub qué PR es. No se cambió nada; se activará cuando GitHub lo confirme.")] {
-            let refused = close_on_github(&unread, &github, pr.0.as_str(), lang).await.unwrap_err();
+            let refused = close_on_github(&two, &github, pr.0.as_str(), lang, &|_| {}).await.err().expect("another PR stays open: nothing would close this one");
             assert_eq!((refused["outcome"].as_str(), refused["message"].as_str()), (Some("rejected"), Some(said)), "{refused}");
         }
         assert!(github.0.lock().unwrap().is_empty(), "nothing reached GitHub");
@@ -4182,9 +4220,11 @@ for line in sys.stdin:
             locator: alondra_domain_rules::ProviderLocator("locator-a".into()), current_repository: "me/app".into() }));
         let read = state_after(commands);
         let elsewhere = AnotherPrThere(Default::default());
-        let refused = close_on_github(&read, &elsewhere, pr.0.as_str(), Lang::En).await.unwrap_err();
+        let looked_for = std::sync::Mutex::new(Vec::new());
+        let refused = close_on_github(&read, &elsewhere, pr.0.as_str(), Lang::En, &|pr| looked_for.lock().unwrap().push(pr.id.clone())).await.err().expect("refused");
         assert_eq!(refused["message"], "Alondra is still checking on GitHub which pull request this is. Nothing was changed; this unlocks when GitHub confirms it.");
         assert_eq!(*elsewhere.0.lock().unwrap(), [7], "asked once, and GitHub closed nothing");
+        assert_eq!(*looked_for.lock().unwrap(), [pr], "the pull request is looked for by its locator");
     }
 
     #[tokio::test]

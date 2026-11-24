@@ -79,6 +79,26 @@ pub trait PrObserver: Send + Sync + 'static {
     fn relocate<'a>(&'a self, _host: &'a str, _locator: &'a ProviderLocator) -> Located<'a> {
         Box::pin(async { Err(GhFailure::Unreadable("this observer cannot find pull requests by their locator".to_owned())) })
     }
+    /// Which pull request answers at this address, read without anything else.
+    fn read_identity<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Located<'a> {
+        Box::pin(async move {
+            let facts = self.observe(host, repository, number).await?;
+            facts.identity.ok_or_else(|| GhFailure::Unreadable("GitHub did not say which pull request it is".into()))
+        })
+    }
+}
+
+/// Closes the PR at this address with `comment` only after a read of it there answers with
+/// `expected`: a moved repository whose old name another one took never gets its pull request
+/// closed, even by an observer whose `close` cannot check the key. One more read, only when the
+/// user closes from a card.
+pub async fn close_checked(observer: &impl PrObserver, host: &str, repository: &str, number: u64, expected: &ProviderPrKey, comment: &str)
+    -> Result<(), GhFailure> {
+    let read = observer.read_identity(host, repository, number).await?;
+    if read.key != *expected {
+        return Err(GhFailure::IdentityMismatch(format!("{repository}#{number} is another pull request now")));
+    }
+    observer.close(host, repository, number, expected, comment).await
 }
 
 impl PrObserver for Arc<dyn PrObserver> {
@@ -91,6 +111,9 @@ impl PrObserver for Arc<dyn PrObserver> {
     fn relocate<'a>(&'a self, host: &'a str, locator: &'a ProviderLocator) -> Located<'a> {
         (**self).relocate(host, locator)
     }
+    fn read_identity<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Located<'a> {
+        (**self).read_identity(host, repository, number)
+    }
 }
 
 impl<T: PrObserver> PrObserver for Arc<T> {
@@ -102,6 +125,9 @@ impl<T: PrObserver> PrObserver for Arc<T> {
     }
     fn relocate<'a>(&'a self, host: &'a str, locator: &'a ProviderLocator) -> Located<'a> {
         (**self).relocate(host, locator)
+    }
+    fn read_identity<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Located<'a> {
+        (**self).read_identity(host, repository, number)
     }
 }
 
@@ -494,3 +520,7 @@ impl<T: Gh> Gh for Arc<T> {
     fn head_ref<'a>(&'a self, url: &'a str) -> Read<'a, Result<String, GhFailure>> { (**self).head_ref(url) }
     fn branch_pr<'a>(&'a self, dir: &'a Path) -> Read<'a, Option<(String, String, u64)>> { (**self).branch_pr(dir) }
 }
+
+#[cfg(test)]
+#[path = "github_tests.rs"]
+mod tests;

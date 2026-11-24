@@ -3,7 +3,7 @@
 //! the worktree it owns from the start.
 use crate::Runtime;
 use crate::domain_runtime::RuntimeRecords as _;
-use alondra_domain_rules::{DomainError, DomainState, TaskId};
+use alondra_domain_rules::{Command, DomainError, DomainState, TaskId, WorktreeOrigin};
 use alondra_engine_ports::worktrees::Workplace;
 
 pub fn validate_request_selection(domain: &dyn Runtime, resolved: &alondra_core::options::Resolved) -> Result<(), DomainError> {
@@ -40,6 +40,12 @@ pub async fn own_worktree(domain: &dyn Runtime, task: &TaskId, workplace: &Workp
     }
     let shown = dir.to_string_lossy();
     let recorded = domain.set_task_worktree(task, &shown);
+    if recorded.is_ok() && let Some(branch) = domain.ports().worktrees().branch_in(&dir).await {
+        let command = Command::RecordTaskWorktree { task_id: task.clone(), path: shown.to_string(), origin: WorktreeOrigin::Task, branch: Some(branch) };
+        if let Err(error) = domain.execute_system_command(command) {
+            log!("could not record the branch of the worktree of {task}: {error}");
+        }
+    }
     let ended = domain.state().tasks.get(task).is_some_and(|ended| ended.state.terminal());
     match (recorded, ended) {
         (Ok(()), false) => return Ok(()),

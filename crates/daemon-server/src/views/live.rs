@@ -1028,8 +1028,7 @@ fn direct_stack_parent<'a>(pr: &PullRequest, state: &'a DomainState) -> Option<&
     if pr.state != PrState::Open { return None; }
     state.pull_requests.values()
         .filter(|candidate| candidate.id != pr.id && candidate.state == PrState::Open
-            && candidate.host == pr.host && candidate.repository == pr.repository
-            && candidate.head == pr.base)
+            && candidate.same_repository_as(pr) && candidate.head == pr.base)
         .min_by_key(|candidate| candidate.number)
 }
 

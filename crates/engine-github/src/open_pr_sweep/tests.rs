@@ -351,3 +351,20 @@ fn checkouts_with_a_gitfile_use_their_common_repository() {
     std::fs::write(projects.join("worktree/.git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
     assert_eq!(checkout_repositories(&projects), BTreeSet::from(["owner/repo".into(), "owner/worktree".into()]));
 }
+
+/// The name a moved repository had is only an alias of its records: a pull request GitHub finds
+/// there now is another one, and no round of the sweep reads it again for nothing.
+#[tokio::test]
+async fn a_pr_at_the_old_name_of_a_moved_repository_costs_no_read() {
+    let f = Fixture::new();
+    cancelled_with_closed_pr(&f, "closed", 7);
+    command(&f.domain, Actor::System, Command::ObservePrAddress { pr_id: hosted_pr_id("github.com", "owner/repo", 7),
+        read: PrRead::Address { repository: "owner/repo".into() }, read_started_at: 1,
+        verdict: PrAddressVerdict::Confirmed { key: ProviderPrKey("key".into()), locator: ProviderLocator("locator".into()), current_repository: "owner/moved".into() } });
+    f.result(7, "owner/repo", "feature");
+    let before = f.domain.state().unwrap();
+    f.sweep().await;
+    f.sweep().await;
+    assert_eq!(f.calls(), "search prs\nsearch prs", "only the searches: nothing of the pull request at the old name is read");
+    assert_eq!(f.domain.state().unwrap(), before);
+}

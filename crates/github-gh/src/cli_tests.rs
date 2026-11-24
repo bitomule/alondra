@@ -194,19 +194,14 @@ fn only_a_typed_not_found_is_a_definitive_not_found() {
 
 /// A failed read is a definitive not-found only when GitHub's own lookup of the same address
 /// answers `NOT_FOUND`; when it finds the pull request, the read's failure stays as it was.
-#[tokio::test]
-async fn a_failed_read_is_gone_only_when_github_says_not_found() {
-    let fixture = directory();
-    let program = fixture.join("gh");
-    let gone = r#"{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository with the name 'ana/lumo'."}]}"#;
-    let there = r#"{"data":{"repository":{"pullRequest":{"id":"PR_x"}}}}"#;
-    std::fs::write(&program, format!("#!/bin/sh\ncase \"$*\" in \"pr view\"*) echo 'request failed' >&2; exit 1;; *name=lumo*) printf 'HTTP/2.0 200 OK\\r\\n\\r\\n%s' '{gone}';; *) printf 'HTTP/2.0 200 OK\\r\\n\\r\\n%s' '{there}';; esac\n")).unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let gh = GhCli::at(program);
-    let failure = gh.observe("github.com", "ana/lumo", 42).await.unwrap_err();
-    assert!(failure.not_found(), "{failure:?}");
-    let failure = gh.observe("github.com", "ana/site", 42).await.unwrap_err();
-    assert!(matches!(failure, GhFailure::Exit(Some(1), _)), "{failure:?}");
-    let failure = gh.close_checked("github.com", "ana/lumo", 42, &ProviderPrKey("1".into()), "bye").await.unwrap_err();
-    assert!(failure.not_found(), "{failure:?}");
+#[test]
+fn a_failed_read_is_gone_only_when_github_says_not_found() {
+    let gone = graphql(200, serde_json::json!({"data": {"repository": null}, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a Repository with the name 'ana/lumo'."}]}));
+    let there = graphql(200, serde_json::json!({"data": {"repository": {"pullRequest": {"id": "PR_x"}}}}));
+    let spent = HttpAnswer { status: 403, headers: [("x-ratelimit-remaining".to_owned(), "0".to_owned())].into(), body: b"{}".to_vec() };
+    let failed = || GhFailure::Exit(Some(1), "request failed".into());
+    assert!(after_failed_view(failed(), Some(&gone)).not_found());
+    assert!(matches!(after_failed_view(failed(), Some(&there)), GhFailure::Exit(Some(1), _)));
+    assert!(matches!(after_failed_view(failed(), None), GhFailure::Exit(Some(1), _)), "no answer says nothing");
+    assert!(after_failed_view(failed(), Some(&spent)).rate_limited());
 }
