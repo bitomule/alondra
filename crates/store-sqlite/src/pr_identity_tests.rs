@@ -229,32 +229,174 @@ fn the_schema_refuses_invalid_identity_combinations() {
     assert!(!refused(&store, "SELECT 1;"), "the probe itself passes");
 }
 
+/// task-1 registered `ana/lumo#42`, was cancelled and its closed pull request ended it; its
+/// metrics are folded under the project `lumo`. task-2 is a live task of another agent.
+fn ended_task_in_lumo(store: &mut DomainStore) {
+    seeded(store);
+    execute(store, &Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request-1".into(), title: "Lumo".into() });
+    execute(store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Second".into(), at: 0 });
+    execute(store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        task_id: "task-2".into(), request_id: "request-1".into(), title: "Later".into(), agent_id: Some("agent-2".into()), review_prs: true,
+        dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/synthetic/repository")),
+    });
+    register(store, "task-1", &agent(), OLD, 42);
+    execute(store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
+    execute(store, &Actor::System, "node-end", Command::RecordNodeEnd { task_id: "task-1".into(), end: NodeEnd::Closed, agent_id: None });
+    execute(store, &Actor::System, "closed", Command::ObservePrState { pr_id: id(OLD, 42), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
+    assert!(store.load().unwrap().tasks[&TaskId::from("task-1")].state.terminal());
+    assert_eq!(store.fold_ended_tasks(10).unwrap(), 1);
+}
+
+fn metrics_project(store: &DomainStore) -> Option<String> {
+    store.conn.query_row("SELECT project FROM task_metrics WHERE task_id='task-1'", [], |row| row.get(0)).unwrap()
+}
+
 #[test]
 fn metrics_follow_the_current_repository_name() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
-    seeded(&mut store);
-    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request-1".into(), title: "Lumo".into() });
-    execute(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Second".into(), at: 0 });
-    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
-        task_id: "task-2".into(), request_id: "request-1".into(), title: "Later".into(), agent_id: Some("agent-2".into()), review_prs: true,
-        dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/synthetic/repository")),
-    });
-    register(&mut store, "task-1", &agent(), OLD, 42);
-    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
-    execute(&mut store, &Actor::System, "node-end", Command::RecordNodeEnd { task_id: "task-1".into(), end: NodeEnd::Closed, agent_id: None });
-    execute(&mut store, &Actor::System, "closed", Command::ObservePrState { pr_id: id(OLD, 42), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
-    assert!(store.load().unwrap().tasks[&TaskId::from("task-1")].state.terminal());
-    assert_eq!(store.fold_ended_tasks(10).unwrap(), 1);
-    let project = |store: &DomainStore| -> Option<String> {
-        store.conn.query_row("SELECT project FROM task_metrics WHERE task_id='task-1'", [], |row| row.get(0)).unwrap()
-    };
-    assert_eq!(project(&store).as_deref(), Some("lumo"));
+    ended_task_in_lumo(&mut store);
+    assert_eq!(metrics_project(&store).as_deref(), Some("lumo"));
 
     let renamed = "ana/lumen";
     register(&mut store, "task-2", &Actor::Agent { agent_id: "agent-2".into() }, renamed, 42);
     execute(&mut store, &Actor::System, "observe", observe(&id(OLD, 42), OLD, 1_000, confirmed("key-a", renamed)));
     let state = store.load().unwrap();
     assert_eq!(state.pull_requests[&id(OLD, 42)].tracking, PrTracking::Superseded { by: id(renamed, 42) }, "the live task's record stays");
-    assert_eq!(project(&store).as_deref(), Some("lumen"), "the ended task counts under the repository's new name");
+    assert_eq!(metrics_project(&store).as_deref(), Some("lumen"), "the ended task counts under the repository's new name");
+}
+
+/// task-1's record, found at `ana/lumo#42` and gone: three answers an hour apart, by its locator.
+fn gone(store: &mut DomainStore, pr: &PrId) {
+    for step in 0..3 {
+        let at = 10_000 + step * STRIKE_GAP;
+        execute(store, &Actor::System, &format!("gone-{step}"), Command::ObservePrAddress { pr_id: pr.clone(), read: PrRead::Locator, read_started_at: at, verdict: PrAddressVerdict::NotFound });
+    }
+}
+
+/// Design §5.4: a joined copy follows its survivor when that one joins a later record.
+#[test]
+fn review_the_schema_lets_a_joined_record_follow_its_survivor() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    for (number, repository) in [(1, OLD), (2, NEW), (3, SITE)] {
+        register(&mut store, "task-1", &agent(), repository, number);
+    }
+    let (copy, survivor, later) = (id(OLD, 1), id(NEW, 2), id(SITE, 3));
+    let set = |pr: &PrId, columns: &str| format!("UPDATE pull_requests SET {columns} WHERE id='{}';", pr.0);
+    let verified = "identity='verified',provider_key='key-a',provider_locator='locator-key-a'";
+    store.conn.execute_batch(&set(&survivor, verified)).unwrap();
+    store.conn.execute_batch(&set(&copy, &format!("{verified},tracking='superseded',superseded_by='{}'", survivor.0))).unwrap();
+    store.conn.execute_batch(&set(&survivor, &format!("tracking='superseded',superseded_by='{}'", later.0))).unwrap();
+    store.conn.execute_batch(&set(&later, verified)).unwrap();
+
+    store.conn.execute_batch(&set(&copy, &format!("superseded_by='{}'", later.0))).unwrap();
+
+    assert_eq!(count(&store, &format!("SELECT count(*) FROM pull_requests WHERE superseded_by='{}'", later.0)), 2);
+    assert!(refused(&store, &set(&copy, "tracking='tracked',superseded_by=NULL")), "a joined record never tracks again");
+    assert!(refused(&store, &set(&copy, "tracking='detached',superseded_by=NULL,detached_at=1")), "a joined record is never removed");
+}
+
+#[test]
+fn review_the_survivor_of_a_join_can_be_removed() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let (kept, copy) = two_copies(&mut store);
+    execute(&mut store, &Actor::System, "observe-old", observe(&kept, OLD, 1_000, confirmed("key-a", NEW)));
+    assert_joined(&mut store, &kept, &copy);
+    gone(&mut store, &kept);
+
+    execute(&mut store, &user(), "detach", Command::DetachPr { pr_id: kept.clone(), at: 20_000_000 });
+
+    let committed = store.load().unwrap();
+    assert_eq!(committed.pull_requests[&kept].tracking, PrTracking::Detached { at: 20_000_000 });
+    assert_eq!(committed.pull_requests[&copy].tracking, PrTracking::Superseded { by: kept.clone() }, "the copy still follows it");
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap(), committed, "a restart reads the same records");
+}
+
+#[test]
+fn review_a_displaced_record_can_still_be_found_by_its_locator() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    register(&mut store, "task-1", &agent(), OLD, 42);
+    let lumo = id(OLD, 42);
+    execute(&mut store, &Actor::System, "observe", observe(&lumo, OLD, 1_000, confirmed("key-a", OLD)));
+    gone(&mut store, &lumo);
+    let committed = store.load().unwrap();
+    let identity = &committed.pull_requests[&lumo].identity;
+    assert!(identity.is_unresolvable());
+    assert_eq!(identity.locator(), Some(&ProviderLocator("locator-key-a".into())));
+    assert_eq!(identity.key(), Some(&ProviderPrKey("key-a".into())));
+    drop(store);
+
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap(), committed, "the locator survives a restart");
+}
+
+/// The table as it was when a record Alondra cannot check kept no locator.
+#[test]
+fn review_a_database_that_kept_no_locator_for_unresolvable_records_upgrades() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    register(&mut store, "task-1", &agent(), OLD, 42);
+    register(&mut store, "task-1", &agent(), SITE, 5);
+    execute(&mut store, &Actor::System, "observe", observe(&id(OLD, 42), OLD, 1_000, confirmed("key-a", OLD)));
+    drop(store);
+    let declared: String = Connection::open(fixture.path()).unwrap()
+        .query_row("SELECT sql FROM sqlite_schema WHERE type='table' AND name='pull_requests'", [], |row| row.get(0)).unwrap();
+    let before = declared.replace("ELSE unresolvable_reason IS NOT NULL", "ELSE provider_locator IS NULL AND unresolvable_reason IS NOT NULL");
+    assert_ne!(before, declared);
+    Connection::open(fixture.path()).unwrap().execute_batch(&format!("PRAGMA foreign_keys=OFF;
+        CREATE TABLE copied AS SELECT * FROM pull_requests; DROP TABLE pull_requests; {before};
+        INSERT INTO pull_requests SELECT * FROM copied; DROP TABLE copied;")).unwrap();
+
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let stored: String = store.conn.query_row("SELECT sql FROM sqlite_schema WHERE type='table' AND name='pull_requests'", [], |row| row.get(0)).unwrap();
+    assert_eq!(stored, declared, "the table is the one the schema declares");
+    assert!(store.load().unwrap().pull_requests[&id(OLD, 42)].identity.is_verified(), "its records are kept");
+    gone(&mut store, &id(OLD, 42));
+    assert!(store.load().unwrap().pull_requests[&id(OLD, 42)].identity.locator().is_some());
+    assert_eq!(count(&store, "SELECT count(*) FROM pragma_foreign_key_check"), 0);
+}
+
+#[test]
+fn review_removing_a_pr_keeps_the_project_of_its_tasks_metrics() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    ended_task_in_lumo(&mut store);
+    let lumo = id(OLD, 42);
+    execute(&mut store, &Actor::System, "reused", observe(&lumo, OLD, 1_000, PrAddressVerdict::NamesAnotherPr));
+    assert!(store.load().unwrap().pull_requests[&lumo].identity.is_unresolvable());
+
+    execute(&mut store, &user(), "detach", Command::DetachPr { pr_id: lumo.clone(), at: 2_000 });
+
+    assert!(matches!(store.load().unwrap().pull_requests[&lumo].tracking, PrTracking::Detached { .. }));
+    assert_eq!(metrics_project(&store).as_deref(), Some("lumo"), "the task still counts under the project it had");
+}
+
+#[test]
+fn review_weeks_older_than_90_days_count_under_the_current_name() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    ended_task_in_lumo(&mut store);
+    let finished: i64 = store.conn.query_row("SELECT finished_at FROM task_metrics WHERE task_id='task-1'", [], |row| row.get(0)).unwrap();
+    let tx = store.conn.unchecked_transaction().unwrap();
+    assert_eq!(crate::testing::tasks_into_weeks(&tx, finished + 91 * crate::testing::DAY_MS, 10).unwrap(), 1);
+    tx.commit().unwrap();
+    let weeks = |store: &DomainStore| -> Vec<(String, i64)> {
+        store.conn.prepare("SELECT project,sum(tasks) FROM metric_weeks GROUP BY project").unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    };
+    assert_eq!(weeks(&store), [("lumo".to_owned(), 1)]);
+
+    let renamed = "ana/lumen";
+    register(&mut store, "task-2", &Actor::Agent { agent_id: "agent-2".into() }, renamed, 42);
+    execute(&mut store, &Actor::System, "observe", observe(&id(OLD, 42), OLD, 1_000, confirmed("key-a", renamed)));
+
+    assert_eq!(weeks(&store), [("lumen".to_owned(), 1)], "the old weeks count under the new name");
 }
