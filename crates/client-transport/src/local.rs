@@ -94,11 +94,54 @@ struct Pairing {
     home: std::path::PathBuf,
     signer: std::sync::Mutex<Option<Signer>>,
     replaced: std::sync::atomic::AtomicBool,
+    /// What the user is told once about a pairing made again on its own.
+    notice: std::sync::Mutex<Option<String>>,
+}
+
+/// Why alondrad refused a signed request in a way a new pairing mends.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Rejection {
+    /// It knows the device, with another key.
+    WrongSignature,
+    /// It no longer has the device: someone unpaired this terminal.
+    NotPaired,
+}
+
+impl Rejection {
+    fn of(status: u16, answer: &[u8]) -> Option<Self> {
+        if status != 401 {
+            return None;
+        }
+        match serde_json::from_slice::<Value>(answer).ok()?["error"].as_str()? {
+            "wrong signature" => Some(Rejection::WrongSignature),
+            "device not paired" => Some(Rejection::NotPaired),
+            _ => None,
+        }
+    }
 }
 
 impl Pairing {
     fn at(home: std::path::PathBuf) -> Self {
-        Pairing { home, signer: std::sync::Mutex::new(None), replaced: std::sync::atomic::AtomicBool::new(false) }
+        Pairing {
+            home,
+            signer: std::sync::Mutex::new(None),
+            replaced: std::sync::atomic::AtomicBool::new(false),
+            notice: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn take_notice(&self) -> Option<String> {
+        self.notice.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+    }
+
+    fn tell(&self, rejection: Rejection) {
+        if rejection == Rejection::NotPaired {
+            let host = computer_name();
+            *self.notice.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(trf!(
+                "This Mac no longer had this terminal among its devices; it paired again as “Terminal ({host})”.",
+                "Este Mac ya no tenía este terminal entre sus dispositivos; se ha vuelto a emparejar como «Terminal ({host})»."
+            ));
+        }
     }
 
     fn cache(&self) -> std::sync::MutexGuard<'_, Option<Signer>> {
@@ -124,7 +167,8 @@ impl Pairing {
     }
 
     /// alondrad knows the stored device but not with the stored key, as a home paired twice at
-    /// once was left. Pairs again, once per process, unless another process already did.
+    /// once was left, or no longer knows the device at all. Pairs again, once per process, unless
+    /// another process already did.
     fn replace_rejected(&self, rejected: &Signer, unsigned: &Client) -> Result<Option<Signer>> {
         let mut cache = self.cache();
         let _lock = self.lock()?;
@@ -269,15 +313,15 @@ impl LocalRoute {
 
 impl Local for LocalRoute {
     /// A request to this Mac's alondrad, sent once more after pairing again when alondrad
-    /// rejects the stored key: a 401 is refused before anything runs.
+    /// rejects the stored key or no longer has the device: a 401 is refused before anything runs.
     fn send(&self, request: Request<'_>, observer: Option<&ResponseObserver>) -> Result<(u16, Vec<u8>)> {
         let signer = self.pairing.as_ref().and_then(|pairing| pairing.current());
         let (status, answer) = self.send_local(&request, signer.as_ref(), observer)?;
         if let (Some(pairing), Some(rejected)) = (&self.pairing, &signer)
-            && status == 401
-            && serde_json::from_slice::<Value>(&answer).is_ok_and(|value| value["error"] == "wrong signature")
+            && let Some(rejection) = Rejection::of(status, &answer)
             && let Ok(Some(fresh)) = pairing.replace_rejected(rejected, &self.unsigned())
         {
+            pairing.tell(rejection);
             return self.send_local(&request, Some(&fresh), observer);
         }
         Ok((status, answer))
@@ -310,6 +354,11 @@ impl Local for LocalRoute {
     fn bounded(&self, timeout: Duration) -> Arc<dyn Local> {
         Arc::new(LocalRoute { agent: agent(timeout), timeout, ..self.clone() })
     }
+}
+
+/// Said once when this terminal paired again on its own.
+pub(crate) fn notice() -> Option<String> {
+    PAIRING.take_notice()
 }
 
 /// Whether a request that failed with `error` never left this machine.
@@ -591,6 +640,10 @@ mod pairing_tests {
             self.state.0.lock().unwrap().devices.push((device.into(), public(key)));
         }
 
+        fn forget_devices(&self) {
+            self.state.0.lock().unwrap().devices.clear();
+        }
+
         fn counts(&self) -> (usize, usize) {
             let seen = self.state.0.lock().unwrap();
             (seen.pairings, seen.pairs)
@@ -795,15 +848,23 @@ mod pairing_tests {
     }
 
     #[test]
-    fn an_unpaired_device_is_not_paired_again() {
+    fn a_terminal_whose_device_was_removed_pairs_again_once_and_says_so() {
         let home = new_home();
         let daemon = Daemon::start(1, false);
-        write_pair(&home, "device-revoked", &key(1));
+        write_pair(&home, "device-removed", &key(1));
+        daemon.enter();
         let pairing = Arc::new(Pairing::at(home.to_path_buf()));
         let client = daemon.client(&pairing);
+        assert_eq!(client.get::<Value>("/views/home").unwrap()["ok"], true);
+        assert_eq!(daemon.counts(), (1, 1));
+        let stored = assert_stored_pair_matches(&daemon, &pairing);
+        assert_ne!(stored.device, "device-removed");
+        assert!(pairing.take_notice().is_some_and(|notice| notice.contains("Terminal (")));
+        assert!(pairing.take_notice().is_none(), "it is said once");
+
+        daemon.forget_devices();
         assert!(format!("{:#}", client.get::<Value>("/views/home").unwrap_err()).contains("device not paired"));
-        assert_eq!(daemon.counts(), (0, 0));
-        assert_eq!(pairing.stored().unwrap().device, "device-revoked");
+        assert_eq!(daemon.counts(), (1, 1), "a process pairs again at most once");
     }
 }
 

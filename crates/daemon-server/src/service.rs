@@ -98,6 +98,21 @@ pub(crate) enum DirectRefusal {
     Rejected(String),
     /// From a device revoked on this Mac and signed by it: the sealed answer saying so.
     Revoked(Vec<u8>),
+    /// Refused to a device whose signature holds, sealed to its keys: over a path anyone could
+    /// answer on, only this proves the Mac refused. `code` is the refusal's name on the wire.
+    Sealed { code: &'static str, detail: Option<String>, bytes: Vec<u8> },
+}
+
+impl DirectRefusal {
+    /// The HTTP status a sealed refusal travels with.
+    pub(crate) fn status_of(code: &str) -> u16 {
+        match code {
+            "busy" => 503,
+            "expired" => 401,
+            "idempotency_conflict" => 409,
+            _ => 400,
+        }
+    }
 }
 
 /// A live executor owns the receipt until response upload finishes. A lease
@@ -1352,6 +1367,7 @@ impl Service {
                 DirectRefusal::Conflict => (409, "idempotency_conflict"),
                 DirectRefusal::Rejected(_) => (400, "request_rejected"),
                 DirectRefusal::Revoked(_) => (403, "device_revoked"),
+                DirectRefusal::Sealed { code, .. } => (DirectRefusal::status_of(code), *code),
             };
             // An envelope refused before it can be opened has no trustworthy operation name.
             log!("device request rejected: operation=encrypted_request transport=Direct status={status} reason={reason}");
@@ -1371,17 +1387,25 @@ impl Service {
         };
         self.require_device_approval(&envelope.sender, &device, Transport::Direct)
             .map_err(|_| self.revoked_refusal(&envelope))?;
-        envelope
-            .verify_signature(&device.signing, &envelope.sender, &self.mac_id, &self.mac_id, self.envelope_now())
-            .map_err(|_| DirectRefusal::Unauthorized)?;
-        let refusal = |error: anyhow::Error| {
-            if error.is::<ReusedRequestId>() {
-                DirectRefusal::Conflict
+        if let Err(error) = envelope.verify_signature(&device.signing, &envelope.sender, &self.mac_id, &self.mac_id, self.envelope_now()) {
+            let signed_but_late = error == alondra_e2e::Error::Expired
+                && envelope.verify_signature(&device.signing, &envelope.sender, &self.mac_id, &self.mac_id, envelope.expires_at_ms).is_ok();
+            return Err(if signed_but_late {
+                self.sealed_refusal(&envelope, &device, "expired", None).unwrap_or(DirectRefusal::Unauthorized)
             } else {
-                DirectRefusal::Rejected(format!("{error:#}"))
-            }
-        };
+                DirectRefusal::Unauthorized
+            });
+        }
         let work = Work { request_id: envelope.request_id.clone(), envelope };
+        let refusal = |error: anyhow::Error| {
+            let (code, detail, plain) = if error.is::<ReusedRequestId>() {
+                ("idempotency_conflict", None, DirectRefusal::Conflict)
+            } else {
+                let detail = format!("{error:#}");
+                ("rejected", Some(detail.clone()), DirectRefusal::Rejected(detail))
+            };
+            self.sealed_refusal(&work.envelope, &device, code, detail).unwrap_or(plain)
+        };
         let mut prepared = loop {
             let finished = self.inflight.done.notified();
             tokio::pin!(finished);
@@ -1410,6 +1434,41 @@ impl Service {
         self.require_device_approval(&work.envelope.sender, &device, Transport::Direct)
             .map_err(|_| DirectRefusal::Unauthorized)?;
         Ok((response, lease))
+    }
+
+    /// The refusal `code` sealed to the device that signed `request`.
+    fn sealed_refusal(&self, request: &Envelope, device: &Device, code: &'static str, detail: Option<String>) -> Option<DirectRefusal> {
+        let answer = json!({"status": DirectRefusal::status_of(code), "refusal": code, "detail": detail,
+            "body": {"error": code, "detail": detail}});
+        let payload = serde_json::to_vec(&answer).ok()?;
+        let envelope = Envelope::seal_random(
+            EnvelopeContext {
+                route: &self.mac_id,
+                sender: &self.mac_id,
+                recipient: &request.sender,
+                request_id: &request.request_id,
+                kind: "response",
+                expires_at_ms: self.envelope_now() + 600_000,
+            },
+            &payload,
+            &self.signing,
+            &device.agreement,
+        )
+        .ok()?;
+        Some(DirectRefusal::Sealed { code, detail, bytes: serde_json::to_vec(&envelope).ok()? })
+    }
+
+    /// That this Mac is too busy to take `request` now, sealed to its device when its signature
+    /// holds, so the device knows nothing ran.
+    pub(crate) fn busy_proof(&self, request: &Envelope) -> Option<Vec<u8>> {
+        let device = self.devices.get(&request.sender).filter(|device| {
+            request.kind == "request"
+                && request.verify_signature(&device.signing, &request.sender, &self.mac_id, &self.mac_id, self.envelope_now()).is_ok()
+        })?;
+        match self.sealed_refusal(request, &device, "busy", None)? {
+            DirectRefusal::Sealed { bytes, .. } => Some(bytes),
+            _ => None,
+        }
     }
 
     /// A device revoked here that signs its request is told so, sealed to its own keys; anyone

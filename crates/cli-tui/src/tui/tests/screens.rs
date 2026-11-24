@@ -175,7 +175,7 @@ pub(super) fn app_on(screen: Screen, home: views::View) -> App {
     let (tx, _rx) = std::sync::mpsc::sync_channel(64);
     let mut app = App::new(tx);
     app.screen = screen;
-    app.on_msg(Msg::ViewHome(Ok(home)));
+    app.on_msg(Msg::home(Ok(home)));
     app.reconcile();
     app
 }
@@ -283,7 +283,7 @@ fn split_group_navigation_reaches_waiting_in_both_directions() {
                 assert!(app.list_scroll > 0);
             }
             let selected = app.sel.clone();
-            app.on_msg(Msg::ViewHome(Ok(home.clone())));
+            app.on_msg(Msg::home(Ok(home.clone())));
             assert_eq!(app.sel, selected, "refresh keeps the selected occurrence");
             assert_eq!(app.sel_idx, index, "refresh keeps its position");
         }
@@ -516,7 +516,7 @@ fn the_completed_header_offers_clear_completed_and_shift_a_empties_it_at_once() 
     for task in cleared.tasks.values_mut().filter(|task| task.state == TaskState::Done) {
         task.archived = true;
     }
-    app.on_msg(Msg::ViewHome(Ok(build(&cleared, &live, "tasks"))));
+    app.on_msg(Msg::home(Ok(build(&cleared, &live, "tasks"))));
     let after = rendered(&mut app, 100, 30);
     dump("tasks (completed, cleared and confirmed)", &after);
     assert!(!after.contains(NIGHTLY) && !after.contains("COMPLETADAS"), "the page opened before clearing does not stay: {after}");
@@ -546,7 +546,7 @@ fn fixture_view(name: &str) -> views::View {
 fn card_screen(card: views::View, lang: crate::i18n::Lang) -> App {
     let (tx, _rx) = std::sync::mpsc::sync_channel(64);
     let mut app = App::new(tx);
-    app.on_msg(Msg::ViewHome(Ok(fixture_view("home-tui.json"))));
+    app.on_msg(Msg::home(Ok(fixture_view("home-tui.json"))));
     app.reconcile();
     crate::i18n::set_for_this_thread(lang);
     app.view_navigation.push(card.key.clone());
@@ -1256,7 +1256,7 @@ fn a_direct_mac_tab_says_whether_it_answers() {
     let mut studio = App::with_target(tx, crate::test_mac("mac-studio", "Studio"));
     assert_eq!(studio.mac_tab(false).name, "Studio");
     assert_eq!(studio.mac_tab(false).status, MacStatus::Connecting);
-    studio.on_msg(Msg::ViewHome(Err(crate::client::availability::ViewFailure { error: anyhow::anyhow!("unreachable"), availability: crate::client::availability::Availability::Unavailable })));
+    studio.on_msg(Msg::home(Err(crate::client::availability::ViewFailure { error: anyhow::anyhow!("unreachable"), availability: crate::client::availability::Availability::Unavailable })));
     assert_eq!(studio.mac_tab(false).status, MacStatus::Offline);
     use alondra_client_port::transport::RouteKind;
     assert_eq!(MacStatus::direct(false, true, Some(RouteKind::Lan)), MacStatus::Lan);
@@ -1357,7 +1357,7 @@ fn sign_in_inbox(lang: crate::i18n::Lang, need: &str) -> App {
     home["sections"][0]["items"][0]["title"] = need.into();
     let (tx, _rx) = std::sync::mpsc::sync_channel(64);
     let mut app = App::new(tx);
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(home).unwrap())));
+    app.on_msg(Msg::home(Ok(serde_json::from_value(home).unwrap())));
     app.reconcile();
     crate::i18n::set_for_this_thread(lang);
     app.sel = Some(Key("a98d034b-249e-4487-a89b-57de38c26372".into()));
@@ -1506,7 +1506,7 @@ fn split_group_selection_survives_rows_inserted_before_it() {
     domain.tasks.insert(inserted.id.clone(), inserted);
     turn_runs(&mut domain, "t-000", &agent.0);
     domain.revision += 1;
-    app.on_msg(Msg::ViewHome(Ok(build(&domain, &live, "tasks"))));
+    app.on_msg(Msg::home(Ok(build(&domain, &live, "tasks"))));
     assert_eq!(app.sel.as_ref(), Some(&group_ids[1]));
     assert_eq!(app.sel_idx, position + 1);
     assert_eq!(app.selected_view_key(), target, "the occurrence keeps its original destination");

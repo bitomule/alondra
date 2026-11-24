@@ -1,5 +1,5 @@
 //! What a TUI restarting on a new binary hands to the new process: the open screen, the
-//! selection and scroll, and the text being written. Saved before `exec`, read and deleted by
+//! selection and scroll, the text being written, and the answers no Mac has confirmed yet. Saved before `exec`, read and deleted by
 //! the process that starts.
 
 use std::path::{Path, PathBuf};
@@ -8,6 +8,7 @@ use alondra_domain_rules::AgentId;
 use serde::{Deserialize, Serialize};
 
 use super::dropped::Chip;
+use super::optimistic::Unconfirmed;
 use super::tasks::TaskKey;
 use super::{Key, Target};
 
@@ -32,6 +33,15 @@ pub struct Restore {
     pub agent_scroll: usize,
     pub agent_detail_scroll: usize,
     pub composer: Option<OpenComposer>,
+    #[serde(default)]
+    pub unconfirmed: Vec<MacAnswers>,
+}
+
+/// The answers on their way to one Mac: `mac` is a paired Mac's id, none for this Mac.
+#[derive(Serialize, Deserialize)]
+pub struct MacAnswers {
+    pub mac: Option<String>,
+    pub answers: Vec<Unconfirmed>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -110,6 +120,7 @@ mod tests {
             agent_scroll: 0,
             agent_detail_scroll: 0,
             composer: Some(OpenComposer { target: Target::General { send: true }, text: "half a reply".into(), chips: vec![chip] }),
+            unconfirmed: vec![],
         };
         let path = save_in(&dir, &restore).unwrap();
 

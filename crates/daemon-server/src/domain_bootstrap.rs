@@ -683,7 +683,9 @@ async fn devices(
     let service = state.service.get();
     let now = alondra_core::now_millis();
     let usage = state.auth.usage().snapshot(now);
+    let own = crate::device_expiry::own_terminal(&state.home);
     let list: Vec<Value> = state.auth.list().into_iter()
+        .filter(|d| own.as_deref() != Some(d.id.as_str()))
         .map(|d| {
             let origin = service.map_or("mac", |service| service.device_origin(&d.id));
             let used = usage.devices.get(&d.id);
@@ -797,6 +799,12 @@ async fn revoke_device(
 ) -> Response {
     if let Some(refused) = local_only(&peer, &headers) {
         return refused;
+    }
+    if crate::device_expiry::own_terminal(&state.home).as_deref() == Some(id.as_str()) {
+        return crate::domain_api::domain_error(DomainError::new(
+            "own_terminal",
+            "this Mac's own terminal cannot be unpaired: it reaches Alondra on this Mac itself",
+        ));
     }
     let revoked = match tokio::task::spawn_blocking(move || state.revoke_device(&id)).await {
         Ok(Ok(revoked)) => revoked,
@@ -1605,6 +1613,36 @@ mod tests {
         assert_eq!(body["devices"][0]["last_seen"], now - 60_000);
         assert_eq!(body["devices"][0]["push_failing"], true);
         assert_eq!(body["expired"], json!([{"id": "phone-recent", "name": "Old iPhone", "reason": "unused", "days": 30.0, "expired_at_ms": now - 3_600_000}]));
+    }
+
+    #[tokio::test]
+    async fn this_macs_own_terminal_is_neither_listed_nor_unpaired() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*home).unwrap();
+        drop(crate::engine_tests::open(&home).unwrap());
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let pair = |name: &str, seed: u8| {
+            let key = STANDARD.encode(SigningKey::from_slice(&[seed; 32]).unwrap().verifying_key().to_sec1_bytes());
+            state.auth.pair(&state.auth.new_pairing_code(), name, &key).unwrap().id
+        };
+        let terminal = pair("Terminal (studio)", 7);
+        let phone = pair("iPhone", 8);
+        std::fs::write(home.join("tui-device"), format!("{terminal}\n")).unwrap();
+        let local = || ConnectInfo("127.0.0.1:4000".parse::<SocketAddr>().unwrap());
+
+        let listed = devices(State(state.clone()), local(), HeaderMap::new()).await;
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(listed.into_body(), 1 << 20).await.unwrap()).unwrap();
+        let ids: Vec<&str> = body["devices"].as_array().unwrap().iter().filter_map(|d| d["id"].as_str()).collect();
+        assert_eq!(ids, [phone.as_str()], "the list holds the devices that use this Mac from elsewhere");
+
+        let refused = revoke_device(State(state.clone()), local(), HeaderMap::new(), RoutePath(terminal.clone())).await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(refused.into_body(), 1 << 20).await.unwrap()).unwrap();
+        assert_eq!(body["code"], "own_terminal");
+        assert!(state.auth.list().iter().any(|device| device.id == terminal), "the terminal stays paired");
+
+        let revoked = revoke_device(State(state.clone()), local(), HeaderMap::new(), RoutePath(phone.clone())).await;
+        assert_eq!(revoked.status(), StatusCode::OK);
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::Key;
@@ -18,13 +19,13 @@ pub const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_MS: [i64; 5] = [1_000, 2_000, 4_000, 8_000, 15_000];
 
 /// What the notice names when an answer does not arrive in time.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Answer {
     pub card: String,
     pub label: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Sending {
     target: Option<Key>,
     epoch: String,
@@ -40,6 +41,17 @@ struct Sending {
 struct Applied {
     version: Option<String>,
     epoch: String,
+    /// The last view request that left before the daemon settled it: no answer to it or to an
+    /// earlier one brings the card back.
+    asked_before: u64,
+}
+
+/// An answer still on its way when the terminal restarts: the new process goes on sending it, with
+/// the same command, and keeps its card where it was.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Unconfirmed {
+    command: String,
+    sending: Sending,
 }
 
 /// An action the daemon answered, and what that means for its card.
@@ -122,6 +134,24 @@ impl Optimistic {
         true
     }
 
+    /// How many answers the daemon has not confirmed yet.
+    pub fn unconfirmed_count(&self) -> usize {
+        self.sending.len()
+    }
+
+    /// The answers still on their way, for the process that takes over from this one.
+    pub fn unconfirmed(&self) -> Vec<Unconfirmed> {
+        self.sending.iter().map(|(command, sending)| Unconfirmed { command: command.clone(), sending: sending.clone() }).collect()
+    }
+
+    /// Takes over the answers a previous process left on their way: each is sent again at once.
+    pub fn resume(&mut self, carried: Vec<Unconfirmed>, now: i64) {
+        for Unconfirmed { command, mut sending } in carried {
+            sending.retry_at = Some(now);
+            self.sending.entry(command).or_insert(sending);
+        }
+    }
+
     /// The requests whose wait is over, to send again now.
     pub fn due(&mut self, now: i64) -> Vec<Value> {
         self.sending.values_mut()
@@ -144,27 +174,30 @@ impl Optimistic {
             .collect()
     }
 
-    /// The daemon answered `command`. Applied, its card stays out until a view other than `shown`
-    /// arrives, even if it had come back as overdue; not applied, it shows again where it was.
-    pub fn settle(&mut self, command: &str, applied: bool, shown: Option<String>) -> Option<Settled> {
+    /// The daemon answered `command`. Applied, its card stays out until a view other than `shown`,
+    /// asked for after the ticket `asked_before`, arrives, even if it had come back as overdue; not
+    /// applied, it shows again where it was.
+    pub fn settle(&mut self, command: &str, applied: bool, shown: Option<String>, asked_before: u64) -> Option<Settled> {
         let s = self.sending.remove(command)?;
         let others = s.target.as_ref().is_some_and(|key| self.is_sending(key));
         if applied && let Some(key) = &s.target {
-            self.applied.insert(key.clone(), Applied { version: shown, epoch: s.epoch.clone() });
+            self.applied.insert(key.clone(), Applied { version: shown, epoch: s.epoch.clone(), asked_before });
         }
         Some(Settled { target: s.target, was_overdue: s.overdue, comes_back: !applied && !s.overdue && !others })
     }
 
-    /// Keeps a card out that the daemon already settled, until a view other than `shown` arrives.
-    pub fn hold(&mut self, key: Key, shown: Option<String>, epoch: String) {
-        self.applied.insert(key, Applied { version: shown, epoch });
+    /// Keeps a card out that the daemon already settled, until a view other than `shown`, asked
+    /// for after the ticket `asked_before`, arrives.
+    pub fn hold(&mut self, key: Key, shown: Option<String>, epoch: String, asked_before: u64) {
+        self.applied.insert(key, Applied { version: shown, epoch, asked_before });
     }
 
-    /// A view arrived: whatever it shows of an applied action is the daemon's word from now on. A
-    /// view of another data epoch drops what was sent for the old one.
-    pub fn reconcile(&mut self, version: &str, epoch: &str) {
+    /// A view arrived, answering the request with `ticket`: unless it was asked for before the
+    /// daemon settled an action, whatever it shows of that action is the daemon's word from now
+    /// on. A view of another data epoch drops what was sent for the old one.
+    pub fn reconcile(&mut self, version: &str, epoch: &str, ticket: u64) {
         self.sending.retain(|_, s| s.epoch == epoch);
-        self.applied.retain(|_, a| a.version.as_deref() == Some(version) && a.epoch == epoch);
+        self.applied.retain(|_, a| (a.version.as_deref() == Some(version) || ticket <= a.asked_before) && a.epoch == epoch);
     }
 }
 
@@ -174,6 +207,7 @@ mod tests {
     use serde_json::json;
 
     const NOW: i64 = 1_000_000;
+    const LATER: u64 = 1;
 
     fn request(command: &str, epoch: &str) -> Value {
         json!({"command_id": command, "data_epoch": epoch, "action_id": format!("ans:{command}"), "option_id": "yes", "input": {}})
@@ -199,21 +233,31 @@ mod tests {
     #[test]
     fn no_view_brings_back_a_card_whose_answer_is_still_on_its_way() {
         let mut optimistic = sent("c1", "card");
-        optimistic.reconcile("v-old", "e1");
-        optimistic.reconcile("v-new", "e1");
+        optimistic.reconcile("v-old", "e1", LATER);
+        optimistic.reconcile("v-new", "e1", LATER);
         assert!(optimistic.hides(&Key("card".into())), "only the daemon's answer settles it");
     }
 
     #[test]
     fn an_applied_answer_stays_out_until_a_newer_view_than_the_one_shown_arrives() {
         let mut optimistic = sent("c1", "card");
-        let settled = optimistic.settle("c1", true, Some("v1".into())).unwrap();
+        let settled = optimistic.settle("c1", true, Some("v1".into()), 0).unwrap();
         assert_eq!(settled, Settled { target: Some(Key("card".into())), was_overdue: false, comes_back: false });
-        optimistic.reconcile("v1", "e1");
+        optimistic.reconcile("v1", "e1", LATER);
         assert!(optimistic.hides(&Key("card".into())), "the view rendered before the answer cannot bring it back");
-        optimistic.reconcile("v2", "e1");
+        optimistic.reconcile("v2", "e1", LATER);
         assert!(!optimistic.hides(&Key("card".into())), "a newer view is the daemon's word");
         assert!(optimistic.is_empty());
+    }
+
+    #[test]
+    fn a_view_asked_for_before_the_daemon_confirmed_the_answer_cannot_bring_its_card_back() {
+        let mut optimistic = sent("c1", "card");
+        optimistic.settle("c1", true, None, 4).unwrap();
+        optimistic.reconcile("v-rendered-before", "e1", 4);
+        assert!(optimistic.hides(&Key("card".into())), "asked for before the daemon applied it, it may still list the card");
+        optimistic.reconcile("v-rendered-after", "e1", 5);
+        assert!(!optimistic.hides(&Key("card".into())), "a view asked for afterwards is the daemon's word");
     }
 
     #[test]
@@ -231,20 +275,20 @@ mod tests {
     fn an_overdue_answer_that_arrives_takes_the_card_away_and_one_refused_leaves_it_where_it_is() {
         let mut optimistic = sent("c1", "card");
         optimistic.expire(NOW + CONFIRMATION_MS);
-        let settled = optimistic.settle("c1", true, Some("v1".into())).unwrap();
+        let settled = optimistic.settle("c1", true, Some("v1".into()), 0).unwrap();
         assert!(settled.was_overdue && !settled.comes_back);
         assert!(optimistic.hides(&Key("card".into())));
 
         let mut optimistic = sent("c1", "card");
         optimistic.expire(NOW + CONFIRMATION_MS);
-        let settled = optimistic.settle("c1", false, None).unwrap();
+        let settled = optimistic.settle("c1", false, None, 0).unwrap();
         assert!(!settled.comes_back, "it is already back");
     }
 
     #[test]
     fn a_refused_answer_brings_its_card_back_at_once() {
         let mut optimistic = sent("c1", "card");
-        let settled = optimistic.settle("c1", false, Some("v1".into())).unwrap();
+        let settled = optimistic.settle("c1", false, Some("v1".into()), 0).unwrap();
         assert!(settled.comes_back);
         assert!(!optimistic.hides(&Key("card".into())));
     }
@@ -289,9 +333,9 @@ mod tests {
     #[test]
     fn a_view_of_another_data_epoch_drops_what_was_sent_for_the_old_one() {
         let mut optimistic = sent("c1", "card");
-        optimistic.reconcile("v1", "e2");
+        optimistic.reconcile("v1", "e2", LATER);
         assert!(!optimistic.hides(&Key("card".into())));
-        assert!(optimistic.settle("c1", true, None).is_none(), "its answer no longer counts");
+        assert!(optimistic.settle("c1", true, None, 0).is_none(), "its answer no longer counts");
         assert!(optimistic.is_empty());
     }
 }

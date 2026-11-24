@@ -184,7 +184,11 @@ async fn hello(State(direct): State<Arc<Direct>>) -> Response {
 
 async fn request(State(direct): State<Arc<Direct>>, body: Bytes) -> Response {
     let Ok(_permit) = direct.permits.try_acquire() else {
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, "busy");
+        let proof = serde_json::from_slice::<Envelope>(&body).ok().and_then(|envelope| direct.service.busy_proof(&envelope));
+        return match proof {
+            Some(sealed) => sealed_refusal(StatusCode::SERVICE_UNAVAILABLE, sealed),
+            None => refuse(StatusCode::SERVICE_UNAVAILABLE, "busy"),
+        };
     };
     let Ok(envelope) = serde_json::from_slice::<Envelope>(&body) else {
         return refuse(StatusCode::BAD_REQUEST, "invalid_envelope");
@@ -204,7 +208,16 @@ async fn request(State(direct): State<Arc<Direct>>, body: Bytes) -> Response {
         Err(DirectRefusal::Rejected(detail)) => {
             (StatusCode::BAD_REQUEST, Json(json!({"error": "rejected", "detail": detail}))).into_response()
         }
+        Err(DirectRefusal::Sealed { code, bytes, .. }) => {
+            let status = StatusCode::from_u16(DirectRefusal::status_of(code)).unwrap_or(StatusCode::BAD_REQUEST);
+            sealed_refusal(status, bytes)
+        }
     }
+}
+
+/// A refusal the client can open with its own keys, so it knows the Mac gave it.
+fn sealed_refusal(status: StatusCode, sealed: Vec<u8>) -> Response {
+    (status, [(header::CONTENT_TYPE, "application/json")], sealed).into_response()
 }
 
 fn pairing_error(error: PairingError) -> Response {

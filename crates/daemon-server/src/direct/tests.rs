@@ -206,6 +206,33 @@ async fn unknown_revoked_expired_and_misdirected_envelopes_are_refused() {
 }
 
 #[tokio::test]
+async fn a_refusal_to_a_device_that_proves_who_it_is_is_sealed_to_it_and_to_nobody_else() {
+    let phone = Phone::new("client-a", 30);
+    let stranger = Phone::new("client-b", 40);
+    let f = fixture(&[&phone]).await;
+    assert_eq!(send(&f.base, "/direct/request", &phone.request("op-1", routes::PATH)).await.0, 200);
+    let refusal = |body: &[u8]| phone.open(body)["refusal"].as_str().map(str::to_owned);
+
+    let (status, body) = send(&f.base, "/direct/request", &phone.request("op-1", "/routes?again")).await;
+    assert_eq!((status, refusal(&body).as_deref()), (409, Some("idempotency_conflict")));
+
+    let late = phone.seal("mac-1", "op-2", "request", now_ms() - 1, &json!({"method": "GET", "path": routes::PATH}));
+    let (status, body) = send(&f.base, "/direct/request", &late).await;
+    assert_eq!((status, refusal(&body).as_deref()), (401, Some("expired")), "a late envelope it signed: the clocks differ");
+
+    let mut forged = phone.seal("mac-1", "op-3", "request", now_ms() - 1, &json!({"method": "GET", "path": routes::PATH}));
+    forged.signature = stranger.request("op-3", routes::PATH).signature;
+    let (status, body) = send(&f.base, "/direct/request", &forged).await;
+    assert_eq!((status, serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"].as_str()), (401, Some("unauthorized")));
+
+    let _all = f.direct.permits.try_acquire_many(MAX_CONCURRENT as u32).unwrap();
+    let (status, body) = send(&f.base, "/direct/request", &phone.request("op-4", routes::PATH)).await;
+    assert_eq!((status, refusal(&body).as_deref()), (503, Some("busy")));
+    let (status, body) = send(&f.base, "/direct/request", &stranger.request("op-5", routes::PATH)).await;
+    assert_eq!((status, serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"].as_str()), (503, Some("busy")));
+}
+
+#[tokio::test]
 async fn a_revoked_device_is_told_so_in_a_sealed_answer_only_when_it_proves_who_it_is() {
     let phone = Phone::new("client-a", 30);
     let bystander = Phone::new("client-b", 40);
