@@ -1765,7 +1765,10 @@ fn until_journaled(slice: &Slice, driver: &Driver, events: usize) {
 #[test]
 fn a_takeover_keeps_no_seal_of_what_its_ended_host_observed() {
     let slice = Slice::new();
-    let mut driver = slice.launch_with("consume-and-hold");
+    let mut quick = slice.backend.clone();
+    quick.io_timeout_seconds = 1;
+    let mut driver = slice.launch_with_backend(&quick, "consume-and-hold", capabilities());
+    driver.until_written().unwrap();
     driver.worker.poll().unwrap().expect("the host reports what its Claude does");
     until_journaled(&slice, &driver, 2);
     slice.kill_host_and_daemon(driver);

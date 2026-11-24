@@ -2101,8 +2101,14 @@ impl Driver {
     /// answer on a loaded Mac. The owner's own steps read only a readable host the same way; a
     /// host that ends makes its connection readable, and the read then fails.
     pub fn observe_written(&mut self) -> Result<alondra_store::ObservationAcceptance, Failed> {
-        while !self.worker.readable(WAKE).map_err(adapter("waiting for the SDK host"))? {}
+        self.until_written()?;
         self.observe()
+    }
+
+    /// Returns once the host has written something to read, however long it stays silent first.
+    pub fn until_written(&mut self) -> Result<(), Failed> {
+        while !self.worker.readable(WAKE).map_err(adapter("waiting for the SDK host"))? {}
+        Ok(())
     }
 
     /// The next thing the host observed, committed with the domain's decision, and acknowledged

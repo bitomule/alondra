@@ -496,7 +496,7 @@ impl Admission {
             return false;
         }
         let inner = self.lock();
-        !inner.turns.contains(task) && !covered(&inner, state, task)
+        !inner.turns.contains(task) && !covered(&inner, state, task) && resume_awaiting_its_turn(&inner, state, task, alondra_core::now_millis()).is_none()
     }
 
     /// Whether the gate gave `task` a slot that still counts for it.
@@ -866,10 +866,17 @@ fn admit(domain: &dyn Runtime, state: &DomainState, inner: &mut Inner, key: Key,
 /// A resume the gate let through already reserved the slot of the first turn its node takes: the
 /// reservation moves to that turn, and its memory stays reserved.
 fn carries_slot_over(inner: &mut Inner, state: &DomainState, task: &TaskId, now: Millis) -> bool {
-    let admitted = inner.admitted.iter().find(|(key, at)| matches!(key, Key::Resume(_)) && now - at < IN_FLIGHT && !inner.at_work.contains(key) && task_of(state, key).as_ref() == Some(task));
-    let Some(key) = admitted.map(|(key, _)| key.clone()) else { return false };
+    let Some(key) = resume_awaiting_its_turn(inner, state, task, now) else { return false };
     inner.at_work.insert(key);
     true
+}
+
+/// The resume the gate let through for `task` whose slot no turn took over yet. Until its owner
+/// asks for that turn the task holds the slot, so it is not waiting for another.
+fn resume_awaiting_its_turn(inner: &Inner, state: &DomainState, task: &TaskId, now: Millis) -> Option<Key> {
+    inner.admitted.iter()
+        .find(|(key, at)| matches!(key, Key::Resume(_)) && now - at < IN_FLIGHT && !inner.at_work.contains(key) && task_of(state, key).as_ref() == Some(task))
+        .map(|(key, _)| key.clone())
 }
 
 /// A slot the gate gave `task` is its owner's: taking it marks what waited then, and it stays

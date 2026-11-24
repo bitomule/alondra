@@ -79,6 +79,9 @@ pub struct Seams {
     pub own_cli: Option<std::path::PathBuf>,
     /// The home of the user whose projects the daemon sweeps for open pull requests.
     pub user_home: std::path::PathBuf,
+    /// The socket the daemon serves on, bound by whoever picked the port: nothing else can take
+    /// the port between picking it and serving on it. The daemon serves on a clone of it.
+    pub listener: Option<std::net::TcpListener>,
 }
 
 impl Seams {
@@ -93,6 +96,7 @@ impl Seams {
             world: World::Real,
             own_cli: alondra_host::brew::own_cli(),
             user_home: options::user_home(),
+            listener: None,
         }
     }
 }
@@ -256,9 +260,14 @@ pub(crate) async fn assemble_with(
     let client = state.client();
     let push = Arc::new(push::Push::open(&config.home)?);
     let addr = SocketAddr::new(config.listen, config.port);
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("cannot listen on {addr}"))?;
+    let listener = match &seams.listener {
+        Some(bound) => {
+            let clone = bound.try_clone().with_context(|| format!("cannot share the listener on {addr}"))?;
+            clone.set_nonblocking(true)?;
+            tokio::net::TcpListener::from_std(clone)?
+        }
+        None => tokio::net::TcpListener::bind(addr).await.with_context(|| format!("cannot listen on {addr}"))?,
+    };
     // The producer transport owns the per-home hook socket before any outbox
     // message can be claimed for a session.
     let hooks = alondra_system::hook_socket::bind(&config.home).await?;

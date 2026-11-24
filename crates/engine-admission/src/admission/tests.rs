@@ -1605,3 +1605,21 @@ fn the_most_working_nodes_settings_offers_follow_the_cores_the_macs_probe_report
     domain.ports().provide::<dyn alondra_engine_ports::machine::MachineProbe>(Arc::new(Sized(12)));
     assert_eq!(most_working_nodes(&*domain), 24);
 }
+
+/// A resume the gate admitted holds its slot until its owner asks for the turn that follows: in
+/// between, the node is not waiting for another one, whatever the owner's thread has got to.
+#[test]
+fn a_task_whose_admitted_resume_has_not_asked_for_its_turn_yet_does_not_wait_for_a_slot() {
+    let (_home, domain) = world();
+    create(&domain, "t1");
+    let now = alondra_core::now_millis();
+    start(&domain, "t1", now);
+    let state = domain.state().unwrap();
+    let task = TaskId::from("t1");
+    let mut inner = Inner::default();
+    inner.admitted.push((Key::Resume("agent-t1".into()), now));
+    assert!(resume_awaiting_its_turn(&inner, &state, &task, now).is_some(), "the resume's slot is still its own");
+    assert!(resume_awaiting_its_turn(&inner, &state, &task, now + IN_FLIGHT).is_none(), "a resume past its window holds nothing");
+    assert!(carries_slot_over(&mut inner, &state, &task, now));
+    assert!(resume_awaiting_its_turn(&inner, &state, &task, now).is_none(), "once its turn took the slot, that turn is what counts");
+}
