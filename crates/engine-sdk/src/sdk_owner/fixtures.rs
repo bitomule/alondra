@@ -200,6 +200,16 @@ pub trait Hosts: Default {
     fn strand(&self, folder: &Path);
     /// Whether the native Claude whose start recorded `pid` still runs.
     fn native_runs(&self, pid: i32) -> bool;
+    /// The processes the native Claudes left running in the background (`background-*`), as the
+    /// fake native Claude records them beside its capture.
+    fn background(&self) -> Vec<alondra_process_group::Member>;
+    /// Whether `process`, one of `background`, still runs.
+    fn background_runs(&self, process: &alondra_process_group::Member) -> bool;
+    /// The command a native Claude left running in the background (`background-command`) ends by
+    /// itself.
+    fn release_background_command(&self);
+    /// Ends `processes`, of `background`, and whatever they started.
+    fn end_background(&self, processes: &[alondra_process_group::Member]);
 }
 
 /// A host a test watches: whether anything of it still runs, and a wait until nothing does.
@@ -323,6 +333,23 @@ impl Hosts for ProcessHosts {
 
     fn native_runs(&self, pid: i32) -> bool {
         running(pid)
+    }
+
+    fn background(&self) -> Vec<alondra_process_group::Member> {
+        std::fs::read_to_string(format!("{}.background", self.capture.display())).unwrap_or_default().lines()
+            .filter_map(|line| alondra_process_group::process(line.parse().unwrap()).unwrap()).collect()
+    }
+
+    fn background_runs(&self, process: &alondra_process_group::Member) -> bool {
+        alondra_process_group::alive(process).unwrap()
+    }
+
+    fn release_background_command(&self) {
+        std::fs::write(format!("{}.release", self.capture.display()), "done\n").unwrap();
+    }
+
+    fn end_background(&self, processes: &[alondra_process_group::Member]) {
+        alondra_process_group::end_tree(processes, std::time::Duration::from_secs(5)).unwrap();
     }
 }
 
@@ -657,28 +684,24 @@ pub fn strand_host<H: Hosts>(slice: &Slice<H>, driver: Driver) -> (String, HostW
     (session, processes)
 }
 
-/// The background commands the fake Claude started, by process id.
-pub fn background_commands(slice: &Slice<ProcessHosts>) -> Vec<libc::pid_t> {
-    std::fs::read_to_string(format!("{}.background", slice.hosts.capture.display())).unwrap_or_default().lines().map(|line| line.parse().unwrap()).collect()
-}
-
 pub fn running(pid: libc::pid_t) -> bool {
     // SAFETY: signal 0 only checks that the process exists.
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
 /// Reads the host until the task's lifecycle waits only on the background work Claude left running.
-pub fn until_own_work(slice: &Slice<ProcessHosts>, driver: &mut Driver) {
+pub fn until_own_work<H: Hosts>(slice: &Slice<H>, driver: &mut Driver) {
     while lifecycle(&*slice.domain).activity() != ActivityView::OwnWork {
         driver.observe_written().unwrap();
     }
-    assert!(background_commands(slice).into_iter().all(running), "the background command runs");
+    let background = slice.hosts.background();
+    assert!(!background.is_empty() && background.iter().all(|process| slice.hosts.background_runs(process)), "the background command runs: {background:?}");
 }
 
 /// The host that replaced the stranded one ended the background command with it, the resumed
 /// session is told that command ended and will not report back, and it goes on: its turn ends.
-pub fn assert_told_the_work_ended(slice: &Slice<ProcessHosts>, domain: &Arc<DomainRuntime>, mut driver: Driver, session: &str) {
-    assert!(background_commands(slice).into_iter().all(|pid| !running(pid)), "the background command ended with its host");
+pub fn assert_told_the_work_ended<H: Hosts>(slice: &Slice<H>, domain: &Arc<DomainRuntime>, mut driver: Driver, session: &str) {
+    assert!(slice.hosts.background().iter().all(|process| !slice.hosts.background_runs(process)), "the background command ended with its host");
     assert!(open_card(domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
     assert_eq!(driver.pending_permits(), 1, "the resumed session is told to go on");
     driver.step(&|| false).unwrap();
@@ -938,11 +961,6 @@ impl Slice<ProcessHosts> {
         let pid: i32 = std::fs::read_to_string(format!("{}.background", self.hosts.capture.display())).unwrap().parse().unwrap();
         alondra_process_group::members(alondra_process_group::group(pid).unwrap().unwrap()).unwrap()
             .into_iter().find(|member| member.pid == pid).expect("the background command runs")
-    }
-
-    /// Ends the command Claude left running in the background.
-    pub fn release_background_command(&self) {
-        std::fs::write(format!("{}.release", self.hosts.capture.display()), "done\n").unwrap();
     }
 
     /// A daemon of this release that took over a node running a command in the background on a

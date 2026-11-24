@@ -270,6 +270,27 @@ impl crate::engine_fixtures::owner::Hosts for ModelHosts {
         self.model().runs(u32::try_from(pid).expect("a host's number is positive"))
     }
 
+    fn background(&self) -> Vec<alondra_process_group::Member> {
+        self.model().background()
+    }
+
+    fn background_runs(&self, process: &alondra_process_group::Member) -> bool {
+        self.hosts.descendant_runs(process)
+    }
+
+    fn release_background_command(&self) {
+        use std::os::unix::process::ExitStatusExt as _;
+        let background = self.model().background();
+        let [command] = background.as_slice() else { panic!("one command runs in the background: {background:?}") };
+        self.hosts.end_descendant(command, std::process::ExitStatus::from_raw(0));
+    }
+
+    fn end_background(&self, processes: &[alondra_process_group::Member]) {
+        for process in processes {
+            self.hosts.end_descendant(process, Stop::Kill.status());
+        }
+    }
+
     fn codex_executables(&self, home: &Path) -> (PathBuf, PathBuf) {
         (model_file(&home.join("model-host"), "codex-host.cjs"), model_file(home, "codex-native"))
     }

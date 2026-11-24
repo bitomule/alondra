@@ -314,7 +314,7 @@ fn an_input_that_arrives_while_the_host_closes_reaches_the_host_that_replaces_it
     replacement.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_whose_own_work_runs_after_its_turn_keeps_its_host() {
     let slice = Slice::new();

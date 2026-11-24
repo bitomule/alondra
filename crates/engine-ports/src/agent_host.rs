@@ -74,6 +74,7 @@ pub trait StopHandle: Send + Sync {
     fn process_group(&self) -> Option<i32>;
     fn gone(&self) -> io::Result<bool>;
     fn tree(&self) -> io::Result<Vec<Member>>;
+    fn end_tree(&self, tree: &[Member], grace: Duration) -> io::Result<()>;
     fn footprint(&self) -> io::Result<Option<u64>>;
     /// The native agent the host started: the live member of the host's group whose parent the
     /// host is.
@@ -117,6 +118,12 @@ impl HostStop {
     /// of the host alone leaves running. The host is not one of them.
     pub fn tree(&self) -> io::Result<Vec<Member>> {
         self.0.tree()
+    }
+    /// Ends `tree`, what `tree` listed before the host stopped, and whatever those processes start
+    /// meanwhile: asked first, killed once `grace` passes. A process that is no longer the one
+    /// listed is left alone. An error names what still runs.
+    pub fn end_tree(&self, tree: &[Member], grace: Duration) -> io::Result<()> {
+        self.0.end_tree(tree, grace)
     }
     /// The bytes the host's process group holds; `None` where `process_group` is.
     pub fn footprint(&self) -> io::Result<Option<u64>> {
