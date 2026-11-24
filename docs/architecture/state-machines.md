@@ -629,7 +629,7 @@ states = "crates/domain/src/lifecycle.rs::TaskPhase"
 variants = ["Unstarted", "InProgress", "Delivered", "Finishing", "Completed", "Cancelled"]
 terminals = ["Completed", "Cancelled"]
 initial = ["Unstarted", "InProgress"]
-transitions = ["Unstarted -> InProgress", "Unstarted -> Finishing", "InProgress -> Delivered", "InProgress -> Finishing", "Delivered -> InProgress", "Delivered -> Finishing", "Delivered -> Completed", "Finishing -> Completed", "Finishing -> Cancelled", "Completed -> InProgress", "Cancelled -> InProgress"]
+transitions = ["Unstarted -> InProgress", "Unstarted -> Finishing", "InProgress -> Delivered", "InProgress -> Finishing", "Delivered -> InProgress", "Delivered -> Finishing", "Delivered -> Completed", "Finishing -> Completed", "Finishing -> Cancelled", "Completed -> InProgress", "Cancelled -> InProgress", "Completed -> Delivered", "Cancelled -> Delivered"]
 ```
 
 - **Kind**: explicit, composite. **Defined in**: `crates/domain/src/lifecycle.rs:1099-1196` (`Progress`, `DeliveryGate`, `Delivered`, `Finishing`, `State`, `TaskLifecycle`); transitions in `lifecycle/commands.rs:4-568` (`transition`) and `lifecycle/observations.rs:4-719` (`runtime_fact`); `advanced` in `lifecycle.rs:1668-1704` (copies, applies, bumps the revision, sets `owed_since`).
@@ -679,6 +679,7 @@ transitions = ["Unstarted -> InProgress", "Unstarted -> Finishing", "InProgress 
 | not terminal and not Finishing | Finish [Complete: gate Accepted, no cards except Recovery, no pending inputs] | Finishing{Cleanup + PostMerge + Execution + Work + Callback + Effects + Merge} |
 | Finishing | DrainObserved [obligation present] | removes it; the last one → Completed/Cancelled (`cancelled_through_generation = generation`) |
 | Completed/Cancelled | Reopen | Queued{Implement} |
+| Completed/Cancelled | `AdoptOpenPr` (system) [its PR is open again and no live task has the branch] | Reopen and, in the same command, the PR is delivered again (`settle_open_pr`): Delivered{Review} for the user (`rules.rs:5474-5510`) |
 | Executing/Waiting/Dependency/Delivered with an execution | ExecutionReleased / ExecutionLeftForReview [no work, callbacks or effects] | Session::Absent with what was not consumed |
 
 - **Rejected**: every `Err(Refusal::…)` is typed; `apply` leaves the aggregate untouched (`lifecycle.rs:1662-1666`). In `domain-rules` a refusal becomes a `DomainError` (`refused`, `lifecycle.rs:3198`) and aborts the whole command. Facts on terminal states: `runtime_fact` returns `StaleExecution` because there is no session (`observations.rs:10`). In `Finishing`, every fact other than `HostEnded/HostStopped/TakenOver/TakeoverUnanswered` is taken "unchanged" (only the cursor advances, `observations.rs:21-24`).
