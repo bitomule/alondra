@@ -102,7 +102,7 @@ pub fn main(seams: fn() -> assemble::Seams) -> Result<()> {
             record.reason,
             wait.as_secs()
         );
-        let watcher = relaunch::watcher(&label);
+        let mut watcher = relaunch::watcher(&label);
         let home = alondra_core::config::alondra_home(&env);
         let mut cut_over = start_guard::became_true(|| {
             domain_cutover::read_marker(&home)
@@ -111,7 +111,7 @@ pub fn main(seams: fn() -> assemble::Seams) -> Result<()> {
                 .is_some_and(|marker| marker.phase == domain_cutover::Phase::Committed)
         });
         if start_guard::wait(wait, relaunch::every().min(std::time::Duration::from_secs(2)), || {
-            watcher.as_ref().is_some_and(|w| w.replaced()) || cut_over()
+            watcher.as_mut().is_some_and(|w| w.replaced()) || cut_over()
         }) {
             log!("the binary was replaced or HOME was cut over; exiting now so launchd starts it");
         }
@@ -299,6 +299,7 @@ where
 async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime, seams: assemble::Seams) -> Result<()> {
     // Taken before the port opens: whoever sees this daemon answer may replace its binary at once.
     let upgrades = relaunch::watcher(&config.service_label);
+    let signals = Signals::listen();
     wire_machine(domain.ports());
     let state = domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
     if config.fast_timing {
@@ -306,7 +307,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime, seam
         state.delivery_reviews().limit(delivery_review::Limits::SANDBOX);
     }
     let assembled = assemble::assemble(config, state, seams).await?;
-    supervise(assembled, upgrades).await
+    supervise(assembled, upgrades, signals).await
 }
 
 /// Only a recovered domain may activate the workers that claim deliveries, launch or resume nodes.
@@ -339,7 +340,8 @@ async fn prepare_workers(
 }
 
 /// Watches the assembled daemon until it has to stop, relaunch or hand over its hosts.
-async fn supervise(assembled: assemble::Assembled, upgrades: Option<relaunch::Watcher>) -> Result<()> {
+async fn supervise(assembled: assemble::Assembled, upgrades: Option<relaunch::Watcher>, signals: Signals) -> Result<()> {
+    let Signals { terminate, interrupt, handover } = signals;
     let assemble::Assembled { domain: owners, server, outbox, scheduler, transport, github, orchestrator, connector, machine_watch, gate, .. } = assembled;
     start_guard::served();
     let maintenance = owners.clone();
@@ -353,11 +355,11 @@ async fn supervise(assembled: assemble::Assembled, upgrades: Option<relaunch::Wa
             domain_orchestrator::note_shutdown(&owners, owners.home());
             relaunch_now()
         },
-        () = handed_over() => {
+        () = handed_over(handover) => {
             domain_orchestrator::note_shutdown(&owners, owners.home());
             exit::now(relaunch::RELAUNCH, || log!("leaving the SDK hosts to the daemon launchd started"))
         },
-        signal = terminated() => {
+        signal = terminated(terminate, interrupt) => {
             log!("{signal} received: stopping the SDK hosts, then exiting");
             domain_orchestrator::note_shutdown(&owners, owners.home());
             stop_sdk_owners(owners).await;
@@ -388,10 +390,30 @@ where
     supervise_workers(server, outbox, scheduler, transport, github, orchestrator, connector, gates).await
 }
 
+/// The signals the daemon answers to, listened for before its port opens: a signal sent to a daemon
+/// that already answers must never meet the default action, which ends the process by that signal
+/// instead of the exit it owes its successor.
+struct Signals {
+    terminate: Option<tokio::signal::unix::Signal>,
+    interrupt: Option<tokio::signal::unix::Signal>,
+    handover: Option<tokio::signal::unix::Signal>,
+}
+
+impl Signals {
+    fn listen() -> Self {
+        use tokio::signal::unix::{SignalKind, signal};
+        let on = |kind| signal(kind).ok();
+        Self {
+            terminate: on(SignalKind::terminate()),
+            interrupt: on(SignalKind::interrupt()),
+            handover: on(SignalKind::user_defined1()),
+        }
+    }
+}
+
 /// Resolves on the first SIGTERM or SIGINT, naming it.
-async fn terminated() -> &'static str {
-    use tokio::signal::unix::{SignalKind, signal};
-    let (Ok(mut term), Ok(mut interrupt)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else {
+async fn terminated(term: Option<tokio::signal::unix::Signal>, interrupt: Option<tokio::signal::unix::Signal>) -> &'static str {
+    let (Some(mut term), Some(mut interrupt)) = (term, interrupt) else {
         log!("could not listen for SIGTERM and SIGINT; the daemon stops only when killed");
         return std::future::pending().await;
     };
@@ -402,11 +424,10 @@ async fn terminated() -> &'static str {
 }
 
 /// `alondra doctor --fix` sends SIGUSR1 to a daemon started by hand once launchd holds its job.
-async fn handed_over() {
-    use tokio::signal::unix::{SignalKind, signal};
-    match signal(SignalKind::user_defined1()) {
-        Ok(mut handover) => { handover.recv().await; }
-        Err(_) => std::future::pending().await,
+async fn handed_over(handover: Option<tokio::signal::unix::Signal>) {
+    match handover {
+        Some(mut handover) => { handover.recv().await; }
+        None => std::future::pending().await,
     }
 }
 
@@ -422,6 +443,13 @@ async fn stop_sdk_owners(domain: Arc<domain_runtime::DomainRuntime>) {
 #[cfg(test)]
 mod worker_supervision_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_handover_signal_sent_before_anyone_waits_for_it_is_not_lost() {
+        let signals = Signals::listen();
+        assert_eq!(unsafe { libc::raise(libc::SIGUSR1) }, 0);
+        handed_over(signals.handover).await;
+    }
 
     #[tokio::test]
     async fn the_daemon_stops_when_the_machine_watch_or_the_gate_ends() {

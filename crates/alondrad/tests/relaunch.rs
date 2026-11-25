@@ -450,9 +450,10 @@ fn repeated_failed_starts_stop_hot_looping_until_the_binary_changes() {
     let mut third = Running(fixture.command(true).spawn().unwrap());
     let mut reader = std::io::BufReader::new(third.0.stderr.take().unwrap());
     let mut log = String::new();
-    while !log.contains("before exiting so launchd does not restart it") {
-        assert_ne!(reader.read_line(&mut log).unwrap(), 0, "the third start ended without saying it waits: {log}");
+    while !log.contains("for a replacement") {
+        assert_ne!(reader.read_line(&mut log).unwrap(), 0, "the third start ended without saying it watches its binary: {log}");
     }
+    assert!(log.contains("before exiting so launchd does not restart it"), "{log}");
     until(
         HANG_LIMIT,
         "the third start to record itself",

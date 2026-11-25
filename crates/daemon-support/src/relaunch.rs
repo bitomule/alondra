@@ -119,29 +119,48 @@ pub struct Outcome {
 
 pub struct Watcher {
     path: PathBuf,
-    running: Identity,
+    /// What this daemon was started from. Unknown while the path cannot be read: the first
+    /// identity read then is taken as the running one, so a failed read at start never leaves the
+    /// daemon deaf to upgrades for as long as it lives.
+    running: Option<Identity>,
     rejected: Option<(Identity, clock::Instant)>,
     retry_rejected: Duration,
 }
 
 impl Watcher {
-    pub fn new(path: PathBuf) -> std::io::Result<Self> {
-        let running = identity(&path)?;
-        Ok(Self { path, running, rejected: None, retry_rejected: RETRY_REJECTED })
+    pub fn new(path: PathBuf) -> Self {
+        let mut watcher = Self { path, running: None, rejected: None, retry_rejected: RETRY_REJECTED };
+        if let Err(e) = watcher.baseline() {
+            log!("cannot read {} yet: {e}; it is watched as soon as it can be read", watcher.path.display());
+        }
+        watcher
+    }
+
+    /// The identity this daemon runs from, read now if it never could be.
+    fn baseline(&mut self) -> std::io::Result<Identity> {
+        if let Some(running) = self.running {
+            return Ok(running);
+        }
+        let running = identity(&self.path)?;
+        log!("watching {} for a replacement", self.path.display());
+        self.running = Some(running);
+        Ok(running)
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    pub fn replaced(&self) -> bool {
-        identity(&self.path).is_ok_and(|now| now != self.running)
+    pub fn replaced(&mut self) -> bool {
+        let Ok(running) = self.baseline() else { return false };
+        identity(&self.path).is_ok_and(|now| now != running)
     }
 
     pub fn check(&mut self, preflight: impl FnOnce(&Path) -> Outcome) -> Check {
         let Ok(found) = identity(&self.path) else { return Check::Unchanged };
+        let Ok(running) = self.baseline() else { return Check::Unchanged };
         let waiting_to_retry = self.rejected.is_some_and(|(rejected, at)| rejected == found && alondra_core::clock::since(at) < self.retry_rejected);
-        if found == self.running || waiting_to_retry {
+        if found == running || waiting_to_retry {
             return Check::Unchanged;
         }
         let outcome = preflight(&self.path);
@@ -221,11 +240,7 @@ pub async fn watch(mut watcher: Watcher, every: Duration) {
 /// Where the watcher starts from, when this daemon runs under launchd.
 pub fn watcher(label: &str) -> Option<Watcher> {
     if !supervised(label, |k| std::env::var(k).ok()) { return None; }
-    let path = launch_path()?;
-    match Watcher::new(path.clone()) {
-        Ok(watcher) => Some(watcher),
-        Err(e) => { log!("cannot watch {} for upgrades: {e}", path.display()); None }
-    }
+    Some(Watcher::new(launch_path()?))
 }
 
 pub fn every() -> Duration {
@@ -268,7 +283,7 @@ mod tests {
         std::fs::create_dir(&dir.0).unwrap();
         let bin = dir.0.join("alondrad");
         std::fs::write(&bin, "old").unwrap();
-        let mut watcher = Watcher::new(bin.clone()).unwrap();
+        let mut watcher = Watcher::new(bin.clone());
         let ran = &Cell::new(0);
         let preflight = |passed| move |_: &Path| { ran.set(ran.get() + 1); outcome(passed) };
 
@@ -295,7 +310,7 @@ mod tests {
         std::fs::create_dir(&dir.0).unwrap();
         let bin = dir.0.join("alondrad");
         std::fs::write(&bin, "old").unwrap();
-        let mut watcher = Watcher::new(bin.clone()).unwrap();
+        let mut watcher = Watcher::new(bin.clone());
         watcher.retry_rejected = Duration::ZERO;
         replace(&bin, "new");
         assert!(matches!(watcher.check(|_| outcome(Err("this HOME still holds legacy data"))), Check::Rejected(_)));
@@ -310,9 +325,25 @@ mod tests {
         std::fs::create_dir(&dir.0).unwrap();
         let bin = dir.0.join("alondrad");
         std::fs::write(&bin, "old").unwrap();
-        let mut watcher = Watcher::new(bin.clone()).unwrap();
+        let mut watcher = Watcher::new(bin.clone());
         replace(&bin, "half written");
         assert_eq!(watcher.check(|path| { replace(path, "complete"); outcome(Err("truncated")) }), Check::Unchanged);
+        assert_eq!(watcher.check(|_| outcome(Ok(()))), Check::Relaunch { version: Some("9.9.9".into()) });
+    }
+
+    #[test]
+    fn a_binary_that_cannot_be_read_at_start_is_watched_once_it_can() {
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = Dir(scratch_directory.parent().unwrap().join(format!("alondra-relaunch-unread-{}", crate::auth::random_hex(8))));
+        std::fs::create_dir(&dir.0).unwrap();
+        let bin = dir.0.join("alondrad");
+        let mut watcher = Watcher::new(bin.clone());
+        assert!(!watcher.replaced());
+        assert_eq!(watcher.check(|_| panic!("nothing to preflight")), Check::Unchanged);
+        std::fs::write(&bin, "old").unwrap();
+        assert!(!watcher.replaced(), "the first binary read is the one running");
+        replace(&bin, "new");
+        assert!(watcher.replaced());
         assert_eq!(watcher.check(|_| outcome(Ok(()))), Check::Relaunch { version: Some("9.9.9".into()) });
     }
 
@@ -323,7 +354,7 @@ mod tests {
         std::fs::create_dir(&dir.0).unwrap();
         let bin = dir.0.join("alondrad");
         std::fs::write(&bin, "old").unwrap();
-        let mut watcher = Watcher::new(bin.clone()).unwrap();
+        let mut watcher = Watcher::new(bin.clone());
         std::fs::remove_file(&bin).unwrap();
         assert_eq!(watcher.check(|_| panic!("nothing to preflight")), Check::Unchanged);
     }

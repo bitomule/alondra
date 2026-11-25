@@ -28,6 +28,15 @@ const PAIRING_WAIT: Duration = Duration::from_secs(130);
 /// After the Mac refused this terminal's dial as someone else's, requests go over HTTP this long
 /// before iroh is tried again.
 const IROH_RETRY: Duration = Duration::from_secs(60);
+/// What a path waits for an answer beyond the request's own timeout.
+const REPLY_SLACK: Duration = Duration::from_secs(5);
+
+/// How long a sealed request stays valid. The same bytes go to every path in turn, and the Mac
+/// refuses them once expired, so they must outlive what the paths before the last one can spend:
+/// iroh's connection budget and its whole wait for an answer, then the request's own timeout.
+fn validity(timeout: Duration) -> Duration {
+    (crate::iroh_client::CONNECT_TIMEOUT + timeout + REPLY_SLACK + timeout).min(Duration::from_millis(590_000))
+}
 
 /// One Mac this terminal paired with directly.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -424,7 +433,7 @@ impl Connection {
         use crate::iroh_client::Reply;
         let Some(session) = self.iroh_session() else { return OverIroh::NotSent };
         let name = &self.mac.name;
-        let sent = session.send(bytes, timeout + Duration::from_secs(5));
+        let sent = session.send(bytes, timeout + REPLY_SLACK);
         if matches!(&sent, Ok(Reply::Sealed(_))) || matches!(&sent, Ok(Reply::Refused { error, .. }) if error != "wrong_mac") {
             self.iroh_answered();
         }
@@ -497,7 +506,7 @@ impl Connection {
                 recipient: &self.mac.mac_id,
                 request_id: &request_id,
                 kind: "request",
-                expires_at_ms: now_ms() + timeout.as_millis().min(590_000) as u64,
+                expires_at_ms: now_ms() + validity(timeout).as_millis() as u64,
             },
             &plaintext,
             &SigningKey::from_slice(&B64.decode(&self.mac.signing_key)?)?,
@@ -561,7 +570,7 @@ impl Connection {
             if !known && !self.validate(&route)? {
                 continue;
             }
-            let wait = deadline.saturating_duration_since(Instant::now()) + Duration::from_secs(5);
+            let wait = deadline.saturating_duration_since(Instant::now()) + REPLY_SLACK;
             let mut request = agent(wait)
                 .post(format!("http://{route}/direct/request"))
                 .header("content-type", "application/json");
