@@ -922,8 +922,8 @@ fn sdk_stopping(state: &DomainState, task: &TaskId) -> (bool, Option<alondra_dom
     (interruptible, lifecycle.turn_stop().filter(|_| lifecycle.activity() == alondra_domain::ActivityView::Working))
 }
 
-/// Every state a core test commits is read both ways: the index must say what the state answers
-/// on demand, card by card and task by task.
+/// A state read both ways: the index must say what the state answers on demand, card by card and
+/// task by task. `read_index_tests` checks it after every command of arbitrary histories.
 #[cfg(test)]
 pub(super) fn assert_index_matches(state: &DomainState) {
     for card in state.interactions.values().filter(|card| card.author == super::Author::System || card.system_card == Some(super::SystemCard::Unheard)) {

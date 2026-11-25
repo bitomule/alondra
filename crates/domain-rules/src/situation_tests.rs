@@ -8,7 +8,7 @@ use alondra_domain::{Await, FinishIntent, Owner, Party, TaskPhase, WaitReason};
 use proptest::prelude::*;
 
 #[derive(Clone, Debug)]
-enum Move {
+pub(super) enum Move {
     Sdk(Act),
     /// The SDK node asks two questions together, as one group.
     AskGrouped,
@@ -20,7 +20,7 @@ enum Move {
     AskOrchestrator,
 }
 
-fn moves() -> impl Strategy<Value = Move> {
+pub(super) fn moves() -> impl Strategy<Value = Move> {
     prop_oneof![
         8 => act().prop_map(Move::Sdk),
         1 => Just(Move::AskGrouped),
@@ -30,7 +30,7 @@ fn moves() -> impl Strategy<Value = Move> {
     ]
 }
 
-fn apply(s: &mut DomainState, step: &Move, n: usize) {
+pub(super) fn apply(s: &mut DomainState, step: &Move, n: usize) {
     match step {
         Move::Sdk(act) => perform(s, act, n),
         Move::AskGrouped => {

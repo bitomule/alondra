@@ -131,6 +131,8 @@ mod settled_delivery_tests;
 mod confirmed_effect_tests;
 #[cfg(test)]
 mod situation_tests;
+#[cfg(test)]
+mod read_index_tests;
 pub use attention::*;
 pub use card_contract::*;
 pub use checklist::*;

@@ -324,6 +324,10 @@ bazelisk test //crates/core:alondra_core_test --test_env=RUSTC_BOOTSTRAP=1 \
   --test_arg=-Zunstable-options --test_arg=--report-time --test_output=all --nocache_test_results
 ```
 
+To see where one slow case spends its time, run the test binary Bazel built on that case alone and
+sample it: `sample <pid> 5 -file .scratch/sample.txt`, then `c++filt < .scratch/sample.txt`, which
+demangles Rust's symbols.
+
 The slowest targets, measured in a full run on a busy machine:
 
 | Target | Seconds | Limit |
