@@ -936,6 +936,83 @@ same Mac, one run each (load average 20 to 27), before on main at 7b5e782:
 `//crates/alondrad:relaunch_test` failed in both runs, as in the final measurement above, under the
 bench's load.
 
+## Calm by events, one case per shard (phase 3 of the test-time split, 2026-11-25)
+
+95% of each case was the runner's wait for calm: 25 polls of 2 ms with nothing moving, 150 while
+an input waited on the owner of a host, which looked again only after up to 250 ms. The polls stood
+in for work the clock's count of working threads did not see. Now the count sees it, and the runner
+waits for one condition, looked at only when the count comes back to zero or the runtime's thread
+goes to sleep (`clock::until_idle`, on the condvar the count already had): nothing works, the
+runtime sleeps with no task woken for it, every host is attached and acknowledged, no takeover runs.
+No poll and no new timer decides it; `PATIENCE` (20 s) only names a hang, with each blocking job
+still running by where it was submitted.
+
+What the count now sees:
+
+- each frame the daemon writes to a Claude host, until the host read it and wrote what it answers
+  (`clock::frame_sent` in `provider-claude/src/wire.rs`, `frame_handled` in the doubled host's
+  `host_transport::serve`; a host that ends or stops reading drops the rest);
+- the daemon's blocking jobs, counted since #650 (`clock::spawn_blocking`); a hang now names each
+  one still running by where it was submitted;
+- the daemon's async tasks: the runtime's park and unpark hooks and its injection queue;
+- an owner of a host that waits for the host while something of its own arrives: `Seals::put`
+  rings the bell of each execution the commit issued for, `Seals::wake` (a stop, a slot the
+  admission gate gave) rings every bell, and a ring counts the owner as working before it runs.
+  In production an input or a control no longer waits up to 250 ms for the owner's next look.
+
+Before removing the polls, every case ran with both criteria at once: after the events said calm,
+150 polls of 2 ms had to see no frame and no commit. The first runs named the gaps above one by one
+(a blocking job the runner holds at start, the usage probe, counted as work while it waited; async
+tasks committed after calm; the admission gate's slot reached the owner only on its next look). With them counted, 28 of the 29
+cases kept every checkpoint. `paused-node-coming-back-can-be-paused-again` changed: its pause's
+interrupt used to wait for the owner's next look, and the case's resume, under 250 ms later in real
+time, cancelled it; now the interrupt leaves at once and the task shows its last turn interrupted.
+Removing only the owner's wake restores the old checkpoint (3 of 3 runs); the new one was accepted.
+`engine-sdk`'s `an_input_mid_turn_ends_the_owners_wait_for_its_host_at_once` gives the owner an
+hour-long look: it passes, and fails on a 10 s timeout without the wake.
+
+`shard_count` is the number of cases (29); the runner fails every shard, naming the count to set,
+when they differ.
+
+`scenarios_test --nocache_test_results`, each case's real time, before (main at f0b985ac2, 16
+shards, one run) and after (29 shards, two runs):
+
+| Case | Before | After |
+|---|---:|---:|
+| usage-limit-hours-later-starts-a-new-session | 23.01 s | 1.80 to 1.89 s |
+| paused-node-coming-back-can-be-paused-again | 17.33 s | 1.23 to 1.42 s |
+| report-held-by-a-changed-repository-asks-where-it-goes | 15.35 s | 0.87 to 1.24 s |
+| login-expired-holds-only-its-account | 15.30 s | 1.34 to 2.14 s |
+| answer-waiting-for-a-slot-reaches-the-node-after-a-restart | 14.44 s | 1.69 to 2.54 s |
+| written-answer-waiting-for-a-slot-reads-as-the-answer | 13.83 s | 0.54 to 1.02 s |
+| own-worktree-file-changes-ask-nothing | 13.08 s | 1.81 to 1.93 s |
+| integrated-delivery-presented-again-is-a-report | 12.96 s | 1.75 to 1.91 s |
+| restart-mid-turn-keeps-the-work | 12.13 s | 1.15 to 1.23 s |
+| user-message-survives-a-restart | 11.51 s | 0.99 to 1.60 s |
+| claude-api-errors-raise-a-card-only-when-they-persist | 10.40 s | 1.10 to 1.74 s |
+| transferred-repository-keeps-one-card | 9.68 s | 1.04 to 1.07 s |
+| restart-loses-a-host-and-a-retake-brings-it-back | 9.04 s | 1.53 to 1.69 s |
+| manually-opened-pr-is-never-adopted | 8.68 s | 0.75 to 1.32 s |
+| provider-outage-opens-no-refusal-cards | 8.27 s | 1.24 to 1.40 s |
+| new-session-that-hit-the-limit-goes-on-itself | 8.19 s | 1.68 to 2.46 s |
+| stack-undeclared-retargeted-before-merge | 8.11 s | 1.04 to 1.70 s |
+| orchestrator-leaves-a-task-question-to-its-node | 7.11 s | 0.65 to 1.18 s |
+| merge-waits-for-the-review-github-requires | 6.68 s | 0.71 to 1.20 s |
+| usage-limit-closes-merged-delivery | 6.62 s | 0.98 to 1.09 s |
+| update-replaces-hosts-it-cannot-adopt | 6.61 s | 0.90 to 1.02 s |
+| one-task-refused-while-others-work-asks-after-the-probe | 6.17 s | 1.18 to 1.76 s |
+| draft-pr-delivery-refused-until-ready | 6.12 s | 0.78 to 1.27 s |
+| answering-one-pr-card-keeps-the-other | 4.79 s | 0.77 to 1.28 s |
+| reply-after-login-expired-on-integrated-delivery | 4.59 s | 1.07 to 1.24 s |
+| stack-declared-retargeted-before-merge | 4.23 s | 0.73 to 0.91 s |
+| reply-to-information-takes-it-out-of-the-inbox | 3.57 s | 0.20 to 0.71 s |
+| codex-turn-cut-and-resumed | 0.70 s | 1.07 to 1.54 s |
+| output-naming-a-pr-registers-nothing | 0.57 s | 0.76 to 1.02 s |
+
+The 29 cases sum 269.1 s before and 41.4 and 32.5 s after. The test target took
+33.8 s (longest shard 23.0 + 6.2 s) before and 6.8 and 5.4 s after; a shard now spends more time
+starting and ending its process than in its case.
+
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 
 `engine-admission` and `engine-orchestrator` compile and test without `daemon-engine` and without

@@ -17,10 +17,6 @@ struct Totals {
     passes: u64,
     idle_passes: u64,
     settles: u64,
-    polls: u64,
-    resets: u64,
-    owner_wakes: u64,
-    probing: Duration,
 }
 
 /// The real time each phase of a case took.
@@ -45,7 +41,9 @@ impl Timings {
     }
 
     pub fn settled(&self, since: Instant) {
-        self.totals().settle += since.elapsed();
+        let mut totals = self.totals();
+        totals.settle += since.elapsed();
+        totals.settles += 1;
     }
 
     pub fn checkpointed(&self, since: Instant) {
@@ -61,17 +59,6 @@ impl Timings {
         totals.idle_passes += u64::from(idle);
     }
 
-    /// What one wait for calm did: how many looks it took, how many times activity restarted the
-    /// count, whether it had to outlast the owner's wake, and how long the looks themselves took.
-    pub fn polled(&self, polls: u64, resets: u64, owner_wake: bool, probing: Duration) {
-        let mut totals = self.totals();
-        totals.settles += 1;
-        totals.polls += polls;
-        totals.resets += resets;
-        totals.owner_wakes += u64::from(owner_wake);
-        totals.probing += probing;
-    }
-
     pub fn torn_down(&self, since: Instant) {
         self.totals().teardown += since.elapsed();
     }
@@ -81,15 +68,11 @@ impl Timings {
     pub fn line(&self) -> String {
         let totals = self.totals();
         let settling = format!(
-            "\n  passes {} ({} idle, advance+yield {:.2} s) · settles {} · polls {} · resets {} · owner-wake settles {} · poll bodies {:.2} s",
+            "\n  passes {} ({} idle, advance+yield {:.2} s) · settles {}",
             totals.passes,
             totals.idle_passes,
             totals.advance.as_secs_f64(),
             totals.settles,
-            totals.polls,
-            totals.resets,
-            totals.owner_wakes,
-            totals.probing.as_secs_f64(),
         );
         let mut kinds: Vec<_> = totals.steps.iter().collect();
         kinds.sort_by(|a, b| b.1.cmp(a.1));

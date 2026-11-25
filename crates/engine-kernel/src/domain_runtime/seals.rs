@@ -15,6 +15,8 @@ pub struct Seals {
     /// shot permits out by field; lost ones would strand a task, and a fresh start derives them
     /// again from the store.
     queued: clock::Monitor<Vec<Committed>>,
+    /// The bell of each owner, by the execution it owns, rung when something of it arrives.
+    bells: std::sync::Mutex<Vec<(TaskId, AgentId, std::sync::Weak<clock::Bell>)>>,
     #[cfg(test)]
     before_wake: std::sync::Mutex<Option<Box<dyn FnMut() + Send>>>,
 }
@@ -22,8 +24,27 @@ pub struct Seals {
 impl Seals {
     /// Called by the runtime only after it published the commit that issued `committed`.
     pub fn put(&self, committed: Committed) {
+        let owners = executions(&committed);
         self.queued.lock_or_exit("the SDK seals").push(committed);
         self.queued.notify_all();
+        let mut bells = self.bells.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        bells.retain(|(_, _, bell)| bell.strong_count() > 0);
+        for (task, node, bell) in bells.iter() {
+            if owners.iter().any(|(owner_task, owner_node)| owner_task == task && owner_node == node)
+                && let Some(bell) = bell.upgrade()
+            {
+                bell.ring();
+            }
+        }
+    }
+
+    /// From now on `bell` rings whenever something of `node`'s execution of `task` arrives, for as
+    /// long as its owner keeps it: an owner that waits for its host hears it without waiting on the
+    /// seals.
+    pub fn ring_on(&self, task: &TaskId, node: &AgentId, bell: &std::sync::Arc<clock::Bell>) {
+        let mut bells = self.bells.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        bells.retain(|(_, _, kept)| kept.strong_count() > 0 && !std::ptr::eq(kept.as_ptr(), std::sync::Arc::as_ptr(bell)));
+        bells.push((task.clone(), node.clone(), std::sync::Arc::downgrade(bell)));
     }
 
     pub fn take(&self, task: &TaskId, node: &AgentId) -> Committed {
@@ -74,14 +95,21 @@ impl Seals {
             .sum()
     }
 
-    /// Wakes every waiting owner, so one told to stop sees it.
+    /// Wakes every waiting owner, also one that waits for its host, so one told to stop or given a
+    /// slot sees it.
     pub fn wake(&self) {
-        let _queued = self.queued.lock_or_exit("the SDK seals");
+        let queued = self.queued.lock_or_exit("the SDK seals");
         #[cfg(test)]
         if let Some(observe) = self.before_wake.lock().unwrap().as_mut() {
             observe();
         }
         self.queued.notify_all();
+        drop(queued);
+        let mut bells = self.bells.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        bells.retain(|(_, _, bell)| bell.strong_count() > 0);
+        for bell in bells.iter().filter_map(|(_, _, bell)| bell.upgrade()) {
+            bell.ring();
+        }
     }
 
     #[cfg(test)]
@@ -103,6 +131,23 @@ pub fn empty(committed: &Committed) -> bool {
         && committed.control_permits.is_empty()
         && committed.control_attempts.is_empty()
         && committed.control_commands.is_empty()
+}
+
+/// The executions `committed` issued something for.
+fn executions(committed: &Committed) -> Vec<(TaskId, AgentId)> {
+    let mut stamps: Vec<&ExecutionStamp> = Vec::new();
+    stamps.extend(committed.permits.iter().map(|permit| permit.execution()));
+    stamps.extend(committed.attempts.iter().map(|attempt| attempt.execution()));
+    stamps.extend(committed.owners.iter().map(|owner| owner.execution()));
+    stamps.extend(committed.commands.iter().map(|command| command.attempt().execution()));
+    stamps.extend(committed.observations.iter().map(|observation| observation.execution()));
+    stamps.extend(committed.control_permits.iter().map(|permit| permit.execution()));
+    stamps.extend(committed.control_attempts.iter().map(|attempt| attempt.execution()));
+    stamps.extend(committed.control_commands.iter().map(|command| command.attempt().execution()));
+    let mut executions: Vec<(TaskId, AgentId)> = stamps.into_iter().map(|stamp| (stamp.task().clone(), stamp.node().clone())).collect();
+    executions.sort();
+    executions.dedup();
+    executions
 }
 
 fn take_of(queued: &mut Vec<Committed>, task: &TaskId, node: &AgentId) -> Committed {

@@ -179,7 +179,7 @@ struct Shared {
     /// The clock and runtime every host reads the time on.
     clock: alondra_core::clock::Clock,
     runtime: Option<tokio::runtime::Handle>,
-    startup_probe: (Mutex<bool>, std::sync::Condvar),
+    startup_probe: (Mutex<StartupProbe>, std::sync::Condvar),
     /// The runs of Claude's command line and of the host's probes under way, which take real time
     /// and answer into a world the daemon may have changed meanwhile: a test waits for them.
     probing: AtomicU64,
@@ -204,11 +204,21 @@ struct Shared {
     background: Mutex<Vec<Member>>,
 }
 
+/// The usage probes the test holds until it lets them go.
+#[derive(Default)]
+struct StartupProbe {
+    held: bool,
+    /// The probes that wait for it, counted again as under way when it lets them go.
+    waiting: u64,
+}
+
 pub struct StartupProbeGate(ClaudeModel);
 
 impl Drop for StartupProbeGate {
     fn drop(&mut self) {
-        *lock(&self.0.0.startup_probe.0) = false;
+        let mut probe = lock(&self.0.0.startup_probe.0);
+        probe.held = false;
+        self.0.0.probing.fetch_add(std::mem::take(&mut probe.waiting), Ordering::SeqCst);
         self.0.0.startup_probe.1.notify_all();
     }
 }
@@ -344,7 +354,7 @@ impl ClaudeModel {
             next_uuid: AtomicU64::new(0),
             clock: alondra_core::clock::Clock::current(),
             runtime: tokio::runtime::Handle::try_current().ok(),
-            startup_probe: (Mutex::new(false), std::sync::Condvar::new()),
+            startup_probe: (Mutex::new(StartupProbe::default()), std::sync::Condvar::new()),
             probing: AtomicU64::new(0),
             closed: AtomicBool::new(false),
             starts: Mutex::default(),
@@ -380,7 +390,7 @@ impl ClaudeModel {
     }
 
     pub fn hold_startup_probe(&self) -> StartupProbeGate {
-        *lock(&self.0.startup_probe.0) = true;
+        lock(&self.0.startup_probe.0).held = true;
         StartupProbeGate(self.clone())
     }
 
@@ -508,19 +518,6 @@ impl ClaudeModel {
     /// Every host started for `task`, in the order they started.
     pub fn hosts_of(&self, task: &str) -> Vec<Arc<Host>> {
         lock(&self.0.hosts).iter().filter(|host| host.task == task).cloned().collect()
-    }
-
-    /// Each task whose host runs, with how many inputs that host was offered and has not taken
-    /// yet: none while it rests between turns.
-    pub fn untaken_offers(&self) -> Vec<(String, usize)> {
-        lock(&self.0.hosts)
-            .iter()
-            .filter(|host| host.alive())
-            .map(|host| {
-                let state = lock(&host.state);
-                (host.task.clone(), if state.turn.is_some() { state.queued.len() } else { 0 })
-            })
-            .collect()
     }
 
     /// The host of `task` that runs now.
@@ -1504,19 +1501,19 @@ impl ClaudeModel {
             return answer(json!({"loggedIn": true, "email": format!("{account}@example.com"), "subscriptionType": "max", "authMethod": "claude.ai"}));
         }
         if args.iter().any(|arg| arg == "--usage-probe") {
-            let (held, ready) = &self.0.startup_probe;
-            let mut held = lock(held);
-            if *held {
+            let (probe, ready) = &self.0.startup_probe;
+            let mut probe = lock(probe);
+            if probe.held {
+                probe.waiting += 1;
                 self.0.probing.fetch_sub(1, Ordering::SeqCst);
-                held = alondra_core::clock::resting(|| {
-                    while *held {
-                        held = ready.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
+                probe = alondra_core::clock::resting(|| {
+                    while probe.held {
+                        probe = ready.wait(probe).unwrap_or_else(std::sync::PoisonError::into_inner);
                     }
-                    held
+                    probe
                 });
-                self.0.probing.fetch_add(1, Ordering::SeqCst);
             }
-            drop(held);
+            drop(probe);
             let session = match lock(&self.0.world).limit_resets_at {
                 Some(resets_at) => json!({"kind": "five_hour", "used": 1.0, "resets_at": resets_at}),
                 None => json!({"kind": "five_hour", "used": 0.2}),

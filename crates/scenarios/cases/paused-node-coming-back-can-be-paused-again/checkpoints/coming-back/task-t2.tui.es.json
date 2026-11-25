@@ -33,6 +33,22 @@
     },
     {
       "collapsed": false,
+      "id": "readings",
+      "items": [
+        {
+          "items": [
+            {
+              "label": "Último turno",
+              "tone": "warning",
+              "value": "Interrumpido"
+            }
+          ],
+          "type": "facts"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
       "id": "elapsed",
       "items": [
         {
@@ -90,7 +106,7 @@
           "struck": false,
           "title": "Último mensaje",
           "trailing": {
-            "at": "2026-11-15T09:00:10.000+00:00",
+            "at": "2026-11-15T09:00:40.000+00:00",
             "format": "relative",
             "kind": "time"
           },

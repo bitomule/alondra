@@ -268,6 +268,35 @@ fn a_message_mid_turn_reaches_claude_inside_the_turn() {
 }
 
 
+/// An input that arrives while the owner waits for its host mid-turn ends that wait at once: the
+/// owner does not sit out its look at the host before it takes the input. Its look here lasts an
+/// hour, so only the input can end the step.
+#[cfg(not(feature = "real-hosts"))]
+#[test]
+fn an_input_mid_turn_ends_the_owners_wait_for_its_host_at_once() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_working();
+    driver.host_wait = Duration::from_secs(3600);
+    assert!(driver.waits_for_host(), "the turn runs");
+    assert_eq!(driver.pending_permits(), 0);
+    let agent = driver.agent().clone();
+    let (stepped, step_ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let step = driver.step(&|| false).map(|()| driver);
+        let _ = stepped.send(step);
+    });
+    let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Rebase on main before you push"})).unwrap();
+    tokio::runtime::Runtime::new().unwrap()
+        .block_on(crate::domain_messages::deliver(&*slice.domain, &slice._home, &user(), "Alice", &agent, message, true))
+        .unwrap();
+    let step = step_ended.recv_timeout(Duration::from_secs(10)).expect("the input ended the owner's wait for its host");
+    let mut driver = step.unwrap();
+    assert_eq!(driver.pending_permits(), 1, "the step that the input ended took it");
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    assert!(slice.prompts().last().is_some_and(|last| last.ends_with("Rebase on main before you push")));
+    driver.stop().unwrap();
+}
 
 // A3: the writer stops between the commit of the turn end and its publication. A runtime opened
 // on the same database gets the host's unacknowledged event again: the exact replay publishes

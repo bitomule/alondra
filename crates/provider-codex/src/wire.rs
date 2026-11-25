@@ -453,6 +453,16 @@ impl Connection {
         }
         alondra_foundation::readable(&self.probe, timeout).map_err(disconnected)
     }
+    /// `readable`, ended early, with false, when `bell` rings first.
+    pub fn readable_unless_rung(&self, timeout: std::time::Duration, bell: &alondra_foundation::clock::Bell) -> Result<bool, AdapterError> {
+        if !self.queued.is_empty() {
+            return Ok(true);
+        }
+        if self.failed {
+            return Err(AdapterError::Disconnected);
+        }
+        alondra_foundation::readable_unless_rung(&self.probe, bell, timeout).map_err(disconnected)
+    }
     fn check_owner(&self, owner: &impl HostOwner) -> Result<(), AdapterError> {
         if self.failed {
             return Err(AdapterError::Disconnected);

@@ -43,8 +43,8 @@ use std::time::Duration;
 
 pub use alondra_engine_ports::hosts::{HOST, runs_through_sdk};
 const DRIVER: &str = "claude-agent-sdk";
-/// How long the owner waits for the host before it looks again for a control to send: a quiet
-/// turn never holds back an interrupt.
+/// How long the owner waits for the host before it looks again on its own: what the store issues
+/// for its execution, an input or a control, rings its bell and ends the wait at once.
 const WAKE: Duration = Duration::from_millis(250);
 /// How long a host handed an input may take to open its native session before another takes its
 /// place. Opening starts the native process, which a loaded Mac makes slow; it has nothing to do
@@ -298,6 +298,10 @@ pub struct Driver {
     pub(crate) panic_next_step: bool,
     /// What this driver and whoever stops its owner agree on before a handoff to the host.
     handoffs: Arc<Handoffs>,
+    /// Rung when the store issues something for this execution: a wait for the host ends at once.
+    bell: Option<Arc<clock::Bell>>,
+    /// How long a step waits for the host before it looks again on its own (`WAKE`).
+    pub(crate) host_wait: Duration,
     /// Runs once a dispatch has recorded its command, just before the command goes to the host.
     pub(crate) before_handoff: Option<Box<dyn FnOnce(&Handoffs) + Send>>,
     /// Runs once the owner reads as ended after it closed the host of a resting node, just before its driver is dropped.
@@ -1815,7 +1819,18 @@ impl Driver {
 
     fn new(domain: Arc<dyn Runtime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
         let pause = Mutex::new(PauseSubscription::new(&*domain, &agent));
-        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, declines_next_release: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None, before_release_ends: None }
+        let bell = match clock::Bell::new() {
+            Ok(bell) => {
+                let bell = Arc::new(bell);
+                domain.ring_on_seals(&task, &agent, &bell);
+                Some(bell)
+            }
+            Err(error) => {
+                log!("the owner of {task} hears what the store issues only between its waits for the host: {error}");
+                None
+            }
+        };
+        Self { bell, host_wait: WAKE, pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, declines_next_release: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None, before_release_ends: None }
     }
 
     /// The runtime of the daemon that owns this host.
@@ -2395,7 +2410,11 @@ impl Driver {
             return self.dispatch(permit);
         }
         if self.expects_host()? {
-            if !self.worker.readable(WAKE).map_err(adapter("waiting for the SDK host"))? {
+            let readable = match &self.bell {
+                Some(bell) => self.worker.readable_unless_rung(self.host_wait, bell),
+                None => self.worker.readable(self.host_wait),
+            };
+            if !readable.map_err(adapter("waiting for the SDK host"))? {
                 return Ok(());
             }
             return self.observe().map(drop);
@@ -2415,6 +2434,9 @@ impl Driver {
 
     pub(crate) fn rebind(&mut self, domain: Arc<dyn Runtime>) {
         self.pause = Mutex::new(PauseSubscription::new(&*domain, &self.agent));
+        if let Some(bell) = &self.bell {
+            domain.ring_on_seals(&self.task, &self.agent, bell);
+        }
         self.domain = domain;
     }
 

@@ -173,6 +173,10 @@ impl alondra_engine_ports::Runtime for DomainRuntime {
         self.seals.wake();
     }
 
+    fn ring_on_seals(&self, task: &TaskId, node: &AgentId, bell: &std::sync::Arc<alondra_core::clock::Bell>) {
+        self.seals.ring_on(task, node, bell);
+    }
+
     fn launch_plan(&self, task: &alondra_domain_rules::TaskId) -> Option<alondra_domain_rules::LaunchPlan> {
         DomainRuntime::launch_plan(self, task).ok().flatten()
     }

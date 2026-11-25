@@ -223,19 +223,12 @@ struct Peer {
 /// naming what is left, instead of waiting for the test's own limit.
 const WATCHDOG: Duration = Duration::from_secs(120);
 
-/// Real milliseconds a wait for the Claude hosts may last: a daemon that never comes to rest ends
-/// the run with what kept moving, not a hang.
-const PATIENCE_MS: u64 = 20_000;
+/// Real time a wait for calm may last: it watches for a hang, never decides that the daemon is
+/// calm. A daemon that never comes to rest ends the run with what kept moving.
+const PATIENCE: Duration = Duration::from_secs(20);
 /// How often the daemon samples the Mac and the accounts' usage for the gauges the apps show: by
 /// then a scenario has started.
 const MACHINE_SAMPLE: Duration = Duration::from_secs(10);
-/// The 2 ms polls with no frame between the daemon and the hosts, and no commit of the daemon, that
-/// make a moment of calm.
-const CALM_POLLS: u64 = 25;
-/// The polls that outlast the longest wait of a host's owner between two looks at the inputs it
-/// holds (250 ms, during a turn and between turns).
-const OWNER_WAKE_POLLS: u64 = 150;
-
 struct Context<'a> {
     peer: Option<Peer>,
     scenario: &'a Scenario,
@@ -811,11 +804,13 @@ impl Context<'_> {
     }
 
     /// The Claude hosts answer the daemon in real time, beside the virtual clock: waits, in the
-    /// runtime's blocking pool (which keeps the clock where it is), until no takeover of a host is
-    /// under way, the daemon is attached to every host that runs and acknowledged what each said,
-    /// no thread of the daemon works on what the clock woke it for (`clock::working`), and neither
-    /// a frame nor a commit moved for a moment, so the next step reads what the daemon did with
-    /// them. Past the patience the run ends, naming what kept moving.
+    /// runtime's blocking pool (which keeps the clock where it is), for one condition, looked at
+    /// each time the last thread of the daemon rests (`clock::until_idle`): nothing of the daemon
+    /// works (`clock::working`: the threads the clock or a notification woke, the jobs of its
+    /// blocking pool, the owners an input rang, the frames written to a host it has not handled),
+    /// the daemon is attached to every host that runs and acknowledged what each said, and no
+    /// takeover of a host is under way. The next step then reads what the daemon did. Past the
+    /// patience the run ends, naming what kept moving.
     async fn settle(&self) -> Result<(), ScenarioError> {
         let started = Instant::now();
         let settled = self.wait_for_calm().await;
@@ -827,73 +822,39 @@ impl Context<'_> {
         if let Some(edge) = &self.claude {
             let edge = edge.clone();
             let domain = self.daemon.as_ref().map(|daemon| daemon.domain.clone());
-            let watched = edge.clone();
-            let retaking = {
-                let domain = domain.clone();
-                move || domain.as_ref().is_some_and(|domain| domain.retaking())
-            };
-            // The owner of a host looks for new inputs only between its waits on the host and on
-            // the store, which last up to `OWNER_WAKE`, during a turn and between turns: an input
-            // the daemon holds for a host that was not offered it yet may still go out once that
-            // wait ends.
-            let undelivered = move || {
-                let Some(state) = domain.as_ref().and_then(|domain| domain.state().ok()) else { return false };
-                watched.untaken_offers().into_iter().any(|(task, offered)| {
-                    state.lifecycle_of(&task.into()).is_ok_and(|lifecycle| lifecycle.pending_inputs().len() > offered)
-                })
-            };
-            let revision = {
-                let domain = self.daemon.as_ref().map(|daemon| daemon.domain.clone());
-                move || domain.as_ref().map_or(0, |domain| domain.read().state().revision)
-            };
-            let timings = self.outcome.timings.clone();
+            let retaking = move || domain.as_ref().is_some_and(|domain| domain.retaking());
             let unsettled = alondra_core::clock::spawn_blocking_unwatched(move || {
-                let (mut last, mut calm, mut patience) = ((edge.activity(), revision()), 0, PATIENCE_MS);
-                let (mut polls, mut resets, mut owner_wake, mut probing) = (0, 0, false, Duration::ZERO);
-                loop {
-                    std::thread::sleep(Duration::from_millis(2));
-                    let probed = Instant::now();
-                    polls += 1;
-                    let now = (edge.activity(), revision());
-                    let working = alondra_core::clock::working();
-                    if now != last || working > 0 {
-                        (last, calm) = (now, 0);
-                        resets += 1;
-                    } else {
-                        calm += 1;
-                    }
-                    let waiting_for_owner = undelivered();
-                    owner_wake |= waiting_for_owner;
-                    let enough = if waiting_for_owner { OWNER_WAKE_POLLS } else { CALM_POLLS };
-                    let (committed, retaking) = (edge.committed(), retaking());
-                    probing += probed.elapsed();
-                    if calm >= enough && committed && !retaking && working == 0 {
-                        timings.polled(polls, resets, owner_wake, probing);
-                        return None;
-                    }
-                    patience = patience.saturating_sub(2);
-                    if patience == 0 {
-                        let mut moving = Vec::new();
-                        if calm < enough {
-                            moving.push("frames or commits");
-                        }
-                        if working > 0 {
-                            moving.push("a thread of the daemon the clock woke, still working");
-                        }
-                        if !committed {
-                            moving.push("a host the daemon did not attach to or acknowledge");
-                        }
-                        if retaking {
-                            moving.push("a takeover of a host");
-                        }
-                        return Some(moving.join(", "));
-                    }
+                let calm = || edge.committed() && !retaking();
+                if alondra_core::clock::until_idle(PATIENCE, calm) {
+                    return None;
                 }
+                let (working, frames) = (alondra_core::clock::working(), alondra_core::clock::frames_in_transit());
+                let mut moving = Vec::new();
+                if frames > 0 {
+                    moving.push(format!("{frames} frames written to a host it has not handled"));
+                }
+                let jobs = alondra_core::clock::running_jobs();
+                for (at, running) in &jobs {
+                    moving.push(format!("{running} job(s) of the daemon's blocking pool submitted at {at}"));
+                }
+                if working > frames + jobs.iter().map(|(_, running)| running).sum::<usize>() {
+                    moving.push("a thread of the daemon, still working".to_owned());
+                }
+                if !alondra_core::clock::runtime_idle() {
+                    moving.push("a task of the daemon's runtime".to_owned());
+                }
+                if !edge.committed() {
+                    moving.push("a host the daemon did not attach to or acknowledge".to_owned());
+                }
+                if retaking() {
+                    moving.push("a takeover of a host".to_owned());
+                }
+                Some(moving.join(", "))
             })
             .await
             .unwrap_or_else(|error| Some(error.to_string()));
             if let Some(what) = unsettled {
-                return Err(ScenarioError::Unsettled(format!("{what}, after {} s", PATIENCE_MS / 1000)));
+                return Err(ScenarioError::Unsettled(format!("{what}, after {} s", PATIENCE.as_secs())));
             }
         }
         self.settle_peer().await
@@ -926,22 +887,10 @@ impl Context<'_> {
     /// Waits, in the blocking pool, until no thread of the daemon works on what the clock woke it
     /// for (`clock::working`), so the next step reads what each did with its instant.
     async fn threads_rest() -> Result<(), ScenarioError> {
-        let rested = alondra_core::clock::spawn_blocking_unwatched(|| {
-            let mut patience = PATIENCE_MS;
-            while alondra_core::clock::working() > 0 {
-                if patience == 0 {
-                    return false;
-                }
-                std::thread::sleep(Duration::from_millis(2));
-                patience = patience.saturating_sub(2);
-            }
-            true
-        })
-        .await
-        .unwrap_or(false);
+        let rested = alondra_core::clock::spawn_blocking_unwatched(|| alondra_core::clock::until_idle(PATIENCE, || true)).await.unwrap_or(false);
         match rested {
             true => Ok(()),
-            false => Err(ScenarioError::Unsettled(format!("a thread of the daemon the clock woke, still working, after {} s", PATIENCE_MS / 1000))),
+            false => Err(ScenarioError::Unsettled(format!("a thread of the daemon, still working, after {} s", PATIENCE.as_secs()))),
         }
     }
 
@@ -1036,7 +985,7 @@ impl Context<'_> {
                 alondra_daemon_engine::accounts::require_initial_check(&*domain).is_ok()
                     && domain.read().state().accounts.iter().any(|account| account.provider == Provider::Claude && account.state != AccountState::Unchecked)
             };
-            for _ in 0..PATIENCE_MS / 2 {
+            for _ in 0..PATIENCE.as_millis() / 2 {
                 if done() {
                     return true;
                 }

@@ -2387,6 +2387,7 @@ decides = "pace"
 name = "WAKE"
 where = "crates/engine-sdk/src/sdk_owner.rs"
 decides = "pace"
+triggers = "the owner looks again on its own; what the store issues for it rings its bell sooner"
 [[timer]]
 name = "FIVE_MINUTES_MS"
 where = "crates/engine-sdk/src/sdk_owner/session_refresh.rs"
@@ -2852,12 +2853,20 @@ truth = ["memory"]
 - **States of a seal**: queued (per task) → taken by the owner of its task (`take`, `wait_for`) | forgotten
   (`forget_observations`, only observations of a host that ended, `:59-65`) | discarded (a `take` whose result is
   ignored: `engine-sdk/src/sdk_owner.rs:804`, `:900`).
-- **Events**: `put` (only after publishing, `:21-24`), `take_of` (part per task, `:108-127`), `wake`.
+- **Events**: `put` (only after publishing, `:26-38`), `take_of` (part per task), `wake` (`:100-115`), `ring_on`
+  (`:44-48`).
+- **Bells**: each SDK owner registers a `clock::Bell` for its execution (`Driver::new`, again on `rebind`); the
+  queue keeps it weakly and drops it once the owner does. `put` rings the bells of the executions the commit issued
+  something for (`executions`, `:137`), and `wake` (an owner told to stop, a turn the admission gate gave a slot)
+  rings every bell. An owner waiting for its host (`readable_unless_rung`) ends that wait at once instead of after
+  its `WAKE` look; a ring counts it as working before it runs, as a monitor notification does. A ring while the
+  owner does something else ends its next wait at once; ringing decides nothing, the owner takes what is queued.
 - **Persistence and restart**: everything is lost. The store reissues dispatch and control permits on **every**
   commit that touches the task (`store/src/lib.rs:1539-1566`: `control_permits` of all `prepared`, and the permit of
   the next offer), and `reissue_permit` on adoption (`sdk_owner.rs:785`, `:880`). That is why a lost or discarded
   seal is recovered on the next commit that touches the task (checked; see the refuted list below).
-- **Concurrency**: one monitor; owners wait with `wait_for` (condvar). Nothing prunes the seals of a task without an
+- **Concurrency**: one monitor; owners wait with `wait_for` (condvar) or on their bell while they wait for their host.
+  The bells have their own mutex, taken after the monitor is released. Nothing prunes the seals of a task without an
   owner: they stay until an owner takes them (see H-ENGINE-9).
 
 ### M-ENGINE-20 · Producer capability registry (`Authority` + `domain-capabilities.json`, explicit)
