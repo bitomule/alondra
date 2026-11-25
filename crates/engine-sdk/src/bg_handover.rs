@@ -150,7 +150,7 @@ async fn admit(domain: &Arc<dyn Runtime>, handover: &Handover) -> Result<(), Str
         account: alondra_core::accounts::AccountId::default_account(),
     };
     let continuation = crate::sdk_owner::Continuation::Node(handover.node.clone());
-    let driver = tokio::task::spawn_blocking(move || crate::sdk_owner::continue_session(runtime, &backend, launch, continuation))
+    let driver = alondra_core::clock::spawn_blocking(move || crate::sdk_owner::continue_session(runtime, &backend, launch, continuation))
         .await
         .map_err(|error| format!("the admission stopped: {error}"))?
         .map_err(|crate::sdk_owner::Failed { why, .. }| format!("the SDK execution was not admitted: {why}"))?;
@@ -167,7 +167,7 @@ async fn finish(domain: &Arc<dyn Runtime>, handover: &Handover) -> Result<(), St
         let backend = backend.clone();
         let plugin = domain.ports().plugins().node(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
         let task = handover.task.clone();
-        let driver = tokio::task::spawn_blocking(move || {
+        let driver = alondra_core::clock::spawn_blocking(move || {
             if crate::sdk_owner::host_started(&backend, &*runtime, &task) {
                 crate::sdk_owner::adopt(runtime, &backend, task, Some(&plugin))
             } else {

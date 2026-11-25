@@ -598,7 +598,7 @@ fn beside(top: &Path) -> Option<PathBuf> {
 /// its files, whose space on disk it returns.
 async fn empty_trash(top: PathBuf, trash: PathBuf) -> Result<u64, String> {
     let shown = top.display().to_string();
-    let emptied = tokio::task::spawn_blocking(move || {
+    let emptied = alondra_core::clock::spawn_blocking(move || {
         let failed = |what: &str, e: std::io::Error| format!("could not delete {what} of {}: {e}", top.display());
         if let Some(admin) = git_admin_dir(&trash) {
             remove_tree(&admin).map_err(|e| failed("git's record", e))?;

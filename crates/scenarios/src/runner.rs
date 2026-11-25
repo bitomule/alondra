@@ -177,12 +177,23 @@ pub(crate) fn run_with_slow_probes(scenario: &Scenario, by: Duration) -> Result<
     }
 }
 
+/// `run`, with every run of a command line or a probe around the Claude hosts starting `by` after
+/// the daemon submitted the blocking job that runs it.
+#[cfg(test)]
+pub(crate) fn run_with_late_probes(scenario: &Scenario, by: Duration) -> Result<Outcome, ScenarioError> {
+    match run_inner(scenario, None, |_| {}, Slowness { probe_late: Some(by), ..Slowness::default() })? {
+        (outcome, None) => Ok(outcome),
+        (_, Some(failure)) => Err(failure),
+    }
+}
+
 /// How slow, in real time, the Claude hosts of a run are.
 #[derive(Clone, Copy, Default)]
 struct Slowness {
     exit: Option<Duration>,
     start: Option<(Duration, u64)>,
     probe: Option<Duration>,
+    probe_late: Option<Duration>,
 }
 
 fn run_inner(
@@ -265,7 +276,7 @@ async fn execute(
     // moves only when a step moves it.
     let assembling = Instant::now();
     let (thaw, frozen) = std::sync::mpsc::channel::<()>();
-    let freeze = tokio::task::spawn_blocking(move || frozen.recv().ok());
+    let freeze = alondra_core::clock::spawn_blocking_unwatched(move || frozen.recv().ok());
     let budget = parse_duration(&scenario.max_virtual)?;
     let home = tempfile::Builder::new().prefix("sc-").tempdir_in(short_root()?).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
     let invalid = |error: &dyn std::fmt::Display| ScenarioError::Invalid(error.to_string());
@@ -300,6 +311,9 @@ async fn execute(
         }
         if let Some(by) = slowness.probe {
             edge.set_slow_probe(by);
+        }
+        if let Some(by) = slowness.probe_late {
+            edge.set_late_probe(by);
         }
         if let Some((by, io_timeout_seconds)) = slowness.start {
             edge.set_slow_start(by);
@@ -368,7 +382,7 @@ async fn execute(
     if let Some(daemon) = &context.daemon {
         daemon.tasks.abort();
         let domain = daemon.domain.clone();
-        tokio::task::spawn_blocking(move || domain.stop_sdk_owners()).await.ok();
+        alondra_core::clock::spawn_blocking_unwatched(move || domain.stop_sdk_owners()).await.ok();
     }
     if let Some(edge) = &context.claude {
         edge.end_all();
@@ -833,7 +847,7 @@ impl Context<'_> {
                 move || domain.as_ref().map_or(0, |domain| domain.read().state().revision)
             };
             let timings = self.outcome.timings.clone();
-            let unsettled = tokio::task::spawn_blocking(move || {
+            let unsettled = alondra_core::clock::spawn_blocking_unwatched(move || {
                 let (mut last, mut calm, mut patience) = ((edge.activity(), revision()), 0, PATIENCE_MS);
                 let (mut polls, mut resets, mut owner_wake, mut probing) = (0, 0, false, Duration::ZERO);
                 loop {
@@ -893,7 +907,7 @@ impl Context<'_> {
     async fn settle_peer(&self) -> Result<(), ScenarioError> {
         let Some(peer) = &self.peer else { return Self::threads_rest().await };
         let (activity, seen, hosts) = (peer.activity.clone(), peer.seen.clone(), peer.hosts);
-        let settled = tokio::task::spawn_blocking(move || {
+        let settled = alondra_core::clock::spawn_blocking_unwatched(move || {
             let reached = || {
                 let seen = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 seen.remaining.is_empty() || seen.failure.is_some() || seen.played(hosts)
@@ -912,7 +926,7 @@ impl Context<'_> {
     /// Waits, in the blocking pool, until no thread of the daemon works on what the clock woke it
     /// for (`clock::working`), so the next step reads what each did with its instant.
     async fn threads_rest() -> Result<(), ScenarioError> {
-        let rested = tokio::task::spawn_blocking(|| {
+        let rested = alondra_core::clock::spawn_blocking_unwatched(|| {
             let mut patience = PATIENCE_MS;
             while alondra_core::clock::working() > 0 {
                 if patience == 0 {
@@ -1017,7 +1031,7 @@ impl Context<'_> {
             return Ok(());
         }
         let domain = self.daemon().domain.clone();
-        let checked = tokio::task::spawn_blocking(move || {
+        let checked = alondra_core::clock::spawn_blocking_unwatched(move || {
             let done = || {
                 alondra_daemon_engine::accounts::require_initial_check(&*domain).is_ok()
                     && domain.read().state().accounts.iter().any(|account| account.provider == Provider::Claude && account.state != AccountState::Unchecked)
@@ -1146,7 +1160,7 @@ impl Context<'_> {
             old.tasks.abort();
             let domain = old.domain.clone();
             drop(old);
-            tokio::task::spawn_blocking(move || domain.crash_sdk_owners()).await.ok();
+            alondra_core::clock::spawn_blocking_unwatched(move || domain.crash_sdk_owners()).await.ok();
         }
         for _ in 0..64 {
             tokio::task::yield_now().await;

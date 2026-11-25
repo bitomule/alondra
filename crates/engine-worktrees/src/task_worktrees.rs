@@ -16,7 +16,7 @@ pub async fn ready(domain: &dyn Runtime, path: &str) -> Result<()> {
     let storage = domain.store().lock_or_exit("the domain store").worktree_storage_at(path)?;
     if let Some((path, storage)) = storage {
         let worktrees = domain.ports().worktrees();
-        tokio::task::spawn_blocking(move || worktrees.restore(&path, &storage))
+        alondra_core::clock::spawn_blocking(move || worktrees.restore(&path, &storage))
             .await?.map_err(Unreachable)?;
     }
     Ok(())

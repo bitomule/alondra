@@ -25,7 +25,7 @@ pub(crate) use crate::orchestrator_provider::Batch;
 pub(crate) async fn execute(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()> + Send + 'static, cancel: impl std::future::Future<Output = ()>) -> Output {
     let cancelled = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&cancelled);
-    let mut run = tokio::task::spawn_blocking(move || run(batch, spawned, &stop));
+    let mut run = alondra_core::clock::spawn_blocking_unwatched(move || run(batch, spawned, &stop));
     tokio::select! {
         biased;
         finished = &mut run => return finished.unwrap_or_else(|error| failed(format!("the SDK run stopped: {error}"))),

@@ -177,7 +177,7 @@ async fn attachment_content_inner(
     let home = home.to_path_buf();
     let reads = domain.stored_reads.clone();
     let digest = stored.content_digest.clone();
-    match tokio::task::spawn_blocking(move || {
+    match alondra_core::clock::spawn_blocking(move || {
         reads.attachment(&home, &stored.content_reference, &stored.content_digest, offset, version)
     }).await {
         Ok(Ok(mut chunk)) => {
@@ -242,7 +242,7 @@ pub(crate) async fn document_content_inner(domain: &DomainRuntime, home: &FsPath
     let revision_id = revision.id.clone();
     let home = home.to_path_buf();
     let reads = domain.stored_reads.clone();
-    let chunk = tokio::task::spawn_blocking(move || {
+    let chunk = alondra_core::clock::spawn_blocking(move || {
         reads.verified(&home, &reference, &digest, offset, version)
     })
     .await;
@@ -1148,7 +1148,7 @@ async fn checked_producer_command<H: DomainHost>(
     let storage = || DomainError::new("storage_unavailable", "domain transaction could not be completed");
     let stored = matches!(&envelope.command, Command::PresentResult { interaction_id, is_final: true, .. } if final_delivery_stored(host.domain(), interaction_id));
     if matches!(principal, Principal::Agent { .. }) && !stored && crate::card_language::declared(&envelope.command).is_some() {
-        let user = tokio::task::spawn_blocking(alondra_core::user_language::current).await.map_err(|_| storage())?;
+        let user = alondra_core::clock::spawn_blocking(alondra_core::user_language::current).await.map_err(|_| storage())?;
         if let Some(refusal) = crate::card_language::refusal(&envelope.command, user) {
             return Err(refusal);
         }

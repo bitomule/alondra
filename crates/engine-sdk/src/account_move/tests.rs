@@ -123,7 +123,7 @@ impl World {
         self.domain.stop_sdk_owners();
         self.domain = Self::boot(&self.home, &self.database, &self.backend, &self.hosts);
         let (domain, backend) = (Arc::clone(&self.domain), self.backend.clone());
-        tokio::task::spawn_blocking(move || crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &backend)).await.unwrap();
+        alondra_core::clock::spawn_blocking_unwatched(move || crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &backend)).await.unwrap();
     }
 
     fn journal(&self) -> Vec<AccountMove> {
@@ -326,7 +326,7 @@ async fn a_historical_started_destination_is_adopted_with_its_existing_physical_
     drop(driver);
     world.domain=World::boot(&world.home,&world.database,&world.backend,&world.hosts);
     let (domain,backend)=(world.domain.clone(),world.backend.clone());
-    tokio::task::spawn_blocking(move||crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&backend)).await.unwrap();
+    alondra_core::clock::spawn_blocking_unwatched(move||crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&backend)).await.unwrap();
     tick(&(world.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
     assert!(world.hosts.native_runs(native_pid),"the original fixture native process remains alive");
     assert_eq!(world.step(),Some(AccountMoveStep::Done));assert_eq!(world.node(),destination);

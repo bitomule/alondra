@@ -84,7 +84,7 @@ pub async fn run(daemon: Arc<DomainDaemon>, home: std::path::PathBuf, days: Opti
         let daemon = daemon.clone();
         let home = home.clone();
         let sweep_now = days.filter(|_| ticks.is_multiple_of(SWEEP_EVERY_FLUSHES));
-        let done = tokio::task::spawn_blocking(move || {
+        let done = alondra_core::clock::spawn_blocking(move || {
             let now = alondra_core::now_millis();
             if let Some(days) = sweep_now {
                 sweep(&daemon, &home, now, days);

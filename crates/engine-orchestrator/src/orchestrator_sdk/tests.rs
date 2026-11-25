@@ -194,13 +194,13 @@ async fn a_message_that_arrives_during_a_turn_waits_for_the_next_batch() {
     f.ask(1, "fixture:hold Where do I put change 1?");
     let during = async {
         let held = f.held.clone();
-        tokio::task::spawn_blocking(move || {
+        alondra_core::clock::spawn_blocking_unwatched(move || {
             let mut text = String::new();
             std::fs::File::open(held).unwrap().read_to_string(&mut text).unwrap();
         }).await.unwrap();
         f.tell("m-2", "Where do I put change 2?");
         let release = f.release.clone();
-        tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(release).unwrap().write_all(b"go").unwrap()).await.unwrap();
+        alondra_core::clock::spawn_blocking_unwatched(move || std::fs::OpenOptions::new().write(true).open(release).unwrap().write_all(b"go").unwrap()).await.unwrap();
     };
     let ((), ()) = tokio::join!(f.tick(), during);
     let prompts = f.prompts();
@@ -374,7 +374,7 @@ async fn cancelled_while_held(marker: &str, meanwhile: impl FnOnce(&Fixture, &st
     f.ask(1, &format!("{marker} Where do I put change 1?"));
     let during = async {
         let held = f.held.clone();
-        let said = tokio::task::spawn_blocking(move || {
+        let said = alondra_core::clock::spawn_blocking_unwatched(move || {
             let mut text = String::new();
             std::fs::File::open(held).unwrap().read_to_string(&mut text).unwrap();
             text

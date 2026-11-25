@@ -144,7 +144,7 @@ async fn watch(
 ) {
     let (repo, cli) = (Arc::new(repo), Arc::new(cli));
     let starting = domain.clone();
-    let mut memory = tokio::task::spawn_blocking(move || Memory {
+    let mut memory = alondra_core::clock::spawn_blocking(move || Memory {
         handled: ours(&*starting).into_iter().filter(|card| card.answer.is_some()).map(|card| card.id).collect(),
         nudged: BTreeSet::new(),
     }).await.expect("held report card worker failed");

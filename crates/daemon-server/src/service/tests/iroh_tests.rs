@@ -410,7 +410,7 @@ async fn iroh_process_fixture_server() {
     });
     println!("ALONDRA_IROH {ready}");
     let options = alondra_core::options::path_in(&f.home);
-    tokio::task::spawn_blocking(move || {
+    alondra_core::clock::spawn_blocking_unwatched(move || {
         for line in std::io::stdin().lock().lines() {
             let Ok(line) = line else { return };
             if line.trim() == "limit" {

@@ -894,7 +894,7 @@ pub async fn run(domain: Arc<dyn Runtime>, home: PathBuf) {
         crate::native_probe::retry(|| {
             let (checking, at) = (domain.clone(), home.clone());
             async move {
-                tokio::task::spawn_blocking(move || check_current(&*checking, &at)).await.unwrap_or_else(|_| {
+                alondra_core::clock::spawn_blocking(move || check_current(&*checking, &at)).await.unwrap_or_else(|_| {
                     log!("the accounts check stopped");
                     crate::native_probe::Outcome::Finished
                 })

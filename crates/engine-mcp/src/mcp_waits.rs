@@ -217,7 +217,7 @@ pub async fn give_back(domain: &Arc<DomainRuntime>, target: &Target, address: St
     drop(state);
     let runtime = domain.clone();
     let (server, at) = (name.clone(), task.clone());
-    let delivered = tokio::task::spawn_blocking(move || crate::mcp_sign_in::complete(&runtime, &at, &server, &address)).await
+    let delivered = alondra_core::clock::spawn_blocking(move || crate::mcp_sign_in::complete(&runtime, &at, &server, &address)).await
         .map_err(|_| DomainError::new("unavailable", "The sign-in could not be handed to Claude"))?;
     match delivered {
         Ok(()) => {}

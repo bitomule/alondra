@@ -136,7 +136,7 @@ fn log_change(found: &str, failure: &str) {
 
 /// `check` off the async runtime.
 pub(crate) async fn check_soon() -> &'static str {
-    tokio::task::spawn_blocking(check).await.unwrap_or("unknown")
+    alondra_core::clock::spawn_blocking(check).await.unwrap_or("unknown")
 }
 
 /// Checks at start and again on `AFTER_START` until it is allowed; from then on the readers and

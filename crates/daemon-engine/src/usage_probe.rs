@@ -339,7 +339,7 @@ async fn measure_account(domain: &dyn Runtime, home: &Path, account: &AccountId)
         return crate::native_probe::Outcome::Finished;
     }
     let measured_at = now_millis();
-    match tokio::task::spawn_blocking(move || probe(&*hosts, &backend, folder.as_deref())).await {
+    match alondra_core::clock::spawn_blocking(move || probe(&*hosts, &backend, folder.as_deref())).await {
         Ok(Ok(reading)) => {
             let command = DomainCommand::RecordAccountUsage { provider: Provider::Claude, account: account.clone(), reading, at: measured_at, day: alondra_daemon_engine_model::local_day(measured_at) };
             match crate::accounts::publish_current_probe(domain, home, fence, vec![command]) {

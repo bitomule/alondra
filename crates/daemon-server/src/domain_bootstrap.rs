@@ -278,7 +278,7 @@ async fn approve_pending_device(
     let Some(direct) = state.direct.get().cloned() else {
         return pairing_refused(crate::direct::pairing::PairingError::NotFound);
     };
-    match tokio::task::spawn_blocking(move || direct.approve(&id)).await {
+    match alondra_core::clock::spawn_blocking(move || direct.approve(&id)).await {
         Ok(Ok(())) => Json(json!({"ok": true})).into_response(),
         Ok(Err(error)) => pairing_refused(error),
         Err(_) => storage(),
@@ -343,7 +343,7 @@ async fn settings_read(
         return refused;
     }
     let relay = relay_on(&state);
-    match tokio::task::spawn_blocking(move || crate::settings::read(&state.home, &crate::options::user_home(), relay)).await {
+    match alondra_core::clock::spawn_blocking(move || crate::settings::read(&state.home, &crate::options::user_home(), relay)).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }
@@ -363,7 +363,7 @@ async fn settings_folders(
     let Some(path) = crate::settings::folders_query(&path_and_query) else {
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid folders query"));
     };
-    match tokio::task::spawn_blocking(move || crate::settings::folders(&crate::options::user_home(), path.as_deref())).await {
+    match alondra_core::clock::spawn_blocking(move || crate::settings::folders(&crate::options::user_home(), path.as_deref())).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }
@@ -384,7 +384,7 @@ async fn settings_write(
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid settings"));
     };
     let relay = relay_on(&state);
-    match tokio::task::spawn_blocking(move || crate::settings::write(&state.home, &crate::options::user_home(), relay, &body, lang)).await {
+    match alondra_core::clock::spawn_blocking(move || crate::settings::write(&state.home, &crate::options::user_home(), relay, &body, lang)).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }
@@ -413,7 +413,7 @@ async fn accounts_read(
         Err(refused) => return refused,
     };
     let (domain, home) = (state.domain(), state.home.clone());
-    match tokio::task::spawn_blocking(move || crate::accounts::read(&*domain, &home, lang)).await {
+    match alondra_core::clock::spawn_blocking(move || crate::accounts::read(&*domain, &home, lang)).await {
         Ok(reply) => crate::accounts::for_client(reply, query.provider_accounts()).into_response(),
         Err(_) => storage(),
     }
@@ -435,7 +435,7 @@ async fn accounts_write(
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid accounts"));
     };
     let (domain, home) = (state.domain(), state.home.clone());
-    match tokio::task::spawn_blocking(move || crate::accounts::write(&*domain, &home, &body, lang)).await {
+    match alondra_core::clock::spawn_blocking(move || crate::accounts::write(&*domain, &home, &body, lang)).await {
         Ok(reply) => crate::accounts::for_client(reply, query.provider_accounts()).into_response(),
         Err(_) => storage(),
     }
@@ -453,7 +453,7 @@ async fn accounts_check(
         Err(refused) => return refused,
     };
     let (domain, home) = (state.domain(), state.home.clone());
-    match tokio::task::spawn_blocking(move || {
+    match alondra_core::clock::spawn_blocking(move || {
         crate::accounts::check_now(&*domain, &home);
         crate::accounts::read(&*domain, &home, lang)
     }).await {
@@ -480,7 +480,7 @@ async fn settings_config(
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid setting"));
     };
     let worktrees = state.domain.ports().worktrees();
-    match tokio::task::spawn_blocking(move || crate::settings::write_config(&state.home, &*worktrees, &body)).await {
+    match alondra_core::clock::spawn_blocking(move || crate::settings::write_config(&state.home, &*worktrees, &body)).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }
@@ -597,7 +597,7 @@ async fn service_approve_device(
         return (StatusCode::BAD_REQUEST, "invalid service approval").into_response();
     };
     let auth = state.auth.clone();
-    let approved = tokio::task::spawn_blocking(move || {
+    let approved = alondra_core::clock::spawn_blocking(move || {
         auth.approve_service(&body.device_id, &body.name, &body.signing_key)
     })
     .await
@@ -657,7 +657,7 @@ async fn pair(
         ));
     };
     let auth = state.auth.clone();
-    let paired = tokio::task::spawn_blocking(move || {
+    let paired = alondra_core::clock::spawn_blocking(move || {
         auth.pair(&body.code, &body.device_name, &body.public_key)
     })
     .await
@@ -717,7 +717,7 @@ async fn metrics(
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "the metrics query names an unknown period, comparison or filter"));
     };
     let domain = state.domain();
-    match tokio::task::spawn_blocking(move || domain.metrics_inputs(alondra_core::now_millis())).await {
+    match alondra_core::clock::spawn_blocking(move || domain.metrics_inputs(alondra_core::now_millis())).await {
         Ok(Ok(inputs)) => Json(alondra_core::metrics::report::report(&inputs, &query)).into_response(),
         _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the metrics could not be read")),
     }
@@ -734,7 +734,7 @@ async fn sdk_handover(
         return refused;
     }
     let domain = state.domain();
-    match tokio::task::spawn_blocking(move || crate::bg_handover::dry_run(&*domain).map(|rows| (domain.sdk().is_some(), rows))).await {
+    match alondra_core::clock::spawn_blocking(move || crate::bg_handover::dry_run(&*domain).map(|rows| (domain.sdk().is_some(), rows))).await {
         Ok(Ok((backend, rows))) => Json(json!({"sdk_backend": backend, "tasks": rows})).into_response(),
         _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the tasks in progress could not be read")),
     }
@@ -751,7 +751,7 @@ async fn files_sweep(
         return refused;
     }
     let (domain, home) = (state.domain(), state.home.clone());
-    match tokio::task::spawn_blocking(move || {
+    match alondra_core::clock::spawn_blocking(move || {
         let snapshot = domain.state()?;
         Ok::<_, anyhow::Error>(crate::files_retention::sweep(&home, &snapshot, clock::system_time()))
     }).await {
@@ -807,7 +807,7 @@ async fn revoke_device(
             "this Mac's own terminal cannot be unpaired: it reaches Alondra on this Mac itself",
         ));
     }
-    let revoked = match tokio::task::spawn_blocking(move || state.revoke_device(&id)).await {
+    let revoked = match alondra_core::clock::spawn_blocking(move || state.revoke_device(&id)).await {
         Ok(Ok(revoked)) => revoked,
         _ => return storage(),
     };
@@ -835,7 +835,7 @@ async fn upload(
         return forbidden("signed user device required");
     }
     let home = state.home.clone();
-    match tokio::task::spawn_blocking(move || attachment_ref(&home, &query.name, &body)).await {
+    match alondra_core::clock::spawn_blocking(move || attachment_ref(&home, &query.name, &body)).await {
         Ok(Ok(reference)) => Json(reference).into_response(),
         Ok(Err(error)) => {
             crate::domain_api::domain_error(DomainError::new("invalid_input", error.to_string()))
@@ -896,7 +896,7 @@ async fn orchestrator_decision(
     let body = body.map(|Json(body)| body);
     let domain = state.domain();
     let home = state.home.clone();
-    match tokio::task::spawn_blocking(move || apply_orchestrator_decision(domain, &home, decision, body.as_ref()))
+    match alondra_core::clock::spawn_blocking(move || apply_orchestrator_decision(domain, &home, decision, body.as_ref()))
     .await
     {
         Ok(answer) => {
@@ -1183,7 +1183,7 @@ async fn orchestrator_schedule(
     let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid schedule draft")); };
     let body = request.clone(); let home = state.home.clone(); let domain = state.domain();
     let work = async move {
-        let value = tokio::task::spawn_blocking(move || crate::domain_schedule_api::orchestrator_mutation(&*domain,&home,"POST","/schedules",Some(&body),None,|| Ok(()))).await
+        let value = alondra_core::clock::spawn_blocking(move || crate::domain_schedule_api::orchestrator_mutation(&*domain,&home,"POST","/schedules",Some(&body),None,|| Ok(()))).await
             .map_err(|_| DomainError::new("operation_uncertain","Schedule creation stopped before returning its result"))?;
         match value["status"].as_u64() {
             Some(200..=299) => Ok(value),
@@ -1338,7 +1338,7 @@ async fn orchestrator_machine(
         None => (Value::Null, Value::Null),
     };
     let domain = state.domain();
-    let tasks = match tokio::task::spawn_blocking(move || domain.metrics_inputs(alondra_core::now_millis())).await {
+    let tasks = match alondra_core::clock::spawn_blocking(move || domain.metrics_inputs(alondra_core::now_millis())).await {
         Ok(Ok(inputs)) => inputs.tasks,
         _ => vec![],
     };
@@ -1440,7 +1440,7 @@ async fn file(
         state.home.join(path)
     };
     let home = state.home.clone();
-    let opened = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+    let opened = alondra_core::clock::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
         let mut file = crate::service_files::open_stored_file(&home, &path)?;
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut file, &mut bytes)?;

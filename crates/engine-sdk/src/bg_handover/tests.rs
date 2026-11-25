@@ -207,7 +207,7 @@ impl World {
         self.domain.stop_sdk_owners();
         self.domain = Self::boot(&self.home, &self.database, &self.backend, &self.bg, &self.hosts);
         let (domain, backend) = (Arc::clone(&self.domain), self.backend.clone());
-        tokio::task::spawn_blocking(move || crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &backend)).await.unwrap();
+        alondra_core::clock::spawn_blocking_unwatched(move || crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &backend)).await.unwrap();
     }
 
     fn step(&self) -> Option<HandoverStep> {

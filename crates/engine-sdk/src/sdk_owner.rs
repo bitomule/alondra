@@ -804,7 +804,7 @@ pub(crate) async fn launch_prepared(domain: &dyn Runtime, launch: Launch, reopen
     };
     let backend = backend.clone();
     let task = launch.task.clone();
-    let driver = tokio::task::spawn_blocking(move || {
+    let driver = alondra_core::clock::spawn_blocking(move || {
         if let Some(reopening) = reopening {
             let offered = provider_capabilities(launch.options.provider);
             start_bound(runtime, &backend, launch, offered, None, Some(reopening))

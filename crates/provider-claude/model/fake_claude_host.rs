@@ -1508,9 +1508,12 @@ impl ClaudeModel {
             let mut held = lock(held);
             if *held {
                 self.0.probing.fetch_sub(1, Ordering::SeqCst);
-                while *held {
-                    held = ready.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
+                held = alondra_core::clock::resting(|| {
+                    while *held {
+                        held = ready.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
+                    }
+                    held
+                });
                 self.0.probing.fetch_add(1, Ordering::SeqCst);
             }
             drop(held);

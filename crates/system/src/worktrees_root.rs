@@ -128,7 +128,7 @@ pub fn stored(worktree: &Path) -> Option<Repository> {
 
 pub async fn ready(root: &WorktreesRoot) -> Result<PathBuf, String> {
     let root = root.clone();
-    tokio::task::spawn_blocking(move || available(&root, &System)).await.map_err(|why| why.to_string())?
+    alondra_core::clock::spawn_blocking(move || available(&root, &System)).await.map_err(|why| why.to_string())?
 }
 
 pub fn repository(worktree: &Path) -> Option<PathBuf> {
@@ -233,7 +233,7 @@ fn opened_identity(file: &std::fs::File) -> Option<String> {
 pub(crate) async fn hold(worktree: &Path, record: &Repository) -> Result<Folder, String> {
     let path = worktree.parent().ok_or("The worktree has no parent")?.to_path_buf();
     let record = record.clone();
-    tokio::task::spawn_blocking(move || {
+    alondra_core::clock::spawn_blocking(move || {
         use std::os::unix::fs::OpenOptionsExt;
         available(&record.root, &System)?;
         let handle = std::fs::OpenOptions::new().read(true)

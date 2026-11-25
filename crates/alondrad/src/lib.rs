@@ -321,7 +321,7 @@ async fn prepare_workers(
     if let Some(backend) = backend {
         domain.enable_sdk(backend.clone());
         let adopting: std::sync::Arc<dyn alondra_engine_ports::Runtime> = domain.clone();
-        tokio::task::spawn_blocking(move || {
+        alondra_core::clock::spawn_blocking(move || {
             accounts::check_if_crossed(&*adopting);
             sdk_owner::adopt_all(&adopting, &backend);
         }).await.ok();
@@ -383,7 +383,7 @@ where
     S: std::future::Future<Output = std::io::Result<()>>,
     G: std::future::Future<Output = (&'static str, std::result::Result<(), tokio::task::JoinError>)>,
 {
-    tokio::task::spawn_blocking(maintenance);
+    alondra_core::clock::spawn_blocking(maintenance);
     supervise_workers(server, outbox, scheduler, transport, github, orchestrator, connector, gates).await
 }
 
@@ -413,7 +413,7 @@ async fn handed_over() {
 /// into a new binary, or exits on an error, leaves them running for the daemon that comes back to
 /// adopt.
 async fn stop_sdk_owners(domain: Arc<domain_runtime::DomainRuntime>) {
-    if let Err(error) = tokio::task::spawn_blocking(move || domain.stop_sdk_owners()).await {
+    if let Err(error) = alondra_core::clock::spawn_blocking_unwatched(move || domain.stop_sdk_owners()).await {
         log!("stopping the SDK hosts failed: {error}");
     }
 }
