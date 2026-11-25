@@ -2961,6 +2961,16 @@ checks:
       targets:
         - //tools:public_build_inputs_test
 
+  simulator-creator:
+    uses: bazel/test
+    paths:
+      - "apple/Testing/Simulator/**"
+      - "bazel/rules/BUILD.bazel"
+      - "bazel/rules/tree.bzl"
+    with:
+      targets:
+        - //apple/Testing/Simulator:create_simulator_test
+
   bazel-test-tmpdir:
     uses: bazel/test
     paths:
