@@ -840,6 +840,41 @@ thread that opens after its I/O timeout, 7.2 s), the uncertain takeover (6.9 to 
 engine's pause of a delivering task whose hosts end (7.0 s), hosts of an older release, and the
 tests of a test process holding, killing or leaving a host, which exist to run real processes.
 
+## Final measurement (phase 11, 2026-11-25, main at d1bcdec12)
+
+`edit_bench --tracked` on the shared Mac, one run, against the goal of one crate's edit: 30 s from
+compiling to the last test in adapters, the engine and the root; in the domain, ports and
+foundations, compiling ≤ 60 s and in all ≤ 120 s.
+
+| Edit | Layer | Crates / test targets reopened | Build: critical path | Longest test target | Edit + test | Goal |
+|---|---|---:|---:|---|---:|---:|
+| `views/src/task_state.rs` | adapter | 9 / 50 | 71 s | `scenarios_test` 32 s | 153 s | 30 s |
+| `github-gh/src/cli.rs` | adapter | 10 / 46 | 130 s | `scenarios_test` 31 s | 162 s | 30 s |
+| `engine-admission/src/admission.rs` | engine | 10 / 51 | 91 s | `engine_sdk_engine_test` 69 s | 190 s | 30 s |
+| `engine-orchestrator/src/domain_orchestrator.rs` | engine | 10 / 51 | 85 s | `engine_orchestrator_host_test` 40 s | 174 s | 30 s |
+| `engine-live/src/node_reports.rs` | engine | 11 / 54 | 94 s | `scenarios_test` 30 s | 183 s | 30 s |
+| `engine-sdk/src/sdk_owner.rs` | engine | 10 / 51 | 95 s | `scenarios_test` 32 s | 178 s | 30 s |
+| `alondrad/src/assemble.rs` | root | 8 / 38 | 31 s | `scenarios_test` 31 s | 90 s | 30 s |
+| `domain-rules/src/rules.rs` | domain | 42 / 139 | 231 s | `domain_rules_test` 116 s | 436 s | 60 s / 120 s |
+
+No edit meets its goal. What is left above it, measured:
+
+- **Compiling** is most of every edit: 71 to 130 s on the critical path for an adapter or the engine,
+  31 s for the root, 231 s for `domain-rules`, whose edit reopens 42 crates. The phases moved tests
+  off real processes and out of the root; they did not shrink what an edit recompiles.
+- **`scenarios_test`** (about 31 s) is the longest test of five of the eight edits: it links the
+  whole daemon, so every crate's edit reruns it.
+- **The engine's own targets**: `engine_sdk_engine_test` (69 s in this run, 19 s alone) and
+  `engine_orchestrator_host_test` (40 s) run on every edit of the engine.
+- **`domain_rules_test`** takes 116 s alone.
+- The SDK's real hosts no longer weigh on any edit: `engine_sdk_host_test` is end to end. Edit +
+  test on `engine-sdk/src/sdk_owner.rs` went from 247 s (main at 92cc6f1) to 187 s (phase 5) and
+  178 s now.
+
+Failures during the run: `//tools:test_execs_test` on every edit (main was red, fixed with this
+measurement), `relaunch_test` on four edits and `engine_sdk_engine_test` once, both under the
+bench's load.
+
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 
 `engine-admission` and `engine-orchestrator` compile and test without `daemon-engine` and without

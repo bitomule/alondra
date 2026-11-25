@@ -2870,6 +2870,14 @@ checks:
       targets:
         - //tools:test_limits_test
 
+  test-execs:
+    uses: bazel/test
+    paths:
+      - "**"
+    with:
+      targets:
+        - //tools:test_execs_test
+
   clock-guard:
     uses: bazel/test
     paths:
