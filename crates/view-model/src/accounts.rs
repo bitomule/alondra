@@ -95,6 +95,7 @@ pub fn state_label(state: AccountState, lang: Lang) -> &'static str {
         AccountState::SignedOut => t!(lang, "signed out", "sin sesión"),
         AccountState::Unavailable => t!(lang, "can't be checked", "no se puede comprobar"),
         AccountState::Disabled => t!(lang, "disabled", "desactivada"),
+        AccountState::PolicyRefused => t!(lang, "refused by its provider: sign in again or change its settings", "rechazada por su proveedor: vuelve a iniciar sesión o cambia su configuración"),
     }
 }
 
@@ -190,3 +191,16 @@ pub fn named_hint(provider: Provider, name: &str, lang: Lang) -> String {
 }
 
 
+
+#[cfg(test)]
+mod policy_refused_tests {
+    use super::*;
+
+    #[test]
+    fn the_account_list_says_why_a_refused_account_takes_no_work() {
+        let account = AccountStatus { antigravity: None, provider: alondra_core::accounts::Provider::Codex, id: alondra_core::accounts::AccountId::default_account(), name: "Codex".into(),
+            state: AccountState::PolicyRefused, native_identity: None, email: Some("ana@example.com".into()), plan: None, billing: Default::default(), sign_ins: 0, profile: None };
+        assert!(subtitle(&account, Lang::En).contains("refused by its provider: sign in again or change its settings"));
+        assert!(subtitle(&account, Lang::Es).contains("rechazada por su proveedor: vuelve a iniciar sesión o cambia su configuración"));
+    }
+}

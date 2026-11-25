@@ -110,6 +110,33 @@ pub(crate) fn record_limit(domain: &crate::domain_runtime::DomainRuntime, select
     }
 }
 
+/// The provider refused the account's native policy before any work: it takes no new work until
+/// the account itself changes. Nothing is recorded when the account already changed during the batch.
+pub(crate) fn record_policy_refused(domain: &crate::domain_runtime::DomainRuntime, selection: &BatchSelection, now: alondra_core::Millis) {
+    use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
+    let account = &selection.account;
+    let Some(source) = selection.account_status.as_ref() else { return };
+    let read = domain.read();
+    let scope = match alondra_store::AuthorityScope::new(read.state().data_epoch.clone()) { Ok(scope) => scope, Err(_) => return };
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(),
+        command_id: format!("native-policy-refused-{}", crate::auth::random_hex(8)).into(), expected_revision: 0,
+        command: Command::RecordAccountPolicyRefused { provider: account.provider, account: account.account.clone() },
+    };
+    drop(read);
+    let result = domain.own(scope, |owner| {
+        let current = owner.state().accounts.iter().find(|status| status.provider == account.provider && status.id == account.account);
+        if !current.is_some_and(|current| current.sign_ins == source.sign_ins && current.email == source.email && current.billing == source.billing && current.native_identity == source.native_identity) { return Ok(false) }
+        owner.stage_command(&Actor::System, &envelope, crate::domain_store::Attached::None)?;
+        Ok(true)
+    });
+    match result {
+        Ok((true, _)) => domain.engine().follow_usage(now),
+        Ok((false, _)) => {},
+        Err(error) => log!("Cannot record the refused native account: {error}"),
+    }
+}
+
 #[cfg(test)]
 #[cfg(not(feature = "real-hosts"))]
 mod tests {

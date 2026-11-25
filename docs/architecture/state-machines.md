@@ -5216,8 +5216,8 @@ truth = ["file:orchestrator.json", "sqlite:orchestrator_session"]
     `announce_request_tasks`, `rested`, `hand_replans`, `settle`).
   - Running -> `NotStarted`/no effects -> Backoff (`:756-762`, 30 s x 2^n, max 16 min).
   - Running -> `Denied` with no Alondra call, no admitted operation and no turn that acted (`refused_before_any_work`) -> the
-    same Backoff as `NotStarted`, no card; a Codex account that refused its native policy is also marked exhausted
-    (`record_limit`) so the next selection skips it. `resume_stopped` treats a remembered `Denied` with no calls the same way.
+    same Backoff as `NotStarted`, no card; a Codex account that refused its native policy becomes `PolicyRefused`
+    (`RecordAccountPolicyRefused`), a state apart from exhausted that no time clears, so selection skips it. `resume_stopped` treats a remembered `Denied` with no calls the same way.
   - Running -> `Interrupted`/`Denied`/`Cancelled{effects}` with doubtful effects -> Ambiguous + card (`:764-773`).
   - Running -> `Interrupted` with confirmed effects -> handoff + Backoff (`:658-665`).
   - Running -> `Limited` -> Idle (+handoff).
@@ -6019,12 +6019,12 @@ id = "M-PROV-12"
 code = ["crates/core/src/accounts.rs::AccountState", "crates/core/src/accounts.rs::AccountsConfig", "crates/daemon-engine/src/accounts.rs::check_current", "crates/domain-rules/src/account_login.rs::AccountLoginPhase"]
 truth = ["file:options.toml", "sqlite:account_configuration", "sqlite:account_distribution", "sqlite:account_logins", "sqlite:account_model_catalogs", "sqlite:accounts", "sqlite:model_profiles", "sqlite:task_accounts", "sqlite:settings_projection_receipts"]
 states = "crates/core/src/accounts.rs::AccountState"
-variants = ["Unchecked", "SignedIn", "SignedOut", "Unavailable", "Disabled"]
+variants = ["Unchecked", "SignedIn", "SignedOut", "Unavailable", "Disabled", "PolicyRefused"]
 ```
 
-- **Kind**: derived, snapshot. **Defined in**: `crates/core/src/accounts.rs:541-561` (`AccountState`: `Unchecked | SignedIn | SignedOut | Unavailable | Disabled`), `:453-536` (`AccountsConfig::changed`); produced in `crates/daemon-engine/src/accounts.rs:134-176` (Claude), `:522-612` (`check_current`, Codex) and `:416-418`.
+- **Kind**: derived, snapshot. **Defined in**: `crates/core/src/accounts.rs:541-561` (`AccountState`: `Unchecked | SignedIn | SignedOut | Unavailable | Disabled | PolicyRefused`), `:453-536` (`AccountsConfig::changed`); produced in `crates/daemon-engine/src/accounts.rs:134-176` (Claude), `:522-612` (`check_current`, Codex) and `:416-418`.
 - **Source of truth**: `options.toml` (`enabled`, order, policy) plus the native probe. The domain stores the snapshot (`RecordAccounts`) and each probe replaces it whole.
-- **Transitions**: any state to any other on each probe; `Disabled` if `enabled=false`; `Unavailable` if the probe fails (`:166`, `:559`); `Unchecked` at startup or on re-enable (`:895-897`).
+- **Transitions**: `PolicyRefused` is entered only by `RecordAccountPolicyRefused` (a provider refusing the account's native policy before any work) from `SignedIn`/`Unchecked`; `record_accounts` (`claude_access.rs`) keeps it while a probe reports `SignedIn`/`Unchecked` with the same identity and billing, and any other fact (another identity or billing, signed out, unavailable, turned off then on again) closes it; no timer does. Otherwise any state to any other on each probe; `Disabled` if `enabled=false`; `Unavailable` if the probe fails (`:166`, `:559`); `Unchecked` at startup or on re-enable (`:895-897`).
 - **Concurrency (fence)**: the probe commit compares `accounts`, configuration versions and `options.toml` with the snapshot taken before (`commit_probe`, `:333-345`); if they changed, `stale_probe` and it is repeated. It does not include usage (`account_usage`), on purpose: readings are ordered by measurement time in `record` (F-PROV-1, fixed).
 - **Missing**: no native error of a node (401, "login expired") changes the state; that is the scope of the expired provider login work.
 

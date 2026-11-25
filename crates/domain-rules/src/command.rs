@@ -871,6 +871,12 @@ pub enum Command {
         at: Millis,
         day: String,
     },
+    /// The provider refused to run work on `account` because of its native account policy: it
+    /// takes no new work until it changes (a new sign-in, enabling it again, another identity or billing).
+    RecordAccountPolicyRefused {
+        provider: alondra_core::accounts::Provider,
+        account: alondra_core::accounts::AccountId,
+    },
     /// The daemon's schedule: one task held by `hold` goes on, to probe whether Claude works again;
     /// for a limit, one of `account`'s when it names one.
     ProbeClaudeAccess {

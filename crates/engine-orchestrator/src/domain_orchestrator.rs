@@ -738,7 +738,7 @@ impl Executor {
             crate::orchestrator_provider::record_limit(&self.domain, &selection, reset, now_millis());
         }
         if output.stream.denied && matches!(end, BatchEnd::NotStarted { .. }) && selection.account.provider == alondra_core::accounts::Provider::Codex {
-            crate::orchestrator_provider::record_limit(&self.domain, &selection, None, now_millis());
+            crate::orchestrator_provider::record_policy_refused(&self.domain, &selection, now_millis());
         }
         if !matches!(end, BatchEnd::Handled) {
             log!("orchestrator: batch {} did not end handled ({:?}); result received: {}, success: {}, denied: {}, storage failure: {}, native request rejected: {}, restarted: {}; admitted {:?}; unconfirmed {:?}",

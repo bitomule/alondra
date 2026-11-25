@@ -476,7 +476,7 @@ impl Room {
 /// its week and today's slice. Unknown for a disabled account or one never measured.
 pub fn own_margin(state: AccountState, usage: Option<&AccountUsage>, reserve: Share, now: Millis, today: &str) -> Option<f64> {
     match state {
-        AccountState::Disabled => return None,
+        AccountState::Disabled | AccountState::PolicyRefused => return None,
         AccountState::SignedOut => return Some(0.0),
         AccountState::Unchecked | AccountState::SignedIn | AccountState::Unavailable => {}
     }

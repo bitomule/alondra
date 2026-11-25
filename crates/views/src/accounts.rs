@@ -86,6 +86,7 @@ fn state_badge(state: AccountState, lang: Lang) -> Label {
         AccountState::Unavailable => (t!(lang, "Can't be checked", "No se puede comprobar"), Tone::Critical),
         AccountState::Unchecked => (t!(lang, "Not checked yet", "Sin comprobar"), Tone::Neutral),
         AccountState::Disabled => (t!(lang, "Off", "Desactivada"), Tone::Neutral),
+        AccountState::PolicyRefused => (t!(lang, "Refused by its provider", "Rechazada por su proveedor"), Tone::Critical),
     };
     Label { text: text.into(), tone, elapsed: None }
 }

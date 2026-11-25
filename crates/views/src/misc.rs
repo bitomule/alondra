@@ -536,6 +536,7 @@ pub(super) fn enrich_model_fields(fields: &mut Vec<Field>, context: &RenderConte
         let reason = match account.state {
             alondra_core::accounts::AccountState::SignedOut => Some(super::accounts::account_sign_in_hint(account, lang)),
             alondra_core::accounts::AccountState::Disabled => Some(t!(lang, "This account is turned off", "Esta cuenta está desactivada").into()),
+            alondra_core::accounts::AccountState::PolicyRefused => Some(t!(lang, "Its provider refused this account's configuration; sign in again or change it", "Su proveedor rechazó la configuración de esta cuenta; vuelve a iniciar sesión o cámbiala").into()),
             alondra_core::accounts::AccountState::Unavailable => Some(t!(lang, "This account could not be checked", "No se pudo comprobar esta cuenta").into()),
             _ => None,
         };
