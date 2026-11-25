@@ -754,10 +754,10 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
                 let restarted = crate::domain_orchestrator::Executor { domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()), home: f.executor.home.clone(), claude_home: f.executor.claude_home.clone() };
                 restarted.repair_incomplete().await.unwrap();
                 let runtime=crate::domain_orchestrator::load(&f.executor.home).unwrap();
-                assert_eq!(runtime.failure,Some(crate::domain_orchestrator::Failure::Interrupted));
-                assert!(runtime.active_run.is_some(),"losing both the refusal report and runtime write still cannot permit native replay after restart");
+                assert!(runtime.failure.is_none(),"a refusal nobody recorded ran nothing, so restart recovery replays it and nobody is asked: {:?}",runtime.failure);
             } else if failed_write.is_some() { f.tick().await; }
-            let runtime=crate::domain_orchestrator::load(&f.executor.home).unwrap();let run=runtime.last_run_id.as_deref().unwrap();assert_eq!(runtime.failure,Some(if cold_restart {crate::domain_orchestrator::Failure::Interrupted} else {crate::domain_orchestrator::Failure::Denied}),"actual host diagnostic: {:?}",runtime.last_error);assert!(runtime.retry_at.is_none(),"payment denial requires a user decision, never another automatic provider attempt");
+            let runtime=crate::domain_orchestrator::load(&f.executor.home).unwrap();let run=runtime.last_run_id.as_deref().unwrap();if !cold_restart { assert!(!matches!(runtime.failure,Some(crate::domain_orchestrator::Failure::Denied|crate::domain_orchestrator::Failure::Interrupted)),"a policy denial before any call never asks the user: {:?} ({refuse_report} {failed_write:?})",runtime.failure);
+                assert!(!f.domain().state().unwrap().interactions.keys().any(|id|id.0.starts_with(alondra_domain_rules::orchestrator_batch::BATCH_PROBLEM_PREFIX)),"nothing ran, so nobody is asked"); }
             let reports:Vec<(u64,Vec<u8>,String)>={let conn=rusqlite::Connection::open(crate::domain_store::active_path(&f.executor.home)).unwrap();let mut query=conn.prepare("SELECT cursor,digest,report FROM orchestrator_batch_reports WHERE run=?1 ORDER BY cursor").unwrap();query.query_map([run],|row|Ok((u64::try_from(row.get::<_,i64>(0)?).unwrap(),row.get(1)?,row.get(2)?))).unwrap().map(|row|row.unwrap()).collect()};
             let directory=std::fs::read_dir(&state_root).unwrap().map(|entry|entry.unwrap().path()).find(|path|path.file_name().unwrap().to_string_lossy().starts_with("orchestrator-"));
             if !refuse_report {

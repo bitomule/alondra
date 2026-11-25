@@ -10,6 +10,7 @@ records its arguments and every prompt it gets, and answers each prompt as its f
                             its domain capability instead, as its Alondra tools would use it
   fixture:tool-then-exit    calls an Alondra tool that changes something, then dies without a result
   fixture:denied            calls an Alondra tool and ends with it refused
+  fixture:denied-first      is refused before calling any tool
   fixture:limited           usage runs out before it answers
   fixture:exit-before-init  dies before it initializes
   fixture:another-input     ends with the result of a prompt that is not this one
@@ -147,6 +148,9 @@ for raw in sys.stdin:
     if 'fixture:read-then-exit' in text:
         assistant(message, [dict(type='text', text='Inspected the current state')])
         sys.exit(1)
+    if 'fixture:denied-first' in text:
+        result(message, permission_denials=[dict(tool_name='mcp__%s__create_task' % server, tool_use_id='toolu_fixture', tool_input={})])
+        continue
     if 'fixture:denied' in text:
         assistant(message, [dict(type='tool_use', id='toolu_fixture', name='mcp__%s__create_task' % server, input=dict(title='Fixture'))])
         result(message, permission_denials=[dict(tool_name='mcp__%s__create_task' % server, tool_use_id='toolu_fixture', tool_input={})])

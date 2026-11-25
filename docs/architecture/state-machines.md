@@ -5215,6 +5215,9 @@ truth = ["file:orchestrator.json", "sqlite:orchestrator_session"]
   - Running -> `Handled` -> Idle (`handled` `:673-711`: `finish_batch`, `settle_orchestrator_batch(Handed)`,
     `announce_request_tasks`, `rested`, `hand_replans`, `settle`).
   - Running -> `NotStarted`/no effects -> Backoff (`:756-762`, 30 s x 2^n, max 16 min).
+  - Running -> `Denied` with no Alondra call, no admitted operation and no turn that acted (`refused_before_any_work`) -> the
+    same Backoff as `NotStarted`, no card; a Codex account that refused its native policy is also marked exhausted
+    (`record_limit`) so the next selection skips it. `resume_stopped` treats a remembered `Denied` with no calls the same way.
   - Running -> `Interrupted`/`Denied`/`Cancelled{effects}` with doubtful effects -> Ambiguous + card (`:764-773`).
   - Running -> `Interrupted` with confirmed effects -> handoff + Backoff (`:658-665`).
   - Running -> `Limited` -> Idle (+handoff).
