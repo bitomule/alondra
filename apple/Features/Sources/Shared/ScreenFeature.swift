@@ -111,22 +111,7 @@ public struct ScreenFeature: Sendable {
         let random = withRandomNumberGenerator { Double.random(in: 0...1, using: &$0) }
         let delay = ConnectionBackoff.standard.delay(attempt: state.failures - 1, random: random)
         return .run { [clock, viewsClient] send in
-            let reconnections = await viewsClient.reconnections()
-            let connection = await viewsClient.connection()
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { try? await clock.sleep(for: delay) }
-                group.addTask { for await _ in reconnections { return } }
-                group.addTask {
-                    var answering = true
-                    for await state in connection {
-                        if state.isConnected && !answering { return }
-                        answering = state.isConnected
-                    }
-                    try? await clock.sleep(for: delay)
-                }
-                await group.next()
-                group.cancelAll()
-            }
+            await viewsClient.waitToRetry(after: delay, clock: clock)
             guard !Task.isCancelled else { return }
             await send(.retry)
         }

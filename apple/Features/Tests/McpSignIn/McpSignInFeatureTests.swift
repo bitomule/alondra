@@ -162,6 +162,7 @@ final class McpSignInFeatureTests: XCTestCase {
             let dismissed = LockIsolated(0)
             let observed = LockIsolated<[String]>([])
             let card = try target(title)
+            let (waiting, waited) = AsyncStream<Void>.makeStream()
             let store = TestStore(initialState: McpSignInFeature.State(card: card, server: title)) { McpSignInFeature() } withDependencies: {
                 $0.mcpSignIn.connect = { _ in throw APIError.unavailable }
                 $0.viewsClient.observe = { key in
@@ -171,10 +172,16 @@ final class McpSignInFeatureTests: XCTestCase {
                         continuation.finish()
                     }
                 }
+                $0.viewsClient.reconnections = { waited.yield(); return AsyncStream { _ in } }
+                $0.continuousClock = TestClock()
                 $0.dismiss = DismissEffect { dismissed.withValue { $0 += 1 } }
             }
             store.exhaustivity = .off
             await store.send(.appeared)
+            if !closes {
+                for await _ in waiting { break }
+                await store.skipInFlightEffects()
+            }
             await store.finish()
             XCTAssertEqual(observed.value, ["mcp_servers"], "the screen's server is watched on the screen, never as a card")
             XCTAssertEqual(dismissed.value, closes ? 1 : 0, "\(title) closes the sheet only once no project needs its sign-in")

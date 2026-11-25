@@ -68,7 +68,9 @@ import Foundation
 
     @Dependency(\.viewsClient) var viewsClient
     @Dependency(\.mcpSignIn) var mcpSignIn
-    private enum CancelID { case observe }
+    /// One per view: the accounts and the MCP servers sections of Settings run this reducer side by
+    /// side, and one starting its observation must never cancel the other's.
+    private enum CancelID: Hashable { case observe(String) }
     public init() {}
 
     public var body: some ReducerOf<Self> {
@@ -78,15 +80,11 @@ import Foundation
             case .task:
                 let key = state.key
                 return .run { [viewsClient] send in
-                    do {
-                        for try await fetch in viewsClient.observe(key) {
-                            if case .document(let document) = fetch { await send(.loaded(document)) }
-                        }
-                    } catch {}
+                    await viewsClient.keepObserving(key) { await send(.loaded($0)) }
                 }
-                .cancellable(id: CancelID.observe, cancelInFlight: true)
+                .cancellable(id: CancelID.observe(key.rawValue), cancelInFlight: true)
             case .stop:
-                return .cancel(id: CancelID.observe)
+                return .cancel(id: CancelID.observe(state.key.rawValue))
             case .loaded(let document):
                 state.document = document
                 state.actions.dataEpoch = document.dataEpoch

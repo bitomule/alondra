@@ -30,7 +30,7 @@ final class MetricsFeatureTests: XCTestCase {
     func testADaemonWithoutTheScreenLeavesSettingsWithoutIt() async {
         let feed = FeedStub()
         let store = TestStore(initialState: MetricsFeature.State()) { MetricsFeature() } withDependencies: {
-            $0.viewsClient.observe = feed.observe
+            $0.viewsClient.observe = feed.observeOpen
         }
         await store.send(.task)
         await store.receive(.missing)
@@ -42,13 +42,14 @@ final class MetricsFeatureTests: XCTestCase {
         let document = try metrics(key: "metrics")
         let feed = FeedStub([document])
         let store = TestStore(initialState: MetricsFeature.State()) { MetricsFeature() } withDependencies: {
-            $0.viewsClient.observe = feed.observe
+            $0.viewsClient.observe = feed.observeOpen
         }
         await store.send(.task)
         await store.receive(.loaded(document)) {
             $0.document = document
             $0.offered = true
         }
+        await store.send(.stop)
     }
 
     func testAPeriodShowsChosenAtOnceAndTheFiguresFollowWhenTheDaemonAnswers() async throws {
@@ -90,7 +91,7 @@ final class MetricsFeatureTests: XCTestCase {
         state.document = week
         state.offered = true
         let store = TestStore(initialState: state) { MetricsFeature() } withDependencies: {
-            $0.viewsClient.observe = feed.observe
+            $0.viewsClient.observe = feed.observeOpen
         }
         await store.send(.choose(row: "period:30d", key: ViewKey(rawValue: Self.month))) {
             $0.key = ViewKey(rawValue: Self.month)
@@ -102,5 +103,6 @@ final class MetricsFeatureTests: XCTestCase {
         }
         await store.receive(.loaded(week))
         XCTAssertTrue(store.state.offered)
+        await store.send(.stop)
     }
 }

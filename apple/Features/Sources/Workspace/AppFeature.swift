@@ -95,10 +95,8 @@ public struct AppFeature: Sendable {
                     for await connection in await viewsClient.connection() { await send(.connectionChanged(connection)) }
                 }.cancellable(id: CancelID.connection, cancelInFlight: true),
                 .run { [viewsClient] send in
-                    for try await fetch in viewsClient.observe(.home) {
-                        if case .document(let document) = fetch { await send(.triage(.screen(.loaded(document)))) }
-                    }
-                } catch: { _, _ in }.cancellable(id: CancelID.queue, cancelInFlight: true)
+                    await viewsClient.keepObserving(.home) { await send(.triage(.screen(.loaded($0)))) }
+                }.cancellable(id: CancelID.queue, cancelInFlight: true)
             )
         case .disappeared:
             return .merge(.send(.triage(.disappeared)), .cancel(id: CancelID.feed), .cancel(id: CancelID.queue),

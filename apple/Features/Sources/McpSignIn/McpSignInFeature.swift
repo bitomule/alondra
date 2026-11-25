@@ -188,16 +188,12 @@ public struct McpSignInFeature: Sendable {
     /// The card leaves the queue once every task that waited goes on: the sheet has nothing left to do.
     private func watchCard(_ card: String) -> Effect<Action> {
         .run { [viewsClient] send in
-            do {
-                for try await fetch in viewsClient.observe(.card(card)) {
-                    guard case .document(let document) = fetch, document.settledNotice == nil else {
-                        return await send(.cardSettled)
-                    }
-                }
-            } catch ViewsClientError.missingView {
+            await viewsClient.watch(.card(card), onMissing: { await send(.cardSettled) }, until: { document in
+                guard document.settledNotice != nil else { return false }
                 await send(.cardSettled)
-            }
-        } catch: { _, _ in }.cancellable(id: CancelID.settled, cancelInFlight: true)
+                return true
+            })
+        }.cancellable(id: CancelID.settled, cancelInFlight: true)
     }
 
     static let serverPrefix = "mcp-server-"
@@ -205,17 +201,18 @@ public struct McpSignInFeature: Sendable {
     /// A server of the MCP servers screen needs no sign-in once no row of it offers Connect.
     private func watchServer(_ target: String) -> Effect<Action> {
         .run { [viewsClient] send in
-            for try await fetch in viewsClient.observe(.mcpServers) {
-                guard case .document(let document) = fetch else { continue }
+            await viewsClient.watch(.mcpServers, until: { document in
                 let rows = document.sections.flatMap(\.items).compactMap { item -> AlondraContract.Row? in
                     if case .row(let row) = item { return row } else { return nil }
                 }.filter { $0.id == target }
                 let connecting = rows.contains { row in
                     row.actions.contains { if case .local(.mcpSignIn)? = $0.link { true } else { false } }
                 }
-                if !rows.isEmpty, !connecting { return await send(.cardSettled) }
-            }
-        } catch: { _, _ in }.cancellable(id: CancelID.settled, cancelInFlight: true)
+                guard !rows.isEmpty, !connecting else { return false }
+                await send(.cardSettled)
+                return true
+            })
+        }.cancellable(id: CancelID.settled, cancelInFlight: true)
     }
 
     public static func signedInNotice(_ server: String) -> WorkspaceNotice.Event {

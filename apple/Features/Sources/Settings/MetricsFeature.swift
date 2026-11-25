@@ -78,13 +78,7 @@ import Foundation
 
     private func observe(_ key: ViewKey) -> Effect<Action> {
         .run { [viewsClient] send in
-            do {
-                for try await fetch in viewsClient.observe(key) {
-                    if case .document(let document) = fetch { await send(.loaded(document)) }
-                }
-            } catch ViewsClientError.missingView {
-                await send(.missing)
-            } catch {}
+            await viewsClient.keepObserving(key, onMissing: { await send(.missing) }) { await send(.loaded($0)) }
         }
         .cancellable(id: CancelID.observe, cancelInFlight: true)
     }

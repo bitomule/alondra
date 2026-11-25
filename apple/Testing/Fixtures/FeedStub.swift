@@ -39,6 +39,20 @@ final class FeedStub: @unchecked Sendable {
         }
     }
 
+    /// Like `observe`, but a served view stays open after its document, as a live observation does
+    /// until its screen stops it; a key nobody serves still ends as missing.
+    var observeOpen: @Sendable (ViewKey) -> AsyncThrowingStream<ViewFetch, any Error> {
+        { [self] key in
+            AsyncThrowingStream { continuation in
+                if let document = lock.withLock({ documents[key.rawValue] }) {
+                    continuation.yield(.document(document))
+                } else {
+                    continuation.finish(throwing: ViewsClientError.missingView)
+                }
+            }
+        }
+    }
+
     var load: @Sendable (ViewKey, String?) async throws -> ViewFetch {
         { [self] key, _ in
             guard let document = lock.withLock({ documents[key.rawValue] }) else { throw ViewsClientError.missingView }
