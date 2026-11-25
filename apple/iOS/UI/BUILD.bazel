@@ -1,9 +1,10 @@
 load("//bazel/rules:tree.bzl", "repo_tree")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
-load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+load("//apple:swift.bzl", "IOS_ONLY", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 swift_library(
     name = "AlondraiOSUI",
+    target_compatible_with = IOS_ONLY,
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraiOSUI",

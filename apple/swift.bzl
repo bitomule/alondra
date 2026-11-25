@@ -7,3 +7,8 @@ STRICT_SWIFT_CONCURRENCY_COPTS = [
     "6",
     "-strict-concurrency=complete",
 ]
+
+# These modules import UIKit or iOS-only SwiftUI API. Declaring it keeps a build of `//apple/...`,
+# which compiles for the Mac, from trying them; the iOS apps and test bundles that use them build
+# for iOS, where the constraint holds.
+IOS_ONLY = ["@platforms//os:ios"]

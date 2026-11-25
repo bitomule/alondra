@@ -3,7 +3,7 @@ load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_unit_tes
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 load("@simpool//:simpool_ios_test_runner.bzl", "simpool_ios_test_runner")
 load("@simpool_env//:env.bzl", "SIMPOOL_TEST_ENV")
-load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+load("//apple:swift.bzl", "IOS_ONLY", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 exports_files(
     ["Support/AssertAppSnapshot.swift"],
@@ -66,6 +66,7 @@ ios_application(
 
 swift_library(
     name = "AlondraSnapshotTestsLib",
+    target_compatible_with = IOS_ONLY,
     testonly = True,
     srcs = glob([
         "Support/*.swift",
