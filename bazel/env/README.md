@@ -6,7 +6,12 @@ them into `bazel/env/.bazel_env/bin`. Nothing has to be installed by hand:
 
 - **Launchers.** bazelisk runs `tools/bazel` before every Bazel command (`.bazeliskrc`). It installs
   `bazel/env/launcher.sh` into `~/.local/bin` as `musts` and `simpool`, and never replaces a file it
-  did not put there. The first Bazel command of a checkout is therefore enough: afterwards `musts
+  did not put there: it leaves it and `bazel/env/foreign_tools.py` says so on stderr before the
+  command, naming the file, its kind, the `--version` it answers (for `musts`, against the pinned one;
+  a foreign `musts` at the pinned version is not reported), and the command that replaces it keeping a
+  backup (`mv <file> <file>.bak && install -m 755 bazel/env/launcher.sh <file>`). A copy of the tool
+  ahead of the launcher on `PATH` is reported the same way. Until you replace it, that copy is what
+  runs, whatever the repo pins. The first Bazel command of a checkout is therefore enough: afterwards `musts
   validate` and `simpool` work in any shell. Keep `~/.local/bin` on `PATH`, ahead of any Homebrew copy.
   Apple silicon only; CI installs `musts` itself and the wrapper does nothing there.
 - **Versions.** Each launcher runs the tool pinned by the repo you are in. `ensure.sh` rebuilds

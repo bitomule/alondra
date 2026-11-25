@@ -3,7 +3,7 @@
 # Before running it, this installs bazel/env/launcher.sh into ~/.local/bin as each tool bazel/env
 # pins, so they work in any shell, and builds bazel/env/.bazel_env when it is missing or stale, so
 # the build's status script finds the pinned musts (bazel/env/README.md). It never replaces a file it
-# did not install, and does nothing on CI.
+# did not install (bazel/env/foreign_tools.py reports it instead), and does nothing on CI.
 if [ -z "${CI:-}" ] && [ -z "${ALONDRA_BAZEL_ENV_ENSURING:-}" ]; then
 	root="$(cd "$(dirname "$0")/.." && pwd)"
 	bin="${ALONDRA_TOOLS_BIN:-$HOME/.local/bin}"
@@ -13,6 +13,8 @@ if [ -z "${CI:-}" ] && [ -z "${ALONDRA_BAZEL_ENV_ENSURING:-}" ]; then
 		cmp -s "$root/bazel/env/launcher.sh" "$target" && continue
 		mkdir -p "$bin" && install -m 755 "$root/bazel/env/launcher.sh" "$target" && echo "bazel/env: installed $target" >&2
 	done
+	# A file in a launcher's place stays, but it is reported, with its version when it is musts.
+	python3 "$root/bazel/env/foreign_tools.py" "$root" "$bin" musts simpool >&2 || true
 	# Nothing to build for a command that only stops or describes Bazel.
 	for argument in "$@"; do
 		case "$argument" in
