@@ -88,10 +88,11 @@ Swift 6.4, they resolve to the old `swiftpkg_xctest_dynamic_overlay` repository 
 The first build downloads Bazel, the Rust toolchain and the crates: several minutes. The
 repository does not read any remote build cache unless you pass `--config=buildbuddy`.
 
-Rust compiles incrementally, so an edit after the first build recompiles only what changed. Its
-state takes about 5 GB inside Bazel's output base (`bazelisk info output_base`), next to
+Rust compiles from scratch and every compilation is cached, so a second checkout reuses the first's.
+For a faster edit loop add `--config=incremental`: an edit after the first build recompiles only what
+changed. Its state takes about 5 GB inside Bazel's output base (`bazelisk info output_base`), next to
 everything else Bazel builds; `bazelisk clean --expunge` deletes it with the rest of the output base; run it if rustc fails
-with an internal error that names the incremental state. Releases build without it
+with an internal error that names the incremental state. Releases never build incrementally
 (`--config=release`).
 
 ```bash

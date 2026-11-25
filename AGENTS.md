@@ -53,13 +53,15 @@ or in the private repository that keeps it, never here.
   - Rust: `make test` (`bazelisk test //crates/...`).
   - Apple: `bazelisk test --build_tests_only -- //apple/... -//apple/NativeHarness/...`.
   - A new integration test needs a Bazel target, or it does not run.
-- rustc and clippy compile incrementally (`.bazelrc`): an edit after the first build of a crate
-  in a checkout recompiles only what changed. If rustc fails with an internal compiler error that
+- rustc and clippy compile from scratch and their results are cached on disk and remotely, so a new
+  checkout reuses what any other built. For a faster edit loop in one checkout add
+  `--config=incremental` (`.bazelrc`): an edit after the first build of a crate recompiles only what
+  changed. Its Rustc and Clippy actions carry `no-cache`, so they never reach the disk or remote cache
+  (`tools/tests/test_release_config.py` guards it). If rustc fails with an internal compiler error that
   names its incremental state, run `bazelisk clean --expunge` (it deletes the state with the rest of the output base) and build again.
   A link failure `Undefined symbols ... .llvm.<hash>` from a crate's own rlib is that state gone
-  incoherent: `make clean-incremental` drops this checkout's outputs and state. Incremental Rustc
-  and Clippy actions carry `no-cache`, so they never reach the disk or remote cache
-  (`tools/tests/test_release_config.py` guards it). A release builds with `--config=release`, without it.
+  incoherent: `make clean-incremental` drops this checkout's outputs and state. A release builds with
+  `--config=release`, never incrementally.
 - Web (`web/`): `npm ci --include=dev`, `npm run typecheck`, `npm run build`, `npm run test:e2e`.
 - `musts validate` is the done-check before committing. Bazel downloads the pinned `musts` and puts it
   on PATH (`bazel/env/README.md`): nothing to install. It asks only for
