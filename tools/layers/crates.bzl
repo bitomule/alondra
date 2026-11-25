@@ -6,7 +6,7 @@ crate below it, depends on a layer its own may not use. `//tools/layers:crate_la
 production `rust_library` or `rust_binary` declared without them.
 """
 
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("//bazel/rules:rust.bzl", "rust_binary", "rust_library")
 load(
     ":crate_layers.bzl",
     "ADAPTER_IN",

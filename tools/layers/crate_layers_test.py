@@ -5,8 +5,9 @@ Fails when a production rust_library or rust_binary is declared without a role m
 that ships Rust has no layer or a layer names a package with no crate, when a production dependency
 breaks the rule (in any branch of a select), when a test outside the root depends on a crate or
 binary of the root, when an exception list keeps an entry nothing uses or grows past its ceiling, when
-a test-only library builds a production crate a second time, and when a test kept apart from a crate
-reaches it again.
+a test-only library builds a production crate a second time, when a test kept apart from a crate
+reaches it again, and when a Rust library or binary of the repository may be cached: it compiles
+incrementally, so it is declared with the rules of bazel/rules/rust.bzl, which tag it `no-cache`.
 """
 import json
 import os
@@ -64,6 +65,25 @@ def read_targets(path):
             "deps": deps,
         }
     return targets
+
+
+def cacheable_compiles(path):
+    """The repository's Rust targets without `no-cache`: their incremental rlibs would reach a cache. A
+    build script compiles for the build's own platform, where nothing is incremental."""
+    found = []
+    for rule in ElementTree.parse(path).getroot().iter("rule"):
+        label = rule.get("name")
+        attributes = {child.get("name"): child for child in rule}
+        generator = attributes.get("generator_function")
+        if not label.startswith("//") or (generator is not None and generator.get("value") in BUILD_SCRIPT_MACROS):
+            continue
+        tags = [entry.get("value") for entry in attributes["tags"].iter("string")] if "tags" in attributes else []
+        if "no-cache" not in tags:
+            found.append(
+                f"{label} ({rule.get('location')}) compiles incrementally but may be cached: declare it with "
+                "the rules of bazel/rules/rust.bzl, not rules_rust's."
+            )
+    return found
 
 
 def violation(table, package, dependency):
@@ -242,6 +262,7 @@ def main():
     rules = read_rules(os.environ["RULES"])
     found += tests_above_their_layer(table, rules)
     found += tests_not_kept_apart(rules, TESTS_KEPT_APART)
+    found += cacheable_compiles(os.environ["RUST_COMPILES"])
     for problem in found:
         print(problem)
     return 1 if found else 0

@@ -2,7 +2,7 @@ load("//tools/layers:crates.bzl", "root_binary")
 load("//bazel/rules:tree.bzl", "repo_tree")
 load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("//bazel/rules:rust.bzl", "rust_binary", "rust_library")
 load("//:version.bzl", "VERSION")
 
 DEPS = all_crate_deps(normal = True) + [

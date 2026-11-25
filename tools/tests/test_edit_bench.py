@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """The edit bench finds a file's label, the frequent edits, and what an execution log really ran."""
+import gzip
 import importlib.util
 import json
 import tempfile
@@ -62,9 +63,37 @@ class EditBenchTest(unittest.TestCase):
         self.assertEqual(bench.bazel_seconds("INFO: Elapsed time: 3.0s", 42), 42)
 
     def test_every_run_edits_differently_so_no_cache_serves_it(self):
-        self.assertNotEqual(bench.edit_text(".rs", 1), bench.edit_text(".rs", 2))
-        self.assertIn("static EDIT_BENCH: u64 = 7;", bench.edit_text(".rs", 7))
-        self.assertEqual(bench.edit_text(".py", 7), "# edit-bench 7\n")
+        source = "fn a() {\n}\n"
+        self.assertNotEqual(bench.edited(source, ".rs", 1), bench.edited(source, ".rs", 2))
+        self.assertEqual(bench.edited("x = 1\n", ".py", 7), "x = 1\n# edit-bench 7\n")
+
+    def test_a_rust_edit_opens_the_body_of_the_first_function(self):
+        source = (
+            "use std::fmt;\n\nconst fn fixed() -> u8 {\n    1\n}\n\nfn split(\n    a: u8,\n) -> u8 {\n    a\n}\n\n"
+            "    pub(crate) async fn turns(queue: &[u8]) -> Vec<u8> {\n        queue.to_vec()\n    }\n"
+        )
+        lines = bench.edited(source, ".rs", 7).split("\n")
+        opened = lines.index("    pub(crate) async fn turns(queue: &[u8]) -> Vec<u8> {")
+        self.assertEqual(lines[opened + 1], "        std::hint::black_box(7u64);")
+        self.assertEqual(len(lines), len(source.split("\n")) + 1, "one line added, nothing else")
+
+    def test_a_rust_file_without_a_function_gets_a_static(self):
+        self.assertEqual(bench.edited("const A: u8 = 1;\n", ".rs", 7), "const A: u8 = 1;\n\n#[used]\nstatic EDIT_BENCH: u64 = 7;\n")
+
+    def test_the_critical_path_lists_its_actions_in_order_without_bookkeeping(self):
+        events = [
+            {"cat": "critical path component", "ph": "X", "ts": 30, "dur": 74_000_000, "name": "action 'Compiling Rust rlib daemon_server v0.3.69 (52 files)'"},
+            {"cat": "critical path component", "ph": "X", "ts": 10, "dur": 5_500_000, "name": "action 'Compiling Rust rlib engine_admission v0.3.69 (8 files)'"},
+            {"cat": "critical path component", "ph": "X", "ts": 20, "dur": 100_000, "name": "runfiles for //crates/scenarios:scenarios_test"},
+            {"cat": "action processing", "ph": "X", "ts": 40, "dur": 90_000_000, "name": "Compiling Rust rlib cli_mcp"},
+        ]
+        profile = self.root / "build.profile.gz"
+        with gzip.open(profile, "wt") as file:
+            json.dump({"traceEvents": events}, file)
+        self.assertEqual(bench.critical_components(profile), [
+            ("Compiling Rust rlib engine_admission v0.3.69 (8 files)", 5.5),
+            ("Compiling Rust rlib daemon_server v0.3.69 (52 files)", 74.0),
+        ])
 
     def test_the_longest_test_is_one_bazel_ran_never_a_cached_result(self):
         output = (

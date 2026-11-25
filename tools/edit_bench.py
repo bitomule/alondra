@@ -6,10 +6,13 @@
 weeks; --tracked measures the edits the build graph's targets are set for. For each edit it makes a
 first one-line change and builds the affected targets, so rustc's incremental state exists for every
 crate the edit reaches, as it does in a real edit loop (a crate taken from a cache has none). Then it
-makes a second change that reaches the binaries (a `#[used]` static in Rust, a comment elsewhere)
-and times `bazel build` over the same targets: what compiling costs. A third change times `bazel
-test` with an execution log: the whole edit, and the test target that took longest. It puts the
-file back exactly as it was, also when interrupted. `--build-only` stops after the build. The log of
+makes a second change and times `bazel build` over the same targets: what compiling costs. In Rust
+the change is a line in the body of the file's first function, as a real edit is; a static added at
+the end of the file would be the best case of incremental compilation, which reuses everything else.
+A third change times `bazel test` with an execution log: the whole edit, and the test target that
+took longest. `--profile` keeps Bazel's profile of both and prints the actions on the build's
+critical path. It puts the file back exactly as it was, also when interrupted. `--build-only` stops
+after the build. The log of
 every test target that fails, times out or never reports, with its earlier attempts, is copied to
 `.scratch/edit-bench-failures/` before the next pass overwrites it; the newest runs are kept.
 
@@ -20,6 +23,7 @@ The time reported is what Bazel ran, from bazelqueue's summary when there is one
 """
 import argparse
 import collections
+import gzip
 import json
 import os
 import re
@@ -49,6 +53,10 @@ CRITICAL = re.compile(r"Critical Path: (\d+(?:\.\d+)?)s")
 QUEUE_RAN = re.compile(r"^bazelqueue: finished \S+ exit=\d+ queued=\S+ ran=(\S+)", re.M)
 DURATION = re.compile(r"(\d+(?:\.\d+)?)(h|ms|m|s)")
 FAILURES = Path(".scratch") / "edit-bench-failures"
+PROFILES = Path(".scratch") / "edit-bench-profiles"
+FUNCTION = re.compile(r"^(\s*)(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+\w+.*\{\s*$")
+# Critical path components shorter than this are Bazel's bookkeeping, not compiling.
+COMPONENT_SECONDS = 0.5
 KEPT_RUNS = 20
 
 
@@ -127,12 +135,33 @@ def bazel_seconds(output, wall):
     return sum(seconds_of(value) for value in ran) if ran else wall
 
 
-def edit_text(suffix, nonce):
-    """A one-line change unique to this run: the same text twice would be served from the cache of
-    the run before, and the bench would measure nothing."""
-    if suffix == ".rs":
-        return f"\n#[used]\nstatic EDIT_BENCH: u64 = {nonce};\n"
-    return f"{COMMENT[suffix]} edit-bench {nonce}\n"
+def edited(original, suffix, nonce):
+    """The file with a one-line change unique to this run: the same text twice would be served from
+    the cache of the run before, and the bench would measure nothing. In Rust, a statement opening
+    the body of the first function whose signature fits one line; a static at the end when there is
+    none."""
+    if suffix != ".rs":
+        return original + f"{COMMENT[suffix]} edit-bench {nonce}\n"
+    lines = original.split("\n")
+    for index, line in enumerate(lines):
+        match = FUNCTION.match(line)
+        if match:
+            lines.insert(index + 1, f"{match.group(1)}    std::hint::black_box({nonce}u64);")
+            return "\n".join(lines)
+    return original + f"\n#[used]\nstatic EDIT_BENCH: u64 = {nonce};\n"
+
+
+def critical_components(profile):
+    """The actions on the critical path of a Bazel JSON profile, in order, with their seconds."""
+    with gzip.open(profile, "rt") as file:
+        events = json.load(file)
+    events = events["traceEvents"] if isinstance(events, dict) else events
+    components = sorted(
+        (event["ts"], event["name"], event["dur"] / 1e6)
+        for event in events
+        if event.get("cat") == "critical path component" and event.get("ph") == "X"
+    )
+    return [(name.removeprefix("action ").strip("'"), seconds) for _, name, seconds in components if seconds >= COMPONENT_SECONDS]
 
 
 def attempts(output):
@@ -162,7 +191,7 @@ def bazel(root, verb, targets, *extra):
     return result.returncode, bazel_seconds(output, time.monotonic() - started), attempts(output), output
 
 
-def measure(root, relative, query_only, build_only=False, flags=()):
+def measure(root, relative, query_only, build_only=False, flags=(), profile=False):
     label = label_of(root, relative)
     crates, tests = reopened(root, label)
     row = {"edit": relative, "crates": len(crates), "tests": len(tests)}
@@ -171,17 +200,27 @@ def measure(root, relative, query_only, build_only=False, flags=()):
     verb = "build" if build_only else "test"
     path = Path(root) / relative
     original = path.read_bytes()
+    text = original.decode()
+    profiles = Path(root) / PROFILES / f"{time.time_ns()}-{relative.replace('/', '_')}"
+    if profile:
+        profiles.mkdir(parents=True)
+
+    def profiled(name):
+        return [f"--profile={profiles / name}.profile.gz"] if profile else []
+
     with tempfile.TemporaryDirectory() as directory:
         log = Path(directory) / "execution.json"
         try:
-            path.write_bytes(original + edit_text(path.suffix, time.time_ns()).encode())
+            path.write_text(edited(text, path.suffix, time.time_ns()))
             bazel(root, "build", tests, *flags)
             if not build_only:
-                path.write_bytes(original + edit_text(path.suffix, time.time_ns()).encode())
-                _, build_seconds, _, build_output = bazel(root, "build", tests, *flags)
+                path.write_text(edited(text, path.suffix, time.time_ns()))
+                _, build_seconds, _, build_output = bazel(root, "build", tests, *flags, *profiled("build"))
                 row.update(build_seconds=round(build_seconds), build_critical=critical_path(build_output))
-            path.write_bytes(original + edit_text(path.suffix, time.time_ns()).encode())
-            code, seconds, tries, output = bazel(root, verb, tests, *flags, f"--execution_log_json_file={log}")
+            path.write_text(edited(text, path.suffix, time.time_ns()))
+            code, seconds, tries, output = bazel(
+                root, verb, tests, *flags, *profiled(verb), f"--execution_log_json_file={log}",
+            )
         finally:
             path.write_bytes(original)
         text = log.read_text() if log.exists() else ""
@@ -202,6 +241,9 @@ def measure(root, relative, query_only, build_only=False, flags=()):
     )
     if row["failed"] and verb == "test":
         row["kept"] = keep_failures(root, relative, row["failed"])
+    if profile:
+        row["profiles"] = profiles
+        row["path"] = critical_components(profiles / "build.profile.gz")
     return row
 
 
@@ -261,6 +303,7 @@ def main(argv):
     parser.add_argument("--query-only", action="store_true", help="count what each edit reopens; run nothing")
     parser.add_argument("--tracked", action="store_true", help="measure the edits the build graph's targets are set for")
     parser.add_argument("--build-only", action="store_true", help="time `bazel build` of the targets instead of `bazel test`")
+    parser.add_argument("--profile", action="store_true", help="keep Bazel's profiles and print the build's critical path")
     parser.add_argument("--bazel-flag", action="append", default=[], help="a flag every Bazel invocation gets, as --bazel-flag=--compilation_mode=opt")
     args = parser.parse_args(argv)
     root = os.environ.get("BUILD_WORKSPACE_DIRECTORY") or os.getcwd()
@@ -271,8 +314,12 @@ def main(argv):
             cwd=root, capture_output=True, text=True, check=True,
         ).stdout
         edits = frequent_edits(log, root, args.count)
-    rows = [measure(root, edit, args.query_only, args.build_only, args.bazel_flag) for edit in edits]
+    rows = [measure(root, edit, args.query_only, args.build_only, args.bazel_flag, args.profile) for edit in edits]
     print(table(rows))
+    for row in rows:
+        if row.get("path"):
+            print(f"Critical path of building after editing {row['edit']} ({row['profiles']}):")
+            print(" → ".join(f"{name} {seconds:.1f} s" for name, seconds in row["path"]))
     for row in rows:
         if row.get("kept"):
             print(f"Logs of the tests that failed after editing {row['edit']}: {row['kept']}")

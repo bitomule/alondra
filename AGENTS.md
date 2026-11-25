@@ -53,15 +53,16 @@ or in the private repository that keeps it, never here.
   - Rust: `make test` (`bazelisk test //crates/...`).
   - Apple: `bazelisk test --build_tests_only -- //apple/... -//apple/NativeHarness/...`.
   - A new integration test needs a Bazel target, or it does not run.
-- rustc and clippy compile from scratch and their results are cached on disk and remotely, so a new
-  checkout reuses what any other built. For a faster edit loop in one checkout add
-  `--config=incremental` (`.bazelrc`): an edit after the first build of a crate recompiles only what
-  changed. Its Rustc and Clippy actions carry `no-cache`, so they never reach the disk or remote cache
-  (`tools/tests/test_release_config.py` guards it). If rustc fails with an internal compiler error that
-  names its incremental state, run `bazelisk clean --expunge` (it deletes the state with the rest of the output base) and build again.
-  A link failure `Undefined symbols ... .llvm.<hash>` from a crate's own rlib is that state gone
-  incoherent: `make clean-incremental` drops this checkout's outputs and state. A release builds with
-  `--config=release`, never incrementally.
+- The libraries and binaries of this repository compile incrementally (`bazel/rules/rust.bzl`): an edit
+  recompiles only what it changed in each crate it reaches. Declare them with that file's
+  `rust_library` and `rust_binary` (or a layer macro), never rules_rust's: their compiles carry
+  `no-cache`, so an incremental rlib never reaches the disk or remote cache
+  (`//tools/layers:crate_layers_test` fails on one declared otherwise). Test crates and third-party
+  crates compile from scratch and stay cached. The state lives in the output base, about 7 GB per
+  checkout, and goes with it. If rustc fails with an internal
+  compiler error that names its incremental state, or a crate's own rlib fails to link with
+  `Undefined symbols ... .llvm.<hash>`, run `make clean-incremental`. A release (`--config=release`)
+  and CI compile from scratch.
 - Web (`web/`): `npm ci --include=dev`, `npm run typecheck`, `npm run build`, `npm run test:e2e`.
 - `musts validate` is the done-check before committing. Bazel downloads the pinned `musts` and puts it
   on PATH (`bazel/env/README.md`): nothing to install. It asks only for

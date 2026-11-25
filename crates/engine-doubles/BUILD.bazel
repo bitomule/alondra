@@ -1,6 +1,6 @@
 load("//bazel/rules:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//bazel/rules:rust.bzl", "rust_library")
 load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("//:version.bzl", "VERSION")
 load("//bazel/rules:rust_sources.bzl", "production_sources")

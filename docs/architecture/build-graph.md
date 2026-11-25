@@ -1014,6 +1014,98 @@ The 29 cases sum 269.1 s before and 41.4 and 32.5 s after. The test target took
 33.8 s (longest shard 23.0 + 6.2 s) before and 6.8 and 5.4 s after; a shard now spends more time
 starting and ending its process than in its case.
 
+## Incremental libraries and binaries (2026-11-25, main at b19779773)
+
+The final measurement above left compiling as most of every edit. Profiled with `bazel --profile` on
+the shared Mac, one run each, before this change:
+
+| Edit | Build: critical path | The chain of crates that makes it |
+|---|---:|---|
+| `domain-rules/src/rules.rs` | 237 s | `domain_rules` 28 s → `view_model` 4 → `engine_ports` 5 → `provider_claude` 25 → `daemon_support` 16 → `daemon_engine_model` 8 → `engine_kernel` 20 → `engine_github` 6 → `daemon_engine` 19 → `daemon_server` 74 → `alondrad_lib` 23 → `scenarios` 7 |
+| `engine-admission/src/admission.rs` | 118 s | `engine_admission` 5 → `daemon_server` 71 → `alondrad_lib` 28 → `scenarios` 12 |
+
+- **Code generation is the cost, not analysis.** Clippy only checks a crate (`--emit=metadata`, no
+  code), so comparing its action with rustc's shows the share: `daemon_server` 38.7 s against 3.9 s,
+  `alondrad_lib` 21.1 s against 1.0 s, `cli_mcp` 64 s against 1.9 s, `domain_rules` 21 s against 5.4 s.
+  Every crate an edit reopens pays its whole code generation at `opt-level=3`.
+- **No early cutoff.** With rustc 1.98, changing only the body of a private, non-inlinable function,
+  without moving a line, changes 32 bytes of the crate's `.rmeta`, so Bazel rebuilds everything that
+  depends on it. The goal that would fix it, ["relink, don't
+  rebuild"](https://goals.rust-lang.org/2025h2/relink-dont-rebuild.html), is not shipped; the [2026
+  roadmap](https://goals.rust-lang.org/2026/roadmap-fast-builds.html) puts it in nightly with
+  limitations, unfunded.
+
+The levers, measured on the same two edits (an edit is a line in the body of a function; Bazel's
+critical path, then the wall clock):
+
+| Lever | `domain-rules` | `engine-admission` | Disk per checkout |
+|---|---:|---:|---:|
+| As before (`-c opt`, from scratch) | 237 s / 259 s | 103-118 s | 0 |
+| `-Copt-level=1` for the repository's crates | 153 s | 66 s (edit + test 221 → 158 s) | 0 |
+| Incremental libraries and binaries (adopted) | 62-75 s / 87-96 s | 43 s / 47 s | ~7 GB |
+| Incremental libraries, binaries and test crates | 38-48 s / 43-61 s | 17-31 s / 18-46 s | ~15.5 GB |
+| Incremental + `opt-level=1` | as incremental | as incremental | |
+
+- **Adopted: libraries and binaries.** `bazel/rules/rust.bzl` gives them `-Cincremental` and
+  `no-cache` (an rlib incremental state left incoherent would reach every checkout with the same
+  sources). Test crates and third-party crates compile from scratch and stay cached. Release and CI
+  (`--//bazel/incremental=false`) compile from scratch. Rustc and Clippy always run locally:
+  under `--spawn_strategy=sandboxed` rustc cannot write its state (`could not create incremental
+  compilation crate directory … Operation not permitted`). Nothing here compiles sandboxed
+  (`--spawn_strategy=worker,local`).
+- **Not adopted: `opt-level=1`.** It cuts a third without incremental and nothing with it.
+- **Not yet: pipelined compilation** (a crate starts once its dependencies' `.rmeta` exists). The bug
+  that breaks it unsandboxed on this Mac ([rules_rust#3662](https://github.com/bazelbuild/rules_rust/issues/3662),
+  [#4389](https://github.com/bazelbuild/rules_rust/issues/4389)) is fixed by
+  [rules_rust#4390](https://github.com/bazelbuild/rules_rust/pull/4390), on its main since 2026-11-17
+  and in no release yet (0.75.0, 2026-10-26, is the latest; this repository is on 0.74.0). With
+  incremental libraries each crate of the chain costs about a second, so it should save ≤ 5 s an edit.
+- **The graph** is phase 7's: the domain's types apart from its rules, and `daemon-server` off the
+  engine (71 of the 118 s of an engine edit before this change).
+
+`edit_bench --tracked --profile` after this change, against the final measurement above (main at
+d1bcdec12, which edited by appending a static: without incremental compilation any edit rebuilds the
+same crates). One run on the shared Mac; every test passed:
+
+| Edit | Layer | Build: critical path, before → after | Edit + test, before → after | What is left on the build's critical path |
+|---|---|---:|---:|---|
+| `views/src/task_state.rs` | adapter | 71 → 55 s | 153 → 94 s | `views` 2 s → `daemon_server_test` 53 s |
+| `github-gh/src/cli.rs` | adapter | 130 → 6 s | 162 → 25 s | `github_gh` 3 s → `engine_github_test` 3 s |
+| `engine-admission/src/admission.rs` | engine | 91 → 43 s | 190 → 103 s | `engine_admission` 2 s → `daemon_server_test` 41 s |
+| `engine-orchestrator/src/domain_orchestrator.rs` | engine | 85 → 37 s | 174 → 112 s | `engine_orchestrator` 1 s → `daemon_server_test` 36 s |
+| `engine-live/src/node_reports.rs` | engine | 94 → 41 s | 183 → 94 s | `engine_live` 1 s → `daemon_engine` 1 s → `daemon_server_test` 39 s |
+| `engine-sdk/src/sdk_owner.rs` | engine | 95 → 40 s | 178 → 92 s | `engine_sdk` 3 s → `daemon_server_test` 37 s |
+| `alondrad/src/assemble.rs` | root | 31 → 12 s | 90 → 67 s | `alondrad_lib` 4 s → `scenarios_harness_test` 8 s |
+| `domain-rules/src/rules.rs` | domain | 231 → 67 s | 436 → 218 s | `domain_rules` 9 s → 7 libraries, 11 s in all → `daemon_server_test` 47 s |
+
+The libraries on the path now take seconds; what is left of compiling is
+`//crates/daemon-server:daemon_server_test`, a test crate of 102 files that compiles from scratch on
+every edit of the engine or below (36 to 53 s). Making that one target incremental, or splitting it,
+is the next lever. Testing is the rest of each edit: `scenarios_test` and the engine's own targets.
+
+### The disk it takes
+
+The state lives in each checkout's output base (`rustc-incremental`, `rustc-incremental-clippy`) and
+goes with it; deleted without a live Bazel server, it is rebuilt by the next build. Measured from an
+empty state over the 139 test targets a `domain-rules` edit reopens:
+
+| | After the first build | After 1 to 5 edits of `domain-rules` (stable) |
+|---|---:|---:|
+| Libraries and binaries (adopted) | 3.0 GB + 1.1 GB Clippy | 4.9 GB + 2.2 GB Clippy ≈ 7 GB |
+| Also test crates | 8.1 GB + 1.1 GB Clippy | 13.3 GB + 2.2 GB Clippy ≈ 15.5 GB |
+
+The first build of a new checkout compiles the repository's libraries and binaries from scratch:
+263 s for those 139 targets, against 282 s before for a new checkout and its first `domain-rules`
+edit.
+
+The 7 GB is per output base that has built since this change. On 2026-11-25 the external disk held 77
+output bases of Alondra checkouts, 56 of them with their checkout still present, and 204 GB free: the
+state of all 56 would take about 392 GB, so 7 GB fits while about 29 output bases build (13 with
+test crates too). Adding test crates gains 24 to 27 s of critical path on a `domain-rules` edit (62-75
+→ 38-48 s) and takes `daemon_server_test` from about 40 s to about 18 s on engine edits, for 8.4 GB
+more per output base: worth revisiting once output bases of closed tasks are collected and the live
+ones stay few.
+
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 
 `engine-admission` and `engine-orchestrator` compile and test without `daemon-engine` and without
