@@ -401,3 +401,25 @@ exports_files(
 )
 
 repo_tree()
+
+# Every test of the package that runs by default, so a test no MUSTS.yml check names cannot go unseen.
+genquery(
+    name = "default_tests",
+    expression = 'let tools_tests = filter("^//tools[:/]", kind(".*_test rule", siblings(deps(//:tree)))) in $tools_tests except attr(tags, manual, $tools_tests)',
+    scope = ["//:tree"],
+)
+
+sh_test(
+    name = "tools_tests_checked_test",
+    srcs = ["tests/test_tools_tests_checked.py"],
+    data = [
+        ":default_tests",
+        "musts_scopes.py",
+        "//:MUSTS.yml",
+    ],
+    env = {
+        "DEFAULT_TESTS": "$(rootpath :default_tests)",
+        "MUSTS_MANIFEST": "$(rootpath //:MUSTS.yml)",
+    },
+    size = "small",
+)
