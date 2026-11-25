@@ -238,6 +238,21 @@ do = "turn_end"
 task = "t3"
 
 [[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "held-and-resting-without-a-host"
+
+[[step.expect]]
+check = "hosts"
+task = "t3"
+started = 1
+running = 0
+sessions = 1
+
+[[step]]
 do = "advance"
 by = "2h"
 

@@ -1486,8 +1486,15 @@ pub fn request_move(slice:&Slice)->serde_json::Value{
     let stamp=slice.domain.state().unwrap().task_selection_stamp(&TASK.into()).unwrap();
     crate::provider_transition::request_move(&*slice.domain,&user(),&TASK.into(),AccountKey::native(Provider::Claude),&stamp,||Ok(())).unwrap()
 }
+/// Waits until the move is done *for readers*. The journal gets its `done` step in the commit,
+/// but the committed state is published to readers only after the owner's hook has run, so the
+/// journal alone says the move ended while the task still reads as moving.
 pub async fn until_moved(slice:&Slice,changed:&mut tokio::sync::watch::Receiver<u64>){
-    let moved=async{while !move_steps(slice).iter().any(|step|step=="done"){changed.changed().await.unwrap();}};
+    let mut published=slice.domain.subscribe();
+    let moved=async{
+        while !move_steps(slice).iter().any(|step|step=="done"){changed.changed().await.unwrap();}
+        published.wait_for(|_|slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].pending_selection.is_none()).await.unwrap();
+    };
     if tokio::time::timeout(std::time::Duration::from_secs(60),moved).await.is_err(){panic!("the move never ended: {:?}, {}",move_steps(slice),where_the_task_is(slice))}
 }
 fn where_the_task_is(slice:&Slice)->String{
@@ -1500,9 +1507,11 @@ fn where_the_task_is(slice:&Slice)->String{
 async fn advance_until_moved(slice:&Slice,domain:&Arc<DomainRuntime>,task:&TaskId,changed:&mut tokio::sync::watch::Receiver<u64>){
     use crate::domain_store::provider_transition::Phase;
     let done=||move_steps(slice).iter().any(|step|step=="done");
+    let mut published=domain.subscribe();
+    let read_as_done=||domain.state().unwrap().tasks[task].pending_selection.is_none();
     while !done(){
         let advanced=crate::provider_transition::advance(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),task).await;
-        if done(){return}
+        if done(){published.wait_for(|_|read_as_done()).await.unwrap();return}
         match advanced{
             Ok(Phase::Aborted)=>panic!("the move was aborted after {:?}",move_steps(slice)),
             Ok(_)=>{}
@@ -1545,6 +1554,35 @@ async fn a_codex_task_moves_to_claude_as_itself_in_its_worktree_with_one_writer_
     assert_eq!(std::fs::read_to_string(slice.worktree.join("draft.md")).unwrap(),"unfinished notes");
     let prompt=slice.prompts().into_iter().find(|prompt|prompt.contains("The user moved this task to claude/default")).expect("Claude is told about the move");
     assert!(prompt.contains("Alondra task context (public records)") && prompt.contains("Write the release notes"),"the new node starts from the task's record: {prompt}");
+    slice.domain.stop_sdk_owners();
+}
+
+/// The move's last commit is held between its write and its publication to readers, as a slow
+/// publication leaves it: the journal says `done` while the task still reads as moving.
+#[cfg(not(feature = "real-hosts"))]
+#[tokio::test]
+async fn a_move_is_awaited_until_its_commit_reaches_readers(){
+    use crate::domain_store::provider_transition::Phase;
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    working_on_codex(&slice);
+    request_move(&slice);
+    let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);
+    let(committed,commit_held)=tokio::sync::oneshot::channel::<()>();let(release,released)=std::sync::mpsc::channel::<()>();
+    let observer=slice.observer();let mut committed=Some(committed);
+    slice.domain.before_owner_publish(move||{
+        pulse.send_modify(|count|*count+=1);
+        let mut statement=observer.prepare("SELECT 1 FROM provider_transition_steps WHERE phase='done'").unwrap();
+        if statement.exists([]).unwrap() && let Some(committed)=committed.take(){committed.send(()).unwrap();released.recv().unwrap();}
+    });
+    assert_eq!(crate::provider_transition::advance(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>),&task).await.unwrap(),Phase::TargetAdmitted);
+    if tokio::time::timeout(std::time::Duration::from_secs(60),commit_held).await.is_err(){panic!("the move never committed: {:?}, {}",move_steps(&slice),where_the_task_is(&slice))}
+    assert!(move_steps(&slice).iter().any(|step|step=="done"),"the journal has the move's end");
+    assert!(slice.domain.state().unwrap().tasks[&task].pending_selection.is_some(),"readers still see the move pending");
+    let mut waiting=std::pin::pin!(until_moved(&slice,&mut changed));
+    tokio::select!{biased;()=&mut waiting=>panic!("the move was awaited as ended while readers still see it pending"),()=std::future::ready(())=>{}}
+    release.send(()).unwrap();
+    waiting.await;
+    assert!(slice.domain.state().unwrap().tasks[&task].pending_selection.is_none());
     slice.domain.stop_sdk_owners();
 }
 
