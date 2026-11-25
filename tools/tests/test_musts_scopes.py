@@ -123,6 +123,7 @@ class MustsScopesTests(unittest.TestCase):
         self.assertEqual(self.reopened_by("tools/shared.bzl"), {
             "apple-app-build", "deploy-apple", "public-data-guard", "transcript-guard", "test-limits", "test-execs",
             "hermetic-tests", "low-opt-rust-tests", "no-old-commands", "prose-decisions", "state-inventory",
+            "repo-tree-exclusions", "test-execs", "tools-tests-checked",
         })
 
     def test_a_bump_with_other_changes_still_reopens_every_check_they_touch(self):

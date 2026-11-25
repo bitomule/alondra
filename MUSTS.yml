@@ -2027,6 +2027,9 @@ checks:
       - "crates/test_support.rs"
       - "bazel/rules/BUILD.bazel"
       - "bazel/rules/rust_test.bzl"
+      - "tools/layers/BUILD.bazel"
+      - "tools/layers/crate_layers.bzl"
+      - "tools/layers/crates.bzl"
       - "tools/sandbox/BUILD.bazel"
       - "tools/sandbox/fixtures/**"
       - "tools/sandbox/src/**"
@@ -2036,6 +2039,7 @@ checks:
     with:
       targets:
         - //tools/sandbox:alondra-sandbox_test
+        - //tools/sandbox:alondra-sandbox_layer_test
 
   local-daemon:
     uses: bazel/test
@@ -3044,3 +3048,51 @@ checks:
     with:
       targets:
         - //tools/worktree_setup_test:setup_test
+
+  connection-measurements:
+    uses: bazel/test
+    paths:
+      - "bazel/rules/BUILD.bazel"
+      - "bazel/rules/rust_test.bzl"
+      - "bazel/rules/tree.bzl"
+      - "tools/BUILD.bazel"
+      - "tools/connection_measurements.py"
+      - "tools/private_literals_source.bzl"
+      - "tools/private_literals_source_test.bzl"
+      - "tools/tests/test_connection_measurements.py"
+    with:
+      targets:
+        - //tools:connection_measurements_test
+
+  repo-tree-exclusions:
+    uses: bazel/test
+    paths:
+      - "**"
+    with:
+      targets:
+        - //tools:repo_tree_exclusions_test
+
+  private-literals-source:
+    uses: bazel/test
+    paths:
+      - "bazel/rules/BUILD.bazel"
+      - "bazel/rules/rust_test.bzl"
+      - "bazel/rules/tree.bzl"
+      - "tools/BUILD.bazel"
+      - "tools/private_literals_source.bzl"
+      - "tools/private_literals_source_test.bzl"
+    with:
+      targets:
+        - //tools:private_literals_source_test_test_0
+        - //tools:private_literals_source_test_test_1
+        - //tools:private_literals_source_test_test_2
+        - //tools:private_literals_source_test_test_3
+        - //tools:private_literals_source_test_test_4
+
+  tools-tests-checked:
+    uses: bazel/test
+    paths:
+      - "**"
+    with:
+      targets:
+        - //tools:tools_tests_checked_test
