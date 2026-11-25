@@ -10,7 +10,7 @@ exports_files(["pnpm-lock.yaml", "package.json"])
 
 ts_project(
     name = "host_lib",
-    srcs = ["session.ts", "main.ts", "frame.ts", "bootstrap.ts", "channel.ts", "diagnostics.ts", "journal.ts", "ownership.ts", "persistent.ts", "persistent-core.ts", "awake-clock.ts", "host-session.ts", "codex-session.ts", "codex-main.ts", "codex-legacy-fixture.ts", "codex-plan-legacy-fixture.ts", "persistent-main.ts", "probe.ts", "persistent-fixture-main.ts", "usage-probe.ts", "model-probe.ts"],
+    srcs = ["session.ts", "main.ts", "frame.ts", "bootstrap.ts", "channel.ts", "diagnostics.ts", "journal.ts", "ownership.ts", "persistent.ts", "persistent-core.ts", "awake-clock.ts", "host-session.ts", "codex-session.ts", "codex-main.ts", "antigravity-session.ts", "antigravity-main.ts", "codex-legacy-fixture.ts", "codex-plan-legacy-fixture.ts", "persistent-main.ts", "probe.ts", "persistent-fixture-main.ts", "usage-probe.ts", "model-probe.ts"],
     tsconfig = "tsconfig.json",
     declaration = True,
     transpiler = "tsc",
@@ -280,6 +280,30 @@ js_test(
     entry_point = "codex-session.test.mjs",
     data = [":host_lib", ":codex_bundle", "fake-codex.py", "codex-exit-fixture.mjs", "codex-host-failure.mjs", "codex-failed-cleanup-fixture.mjs", "codex-ack-progress-fixture.mjs", ":node_modules/zod"],
 )
+
+js_run_binary(
+    name = "antigravity_bundle",
+    tool = ":bundle_tool",
+    srcs = [":host_lib", "antigravity-main.ts"],
+    outs = ["antigravity.cjs", "antigravity.meta.json"],
+    args = ["$(location antigravity-main.ts)", "$(location antigravity.cjs)", "$(location antigravity.meta.json)"],
+)
+js_run_binary(
+    name = "antigravity_release_host",
+    tool = ":sea_tool",
+    srcs = [":antigravity.cjs", "host-entitlements.plist"],
+    outs = ["alondra-antigravity-host", "alondra-antigravity-host.manifest.json"],
+    args = ["$(location antigravity.cjs)", "$(location alondra-antigravity-host)", "$(location alondra-antigravity-host.manifest.json)", "$(location host-entitlements.plist)", "antigravity-acp-1"],
+)
+
+# The fake agent runs under the test's own Node: the test runs no other program.
+js_test(
+    name = "antigravity_session_test",
+    timeout = "short",
+    entry_point = "antigravity-session.test.mjs",
+    data = [":host_lib", "fake-agy-acp.mjs", ":node_modules/zod"],
+)
+exports_files(["fake-agy-acp.mjs"])
 
 js_run_binary(
     name = "codex_legacy_fixture_bundle",

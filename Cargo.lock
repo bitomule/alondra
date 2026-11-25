@@ -118,6 +118,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-antigravity-protocol"
+version = "0.3.69"
+dependencies = [
+ "alondra-foundation",
+ "hmac 0.12.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "alondra-cli"
 version = "0.3.69"
 dependencies = [
@@ -801,6 +812,24 @@ name = "alondra-process-group"
 version = "0.3.69"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "alondra-provider-antigravity"
+version = "0.3.69"
+dependencies = [
+ "alondra-agent-application",
+ "alondra-antigravity-protocol",
+ "alondra-engine-ports",
+ "alondra-foundation",
+ "alondra-process-group",
+ "alondra-provider-conformance",
+ "alondra-provider-contract",
+ "alondra-store",
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

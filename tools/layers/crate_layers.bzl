@@ -68,12 +68,14 @@ CRATE_LAYERS = {
     "crates/cli-report": ADAPTER_IN,
     "crates/cli-tui": ADAPTER_IN,
     "crates/client-transport": ADAPTER_IN,
+    "crates/provider-antigravity": ADAPTER_OUT,
     "crates/provider-claude": ADAPTER_OUT,
     "crates/provider-codex": ADAPTER_OUT,
     "crates/store-sqlite": ADAPTER_OUT,
     "crates/system": ADAPTER_OUT,
     "crates/agent-runtime": ADAPTER_OUT,
     "crates/agent-protocol": ADAPTER_PRIVATE,
+    "crates/antigravity-protocol": ADAPTER_PRIVATE,
     "crates/codex-protocol": ADAPTER_PRIVATE,
     "crates/daemon-server": ADAPTER_IN,
     "crates/alondrad": ROOT,
@@ -85,6 +87,7 @@ CRATE_LAYERS = {
 
 PRIVATE_TO = {
     "crates/agent-protocol": "crates/provider-claude",
+    "crates/antigravity-protocol": "crates/provider-antigravity",
     "crates/codex-protocol": "crates/provider-codex",
 }
 

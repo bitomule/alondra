@@ -7,7 +7,8 @@ load("//bazel/rules:rust_sources.bzl", "production_sources")
 
 # The scenarios every provider adapter must pass. Each provider's own test target runs them through
 # its private normalizer: `bazel test //crates/provider-claude:provider_claude_test
-# --test_arg=conformance_tests::` (and the same for provider-codex) runs only the suite.
+# --test_arg=conformance_tests::` (and the same for provider-codex and provider-antigravity) runs
+# only the suite.
 _DEPS = [
     "//crates/agent-application:agent_application",
     "//crates/domain:domain",
@@ -27,7 +28,7 @@ rust_library(
     crate_name = "alondra_provider_conformance",
     edition = "2024",
     version = VERSION,
-    visibility = ["//crates/provider-claude:__pkg__", "//crates/provider-codex:__pkg__"],
+    visibility = ["//crates/provider-antigravity:__pkg__", "//crates/provider-claude:__pkg__", "//crates/provider-codex:__pkg__"],
     deps = _DEPS,
 )
 

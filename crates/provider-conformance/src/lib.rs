@@ -28,12 +28,14 @@ use store::{Observed, Store};
 pub enum Provider {
     Claude,
     Codex,
+    Antigravity,
 }
 impl Provider {
     pub fn name(self) -> &'static str {
         match self {
             Provider::Claude => "claude",
             Provider::Codex => "codex",
+            Provider::Antigravity => "antigravity",
         }
     }
 }

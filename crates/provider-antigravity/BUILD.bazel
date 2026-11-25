@@ -1,0 +1,37 @@
+load("//tools/layers:crates.bzl", "adapter_out_crate")
+load("//bazel/rules:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
+
+_DEPS = [
+    "//crates/antigravity-protocol:antigravity_protocol",
+    "//crates/engine-ports:engine_ports",
+    "//crates/agent-application:agent_application",
+    "//crates/provider-contract:provider_contract",
+    "//crates/foundation:foundation",
+    "//crates/store:store",
+    "//crates/process-group:process_group",
+] + all_crate_deps(normal = True)
+
+adapter_out_crate(
+    name = "provider_antigravity",
+    srcs = glob(["src/*.rs"], exclude = ["src/*_tests.rs"]),
+    crate_name = "alondra_provider_antigravity",
+    version = "0.1.0",
+    deps = _DEPS,
+)
+low_opt_rust_test(
+    name = "provider_antigravity_test",
+    size = "small",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/*.rs"]) + ["//crates/provider-claude:src/archive_tests.rs", "//crates:test_support.rs"],
+    crate_name = "alondra_provider_antigravity",
+    edition = "2024",
+    version = "0.1.0",
+    deps = _DEPS + ["//crates/provider-conformance:provider_conformance"] + all_crate_deps(normal_dev = True),
+    compile_data = ["//crates/agent-protocol:fixtures/hello.json"],
+    env = {"HOME": "."},
+)
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+repo_tree()

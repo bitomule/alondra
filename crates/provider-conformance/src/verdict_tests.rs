@@ -3,7 +3,7 @@ use crate::catalogue::scenario;
 
 const EXPECTED: &[&str] = &["Available", "TurnStarted(T1, input-1)", "TurnEnded(T1, Completed)"];
 const DIVERGENT: &[&str] = &["Available", "TurnStarted(T1, input-1)", "TurnEnded(T1, Failed(other))"];
-const SCENARIO: Scenario = scenario("demo", &[], (None, None), EXPECTED);
+const SCENARIO: Scenario = scenario("demo", &[], (None, None, None), EXPECTED);
 const KNOWN: KnownDivergence = KnownDivergence { scenario: "demo", provider: Provider::Codex, cause: "the provider names its own code", actual: DIVERGENT };
 
 fn facts(facts: &[&str]) -> Result<Vec<String>, String> {
