@@ -3,11 +3,17 @@ use clap::{Arg, ArgAction, Command};
 /// clap writes "Usage", "Commands", "Arguments", "Options", "Print help" and the `help`
 /// subcommand in English; this gives every command those texts in the user's language.
 pub fn localized(cmd: Command) -> Command {
+    let cmd = translated(cmd);
+    let root = root_template(&cmd);
+    cmd.help_template(root)
+}
+
+/// The same texts for a command that lists its subcommands itself, without the groups of `alondra`.
+pub fn translated(cmd: Command) -> Command {
     let mut cmd = localize(cmd);
     cmd.build();
     localize_help_subcommands(&mut cmd);
-    let root = root_template(&cmd);
-    cmd.help_template(root)
+    cmd
 }
 
 /// The groups of the top-level help, in order; the rest is under `alondra help more`.

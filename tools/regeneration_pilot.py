@@ -250,35 +250,44 @@ def main():
         command = arguments.generator.replace("{prompt}", shlex.quote(str(target / "PROMPT.md")))
         finished, said = generate(command, target, arguments.timeout_minutes)
         (kept / "generator.log").write_text(said)
+        wrote = 0
         for path in sorted(target.rglob("*")):
             relative = path.relative_to(target)
             if path.is_file() and any(matches(pattern, f"{owned_root}/{relative}") for pattern in regenerates):
                 (kept / relative).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(path, kept / relative)
-        return number, folder, target, owned_root, finished
+                wrote += 1
+        return number, folder, target, owned_root, finished, wrote
 
     results = []
     with ThreadPoolExecutor(max_workers=arguments.jobs) as generators:
-        for number, folder, target, owned_root, finished in generators.map(generated, range(1, arguments.runs + 1)):
+        for number, folder, target, owned_root, finished, wrote in generators.map(generated, range(1, arguments.runs + 1)):
             try:
-                swap(owned_root, regenerates, target)
-                result = measure(boundary, withheld)
+                if wrote:
+                    swap(owned_root, regenerates, target)
+                    result = measure(boundary, withheld)
+                else:
+                    result = {"works": False}
             finally:
                 run(["git", "checkout", "--", owned_root], ROOT)
                 run(["git", "clean", "-fdq", "--", owned_root], ROOT)
                 shutil.rmtree(folder, ignore_errors=True)
-            result.update({"run": number, "arm": label, "generator_finished": finished})
+            result.update({"run": number, "arm": label, "generator_finished": finished, "files_written": wrote})
             results.append(result)
             print(json.dumps(result), flush=True)
+    written = [result for result in results if result["files_written"]]
     summary = {
         "component": arguments.component,
         "arm": label,
         "runs": len(results),
-        "works": sum(result["works"] for result in results),
+        "written": len(written),
+        "works": sum(result["works"] for result in written),
         "results": results,
     }
     (WORK / f"{label}.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(f"{summary['works']} of {summary['runs']} runs pass every suite ({label}); details in {WORK / (label + '.json')}")
+    print(f"{summary['works']} of {summary['written']} written runs pass every suite ({label}); details in {WORK / (label + '.json')}")
+    if len(written) < len(results):
+        sys.exit(f"{len(results) - len(written)} of {len(results)} generators wrote nothing: see their generator.log under {WORK / label}")
 
 
 if __name__ == "__main__":

@@ -4,7 +4,8 @@ use std::time::Duration;
 use alondra_spec_engine::Files;
 use serde_json::Value;
 
-use super::{CLEAN, Limits, Outcome, PENDING, RecordKind, RecordVerdict, SpecCmd, UNREADABLE, execute, run_in};
+use super::{CLEAN, Limits, Outcome, PENDING, RecordKind, RecordVerdict, SpecCmd, UNREADABLE, execute, run_in, standalone_command};
+use crate::i18n::{Lang, set_for_this_thread};
 use crate::test_support::Directory;
 
 const SETTINGS: &str = "format = 1\n\n[specs]\nenabled = true\n";
@@ -337,4 +338,22 @@ fn test_results_are_read_from_a_junit_file() {
 
     let report: Value = serde_json::from_str(&out).unwrap();
     assert_eq!(state(&report, "billing.refunds/full", "passes"), "failed");
+}
+
+#[test]
+fn the_binary_of_its_own_prints_its_help_in_the_language_of_the_user() {
+    set_for_this_thread(Lang::Es);
+    let mut command = standalone_command();
+    let mut pages = vec![command.render_long_help().to_string()];
+    let names: Vec<String> = command.get_subcommands().map(|sub| sub.get_name().to_string()).collect();
+    for name in names {
+        pages.push(command.find_subcommand_mut(&name).unwrap().render_long_help().to_string());
+    }
+
+    assert!(pages[0].contains("Uso: alondra-spec"), "{}", pages[0]);
+    for page in &pages {
+        for english in ["Usage:", "Commands:", "Arguments:", "Options:", "Print help", "Print this message"] {
+            assert!(!page.contains(english), "{english:?} in:\n{page}");
+        }
+    }
 }

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use alondra_spec_engine::{Code, Entry, Evidence, Files, Kind, Problem, Project, Report, ReportStatus, State, Verdict, load, read_results};
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 const CLEAN: i32 = 0;
 const PENDING: i32 = 1;
@@ -80,8 +80,12 @@ struct Standalone {
 
 /// The `alondra-spec` binary: the same commands without the rest of the terminal.
 pub fn standalone() -> Result<()> {
-    let cli = Standalone::parse();
+    let cli = Standalone::from_arg_matches(&standalone_command().get_matches())?;
     run(cli.command, cli.json)
+}
+
+fn standalone_command() -> clap::Command {
+    crate::help::translated(Standalone::command())
 }
 
 pub fn run(command: SpecCmd, json: bool) -> Result<()> {

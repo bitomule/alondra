@@ -416,7 +416,7 @@ regeneration-pilot:
 	bazelisk build //crates/alondra:alondra-spec
 	python3 tools/regeneration_pilot.py $(PILOT_COMPONENT) --runs $(or $(RUNS),5) --jobs $(or $(JOBS),1) \
 		--timeout-minutes $(or $(TIMEOUT_MINUTES),60) $(if $(filter 1,$(BASELINE)),--baseline) \
-		--packet "$$($(call exe,//crates/alondra:alondra-spec) packet $(PILOT_COMPONENT))" \
+		--packet "$$(.bazel-links/bazel-bin/crates/alondra/alondra-spec packet $(PILOT_COMPONENT))" \
 		--generator '$(PILOT_GENERATOR)'
 
 # MAC=n for that daemon's log, MAC=relay for the relay's.
