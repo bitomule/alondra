@@ -154,8 +154,7 @@ async fn nodes_that_wait_keep_no_process_and_a_restarted_daemon_starts_none() {
     let started = slice.starts().len();
     assert!(hosts.iter().all(HostWatch::runs), "the hosts and their Claudes run while the nodes rest");
 
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &tasks).await;
+    close_resting_hosts(&slice.domain, &tasks).await;
 
     assert!(!hosts.iter().any(HostWatch::runs), "no process is left of any node that waits");
     assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
@@ -190,8 +189,7 @@ async fn work_for_a_closed_node_resumes_its_session_with_no_card_and_no_turn_of_
     let slice = Slice::new();
     let (session, host) = resting_node(&slice);
     let told_before = slice.prompts().len();
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
+    close_resting_hosts(&slice.domain, &[TASK]).await;
     assert!(!host.runs());
 
     tell(&slice, TASK, "Now the changelog.").await;
@@ -225,8 +223,7 @@ async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_o
     use std::sync::mpsc::channel;
     let slice = Slice::new();
     let (session, _) = resting_node(&slice);
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
+    close_resting_hosts(&slice.domain, &[TASK]).await;
     let agent = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
     let (reserved, first_reserved) = channel();
     let (go, gone) = channel::<()>();
@@ -268,8 +265,7 @@ async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_o
 async fn cancelling_a_closed_node_ends_the_task_without_starting_anything() {
     let slice = Slice::new();
     resting_node(&slice);
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
+    close_resting_hosts(&slice.domain, &[TASK]).await;
     slice.domain.join_retakes();
     slice.run(&user(), "cancel-closed-node", Command::CancelTask { task_id: TASK.into(), reason: None });
     crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
@@ -293,8 +289,7 @@ async fn a_closed_node_moves_to_another_provider_like_a_resting_one() {
     let mut driver = launch(&slice);
     slice.settle(&mut driver);
     slice.domain.add_sdk_owner(Owner::spawn(driver));
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
+    close_resting_hosts(&slice.domain, &[TASK]).await;
     request_move(&slice);
     let (pulse, mut changed) = tokio::sync::watch::channel(0_u64);
     slice.domain.before_owner_publish(move || pulse.send_modify(|count| *count += 1));
@@ -422,8 +417,7 @@ async fn a_node_resting_on_a_delivery_in_review_with_work_declared_after_the_mer
     assert!(slice.domain.read().state().host_releasable(&TASK.into()), "{:?}", lifecycle(&*slice.domain));
     let host = slice.hosts.watch(driver.worker.host_group().unwrap());
     slice.domain.add_sdk_owner(Owner::spawn(driver));
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
+    close_resting_hosts(&slice.domain, &[TASK]).await;
     assert!(!host.runs());
     slice.domain.stop_sdk_owners();
     assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
@@ -456,8 +450,7 @@ async fn a_node_the_user_paused_closes_its_host_and_its_resume_goes_on_with_the_
     slice.domain.join_retakes();
     assert!(slice.domain.read().state().host_releasable(&TASK.into()), "nothing of the task is in its host: {:?}", lifecycle(&*slice.domain));
 
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
+    close_resting_hosts(&slice.domain, &[TASK]).await;
     assert!(!host.runs());
 
     assert!(slice.domain.admission().resume_now(&*slice.domain, &agent.0, alondra_core::now_millis()));
@@ -549,8 +542,7 @@ async fn a_closed_codex_node_resumes_the_same_thread() {
     let host = slice.hosts.watch(driver.worker.host_group().unwrap());
     assert!(transcript(&trace).iter().any(|message| message["method"] == "thread/start"), "the node opened its thread");
     slice.domain.add_sdk_owner(Owner::spawn(driver));
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
+    close_resting_hosts(&slice.domain, &[TASK]).await;
     assert!(!host.runs(), "neither its host nor its app-server is left");
 
     tell(&slice, TASK, "Now the changelog.").await;
@@ -625,8 +617,7 @@ async fn resumes_over_the_node_limit_wait_for_capacity_with_no_process_and_no_ca
         slice.settle(&mut driver);
         slice.domain.add_sdk_owner(Owner::spawn(driver));
     }
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &tasks).await;
+    close_resting_hosts(&slice.domain, &tasks).await;
     slice.hosts.hold();
     let limit = |slots| slice.domain.admission().tune(crate::admission::Tuning { spacing: 60_000, limit: Some(crate::admission::Limit::Fixed(slots)) });
     let working = || crate::admission::working_tasks(&*slice.domain, &slice.domain.read().state());
@@ -663,8 +654,7 @@ async fn a_node_whose_host_closed_while_it_rests_holds_no_capability_until_its_s
     let agent = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
     let holds = |domain: &DomainRuntime| std::fs::read_to_string(domain.home().join("domain-capabilities.json")).unwrap().contains(&agent.0);
     assert!(holds(&slice.domain));
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
+    close_resting_hosts(&slice.domain, &[TASK]).await;
     let retired = async { while holds(&slice.domain) { tokio::task::yield_now().await } };
     retired.await;
     tell(&slice, TASK, "Now the changelog.").await;
@@ -754,8 +744,7 @@ async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_cor
     slice.domain.add_sdk_owner(Owner::spawn(driver));
     match standing {
         Standing::Released => {
-            look_after_the_wait(&slice.domain);
-            until_released(&slice.domain, &[TASK]).await;
+            close_resting_hosts(&slice.domain, &[TASK]).await;
         }
         Standing::Live => {}
         Standing::Adopted => {
