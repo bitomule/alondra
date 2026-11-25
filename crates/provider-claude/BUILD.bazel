@@ -72,12 +72,14 @@ low_opt_rust_test(
         "//agent-host:pinned_node",
         "//agent-host:persistent.cjs",
         "//agent-host:persistent-fake-claude.py",
+        "//agent-host:orchestrator-fake-claude.py",
     ],
     env = {
         "HOME": ".",
         "FIXTURE_NODE": "$(rootpath //agent-host:pinned_node)",
         "FIXTURE_HOST": "$(rootpath //agent-host:persistent.cjs)",
         "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
+        "FIXTURE_ORCHESTRATOR_NATIVE": "$(rootpath //agent-host:orchestrator-fake-claude.py)",
         "TEST_EXECS": "$(rootpath //agent-host:pinned_node) /usr/bin/python3 tmpdir",
     },
 )

@@ -12,6 +12,8 @@ mod arguments;
 mod decisions;
 #[path = "host_cases/journal_tests.rs"]
 mod journal;
+#[path = "host_cases/orchestrator_tests.rs"]
+mod orchestrator;
 
 use fixture_controller::WorkerController;
 use super::*;

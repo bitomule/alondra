@@ -568,6 +568,10 @@ needs. No test runs on the double yet.
   native command line): `sdk_worker_test` runs them on the real Node host with the fake native
   Claude, `claude_host_model_test` on the model, with the same expectations. A model that answered
   a prompt without starting it failed the turns case while the real host passed it.
+  `host_cases/orchestrator_tests.rs` is the orchestrator's batch: a new conversation, a resumed
+  one, one Claude never had and a turn stopped while held, on the real host with the fake
+  orchestrator Claude and on the orchestrator model `engine_orchestrator_test` runs on. A model
+  that resumed any conversation, or answered another prompt, fails it.
   `agent-host:sdk_worker_test` checks the worker's `--model`, `--effort`, `--disallowedTools`,
   `--session-id` and `--resume` itself.
 
