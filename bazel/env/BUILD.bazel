@@ -11,6 +11,7 @@ filegroup(
     srcs = [
         "BUILD.bazel",
         "ensure.sh",
+        "foreign_tools.py",
         "launcher.sh",
     ],
     visibility = ["//tools:__pkg__"],

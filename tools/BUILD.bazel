@@ -20,6 +20,7 @@ sh_test(
         "//:.bazeliskrc",
         "//:.gitignore",
         "//bazel/env:scripts",
+        "//bazel/env:tools.bzl",
         "bazel",
     ],
 )
