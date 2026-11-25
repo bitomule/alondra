@@ -207,16 +207,25 @@ pub async fn run(service: Arc<Service>) {
 /// Binds the configured port; when the default one is taken, any free one. The flag says whether
 /// the port is the same on every start.
 pub(crate) async fn bind_preferring_port(key: &SecretKey, config: &IrohConfig) -> Option<(Endpoint, bool)> {
-    match bind(key.clone(), config).await {
-        Ok(endpoint) => return Some((endpoint, config.port != 0)),
+    prefer_port(config, |config| async move { bind(key.clone(), &config).await }).await
+}
+
+/// The port policy of `bind_preferring_port` over any binder, so a test decides which ports are taken.
+pub(crate) async fn prefer_port<T, Bind, Binding>(config: &IrohConfig, bind: Bind) -> Option<(T, bool)>
+where
+    Bind: Fn(IrohConfig) -> Binding,
+    Binding: Future<Output = Result<T>>,
+{
+    match bind(config.clone()).await {
+        Ok(bound) => return Some((bound, config.port != 0)),
         Err(error) if config.port == DEFAULT_PORT => log!("iroh port {DEFAULT_PORT} not free, using any: {error:#}"),
         Err(error) => {
             log!("iroh endpoint cannot bind: {error:#}");
             return None;
         }
     }
-    match bind(key.clone(), &IrohConfig { port: 0, ..config.clone() }).await {
-        Ok(endpoint) => Some((endpoint, false)),
+    match bind(IrohConfig { port: 0, ..config.clone() }).await {
+        Ok(bound) => Some((bound, false)),
         Err(error) => {
             log!("iroh endpoint cannot bind: {error:#}");
             None

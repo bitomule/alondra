@@ -475,10 +475,37 @@ async fn the_default_port_falls_back_to_a_free_one_and_says_it_is_not_fixed() {
     let held = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let chosen = IrohConfig { port: held.local_addr().unwrap().port(), ..loopback.clone() };
     assert!(iroh_endpoint::bind_preferring_port(&key, &chosen).await.is_none(), "a port set in service.toml is not swapped");
-    drop(held);
-    let (endpoint, fixed) = iroh_endpoint::bind_preferring_port(&key, &chosen).await.expect("binds the chosen port");
-    assert!(fixed);
-    assert_eq!(endpoint.bound_sockets()[0].port(), chosen.port);
+}
+
+#[tokio::test]
+async fn a_port_set_in_service_toml_is_fixed_and_only_the_default_one_gives_way() {
+    let asked = std::sync::Mutex::new(Vec::new());
+    let taking = |taken: Vec<u16>| {
+        let asked = &asked;
+        move |config: IrohConfig| {
+            asked.lock().unwrap().push(config.port);
+            let result = if taken.contains(&config.port) { Err(anyhow::anyhow!("address in use")) } else { Ok(config.port) };
+            std::future::ready(result)
+        }
+    };
+    let config = |port| IrohConfig { port, ..IrohConfig::default() };
+
+    let free = iroh_endpoint::prefer_port(&config(51000), taking(vec![])).await;
+    assert_eq!(free, Some((51000, true)), "a set port that binds is the same on every start");
+
+    let taken = iroh_endpoint::prefer_port(&config(51000), taking(vec![51000])).await;
+    assert_eq!(taken, None, "a set port that is taken is not swapped");
+
+    let default = iroh_endpoint::prefer_port(&config(iroh_endpoint::DEFAULT_PORT), taking(vec![])).await;
+    assert_eq!(default, Some((iroh_endpoint::DEFAULT_PORT, true)));
+
+    asked.lock().unwrap().clear();
+    let fallback = iroh_endpoint::prefer_port(&config(iroh_endpoint::DEFAULT_PORT), taking(vec![iroh_endpoint::DEFAULT_PORT])).await;
+    assert_eq!(fallback, Some((0, false)), "the default port gives way to any free one, which is not fixed");
+    assert_eq!(*asked.lock().unwrap(), vec![iroh_endpoint::DEFAULT_PORT, 0]);
+
+    let nothing = iroh_endpoint::prefer_port(&config(iroh_endpoint::DEFAULT_PORT), taking(vec![iroh_endpoint::DEFAULT_PORT, 0])).await;
+    assert_eq!(nothing, None, "when no port binds there is nothing to serve");
 }
 
 #[tokio::test]
