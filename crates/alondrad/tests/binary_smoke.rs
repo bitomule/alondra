@@ -22,11 +22,12 @@ mod engine {
         alondra_daemon_engine::wiring::open_with(open_at);
     }
 
-    /// The runtime as the daemon opens it, with the doubles of the Mac, the screens the root
+    /// The runtime as the daemon opens it, with the doubles of the Mac and of GitHub, the screens the root
     /// registers and a gate that is unpaced and launches on the disk the machine watch measured.
     pub fn open_at(home: &Path, database: &Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<DomainRuntime> {
         let runtime = alondrad::wiring::open_at(home, database, files)?;
         alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_server::watcher::claude_home);
+        alondra_engine_doubles::github::wire(runtime.ports());
         alondra_agent_runtime::wire(runtime.ports(), Default::default());
         alondra_views::wire(runtime.ports());
         alondra_daemon_server::screens::install(runtime.ports());

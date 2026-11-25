@@ -69,6 +69,11 @@ impl Registry {
         self.port::<dyn Disk>().expect("the root gives the registry the Mac's disks")
     }
 
+    /// GitHub, as the root or the test that opened the runtime gave it.
+    pub fn github(&self) -> Arc<GitHub> {
+        self.port::<GitHub>().expect("the root gives the registry GitHub")
+    }
+
     /// The Mac's gauges.
     pub fn machine(&self) -> Arc<dyn MachineProbe> {
         self.port::<dyn MachineProbe>().expect("the root gives the registry the Mac's gauges")

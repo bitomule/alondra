@@ -39,7 +39,8 @@ pub fn wire_machine(registry: &alondra_engine_ports::Registry) {
     alondra_system::wire(registry, alondra_daemon_server::watcher::claude_home);
 }
 
-pub fn main() -> Result<()> {
+/// Runs the daemon, with the edges `seams` gives once its domain is open.
+pub fn main(seams: fn() -> assemble::Seams) -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [flag] if flag == "--help" || flag == "-h" => {
@@ -90,7 +91,7 @@ pub fn main() -> Result<()> {
         relaunch::wait_until_free(&alondra_core::config::alondra_home(&env), std::time::Duration::from_millis(500));
     }
     start_guard::begin(alondra_core::config::alondra_home(&env), supervised);
-    let error = match run(diagnostic) {
+    let error = match run(diagnostic, seams) {
         Ok(()) => return Ok(()),
         Err(error) => error,
     };
@@ -119,7 +120,7 @@ pub fn main() -> Result<()> {
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn run(diagnostic: Option<String>) -> Result<()> {
+async fn run(diagnostic: Option<String>, seams: fn() -> assemble::Seams) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
     if let Some(device) = diagnostic {
         return test_push(&config, &device).await;
@@ -153,7 +154,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     ensure_domain_protocol(&config.home)?;
     sdk_owner::backend::load(&config.home, config.sandbox, &options::user_home())?;
     let (_writer, domain) = open_as_writer(&config.home, |home| wiring::open(home, &alondra_store_sqlite::Sqlite))?;
-    run_domain(&config, domain).await
+    run_domain(&config, domain, seams()).await
 }
 
 /// The diagnostic push runs beside the live daemon: it reads the service's devices and sends,
@@ -295,7 +296,7 @@ where
 
 
 /// A committed HOME has one SQL authority shared by local and encrypted adapters.
-async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> Result<()> {
+async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime, seams: assemble::Seams) -> Result<()> {
     // Taken before the port opens: whoever sees this daemon answer may replace its binary at once.
     let upgrades = relaunch::watcher(&config.service_label);
     wire_machine(domain.ports());
@@ -304,7 +305,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
         use domain_api::DomainHost as _;
         state.delivery_reviews().limit(delivery_review::Limits::SANDBOX);
     }
-    let assembled = assemble::assemble(config, state, assemble::Seams::production()).await?;
+    let assembled = assemble::assemble(config, state, seams).await?;
     supervise(assembled, upgrades).await
 }
 
@@ -660,11 +661,12 @@ mod engine {
         alondra_daemon_engine::wiring::open_with(open_at);
     }
 
-    /// The runtime as the daemon opens it, with the doubles of the Mac and a gate that is unpaced and
+    /// The runtime as the daemon opens it, with the doubles of the Mac and of GitHub and a gate that is unpaced and
     /// launches on the disk the machine watch measured.
     pub fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
         let runtime = crate::wiring::open_at(home, database, files)?;
         alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
+        alondra_engine_doubles::github::wire(runtime.ports());
         alondra_agent_runtime::wire(runtime.ports(), Default::default());
         alondra_engine_admission::for_tests(&runtime);
         Ok(runtime)

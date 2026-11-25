@@ -621,7 +621,7 @@ impl Github for FakeGithub {
         Box::pin(async { Err("unexpected PR state".into()) })
     }
 
-    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
+    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<alondra_engine_ports::github::Marks, String>> {
         Box::pin(async { Err("viewed files are not available here".into()) })
     }
 
@@ -1274,7 +1274,7 @@ impl Github for HeldIssueSearch {
     fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
         Box::pin(async { Err("unexpected PR state".into()) })
     }
-    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
+    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<alondra_engine_ports::github::Marks, String>> {
         Box::pin(async { Err("unexpected viewed files".into()) })
     }
     fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> close::Answer<'a, Result<(), String>> {
@@ -1296,9 +1296,9 @@ fn runtime_progress_slow_issue_refreshes_leave_the_view_read_lane_free() {
     let client = Client::open(domain, &directory, Default::default());
     let (entered, started) = tokio::sync::oneshot::channel();
     let release = Arc::new(tokio::sync::Semaphore::new(0));
-    *client.github.lock().unwrap() = Arc::new(HeldIssueSearch {
+    *client.github.lock().unwrap() = Some(Arc::new(HeldIssueSearch {
         entered: std::sync::Mutex::new(Some(entered)), release: release.clone(),
-    });
+    }));
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
         let release = ReleaseIssueSearch(release);
@@ -1550,13 +1550,13 @@ async fn diff_read_failures_keep_their_errors_without_rechecking_the_head() {
 
 /// Answers the reads and marks of viewed files from memory, and keeps every mark it is asked for.
 struct ViewedGithub {
-    marks: Result<crate::pr_viewed::Marks, String>,
+    marks: Result<alondra_engine_ports::github::Marks, String>,
     set: std::sync::Mutex<Vec<(String, String, String, bool)>>,
 }
 
 impl ViewedGithub {
     fn at(head: &str) -> Arc<Self> {
-        use crate::pr_viewed::{Mark, Marks, Viewed};
+        use alondra_engine_ports::github::{Mark, Marks, Viewed};
         Arc::new(Self {
             marks: Ok(Marks { node: "PR_node".into(), head: head.into(), files: vec![Mark { path: "src/a.rs".into(), viewed: Viewed::Unviewed }] }),
             set: Default::default(),
@@ -1577,7 +1577,7 @@ impl Github for ViewedGithub {
     fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
         Box::pin(async { Err("unexpected PR state".into()) })
     }
-    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
+    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<alondra_engine_ports::github::Marks, String>> {
         Box::pin(async { self.marks.clone() })
     }
     fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> close::Answer<'a, Result<(), String>> {
@@ -1716,4 +1716,42 @@ async fn a_screen_builds_reads_and_sends_a_crash_report_through_the_macs_own_cli
     for path in ["/reports/r-1/files/daemon.log", "/reports/r-20261027-0000abcd/files/..", "/reports/r-20261027-0000abcd/files/a/b"] {
         assert!(!approved_read_path(path), "{path}");
     }
+}
+
+/// GitHub's reads, recorded, answering every PR as merged.
+#[derive(Default)]
+struct RegisteredReads(std::sync::Mutex<Vec<String>>);
+
+impl alondra_engine_ports::github::Gh for RegisteredReads {
+    fn view<'a>(&'a self, url: &'a str) -> alondra_engine_ports::github::Read<'a, Option<Value>> {
+        self.0.lock().unwrap().push(format!("view {url}"));
+        Box::pin(async { Some(serde_json::json!({"state": "MERGED"})) })
+    }
+
+    fn set_viewed<'a>(&'a self, _: &'a str, node: &'a str, path: &'a str, viewed: bool) -> alondra_engine_ports::github::Read<'a, Result<(), String>> {
+        self.0.lock().unwrap().push(format!("viewed {node} {path} {viewed}"));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A client no test gave a GitHub asks the one registered in the runtime, the root's in the
+/// daemon: its reads, its marks and its view of a PR reach that GitHub and no `gh` of its own.
+#[test]
+fn the_client_asks_the_registered_github() {
+    let directory = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&directory).unwrap();
+    let domain = Arc::new(crate::engine_tests::open(&directory).unwrap());
+    let client = Client::open(domain.clone(), &directory, Default::default());
+    let reads = Arc::new(RegisteredReads::default());
+    let mut port = (*domain.ports().github()).clone();
+    port.reads = reads.clone();
+    domain.ports().provide(Arc::new(port));
+    let url = "https://github.com/me/app/pull/7";
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        client.github().set_viewed("github.com", "PR_node", "src/a.rs", true).await.unwrap();
+        assert_eq!(client.github().pr_state("github.com", "me/app", 7).await, Ok(alondra_domain_rules::PrState::Merged));
+        assert_eq!(client.pr_view().view(url).await, Some(serde_json::json!({"state": "MERGED"})));
+    });
+    assert_eq!(*reads.0.lock().unwrap(), ["viewed PR_node src/a.rs true".to_owned(), format!("view {url}"), format!("view {url}")]);
 }

@@ -1,8 +1,7 @@
 //! `gh` itself: running it, reading what it answers, and observing a pull request with it.
 use alondra_core::clock;
-use alondra_core::pr::CheckState;
-use alondra_domain_rules::{MergeMethod, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey};
-use alondra_engine_ports::github::{Closed, GhFailure, HttpAnswer, Located, Observed, PrFacts, PrObserver, ReadIdentity, pr_url};
+use alondra_domain_rules::{MergeMethod, ProviderLocator, ProviderPrKey};
+use alondra_engine_ports::github::{Closed, GhFailure, HttpAnswer, Located, Observed, PrObserver, ReadIdentity, address, identity, pr_facts, pr_url};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -73,7 +72,7 @@ impl PrObserver for GhCli {
                 Err(_) => return Err(GhFailure::TimedOut("gh pr view did not finish within 30 s".into())),
             };
             let value: Value = serde_json::from_slice(&output.stdout).map_err(GhFailure::unreadable)?;
-            let mut facts = parse(&value).map_err(GhFailure::Unreadable)?;
+            let mut facts = pr_facts(&value).map_err(GhFailure::Unreadable)?;
             facts.allowed_methods = self.repository_methods(host, repository).await;
             Ok(facts)
         })
@@ -152,32 +151,6 @@ pub fn located(answer: &HttpAnswer) -> Result<ReadIdentity, GhFailure> {
         });
     }
     identity(node).ok_or_else(|| GhFailure::Unreadable("GitHub's node is not a pull request".into()))
-}
-
-/// Which pull request a `gh` answer is about: `fullDatabaseId` is the key, which no move or
-/// rename changes; the node `id` only finds it again, and GitHub may hand a new one; `url` is
-/// where GitHub serves it now.
-pub fn identity(value: &Value) -> Option<ReadIdentity> {
-    let key = match &value["fullDatabaseId"] {
-        Value::String(key) => key.trim().to_owned(),
-        Value::Number(key) => key.to_string(),
-        _ => return None,
-    };
-    if key.is_empty() || !key.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let locator = value["id"].as_str().map(str::trim).filter(|id| !id.is_empty())?;
-    let (_, repository, _) = address(value["url"].as_str()?)?;
-    let head_ref = value["headRefName"].as_str().unwrap_or_default().to_owned();
-    Some(ReadIdentity { key: ProviderPrKey(key), locator: ProviderLocator(locator.to_owned()), repository, head_ref })
-}
-
-/// `https://<host>/<owner>/<repo>/pull/<number>` as host, lower-case `owner/repo` and number.
-pub fn address(url: &str) -> Option<(String, String, u64)> {
-    let (host, path) = url.split_once("://")?.1.split_once('/')?;
-    let (repository, number) = path.split_once("/pull/")?;
-    let number = number.trim_end_matches('/').parse().ok()?;
-    (repository.split('/').count() == 2).then(|| (alondra_domain_rules::normalize_pr_host(host), alondra_domain_rules::normalize_pr_repository(repository), number))
 }
 
 impl GhCli {
@@ -284,67 +257,6 @@ fn parse_methods(value: &Value) -> Vec<MergeMethod> {
     .filter(|(key, _)| value[*key].as_bool() == Some(true))
     .map(|(_, method)| method)
     .collect()
-}
-
-pub fn parse(value: &Value) -> Result<PrFacts, String> {
-    let head = value["headRefOid"].as_str()
-        .filter(|head| head.len() == 40 && head.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or("gh reported no PR head")?;
-    let base = value["baseRefName"].as_str().filter(|base| !base.is_empty())
-        .ok_or("gh reported no PR base")?;
-    let state = match value["state"].as_str() {
-        Some("OPEN") => PrState::Open,
-        Some("CLOSED") => PrState::Closed,
-        Some("MERGED") => PrState::Merged,
-        other => return Err(format!("gh reported an unknown PR state {other:?}")),
-    };
-    Ok(PrFacts {
-        head: head.to_owned(),
-        base: base.to_owned(),
-        merged_head: (state == PrState::Merged).then(|| head.to_owned()),
-        state,
-        allowed_methods: vec![],
-        mergeable: mergeable(value),
-        checks: checks(value),
-        identity: identity(value),
-    })
-}
-
-fn mergeable(value: &Value) -> PrMergeable {
-    match (value["mergeable"].as_str(), value["mergeStateStatus"].as_str()) {
-        (Some("CONFLICTING"), _) | (_, Some("DIRTY")) => PrMergeable::Conflicting,
-        (Some("UNKNOWN") | None, _) | (_, Some("UNKNOWN")) => PrMergeable::Computing,
-        (Some("MERGEABLE"), None | Some("CLEAN" | "HAS_HOOKS")) => PrMergeable::Clean,
-        _ => PrMergeable::Other,
-    }
-}
-
-/// The latest run of each check: any failure first, then any that needs someone's approval to run,
-/// then any still running.
-fn checks(value: &Value) -> PrChecks {
-    let entries = value["statusCheckRollup"].as_array().map(|rollup| crate::prs::latest_entries(rollup)).unwrap_or_default();
-    let (mut failed, mut approval, mut running, mut any) = (vec![], vec![], vec![], false);
-    for entry in entries {
-        let Some(check) = crate::prs::check(entry) else { continue };
-        any = true;
-        match check.state {
-            _ if entry["conclusion"].as_str() == Some("ACTION_REQUIRED") => approval.push(check.name),
-            CheckState::Failed => failed.push(check.name),
-            CheckState::Running => running.push(check.name),
-            CheckState::Passed | CheckState::Other => (),
-        }
-    }
-    if !failed.is_empty() {
-        PrChecks::Failed { names: failed }
-    } else if !approval.is_empty() {
-        PrChecks::ActionRequired { names: approval }
-    } else if !running.is_empty() {
-        PrChecks::Pending { names: running }
-    } else if any {
-        PrChecks::Passed
-    } else {
-        PrChecks::None
-    }
 }
 
 #[cfg(test)]

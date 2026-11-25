@@ -1,5 +1,6 @@
 use super::*;
-use alondra_engine_ports::github::PrObserver;
+use alondra_domain_rules::{PrChecks, PrMergeable, PrState};
+use alondra_engine_ports::github::{PrFacts, PrObserver};
 use std::os::unix::fs::PermissionsExt;
 
 const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -112,58 +113,19 @@ async fn gh_closes_a_pr_with_its_comment() {
     assert!(calls.contains("pr close https://github.com/owner/repo/pull/7 --comment Cancelled in Alondra: Task"), "{calls}");
 }
 
+/// T16: the observer's one read asks for every field that says which pull request answered, and
+/// GitHub's `node(id:)` names the same pull request the read named, or says for certain it is gone.
 #[test]
-fn readiness_is_read_from_githubs_typed_fields() {
-    let read = |extra: Value| {
-        let mut value = serde_json::json!({"state": "OPEN", "headRefOid": HEAD, "baseRefName": "main"});
-        value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-        let facts = parse(&value).unwrap();
-        (facts.mergeable, facts.checks)
-    };
-    let run = |name: &str, status: &str, conclusion: &str| serde_json::json!({"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion});
-    assert_eq!(read(serde_json::json!({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "statusCheckRollup": []})),
-        (PrMergeable::Clean, PrChecks::None));
-    assert_eq!(read(serde_json::json!({"mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY",
-        "statusCheckRollup": [run("test", "COMPLETED", "SUCCESS"), run("lint", "IN_PROGRESS", "")]})), (PrMergeable::Conflicting, PrChecks::Pending { names: vec!["lint".into()] }));
-    assert_eq!(read(serde_json::json!({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
-        "statusCheckRollup": [run("lint", "IN_PROGRESS", ""), serde_json::json!({"context": "ci/legacy", "state": "PENDING"}), run("test", "COMPLETED", "SUCCESS")]})),
-        (PrMergeable::Clean, PrChecks::Pending { names: vec!["lint".into(), "ci/legacy".into()] }));
-    assert_eq!(serde_json::from_str::<PrChecks>(r#"{"kind":"pending"}"#).unwrap(), PrChecks::Pending { names: vec![] });
-    assert_eq!(read(serde_json::json!({"mergeable": "UNKNOWN", "statusCheckRollup": [run("test", "COMPLETED", "FAILURE"), run("lint", "IN_PROGRESS", "")]})),
-        (PrMergeable::Computing, PrChecks::Failed { names: vec!["test".into()] }));
-    assert_eq!(read(serde_json::json!({"mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED",
-        "statusCheckRollup": [run("deploy", "COMPLETED", "ACTION_REQUIRED"), run("test", "COMPLETED", "SUCCESS")]})),
-        (PrMergeable::Other, PrChecks::ActionRequired { names: vec!["deploy".into()] }));
-}
-
-/// T16: what `gh pr view --json` says about which pull request answered, read from GitHub's own
-/// JSON: the database id is the key, the node id the locator, and the URL GitHub answers with,
-/// after the redirect of a moved repository, the address the pull request lives at now.
-#[test]
-fn identity_fields_are_parsed_from_gh_json() {
-    let moved = serde_json::json!({
-        "state": "OPEN", "headRefOid": HEAD, "baseRefName": "main", "headRefName": "csv-export",
-        "fullDatabaseId": "15890129", "id": "PR_kwDOAOXXVc4A8nbR", "url": "https://github.com/Lumo-Org/Lumo/pull/42",
-    });
-    let read = parse(&moved).unwrap().identity.expect("an answer with its ids names its pull request");
-    assert_eq!(read, ReadIdentity {
-        key: ProviderPrKey("15890129".into()), locator: ProviderLocator("PR_kwDOAOXXVc4A8nbR".into()),
-        repository: "lumo-org/lumo".into(), head_ref: "csv-export".into(),
-    });
+fn the_observer_reads_the_identity_and_a_node_finds_it_again() {
     assert!(OBSERVED_FIELDS.split(',').filter(|field| IDENTITY_FIELDS.split(',').any(|id| id == *field)).count() == 4,
         "the observer's one read asks for every identity field");
-    let mut numeric = moved.clone();
-    numeric["fullDatabaseId"] = serde_json::json!(15890129);
-    assert_eq!(identity(&numeric).unwrap().key, ProviderPrKey("15890129".into()));
-    for (field, value) in [("fullDatabaseId", serde_json::Value::Null), ("fullDatabaseId", serde_json::json!("")), ("fullDatabaseId", serde_json::json!("PR_x")),
-        ("id", serde_json::Value::Null), ("url", serde_json::json!("https://github.com/lumo-org/lumo/issues/42")), ("url", serde_json::Value::Null)] {
-        let mut partial = moved.clone();
-        partial[field] = value.clone();
-        assert_eq!(parse(&partial).unwrap().identity, None, "{field} = {value} names no pull request");
-    }
+    let read = ReadIdentity {
+        key: ProviderPrKey("15890129".into()), locator: ProviderLocator("PR_kwDOAOXXVc4A8nbR".into()),
+        repository: "lumo-org/lumo".into(), head_ref: "csv-export".into(),
+    };
     let located_at = |body: serde_json::Value| located(&HttpAnswer { status: 200, headers: Default::default(), body: body.to_string().into_bytes() });
     let node = serde_json::json!({"data": {"node": {"fullDatabaseId": "15890129", "id": "PR_kwDOAOXXVc4A8nbR",
-        "url": "https://github.com/lumo-org/lumo/pull/42", "headRefName": "csv-export"}}});
+        "url": "https://github.com/Lumo-Org/Lumo/pull/42", "headRefName": "csv-export"}}});
     assert_eq!(located_at(node).unwrap(), read);
     let gone = located_at(serde_json::json!({"data": {"node": null}, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a node with the global id of 'PR_x'"}]}));
     assert!(gone.unwrap_err().not_found(), "a node GitHub no longer has is gone for certain");

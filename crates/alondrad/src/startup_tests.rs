@@ -77,7 +77,7 @@ async fn the_port_answers_while_hosts_are_still_being_taken_over() {
         let _ = held.await;
         PreparedWorkers(recovering)
     };
-    let seams = assemble::Seams { listener: Some(reserved), ..assemble::Seams::production() };
+    let seams = assemble::Seams { listener: Some(reserved), ..assemble::Seams::over(offline_github()) };
     let daemon = tokio::spawn(async move { assemble::assemble_with(&config, state, domain, recovery, None, &seams).await.map(|_| ()) });
     let connecting = async {
         loop {
@@ -98,7 +98,7 @@ async fn the_port_answers_while_hosts_are_still_being_taken_over() {
 }
 
 /// Every port has its implementation once the root wired the daemon: the engine's pieces, the
-/// orchestrator the server adds, and the screens only the root sees.
+/// orchestrator the server adds, the screens only the root sees and the GitHub of its seams.
 #[test]
 fn the_daemon_implements_every_port() {
     let home = crate::test_support::Directory::new();
@@ -107,6 +107,7 @@ fn the_daemon_implements_every_port() {
     alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
     let runtime = domain_runtime::DomainRuntime::open_unwired_at(&home, &alondra_engine_ports::journal::active_path(&home)).unwrap();
     crate::wire(runtime.ports());
+    offline_github().wire(runtime.ports());
     let daemon = domain_bootstrap::DomainDaemon::over(&home, runtime).unwrap();
     assert_eq!(daemon.domain().ports().missing(), Vec::<&str>::new(), "a port nothing implements");
 }
@@ -139,12 +140,14 @@ fn the_ports_run_on_a_runtime_that_is_not_the_kernels() {
     assert!(ports.port::<dyn OrchestratorEngine>().unwrap().usage_pause(&forwarded).is_none(), "engine");
 }
 
-/// The server's wiring and the root's, on an empty registry, leave no port to nothing.
+/// The server's wiring, the root's and its seams' GitHub, on an empty registry, leave no port to
+/// nothing.
 #[test]
 fn the_daemons_wiring_alone_implements_every_port() {
     let registry = alondra_engine_ports::Registry::default();
     domain_bootstrap::wire(&registry);
     crate::wire(&registry);
+    offline_github().wire(&registry);
     assert_eq!(registry.missing(), Vec::<&str>::new(), "a port the daemon's wiring leaves to nothing");
 }
 
@@ -178,4 +181,9 @@ fn a_second_daemon_is_refused_before_its_restart_recovery_touches_the_live_daemo
     assert!(second.as_ref().is_err_and(|error| error.to_string().contains("another Alondra daemon")), "{:?}", second.err());
     assert!(live.store.lock().unwrap().finish_message(claim.attempt_id, claim.version, alondra_core::delivery::State::Handed, None).unwrap(),
         "the live daemon's delivery is still its own");
+}
+
+/// The seams' GitHub of a test: one that nothing reaches.
+fn offline_github() -> assemble::GithubSeams {
+    assemble::GithubSeams::of(Arc::new(alondra_engine_doubles::github::Offline))
 }

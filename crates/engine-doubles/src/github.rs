@@ -1,8 +1,13 @@
-//! PR reads in memory. Every request is scoped to a URL, and head changes are explicit.
-use alondra_domain_rules::PullRequest;
-use alondra_engine_ports::github::{DiffError, Gh, HeadError, Marks, PrDiff, Read, MAX_PR_DIFF_BYTES};
+//! PR reads in memory, every request scoped to a URL and head changes explicit, and a GitHub no
+//! test reaches.
+use alondra_domain_rules::{MergeMethod, MergeVerdict, ProviderLocator, ProviderPrKey, PullRequest};
+use alondra_engine_ports::Registry;
+use alondra_engine_ports::github::{
+    Closed, DiffError, Failure, Fetch, Gh, GhFailure, GitHub, GitHubImages, HeadError, Located, Marks, Observed, Pending, PrDiff, PrMerger,
+    PrObserver, Read, Status, MAX_PR_DIFF_BYTES,
+};
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Call {
@@ -73,6 +78,78 @@ impl Gh for PullRequests {
             self.calls.lock().unwrap().push(Call::Marks(url.clone()));
             self.prs.lock().unwrap().get(&url).expect("marks requested for an unconfigured PR").marks.clone()
         })
+    }
+}
+
+/// A GitHub no test reaches: every read and change fails as `gh` fails on a Mac without it, and
+/// nothing leaves the process. The server's tests register it in place of the real one.
+pub struct Offline;
+
+/// Gives the registry the GitHub no test reaches.
+pub fn wire(registry: &Registry) {
+    registry.provide(Arc::new(offline()));
+}
+
+pub fn offline() -> GitHub {
+    GitHub::of(Arc::new(Offline))
+}
+
+fn absent() -> GhFailure {
+    GhFailure::Launch(std::io::ErrorKind::NotFound, "gh is not installed here".into())
+}
+
+fn pending<'a, T: Send + 'a>() -> Pending<'a, T> {
+    Box::pin(async { Err(absent()) })
+}
+
+impl PrObserver for Offline {
+    fn observe<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> Observed<'a> {
+        Box::pin(async { Err(absent()) })
+    }
+    fn close<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a ProviderPrKey, _: &'a str) -> Closed<'a> {
+        Box::pin(async { Err(absent()) })
+    }
+    fn relocate<'a>(&'a self, _: &'a str, _: &'a ProviderLocator) -> Located<'a> {
+        Box::pin(async { Err(absent()) })
+    }
+}
+
+impl PrMerger for Offline {
+    fn status<'a>(&'a self, _: &'a PullRequest) -> Pending<'a, Status> { pending() }
+    fn default_branch<'a>(&'a self, _: &'a PullRequest) -> Pending<'a, String> { pending() }
+    fn retarget<'a>(&'a self, _: &'a PullRequest, _: &'a ProviderPrKey, _: &'a str) -> Pending<'a, ()> { pending() }
+    fn merge<'a>(&'a self, _: &'a PullRequest, _: &'a ProviderPrKey, _: &'a str, _: MergeMethod) -> Pending<'a, ()> { pending() }
+    fn merge_bypassing<'a>(&'a self, _: &'a PullRequest, _: &'a ProviderPrKey, _: &'a str, _: MergeMethod) -> Pending<'a, ()> { pending() }
+    fn in_queue<'a>(&'a self, _: &'a PullRequest) -> Pending<'a, bool> { pending() }
+    fn is_draft<'a>(&'a self, _: &'a PullRequest) -> Pending<'a, bool> { pending() }
+    fn ready<'a>(&'a self, _: &'a PullRequest, _: &'a ProviderPrKey) -> Pending<'a, ()> { pending() }
+    fn required_checks<'a>(&'a self, _: &'a PullRequest, _: &'a str) -> Pending<'a, Vec<String>> { pending() }
+    fn bypassable_checks<'a>(&'a self, _: &'a PullRequest, _: &'a str) -> Pending<'a, Vec<String>> { pending() }
+    fn can_merge<'a>(&'a self, _: &'a PullRequest) -> Pending<'a, bool> { pending() }
+    fn verdict<'a>(&'a self, _: &'a PullRequest) -> Pending<'a, MergeVerdict> { pending() }
+}
+
+impl GitHubImages for Offline {
+    fn size<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: &'a str) -> Fetch<'a, u64> {
+        Box::pin(async { Err(Failure::Transient) })
+    }
+    fn file<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: &'a str) -> Fetch<'a, Vec<u8>> {
+        Box::pin(async { Err(Failure::Transient) })
+    }
+    fn repository<'a>(&'a self, _: &'a str, _: &'a str) -> Fetch<'a, ()> {
+        Box::pin(async { Err(Failure::Transient) })
+    }
+    fn body_html<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> Fetch<'a, String> {
+        Box::pin(async { Err(Failure::Transient) })
+    }
+    fn download<'a>(&'a self, _: &'a str) -> Fetch<'a, Vec<u8>> {
+        Box::pin(async { Err(Failure::Transient) })
+    }
+}
+
+impl Gh for Offline {
+    fn view<'a>(&'a self, _: &'a str) -> Read<'a, Option<serde_json::Value>> {
+        Box::pin(async { None })
     }
 }
 

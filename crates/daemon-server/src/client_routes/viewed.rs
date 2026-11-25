@@ -1,6 +1,6 @@
 //! Marking a file of a pull request as viewed, or not, in GitHub, for the head the reader saw.
 use super::{Client, Reply};
-use crate::pr_viewed::Viewed;
+use alondra_engine_ports::github::Viewed;
 use alondra_domain_rules::{DomainError, PrId, PrState};
 use serde::Deserialize;
 use serde_json::{Value, json};

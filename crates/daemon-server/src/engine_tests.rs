@@ -62,13 +62,14 @@ pub(crate) fn wired() {
     alondra_daemon_engine::wiring::open_with(open_at);
 }
 
-/// The runtime as the daemon opens it, with the doubles of the Mac, the agent hosts of this target
+/// The runtime as the daemon opens it, with the doubles of the Mac and of GitHub, the agent hosts of this target
 /// and a gate that is unpaced and launches on the disk the machine watch measured; every command it
 /// accepts keeps the domain's invariants or fails the test.
 pub(crate) fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
     alondra_domain_rules::invariants::check_after_every_command();
     let runtime = engine_assembly::open_engine_at(home, database, files)?;
     alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
+    alondra_engine_doubles::github::wire(runtime.ports());
     #[cfg(feature = "real-hosts")]
     alondra_agent_runtime::wire(runtime.ports(), Default::default());
     #[cfg(not(feature = "real-hosts"))]
