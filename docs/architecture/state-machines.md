@@ -1018,7 +1018,7 @@ truth = ["sqlite:interactions", "sqlite:interaction_attachments", "sqlite:intera
 ```
 
 - **Kind**: implicit, composite. State = `withdrawn: bool` × payload (`Information.read_by`, `Question/ActionRequest.answer`, `Delivery{acceptance, is_final, feedback}`) × `task.final_presentation` × `holds` × `snoozed_until` × `clarification`. **Defined in**: `model.rs:906-925` (payload), `:1296-1326` (`Interaction`). Opening: `open()` (`rules.rs:1006-1021`).
-- **Source of truth**: `DomainState.interactions` (table `interactions`). **Copies and derivatives**: read index (`read_index.rs`, checked equal in tests with `assert_index_matches`), inbox (`projection.rs:381-405` `inbox_pending`/`card_waits_for_user`), `attention` (`attention.rs:140-189`), apps. **Duplicate that diverges**: `open()` and `card_waits_for_user()` are two definitions of "open"; the inbox also requires an active task, not snoozed, not `out_of_sight`, and for deliveries that `attention` be that card. A system card of an ended task is still `open()` but is not listed (see H-CARDS-2).
+- **Source of truth**: `DomainState.interactions` (table `interactions`). **Copies and derivatives**: read index (`read_index.rs`, checked equal with `assert_index_matches` by `read_index_tests.rs`), inbox (`projection.rs:381-405` `inbox_pending`/`card_waits_for_user`), `attention` (`attention.rs:140-189`), apps. **Duplicate that diverges**: `open()` and `card_waits_for_user()` are two definitions of "open"; the inbox also requires an active task, not snoozed, not `out_of_sight`, and for deliveries that `attention` be that card. A system card of an ended task is still `open()` but is not listed (see H-CARDS-2).
 - **States**:
 
 | State | Condition |

@@ -130,7 +130,7 @@ every key shares is kept once per language; keys that read files or GitHub (`mac
 
 | Check | Where | Fails when |
 |---|---|---|
-| Index equals the state's on-demand answers | `assert_index_matches`, after every `execute` in the core tests (`rules.rs`) | the index disagrees on queue order, Waiting for You and its buttons, counts, acting cards, blockers, relations, items, reviewers, dependents, PRs, task buttons, schedule marks |
+| Index equals the state's on-demand answers | `assert_index_matches`, after every command of arbitrary histories (`read_index_tests.rs`) and of the core tests (`tests.rs`, `card_tests.rs`) | the index disagrees on queue order, Waiting for You and its buttons, counts, acting cards, blockers, relations, items, reviewers, dependents, PRs, task buttons, schedule marks |
 | Guard equals execution, every button | `assert_guard_matches_execution`, in `action()` under `cfg(test)` | a button's guard accepts or refuses differently from running its command on a copy |
 | Guard equals execution, every refusal | `guards_refuse_what_the_commands_refuse` (`domain/tests.rs`) | any button command × 5 actors × 5 envelopes × 4 delivery states disagrees |
 | View budget | `//crates/views:views_budget_test` | any of 29 keys renders cold over 50 ms (median of 5) on a real-size domain, or a `Family` has no measured key |

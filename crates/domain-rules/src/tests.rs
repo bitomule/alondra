@@ -67,6 +67,7 @@ fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, Dom
         },
     );
     assert_cards_usable(s);
+    assert_index_matches(s);
     outcome
 }
 fn fixture() -> DomainState {

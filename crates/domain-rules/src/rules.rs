@@ -3086,8 +3086,6 @@ impl DomainState {
     /// stays as it was.
     pub fn transition(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<(Self, CommandOutcome)> {
         let (next, outcome) = self.prepare_transition(actor, envelope)?;
-        #[cfg(test)]
-        super::read_index::assert_index_matches(&next);
         super::invariants::assert_hold(self, actor, envelope, &next);
         #[cfg(test)]
         super::transition_table::assert_declared(self, &next, &envelope.command);

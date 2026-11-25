@@ -911,6 +911,31 @@ d1bcdec12, under the bench's load) and after (this change, one run on the shared
 - The two runs were not under the same load (the before's build critical path was 130 s), so the
   time is indicative; the crates and targets reopened are what the graph decides.
 
+## The read index checked in its own property (2026-11-25)
+
+`domain_rules_test` ran `read_index::assert_index_matches` after every transition of every test:
+it rebuilds the read index, replays every task's journal twice and compares both with the state's
+on-demand answers. A `sample` profile of the slowest property put 81% of its time there; the whole
+target spent 248 s of CPU with it and 32 s without, all 868 tests passing either way. The check now
+runs after every command of `read_index_tests`, a property over arbitrary histories of the
+situation moves plus PRs and their states, work after the merge, information and its reading,
+snoozes, archiving, dependencies, problems and merge methods, and after every command of the core
+unit tests (`tests.rs`, `card_tests.rs`). With each of these broken, the property fails: a kept
+lifecycle never updated after the first record, the work after the merge never cleared on the
+task, and a waiting card built without its buttons.
+
+`domain_rules_test` alone, `--report-time`: the run took 31.3 s before and 13.7 s after, and the
+test cases summed 229 s before and 50 s after. `edit_bench --edit crates/domain-rules/src/rules.rs`,
+same Mac, one run each (load average 20 to 27), before on main at 7b5e782:
+
+| `domain-rules/src/rules.rs` | Crates / test targets reopened | Build: critical path | `domain_rules_test` | Longest test target | Critical path | Edit + test |
+|---|---:|---:|---:|---|---:|---:|
+| Before | 42 / 139 | 42 s | 129 s | `domain_rules_test` 129 s | 138 s | 207 s |
+| After | 42 / 139 | 38 s | 23 s | `engine_orchestrator_host_test` 70 s | 96 s | 188 s |
+
+`//crates/alondrad:relaunch_test` failed in both runs, as in the final measurement above, under the
+bench's load.
+
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 
 `engine-admission` and `engine-orchestrator` compile and test without `daemon-engine` and without

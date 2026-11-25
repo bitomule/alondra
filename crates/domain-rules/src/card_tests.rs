@@ -32,6 +32,7 @@ fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, Dom
         command: c,
     });
     assert_cards_usable(s);
+    assert_index_matches(s);
     outcome
 }
 fn ok(s: &mut DomainState, a: Actor, c: Command) -> CommandOutcome {
