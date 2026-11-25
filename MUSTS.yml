@@ -470,12 +470,12 @@ checks:
       - "crates/agent-protocol/**"
       - "crates/antigravity-protocol/**"
       - "crates/foundation/**"
-      - "tools/BUILD.bazel"
+      - "bazel/rules/BUILD.bazel"
       - "tools/layers/*.bzl"
       - "tools/layers/BUILD.bazel"
-      - "tools/rust_sources.bzl"
-      - "tools/rust_test.bzl"
-      - "tools/tree.bzl"
+      - "bazel/rules/rust_sources.bzl"
+      - "bazel/rules/rust_test.bzl"
+      - "bazel/rules/tree.bzl"
     with:
       targets:
         - //crates/antigravity-protocol/...
@@ -1641,13 +1641,13 @@ checks:
       - "crates/store/**"
       - "crates/test_support.rs"
       - "crates/view-model/**"
-      - "tools/BUILD.bazel"
+      - "bazel/rules/BUILD.bazel"
       - "tools/layers/*.bzl"
       - "tools/layers/BUILD.bazel"
-      - "tools/rust_inputs_test.bzl"
-      - "tools/rust_sources.bzl"
-      - "tools/rust_test.bzl"
-      - "tools/tree.bzl"
+      - "bazel/rules/rust_inputs_test.bzl"
+      - "bazel/rules/rust_sources.bzl"
+      - "bazel/rules/rust_test.bzl"
+      - "bazel/rules/tree.bzl"
       - "version.bzl"
     with:
       targets:
