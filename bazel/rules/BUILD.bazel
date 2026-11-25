@@ -1,4 +1,7 @@
 load("//bazel/rules:tree.bzl", "repo_tree")
 
 # Shared Bazel macros. Kept apart from //tools so that adding a target there reopens no check that only loads a macro.
+# The release configuration test reads the directory rustc keeps its state in.
+exports_files(["rust.bzl"], visibility = ["//tools:__pkg__"])
+
 repo_tree()

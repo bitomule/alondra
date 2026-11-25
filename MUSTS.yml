@@ -16,6 +16,8 @@ checks:
     paths:
       - "MUSTS.yml"
       - "docs/on-your-mac.md"
+      - ".bazelrc"
+      - "bazel/rules/rust.bzl"
       - "Makefile"
       - "deploy/brew/alondra.rb.in"
       - "deploy/brew/local-release.py"
@@ -166,6 +168,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/agent-application/...
@@ -184,6 +188,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/agent-protocol/...
@@ -213,6 +219,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/agent-runtime/...
@@ -288,6 +296,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/alondra/...
@@ -373,6 +383,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/alondrad/...
@@ -451,6 +463,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "version.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/daemon-server:daemon_server_test
@@ -476,6 +490,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/antigravity-protocol/...
@@ -495,6 +511,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/codex-protocol/...
@@ -518,6 +536,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/core/...
@@ -542,6 +562,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/domain-rules/...
@@ -565,6 +587,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/view-model/...
@@ -596,6 +620,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/views/...
@@ -658,6 +684,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/daemon-engine/...
@@ -712,6 +740,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/machine-model:machine_model_test
@@ -754,6 +784,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/daemon-engine-machine/...
@@ -799,6 +831,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-github/...
@@ -843,6 +877,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-live/...
@@ -887,6 +923,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-mcp/...
@@ -931,6 +969,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-worktrees/...
@@ -956,6 +996,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-ports/...
@@ -987,6 +1029,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/github-gh/...
@@ -1016,6 +1060,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-doubles/...
@@ -1048,6 +1094,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/system/...
@@ -1071,6 +1119,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/host/...
@@ -1115,6 +1165,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-kernel/...
@@ -1158,6 +1210,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-admission/...
@@ -1208,6 +1262,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-sdk:engine_sdk_test
@@ -1264,6 +1320,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-sdk:engine_sdk_engine_test
@@ -1309,6 +1367,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "version.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-orchestrator:engine_orchestrator_test
@@ -1363,6 +1423,8 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/engine-orchestrator:engine_orchestrator_host_test
@@ -1407,6 +1469,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/store-sqlite/...
@@ -1446,6 +1510,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/daemon-engine-model/...
@@ -1484,6 +1550,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/daemon-support/...
@@ -1502,6 +1570,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/domain/...
@@ -1522,6 +1592,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/e2e/...
@@ -1542,6 +1614,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/foundation/...
@@ -1559,6 +1633,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/process-group/...
@@ -1607,6 +1683,8 @@ checks:
       - "tools/layers/BUILD.bazel"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/provider-claude/...
@@ -1648,6 +1726,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "version.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/provider-antigravity/...
@@ -1686,6 +1766,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/provider-codex/...
@@ -1710,6 +1792,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/provider-conformance/...
@@ -1728,6 +1812,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/provider-contract/...
@@ -1753,6 +1839,8 @@ checks:
       - "web/react-router.config.ts"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/relay/...
@@ -1778,6 +1866,8 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/store/...
@@ -1885,6 +1975,7 @@ checks:
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //tools:prose_decisions_test
@@ -1990,6 +2081,8 @@ checks:
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
       - "bazel/rules/rust_test.bzl"
+      - "bazel/incremental/**"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //tools/layers:crate_layers_test
@@ -2019,6 +2112,7 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //tools:module_cycles_test
@@ -2061,9 +2155,13 @@ checks:
       - "bazel/rules/BUILD.bazel"
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
+      - "bazel/rules/rust.bzl"
+      - "bazel/incremental/**"
     with:
       targets:
         - //tools:release_config_test
+        - //bazel/incremental/tests:compiles_incrementally_test
+        - //bazel/incremental/tests:compiles_from_scratch_test
 
   module-lock:
     uses: bazel/test
@@ -2099,6 +2197,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //tools/sandbox:alondra-sandbox_test
@@ -2163,6 +2263,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //tests/system/macos:local_daemon_test
@@ -2366,6 +2468,7 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //deploy/brew:local_release_test
@@ -2464,6 +2567,8 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //apple/Data/Feed:ActionJournalProcessTests
@@ -2743,6 +2848,7 @@ checks:
       - "bazel/rules/rust_test.bzl"
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //agent-host:sdk_test
@@ -2787,6 +2893,7 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates:cargo_bazel_deps_test
@@ -2974,6 +3081,7 @@ checks:
       - "bazel/rules/tree.bzl"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //tools:clock_guard_test
@@ -3002,6 +3110,7 @@ checks:
       - "tools/tests/test_state_inventory.py"
       - "bazel/rules/tree.bzl"
       - "version.bzl"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //tools:state_inventory_test
@@ -3083,6 +3192,8 @@ checks:
       - "crates/provider-claude/**"
       - "bazel/rules/rust_inputs_test.bzl"
       - "bazel/rules/rust_sources.bzl"
+      - "bazel/incremental/BUILD.bazel"
+      - "bazel/rules/rust.bzl"
     with:
       targets:
         - //crates/scenarios:scenarios_test

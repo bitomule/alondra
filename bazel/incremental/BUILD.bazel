@@ -1,0 +1,18 @@
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+load("//bazel/rules:tree.bzl", "repo_tree")
+
+# Whether the libraries and binaries of this repository compile incrementally
+# (//bazel/rules:rust.bzl). A release and CI turn it off with `--//bazel/incremental=false`.
+bool_flag(
+    name = "incremental",
+    build_setting_default = True,
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "on",
+    flag_values = {":incremental": "true"},
+    visibility = ["//visibility:public"],
+)
+
+repo_tree()

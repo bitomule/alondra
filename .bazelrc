@@ -9,17 +9,20 @@ common --symlink_prefix=.bazel-links/bazel-
 build --macos_minimum_os=26.0
 build -c opt
 
-# Rust compiles from scratch and every Rustc and Clippy action is cached on disk and remotely, so a
-# new checkout reuses what any other built. `--config=incremental` trades that for faster edits: a
-# one-line edit recompiles only what it changed. Actions run unsandboxed in the execroot, so the state
-# lives two levels up, in this checkout's output base, and goes with it. Clippy keeps its own state:
-# sharing rustc's would discard it on every check. `bazelisk clean --expunge` deletes the state.
-build:incremental --@rules_rust//rust/settings:extra_rustc_flags=-Cincremental=../../rustc-incremental
-build:incremental --@rules_rust//rust/settings:clippy_flags=-Aclippy::all,-Dclippy::disallowed_methods,-Cincremental=../../rustc-incremental-clippy
+# The libraries and binaries of this repository compile incrementally (bazel/rules/rust.bzl): an edit
+# recompiles only what it changed in each crate it reaches, instead of every crate above it from
+# scratch; test crates compile from scratch. Their state
+# lives in this checkout's output base, which rustc reaches only from the unsandboxed execroot, so
+# their compiles never run sandboxed. Clippy gets the crate's flags and keeps its own state, named
+# last in its flags: sharing rustc's would discard it on every check. A release and CI compile from
+# scratch. `make clean-incremental` drops the state; `bazelisk clean --expunge` deletes it with the
+# output base.
+build --strategy=Rustc=worker,local
+build --strategy=Clippy=worker,local
 
 # Clippy resolves the APIs used by tests, including aliases and imported functions.
 build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
-build --@rules_rust//rust/settings:clippy_flags=-Aclippy::all,-Dclippy::disallowed_methods
+build --@rules_rust//rust/settings:clippy_flags=-Aclippy::all,-Dclippy::disallowed_methods,-Cincremental=../../rustc-incremental-clippy
 build --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 build --output_groups=+clippy_checks
 
@@ -35,10 +38,9 @@ common:upload --remote_upload_local_results
 
 # Signing, linking and bundling outputs are machine-specific or cheap to redo; never cache them.
 # --modify_execution_info keeps only its last value, so every configuration restates the whole list.
-# An rlib that incremental state leaves incoherent has the same action key in every checkout, so
-# incremental Rustc and Clippy actions skip the disk and remote cache.
+# An rlib that incremental state leaves incoherent has the same action key in every checkout, so the
+# libraries and binaries of this repository carry `no-cache` (bazel/rules/rust.bzl).
 common --modify_execution_info=^(AppleLipo|BitcodeSymbolsCopy|BundleApp|BundleTreeApp|DsymDwarf|DsymLipo|GenerateAppleSymbolsFile|ObjcBinarySymbolStrip|CppArchive|CppLink|ObjcLink|ProcessAndSign|SignBinary|SwiftArchive|SwiftStdlibCopy)$=+no-remote,^(BundleResources|ImportedDynamicFrameworkProcessor)$=+no-remote-exec
-common:incremental --modify_execution_info=^(AppleLipo|BitcodeSymbolsCopy|BundleApp|BundleTreeApp|DsymDwarf|DsymLipo|GenerateAppleSymbolsFile|ObjcBinarySymbolStrip|CppArchive|CppLink|ObjcLink|ProcessAndSign|SignBinary|SwiftArchive|SwiftStdlibCopy)$=+no-remote,^(BundleResources|ImportedDynamicFrameworkProcessor)$=+no-remote-exec,^(Rustc|Clippy)$=+no-cache
 
 common:ci --color=yes
 common:ci --announce_rc
@@ -48,6 +50,7 @@ common:ci --bes_backend=
 build:ci --jobs=2
 common:ci --modify_execution_info=^(AppleLipo|BitcodeSymbolsCopy|BundleApp|BundleTreeApp|DsymDwarf|DsymLipo|GenerateAppleSymbolsFile|ObjcBinarySymbolStrip|CppArchive|CppLink|ObjcLink|ProcessAndSign|SignBinary|SwiftArchive|SwiftStdlibCopy)$=+no-remote,^(BundleResources|ImportedDynamicFrameworkProcessor)$=+no-remote-exec
 # A runner starts empty and is thrown away: it compiles from scratch, like a release.
+build:ci --//bazel/incremental=false
 build:ci --@rules_rust//rust/settings:extra_rustc_flags=
 build:ci --@rules_rust//rust/settings:clippy_flags=-Aclippy::all,-Dclippy::disallowed_methods
 build:ci --xcode_version=27.1
@@ -62,6 +65,7 @@ common:warming --remote_download_minimal
 # What ships never compiles incrementally, whatever else is configured; the release tests the same
 # binaries in this configuration, so it never compiles them twice.
 common:release --modify_execution_info=^(AppleLipo|BitcodeSymbolsCopy|BundleApp|BundleTreeApp|DsymDwarf|DsymLipo|GenerateAppleSymbolsFile|ObjcBinarySymbolStrip|CppArchive|CppLink|ObjcLink|ProcessAndSign|SignBinary|SwiftArchive|SwiftStdlibCopy)$=+no-remote,^(BundleResources|ImportedDynamicFrameworkProcessor)$=+no-remote-exec
+build:release --//bazel/incremental=false
 build:release --@rules_rust//rust/settings:extra_rustc_flags=
 build:release --@rules_rust//rust/settings:clippy_flags=-Aclippy::all,-Dclippy::disallowed_methods
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Only `--config=incremental` compiles incrementally, with clippy's state apart from rustc's, and only its results skip the cache; the default, a release and CI compile from scratch and cache."""
+"""Every build but a release and CI compiles the repository's libraries and binaries incrementally, never
+sandboxed, with clippy's state apart from rustc's; third-party crates keep their cache."""
 import os
 from pathlib import Path
 import re
@@ -8,8 +9,9 @@ import unittest
 EXTRA = "--@rules_rust//rust/settings:extra_rustc_flags="
 CLIPPY = "--@rules_rust//rust/settings:clippy_flags="
 MODIFY = "--modify_execution_info="
-INCREMENTAL_ACTIONS = "^(Rustc|Clippy)$"
+SWITCH = "--//bazel/incremental="
 INCREMENTAL = re.compile(r"^-Cincremental=(.+)$")
+STATE = re.compile(r'^INCREMENTAL_STATE = "(.+)"$', re.M)
 
 
 def checkout():
@@ -42,6 +44,16 @@ def execution_info(bazelrc, command):
     return dict(rule.rsplit("=", 1) for rule in re.split(r",(?=\^)", value) if rule)
 
 
+def switch(bazelrc, command):
+    """The last value of the incremental switch for one `command` or `command:config`, if any."""
+    value = None
+    for line in bazelrc.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and parts[0] == command and parts[1].startswith(SWITCH):
+            value = parts[1][len(SWITCH):]
+    return value
+
+
 def incremental_dirs(flags):
     return [match.group(1) for match in map(INCREMENTAL.match, flags) if match]
 
@@ -53,35 +65,38 @@ def plain(flags):
 class ReleaseConfigTests(unittest.TestCase):
     def setUp(self):
         root = checkout()
-        self.loop = settings((root / ".bazelrc").read_text(), "build:incremental")
-        self.default = settings((root / ".bazelrc").read_text(), "build")
-        self.release = settings((root / ".bazelrc").read_text(), "build:release")
-        self.ci = settings((root / ".bazelrc").read_text(), "build:ci")
         self.rc = (root / ".bazelrc").read_text()
+        self.default = settings(self.rc, "build")
+        self.release = settings(self.rc, "build:release")
+        self.ci = settings(self.rc, "build:ci")
+        self.rustc_state = STATE.search((root / "bazel/rules/rust.bzl").read_text()).group(1)
         self.script = (root / "deploy/brew/local-release.py").read_text()
 
-    def test_the_incremental_config_compiles_into_different_directories(self):
-        rustc = incremental_dirs(self.loop[EXTRA])
-        clippy = incremental_dirs(self.loop[CLIPPY])
-        self.assertEqual(len(rustc), 1)
+    def test_clippy_keeps_its_incremental_state_apart_from_rustc(self):
+        clippy = incremental_dirs(self.default[CLIPPY])
         self.assertEqual(len(clippy), 1)
-        self.assertNotEqual(rustc, clippy, "clippy would discard rustc's state on every check")
+        self.assertNotEqual(clippy[0], self.rustc_state, "clippy would discard rustc's state on every check")
+        self.assertTrue(self.default[CLIPPY][-1].startswith("-Cincremental="), "clippy's state must come after the crate's")
 
-    def test_the_default_a_release_and_ci_compile_from_scratch_with_the_same_lints(self):
+    def test_a_release_and_ci_compile_from_scratch_with_the_same_lints(self):
+        self.assertIsNone(switch(self.rc, "build"), "the switch defaults to incremental in its BUILD file")
         self.assertNotIn(EXTRA, self.default)
-        self.assertEqual(incremental_dirs(self.default[CLIPPY]), [])
-        self.assertEqual(self.default[CLIPPY], plain(self.loop[CLIPPY]))
-        for config in (self.release, self.ci):
+        for config, name in ((self.release, "build:release"), (self.ci, "build:ci")):
+            self.assertEqual(switch(self.rc, name), "false")
             self.assertEqual(config.get(EXTRA), [])
-            self.assertEqual(config.get(CLIPPY), self.default[CLIPPY])
+            self.assertEqual(config.get(CLIPPY), plain(self.default[CLIPPY]))
 
-    def test_only_incremental_results_skip_the_shared_cache(self):
-        incremental = execution_info(self.rc, "common:incremental")
-        self.assertEqual(incremental.get(INCREMENTAL_ACTIONS), "+no-cache")
-        others = {rule: tags for rule, tags in incremental.items() if rule != INCREMENTAL_ACTIONS}
-        for config in ("common", "common:release", "common:ci"):
-            self.assertEqual(execution_info(self.rc, config), others,
-                             f"{config} keeps the other rules and lets rustc and clippy be cached")
+    def test_incremental_compiles_never_run_sandboxed(self):
+        for mnemonic in ("Rustc", "Clippy"):
+            self.assertIn(f"build --strategy={mnemonic}=worker,local\n", self.rc)
+
+    def test_third_party_crates_keep_their_cache_in_every_configuration(self):
+        lists = {config: execution_info(self.rc, config) for config in ("common", "common:release", "common:ci")}
+        for config, rules in lists.items():
+            for rule in rules:
+                self.assertNotRegex(rule, "Rustc|Clippy", f"{config} would drop the third-party crates' cache")
+        self.assertEqual(lists["common"], lists["common:release"])
+        self.assertEqual(lists["common"], lists["common:ci"])
 
     def test_every_bazel_call_of_a_release_uses_the_release_config(self):
         self.assertIn("RELEASE_CONFIG = '--config=release'", self.script)

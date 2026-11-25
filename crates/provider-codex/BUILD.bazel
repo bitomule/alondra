@@ -2,7 +2,7 @@ load("//tools/layers:crates.bzl", "adapter_out_crate")
 load("//bazel/rules:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//bazel/rules:rust.bzl", "rust_library")
 
 _DEPS = [
     "//crates/codex-protocol:codex_protocol",

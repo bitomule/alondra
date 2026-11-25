@@ -1,0 +1,26 @@
+load("//bazel/rules:rust.bzl", "rust_library")
+load("//bazel/rules:tree.bzl", "repo_tree")
+load(":rust_incremental_test.bzl", "compiles_from_scratch_test", "compiles_incrementally_test")
+
+rust_library(
+    name = "fixture",
+    testonly = True,
+    srcs = ["testdata/lib.rs"],
+    crate_root = "testdata/lib.rs",
+    edition = "2024",
+    tags = ["manual"],
+)
+
+compiles_incrementally_test(
+    name = "compiles_incrementally_test",
+    size = "small",
+    target_under_test = ":fixture",
+)
+
+compiles_from_scratch_test(
+    name = "compiles_from_scratch_test",
+    size = "small",
+    target_under_test = ":fixture",
+)
+
+repo_tree()

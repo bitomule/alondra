@@ -18,6 +18,8 @@ A new integration test needs a Bazel target, or it does not run.
 `bazelisk test` runs again only the targets whose declared inputs changed; every other target reports
 `(cached) PASSED` from the local or remote cache. Run the scope you touched (`//crates/<crate>/...`
 or `//...`) and let the cache skip the rest: there is no separate list of affected tests to keep.
+The libraries and binaries themselves compile incrementally and their compiles skip the disk and
+remote cache (`bazel/rules/rust.bzl`); test crates and test results do not.
 
 A cached result is only as good as the inputs the target declares, so every test reads what its
 BUILD target lists, from its runfiles. A test that reads the checkout (a lint over many packages)
@@ -31,6 +33,9 @@ reason in `tools/uncacheable_tests.tsv`.
 reopens, the actions Bazel really runs, the time to build alone, the time to edit and test, and the
 test target that took longest. `--edit <path>` picks the files; without it, the files edited most
 often in the last two weeks; `--tracked` measures one edit per layer. `--query-only` only counts.
+In Rust the edit is a line in the body of the file's first function, as a real edit is: a static
+added at the end would be incremental compilation's best case. `--profile` keeps Bazel's profiles in
+`.scratch/edit-bench-profiles/` and prints the actions on the build's critical path.
 On a shared Mac, where bazelqueue keeps a `bazel run` in its build slot until the program ends,
 build the script and run it outside Bazel:
 `bazelisk run --script_path=.scratch/edit_bench //tools:edit_bench && .scratch/edit_bench --edit <path>`.

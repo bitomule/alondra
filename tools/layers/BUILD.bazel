@@ -23,6 +23,15 @@ genquery(
     scope = ["//:tree"],
 )
 
+# Every Rust library and binary of the repository with its tags: each one compiles incrementally, so
+# none may be cached (bazel/rules/rust.bzl).
+genquery(
+    name = "rust_compiles",
+    expression = 'kind("rust_(library|binary|proc_macro|shared_library|static_library)", siblings(deps(//:tree)))',
+    opts = ["--output=xml"],
+    scope = ["//:tree"],
+)
+
 # Every rule of the repository with what it reads: the test follows them from each test target to
 # the crates of the root. A genquery may not walk dependencies outside its scope, so `rdeps` here
 # fails on the first one.
@@ -41,11 +50,13 @@ sh_test(
     data = [
         ":crate_layers",
         ":rules",
+        ":rust_compiles",
         ":rust_targets",
     ],
     env = {
         "CRATE_LAYERS": "$(rootpath :crate_layers)",
         "RULES": "$(rootpath :rules)",
+        "RUST_COMPILES": "$(rootpath :rust_compiles)",
         "RUST_TARGETS": "$(rootpath :rust_targets)",
     },
 )
