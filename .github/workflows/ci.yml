@@ -21,8 +21,8 @@
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 10,
       "env": {
-        "MUSTS_VERSION": "0.10.1",
-        "MUSTS_SHA256": "f0407f69edb8095885e70ab2ffeeed90ea83ed013ffe41ece178c67acf232bdc",
+        "MUSTS_VERSION": "0.11.1",
+        "MUSTS_SHA256": "e6b7d414645cf2aa6e19d4642d5836b27c4d61cad2aeaa1d70a8f8c98c4305a0",
         "GH_TOKEN": "${{ github.token }}"
       },
       "steps": [

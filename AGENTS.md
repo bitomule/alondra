@@ -71,17 +71,16 @@ or in the private repository that keeps it, never here.
   after a `bazelisk test` of the same tree. Commit `.musts/ledger/` (one file per check, `musts` 0.10.1 or later
   migrates the old `ledger.lock.yaml` itself) and any `MODULE.bazel.lock` change with the code.
   A conflict in `.musts/ledger/` is resolved by taking the base's files and validating again, never
-  by deleting the ledger. `musts validate` also trusts the checkout's own `.musts/state.sqlite`, so
-  after a rebase or merge it can report clean while the committed ledger is stale: move that file
-  aside first, then `musts validate` must be empty on the exact commit you push, as CI sees it.
+  by deleting the ledger. `musts` 0.11.1 decides what is validated from the committed ledger alone,
+  so `musts validate` must be empty on the exact commit you push, as CI sees it.
 - **Iterating on a failure: run the test, not the binary.** Pass the test's name or module path to
   the test binary, `bazelisk test //crates/daemon-engine:daemon_engine_test --test_arg=domain_merges::`
   (several `--test_arg` filters are allowed), instead of the whole target. Each crate has one test
-  target. A run you mean to record with `musts record` never has a filter.
-- After a `bazelisk test` that covers every target of the `bazel-test` check, `musts record
-  bazel-test-root` records it instead of rerunning (`musts` 0.9.0 or later). It says what is missing
-  when it answers "Not recorded". Never pass `--test_filter` or tag/size filters to a run you mean
-  to record.
+  target. A run you mean to record never has a filter.
+- `musts run bazel-test-root` runs `bazel test`, and Bazel serves unchanged tests from its own test cache
+  (`musts` 0.11.1 or later): after a `bazelisk test` of the same tree it finishes without rerunning, and
+  its output says how many tests came from the cache. Never pass `--test_filter` or tag/size filters to
+  a run you mean to record.
 - **One Bazel queue serves every checkout of the Mac, one pass at a time**: each pass, and each
   minute it runs, holds every other checkout back. Iterate without blocking it
   (`docs/running-tests.md`, "Iterating without blocking the queue"):

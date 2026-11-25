@@ -12,7 +12,7 @@ them into `bazel/env/.bazel_env/bin`. Nothing has to be installed by hand:
 - **Versions.** Each launcher runs the tool pinned by the repo you are in. `ensure.sh` rebuilds
   `.bazel_env` first when it is missing or out of date with `MODULE.bazel` or this package (about 5 s
   the first time in a worktree, about 25 ms per call otherwise); `tools/bazel` runs it before each Bazel
-  command too, so the build's status script (`tools/musts-stamp.sh`) always finds the pinned `musts`.
+  command too, so the launchers always find the pinned tools.
   Outside this repo, a launcher runs the next copy of the tool on PATH.
 - **Bumping a tool.** Change its `url` and `sha256` in `tools.bzl` in one PR. For simpool, bump the
   binary and the test runner archive together: they come from the same release. For `musts`, the
