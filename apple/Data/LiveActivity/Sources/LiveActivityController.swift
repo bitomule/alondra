@@ -68,8 +68,11 @@ public final class LiveActivityController {
     }
 
     /// The counts of one Mac as the app last loaded them; `live` while its connection answers.
+    /// The app follows one Mac at a time: a report from another one means the Mac shown before is
+    /// no longer followed, so its last numbers stop counting as fresh and a sealed report wins.
     public func report(macID: String, name: String?, counts: ActivityCounts, live: Bool) {
         let at = now()
+        for other in macs.keys where other != macID { macs[other]?.live = false }
         var mac = macs[macID] ?? Mac(name: name, counts: counts, live: live, heardAt: at, zeroSince: nil)
         if mac.live || live { mac.heardAt = at }
         mac.name = name

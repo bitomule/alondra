@@ -50,6 +50,7 @@ final class SchedulesTests: XCTestCase {
         let store = TestStore(initialState: SchedulesFeature.State()) {
             SchedulesFeature()
         } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = ViewsClient.showing(document)
             $0.viewsClient.perform = { request in sent.record(request); return try respond(request) }
             $0.uuid = .incrementing
@@ -210,6 +211,7 @@ final class SchedulesTests: XCTestCase {
         let store = TestStore(initialState: SchedulesFeature.State()) {
             SchedulesFeature()
         } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = { _ in AsyncThrowingStream { $0.finish(throwing: ViewsClientError.missingView) } }
         }
         store.exhaustivity = .off

@@ -321,8 +321,9 @@ public struct TriageFeature: Sendable {
                 state.cards[id: id]?.actions.stamp = nil
                 state.cards[id: id]?.actions.inFlight = false
                 let card = state.cards[id: id]?.card
+                let late = LateNotice.answer(card?.need ?? card?.title)
                 return .merge(showQueue(&state, front: id),
-                              .send(.delegate(.answerNotConfirmed(Optimistic.notConfirmed(card?.need ?? card?.title)))))
+                              .run { [viewsClient] send in await send(.delegate(.answerNotConfirmed(await viewsClient.lateNotice(late)))) })
             case .setAsideDismissed:
                 state.setAside = nil
                 return .run { [viewsClient] _ in viewsClient.dismissSetAsideAnswers() }

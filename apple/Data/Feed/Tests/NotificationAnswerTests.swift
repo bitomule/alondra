@@ -46,6 +46,11 @@ private actor DistantMac: ViewTransport {
     }
 }
 
+private extension ActionRetryPolicy {
+    /// A delivery that failed goes again only when something wakes it.
+    static let untilWoken = ActionRetryPolicy(delay: { _ in .seconds(86_400) }, sleep: { try await Task.sleep(for: $0) })
+}
+
 @Suite(.temporaryFiles) struct NotificationAnswerTests {
     private func answer() -> ActionRequest {
         ActionRequest(commandId: "40000000-0000-4000-8000-000000000009", dataEpoch: "epoch",
@@ -69,7 +74,7 @@ private actor DistantMac: ViewTransport {
     /// send, and the answer goes by itself once the app is open.
     @Test func anAnswerTheMacCouldNotTakeIsKeptAndGoesOnceTheAppIsOpen() async throws {
         let mac = DistantMac()
-        let sender = ViewActionSender(transport: mac, intents: try await store(knowingGeneration: true))
+        let sender = ViewActionSender(transport: mac, intents: try await store(knowingGeneration: true), retryPolicy: .untilWoken)
         await #expect(throws: AnswerKeptForLater()) { try await sender.sendNow(answer()) }
         let kept = try #require(await sender.unresolvedRequests().first)
         #expect(ActionOperationID(rawValue: kept.commandId)?.generation == 1)
@@ -77,9 +82,26 @@ private actor DistantMac: ViewTransport {
 
         await mac.comeIntoReach()
         await sender.resumeDeliveries(dataEpoch: "epoch")
+        await sender.retryNow()
         await sender.drainDeliveries()
         #expect(await sender.unresolvedRequests().isEmpty)
         #expect(await mac.runs == [kept.commandId: 1])
+        await sender.drainRetirement()
+    }
+
+    /// With several Macs only the one on screen loads views: a kept answer for another Mac goes
+    /// by itself as soon as that Mac answers, with no screen of it ever opened.
+    @Test func aKeptAnswerGoesOnceItsMacAnswersWithoutAnyScreenOfThatMac() async throws {
+        let mac = DistantMac()
+        let sender = ViewActionSender(transport: mac, intents: try await store(knowingGeneration: true), retryPolicy: .untilWoken)
+        await #expect(throws: AnswerKeptForLater()) { try await sender.sendNow(answer()) }
+        let kept = try #require(await sender.unresolvedRequests().first)
+
+        await mac.comeIntoReach()
+        await sender.retryNow()
+        await sender.drainDeliveries()
+        #expect(await mac.runs == [kept.commandId: 1])
+        #expect(await sender.unresolvedRequests().isEmpty)
         await sender.drainRetirement()
     }
 

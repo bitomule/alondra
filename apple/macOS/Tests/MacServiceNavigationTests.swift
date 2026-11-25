@@ -341,6 +341,26 @@ struct MacAnsweringTests {
     }
 
     @Test
+    func anAnswerThatCannotBePreparedIsNoLongerSendingAndNeverSaysTheMacDidNotConfirmIt() async throws {
+        let clock = TestClock<Duration>()
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", clock: clock, load: unchangedSidebar)
+        store.dependencies.viewsClient.prepare = { _ in throw FeedError.commandIdentityConflict }
+        await store.send(.beginViewAction(try answer()))
+        await store.send(.action(.textChanged("Ship it")))
+        await store.send(.action(.submit))
+        await store.receive(\.action.sending)
+        await store.receive(\.action.settled)
+        await store.receive(\.action.undelivered)
+        await store.skipReceivedActions(strict: false)
+        #expect(!store.state.optimistic.isSending("a"), "an answer that never left is no longer on its way")
+        #expect(store.state.returnReasons["a"] == "Alondra couldn’t prepare this request.")
+
+        await clock.advance(by: Optimistic.confirmationTimeout)
+        await store.skipReceivedActions(strict: false)
+        #expect(!store.state.optimistic.isOverdue("a"), "no notice says the Mac has not confirmed what never left")
+    }
+
+    @Test
     func anAnswerTheDaemonConfirmsInTimeNeverComesBack() async throws {
         let clock = TestClock<Duration>()
         let hold = Hold()

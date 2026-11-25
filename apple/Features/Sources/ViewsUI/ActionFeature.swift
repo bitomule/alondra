@@ -145,7 +145,8 @@ public struct ActionFeature: Sendable {
         /// The request left: the screen shows its result now, without waiting for the daemon.
         case prepared(ActionRequest, ActionRequest)
         case sent(ActionRequest)
-        /// The daemon answered `sent`, or could not be reached; a screen undoes what it showed when not applied.
+        /// The daemon answered `sent`, could not be reached, or the request could not be prepared on this
+        /// device; a screen undoes what it showed when not applied.
         case settled(ActionRequest, applied: Bool)
         case response(ActionResponse)
         /// The daemon answered `request`. Only the request this action is still waiting on changes
@@ -418,7 +419,10 @@ public struct ActionFeature: Sendable {
                 let prepared = try await viewsClient.prepare(request)
                 try Task.checkCancellation()
                 await send(.prepared(request, prepared))
-            } catch { await send(.undelivered(request, SendFailure(preparation: error))) }
+            } catch {
+                await send(.settled(request, applied: false))
+                await send(.undelivered(request, SendFailure(preparation: error)))
+            }
         }
         .cancellable(id: DeliveryID(commandID: request.commandId))
         if state.handsOff { return .merge(stallTimer(request), preparation) }

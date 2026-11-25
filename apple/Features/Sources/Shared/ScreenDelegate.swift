@@ -43,6 +43,17 @@ extension ViewsClient {
         guard case .document(let document) = try await load(key, nil) else { return nil }
         return document
     }
+
+    /// The connection as it is now, or nil when nothing reports it.
+    func currentConnection() async -> ConnectionState? {
+        for await state in await connection() { return state }
+        return nil
+    }
+
+    /// The notice for something the Mac has not confirmed in time, with the connection's cause.
+    func lateNotice(_ late: LateNotice) async -> String {
+        late.message(await currentConnection())
+    }
 }
 
 enum WireTimestamp {

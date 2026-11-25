@@ -1,5 +1,6 @@
 import AlondraContract
 import AlondraFeed
+import ComposableArchitecture
 import Foundation
 
 /// What the person did that no server view shows yet. A screen draws the daemon's document through
@@ -100,5 +101,18 @@ public extension Optimistic {
     static func notConfirmed(_ card: String?) -> String {
         guard let card, !card.isEmpty else { return String(localized: "Your Mac hasn’t confirmed an answer.") }
         return String(localized: "Your Mac hasn’t confirmed your answer to “\(card)”.")
+    }
+
+    /// Waits for the daemon to confirm what was sent for `id`; when it has not in time, `overdue`
+    /// goes to the screen, which shows the item again while the delivery goes on.
+    static func confirmation<Action>(
+        of id: String, clock: any Clock<Duration>, cancelID: some Hashable & Sendable,
+        overdue: @escaping @Sendable (String) -> Action
+    ) -> Effect<Action> {
+        .run { send in
+            try await clock.sleep(for: confirmationTimeout)
+            await send(overdue(id))
+        }
+        .cancellable(id: cancelID, cancelInFlight: true)
     }
 }

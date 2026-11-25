@@ -178,6 +178,22 @@ private final class Harness {
         #expect(ActivitySummary(state, now: harness.now, stale: false).totals == ActivityCounts(inbox: 4, waiting: 1, working: 2))
     }
 
+    @Test func aMacNoLongerShownNeverCoversWhatTheRelayLaterSaysOfIt() async throws {
+        let harness = Harness()
+        await harness.foreground()
+        await harness.report(3, mac: "mac-a")
+        await harness.report(0, mac: "mac-b")
+        harness.now += 60
+        runningWithPush(harness, macs: ["mac-a"])
+        harness.opened = [ActivityReport(macID: "mac-a", macName: nil, counts: ActivityCounts(inbox: 0, waiting: 0, working: 0), measuredAt: harness.now)]
+        await harness.background()
+        #expect(!harness.host.calls.contains { call in
+            guard case .update(_, let state) = call else { return false }
+            return state.reports.contains { $0.macID == "mac-a" && $0.measuredAt > harness.now.addingTimeInterval(-60) }
+        }, "the Mac shown before keeps the time it was last loaded")
+        #expect(harness.host.ends == [.end("pushed", .immediate)], "the relay says mac-a is done and mac-b has nothing: it ends")
+    }
+
     @Test func staysFifteenMinutesAfterEverythingReachesZeroThenEnds() async {
         let harness = Harness()
         await harness.foreground()

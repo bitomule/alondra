@@ -230,6 +230,7 @@ final class TaskDetailTests: XCTestCase {
         let store = TestStore(initialState: TaskDetailFeature.State(key: ViewKey(rawValue: "task:t-1"))) {
             TaskDetailFeature()
         } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = ViewsClient.showing(document)
             $0.viewsClient.perform = { request in sent.record(request); return try respond(request) }
             $0.uuid = .incrementing
@@ -283,6 +284,36 @@ final class TaskDetailTests: XCTestCase {
     }
 
     @MainActor
+    func testACancelTheMacNeverConfirmsShowsItsButtonAgainWithANoticeAfterTheTimeout() async throws {
+        let gate = Gate()
+        let clock = TestClock<Duration>()
+        let store = try await loaded()
+        store.dependencies.continuousClock = clock
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            return try Responses.applied("Cancelled")
+        }
+        let cancel = try XCTUnwrap(store.state.detail?.cancel)
+
+        await store.send(.perform(cancel))
+        await store.send(.actions(.confirm))
+        await store.receive(\.actions.sent)
+        XCTAssertTrue(store.state.optimistic.hides(cancel.id), "the button leaves at once")
+
+        await clock.advance(by: Optimistic.confirmationTimeout - .milliseconds(1))
+        XCTAssertTrue(store.state.optimistic.hides(cancel.id), "nothing shows while it retries")
+
+        await clock.advance(by: .milliseconds(1))
+        await store.receive(\.actionOverdue, try XCTUnwrap(cancel.id))
+        await store.receive(\.delegate.failed, "Your Mac hasn’t confirmed it yet: still sending “\(cancel.label)”.")
+        XCTAssertFalse(store.state.optimistic.hides(cancel.id), "the unconfirmed cancel shows its button again")
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertTrue(store.state.optimistic.hides(cancel.id), "confirmed late, it leaves")
+    }
+
+    @MainActor
     func testARevokedGrantLeavesAtOnceAndReturnsWithTheErrorIfTheDaemonRefuses() async throws {
         let gate = Gate()
         let sent = SentActions()
@@ -290,6 +321,7 @@ final class TaskDetailTests: XCTestCase {
         let store = TestStore(initialState: TaskDetailFeature.State(key: ViewKey(rawValue: document.key))) {
             TaskDetailFeature()
         } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = ViewsClient.showing(document)
             $0.viewsClient.perform = { request in
                 sent.record(request)
@@ -322,6 +354,7 @@ final class TaskDetailTests: XCTestCase {
         let store = TestStore(initialState: TaskDetailFeature.State(key: ViewKey(rawValue: document.key))) {
             TaskDetailFeature()
         } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = ViewsClient.showing(document)
             $0.viewsClient.perform = { request in sent.record(request); return try Responses.applied("Prioridad cambiada") }
             $0.uuid = .incrementing
@@ -350,6 +383,7 @@ final class TaskDetailTests: XCTestCase {
         let store = TestStore(initialState: TaskDetailFeature.State(key: ViewKey(rawValue: document.key))) {
             TaskDetailFeature()
         } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = ViewsClient.showing(document)
             $0.viewsClient.perform = { request in sent.record(request); return try Responses.applied("Done") }
             $0.uuid = .incrementing
@@ -465,6 +499,7 @@ final class TaskDetailTests: XCTestCase {
         let store = TestStore(initialState: TaskDetailFeature.State(key: ViewKey(rawValue: "task:t-gone"))) {
             TaskDetailFeature()
         } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = { _ in AsyncThrowingStream { $0.finish(throwing: ViewsClientError.missingView) } }
         }
         store.exhaustivity = .off

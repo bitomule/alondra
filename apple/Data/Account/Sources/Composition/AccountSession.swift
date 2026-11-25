@@ -386,6 +386,12 @@ public final class AccountSession {
         for entry in registry.snapshot.entries { await entry.session.goLive() }
     }
 
+    /// A push arrived from one of the paired Macs: every Mac's waiting answers go now, the one on
+    /// screen or not, since the push does not say which connection it reached.
+    public func macReached() async {
+        for entry in registry.snapshot.entries { await entry.session.macReached() }
+    }
+
     /// The app went to the background: the live connections close; push is what reaches it now.
     public func goIdle() async {
         isLive = false
@@ -522,9 +528,11 @@ public final class AccountSession {
         try Self.validateRelay(invitation.url)
         let current = generation
         let subject = try await auth.verifiedSubject()
-        let token = try await auth.bearerToken()
+        let auth = auth
         let pending = try await pairing.begin(qrPayload: payload,
-            authorization: PairingAuthorization(bearerToken: token, ownerSub: subject), displayName: displayName,
+            authorization: PairingAuthorization(ownerSub: subject, bearer: { try await auth.bearerToken() },
+                                                refused: { await auth.accessTokenRefused(ifMatches: $0) }),
+            displayName: displayName,
             rejectExistingMac: scope != nil, replacing: pairAgainMacID)
         guard current == generation, attempts.contains(ticket), !Task.isCancelled,
               expectedSession == nil || services === expectedSession else {
