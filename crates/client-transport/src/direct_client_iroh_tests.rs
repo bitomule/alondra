@@ -313,13 +313,30 @@ fn an_unreachable_endpoint_falls_back_to_http_and_learns_the_dial_again() {
     let stale = crate::iroh_client::Dial { addrs: vec!["127.0.0.1:9".into()], ..iroh.dial() };
     let terminal = terminal(&http, Some(stale));
     *http.routes.lock().unwrap() = json!({"lan": [], "iroh_endpoint": iroh.dial().endpoint, "iroh_addrs": iroh.dial().addrs});
-    let started = Instant::now();
-    assert_eq!(read(&terminal).unwrap(), (200, json!({"path": "/capabilities"})));
-    assert!(started.elapsed() < crate::iroh_client::CONNECT_TIMEOUT + Duration::from_secs(3));
+    // The request's own timeout is shorter than the time iroh spends failing to connect: the
+    // envelope that goes over HTTP afterwards is only still valid if its window counted that time.
+    let timeout = Duration::from_secs(1);
+    assert!(timeout < crate::iroh_client::CONNECT_TIMEOUT);
+    assert_eq!(terminal.connection.request("GET", "/capabilities", None, timeout).unwrap(), (200, json!({"path": "/capabilities"})));
     assert_eq!(http.received().len(), 2, "the read, then the routes that tell how to dial the Mac now");
     assert_eq!(crate::iroh_client::load_dial(&terminal.home, MAC), Some(iroh.dial()));
     assert_eq!(read(&terminal).unwrap(), (200, json!({"path": "/capabilities"})));
     assert_eq!((iroh.received().len(), http.received().len()), (1, 2), "the next read goes over iroh");
+}
+
+#[test]
+fn a_sealed_request_is_valid_when_the_last_path_starts_after_the_others_spent_their_budget() {
+    let http = Http::start();
+    let terminal = terminal(&http, None);
+    for timeout in [Duration::from_millis(1), Duration::from_secs(5), Duration::from_secs(120)] {
+        let sealed_after = now_ms();
+        let (_, bytes) = terminal.connection.seal("GET", "/capabilities", None, timeout).unwrap();
+        let envelope: Envelope = serde_json::from_slice(&bytes).unwrap();
+        let spent_before_the_last_path = crate::iroh_client::CONNECT_TIMEOUT + timeout + REPLY_SLACK;
+        let opened = |at: u64| envelope.open(device_signing().verifying_key(), &mac_agreement(), DEVICE, MAC, MAC, at);
+        opened(sealed_after + spent_before_the_last_path.as_millis() as u64).unwrap_or_else(|error| panic!("{timeout:?}: {error:?}"));
+        assert!(opened(envelope.expires_at_ms + 1).is_err(), "{timeout:?}: it does not stay valid forever");
+    }
 }
 
 #[test]
