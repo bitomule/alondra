@@ -103,3 +103,30 @@ pub fn recorded(record: &Path, file: &str) -> Vec<serde_json::Value> {
 pub fn received(record: &Path, method: &str) -> Vec<serde_json::Value> {
     recorded(record, "messages.jsonl").into_iter().filter(|message| message["method"] == method).collect()
 }
+
+/// Steps `driver` until `done`, failing with what the task's lifecycle and agy saw when it takes
+/// longer than a minute of real time: a host that never answers ends the test instead of hanging it.
+pub fn drive_until(slice: &Slice, driver: &mut Driver, record: &Path, mut done: impl FnMut(&Slice, &mut Driver) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !done(slice, driver) {
+        stuck_after(deadline, slice, record);
+        if driver.pending_permits() > 0 { driver.step(&|| false).unwrap(); } else { driver.step(&|| true).unwrap(); }
+    }
+}
+
+/// Observes `driver` until its turn is working, within the same minute as `drive_until`.
+pub fn until_working(slice: &Slice, driver: &mut Driver, record: &Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working {
+        stuck_after(deadline, slice, record);
+        driver.observe_written().unwrap();
+    }
+}
+
+fn stuck_after(deadline: std::time::Instant, slice: &Slice, record: &Path) {
+    if std::time::Instant::now() <= deadline { return; }
+    let journal: Vec<String> = slice.domain.state().unwrap().lifecycle_journal.get(&TaskId::from(TASK)).into_iter().flatten()
+        .map(|record| serde_json::to_value(record).unwrap()["kind"].as_str().unwrap_or_default().to_owned()).collect();
+    let methods: Vec<serde_json::Value> = recorded(record, "messages.jsonl").into_iter().map(|message| message["method"].clone()).collect();
+    panic!("the node did not get there: lifecycle {journal:?}; agy received {methods:?}; starts {:?}", recorded(record, "starts.jsonl"));
+}

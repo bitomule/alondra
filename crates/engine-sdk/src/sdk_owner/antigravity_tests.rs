@@ -81,18 +81,20 @@ fn a_new_daemon_adopts_the_running_host_without_a_second_agy_or_prompt() {
 }
 
 #[test]
-fn a_host_that_died_mid_turn_resumes_the_same_session_in_a_new_one() {
+fn a_turn_whose_agy_died_resumes_the_same_session_in_a_new_host() {
     let slice = Slice::new();
-    let record = configured(&slice, &default_account(), Access::Google, serde_json::json!([[{"hold": {}}], [{"message": "Back where I was"}, {"end": "end_turn"}]]));
+    let record = configured(&slice, &default_account(), Access::Google, serde_json::json!([[{"message": "Working on it"}, {"hold": {}}], [{"message": "Back where I was"}, {"end": "end_turn"}]]));
     let mut driver = launch(&slice, &default_account());
-    slice.until_working(&mut driver);
-    slice.kill_host(&driver);
+    until_working(&slice, &mut driver, &record);
+    let agy = recorded(&record, "starts.jsonl")[0]["pid"].as_i64().unwrap() as i32;
+    // SAFETY: the test signals only the fake agy its own node started, by the pid that agy recorded.
+    assert_eq!(unsafe { libc::kill(agy, libc::SIGKILL) }, 0, "{}", std::io::Error::last_os_error());
     let error = loop {
         if let Err(error) = driver.observe() { break error; }
     };
-    assert!(driver.host_to_replace(), "the lost host is replaced: {error}");
+    assert!(driver.host_to_replace(), "the host that lost its agy is replaced: {error}");
     let mut resumed = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    while super::codex_tests::turns_started(&slice.domain) < 2 { resumed.step(&|| true).unwrap(); }
+    drive_until(&slice, &mut resumed, &record, |slice, _| super::codex_tests::turns_started(&slice.domain) >= 2);
     assert_eq!(received(&record, "session/resume")[0]["params"]["sessionId"], "fixture-acp-session-1", "the new host resumes the session the first one opened");
     assert_eq!(received(&record, "session/new").len(), 1, "no second session opens");
     resumed.stop().unwrap();
@@ -106,7 +108,7 @@ fn an_api_key_reaches_only_its_accounts_agy_and_no_file_alondra_writes() {
     let studio = AccountId::parse("studio").unwrap();
     let record = configured(&slice, &studio, Access::ApiKey, serde_json::json!([]));
     let mut driver = launch(&slice, &studio);
-    slice.settle(&mut driver);
+    drive_until(&slice, &mut driver, &record, |_, driver| driver.pending_permits() == 0 && !driver.waits_for_host());
     let folder = alondra_core::accounts::provider_folder(&slice._home, &AccountKey::new(Provider::Antigravity, studio.clone())).unwrap();
     assert_eq!(received(&record, "authenticate")[0]["params"]["methodId"], "gemini-api-key");
     let started = &recorded(&record, "starts.jsonl")[0];
