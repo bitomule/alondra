@@ -5,7 +5,7 @@ load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "LIVE_ACTIVITY_BUNDLE_ID", "LIVE_ACTIVITY_PROFILE", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE", "TEAM_ID")
 load("//apple:entitlements.bzl", "entitlements_follow_signing_test", "signed_entitlements")
-load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+load("//apple:swift.bzl", "IOS_ONLY", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 exports_files(
     ["entitlements_follow_signing_test.py"],
@@ -301,6 +301,7 @@ ios_application(
 
 swift_library(
     name = "AlondraiOSViewsEntry",
+    target_compatible_with = IOS_ONLY,
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["iOS/ViewsShipping/*.swift"]),
     module_name = "AlondraiOS",
@@ -347,6 +348,7 @@ ios_extension(
 
 swift_library(
     name = "AlondraLiveActivityUI",
+    target_compatible_with = IOS_ONLY,
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["iOSLiveActivity/Views/*.swift"]),
     module_name = "AlondraLiveActivityUI",
@@ -356,6 +358,7 @@ swift_library(
 
 swift_library(
     name = "AlondraLiveActivityLib",
+    target_compatible_with = IOS_ONLY,
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["iOSLiveActivity/Sources/**/*.swift"]),
     module_name = "AlondraLiveActivityExtension",

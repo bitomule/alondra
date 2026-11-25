@@ -2,7 +2,7 @@ load("//bazel/rules:tree.bzl", "repo_tree")
 load("@simpool_env//:env.bzl", "SIMPOOL_TEST_ENV")
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_unit_test")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
-load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+load("//apple:swift.bzl", "IOS_ONLY", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 # Reads, places and draws Mermaid diagrams. Nothing from Alondra: the caller supplies the theme
 # and turns the summary into its own words.
@@ -37,6 +37,7 @@ swift_test(
 
 swift_library(
     name = "AlondraMermaidSnapshotTestsLib",
+    target_compatible_with = IOS_ONLY,
     testonly = True,
     srcs = glob(["Snapshots/*.swift"]) + ["//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift"],
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
