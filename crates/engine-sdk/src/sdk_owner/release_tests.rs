@@ -27,6 +27,18 @@ fn look_after_the_wait(domain: &DomainRuntime) {
     pass(domain, &mut rests, now + WAIT.wait, now + WAIT.wait, &WAIT);
 }
 
+/// The daemon's looks until every task's host closed. An owner that finds its node still settling
+/// when it is asked refuses and forgets the request, so a look that asked once is not enough: the
+/// daemon asks again at its next look, and so does this.
+async fn close_resting_hosts(domain: &DomainRuntime, tasks: &[&str]) {
+    let released = || tasks.iter().all(|task| domain.read().state().lifecycle_of(&TaskId::from(*task)).is_ok_and(|lifecycle| lifecycle.host_released()));
+    while !released() {
+        look_after_the_wait(domain);
+        tokio::task::yield_now().await;
+    }
+    until_released(domain, tasks).await;
+}
+
 async fn until_released(domain: &DomainRuntime, tasks: &[&str]) {
     let mut changed = domain.subscribe();
     let released = |domain: &DomainRuntime| {
@@ -297,11 +309,24 @@ async fn a_closed_node_moves_to_another_provider_like_a_resting_one() {
 
 #[cfg(not(feature = "real-hosts"))]
 #[tokio::test(flavor = "multi_thread")]
+async fn a_host_whose_owner_refused_the_first_request_to_close_closes_at_the_next_look() {
+    let slice = Slice::new();
+    enable(&slice);
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    driver.declines_next_release = true;
+    slice.domain.add_sdk_owner(Owner::spawn(driver));
+    close_resting_hosts(&slice.domain, &[TASK]).await;
+    assert!(lifecycle(&*slice.domain).host_released());
+    slice.domain.stop_sdk_owners();
+}
+
+#[cfg(not(feature = "real-hosts"))]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_model_chosen_for_a_closed_node_reaches_it_and_stays_when_it_closes_again() {
     let slice = Slice::new();
     resting_node(&slice);
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
+    close_resting_hosts(&slice.domain, &[TASK]).await;
 
     let state = slice.domain.state().unwrap();
     slice.domain.execute_as_system(envelope(&state, "model-of-a-closed-node", Command::SetModel { task_id: TASK.into(), model: "sonnet".into() })).unwrap();

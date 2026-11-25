@@ -292,6 +292,9 @@ pub struct Driver {
     refused: BTreeSet<InputId>,
     pub refuse_offers: usize,
     pub(crate) fail_next_step: bool,
+    /// The next request to close the host finds the node still settling: it is read and refused, as
+    /// when something of the node arrives between the request and its answer.
+    pub(crate) declines_next_release: bool,
     pub(crate) panic_next_step: bool,
     /// What this driver and whoever stops its owner agree on before a handoff to the host.
     handoffs: Arc<Handoffs>,
@@ -1812,7 +1815,7 @@ impl Driver {
 
     fn new(domain: Arc<dyn Runtime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId) -> Self {
         let pause = Mutex::new(PauseSubscription::new(&*domain, &agent));
-        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None, before_release_ends: None }
+        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, declines_next_release: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None, before_release_ends: None }
     }
 
     /// The runtime of the daemon that owns this host.
@@ -2281,7 +2284,7 @@ impl Driver {
             self.control(permit)?;
             return Ok(false);
         }
-        self.releases = self.may_release_host();
+        self.releases = self.may_release_host() && !std::mem::take(&mut self.declines_next_release);
         Ok(true)
     }
 
