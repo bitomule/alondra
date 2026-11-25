@@ -22,7 +22,7 @@ or `//...`) and let the cache skip the rest: there is no separate list of affect
 A cached result is only as good as the inputs the target declares, so every test reads what its
 BUILD target lists, from its runfiles. A test that reads the checkout (a lint over many packages)
 lists the `tree` of each directory it reads: every package calls `repo_tree()` from
-`tools/tree.bzl`, which declares `:files` (that package's files) and `:tree` (those plus the `:tree`
+`bazel/rules/tree.bzl`, which declares `:files` (that package's files) and `:tree` (those plus the `:tree`
 of every package below). `//tools:hermetic_tests_test` refuses a test that resolves a runfiles link
 back to the checkout, and a test tagged `external`, `local`, `no-cache` or `no-remote` without a
 reason in `tools/uncacheable_tests.tsv`.

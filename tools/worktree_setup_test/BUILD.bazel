@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 sh_test(
     name = "setup_test",
     env = {"TEST_EXECS": "/bin/mv /bin/sh /usr/bin/git /usr/bin/grep /usr/bin/mktemp /usr/bin/tail"},

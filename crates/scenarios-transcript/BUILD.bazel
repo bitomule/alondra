@@ -1,6 +1,6 @@
 load("//tools/layers:crates.bzl", "foundation_crate")
-load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:tree.bzl", "repo_tree")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//:version.bzl", "VERSION")
 

@@ -15,7 +15,7 @@ def checkout():
 
 
 def local_state(root):
-    source = (root / "tools/tree.bzl").read_text()
+    source = (root / "bazel/rules/tree.bzl").read_text()
     block = re.search(r"LOCAL_STATE = \[(.*?)\n\]", source, re.S).group(1)
     return re.findall(r'"([^"]+)"', block)
 

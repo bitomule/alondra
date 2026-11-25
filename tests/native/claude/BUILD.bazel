@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 load("@aspect_rules_js//js:defs.bzl", "js_run_binary")
 
 # The fixture's archive reader and the model double, for the e2e sandbox's SDK backend.

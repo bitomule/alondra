@@ -1,6 +1,6 @@
 load("//tools/layers:crates.bzl", "root_binary")
-load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:tree.bzl", "repo_tree")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 
 root_binary(
     name = "alondra-sandbox",

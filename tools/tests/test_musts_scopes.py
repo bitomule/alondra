@@ -130,6 +130,16 @@ class MustsScopesTests(unittest.TestCase):
         self.assertIn("apple-tests", reopened)
         self.assertIn("apple-app-build", reopened)
 
+    def test_a_new_tools_test_target_reopens_no_crate_check(self):
+        reopened = self.reopened_by("tools/BUILD.bazel")
+        self.assertEqual({name for name in reopened if name.startswith("crate-")} - {"crate-layers"}, set())
+        self.assertLess(len(reopened), 40)
+
+    def test_the_shared_macros_live_outside_the_tools_package(self):
+        macros = [f"tools/{macro}.bzl" for macro in ("tree", "rust_test", "rust_sources", "rust_inputs_test")]
+        self.assertEqual(self.reopened_by(*macros) - self.reopened_by("docs/unread.md"), set())
+        self.assertIn("crate-core", self.reopened_by("bazel/rules/rust_test.bzl"))
+
     def test_a_lock_file_or_the_version_file_reopens_no_check(self):
         self.assertEqual(self.reopened_by("Cargo.lock", "MODULE.bazel.lock", "version.bzl"), set())
 

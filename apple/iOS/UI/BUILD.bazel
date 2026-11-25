@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 

@@ -1,9 +1,9 @@
-load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:tree.bzl", "repo_tree")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
-load("//tools:rust_sources.bzl", "production_sources")
+load("//bazel/rules:rust_sources.bzl", "production_sources")
 
 # The scenarios every provider adapter must pass. Each provider's own test target runs them through
 # its private normalizer: `bazel test //crates/provider-claude:provider_claude_test

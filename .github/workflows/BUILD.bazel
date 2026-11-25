@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 exports_files(["ci.yml"], visibility = ["//tools:__pkg__"])
 
 repo_tree()

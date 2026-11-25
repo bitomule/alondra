@@ -1,12 +1,12 @@
 load("//tools/layers:crates.bzl", "root_binary", "root_library")
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
-load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//:version.bzl", "VERSION")
 load(":catalog.bzl", "CATALOG_FRAGMENTS", "REPORT_SOURCES")
-load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+load("//bazel/rules:rust_inputs_test.bzl", "rust_inputs_test")
 
 # The crash report keeps a line of alondrad.log only as the text of a log! call in the code: this
 # writes the catalog of those calls and the words of the code. Each crate's part comes from its

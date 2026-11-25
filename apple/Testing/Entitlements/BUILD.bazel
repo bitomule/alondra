@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 load("//apple:entitlements.bzl", "entitlements_follow_signing_test", "signed_entitlements")
 
 SAMPLE_BUNDLE_ID = "org.sample.notes"

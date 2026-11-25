@@ -1,10 +1,10 @@
 load("//tools/layers:crates.bzl", "adapter_out_crate")
-load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
-load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:tree.bzl", "repo_tree")
+load("//bazel/rules:rust_inputs_test.bzl", "rust_inputs_test")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//:version.bzl", "VERSION")
-load("//tools:rust_sources.bzl", "production_sources")
+load("//bazel/rules:rust_sources.bzl", "production_sources")
 
 # The Mac as the engine reaches it through the `Worktrees`, `Disk` and `MachineProbe` ports: git,
 # the task worktrees, the disks and the memory and load gauges. Only the roots link it, so editing it rebuilds this crate and their link.
