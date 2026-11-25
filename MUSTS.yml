@@ -2964,7 +2964,8 @@ checks:
   simulator-creator:
     uses: bazel/test
     paths:
-      - "apple/Testing/Simulator/**"
+      - "apple/Testing/Simulator/*.py"
+      - "apple/Testing/Simulator/BUILD.bazel"
       - "bazel/rules/BUILD.bazel"
       - "bazel/rules/tree.bzl"
     with:
