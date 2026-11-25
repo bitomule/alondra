@@ -1,0 +1,697 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "accounts",
+  "key": "accounts",
+  "client": "ios",
+  "version": "vf72b5039befd99fd",
+  "cursor": "cursor-1",
+  "title": "Cuentas",
+  "status": {
+    "version": "ve47aaae2024e68d7",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "badge": 3,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "accounts",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "account": {
+            "key": {
+              "provider": "antigravity",
+              "account": "studio"
+            },
+            "position": 1,
+            "availability": {
+              "text": "Con sesión",
+              "tone": "success"
+            },
+            "active_nodes": 0,
+            "freshness": {
+              "text": "Uso sin informar",
+              "tone": "neutral"
+            },
+            "windows": [],
+            "credential": {
+              "label": "Clave de API de Gemini",
+              "state": {
+                "text": "Clave puesta",
+                "tone": "success"
+              },
+              "set": true
+            }
+          },
+          "id": "antigravity-studio",
+          "icon": "machine",
+          "title": "Studio",
+          "subtitle": "Antigravity · Clave de API de Gemini · Clave puesta\nse paga por uso",
+          "badges": [
+            {
+              "text": "Con sesión",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "account_down:studio@6~antigravity",
+              "label": "Bajar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_disable:studio@6~antigravity",
+              "label": "Desactivar",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "No empieza trabajo nuevo en ella; lo que ya trabaja sigue",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_rename:studio@6~antigravity",
+              "label": "Renombrar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Studio",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:studio@6~antigravity",
+              "label": "Actualizar modelos",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_credential:studio@6~antigravity",
+              "label": "Cambiar clave",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "Alondra la guarda en un archivo que solo tú puedes leer y solo se la da al agy de esta cuenta",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Clave de API de Gemini",
+                "required": true,
+                "multiline": false,
+                "secret": true
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Clave guardada",
+              "resolves_card": false
+            },
+            {
+              "id": "account_credential:studio@6~antigravity",
+              "label": "Quitar clave",
+              "style": "destructive",
+              "role": "risk",
+              "option_id": "clear",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Quitar la clave de Studio?",
+                "message": "Alondra borra la clave de este Mac, y la cuenta queda sin sesión hasta que pongas otra.",
+                "button": "Quitar clave"
+              },
+              "enabled": true,
+              "stamp": "Clave quitada",
+              "resolves_card": false
+            },
+            {
+              "id": "account_remove:studio@6~antigravity",
+              "label": "Quitar",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Quitar Studio?",
+                "message": "Alondra cierra la sesión de Studio en Antigravity en este Mac y la olvida. Tu cuenta del proveedor sigue como está.",
+                "button": "Quitar"
+              },
+              "enabled": true,
+              "stamp": "Quitada",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "account": {
+            "key": {
+              "provider": "antigravity",
+              "account": "fresh"
+            },
+            "position": 2,
+            "availability": {
+              "text": "Sin sesión",
+              "tone": "your_turn"
+            },
+            "reason": "Pon su clave en los ajustes de la cuenta, o ejecuta alondra accounts set-key antigravity/fresh en el Mac",
+            "active_nodes": 0,
+            "freshness": {
+              "text": "Uso sin informar",
+              "tone": "neutral"
+            },
+            "windows": [],
+            "credential": {
+              "label": "Clave de API de Gemini",
+              "state": {
+                "text": "Sin clave",
+                "tone": "neutral"
+              },
+              "set": false
+            }
+          },
+          "id": "antigravity-fresh",
+          "icon": "machine",
+          "title": "Fresh",
+          "subtitle": "Antigravity · Clave de API de Gemini · Sin clave\nse paga por uso",
+          "badges": [
+            {
+              "text": "Sin sesión",
+              "tone": "your_turn"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "account_up:fresh@6~antigravity",
+              "label": "Subir",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_down:fresh@6~antigravity",
+              "label": "Bajar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_disable:fresh@6~antigravity",
+              "label": "Desactivar",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "No empieza trabajo nuevo en ella; lo que ya trabaja sigue",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_rename:fresh@6~antigravity",
+              "label": "Renombrar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Fresh",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:fresh@6~antigravity",
+              "label": "Actualizar modelos",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_credential:fresh@6~antigravity",
+              "label": "Poner clave",
+              "style": "primary",
+              "role": "advance",
+              "description": "Alondra la guarda en un archivo que solo tú puedes leer y solo se la da al agy de esta cuenta",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Clave de API de Gemini",
+                "required": true,
+                "multiline": false,
+                "secret": true
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Clave guardada",
+              "resolves_card": false
+            },
+            {
+              "id": "account_remove:fresh@6~antigravity",
+              "label": "Quitar",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Quitar Fresh?",
+                "message": "Alondra cierra la sesión de Fresh en Antigravity en este Mac y la olvida. Tu cuenta del proveedor sigue como está.",
+                "button": "Quitar"
+              },
+              "enabled": true,
+              "stamp": "Quitada",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "account": {
+            "key": {
+              "provider": "antigravity",
+              "account": "lab"
+            },
+            "position": 3,
+            "availability": {
+              "text": "Sin sesión",
+              "tone": "your_turn"
+            },
+            "reason": "En el Mac, ejecuta gcloud auth application-default login --project demo-project",
+            "active_nodes": 0,
+            "freshness": {
+              "text": "Uso sin informar",
+              "tone": "neutral"
+            },
+            "windows": [],
+            "credential": {
+              "label": "Clave de Agent Platform",
+              "state": {
+                "text": "Sin clave",
+                "tone": "neutral"
+              },
+              "set": false
+            }
+          },
+          "id": "antigravity-lab",
+          "icon": "machine",
+          "title": "Lab",
+          "subtitle": "Antigravity · Proyecto de Google Cloud · Sin clave\nse paga por uso",
+          "badges": [
+            {
+              "text": "Sin sesión",
+              "tone": "your_turn"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "account_up:lab@6~antigravity",
+              "label": "Subir",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_disable:lab@6~antigravity",
+              "label": "Desactivar",
+              "style": "secondary",
+              "role": "neutral",
+              "description": "No empieza trabajo nuevo en ella; lo que ya trabaja sigue",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_rename:lab@6~antigravity",
+              "label": "Renombrar",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Lab",
+                "required": true,
+                "multiline": false
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_models:lab@6~antigravity",
+              "label": "Actualizar modelos",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "account_credential:lab@6~antigravity",
+              "label": "Poner clave",
+              "style": "primary",
+              "role": "advance",
+              "description": "Alondra la guarda en un archivo que solo tú puedes leer y solo se la da al agy de esta cuenta",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Clave de Agent Platform",
+                "required": true,
+                "multiline": false,
+                "secret": true
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Clave guardada",
+              "resolves_card": false
+            },
+            {
+              "id": "account_remove:lab@6~antigravity",
+              "label": "Quitar",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Quitar Lab?",
+                "message": "Alondra cierra la sesión de Lab en Antigravity en este Mac y la olvida. Tu cuenta del proveedor sigue como está.",
+                "button": "Quitar"
+              },
+              "enabled": true,
+              "stamp": "Quitada",
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list",
+      "actions": [
+        {
+          "id": "account_check:accounts@6",
+          "label": "Comprobar cuentas",
+          "style": "secondary",
+          "role": "neutral",
+          "presentation": "button",
+          "input": {
+            "kind": "none"
+          },
+          "attachments": false,
+          "enabled": true,
+          "resolves_card": false
+        }
+      ]
+    },
+    {
+      "id": "providers",
+      "title": "Proveedores",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "claude-connect",
+          "icon": "machine",
+          "title": "Conectar Claude",
+          "subtitle": "Usar la sesión de Claude que iniciaste en el Mac",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "provider_connect:claude@6",
+              "label": "Conectar",
+              "style": "primary",
+              "role": "advance",
+              "description": "Abre Terminal en el Mac, ejecuta claude e inicia sesión con /login",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Conectado",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "codex-connect",
+          "icon": "machine",
+          "title": "Conectar Codex",
+          "subtitle": "Usar la sesión de Codex que iniciaste en el Mac",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "provider_connect:codex@6",
+              "label": "Conectar",
+              "style": "primary",
+              "role": "advance",
+              "description": "En el Mac, ejecuta codex login",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Conectado",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "antigravity-add",
+          "icon": "action",
+          "title": "Añadir una cuenta de Antigravity",
+          "subtitle": "Elige un nombre; luego inicia su sesión de Antigravity en Terminal en el Mac",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "account_add:antigravity@6",
+              "label": "Añadir",
+              "style": "primary",
+              "role": "advance",
+              "description": "Una cuenta de proyecto de Google Cloud se añade con alondra accounts add en el Mac, que pide su proyecto",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "google",
+                  "label": "Cuenta de Google",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "text",
+                    "placeholder": "Nombre de la cuenta",
+                    "required": true,
+                    "multiline": false
+                  }
+                },
+                {
+                  "id": "enterprise",
+                  "label": "Gemini Enterprise",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "text",
+                    "placeholder": "Nombre de la cuenta",
+                    "required": true,
+                    "multiline": false
+                  }
+                },
+                {
+                  "id": "api_key",
+                  "label": "Clave de API de Gemini",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "text",
+                    "placeholder": "Nombre de la cuenta",
+                    "required": true,
+                    "multiline": false
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Añadida",
+              "resolves_card": false
+            }
+          ]
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "policy",
+      "title": "Trabajo nuevo",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "claude-policy",
+          "icon": "node",
+          "title": "Primero la de más margen",
+          "subtitle": "Comparar todos los proveedores por cuota restante; el orden no afecta al reparto por margen",
+          "depth": 0,
+          "struck": false
+        }
+      ],
+      "style": "list"
+    }
+  ]
+}

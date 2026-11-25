@@ -35,6 +35,7 @@ public struct McpServersScreen: View {
 
     public var body: some View {
         Form { ServerSettingsSection(store: store, showsTitle: false) }
+            .serverSettingsPresentations(store)
             .formStyle(.grouped)
             .navigationTitle(Text("MCP servers"))
             #if os(iOS)

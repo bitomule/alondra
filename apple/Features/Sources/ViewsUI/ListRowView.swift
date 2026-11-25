@@ -13,11 +13,15 @@ public struct ListRowView: View {
     public var onAction: (Action) -> Void
     public var onLink: (Link) -> Void
     public var onOption: (Action, String) -> Void
+    /// Actions the screen shows elsewhere, such as an account's key in its own section.
+    public var omitting: (Action) -> Bool
 
     public init(row: AlondraContract.Row, busy: Set<String> = [], onAction: @escaping (Action) -> Void, onLink: @escaping (Link) -> Void,
-                onOption: @escaping (Action, String) -> Void = { _, _ in }) {
-        self.row = row; self.busy = busy; self.onAction = onAction; self.onLink = onLink; self.onOption = onOption
+                onOption: @escaping (Action, String) -> Void = { _, _ in }, omitting: @escaping (Action) -> Bool = { _ in false }) {
+        self.row = row; self.busy = busy; self.onAction = onAction; self.onLink = onLink; self.onOption = onOption; self.omitting = omitting
     }
+
+    private var shownActions: [Action] { row.actions.filter { !omitting($0) } }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -32,7 +36,7 @@ public struct ListRowView: View {
                     ListToneSymbol(icon: row.icon, tone: row.badges.first?.tone)
                     VStack(alignment: .leading, spacing: 8) {
                         labels
-                        if !row.actions.isEmpty { actions }
+                        if !shownActions.isEmpty { actions }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -74,7 +78,7 @@ public struct ListRowView: View {
     }
 
     private var disabledReasons: [String] {
-        row.actions.filter { !$0.enabled }.compactMap { $0.disabledReason ?? ($0.needsNewerApp ? String(localized: "Update Alondra to use this action") : nil) }
+        shownActions.filter { !$0.enabled }.compactMap { $0.disabledReason ?? ($0.needsNewerApp ? String(localized: "Update Alondra to use this action") : nil) }
             .reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
     }
 
@@ -87,7 +91,7 @@ public struct ListRowView: View {
     }
 
     @ViewBuilder private var actions: some View {
-        let shown = row.actions
+        let shown = shownActions
         HStack(spacing: 6) {
             if let first = shown.first { button(first).disabled(!first.enabled) }
             if shown.count > 1 {

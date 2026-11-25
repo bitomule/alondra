@@ -464,6 +464,18 @@ pub struct AccountPresentation {
     pub freshness: Label,
     #[serde(default)]
     pub windows: Vec<AccountWindowPresentation>,
+    /// The key a named Antigravity account keeps for `agy`: only whether one is set, never the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<AccountCredentialPresentation>,
+}
+/// What a screen shows of an account's key: what the key is called and whether one is set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AccountCredentialPresentation {
+    /// `Gemini API key`, or `Agent Platform key` for a Google Cloud project.
+    pub label: String,
+    /// `Key set` or `No key`.
+    pub state: Label,
+    pub set: bool,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AccountWindowPresentation {

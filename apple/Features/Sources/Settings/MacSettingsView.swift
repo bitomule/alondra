@@ -51,6 +51,7 @@ public struct MacSettingsView<PairingContent: View>: View {
             CrashReportRow(store: store.scope(state: \.crashReport, action: \.crashReport))
             LicensesRow()
         }
+        .serverSettingsPresentations(store.scope(state: \.accounts, action: \.accounts))
         .sheet(item: $store.scope(state: \.pairing, action: \.pairing)) { pairing in
             NavigationStack {
                 pairingContent(pairing)

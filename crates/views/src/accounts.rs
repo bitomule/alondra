@@ -160,8 +160,7 @@ fn account_row(account: &AccountStatus, position: usize, measured: Option<&alond
 fn key_actions(account: &AccountStatus, context: &RenderContext<'_>) -> Vec<Action> {
     let lang = context.lang;
     let Some(status) = account.antigravity.as_ref().filter(|status| status.access.takes_key() && !account.id.is_default()) else { return vec![] };
-    let placeholder = if status.access == alondra_core::antigravity_account::Access::ApiKey { t!(lang, "Gemini API key", "Clave de API de Gemini") }
-        else { t!(lang, "Agent Platform key", "Clave de Agent Platform") };
+    let placeholder = key_name(status.access, lang);
     let mut actions = vec![];
     let label = if status.key_set { t!(lang, "Replace key", "Cambiar clave") } else { t!(lang, "Set key", "Poner clave") };
     if let Some(mut set) = scoped_action(Verb::AccountCredential, account, label, if status.key_set { Style::Secondary } else { Style::Primary }, context) {
@@ -183,6 +182,22 @@ fn key_actions(account: &AccountStatus, context: &RenderContext<'_>) -> Vec<Acti
         actions.push(clear);
     }
     actions
+}
+
+/// What the key of an account that takes one is called.
+fn key_name(access: alondra_core::antigravity_account::Access, lang: Lang) -> &'static str {
+    if access == alondra_core::antigravity_account::Access::ApiKey { t!(lang, "Gemini API key", "Clave de API de Gemini") }
+    else { t!(lang, "Agent Platform key", "Clave de Agent Platform") }
+}
+
+/// Whether a named Antigravity account that takes a key has one, for the key field of its settings.
+fn credential_presentation(account: &AccountStatus, lang: Lang) -> Option<super::AccountCredentialPresentation> {
+    let status = account.antigravity.as_ref().filter(|status| status.access.takes_key() && !account.id.is_default())?;
+    Some(super::AccountCredentialPresentation {
+        label: key_name(status.access, lang).into(),
+        state: Label { text: key_label(status.key_set, lang).into(), tone: if status.key_set { Tone::Success } else { Tone::Neutral }, elapsed: None },
+        set: status.key_set,
+    })
 }
 
 /// The weight to count the account for: its plan's, or one the user picks.
@@ -396,5 +411,6 @@ fn account_presentation(account: &AccountStatus, position: usize, measured: Opti
             Provider::Antigravity => Some(t!(lang, "Source: agy /usage", "Origen: agy /usage").into()),
             Provider::Claude => None,
         }).flatten(),
-        email: account.email.clone(), plan: account.plan.clone(), active_nodes: u32::try_from(context.index.nodes_on_account_key(&key)).unwrap_or(u32::MAX), freshness, windows }
+        email: account.email.clone(), plan: account.plan.clone(), active_nodes: u32::try_from(context.index.nodes_on_account_key(&key)).unwrap_or(u32::MAX), freshness, windows,
+        credential: credential_presentation(account, lang) }
 }

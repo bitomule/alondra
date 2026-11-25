@@ -44,16 +44,6 @@ public struct ServerSettingsSection: View {
                 }
             }
         }
-        .actionDialogs(store.scope(state: \.actions, action: \.actions))
-        .sheet(item: $store.accountDetail.sending(\.accountDetailPresented), onDismiss: { store.send(.accountDetailClosed) }) { row in
-            AccountDetailView(row: row, onAction: { store.send(.fromAccountDetail(.perform($0))) },
-                onLink: { store.send(.fromAccountDetail(.follow($0))) }, onOption: { store.send(.fromAccountDetail(.option($0, $1))) },
-                onReorder: store.reorderAction == nil ? nil : { store.send(.fromAccountDetail(.reorder)) })
-        }
-        .sheet(item: $store.orderDraft.sending(\.orderDraftPresented)) { _ in AccountOrderSheet(store: store) }
-        .sheet(item: $store.scope(state: \.signIn, action: \.signIn)) { signIn in
-            McpSignInSheet(store: signIn)
-        }
     }
 
     private var busy: Set<String> {
@@ -80,5 +70,35 @@ public struct ServerSettingsSection: View {
 
     private func notes(_ section: ViewSection) -> [String] {
         section.items.compactMap { item in if case .notice(let notice) = item { notice.text } else { nil } }
+    }
+}
+
+public extension View {
+    /// The sheets and dialogs of a server-drawn part of Settings: an account's details, the account
+    /// order and the MCP sign-in. They go once on the Form that holds its sections, never on the
+    /// sections themselves: a Form gives a Group's modifiers to each of its sections, and several
+    /// presenters of one sheet dismiss it as it opens, and the Settings sheet with it.
+    func serverSettingsPresentations(_ store: StoreOf<ServerSettingsFeature>) -> some View {
+        modifier(ServerSettingsPresentations(store: store))
+    }
+}
+
+struct ServerSettingsPresentations: ViewModifier {
+    @Bindable var store: StoreOf<ServerSettingsFeature>
+
+    func body(content: Content) -> some View {
+        content
+            .actionDialogs(store.scope(state: \.actions, action: \.actions))
+            .sheet(item: $store.accountDetail.sending(\.accountDetailPresented), onDismiss: { store.send(.accountDetailClosed) }) { row in
+                AccountDetailView(row: row, onAction: { store.send(.fromAccountDetail(.perform($0))) },
+                    onLink: { store.send(.fromAccountDetail(.follow($0))) }, onOption: { store.send(.fromAccountDetail(.option($0, $1))) },
+                    onReorder: store.reorderAction == nil ? nil : { store.send(.fromAccountDetail(.reorder)) },
+                    keyField: AccountKeyField(draft: $store.credentialDraft.sending(\.credentialDraftChanged), send: store.credentialSend,
+                        onSave: { store.send(.credentialSaved) }, onRemove: { store.send(.credentialRemoved) }))
+            }
+            .sheet(item: $store.orderDraft.sending(\.orderDraftPresented)) { _ in AccountOrderSheet(store: store) }
+            .sheet(item: $store.scope(state: \.signIn, action: \.signIn)) { signIn in
+                McpSignInSheet(store: signIn)
+            }
     }
 }

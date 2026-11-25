@@ -118,6 +118,17 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   removing the account deletes its folder and the key with it. The default account takes no key.
   Treat the folder as credential access. See [key file](../crates/system/src/antigravity_account.rs)
   and [key action](../crates/daemon-engine/src/accounts.rs).
+- **An API key entered in the app:** the account's settings on the Mac and the iPhone have a key
+  section (*Gemini API key*, or *Agent Platform key* for a Cloud project account) with "Key set" or
+  "No key", a secure field that always starts empty, and Remove key when one is set. Saving sends
+  the key once, as the text of the account's credential action, and empties the field at once;
+  the section then shows the daemon's answer and the account check that ran after it. Like every
+  answer from the app, the action waits in the app's pending answers, encrypted with that device's
+  key, until the daemon confirms it, and is sealed end to end for the Mac on the way, so the relay
+  never reads it. Once confirmed the device keeps only a digest of the whole request, never the
+  key. The app never stores, logs or shows the key back. See
+  [key section](../apple/Features/Sources/Settings/AccountRowView.swift) and
+  [pending answers](../apple/Data/Feed/Sources/ActionIntentDatabase.swift).
 - **Alondra Cloud login:** The CLI stores its refresh credential in Keychain; the daemon does
   not read that item. The Mac app uses `com.bitomule.alondra.mac.auth` for refresh tokens and
   `com.bitomule.alondra.mac.service-pairing.v1` for pairing secrets. The app's token item uses

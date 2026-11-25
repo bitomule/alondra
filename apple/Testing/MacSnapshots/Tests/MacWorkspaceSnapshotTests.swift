@@ -1103,6 +1103,26 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
     }
 
+    /// The settings of a named Antigravity account: with a key, without one, and once a new key is
+    /// saved and the account checked.
+    func test_settings_antigravityKey() throws {
+        for spanish in [false, true] {
+            let document = try document(spanish ? "accounts-antigravity-mac-es" : "accounts-antigravity-mac")
+            let rows = document.sections.flatMap(\.items).compactMap { item -> AlondraContract.Row? in if case let .row(row) = item, row.account != nil { row } else { nil } }
+            for (account, send) in [("studio", nil), ("fresh", nil), ("studio", CredentialSend(phase: .done(spanish ? "Clave guardada" : "Key saved"), removing: false))] {
+                let row = try XCTUnwrap(rows.first { $0.account?.key.account == account })
+                let name = "\(account)\(send == nil ? "" : "_checked")"
+                let account = try XCTUnwrap(row.account), credential = try XCTUnwrap(account.credential)
+                assertWindow(size: CGSize(width: 560, height: 360), spanish: spanish, variants: send == nil ? Appearance.allCases : [.light], testName: "test_settings_antigravityKey_\(name)") {
+                    Form {
+                        AccountKeySection(account: account, credential: credential, actions: row.actions,
+                            field: AccountKeyField(draft: .constant(""), send: send, onSave: {}, onRemove: {}))
+                    }.formStyle(.grouped)
+                }
+            }
+        }
+    }
+
     func test_newRequest_codexModelOptions() throws {
         for spanish in [false, true] {
             let form = try XCTUnwrap(try document(spanish ? "new-request-codex-mac-es" : "new-request-codex-mac").sections.flatMap(\.items).compactMap { item -> AlondraContract.Form? in
