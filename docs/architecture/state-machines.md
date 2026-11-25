@@ -1615,6 +1615,11 @@ truth = ["memory"]
     `take_sdk_owner`; the closer and `close_hosts_of_ended_nodes` call it from a blocking task or a thread of their
     own, `task_closer.rs:526`, `sdk_owner.rs:1369-1373`), and the old `join` already waited for everything the
     thread does, so the gate adds no lock cycle.
+  - **After an interrupting stop (`close`, `halt`)**: once its loop ended, the owner thread reads and commits what the
+    host still says (`Driver::settle_interrupt`) until the host closes, so the turn's interrupted result is recorded
+    however long the host takes to write it; it used to drop the connection after one `WAKE`. A host still open
+    `INTERRUPT_GRACE` (10 s) after the request, by the clock or by polls that found it silent, is killed and has no
+    result to record; `driver.stop()` then waits for its exit as before. A plain `stop` reads nothing more.
   - **Not gated**: the owner thread's own stops (`driver.stop()` at the end of the loop, `:2732`, and inside
     `replace_ended_host`, `:2437`), which run on the same thread after the handoff ended; and a second live `Owner` of
     the same agent (F-ENGINE-12).
@@ -1733,6 +1738,7 @@ policy holds the deadlines on what a task owes and lists every timer of this tab
 | `UNKNOWN_RESET_WAIT_MS` 30 min | `usage_pause.rs:31,485` | An exhausted window with no reset time stops blocking |
 | `TERMINATE_AFTER`/`KILL_AFTER` | `pauses.rs:20-21` | Signals to processes of paused `--bg` nodes |
 | `Timing.wait`, `RETRY` | `task_closer.rs:30-55` | Forced close after the cleanup wait |
+| `INTERRUPT_GRACE` 10 s | `sdk_owner.rs` (`settle_interrupt`) | How long the owner waits for a host asked to interrupt its turn and stop to close, reading its interrupted result, before killing it |
 | `io_timeout` of one handoff (since #505) | `sdk_owner.rs:340-349`, `:2812` at `3fc0370ea`; `provider-claude/src/adapter.rs:672-676` | How long a stop of an SDK owner waits for the input or control it is handing to the host before asking the host to end |
 
 At `68770a298`: `opening_deadline` is `OPENING_TIMEOUT` = 120 s, a constant of its own (`sdk_owner.rs:53`, armed at
@@ -2372,6 +2378,12 @@ decides = "pace"
 name = "HALT_GRACE"
 where = "crates/engine-sdk/src/sdk_owner.rs"
 decides = "pace"
+[[timer]]
+name = "INTERRUPT_GRACE"
+where = "crates/engine-sdk/src/sdk_owner.rs"
+decides = "state"
+machine = "M-ENGINE-4"
+triggers = "kills a host that stayed open after it was asked to interrupt its turn and stop"
 [[timer]]
 name = "OPENING_TIMEOUT"
 where = "crates/engine-sdk/src/sdk_owner.rs"
