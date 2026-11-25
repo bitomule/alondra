@@ -1494,17 +1494,6 @@ impl ClaudeModel {
         }
     }
 
-    /// The turn Claude runs ends as an interrupted one: its result says it was aborted.
-    fn abort_turn(&self, host: &Host, state: &mut State) {
-        if state.turn.is_some() {
-            let taken = state.turn.take().unwrap_or_default();
-            let result = self.uuid();
-            let last = taken.last().cloned().unwrap_or_default();
-            self.emit(host, state, "result", json!({"type": "result", "subtype": "error_during_execution", "uuid": result, "user_message_uuid": last,
-                "user_message_uuids": taken, "is_error": true, "terminal_reason": "aborted_streaming", "session_id": host.session}));
-        }
-    }
-
     /// How the hosts react from now on to a stop that interrupts Claude's turn first.
     pub fn set_interrupted(&self, interrupted: Interrupted) {
         lock(&self.0.world).interrupted = interrupted;
