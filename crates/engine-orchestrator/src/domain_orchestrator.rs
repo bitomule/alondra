@@ -1683,11 +1683,11 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
             #[cfg(test)]
 #[cfg(not(feature = "real-hosts"))]
             if let Some(model) = self.model().cloned() {
-                tokio::task::spawn_blocking(move || model.held()).await.unwrap();
+                alondra_core::clock::spawn_blocking_unwatched(move || model.held()).await.unwrap();
                 return;
             }
             let held = self.held.clone();
-            tokio::task::spawn_blocking(move || {
+            alondra_core::clock::spawn_blocking_unwatched(move || {
                 let mut text = String::new();
                 std::fs::File::open(held).unwrap().read_to_string(&mut text).unwrap();
             }).await.unwrap();

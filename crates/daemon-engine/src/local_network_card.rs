@@ -90,7 +90,7 @@ async fn watch(
 ) {
     let (read, recheck) = (Arc::new(read), Arc::new(recheck));
     let starting = domain.clone();
-    tokio::task::spawn_blocking(move || {
+    alondra_core::clock::spawn_blocking(move || {
         for id in open_cards(&*starting) {
             let _ = starting.withdraw_problem(&id);
         }
@@ -98,7 +98,7 @@ async fn watch(
     let mut open: Option<InteractionId> = None;
     loop {
         let (domain, read, recheck, card) = (domain.clone(), read.clone(), recheck.clone(), open.clone());
-        open = tokio::task::spawn_blocking(move || {
+        open = alondra_core::clock::spawn_blocking(move || {
             let answered = card.as_ref().is_some_and(|id| answered(&*domain, id));
             let (found, denied_for) = if answered { (recheck(), read().1) } else { read() };
             match step(card.is_some(), answered, found, denied_for) {

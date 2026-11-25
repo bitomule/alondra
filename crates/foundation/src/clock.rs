@@ -78,6 +78,7 @@ impl Work {
         held.waiting = true;
         drop(held);
         // Spawning it holds the runtime's own jumps at once; the task lets go once none works.
+        #[expect(clippy::disallowed_methods, reason = "this job is the hold itself: counted, it would wait for itself")]
         runtime.spawn_blocking(move || {
             let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             while self.count.load(Ordering::SeqCst) > 0 && held.runtime.is_some() {
@@ -507,27 +508,80 @@ where
 /// it ends, so a test that moves virtual time waits for it (see [`working`]) instead of moving the
 /// time under a job that has not read the clock yet, or has read it and not committed what it found.
 /// Under the system clock it is the plain call.
+///
+/// Every job of the daemon goes through here: a plain `tokio::task::spawn_blocking` is invisible to
+/// [`working`], so a loaded Mac that starts its thread late lets the scenario runner declare the
+/// daemon calm before the job read the clock or committed, and what it did lands at a later instant.
+/// `clippy.toml` refuses the plain call. A job that must not count, because it waits on the clock
+/// for a long time or is what the runner polls with, uses [`spawn_blocking_unwatched`].
 pub fn spawn_blocking<F, T>(work: F) -> tokio::task::JoinHandle<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let Clock::Virtual { work: counter, .. } = Clock::current() else { return tokio::task::spawn_blocking(work) };
+    let Clock::Virtual { work: counter, .. } = Clock::current() else { return spawn_blocking_unwatched(work) };
     counter.add();
-    let unit = Unit(counter);
-    tokio::task::spawn_blocking(move || {
-        let _unit = unit;
+    let submitted = Submitted(Some(counter));
+    spawn_blocking_unwatched(move || {
+        let _running = submitted.start();
         work()
     })
 }
 
-/// One unit of [`Work`], given back when dropped, whether its job ran, panicked or never started.
-struct Unit(&'static Work);
+/// The unit [`spawn_blocking`] counted for a job, held until its thread starts it, or given back if
+/// the job never starts.
+struct Submitted(Option<&'static Work>);
 
-impl Drop for Unit {
-    fn drop(&mut self) {
-        self.0.remove();
+impl Submitted {
+    /// The thread of the pool takes over the unit as a thread of its own does ([`started`]): the job
+    /// rests while it waits on the clock or on a stream, and works again after.
+    fn start(mut self) -> Running {
+        started(self.0.take());
+        Running
     }
+}
+
+impl Drop for Submitted {
+    fn drop(&mut self) {
+        if let Some(work) = self.0.take() {
+            work.remove();
+        }
+    }
+}
+
+/// A job that runs on a thread of the pool: when it ends, or panics, the thread gives back what it
+/// held and counts for no later job.
+struct Running;
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        rest();
+        let _ = HELD.try_with(|held| held.counted.set(false));
+    }
+}
+
+/// Runs `wait`, a wait for something outside the daemon that no wait on the clock or on a stream
+/// expresses (a gate the test that drives the clock opens), as a thread that does not hold virtual
+/// time while it waits and works again once it ends. Under the system clock it is `wait`.
+pub fn resting<T>(wait: impl FnOnce() -> T) -> T {
+    let Clock::Virtual { work, .. } = Clock::current() else { return wait() };
+    rest();
+    let done = wait();
+    resume(work, false);
+    done
+}
+
+/// [`tokio::task::spawn_blocking`] without counting the job in [`working`]: for a job that waits on
+/// the clock itself (a sleep, a timed wait for a stream, a loop that lasts a turn) or that is the one
+/// watching [`working`], which counted would hold virtual time, or the watcher, for ever. Under a
+/// virtual clock the runtime still does not jump while it runs.
+pub fn spawn_blocking_unwatched<F, T>(work: F) -> tokio::task::JoinHandle<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    #[expect(clippy::disallowed_methods, reason = "the one place that submits a job to the blocking pool")]
+    tokio::task::spawn_blocking(work)
 }
 
 /// [`std::thread::scope`] whose threads keep the clock and the runtime of the thread that opens it.

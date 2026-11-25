@@ -39,7 +39,7 @@ pub async fn bind(home: &Path) -> Result<UnixListener> {
         }
         match UnixStream::connect(&path) {
             Ok(mut stream) => {
-                if tokio::task::spawn_blocking(move || owner_is_serving(&mut stream)).await? {
+                if alondra_core::clock::spawn_blocking(move || owner_is_serving(&mut stream)).await? {
                     bail!("another daemon already owns {}", path.display());
                 }
             }

@@ -387,6 +387,53 @@ screens = ["task:t2"]
     assert_eq!(at_once.checkpoints, slowly.checkpoints);
 }
 
+/// A blocking job of the daemon that a loaded Mac schedules late: virtual time never waits for a
+/// job nobody told it about, so a job that starts after the step that woke it reads the clock, and
+/// commits, at the instant of a later step. The daemon's jobs count as work from the moment they are
+/// submitted, so the instants stay where a job that starts at once leaves them.
+#[test]
+fn a_probe_that_starts_late_moves_no_instant() {
+    let text = r#"
+name = "a resting node whose host closes"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report"
+task = "t1"
+title = "Add the export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "login_expired"
+account = "default"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Add the summary"
+
+[[step]]
+do = "checkpoint"
+name = "after-the-rest"
+screens = ["task:t2"]
+"#;
+    let at_once = run(&scenario(text), None).expect("the scenario runs");
+    let late = crate::runner::run_with_late_probes(&scenario(text), std::time::Duration::from_millis(1500)).expect("the scenario runs");
+    assert_eq!(at_once.checkpoints, late.checkpoints);
+}
+
 /// 15 November: on a loaded Mac a release run failed «starting the SDK host» for a host that did
 /// start, only later than the daemon's I/O timeout in real time. A host that opens its socket later
 /// than that timeout still starts its node, and the scenario reads the same as with a host that

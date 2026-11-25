@@ -490,7 +490,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
                     attachments: vec![],
                 },
             };
-            tokio::task::spawn_blocking(move || {
+            alondra_core::clock::spawn_blocking_unwatched(move || {
                 let body = serde_json::to_value(&envelope).unwrap();
                 barrier.wait();
                 let result = crate::domain_api::encrypted_command_runtime(

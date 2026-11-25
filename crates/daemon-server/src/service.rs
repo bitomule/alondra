@@ -1569,7 +1569,7 @@ impl Service {
         } else {
             return Ok(None);
         };
-        Ok(Some(tokio::task::spawn_blocking(work).await?))
+        Ok(Some(alondra_core::clock::spawn_blocking(work).await?))
     }
 
     async fn dispatch_domain(
@@ -1639,7 +1639,7 @@ impl Service {
                     sender.to_owned(),
                     request.path.clone(),
                 );
-                let result = tokio::task::spawn_blocking(move || {
+                let result = alondra_core::clock::spawn_blocking(move || {
                     transfers.dispatch_domain(&home, &owner, &route, body)
                 })
                 .await?;
@@ -1775,7 +1775,7 @@ impl Service {
             let home = self.home.clone();
             let sender = sender.to_owned();
             let path = request.path.clone();
-            let result = tokio::task::spawn_blocking(move || {
+            let result = alondra_core::clock::spawn_blocking(move || {
                 transfers.dispatch(&home, &sender, &path, body)
             })
             .await?;
@@ -2537,7 +2537,7 @@ impl Journal {
     ) -> Result<T> {
         let physical = self.accept_jobs.clone().acquire_owned().await?;
         let journal = self.clone();
-        tokio::task::spawn_blocking(move || {
+        alondra_core::clock::spawn_blocking(move || {
             let (_physical, _receipt) = (physical, receipt);
             operation(&journal)
         }).await?
@@ -2577,7 +2577,7 @@ impl Journal {
             .context("receipt journal admission full before acknowledgement")?;
         let physical = self.accept_jobs.clone().acquire_owned().await?;
         let journal = self.clone();
-        tokio::task::spawn_blocking(move || {
+        alondra_core::clock::spawn_blocking(move || {
             let (_admission, _physical, _reservation) = (admission, physical, reservation);
             operation(&journal)
         }).await?
@@ -2600,7 +2600,7 @@ impl Journal {
         operation: impl FnOnce(&Journal) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let journal = self.clone();
-        tokio::task::spawn_blocking(move || operation(&journal)).await?
+        alondra_core::clock::spawn_blocking(move || operation(&journal)).await?
     }
     fn open(path: PathBuf) -> Result<Self> {
         crate::operation_journal::guard(&path)?;

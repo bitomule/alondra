@@ -244,7 +244,7 @@ pub fn apply(domain: &dyn Runtime, task: &TaskId, action: Action) -> Result<(), 
 pub async fn run(domain: Arc<dyn Runtime>) {
     loop {
         let domain = Arc::clone(&domain);
-        let passed = tokio::task::spawn_blocking(move || pass(&*domain, &mut domain.live().obligations.lock_or_recover("the obligation watch"), now_millis())).await;
+        let passed = alondra_core::clock::spawn_blocking(move || pass(&*domain, &mut domain.live().obligations.lock_or_recover("the obligation watch"), now_millis())).await;
         if let Err(error) = passed {
             log!("a pass of the obligation watch stopped: {error}");
         }

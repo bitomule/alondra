@@ -594,12 +594,12 @@ async fn act(domain: &std::sync::Arc<dyn Runtime>, _alerts: &impl Alerts, action
             }
             Action::Withdraw(id) => {
                 let withdrawing = domain.clone();
-                let _ = tokio::task::spawn_blocking(move || withdrawing.withdraw_problem(&alondra_domain_rules::InteractionId(id))).await;
+                let _ = alondra_core::clock::spawn_blocking(move || withdrawing.withdraw_problem(&alondra_domain_rules::InteractionId(id))).await;
             }
             Action::Release(sessions) => {
                 log!("the machine recovered: {} node(s) that waited come back through the admission gate", sessions.len());
                 let releasing = domain.clone();
-                tokio::task::spawn_blocking(move || releasing.machine_watch().forget(&sessions)).await.expect("machine release worker failed");
+                alondra_core::clock::spawn_blocking(move || releasing.machine_watch().forget(&sessions)).await.expect("machine release worker failed");
             }
         }
     }
@@ -686,12 +686,12 @@ pub async fn run(domain: std::sync::Arc<dyn Runtime>, gauges: alondra_daemon_eng
 
 async fn watch(domain: std::sync::Arc<dyn Runtime>, sample: impl Fn() -> Option<Machine>, alerts: impl Alerts, tick: Duration) {
     let starting = domain.clone();
-    tokio::task::spawn_blocking(move || withdraw_strays(&*starting)).await.expect("machine startup worker failed");
+    alondra_core::clock::spawn_blocking(move || withdraw_strays(&*starting)).await.expect("machine startup worker failed");
     let mut cards = domain.subscribe();
     loop {
         if let Some(machine) = sample() {
             let measuring = domain.clone();
-            let actions = tokio::task::spawn_blocking(move || look(&*measuring, machine)).await.expect("machine watch worker failed");
+            let actions = alondra_core::clock::spawn_blocking(move || look(&*measuring, machine)).await.expect("machine watch worker failed");
             act(&domain, &alerts, actions).await;
         }
         tokio::select! {

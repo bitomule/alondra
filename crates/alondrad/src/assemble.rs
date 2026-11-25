@@ -337,7 +337,7 @@ pub(crate) async fn assemble_with(
         tasks.spawn(auto_launch::run(domain.clone(), config.home.clone()));
     }
     let handed = domain.clone();
-    tokio::task::spawn_blocking(move || domain_orchestrator::read_handed_notices_in_background(&handed));
+    alondra_core::clock::spawn_blocking_unwatched(move || domain_orchestrator::read_handed_notices_in_background(&handed));
     tasks.spawn(retention::run(domain.clone()));
     let gate = tasks.spawn(admission::run(domain.clone(), config.home.clone()));
     let transport = tasks.spawn(domain_transport::run(hooks, domain.clone()));

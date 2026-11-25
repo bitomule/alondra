@@ -369,7 +369,7 @@ impl Service {
                 continue;
             }
             let (auth, id) = (self.auth.clone(), device.id.clone());
-            if !tokio::task::spawn_blocking(move || auth.revoke(&id)).await?? {
+            if !alondra_core::clock::spawn_blocking(move || auth.revoke(&id)).await?? {
                 continue;
             }
             self.remember_revoked(&device.id);

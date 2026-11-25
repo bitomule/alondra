@@ -282,7 +282,7 @@ async fn choose(cwd: &Path, slug: &str, known: Option<&Path>, pr_head: Option<&s
         Some(root) => {
             let storage = crate::worktrees_root::Repository { repository: top.canonicalize().map_err(|why| LaunchError::Storage(why.to_string()))?, root: root.clone() };
             let (root, repository) = (root.clone(), top.clone());
-            let dir = tokio::task::spawn_blocking(move || crate::worktrees_root::directory(&root, &repository))
+            let dir = alondra_core::clock::spawn_blocking(move || crate::worktrees_root::directory(&root, &repository))
                 .await.map_err(|why| LaunchError::Storage(why.to_string()))?.map_err(LaunchError::Storage)?.join(slug);
             (dir, Some(storage))
         },

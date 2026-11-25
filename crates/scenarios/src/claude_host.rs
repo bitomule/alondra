@@ -32,6 +32,7 @@ struct Slowness {
     start: Option<std::time::Duration>,
     io_timeout_seconds: Option<u64>,
     probe: Option<std::time::Duration>,
+    probe_late: Option<std::time::Duration>,
 }
 
 /// The I/O timeout of the hosts of a scenario's daemon, unless a test gives a shorter one.
@@ -65,6 +66,13 @@ impl ClaudeEdge {
     /// process a loaded Mac starts late; without it, they end at once.
     pub fn set_slow_probe(&self, by: std::time::Duration) {
         self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).probe = Some(by);
+    }
+
+    /// Every run of Claude's command line or of a host's probe starts `by` of real time after the
+    /// daemon submitted the job that runs it, as a blocking job a loaded Mac schedules late; the
+    /// model sees no probe under way until it starts.
+    pub fn set_late_probe(&self, by: std::time::Duration) {
+        self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).probe_late = Some(by);
     }
 
     /// Every host started from now on takes `by` to open its socket, as a host a loaded Mac starts
@@ -181,8 +189,11 @@ impl HostLauncher for ClaudeEdge {
     }
 
     fn run(&self, run: ProbeRun) -> std::io::Result<ProbeOutput> {
-        let slow = self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).probe;
-        self.0.probe_after(&run, slow)
+        let Slowness { probe, probe_late, .. } = *self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(late) = probe_late {
+            std::thread::sleep(late);
+        }
+        self.0.probe_after(&run, probe)
     }
 }
 

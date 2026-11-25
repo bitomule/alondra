@@ -118,7 +118,7 @@ async fn updated(version: &str) -> Option<Update> {
     let launcher = claude_update::find_on_path(&std::env::var("PATH").unwrap_or_default(), "claude")?;
     log!("Claude Code {} is older than {}: updating it", version.split_whitespace().next().unwrap_or_default(), claude_code::MIN_TEXT);
     let host = claude_update::ProcessHost { launcher, environment: None };
-    let outcome = tokio::task::spawn_blocking(move || claude_update::update(&host)).await.ok()?;
+    let outcome = alondra_core::clock::spawn_blocking(move || claude_update::update(&host)).await.ok()?;
     log!("{}", outcome.english());
     *ATTEMPT.lock_or_recover("the Claude Code update") = Some(Attempt { version: version.to_owned(), at: now, outcome: outcome.clone() });
     Some(outcome)

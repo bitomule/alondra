@@ -106,7 +106,7 @@ impl Updater {
             Plan::NotHomebrew => log!("{} is available; auto_update only installs through Homebrew under launchd", latest.unwrap_or_default()),
             Plan::Upgrade { brew, version } => {
                 log!("{version} is available; running {} upgrade {}", brew.display(), update::FORMULA);
-                let (ok, detail) = tokio::task::spawn_blocking(move || upgrade(&brew)).await
+                let (ok, detail) = alondra_core::clock::spawn_blocking_unwatched(move || upgrade(&brew)).await
                     .unwrap_or_else(|e| (false, format!("upgrade crashed: {e}")));
                 log!("automatic update to {version} {}: {detail}", if ok { "installed" } else { "failed" });
                 record_attempt(&self.home, &Attempt::after(last.as_ref(), version, alondra_core::now_millis(), ok, detail));

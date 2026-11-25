@@ -45,7 +45,7 @@ async fn local(
     }
     let lang = if params.lang.as_deref() == Some("es") { Lang::Es } else { Lang::En };
     let domain = state.domain();
-    match tokio::task::spawn_blocking(move || notices(&domain, lang)).await {
+    match alondra_core::clock::spawn_blocking(move || notices(&domain, lang)).await {
         Ok(Ok(body)) => Json(body).into_response(),
         _ => crate::domain_api::domain_error(alondra_domain_rules::DomainError::new(
             "storage_unavailable",

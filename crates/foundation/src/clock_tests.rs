@@ -54,7 +54,7 @@ fn a_blocking_thread_of_the_runtime_reads_the_virtual_clock() {
     let runtime = VirtualRuntime::new(EPOCH).unwrap();
     let read = runtime.block_on(async {
         advance(HOUR).await;
-        tokio::task::spawn_blocking(now_millis).await.unwrap()
+        spawn_blocking_unwatched(now_millis).await.unwrap()
     });
     assert_eq!(read, EPOCH + 3_600_000);
 }
@@ -126,7 +126,7 @@ fn a_receiver_times_out_when_virtual_time_reaches_its_timeout() {
 fn a_message_ends_the_wait_at_once_and_a_gone_sender_ends_it_too() {
     let (message, gone, at) = on_its_own_thread(|| {
         let (sender, receiver) = channel();
-        let sending = tokio::task::spawn_blocking(move || sender.send(7).unwrap());
+        let sending = spawn_blocking_unwatched(move || sender.send(7).unwrap());
         let message = recv_timeout(&receiver, HOUR);
         tokio::runtime::Handle::current().block_on(sending).unwrap();
         (message, recv_timeout(&receiver, HOUR), now_millis())
@@ -260,7 +260,7 @@ fn a_blocking_job_works_from_its_submission_until_it_ends() {
             now_millis()
         });
         assert_eq!(working(), 1, "it counts before its thread even starts");
-        tokio::task::spawn_blocking(move || read.recv().unwrap()).await.unwrap();
+        spawn_blocking_unwatched(move || read.recv().unwrap()).await.unwrap();
         advance(Duration::from_secs(1)).await;
         assert_eq!(working(), 1);
         go.send(()).unwrap();
@@ -386,7 +386,7 @@ fn a_wait_on_another_thread_is_pending_before_the_advance() {
             tokio::task::yield_now().await;
         }
         advance(HOUR).await;
-        tokio::task::spawn_blocking(move || sleeper.join().unwrap()).await.unwrap();
+        spawn_blocking_unwatched(move || sleeper.join().unwrap()).await.unwrap();
         assert!(!deadline_within(2 * HOUR));
 
         let (_sender, receiver) = channel::<()>();
@@ -395,7 +395,7 @@ fn a_wait_on_another_thread_is_pending_before_the_advance() {
             tokio::task::yield_now().await;
         }
         advance(HOUR).await;
-        let received = tokio::task::spawn_blocking(move || receiving.join().unwrap()).await.unwrap();
+        let received = spawn_blocking_unwatched(move || receiving.join().unwrap()).await.unwrap();
         assert_eq!(received, Err(std::sync::mpsc::RecvTimeoutError::Timeout));
         assert!(!deadline_within(2 * HOUR));
     });
@@ -407,7 +407,7 @@ fn a_thread_of_the_blocking_pool_holds_no_virtual_time_after_its_wait() {
     runtime.block_on(async {
         let monitor = std::sync::Arc::new(Monitor::new(false));
         let waiting = monitor.clone();
-        let task = tokio::task::spawn_blocking(move || {
+        let task = spawn_blocking_unwatched(move || {
             let mut ready = waiting.lock().unwrap();
             while !*ready {
                 ready = waiting.wait(ready, HOUR).unwrap();
@@ -449,5 +449,67 @@ fn work_in_real_time_counts_from_its_first_poll_until_it_ends() {
         cancelled.abort();
         let _ = cancelled.await;
         assert_eq!(working(), 0, "a cancelled work gives its unit back");
+    });
+}
+
+/// A job that waits on the clock for long, or that watches `working` itself, is submitted without
+/// counting: counted, it would hold virtual time for as long as it waits.
+#[test]
+fn an_unwatched_blocking_job_does_not_count_as_work() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let (reading, read) = std::sync::mpsc::channel::<()>();
+        let job = spawn_blocking_unwatched(move || {
+            reading.send(()).unwrap();
+            gone.recv().ok();
+            working()
+        });
+        spawn_blocking_unwatched(move || read.recv().unwrap()).await.unwrap();
+        assert_eq!(working(), 0);
+        go.send(()).unwrap();
+        assert_eq!(job.await.unwrap(), 0);
+    });
+}
+
+/// A counted job that waits on the clock rests like a thread of its own: it holds no virtual time
+/// while it sleeps, and the timer that wakes it counts it again before it runs.
+#[test]
+fn a_blocking_job_that_waits_on_the_clock_holds_no_virtual_time() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let job = spawn_blocking(|| {
+            blocking_sleep(Duration::from_secs(5));
+            now_millis()
+        });
+        assert_eq!(working(), 1, "it counts from its submission");
+        until("the job sleeps", || working() == 0).await;
+        advance(Duration::from_secs(5)).await;
+        assert_eq!(job.await.unwrap(), EPOCH + 5_000);
+        assert_eq!(working(), 0);
+    });
+}
+
+/// A wait for a gate that is neither the clock nor a stream rests the job too, and the job works
+/// again once the gate opens, until it ends.
+#[test]
+fn a_blocking_job_resting_for_a_gate_holds_no_virtual_time_and_works_after() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (open, opened) = std::sync::mpsc::channel::<()>();
+        let (after, was_after) = std::sync::mpsc::channel::<()>();
+        let (end, ended) = std::sync::mpsc::channel::<()>();
+        let job = spawn_blocking(move || {
+            resting(|| opened.recv().ok());
+            after.send(()).unwrap();
+            ended.recv().ok();
+        });
+        until("the job waits at its gate", || working() == 0).await;
+        open.send(()).unwrap();
+        spawn_blocking_unwatched(move || was_after.recv().unwrap()).await.unwrap();
+        assert_eq!(working(), 1, "past its gate it works again");
+        end.send(()).unwrap();
+        job.await.unwrap();
+        assert_eq!(working(), 0);
     });
 }

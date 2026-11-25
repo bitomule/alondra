@@ -795,7 +795,7 @@ async fn execute_external(
             let Ok(account) = alondra_core::accounts::AccountId::parse(&action.subject) else { return Ok(rejected_field(lang, "account", "Choose an account")); };
             let key = alondra_core::accounts::AccountKey { provider, account };
             let (runtime, home) = (client.domain.clone(), home.to_path_buf());
-            match tokio::task::spawn_blocking(move || crate::accounts::refresh_models(&*runtime, &home, &key)).await? {
+            match alondra_core::clock::spawn_blocking(move || crate::accounts::refresh_models(&*runtime, &home, &key)).await? {
                 Ok(()) => Ok(to_applied(200, json!({"models_refreshed": true}))),
                 Err(message) => Ok(error_value("unavailable", &message)),
             }
@@ -848,7 +848,7 @@ async fn execute_external(
             match crate::accounts::set_credential_authorized(domain, home, &actor, &key, secret, &authorize) {
                 Ok(()) => {
                     let (runtime, home) = (client.domain.clone(), home.to_path_buf());
-                    tokio::task::spawn_blocking(move || crate::accounts::check(&*runtime, &home)).await?;
+                    alondra_core::clock::spawn_blocking(move || crate::accounts::check(&*runtime, &home)).await?;
                     Ok(to_applied(200, json!({"credential": if cleared { "cleared" } else { "set" }})))
                 }
                 Err(crate::accounts::ChangeRefused::Domain(error)) => Ok(domain_refusal_value(&error, lang)),
@@ -857,7 +857,7 @@ async fn execute_external(
         }
         Verb::AccountCheck => {
             let (runtime, home) = (client.domain.clone(), home.to_path_buf());
-            tokio::task::spawn_blocking(move || crate::accounts::check_now(&*runtime, &home)).await?;
+            alondra_core::clock::spawn_blocking(move || crate::accounts::check_now(&*runtime, &home)).await?;
             Ok(to_applied(200, json!({"accounts_checked": true})))
         }
         Verb::AccountOrder => {
@@ -921,7 +921,7 @@ async fn execute_external(
                 return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to reach Claude Code with"));
             };
             let (nodes, probes, backend, subject) = (state.mcp_nodes(), client.mcp_probes.clone(), backend.clone(), action.subject.clone());
-            let removed = tokio::task::spawn_blocking(move || crate::mcp_remove::remove(&nodes, &probes, &projects, &backend, &subject)).await?;
+            let removed = alondra_core::clock::spawn_blocking_unwatched(move || crate::mcp_remove::remove(&nodes, &probes, &projects, &backend, &subject)).await?;
             match removed {
                 Ok(server) => {
                     client.feeds.wake();

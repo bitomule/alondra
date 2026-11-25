@@ -95,7 +95,7 @@ pub async fn retry_pending(home: PathBuf, cli: Option<PathBuf>, fast: bool) {
         clock::sleep(if fast { Duration::from_secs(1) } else { EVERY }).await;
         for id in due(&reports, alondra_core::now_millis()) {
             let (cli, home) = (cli.clone(), home.clone());
-            let _ = tokio::task::spawn_blocking(move || send_again(&cli, &home, &id)).await;
+            let _ = alondra_core::clock::spawn_blocking_unwatched(move || send_again(&cli, &home, &id)).await;
         }
     }
 }

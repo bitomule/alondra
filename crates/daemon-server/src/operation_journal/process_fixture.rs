@@ -615,7 +615,7 @@ impl IrohLife {
     async fn close(self) {
         let Self { runtime, endpoint } = self;
         runtime.spawn(async move { endpoint.close().await }).await.unwrap();
-        tokio::task::spawn_blocking(move || drop(runtime)).await.unwrap();
+        alondra_core::clock::spawn_blocking_unwatched(move || drop(runtime)).await.unwrap();
     }
 }
 

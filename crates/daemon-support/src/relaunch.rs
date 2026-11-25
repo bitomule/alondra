@@ -192,7 +192,7 @@ fn output(path: &Path, arg: &str, timeout: Duration) -> Option<(bool, String)> {
 pub async fn watch(mut watcher: Watcher, every: Duration) {
     loop {
         clock::sleep(every).await;
-        let checked = tokio::task::spawn_blocking(move || {
+        let checked = alondra_core::clock::spawn_blocking_unwatched(move || {
             let check = watcher.check(run_preflight);
             (watcher, check)
         }).await;

@@ -18,7 +18,7 @@ const WAKE: Duration = Duration::from_millis(250);
 pub(crate) async fn execute(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()> + Send + 'static, cancel: impl std::future::Future<Output=()>) -> Output {
     let cancelled = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&cancelled);
-    let mut running = tokio::task::spawn_blocking(move || run(batch, spawned, &stop));
+    let mut running = alondra_core::clock::spawn_blocking_unwatched(move || run(batch, spawned, &stop));
     tokio::select! {
         biased;
         finished = &mut running => return finished.unwrap_or_else(|error| failed(format!("The Codex batch stopped: {error}"))),

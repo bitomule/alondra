@@ -30,8 +30,12 @@ pub async fn run(
 async fn sample_loop(probe: Arc<dyn MachineProbe>, mut publish: impl FnMut(Machine)) {
     loop {
         let sampling = probe.clone();
-        let machine = tokio::task::spawn_blocking(move || sampling.sample()).await.expect("machine sample worker failed");
+        let machine = alondra_core::clock::spawn_blocking(move || sampling.sample()).await.expect("machine sample worker failed");
         publish(machine);
         clock::sleep(Duration::from_secs(10)).await;
     }
 }
+
+#[cfg(test)]
+#[path = "machine_tests.rs"]
+mod tests;

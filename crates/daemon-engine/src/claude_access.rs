@@ -71,7 +71,7 @@ pub async fn run(domain: Arc<dyn Runtime>) {
             if provider == Provider::Claude { probe(&*domain, hold, account); }
             else {
                 let domain=domain.clone();
-                if tokio::task::spawn_blocking(move || probe_for(&*domain,provider,hold,account)).await.is_err() { log!("the provider metadata probe stopped"); }
+                if alondra_core::clock::spawn_blocking(move || probe_for(&*domain,provider,hold,account)).await.is_err() { log!("the provider metadata probe stopped"); }
             }
         }
         match next {

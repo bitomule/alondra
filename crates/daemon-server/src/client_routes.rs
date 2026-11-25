@@ -454,7 +454,7 @@ impl Client {
     async fn file_chunk(&self, reference: String, offset: u64, version: Option<String>) -> Response {
         let home = self.home.clone();
         let reads = self.domain.stored_reads.clone();
-        let chunk = tokio::task::spawn_blocking(move || reads.stored(&home, &reference, offset, version)).await;
+        let chunk = alondra_core::clock::spawn_blocking(move || reads.stored(&home, &reference, offset, version)).await;
         match chunk {
             Ok(Ok(chunk)) => Json(chunk).into_response(),
             _ => crate::domain_api::domain_error(DomainError::new("content_unavailable", "stored file content is unavailable")),
@@ -645,7 +645,7 @@ async fn resolve_delivery(
     let digest: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(body.to_string().as_bytes()).into();
     let request = format!("local-{}", crate::auth::random_hex(16));
     let domain = client.domain.clone();
-    let resolved = tokio::task::spawn_blocking(move || crate::domain_api::encrypted_resolve_delivery_runtime(
+    let resolved = alondra_core::clock::spawn_blocking(move || crate::domain_api::encrypted_resolve_delivery_runtime(
         &domain, &home.clone(), &device.device_id, attempt, Some(&body), (&device.device_id, &request, &digest),
         || crate::domain_bootstrap::signed_device(&home, &signed).map(|_| ()).ok_or_else(|| anyhow::anyhow!("device approval was revoked")))).await;
     match resolved {

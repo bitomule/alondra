@@ -169,7 +169,7 @@ async fn journal<T: Send + 'static>(
         .clone()
         .acquire_owned()
         .await?;
-    tokio::task::spawn_blocking(move || {
+    alondra_core::clock::spawn_blocking(move || {
         let (_admitted, _physical) = (admitted, physical);
         let _approval = crate::approval_lease::ApprovalLease::shared(&home)?;
         let actor = actor(&home, &signed)?;

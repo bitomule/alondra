@@ -2,4 +2,7 @@ disallowed-methods = [
     { path = "std::env::temp_dir", reason = "Tests must retain crate::test_support::Directory; a PathBuf does not clean itself up." },
     { path = "tempfile::TempDir::keep", reason = "Test scratch must be removed when its owner is dropped." },
     { path = "tempfile::TempDir::into_path", reason = "Test scratch must be removed when its owner is dropped." },
+    { path = "tokio::task::spawn_blocking", reason = "Use alondra_core::clock::spawn_blocking: a plain job is invisible to clock::working, so the scenario runner can settle before it ends. A job that waits on the clock uses clock::spawn_blocking_unwatched." },
+    { path = "tokio::runtime::Handle::spawn_blocking", reason = "Use alondra_core::clock::spawn_blocking, or clock::spawn_blocking_unwatched for a job that waits on the clock." },
+    { path = "tokio::runtime::Runtime::spawn_blocking", reason = "Use alondra_core::clock::spawn_blocking, or clock::spawn_blocking_unwatched for a job that waits on the clock." },
 ]

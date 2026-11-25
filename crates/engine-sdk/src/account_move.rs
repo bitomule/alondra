@@ -183,7 +183,7 @@ async fn stop(domain: &Arc<dyn Runtime>, moving: &AccountMove) -> Result<(), Str
     let (backend, _) = domain.sdk().ok_or("this daemon has no SDK backend")?;
     let folder = backend.state_root.join(&moving.plan.instance);
     let (runtime, node) = (Arc::clone(domain), moving.plan.node.clone());
-    tokio::task::spawn_blocking(move || -> Result<(), String> {
+    alondra_core::clock::spawn_blocking(move || -> Result<(), String> {
         runtime.stop_sdk_host(&node).map_err(|crate::sdk_owner::Failed { why, .. }| format!("its host did not stop: {why}"))?;
         if folder.join("host.lock").exists() {
             alondra_engine_ports::agent_host::of(runtime.ports()).and_then(|hosts| hosts.end_holders(&folder)).map_err(|error| format!("its host did not stop: {error}"))?;
@@ -217,7 +217,7 @@ async fn admit(domain: &Arc<dyn Runtime>, moving: &AccountMove) -> Result<(), St
         account: moving.plan.to.clone(),
     };
     let continuation = crate::sdk_owner::Continuation::Moved { session: moving.plan.session.clone(), card: moving.plan.card.clone(), number: moving.number };
-    let admitted = tokio::task::spawn_blocking(move || crate::sdk_owner::continue_session(runtime, &backend, launch, continuation))
+    let admitted = alondra_core::clock::spawn_blocking(move || crate::sdk_owner::continue_session(runtime, &backend, launch, continuation))
         .await
         .map_err(|error| crate::sdk_owner::Failed::new(format!("the admission stopped: {error}")))
         .and_then(|admitted| admitted);
@@ -249,7 +249,7 @@ async fn finish(domain: &Arc<dyn Runtime>, moving: &AccountMove) -> Result<(), S
         let backend = backend.clone();
         let plugin = domain.ports().plugins().node(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
         let task = moving.task.clone();
-        let driver = tokio::task::spawn_blocking(move || {
+        let driver = alondra_core::clock::spawn_blocking(move || {
             crate::sdk_owner::adopt(runtime, &backend, task, Some(&plugin))
         })
         .await

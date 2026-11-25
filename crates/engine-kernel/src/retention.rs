@@ -14,7 +14,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
     loop {
         let pass = {
             let domain = domain.clone();
-            tokio::task::spawn_blocking(move || {
+            alondra_core::clock::spawn_blocking(move || {
                 let expired = remove_expired_files(&domain);
                 (domain.retain(alondra_core::now_millis()), expired)
             }).await
