@@ -37,13 +37,41 @@ async fn until_released(domain: &DomainRuntime, tasks: &[&str]) {
     arrived.await.unwrap();
     let ended = async { while !domain.node_groups().is_empty() { tokio::task::yield_now().await } };
     ended.await;
+    // An owner reads as ended once its host closed, but its driver keeps the task's execution and
+    // slot until its thread lets go of them: a look of the gate before that finds the task in hand
+    // and takes nothing over, and the owner's end then withdraws the slot the look granted.
+    let in_hand = || tasks.iter().any(|task| domain.sdk_owners().in_hand.lock_or_recover("the executions in hand").contains_key(&TaskId::from(*task)));
+    let let_go = async { while in_hand() { tokio::task::yield_now().await } };
+    let_go.await;
+}
+
+/// The daemon's own looks, one a wait after the other, from the takeover of a closed node until its
+/// host closes again. An owner asked while it still settles what took its node over (a control it
+/// applied, an input not yet acknowledged) declines, and the daemon asks again at its next look: a
+/// single look finds that owner busy, closes nothing, and the wait for the release never ends.
+async fn look_until_released(domain: &DomainRuntime, task: &str) {
+    let released = |domain: &DomainRuntime| domain.read().state().lifecycle_of(&TaskId::from(task)).is_ok_and(|lifecycle| lifecycle.host_released());
+    let mut changed = domain.subscribe();
+    let taken_over = changed.wait_for(|_| !released(domain));
+    taken_over.await.unwrap();
+    let mut rests = Rests::default();
+    let mut now = alondra_core::now_millis();
+    loop {
+        pass(domain, &mut rests, now, now, &WAIT);
+        now += WAIT.wait;
+        if released(domain) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    until_released(domain, &[task]).await;
 }
 
 #[cfg(not(feature = "real-hosts"))]
 async fn until_working(slice: &Slice, count: usize) {
     let mut changed = slice.domain.subscribe();
     let reached = changed.wait_for(|_| crate::admission::working_tasks(&*slice.domain, &slice.domain.read().state()).len() == count);
-    tokio::time::timeout(std::time::Duration::from_secs(60), reached).await.expect("the nodes never resumed").unwrap();
+    reached.await.unwrap();
 }
 
 /// The gate's look, which gives the turns that wait a slot and takes over the tasks with no host.
@@ -281,9 +309,7 @@ async fn a_model_chosen_for_a_closed_node_reaches_it_and_stays_when_it_closes_ag
     let applied = changed.wait_for(|_| slice.control_rows().iter().any(|(kind, _, status)| kind == "set_model" && status != "requested"));
     applied.await.unwrap();
     assert!(slice.domain.read().state().last_model_asked(&TASK.into()).is_some_and(|model| model == "sonnet"));
-
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &[TASK]).await;
+    look_until_released(&slice.domain, TASK).await;
     tell(&slice, TASK, "Go on.").await;
     until_last_prompt_ends_with(&slice.domain, &slice.hosts, "Go on.").await;
     slice.domain.stop_sdk_owners();
@@ -439,7 +465,7 @@ async fn an_owner_that_reads_as_ended_no_longer_holds_its_task() {
     }));
     slice.domain.add_sdk_owner(Owner::spawn(driver));
     look_after_the_wait(&slice.domain);
-    at_the_end.recv_timeout(std::time::Duration::from_secs(60)).expect("the owner never closed its host");
+    at_the_end.recv().expect("the owner never closed its host");
     let state = slice.domain.state().unwrap();
     let task = TaskId::from(TASK);
     let held_by_the_ended_owner = !crate::sdk_owner::unowned(&*slice.domain, &state, &task);
