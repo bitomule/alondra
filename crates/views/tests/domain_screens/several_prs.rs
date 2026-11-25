@@ -176,8 +176,7 @@ fn a_delivery_of_several_prs_is_one_card_per_pr_each_with_only_its_merge() {
         assert_eq!(merges[0].1, "Squash and merge");
         let view = view_json(&s, &format!("card:{pr}"));
         assert!(view["title"].as_str().unwrap().ends_with(name), "each card names its PR: {}", view["title"]);
-        let diff = find_section(&view, "diff").expect("each card shows its PR's diff");
-        assert!(diff.to_string().contains(&alondra_core::id::path_segment(pr)), "{diff}");
+        assert!(find_section(&view, "diff").is_none(), "a delivery shows no diff");
     }
 }
 

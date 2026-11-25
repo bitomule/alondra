@@ -8,7 +8,6 @@ public struct PRReview: Equatable, Sendable {
     public var facts: [Fact] = []
     public var checks: [Check] = []
     public var description: Markdown?
-    public var diff: ContentRef?
     public var notices: [Notice]
     public var merge: WireAction?
     public var resolveConflicts: WireAction?
@@ -23,7 +22,6 @@ public struct PRReview: Equatable, Sendable {
             case "facts": facts = section.items.facts
             case "checks": checks = section.items.checks
             case "description": description = section.items.markdown
-            case "diff": diff = section.items.diff
             case "actions": sortActions(section.items.actions)
             default: break
             }
@@ -70,11 +68,6 @@ private extension Array where Element == ViewItem {
 
     var markdown: Markdown? {
         for item in self { if case .markdown(let value) = item { return value } }
-        return nil
-    }
-
-    var diff: ContentRef? {
-        for item in self { if case .contentRef(let value) = item, value.kind == .diff { return value } }
         return nil
     }
 

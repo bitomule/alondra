@@ -1157,27 +1157,6 @@ fn settings_open_a_crash_report_as_other() {
     assert!(matches!(&app.composer, Some(c) if matches!(&c.target, Target::ReportDescription { failure } if failure == "other")));
 }
 
-#[test]
-fn tuicr_is_not_installed_only_when_it_is_not_found_and_another_launch_failure_shows_as_it_is() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let root = crate::test_support::Directory::new();
-    std::fs::create_dir_all(&*root).unwrap();
-    let blocked = root.join("tuicr");
-    std::fs::write(&blocked, "#!/bin/sh\n").unwrap();
-    let launch = |program: &std::path::Path| {
-        crate::pty::run_tool(program.to_str().unwrap(), &["--stdout"], &root).unwrap_err()
-    };
-    let shown = |error: anyhow::Error| {
-        let mut app = app();
-        app.reviewed(Key("i-1".into()), PrId("pr-1".into()), 7, Err(error));
-        app.flash.map(|flash| flash.text).unwrap_or_default()
-    };
-    let without_permission = shown(launch(&blocked));
-    assert!(!without_permission.contains("not installed"), "{without_permission}");
-    assert!(without_permission.starts_with("tuicr: could not launch"), "{without_permission}");
-    assert_eq!(shown(launch(&root.join("missing/tuicr"))), "tuicr is not installed: brew install tuicr");
-}
-
 const FORM_CARD: &str = "a98d034b-249e-4487-a89b-57de38c26372";
 
 fn app_on_a_form_card() -> App {

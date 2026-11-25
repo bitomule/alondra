@@ -32,7 +32,7 @@ export default function Install() {
     <section aria-labelledby="mac-title">
       <h2 id="mac-title">On your Mac</h2>
       <Commands commands={[{ run: 'brew install bitomule/tap/alondra' }, { run: 'alondra' }]}/>
-      <p>The first time, <code>alondra</code> asks for the folder with your projects, starts the background service and registers its Claude Code plugin, which loads only in the sessions Alondra starts. Run it again whenever you like: it only changes what is missing. Alondra brings Node and the Agent SDK it needs, and Homebrew installs tuicr, which the terminal app uses to show diffs.</p>
+      <p>The first time, <code>alondra</code> asks for the folder with your projects, starts the background service and registers its Claude Code plugin, which loads only in the sessions Alondra starts. Run it again whenever you like: it only changes what is missing. Alondra brings Node and the Agent SDK it needs.</p>
     </section>
 
     <section aria-labelledby="apps-title">

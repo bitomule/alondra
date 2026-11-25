@@ -1,11 +1,11 @@
 1. Install:
 
    ```bash
-   brew install tuicr
+   brew install jq
    ```
 
 2. Run it:
 
    ```bash
-   tuicr pr 12
+   jq . report.json
    ```

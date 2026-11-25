@@ -34,7 +34,6 @@ low_opt_rust_test(
     env = {"TEST_EXECS": "/bin/sh /usr/bin/defaults /usr/bin/id tmpdir"},
     timeout = "moderate",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    compile_data = ["//fixtures/diffs"],
     crate_name = "alondra_cli_tui",
     crate_root = "src/lib.rs",
     data = [

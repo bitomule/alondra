@@ -4,8 +4,8 @@ import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
-/// A pull request on the phone: what it changes and where it stands, the diff to comment on, and
-/// the bar to merge, hand conflicts back, ask, or request changes.
+/// A pull request on the phone: what it changes and where it stands, and the bar to merge, hand
+/// conflicts back, ask, or request changes.
 public struct PRReviewView: View {
     @Bindable var store: StoreOf<PRReviewFeature>
     @Environment(\.openURL) private var openURL
@@ -26,14 +26,6 @@ public struct PRReviewView: View {
         .toolbar(.hidden, for: .tabBar)
         .toolbar { hostToolbar }
         .task { await store.send(.task).finish() }
-        .navigationDestination(isPresented: Binding(get: { store.showsChanges }, set: { store.send(.changesShown($0)) })) {
-            PRChangesView(files: store.diff.files, failed: store.diff.failed, truncated: store.diffTruncated,
-                          collapsed: store.collapsed, comments: store.comments,
-                          marks: store.viewed.marks, failedMark: store.viewed.failed,
-                          toggle: { store.send(.toggleFile($0)) }, toggleViewed: { store.send(.viewed(.toggle($0))) },
-                          dismissFailure: { store.send(.viewed(.dismissFailure)) }, toggleAll: { store.send(.toggleAllFiles) },
-                          comment: { store.send(.comment(anchor: $0, $1)) }, retry: { store.send(.retryDiff) })
-        }
         .sheet(isPresented: Binding(get: { store.isComposing }, set: { if !$0 { store.send(.dismissSheet) } })) { sheet }
         .actionDialogs(store.scope(state: \.actions, action: \.actions))
     }
@@ -65,20 +57,11 @@ public struct PRReviewView: View {
                 if let description = review.description, !description.text.isEmpty {
                     PRDescription(markdown: description)
                 }
-                diff
             }
             .padding(16)
         }
         .scrollDismissesKeyboard(.interactively)
         .safeAreaBar(edge: .bottom) { PRActionBar(store: store, review: review) }
-    }
-
-    @ViewBuilder private var diff: some View {
-        if store.diff != .unavailable {
-            DiffSummaryCard(summary: store.diff.files.map(DiffSummary.init),
-                            viewed: store.diff.files.flatMap { DiffSummary.viewedCount($0, marks: store.viewed.marks) }, pending: nil,
-                            failed: store.diff.failed, open: { store.send(.changesShown(true)) }, retry: { store.send(.retryDiff) })
-        }
     }
 
     @ToolbarContentBuilder private var hostToolbar: some ToolbarContent {

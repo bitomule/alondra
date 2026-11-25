@@ -45,7 +45,6 @@ pub fn steps() -> Vec<Step> {
         },
         Step { name: tr!("Devices", "Dispositivos"), checks: &["devices", "notifications"], show: Show::Fix },
         Step { name: tr!("Direct connection", "Conexión directa"), checks: &["direct"], show: Show::Problems },
-        Step { name: tr!("Tools", "Herramientas"), checks: &["tuicr"], show: Show::Problems },
     ]
 }
 

@@ -3,7 +3,7 @@
 use alondra_domain_rules::{MergeMethod, MergeVerdict, ProviderLocator, ProviderPrKey, PullRequest};
 use alondra_engine_ports::Registry;
 use alondra_engine_ports::github::{
-    Closed, DiffError, Failure, Fetch, Gh, GhFailure, GitHub, GitHubImages, HeadError, Located, Marks, Observed, Pending, PrDiff, PrMerger,
+    Closed, DiffError, Failure, Fetch, Gh, GhFailure, GitHub, GitHubImages, HeadError, Located, Observed, Pending, PrDiff, PrMerger,
     PrObserver, Read, Status, MAX_PR_DIFF_BYTES,
 };
 use std::collections::{BTreeMap, VecDeque};
@@ -13,13 +13,11 @@ use std::sync::{Arc, Mutex};
 pub enum Call {
     Head(String),
     Diff(String),
-    Marks(String),
 }
 
 pub struct PrReads {
     pub heads: VecDeque<Result<String, HeadError>>,
     pub diff: Result<Vec<u8>, DiffError>,
-    pub marks: Result<Marks, String>,
 }
 
 #[derive(Default)]
@@ -69,14 +67,6 @@ impl Gh for PullRequests {
             let bytes = prs.get(url).expect("diff requested for an unconfigured PR").diff.clone()?;
             let truncated = bytes.len() > MAX_PR_DIFF_BYTES;
             Ok(PrDiff { bytes: bytes.into_iter().take(MAX_PR_DIFF_BYTES + 1).collect(), truncated })
-        })
-    }
-
-    fn viewed_files<'a>(&'a self, pr: &'a PullRequest) -> Read<'a, Result<Marks, String>> {
-        Box::pin(async move {
-            let url = format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number);
-            self.calls.lock().unwrap().push(Call::Marks(url.clone()));
-            self.prs.lock().unwrap().get(&url).expect("marks requested for an unconfigured PR").marks.clone()
         })
     }
 }
@@ -174,12 +164,7 @@ mod tests {
                 Case::Truncated => Ok(vec![b'a'; MAX_PR_DIFF_BYTES + 64]),
                 _ => Ok(github::DIFF.as_bytes().to_vec()),
             };
-            let marks = match case {
-                Case::Failed | Case::InvalidJson => Err("unavailable".into()),
-                Case::EmptyMarks => Ok(alondra_engine_ports::github::Marks { files: vec![], ..github::marks() }),
-                _ => Ok(github::marks()),
-            };
-            gh.insert(github::url(case), PrReads { heads: [head].into(), diff, marks });
+            gh.insert(github::url(case), PrReads { heads: [head].into(), diff });
             github::check(&gh, case).await;
         }
     }

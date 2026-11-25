@@ -788,12 +788,6 @@ pub enum LocalLink {
     Attach {
         session: String,
     },
-    ReviewClone {
-        repo: String,
-        branch: String,
-        pr: u64,
-        pr_id: String,
-    },
     OpenPath {
         path: String,
     },

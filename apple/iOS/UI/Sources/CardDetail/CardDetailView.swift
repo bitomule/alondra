@@ -37,15 +37,7 @@ public struct CardDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .task { await store.send(.task).finish() }
-        .onDisappear { if !store.showsChanges { store.send(.screen(.stop)) } }
-        .navigationDestination(isPresented: Binding(get: { store.showsChanges }, set: { store.send(.changesShown($0)) })) {
-            PRChangesView(files: store.diff, failed: store.diffFailed, truncated: store.diffTruncated,
-                          collapsed: store.collapsedFiles, comments: nil,
-                          marks: store.viewed.marks, failedMark: store.viewed.failed,
-                          toggle: { store.send(.toggleFile($0)) }, toggleViewed: { store.send(.viewed(.toggle($0))) },
-                          dismissFailure: { store.send(.viewed(.dismissFailure)) }, toggleAll: { store.send(.toggleAllFiles) },
-                          comment: { _, _ in }, retry: { store.send(.retryDiff) })
-        }
+        .onDisappear { store.send(.screen(.stop)) }
     }
 
     private func methodDialog<Content: View>(_ view: Content) -> some View {
@@ -160,7 +152,7 @@ public struct CardDetailView: View {
 
     private func sectionView(_ section: ViewSection) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let title = section.title, section.id != "diff" {
+            if let title = section.title {
                 Text(title).font(.footnote.weight(.bold)).textCase(.uppercase).kerning(0.6).foregroundStyle(.secondary)
             }
             ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
@@ -207,17 +199,9 @@ public struct CardDetailView: View {
         switch reference.kind {
         case .document:
             documentBody
-        case .diff:
-            diffBody(reference)
-        case .file:
+        case .diff, .file:
             EmptyView()
         }
-    }
-
-    private func diffBody(_ reference: ContentRef) -> some View {
-        DiffSummaryCard(summary: store.diff.map(DiffSummary.init),
-                        viewed: store.diff.flatMap { DiffSummary.viewedCount($0, marks: store.viewed.marks) }, pending: store.subject?.card?.contentRow?.summary,
-                        failed: store.diffFailed, open: { store.send(.changesShown(true)) }, retry: { store.send(.retryDiff) })
     }
 
     private func historyRow(_ row: Row) -> some View {

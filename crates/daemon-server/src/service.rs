@@ -40,8 +40,6 @@ pub(crate) mod operation_results;
 // Base64 adds ~33%; 760 KiB plus encryption and envelope metadata stays below 1 MiB.
 pub(crate) const MAX_LOCAL_RESPONSE: usize = 760 * 1024;
 pub(crate) const MAX_RELAY_RESPONSE: usize = 1024 * 1024;
-// A 2 MiB diff whose every byte needs a six-byte JSON escape, plus the snapshot fields.
-const MAX_LOCAL_DIFF_SNAPSHOT: usize = 12 * 1024 * 1024 + 4096;
 // The relay wraps the envelope in a 4 KiB APNs alert. Leave room for its
 // generic aps fields, binding, JSON escaping, and future metadata.
 const MAX_PUSH_BODY: usize = 3_000;
@@ -1794,15 +1792,6 @@ impl Service {
         }
         let response = builder.send().await?;
         let status = response.status().as_u16();
-        let diff_snapshot =
-            request.method == "GET" && id_action(&request.path, "/v1/prs/", "/diff-snapshot", true);
-        if diff_snapshot && status == 200 {
-            // The local diff may reach 2 MiB; cut it to the relay budget and flag it instead of failing.
-            let bytes = bounded_response_within(response, MAX_LOCAL_DIFF_SNAPSHOT).await?;
-            let mut body: Value = serde_json::from_slice(&bytes)?;
-            crate::domain_api::bound_diff_json(&mut body);
-            return Ok(json!({"status":status,"body":body}));
-        }
         let bytes = bounded_response(response).await?;
         let file_success = request.method == "GET"
             && request.path.split('?').next() == Some("/v1/file")
@@ -2172,14 +2161,10 @@ fn minimal_push(payload: &Value) -> Value {
     json!({"aps": aps, "alondra": payload.get("alondra").cloned().unwrap_or(json!({}))})
 }
 
-async fn bounded_response(response: reqwest::Response) -> Result<Vec<u8>> {
-    bounded_response_within(response, MAX_LOCAL_RESPONSE).await
-}
-
-async fn bounded_response_within(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
+async fn bounded_response(mut response: reqwest::Response) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
-        if bytes.len().saturating_add(chunk.len()) > limit {
+        if bytes.len().saturating_add(chunk.len()) > MAX_LOCAL_RESPONSE {
             return Err(ResponseTooLarge.into());
         }
         bytes.extend_from_slice(&chunk);
@@ -2400,8 +2385,6 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
             ) || one_id_path(path, "/v1/tasks/").is_some()
                 || one_id_path(path, "/v1/nodes/").is_some()
                 || id_action(path, "/v1/nodes/", "/activity", false)
-                || id_action(path, "/v1/prs/", "/diff", true)
-                || id_action(path, "/v1/prs/", "/diff-snapshot", true)
         }
         "POST" if request.body.is_some() && query.is_none() => {
             matches!(
@@ -5379,8 +5362,6 @@ agreement_key = "{}"
         for path in [
             "/v1/tasks/task-1",
             "/v1/nodes/session_1/activity",
-            "/v1/prs/7/diff",
-            "/v1/prs/7/diff-snapshot",
             "/v1/search?q=hello%20world",
             "/v1/file?path=%2FUsers%2Fme%2Ffile.txt",
             "/v1/options?project=foo",
@@ -5446,7 +5427,8 @@ agreement_key = "{}"
             ("DELETE", "/v1/devices/phone", None),
             ("GET", "/v1/overview", Some(json!({}))),
             ("POST", "/v1/requests", None),
-            ("GET", "/v1/prs/7/diff#fragment", None),
+            ("GET", "/v1/prs/7/diff", None),
+            ("GET", "/v1/prs/7/diff-snapshot", None),
         ] {
             assert!(!accepts(method, path, body), "{method} {path}");
         }
@@ -5465,9 +5447,6 @@ agreement_key = "{}"
                     Some("scalar.md") => (StatusCode::OK, "null"),
                     _ => (StatusCode::NOT_FOUND, r#"{"error":"file_not_found"}"#),
                 }
-            }))
-            .route("/v1/prs/7/diff-snapshot", get(|| async {
-                axum::Json(json!({"diff":"diff --git a/file b/file\n","head_sha":"abc","truncated":false}))
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local_port = listener.local_addr().unwrap().port();
@@ -5526,16 +5505,10 @@ agreement_key = "{}"
                 "{file}"
             );
         }
-        for (path, expected) in [
-            (
-                "/v1/file?path=missing.md",
-                json!({"status":404,"body":{"error":"file_not_found"}}),
-            ),
-            (
-                "/v1/prs/7/diff-snapshot",
-                json!({"status":200,"body":{"diff":"diff --git a/file b/file\n","head_sha":"abc","truncated":false}}),
-            ),
-        ] {
+        for (path, expected) in [(
+            "/v1/file?path=missing.md",
+            json!({"status":404,"body":{"error":"file_not_found"}}),
+        )] {
             assert_eq!(
                 service
                     .dispatch(
@@ -5551,77 +5524,6 @@ agreement_key = "{}"
                 expected
             );
         }
-        task.abort();
-        drop(service);
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[tokio::test]
-    async fn oversized_diff_snapshot_is_cut_to_the_relay_budget_instead_of_failing() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let large = "+".repeat(MAX_LOCAL_RESPONSE * 4);
-        let local = large.clone();
-        let router = Router::new().route(
-            "/v1/prs/7/diff-snapshot",
-            get(move || {
-                let diff = local.clone();
-                async move {
-                    axum::Json(json!({"diff":diff,"head_sha":"a".repeat(40),"truncated":false}))
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let local_port = listener.local_addr().unwrap().port();
-        let task = tokio::spawn(axum::serve(listener, router).into_future());
-        let home = scratch_directory.parent().unwrap().join(format!(
-            "alondra-diff-budget-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        std::fs::create_dir_all(&home).unwrap();
-        let service = Service {
-            relay: Some(relay::RelayConnector::new(Url::parse("http://127.0.0.1:1/").unwrap(), "owner".into())),
-            direct: DirectConfig::default(),
-            iroh: crate::iroh_endpoint::IrohConfig::default(),
-            iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
-            iroh_relay: tokio::sync::watch::Sender::new(None),
-            iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
-            lane: Arc::new(tokio::sync::Mutex::new(())),
-            push_transport: Default::default(),
-            #[cfg(test)]
-            envelope_clock: None,
-            client: Client::new(),
-            mac_id: "mac-test".into(),
-            signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
-            agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
-            devices: HashMap::new().into(),
-            home: home.clone(),
-            transfers: Arc::default(),
-            inflight: Arc::default(),
-            domain: None,
-            routes: None,
-            revoked: crate::revoked_devices::RevokedDevices::empty(),
-            auth: Arc::new(Auth::open(&home).unwrap()),
-            journal: Journal::open(home.join("receipts.sqlite")).unwrap(),
-            local_port,
-        };
-        let response = service
-            .dispatch(
-                "client-test",
-                &LocalRequest {
-                    method: "GET".into(),
-                    path: "/v1/prs/7/diff-snapshot".into(),
-                    body: None,
-                }, Transport::Relay,
-            )
-            .await
-            .unwrap();
-        assert_eq!(response["status"], 200);
-        assert_eq!(response["body"]["truncated"], true);
-        assert_eq!(response["body"]["head_sha"], "a".repeat(40));
-        let diff = response["body"]["diff"].as_str().unwrap();
-        assert!(!diff.is_empty() && large.starts_with(diff));
-        assert!(serde_json::to_vec(&response).unwrap().len() <= MAX_LOCAL_RESPONSE);
         task.abort();
         drop(service);
         std::fs::remove_dir_all(home).unwrap();

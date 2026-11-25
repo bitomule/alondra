@@ -47,9 +47,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
             state.selectedViewKey = document.key
         }
         edit(&state)
-        return Store(initialState: state) { MacPresentationFeature() } withDependencies: {
-            $0.viewsClient.fetchDiff = { _ in try await Task.never() }
-        }
+        return Store(initialState: state) { MacPresentationFeature() }
     }
 
     private func assertWindow<Content: View>(
@@ -632,7 +630,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         """
         let content = MacContent.markdown(MarkdownParser.segments(from: readme))
         assertWindow(size: CGSize(width: 620, height: 520)) {
-            MacContentViewer(title: "README.md", content: content, loading: false, error: nil, comments: .constant([:]))
+            MacContentViewer(title: "README.md", content: content, loading: false, error: nil)
                 .environment(\.storedFiles, files)
         }
     }
@@ -673,9 +671,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         for route in routes {
             _ = try await files.fetch(try XCTUnwrap(StoredImage.attachment(try XCTUnwrap(URL(string: route)))))
         }
-        let store = Store(initialState: state) { MacPresentationFeature() } withDependencies: {
-            $0.viewsClient.fetchDiff = { _ in try await Task.never() }
-        }
+        let store = Store(initialState: state) { MacPresentationFeature() }
         assertWindow(size: CGSize(width: 900, height: 2000), spanish: spanish, testName: testName) {
             MacServiceDetail(presentation: store).environment(\.storedFiles, files)
         }
@@ -782,76 +778,23 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 760)) { MacServiceDetail(presentation: store) }
     }
 
-    private func diff() throws -> [DiffFile] { UnifiedDiff.parse(try DiffFixture.text()) }
-
-    func test_pullRequest_changesFoldedIntoTheirSummary() throws {
-        let files = try diff()
-        let store = try presentation(detail: "pull-request-mac") { $0.diff = MacDiff(digest: "abcdef12", files: files, truncated: false) }
-        assertWindow(size: CGSize(width: 900, height: 900)) { MacServiceDetail(presentation: store) }
-    }
-
-    func test_pullRequest_changesFoldedIntoTheirSummary_spanish() throws {
-        let files = try diff()
-        let store = try presentation(detail: "pull-request-mac", spanish: true) { $0.diff = MacDiff(digest: "abcdef12", files: files, truncated: false) }
-        assertWindow(size: CGSize(width: 900, height: 900), spanish: true) { MacServiceDetail(presentation: store) }
-    }
-
-    func test_pullRequest_changesFileByFile() throws {
-        let files = try diff()
-        let anchor = try XCTUnwrap(files.first?.lines.first { $0.kind == .added }?.anchor)
-        let comments = [anchor: ActionComment(anchor: anchor, text: "Keep the long rows behind a toggle", quote: "")]
-        assertWindow(size: CGSize(width: 1100, height: 760)) {
-            MacChangesView(files: files, truncated: true, highlights: false, comments: .constant(comments))
-        }
-    }
-
-    func test_pullRequest_changesFileByFile_spanish() throws {
-        let files = try diff()
-        assertWindow(size: CGSize(width: 1100, height: 760), spanish: true) {
-            MacChangesView(files: files, truncated: true, highlights: false, comments: .constant([:]))
-        }
-    }
-
-    private func marks(_ files: [DiffFile]) -> [String: FileViewed] {
-        var marks = Dictionary(uniqueKeysWithValues: files.map { ($0.id, FileViewed.unviewed) })
-        marks["Sources/CompactRow.swift"] = .viewed
-        marks["Sources/Launch/Launch.swift"] = .viewed
-        marks["Sources/ScheduleEditor.swift"] = .changed
-        return marks
-    }
-
-    func test_pullRequest_changesWithViewedBoxes() throws {
-        let files = try diff()
-        assertWindow(size: CGSize(width: 1100, height: 760)) {
-            MacChangesView(files: files, truncated: false, highlights: false, marks: marks(files), comments: .constant([:]))
-        }
-    }
-
-    func test_pullRequest_changesWithViewedBoxes_spanish() throws {
-        let files = try diff()
-        assertWindow(size: CGSize(width: 1100, height: 760), spanish: true) {
-            MacChangesView(files: files, truncated: false, highlights: false, marks: marks(files),
-                           failedMark: "Sources/LongForm.swift", comments: .constant([:]))
-        }
-    }
-
-    private func summaryWithViewedBoxes(spanish: Bool) throws -> StoreOf<MacPresentationFeature> {
-        let files = try diff()
-        let marks = marks(files)
-        return try presentation(detail: "pull-request-mac", spanish: spanish) {
-            $0.diff = MacDiff(digest: "abcdef12", files: files, truncated: false)
-            $0.viewed = ViewedFilesFeature.State(saved: FileMarks(prID: "github.com/example/repo#12", head: "abcdef12", files: marks))
-        }
-    }
-
-    func test_pullRequest_summaryCountsViewedFiles() throws {
-        let store = try summaryWithViewedBoxes(spanish: false)
-        assertWindow(size: CGSize(width: 900, height: 900)) { MacServiceDetail(presentation: store) }
-    }
-
-    func test_pullRequest_summaryCountsViewedFiles_spanish() throws {
-        let store = try summaryWithViewedBoxes(spanish: true)
-        assertWindow(size: CGSize(width: 900, height: 900), spanish: true) { MacServiceDetail(presentation: store) }
+    /// A daemon from before the diff was dropped still sends its section: the window leaves it out.
+    func test_pullRequest_detailFromAnOlderDaemonLeavesItsChangesOut() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let url = URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
+            .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
+            .appendingPathComponent("fixtures/views/cards/pull-request-mac.json")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+        sections.removeAll { $0["id"] as? String == "diff" }
+        sections.insert(["id": "diff", "title": "Changes", "collapsed": false, "items": [[
+            "type": "content_ref", "kind": "diff", "title": "Changes", "size": 120, "digest": "abcdef12",
+            "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff", "commentable": false,
+        ]]], at: 1)
+        object["sections"] = sections
+        let older = try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
+        let store = try presentation(detail: "pull-request-mac") { $0.detailDocument = older }
+        assertWindow(size: CGSize(width: 900, height: 760)) { MacServiceDetail(presentation: store) }
     }
 
     func test_tasks_board() throws {

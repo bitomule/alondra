@@ -72,8 +72,7 @@ public struct APIRequest: Sendable, Equatable {
         let resourceRead = endpoint.path == ["capabilities"] && endpoint.method == .get
             || endpoint.path == ["changes"] && endpoint.method == .get
         let contentDetail = endpoint.method == .get && endpoint.path.count == 3
-            && ((endpoint.path[0] == "pull-requests" && endpoint.path[2] == "diff")
-                || (endpoint.path[0] == "document-revisions" && endpoint.path[2] == "content"))
+            && endpoint.path[0] == "document-revisions" && endpoint.path[2] == "content"
             && Self.validViewID(endpoint.path[1])
         let clientContract = Self.validClientContractRoute(method: endpoint.method, path: endpoint.path)
             && Self.validClientQuery(method: endpoint.method, path: endpoint.path, query: endpoint.query)
@@ -111,9 +110,6 @@ public struct APIRequest: Sendable, Equatable {
         }
         if path.first == "reports" { return validReportRoute(method: method, path: path) }
         if path.first == "interactions" { return validAttachmentContentRoute(method: method, path: path) }
-        if method == .post, path.count == 3, path[0] == "pull-requests", path[2] == "viewed-files" {
-            return validViewID(path[1])
-        }
         switch (method, path) {
         case (.get, ["capabilities"]), (.get, ["changes"]), (.get, ["files", "chunk"]), (.get, ["routes"]),
              (.post, ["actions"]), (.post, ["activity"]), (.post, ["device", "push-binding"]),

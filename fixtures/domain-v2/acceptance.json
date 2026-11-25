@@ -2867,7 +2867,7 @@
           "value": false
         }
       ],
-      "cs_evidence": ["domain::tests::free_text_response_with_or_without_options_and_attachment_bounds", "domain_api::tests::serialized_diff_fits_encrypted_relay_budget_and_reports_truncation"],
+      "cs_evidence": ["domain::tests::free_text_response_with_or_without_options_and_attachment_bounds"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },

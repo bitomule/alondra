@@ -135,7 +135,6 @@ pub trait System {
     fn marketplace(&self) -> bool;
     fn node_plugin(&self) -> Option<PathBuf>;
     fn fingerprint(&self, dir: &Path) -> Option<String>;
-    fn tool(&self, program: &str, args: &[&str]) -> Option<String>;
     fn port_owner(&self, port: u16) -> Option<String>;
     fn log_tail(&self, lines: usize) -> Vec<String>;
     fn memory(&self) -> Memory;
@@ -591,10 +590,6 @@ impl System for Real {
 
     fn fingerprint(&self, dir: &Path) -> Option<String> {
         fingerprint(dir)
-    }
-
-    fn tool(&self, program: &str, args: &[&str]) -> Option<String> {
-        output(program, args, Duration::from_secs(5))
     }
 
     fn port_owner(&self, port: u16) -> Option<String> {

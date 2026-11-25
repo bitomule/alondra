@@ -560,22 +560,6 @@ pub fn validate_skipped(at: i64) -> Outcome {
         trf!("validated on {date} · --deep checks again", "validado el {date} · --deep lo vuelve a comprobar"), None)
 }
 
-/// The oldest tuicr whose `--stdout pr <n>` Alondra relies on.
-pub const TUICR_MIN: (u32, u32) = (0, 26);
-
-pub fn tuicr_check(out: Option<&str>) -> Outcome {
-    let Some(version) = out.map(str::trim).filter(|v| !v.is_empty()) else {
-        return outcome("tuicr", "tuicr", Group::Tools, Status::Warn,
-            tr!("tuicr is missing: PR cards have no diff in the TUI", "falta tuicr: las tarjetas de PR no tienen diff en la TUI"), manual("brew install tuicr"));
-    };
-    let numbers: Vec<u32> = version.rsplit(' ').next().unwrap_or("").split('.').filter_map(|n| n.parse().ok()).collect();
-    match numbers.as_slice() {
-        [major, minor, ..] if (*major, *minor) >= TUICR_MIN => outcome("tuicr", "tuicr", Group::Tools, Status::Pass, version.to_string(), None),
-        _ => outcome("tuicr", "tuicr", Group::Tools, Status::Warn,
-            trf!("{version} is older than Alondra needs (0.26)", "{version} es más antiguo de lo que Alondra necesita (0.26)"), manual("brew upgrade tuicr")),
-    }
-}
-
 fn run_mac(env: &Env) -> Option<Outcome> {
     Some(mac_check(&env.sys.mac()))
 }
@@ -754,10 +738,6 @@ fn run_notifications(env: &Env) -> Option<Outcome> {
     Some(notifications_check(env.sys.relay(), env.sys.memory().test_push.as_ref(), devices.as_deref()))
 }
 
-fn run_tuicr(env: &Env) -> Option<Outcome> {
-    Some(tuicr_check(env.sys.tool("tuicr", &["--version"]).as_deref()))
-}
-
 /// In the order `--fix` walks them: what a later check needs (Claude, the service identity, the
 /// service itself) is repaired first.
 pub const CHECKS: &[Check] = &[
@@ -786,5 +766,4 @@ pub const CHECKS: &[Check] = &[
     Check { id: "direct", run: run_direct },
     Check { id: "devices", run: run_devices },
     Check { id: "notifications", run: run_notifications },
-    Check { id: "tuicr", run: run_tuicr },
 ];

@@ -588,70 +588,7 @@ fn reader_review_and_read_keys_use_views_actions() {
     assert_eq!(posted(&app)[0].1["action_id"], format!("read:{id}@1"));
 }
 
-#[test]
-fn canonical_pr_diff_content_ref_opens_in_the_views_reader() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    let key = "pull_request:github.com/bitomule/alondra#154";
-    let route = "/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff";
-    let mut view = view_fixture("card-question.json");
-    view["key"] = serde_json::json!(key);
-    view["sections"] = serde_json::json!([{
-        "id":"diff", "collapsed":false, "items":[{
-            "type":"content_ref", "kind":"diff", "title":"Diff", "size":0,
-            "digest":"head-154", "fetch":route, "commentable":true
-        }]
-    }]);
-    app.view_navigation.push(key.into());
-    app.card_view = Some(serde_json::from_value(view).unwrap());
-    app.open_reader();
-    assert!(app.loading.contains(&diff_key(route, "head-154")));
-    load_diff_at(&mut app, route, "head-154", "diff --git a/a b/a\n@@ -1 +1 @@\n-broken\n+fixed\n", false);
-    let shown = screen(&mut app, 120, 30);
-    assert!(shown.contains("fixed") && shown.contains("Changes · 1 file · +1 −1"), "{shown}");
-}
-
-const PR_DIFF: &str = include_str!("../../../../../fixtures/diffs/pull-request.diff");
-const DELIVERY_DIFF: &str = "/pull-requests/github.com%2Fexample%2Frepo%2312/diff";
-const DELIVERY_HEAD: &str = "abcdef12";
-
-fn load_diff(app: &mut App, route: &str, text: &str, truncated: bool) {
-    load_diff_at(app, route, DELIVERY_HEAD, text, truncated);
-}
-
-/// The diff the daemon answers for `route` at `head`.
-fn load_diff_at(app: &mut App, route: &str, head: &str, text: &str, truncated: bool) {
-    app.on_msg(Msg::File {
-        route: diff_key(route, head),
-        result: Ok(files::FileBody::Diff(std::sync::Arc::new(unified_diff::Diff::read(text, truncated)))),
-    });
-}
-
-/// The screen's rows, and its buffer to read colours from.
-fn diff_rows(app: &mut App, width: u16, height: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
-    let backend = ratatui::backend::TestBackend::new(width, height);
-    let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|frame| draw::draw(frame, app)).unwrap();
-    let buffer = terminal.backend().buffer().clone();
-    let rows = (0..height)
-        .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
-        .collect();
-    (rows, buffer)
-}
-
-fn row_with<'a>(rows: &'a [String], text: &str) -> Option<&'a String> {
-    rows.iter().find(|row| row.contains(text))
-}
-
-/// The style of the cell where `text` starts on screen.
-fn style_at(rows: &[String], buffer: &ratatui::buffer::Buffer, text: &str) -> ratatui::style::Style {
-    let (y, row) = rows.iter().enumerate().find(|(_, row)| row.contains(text)).unwrap_or_else(|| panic!("no {text}"));
-    let x = row[..row.find(text).unwrap()].chars().count();
-    buffer[(x as u16, y as u16)].style()
-}
-
-/// The PR delivery card's detail, as the inbox shows it, with `d` offered for its diff.
+/// The PR delivery card's detail, as the inbox shows it.
 fn delivery_detail() -> App {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
@@ -662,166 +599,20 @@ fn delivery_detail() -> App {
     app
 }
 
-fn cursor_kind(app: &App) -> md::Kind {
-    let reader = app.reader.as_ref().unwrap();
-    reader.blocks[reader.cursor].kind.clone()
-}
-
 #[test]
-fn pr_detail_summarises_the_changes_and_leaves_the_diff_to_d() {
+fn a_pr_delivery_shows_no_changes_and_d_opens_nothing() {
     let mut app = delivery_detail();
-    load_diff(&mut app, DELIVERY_DIFF, PR_DIFF, false);
     let shown: String = view_render::document_lines(app.card_view.as_ref().unwrap(), 120, false, false)
         .iter()
         .map(|line| format!("{line}\n"))
         .collect();
-    assert!(shown.contains("Changes · 4 files · +120 −30 · d view changes"), "{shown}");
-    assert!(!shown.contains("compactRow") && !shown.contains("ScheduleEditor.swift"), "{shown}");
-    assert!(draw::footer_keys(&app).iter().any(|(key, label)| key == "d" && label == "view changes"));
-}
-
-/// The PR delivery's detail opened as the daemon sends it, without the card's count of changes.
-fn uncounted_detail() -> App {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    let mut view = view_fixture("card-delivery.json");
-    view["sections"][0]["items"][0]["content_row"] = serde_json::Value::Null;
-    let key = view["key"].as_str().unwrap().to_owned();
-    app.view_navigation.push(key.clone());
-    app.on_msg(Msg::ViewCard { key, result: Ok(serde_json::from_value(view).unwrap()) });
-    app
-}
-
-fn changes_label(app: &App) -> String {
-    let changes = |route: &str, head: &str| match app.files.get(&diff_key(route, head)) {
-        Some(Ok(files::FileBody::Diff(diff))) => Some(md::diff::diff_counts(diff)),
-        _ => None,
-    };
-    view_render::document_lines_with(app.card_view.as_ref().unwrap(), 120, false, false, &changes)
-        .iter()
-        .map(|line| format!("{line}\n"))
-        .collect()
-}
-
-#[test]
-fn a_detail_without_the_cards_count_fetches_the_diff_and_counts_it() {
-    let mut app = uncounted_detail();
-    assert!(app.loading.contains(&diff_key(DELIVERY_DIFF, DELIVERY_HEAD)), "opening the detail asks for its diff");
-    assert!(changes_label(&app).contains("Changes · d view changes"), "{}", changes_label(&app));
-    load_diff(&mut app, DELIVERY_DIFF, PR_DIFF, false);
-    assert!(changes_label(&app).contains("Changes · 6 files · +8 −6 · d view changes"), "{}", changes_label(&app));
-}
-
-#[test]
-fn a_new_head_reads_the_diff_again() {
-    let mut app = uncounted_detail();
-    load_diff(&mut app, DELIVERY_DIFF, PR_DIFF, false);
-    let mut pushed = serde_json::to_value(app.card_view.clone().unwrap()).unwrap();
-    pushed["sections"][2]["items"][0]["digest"] = serde_json::json!("fedcba98");
-    let key = pushed["key"].as_str().unwrap().to_owned();
-    app.on_msg(Msg::ViewCard { key, result: Ok(serde_json::from_value(pushed).unwrap()) });
-    assert!(app.loading.contains(&diff_key(DELIVERY_DIFF, "fedcba98")), "a new head reads the diff again");
-    assert!(changes_label(&app).contains("Changes · d view changes"), "the old count is not shown for the new head: {}", changes_label(&app));
-}
-
-#[test]
-fn d_on_a_card_detail_opens_its_pr_diff_by_file() {
-    let mut app = delivery_detail();
-    press(&mut app, KeyCode::Char('d'));
-    assert!(app.loading.contains(&diff_key(DELIVERY_DIFF, DELIVERY_HEAD)), "the card's diff is fetched as the PR's diff");
-    let reader = app.reader.as_ref().expect("d opens the reader");
-    assert!(
-        reader.parts.iter().any(|part| matches!(part,
-            Part::Diff { route, id, head } if route == DELIVERY_DIFF && id == "github.com/example/repo#12" && head == "abcdef12")),
-        "a card's diff is read as the PR's diff, not as a file"
-    );
-    load_diff(&mut app, DELIVERY_DIFF, PR_DIFF, false);
-    let (rows, buffer) = diff_rows(&mut app, 110, 60);
-    let screen = rows.join("\n");
-    assert!(screen.contains("Changes · 6 files · +8 −6"), "{screen}");
-    for entry in ["M  Sources/ScheduleEditor.swift  +3 −3", "A  Sources/CompactRow.swift  +4 −0",
-        "D  Sources/LongForm.swift  +0 −2", "R  Old/Launch.swift → Sources/Launch/Launch.swift",
-        "R  Sources/Settings.swift → Sources/Preferences.swift  +1 −1", "B  Assets/icon.png"] {
-        assert!(screen.contains(entry), "{entry}: {screen}");
-    }
-    assert!(matches!(cursor_kind(&app), md::Kind::DiffEntry(header) if header.path == "Sources/ScheduleEditor.swift"),
-        "d puts the cursor on the list of files");
-    assert!(screen.contains("⌄ M  Sources/ScheduleEditor.swift  +3 −3"), "{screen}");
-    assert!(screen.contains("@@ -10,5 +10,5 @@ struct ScheduleEditor: View {"), "{screen}");
-    let context = row_with(&rows, "var body: some View {").unwrap();
-    assert!(context.contains(" 10  10   "), "old and new numbers: {context}");
-    let removed = row_with(&rows, "Form { longRows }").unwrap();
-    assert!(removed.contains(" 11     -"), "a removed line has only its old number: {removed}");
-    let added = row_with(&rows, "Form { compactRow }").unwrap();
-    assert!(added.contains("      11 +"), "an added line has only its new number: {added}");
-    use ratatui::style::Color;
-    assert_eq!(style_at(&rows, &buffer, "Form { compactRow }").fg, Some(Color::Green));
-    assert_eq!(style_at(&rows, &buffer, "Form { compactRow }").bg, Some(Color::Reset));
-    assert_eq!(style_at(&rows, &buffer, "compactRow").bg, Some(Color::Indexed(22)), "what changed inside the line is marked");
-    assert_eq!(style_at(&rows, &buffer, "longRows").bg, Some(Color::Indexed(52)));
-    assert_eq!(style_at(&rows, &buffer, "Form { longRows }").fg, Some(Color::Red));
-    assert!(screen.contains("› B  Assets/icon.png · Binary file"), "a binary starts folded: {screen}");
-    assert!(screen.contains("› R  Old/Launch.swift → Sources/Launch/Launch.swift · Renamed, no changes"), "{screen}");
-}
-
-#[test]
-fn files_fold_with_enter_and_brackets_jump_between_them() {
-    let mut app = delivery_detail();
-    press(&mut app, KeyCode::Char('d'));
-    load_diff(&mut app, DELIVERY_DIFF, PR_DIFF, false);
-    diff_rows(&mut app, 110, 60);
+    assert!(!shown.contains("▤ Changes") && !shown.contains("view changes") && !shown.contains("▤ Diff"), "{shown}");
     let footer = draw::footer_keys(&app);
-    assert!(footer.iter().any(|(key, label)| key == "]" && label == "next file"), "{footer:?}");
-    assert!(footer.iter().any(|(key, label)| key == "[" && label == "previous file"), "{footer:?}");
-    assert!(footer.iter().any(|(key, label)| key == "⏎" && label == "go to the file"), "{footer:?}");
-    let header = |app: &App| match cursor_kind(app) {
-        md::Kind::DiffFile(header) => header.path,
-        other => panic!("not on a file: {other:?}"),
-    };
-    press(&mut app, KeyCode::Char(']'));
-    assert_eq!(header(&app), "Sources/ScheduleEditor.swift");
-    let (shown, _) = diff_rows(&mut app, 110, 20);
-    let top = shown.iter().position(|row| row.contains("⌄ M  Sources/ScheduleEditor.swift"));
-    assert!(top.is_some_and(|row| row < 4), "the file comes to the top: {shown:#?}");
-    assert!(draw::footer_keys(&app).iter().any(|(key, label)| key == "⏎" && label == "fold the file"));
-    press(&mut app, KeyCode::Enter);
-    let (shown, _) = diff_rows(&mut app, 110, 60);
-    let screen = shown.join("\n");
-    assert!(screen.contains("› M  Sources/ScheduleEditor.swift") && !screen.contains("Form { compactRow }"), "{screen}");
-    press(&mut app, KeyCode::Enter);
-    let (shown, _) = diff_rows(&mut app, 110, 60);
-    assert!(shown.join("\n").contains("Form { compactRow }"), "enter unfolds it again");
-    press(&mut app, KeyCode::Char(']'));
-    assert_eq!(header(&app), "Sources/CompactRow.swift");
-    press(&mut app, KeyCode::Char('['));
-    assert_eq!(header(&app), "Sources/ScheduleEditor.swift");
-    press(&mut app, KeyCode::Char('j'));
-    press(&mut app, KeyCode::Char('j'));
-    press(&mut app, KeyCode::Char('c'));
-    assert!(
-        matches!(app.composer.as_ref().map(|composer| &composer.target),
-            Some(Target::Comment { quote, .. }) if quote == "Sources/ScheduleEditor.swift:11 Form { longRows }"),
-        "a comment on a diff line quotes its file and line"
-    );
-}
-
-#[test]
-fn large_files_start_folded_and_open_from_the_list_and_a_cut_diff_says_so() {
-    let mut app = delivery_detail();
+    assert!(!footer.iter().any(|(key, label)| key == "d" || label == "view changes"), "{footer:?}");
     press(&mut app, KeyCode::Char('d'));
-    let lines: String = (0..=unified_diff::FOLDED_CHANGE_THRESHOLD).map(|n| format!("+generated line {n}\n")).collect();
-    let text = format!("diff --git a/big.txt b/big.txt\nnew file mode 100644\n@@ -0,0 +1,401 @@\n{lines}");
-    load_diff(&mut app, DELIVERY_DIFF, &text, true);
-    let (shown, _) = diff_rows(&mut app, 110, 40);
-    let screen = shown.join("\n");
-    assert!(screen.contains("Part of the diff is not shown. Open the PR on GitHub to read the rest."), "{screen}");
-    assert!(screen.contains("› A  big.txt  +401 −0 · Large file · ⏎ shows it"), "{screen}");
-    assert!(!screen.contains("generated line 0"), "{screen}");
-    press(&mut app, KeyCode::Enter);
-    let (shown, _) = diff_rows(&mut app, 110, 40);
-    let screen = shown.join("\n");
-    assert!(screen.contains("⌄ A  big.txt") && screen.contains("generated line 0"), "{screen}");
+    assert!(app.reader.is_none(), "d opens nothing");
+    app.open_reader();
+    assert!(!app.loading.iter().any(|route| route.contains("/diff")), "the reader never asks for a diff: {:?}", app.loading);
 }
 
 /// The key bar with `view` open as the detail of what is selected.
@@ -831,19 +622,6 @@ fn footer_on(view: alondra_views::View) -> Vec<(String, String)> {
     app.view_navigation.push(view.key.clone());
     app.card_view = Some(view);
     crate::tui::draw::footer_keys(&app)
-}
-
-#[test]
-fn diff_card_footer_names_the_view_changes_shortcut() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let mut view = view_fixture("card-question.json");
-    view["key"] = serde_json::json!("pull_request:owner/repo#1");
-    view["sections"] = serde_json::json!([{"id":"diff", "collapsed":false, "items":[{
-        "type":"content_ref", "kind":"diff", "title":"Diff", "size":0,
-        "digest":"head-1", "fetch":"/diff", "commentable":true
-    }]}]);
-    let keys = footer_on(serde_json::from_value(view).unwrap());
-    assert!(keys.iter().any(|(key, label)| key == "d" && label == "view changes"));
 }
 
 #[test]
@@ -874,43 +652,6 @@ fn view_footer_deduplicates_actions_and_names_merge_methods_for_people() {
     assert_eq!(keys.iter().filter(|(_, label)| label == "Ask about the PR").count(), 1);
     assert!(keys.iter().any(|(key, label)| key == "1" && label == "Squash and merge"));
     assert!(keys.iter().any(|(key, label)| key == "2" && label == "Merge commit"));
-}
-
-#[test]
-fn d_on_a_selected_delivery_opens_the_views_diff_without_a_clone() {
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    let pr_id = "github.com/bitomule/alondra#154";
-    let key = format!("pull_request:{pr_id}");
-    let route = "/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff";
-    let mut delivery = view_fixture("card-question.json");
-    delivery["key"] = serde_json::json!("card:delivery-1");
-    delivery["sections"][0]["items"][0]["actions"] = serde_json::json!([]);
-    delivery["sections"][0]["items"][0]["more"] = serde_json::json!([{
-        "id":"", "label":"Review local clone", "style":"plain", "presentation":"button",
-        "input":{"kind":"none"}, "attachments":false, "enabled":true,
-        "link":{"kind":"local", "local":{"kind":"review_clone",
-            "repo":"owner/alondra-no-clone-fixture-999", "branch":"head-154", "pr":154,
-            "pr_id":pr_id}}
-    }]);
-    app.view_navigation.push("card:delivery-1".into());
-    app.card_view = Some(serde_json::from_value(delivery).unwrap());
-    press(&mut app, KeyCode::Char('m'));
-    press(&mut app, KeyCode::Char('1'));
-    assert_eq!(app.view_navigation.last(), Some(&key));
-    assert_eq!(app.reader_after_view.as_deref(), Some(key.as_str()));
-
-    let mut detail = view_fixture("card-question.json");
-    detail["key"] = serde_json::json!(key);
-    detail["sections"] = serde_json::json!([{"id":"diff", "collapsed":false, "items":[{
-        "type":"content_ref", "kind":"diff", "title":"Diff", "size":0,
-        "digest":"head-154", "fetch":route, "commentable":true
-    }]}]);
-    app.on_msg(Msg::ViewCard {
-        key,
-        result: Ok(serde_json::from_value(detail).unwrap()),
-    });
-    assert!(app.reader.is_some() && app.loading.contains(&diff_key(route, "head-154")));
 }
 
 #[test]
@@ -1189,68 +930,6 @@ fn view_url_links_only_open_https_github_hosts() {
         assert!(!inbox::safe_github_url(url), "{url}");
     }
 }
-#[test]
-fn tuicr_comments_use_the_views_changes_action() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    let pr = "github.com/bitomule/alondra#154";
-    let key = format!("pull_request:{pr}");
-    let mut view = view_fixture("card-question.json");
-    view["key"] = serde_json::json!(key);
-    view["sections"][0]["items"][0]["actions"] = serde_json::json!([{
-        "id": format!("changes:{pr}@1~abcdef12"),
-        "label": "Request changes", "style": "secondary", "presentation": "button",
-        "input": {"kind": "text", "placeholder": "Describe the changes", "required": false, "multiline": true},
-        "attachments": true, "enabled": true
-    }]);
-    app.view_navigation.push(key.clone());
-    app.card_view = Some(serde_json::from_value(view).unwrap());
-    app.reviewed(
-        Key("interaction:delivery-1".into()),
-        PrId(pr.into()),
-        154,
-        Ok("Reviewed.\n".into()),
-    );
-    assert!(posted(&app).is_empty() && flash(&app).contains("without comments"));
-    app.reviewed(
-        Key("interaction:delivery-1".into()),
-        PrId(pr.into()),
-        154,
-        Ok("1. `src/a.rs:4` - rename it\n".into()),
-    );
-    let requests = posted(&app);
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].0, "/actions");
-    assert_eq!(requests[0].1["data_epoch"], "test-epoch");
-    assert_eq!(
-        requests[0].1["action_id"],
-        format!("changes:{pr}@1~abcdef12")
-    );
-    assert_eq!(
-        requests[0].1["input"]["text"],
-        "1. `src/a.rs:4` - rename it"
-    );
-}
-
-#[test]
-fn review_clone_flow_keeps_delivery_selection_and_uses_canonical_pr_id() {
-    let selected = Key("interaction:delivery-1".into());
-    let dir = std::path::PathBuf::from("/private/tmp/synthetic-clone");
-    let flow = inbox::review_clone_flow(
-        &selected,
-        "github.com/bitomule/alondra#154",
-        154,
-        dir.clone(),
-    )
-    .unwrap();
-    assert!(
-        matches!(flow, Flow::Review { key, pr, number: 154, dir: path }
-        if key == selected && pr.0 == "github.com/bitomule/alondra#154" && path == dir)
-    );
-    assert!(inbox::review_clone_flow(&selected, "../wrong", 154, dir).is_none());
-}
-
 #[test]
 fn schedules_screen_has_its_own_footer_with_the_create_hint() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);

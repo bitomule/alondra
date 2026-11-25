@@ -26,7 +26,6 @@ swift_test(
     srcs = glob(["Tests/**/*.swift"]),
     data = [
         "Resources/AlondraDesign.xcstrings",
-        "//fixtures/diffs",
         "//fixtures/markdown",
     ],
     deps = [

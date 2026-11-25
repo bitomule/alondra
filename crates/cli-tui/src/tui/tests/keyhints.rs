@@ -202,8 +202,6 @@ fn reader_on(parts: Vec<Part>, block_with: usize) -> App {
         total: 0,
         find: None,
         picking: false,
-        folds: HashMap::new(),
-        to_diff: false,
         show_from: None,
     });
     app.rebuild_reader();

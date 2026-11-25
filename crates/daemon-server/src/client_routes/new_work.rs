@@ -26,8 +26,6 @@ pub(crate) trait Github: Send + Sync + 'static {
         -> Answer<'a, Result<(), crate::domain_github::GhFailure>>;
     /// Whether GitHub has the PR open, closed or merged now.
     fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_rules::PrState, String>>;
-    fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Answer<'a, Result<alondra_engine_ports::github::Marks, String>>;
-    fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> Answer<'a, Result<(), String>>;
 }
 
 /// GitHub as the root registered it.
@@ -58,14 +56,6 @@ impl Github for Ported {
                 other => Err(format!("gh reported an unknown PR state {other:?}")),
             }
         })
-    }
-
-    fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Answer<'a, Result<alondra_engine_ports::github::Marks, String>> {
-        self.0.reads.viewed_files(pr)
-    }
-
-    fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> Answer<'a, Result<(), String>> {
-        self.0.reads.set_viewed(host, node, path, viewed)
     }
 }
 

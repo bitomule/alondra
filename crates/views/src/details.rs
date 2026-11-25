@@ -130,7 +130,7 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
         context,
         vec![],
     );
-    let mut facts = vec![
+    let facts = vec![
         Fact {
             kind: None,
             label: t!(context.lang, "Repository", "Repositorio").into(),
@@ -155,15 +155,6 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
             link: None,
         },
     ];
-    if let Some(live) = live.filter(|live| live.changed_files > 0) {
-        facts.push(Fact {
-            kind: None,
-            label: t!(context.lang, "Changes", "Cambios").into(),
-            value: super::card::changes_summary(live, context.lang),
-            tone: None,
-            link: None,
-        });
-    }
     let status = super::pr_status::label(super::pr_status::status(pr, live), context.lang);
     view.sections.push(common::section(
         "status",
@@ -222,18 +213,6 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
             })],
         ));
     }
-    view.sections.push(common::section(
-        "diff",
-        None,
-        vec![Item::ContentRef(ContentRef {
-            kind: ContentKind::Diff,
-            title: t!(context.lang, "Diff", "Diferencias").into(),
-            size: 0,
-            digest: Some(pr.head.clone()),
-            fetch: format!("/pull-requests/{}/diff", alondra_core::id::path_segment(id)),
-            commentable: true,
-        })],
-    ));
     if pr.state != PrState::Open {
         view.notices.push(Notice {
             text: if pr.state == PrState::Merged {

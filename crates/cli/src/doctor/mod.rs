@@ -45,7 +45,6 @@ pub enum Group {
     Service,
     Claude,
     Devices,
-    Tools,
 }
 
 /// A repair `doctor --fix` can carry out itself.

@@ -94,7 +94,7 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertEqual(card.kind, .review)
         XCTAssertEqual(card.need, "Review the result")
         XCTAssertEqual(card.title, "Review the beta candidate")
-        XCTAssertEqual(card.contentRow?.kind, "diff")
+        XCTAssertNil(card.contentRow, "a pull request has no line of changes to open")
         XCTAssertTrue(card.blockedBy.isEmpty, "a delivery held back is no card, so the golden review has nothing holding it")
         XCTAssertNotNil(card.reply)
         XCTAssertEqual(card.actions.first?.role, .advance)

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "mac",
-  "version": "v12906b14ef2516a9",
+  "version": "v536f8d3dbbe2f769",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
@@ -101,13 +101,7 @@
           "need": "Review the result",
           "title_is_separate": true,
           "why": "This pull request's old address now leads to a different pull request. “Remove from Alondra” doesn't close or merge the pull request.\n\nTwo checks passed; one is still running, and the branch is up to date with main.",
-          "meta": "example/repo · feature/compact-schedule-editor → main · 4 files · +120 −30 · 2 of 3 passed, 1 running",
-          "content_row": {
-            "kind": "diff",
-            "icon": "pull_request",
-            "label": "Changes",
-            "summary": "4 files · +120 −30"
-          },
+          "meta": "example/repo · feature/compact-schedule-editor → main · 2 of 3 passed, 1 running",
           "link": {
             "kind": "view",
             "key": "card:hf-weekly-2026-09-30"
@@ -186,22 +180,6 @@
               "state": "pass"
             }
           ]
-        }
-      ]
-    },
-    {
-      "id": "diff",
-      "title": "Diff",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "content_ref",
-          "kind": "diff",
-          "title": "Diff",
-          "size": 0,
-          "digest": "abcdef12",
-          "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
-          "commentable": true
         }
       ]
     },

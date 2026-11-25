@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "mac",
-  "version": "v33a6506dcd11c26e",
+  "version": "v2a6a5981d6a4e1da",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
@@ -101,13 +101,7 @@
           "need": "Revisa el resultado",
           "title_is_separate": true,
           "why": "La dirección antigua de este PR lleva ahora a otro PR. «Quitar de Alondra» no cierra el PR ni hace merge.\n\nTwo checks passed; one is still running, and the branch is up to date with main.",
-          "meta": "example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · 2 de 3 correctos, 1 en marcha",
-          "content_row": {
-            "kind": "diff",
-            "icon": "pull_request",
-            "label": "Cambios",
-            "summary": "4 archivos · +120 −30"
-          },
+          "meta": "example/repo · feature/compact-schedule-editor → main · 2 de 3 correctos, 1 en marcha",
           "link": {
             "kind": "view",
             "key": "card:hf-weekly-2026-09-30"
@@ -186,22 +180,6 @@
               "state": "pass"
             }
           ]
-        }
-      ]
-    },
-    {
-      "id": "diff",
-      "title": "Diferencias",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "content_ref",
-          "kind": "diff",
-          "title": "Diferencias",
-          "size": 0,
-          "digest": "abcdef12",
-          "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
-          "commentable": true
         }
       ]
     },

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "mac",
-  "version": "ve4e392637373a382",
+  "version": "vaf50f78ddf7e64c4",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
@@ -101,13 +101,7 @@
           "need": "Revisa el resultado",
           "title_is_separate": true,
           "why": "Two checks passed; one is still running, and the branch is up to date with main.",
-          "meta": "example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · 2 de 3 correctos, 1 en marcha",
-          "content_row": {
-            "kind": "diff",
-            "icon": "pull_request",
-            "label": "Cambios",
-            "summary": "4 archivos · +120 −30"
-          },
+          "meta": "example/repo · feature/compact-schedule-editor → main · 2 de 3 correctos, 1 en marcha",
           "reply": {
             "id": "changes:github.com/example/repo#12@6~abcdef12",
             "label": "Pedir cambios",
@@ -252,22 +246,6 @@
               "state": "pass"
             }
           ]
-        }
-      ]
-    },
-    {
-      "id": "diff",
-      "title": "Diferencias",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "content_ref",
-          "kind": "diff",
-          "title": "Diferencias",
-          "size": 0,
-          "digest": "abcdef12",
-          "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
-          "commentable": true
         }
       ]
     },

@@ -54,7 +54,6 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         .route("/capabilities", get(capabilities::<H>))
         .route("/changes", get(changes::<H>))
         .route("/delivery-attempts", get(delivery_evidence::<H>))
-        .route("/pull-requests/{id}/diff", get(pull_request_diff::<H>))
         .route("/requests", post(request_resource::<H>))
         .route("/tasks/{id}", patch(resource_command::<H>))
         .route("/questions", post(resource_command::<H>))
@@ -316,143 +315,6 @@ pub(crate) fn task_actions_inner(domain: &DomainRuntime, id: String) -> Response
         None => domain_error(DomainError::new("not_found", "task does not exist")),
     }
 }
-use alondra_engine_ports::github::MAX_PR_DIFF_BYTES as MAX_DIFF_BYTES;
-const MAX_RELAY_DIFF_RESPONSE: usize = 120 * 1024;
-
-async fn pull_request_diff<H: DomainHost>(
-    State(host): State<Arc<H>>,
-    signed: Option<Extension<Signed>>,
-    Path(id): Path<String>,
-) -> Response {
-    if !signed_read(&*host, &signed) {
-        return unsigned_read();
-    }
-    let response = pull_request_diff_inner(host.domain(), id).await;
-    if !signed_read(&*host, &signed) {
-        return unsigned_read();
-    }
-    response
-}
-
-pub(crate) async fn pull_request_diff_inner(domain: &DomainRuntime, id: String) -> Response {
-    let Some(github) = domain.ports().port::<alondra_engine_ports::github::GitHub>() else {
-        return domain_error(DomainError::new("external_read_failed", "could not verify PR head"));
-    };
-    pull_request_diff_from(domain, id, github.reads.as_ref()).await
-}
-
-/// The diff at the registered head, with the viewed mark GitHub keeps for each file when it gives
-/// them for that same head: a mark that cannot be read never holds back the diff.
-pub(crate) async fn pull_request_diff_from(domain: &DomainRuntime, id: String, gh: &dyn alondra_engine_ports::github::Gh) -> Response {
-    let state = match domain.state() {
-        Ok(state) => state,
-        Err(_) => return storage_error(),
-    };
-    let Some(pr) = state.pull_requests.get(&PrId(id)) else {
-        return domain_error(DomainError::new("not_found", "pull request does not exist"));
-    };
-    // The registered host/repository/number is the identity. Never interpret a bare
-    // numeric PR or an arbitrary URL supplied by a reader.
-    let url = format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number);
-    let expected_head = pr.head.clone();
-    let before = match live_head(gh, &url).await {
-        Ok(head) => head,
-        Err(error) => return error,
-    };
-    if before != expected_head {
-        return domain_error(DomainError::new("stale_head", "registered PR head changed"));
-    }
-    let (diff, marks) = tokio::join!(bounded_diff(gh, &url), gh.viewed_files(pr));
-    let (bytes, truncated) = match diff {
-        Ok(result) => result,
-        Err(error) => return domain_error(error),
-    };
-    let marks = match marks {
-        Ok(marks) if marks.head == before => Some(marks.files),
-        Ok(_) => None,
-        Err(error) => {
-            log!("could not read the viewed files of {url}: {error}");
-            None
-        }
-    };
-    let after = match live_head(gh, &url).await {
-        Ok(head) => head,
-        Err(error) => return error,
-    };
-    if after != before {
-        return domain_error(DomainError::new(
-            "stale_head",
-            "PR head changed while loading diff",
-        ));
-    }
-    let mut diff = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_DIFF_BYTES)]).into_owned();
-    if truncated {
-        while diff.ends_with('\u{fffd}') {
-            diff.pop();
-        }
-    }
-    let mut body = json!({"pr_id":pr.id,"host":pr.host,"repository":pr.repository,
-        "number":pr.number,"head":before,"diff":diff,"truncated":truncated});
-    if let Some(marks) = marks {
-        body["files"] = json!(marks);
-    }
-    bound_diff_json(&mut body);
-    Json(body).into_response()
-}
-
-pub(crate) fn bound_diff_json(body: &mut Value) {
-    // Bound the *encoded JSON*, not source bytes: backslashes/control chars can
-    // expand substantially when relayed. All readers receive an explicit
-    // truncated flag rather than a transport-level 502.
-    let too_big = |body: &Value| serde_json::to_vec(body).is_ok_and(|encoded| encoded.len() > MAX_RELAY_DIFF_RESPONSE);
-    if body.get("files").is_some() {
-        let mut bare = body.clone();
-        bare["diff"] = json!("");
-        if too_big(&bare) {
-            body.as_object_mut().map(|fields| fields.remove("files"));
-        }
-    }
-    while too_big(body) {
-        let Some(diff) = body.get("diff").and_then(Value::as_str) else {
-            break;
-        };
-        if diff.is_empty() {
-            break;
-        }
-        let mut cut = diff.len() * 3 / 4;
-        while cut > 0 && !diff.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        let replacement = diff[..cut].to_owned();
-        body["diff"] = json!(replacement);
-        body["truncated"] = json!(true);
-        keep_shown_marks(body);
-    }
-}
-
-/// Drops the marks of the files a cut diff no longer shows.
-fn keep_shown_marks(body: &mut Value) {
-    let shown = diff_paths(body["diff"].as_str().unwrap_or_default());
-    if let Some(files) = body.get_mut("files").and_then(Value::as_array_mut) {
-        files.retain(|file| file["path"].as_str().is_some_and(|path| shown.contains(path)));
-    }
-}
-
-/// The paths each `diff --git a/OLD b/NEW` header names, both sides of a rename.
-fn diff_paths(diff: &str) -> std::collections::HashSet<String> {
-    let mut paths = std::collections::HashSet::new();
-    for names in diff.lines().filter_map(|line| line.strip_prefix("diff --git a/")) {
-        let half = names.len().saturating_sub(3) / 2;
-        if names.len() % 2 == 1 && names.get(half..half + 3) == Some(" b/") && names[..half] == names[half + 3..] {
-            paths.insert(names[..half].to_owned());
-        } else if let Some((old, new)) = names.split_once(" b/") {
-            paths.insert(old.to_owned());
-            paths.insert(new.to_owned());
-        }
-    }
-    paths
-}
-
 pub(crate) async fn bounded_diff(gh: &dyn alondra_engine_ports::github::Gh, url: &str) -> Result<(Vec<u8>, bool), DomainError> {
     use alondra_engine_ports::github::DiffError;
     gh.diff(url).await.map(|diff| (diff.bytes, diff.truncated)).map_err(|error| {
@@ -465,17 +327,6 @@ pub(crate) async fn bounded_diff(gh: &dyn alondra_engine_ports::github::Gh, url:
     })
 }
 
-async fn live_head(gh: &dyn alondra_engine_ports::github::Gh, url: &str) -> Result<String, Response> {
-    use alondra_engine_ports::github::HeadError;
-    gh.head_oid(url).await.map_err(|error| {
-        let message = match error {
-            HeadError::Unavailable(_) => "could not verify PR head",
-            HeadError::InvalidResponse => "invalid PR head response",
-            HeadError::InvalidHead => "invalid PR head",
-        };
-        domain_error(DomainError::new("external_read_failed", message))
-    })
-}
 async fn changes<H: DomainHost>(
     State(host): State<Arc<H>>,
     signed: Option<Extension<Signed>>,
@@ -544,12 +395,6 @@ pub(crate) async fn encrypted_read_runtime(
         delivery_evidence_inner(domain, query)
     } else if path == "/capabilities" {
         capabilities_inner(domain)
-    } else if let Some(id) = path.strip_prefix("/pull-requests/")
-        .and_then(|suffix| suffix.strip_suffix("/diff")) {
-        let Some(id) = decoded_pull_request_id(id) else {
-            anyhow::bail!("unapproved encrypted domain read path");
-        };
-        pull_request_diff_inner(domain, id).await
     } else if let Some((interaction, attachment, query)) = attachment_content_path(path) {
         attachment_content_inner(domain, home, interaction, attachment, Some(query)).await
     } else if let Some((id, query)) = path.strip_prefix("/document-revisions/")
@@ -956,7 +801,6 @@ pub(crate) fn approved_resource_read_path(path: &str) -> bool {
         || attachment_content_path(path).is_some()
         || path == "/capabilities"
         || path.strip_prefix("/delivery-attempts?").is_some_and(|query| delivery_evidence_query(query).is_some())
-        || path.strip_prefix("/pull-requests/").and_then(|s| s.strip_suffix("/diff")).is_some_and(encoded_pull_request_id)
         || path.strip_prefix("/document-revisions/").and_then(|s| s.split_once("/content?"))
             .is_some_and(|(id, query)| valid_resource_id(id) && document_content_query(query).is_some())
 }
@@ -967,10 +811,6 @@ fn valid_resource_id(value: &str) -> bool {
 
 fn decode_path_id(value: &str) -> Option<String> {
     percent_decoded(value).filter(|decoded| valid_resource_id(decoded))
-}
-
-pub(crate) fn encoded_pull_request_id(raw: &str) -> bool {
-    decoded_pull_request_id(raw).is_some()
 }
 
 /// A PR id is the registered `host/owner/repo#number`, so it travels percent-encoded once.
@@ -1714,39 +1554,6 @@ mod tests {
         drop(host);
         std::fs::remove_dir_all(home).unwrap();
     }
-    #[test]
-    fn serialized_diff_fits_encrypted_relay_budget_and_reports_truncation() {
-        let mut body = json!({"pr_id":"pr-a","host":"github.com","repository":"owner/repo",
-            "number":1,"head":"a".repeat(40),"diff":"\\\n\t".repeat(100_000),
-            "truncated":false});
-        bound_diff_json(&mut body);
-        assert!(body["truncated"].as_bool().unwrap());
-        assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_RELAY_DIFF_RESPONSE);
-        assert!(body["diff"].as_str().unwrap().chars().count() > 0);
-    }
-    #[test]
-    fn a_cut_diff_keeps_only_the_marks_of_the_files_it_still_shows() {
-        let file = |path: &str| format!("diff --git a/{path} b/{path}\n{}", "+line\n".repeat(10_000));
-        let diff = format!("{}diff --git a/old name.rs b/new name.rs\n+x\n{}{}", file("src/a.rs"), file("src/b.rs"), file("src/c.rs"));
-        let marks = ["src/a.rs", "new name.rs", "src/b.rs", "src/c.rs"].map(|path| json!({"path": path, "viewed": "viewed"}));
-        let mut body = json!({"pr_id":"pr-a","head":"a".repeat(40),"diff":diff,"truncated":false,"files":marks});
-        bound_diff_json(&mut body);
-        assert!(body["truncated"].as_bool().unwrap());
-        assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_RELAY_DIFF_RESPONSE);
-        let shown = diff_paths(body["diff"].as_str().unwrap());
-        let kept: Vec<_> = body["files"].as_array().unwrap().iter().map(|mark| mark["path"].as_str().unwrap()).collect();
-        assert!(kept.starts_with(&["src/a.rs", "new name.rs"]) && !kept.contains(&"src/c.rs"), "{kept:?}");
-        assert!(kept.iter().all(|path| shown.contains(*path)), "{kept:?}");
-    }
-    #[test]
-    fn marks_that_alone_overflow_the_relay_go_before_the_diff() {
-        let marks: Vec<_> = (0..3000).map(|n| json!({"path": format!("src/{}/file-{n}.rs", "deep/".repeat(10)), "viewed": "unviewed"})).collect();
-        let mut body = json!({"pr_id":"pr-a","head":"a".repeat(40),"diff":"diff --git a/x b/x\n+x\n","truncated":false,"files":marks});
-        bound_diff_json(&mut body);
-        assert!(body.get("files").is_none());
-        assert_eq!(body["diff"], "diff --git a/x b/x\n+x\n");
-        assert!(!body["truncated"].as_bool().unwrap());
-    }
     fn envelope(host: &Host, id: &str, command: Command) -> CommandEnvelope {
         let state = host.domain.state().unwrap();
         CommandEnvelope {
@@ -1810,7 +1617,7 @@ mod tests {
         assert!(!approved_resource_read_path("/tasks?limit=20"));
         assert!(!approved_resource_read_path("/tasks?unknown=1"));
         assert!(!approved_resource_read_path("/merge-authorizations/auth-1"));
-        assert!(approved_resource_read_path("/pull-requests/github.com%2Fowner%2Frepo%23154/diff"));
+        assert!(!approved_resource_read_path("/pull-requests/github.com%2Fowner%2Frepo%23154/diff"));
         assert!(approved_resource_read_path("/delivery-attempts?after=0"));
         assert!(!approved_resource_read_path("/delivery-attempts?after=0&all=1"));
         assert_eq!(
@@ -1822,8 +1629,6 @@ mod tests {
             decoded_pull_request_id("github.com%252Fowner%252Frepo%2523154")
                 .is_none()
         );
-        assert!(!approved_resource_read_path("/pull-requests/..%2F154/diff"));
-        assert!(!approved_resource_read_path("/pull-requests/github.com%2Fowner%2Frepo%3F154/diff"));
         assert!(!approved_resource_read_path("/merge-authorizations/../auth-1"));
         assert!(!is_resource_mutation_path("POST", "/tasks//start"));
         assert!(!is_resource_mutation_path("POST", "/tasks/../start"));

@@ -86,12 +86,6 @@ final class DesignSnapshotTests: XCTestCase {
             MarkdownView(markdown: markdown).padding()
         }
     }
-
-    func test_diffFile() {
-        assertVariants {
-            DiffSample().padding()
-        }
-    }
 }
 
 private struct PaletteSwatches: View {
@@ -243,28 +237,6 @@ private struct MermaidSample: View {
             ForEach(Self.segments) { MarkdownSegmentView(segment: $0) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct DiffSample: View {
-    private let files = UnifiedDiff.parse("""
-    diff --git a/Welcome.swift b/Welcome.swift
-    --- a/Welcome.swift
-    +++ b/Welcome.swift
-    @@ -1,3 +1,3 @@
-     struct Welcome {
-    -    let greeting = "Welcome to the dashboard"
-    +    let greeting = "What needs your attention?"
-     }
-    """)
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(files) { file in
-                DiffFileHeader(file: file, comments: 2)
-                ForEach(file.lines) { DiffCodeLine(line: $0, coloured: nil) }
-            }
-        }
     }
 }
 

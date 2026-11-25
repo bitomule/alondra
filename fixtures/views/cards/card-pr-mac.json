@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "mac",
-  "version": "vfd7a4c62cd33b8a5",
+  "version": "v00c4a511cfde1d66",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
@@ -101,13 +101,7 @@
           "need": "Review the result",
           "title_is_separate": true,
           "why": "Two checks passed; one is still running, and the branch is up to date with main.",
-          "meta": "example/repo · feature/compact-schedule-editor → main · 4 files · +120 −30 · 2 of 3 passed, 1 running",
-          "content_row": {
-            "kind": "diff",
-            "icon": "pull_request",
-            "label": "Changes",
-            "summary": "4 files · +120 −30"
-          },
+          "meta": "example/repo · feature/compact-schedule-editor → main · 2 of 3 passed, 1 running",
           "reply": {
             "id": "changes:github.com/example/repo#12@6~abcdef12",
             "label": "Request changes",
@@ -252,22 +246,6 @@
               "state": "pass"
             }
           ]
-        }
-      ]
-    },
-    {
-      "id": "diff",
-      "title": "Diff",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "content_ref",
-          "kind": "diff",
-          "title": "Diff",
-          "size": 0,
-          "digest": "abcdef12",
-          "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
-          "commentable": true
         }
       ]
     },

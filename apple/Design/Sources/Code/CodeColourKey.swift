@@ -22,6 +22,6 @@ public struct CodeColourKey: Hashable, Sendable {
         guard let word = fence?.split(whereSeparator: \.isWhitespace).first else { return nil }
         let name = word.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "{}."))
         guard !name.isEmpty, !plain.contains(name) else { return nil }
-        return DiffHighlighter.aliases[name] ?? name
+        return SyntaxColour.aliases[name] ?? name
     }
 }

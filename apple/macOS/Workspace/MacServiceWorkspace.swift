@@ -280,7 +280,7 @@ public struct MacServiceDetail: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 18) {
                             if let title = document.title, !showsCard(document) { Text(title).font(.title2.weight(.semibold)) }
-                            ForEach(document.sections.filter { !presentation.optimistic.hides($0.id, undelivered: presentation.undelivered) && !(cardShowsChanges(document) && $0.id == "diff") }, id: \.id) { section in
+                            ForEach(document.sections.filter { !presentation.optimistic.hides($0.id, undelivered: presentation.undelivered) && $0.id != "diff" }, id: \.id) { section in
                                 MacSectionView(section: section,
                                                returnReasons: presentation.returnReasons,
                                                onAction: perform,
@@ -297,10 +297,6 @@ public struct MacServiceDetail: View {
                                                onContent: { presentation.send(.contentRequested($0)) },
                                                onContentRow: { showContent(of: document, scrollTo: proxy) },
                                                onFilledForm: { presentation.send(.sendForm($0, $1, content: $2)) },
-                                               diff: presentation.diff,
-                                               marks: presentation.viewed.marks,
-                                               diffFailed: presentation.diffFailed,
-                                               onDiffNeeded: { presentation.send(.diffNeeded($0)) },
                                                opened: presentation.openSections.contains(section.id),
                                                page: presentation.sectionPages[section.id],
                                                onToggle: { presentation.send(.sectionToggled(section)) },
@@ -336,13 +332,9 @@ public struct MacServiceDetail: View {
                 .sheet(isPresented: Binding(get: { presentation.contentPresented }, set: { presentation.send(.contentPresented($0)) })) {
                     MacContentViewer(title: presentation.contentTitle, content: presentation.contentShown,
                                      loading: presentation.contentLoading,
-                                     error: presentation.contentError,
-                                     viewed: presentation.scope(state: \.viewed, action: \.viewed),
-                                     comments: Binding(get: { presentation.diffComments },
-                                                       set: { presentation.send(.diffCommentsChanged($0)) }))
+                                     error: presentation.contentError)
                         .id(presentation.contentDigest)
-                        .frame(minWidth: presentation.contentIsDiff ? 900 : 620, idealWidth: presentation.contentIsDiff ? 1100 : nil,
-                               minHeight: presentation.contentIsDiff ? 640 : 420, idealHeight: presentation.contentIsDiff ? 800 : nil)
+                        .frame(minWidth: 620, minHeight: 420)
                         .presentationSizing(.fitted)
                 }
             } else if presentation.selectedViewKey != nil,
@@ -357,22 +349,12 @@ public struct MacServiceDetail: View {
         }
     }
 
-    /// A card already shows its changes in its own row, which opens them; the detail does not repeat them.
-    private func cardShowsChanges(_ document: ViewDocument) -> Bool {
-        document.sections.contains { $0.items.contains { if case let .card(card) = $0 { card.contentRow?.kind == "diff" } else { false } } }
-    }
-
     private func showsCard(_ document: ViewDocument) -> Bool {
         document.sections.contains { $0.items.contains { if case let .card(card) = $0 { card.need != nil } else { false } } }
     }
 
     private func showContent(of document: ViewDocument, scrollTo proxy: ScrollViewProxy) {
-        let diff = document.sections.lazy.flatMap(\.items).compactMap { item -> ContentRef? in
-            if case let .contentRef(reference) = item, reference.kind == .diff { reference } else { nil }
-        }.first
-        if let diff {
-            presentation.send(.contentRequested(diff))
-        } else if document.sections.contains(where: { $0.id == "content" }) {
+        if document.sections.contains(where: { $0.id == "content" }) {
             withAnimation(.smooth) { proxy.scrollTo("content", anchor: .top) }
         }
     }
@@ -417,25 +399,18 @@ public struct MacContentViewer: View {
     let content: MacContent
     let loading: Bool
     let error: String?
-    let viewed: StoreOf<ViewedFilesFeature>?
-    @Binding var comments: [String: ActionComment]
 
-    public init(title: String, content: MacContent, loading: Bool, error: String?, viewed: StoreOf<ViewedFilesFeature>? = nil,
-                comments: Binding<[String: ActionComment]>) {
-        self.title = title; self.content = content; self.loading = loading; self.error = error; self.viewed = viewed; _comments = comments
+    public init(title: String, content: MacContent, loading: Bool, error: String?) {
+        self.title = title; self.content = content; self.loading = loading; self.error = error
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if !showsDiff { Text(title).font(.title3.weight(.semibold)) }
+            Text(title).font(.title3.weight(.semibold))
             if loading { ProgressView("Loading…") }
             else if let error { ContentUnavailableView("Couldn’t load content", systemImage: "exclamationmark.triangle", description: Text(error)) }
             else {
                 switch content {
-                case let .diff(files, truncated):
-                    MacChangesView(files: files, truncated: truncated, marks: viewed?.marks, failedMark: viewed?.failed,
-                                   toggleViewed: { viewed?.send(.toggle($0)) }, dismissFailure: { viewed?.send(.dismissFailure) },
-                                   comments: $comments)
                 case let .markdown(segments):
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {
@@ -450,11 +425,7 @@ public struct MacContentViewer: View {
                     }.background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 8))
                 }
             }
-        }.padding(showsDiff ? 0 : 20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private var showsDiff: Bool {
-        if case .diff = content, !loading, error == nil { true } else { false }
+        }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

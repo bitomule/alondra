@@ -45,14 +45,6 @@ impl Gh for GhCli {
         Box::pin(crate::diff::read(self, url))
     }
 
-    fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Read<'a, Result<alondra_engine_ports::github::Marks, String>> {
-        Box::pin(crate::pr_viewed::read(self, pr))
-    }
-
-    fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> Read<'a, Result<(), String>> {
-        Box::pin(crate::pr_viewed::set(self, host, node, path, viewed))
-    }
-
     fn pr_graphql<'a>(&'a self, host: &'a str, owner: &'a str, name: &'a str, number: u64, query: &'a str) -> Read<'a, Result<Vec<u8>, alondra_engine_ports::github::GhFailure>> {
         Box::pin(async move {
             let (query, owner, name, number) = (format!("query={query}"), format!("owner={owner}"), format!("name={name}"), format!("number={number}"));

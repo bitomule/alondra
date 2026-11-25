@@ -4,7 +4,6 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-pub(crate) mod diff;
 pub(crate) use alondra_core::markdown::html;
 mod mermaid;
 
@@ -27,11 +26,6 @@ pub enum Kind {
     },
     Rule,
     Label,
-    /// A diff's totals, over the list of its files.
-    DiffFiles { truncated: bool },
-    DiffEntry(diff::Header),
-    DiffFile(diff::Header),
-    DiffLine(diff::Row),
     /// An image the terminal draws under its caption, `cols`×`rows` cells at its own size.
     Image {
         cols: u16,
@@ -51,8 +45,6 @@ struct Fmt {
     mark: bool,
     /// The block's target this text opens.
     href: Option<u8>,
-    /// What changed inside a diff line.
-    changed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -177,23 +169,16 @@ impl Block {
     }
 
     pub fn quote(&self) -> String {
-        match &self.kind {
-            Kind::DiffLine(row) => clip(&format!("{} {}", row.place(), one_line(&self.plain())), QUOTE_MAX),
-            _ => clip(&one_line(&self.plain()), QUOTE_MAX),
-        }
+        clip(&one_line(&self.plain()), QUOTE_MAX)
     }
 
     pub fn commentable(&self) -> bool {
-        match &self.kind {
-            Kind::Rule | Kind::Label | Kind::DiffFiles { .. } | Kind::DiffEntry(_) | Kind::DiffFile(_) => false,
-            Kind::DiffLine(row) => row.commentable(),
-            _ => true,
-        }
+        !matches!(self.kind, Kind::Rule | Kind::Label)
     }
 
-    /// Where the reader's cursor stops: what takes a comment, and a diff's files, which open and fold.
+    /// Where the reader's cursor stops: what takes a comment.
     pub fn selectable(&self) -> bool {
-        self.commentable() || matches!(self.kind, Kind::DiffEntry(_) | Kind::DiffFile(_))
+        self.commentable()
     }
 }
 
@@ -946,11 +931,10 @@ pub struct Rendered {
 }
 
 fn joins_previous(prev: &Kind, cur: &Kind) -> bool {
-    diff::joins(prev, cur)
-        || matches!(
-            (prev, cur),
-            (Kind::Item(_), Kind::Item(_)) | (Kind::Row { .. }, Kind::Row { .. })
-        )
+    matches!(
+        (prev, cur),
+        (Kind::Item(_), Kind::Item(_)) | (Kind::Row { .. }, Kind::Row { .. })
+    )
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -1106,10 +1090,6 @@ pub fn render_linked(blocks: &[Block], width: usize) -> Rendered {
     let mut table = Table::default();
     let mut shown: Option<usize> = None;
     for (i, b) in blocks.iter().enumerate() {
-        if diff::hidden(&b.kind) {
-            ranges.push((lines.len(), lines.len()));
-            continue;
-        }
         let previous = shown.replace(i);
         let indent = if matches!(b.kind, Kind::Item(_)) {
             0
@@ -1356,7 +1336,6 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
             out
         }
         Kind::Rule => vec![Line::styled("─".repeat(width), Style::new().fg(DIM))],
-        Kind::DiffFiles { .. } | Kind::DiffEntry(_) | Kind::DiffFile(_) | Kind::DiffLine(_) => diff::render(b, width),
         Kind::Image { cols, rows } => {
             let mut out = wrap_text(b, Style::new().fg(DIM), width, vec![], vec![]);
             out.extend(std::iter::repeat_n(Line::default(), image_rows(*cols, *rows, width)));

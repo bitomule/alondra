@@ -1,8 +1,0 @@
-load("//bazel/rules:tree.bzl", "repo_tree")
-filegroup(
-    name = "diffs",
-    srcs = glob(["*.diff"]),
-    visibility = ["//visibility:public"],
-)
-
-repo_tree()

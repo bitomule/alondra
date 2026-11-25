@@ -66,8 +66,8 @@ export default function HowItWorks() {
 
     <section id="review" aria-labelledby="review-title">
       <h2 id="review-title">Reviewing a pull request</h2>
-      <p>A finished task arrives as a pull request card with how its checks went. In the iPhone and Mac apps it opens the changes file by file, and you tap or click a line to comment on it. In the terminal app the diff opens in tuicr, which Homebrew installs with Alondra.</p>
-      <p>Accept it and Alondra merges the pull request. Request changes and the node gets your line comments and your note in one message, and carries on in the same worktree. If the pull request moves on before you send them, the comments on old lines are dropped.</p>
+      <p>A finished task arrives as a pull request card that says what the task did and how its checks went, in the iPhone and Mac apps and in the terminal app.</p>
+      <p>Accept it and Alondra merges the pull request. Request changes and the node gets your note, and carries on in the same worktree.</p>
       <Capture name="mac-review" className="doc-capture" alt="The Mac app showing the changes of a pull request: two added files, each with its lines marked as added."/>
     </section>
 

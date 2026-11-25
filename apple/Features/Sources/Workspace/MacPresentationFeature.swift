@@ -6,7 +6,6 @@ import AlondraFeed
 
 /// What the content sheet draws: a fetched document is Markdown, so its links open and its images show.
 public enum MacContent: Equatable, Sendable {
-    case diff([DiffFile], truncated: Bool)
     case markdown([MarkdownSegment])
     case text(String)
 }
@@ -73,23 +72,14 @@ public struct MacPresentationFeature: Sendable {
         public var contentTitle = ""
         public var contentBody = ""
         public var contentKind: ContentKind?
-        public var contentIsDiff: Bool { contentKind == .diff }
         public var contentLoading = false
         public var contentError: String?
         public var contentPresented = false
         public var contentDigest: String?
-        public var diffComments: [String: ActionComment] = [:]
-        /// The selected pull request's diff, fetched once per head and kept for its summary and its viewer.
-        public var diff: MacDiff?
-        public var diffFailed: String?
-        public var diffRequested: String?
-        public var diffReference: AlondraContract.ContentRef?
-        public var viewed = ViewedFilesFeature.State()
         public var contentShown: MacContent {
             switch contentKind {
-            case .diff: return .diff(diff?.files ?? [], truncated: diff?.truncated ?? false)
             case .document: return .markdown(MarkdownParser.segments(from: contentBody))
-            case .file, nil: return .text(contentBody)
+            case .diff, .file, nil: return .text(contentBody)
             }
         }
         public var newRequest = NewRequestFeature.State(client: .mac)
@@ -137,14 +127,9 @@ public struct MacPresentationFeature: Sendable {
         case reloadForm(String, JSONValue)
         case pickerOpened(String, String), pickerQueryChanged(String), pickerLoaded(ViewFetch), pickerFailed(String)
         case pickerSelected(String), pickerClosed
-        case diffCommentsChanged([String: ActionComment])
         case contentRequested(AlondraContract.ContentRef)
         case contentLoaded(AlondraContract.ContentRef, String)
         case contentFailed(String)
-        case diffNeeded(AlondraContract.ContentRef)
-        case diffLoaded(String, FetchedDiff)
-        case diffLoadFailed(String)
-        case viewed(ViewedFilesFeature.Action)
         case contentPresented(Bool)
         case actionPresented(Bool)
         case action(ActionFeature.Action)
@@ -164,17 +149,10 @@ public struct MacPresentationFeature: Sendable {
     @Dependency(\.continuousClock) var clock
     @Dependency(\.mcpSignIn) var mcpSignIn
     @Dependency(\.viewsClient) var viewsClient
-    private enum CancelID: Hashable { case search, picker, undelivered, diff, confirmation(String) }
+    private enum CancelID: Hashable { case search, picker, undelivered, confirmation(String) }
     public var body: some ReducerOf<Self> {
-        Scope(state: \.viewed, action: \.viewed) { ViewedFilesFeature() }
         Reduce { state, action in
             switch action {
-            case .viewed(.delegate(.reload)):
-                guard let content = state.diffReference else { return .none }
-                state.diffRequested = nil
-                return fetchDiff(content, state: &state)
-            case .viewed:
-                return .none
             case let .beginViewAction(action, target):
                 guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
                 let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
@@ -183,10 +161,6 @@ public struct MacPresentationFeature: Sendable {
                 state.activeForm = nil
                 state.actionTarget = target ?? state.selectedViewKey.flatMap(Self.cardID)
                 state.actionPresented = !action.sendsWithoutAsking
-                if action.comments?.kind == .diffLines {
-                    let comments = state.diffComments.values.sorted { $0.anchor < $1.anchor }
-                    return .concatenate(.send(.action(.present(action))), .send(.action(.commentsChanged(comments))))
-                }
                 if action.sendsWithoutAsking {
                     return .concatenate(.send(.action(.present(action))), .send(.action(.submit)))
                 }
@@ -198,10 +172,9 @@ public struct MacPresentationFeature: Sendable {
                 state.actionFeature.unsure = action.id.flatMap { state.unsure[$0] }
                 state.activeForm = nil
                 state.actionTarget = state.selectedViewKey.flatMap(Self.cardID)
-                if let comments = action.comments {
+                if action.comments != nil {
                     state.actionPresented = true
-                    let diff = comments.kind == .diffLines ? state.diffComments.values.sorted { $0.anchor < $1.anchor } : []
-                    return .concatenate(.send(.action(.present(action))), .send(.action(.textChanged(text))), .send(.action(.commentsChanged(diff))))
+                    return .concatenate(.send(.action(.present(action))), .send(.action(.textChanged(text))), .send(.action(.commentsChanged([]))))
                 }
                 state.actionPresented = false
                 return .concatenate(.send(.action(.present(action))), .send(.action(.textChanged(text))), .send(.action(.submit)))
@@ -271,21 +244,15 @@ public struct MacPresentationFeature: Sendable {
                 state.pickerFieldID = nil
                 state.pickerDocument = nil
                 return .cancel(id: CancelID.picker)
-            case .diffCommentsChanged(let comments): state.diffComments = comments
             case .contentRequested(let content):
-                let identity = content.digest ?? content.fetch
-                if state.contentDigest != identity { state.diffComments = [:] }
-                state.contentDigest = identity
+                guard content.kind != .diff else { return .none }
+                state.contentDigest = content.digest ?? content.fetch
                 state.contentTitle = content.title
                 state.contentKind = content.kind
                 state.contentBody = ""
                 state.contentError = nil
                 state.contentLoading = true
                 state.contentPresented = true
-                if content.kind == .diff {
-                    state.contentLoading = state.diff?.digest != identity
-                    return state.contentLoading ? fetchDiff(content, state: &state) : .none
-                }
                 return .run { [viewsClient] send in
                     do { await send(.contentLoaded(content, try await viewsClient.fetchContent(content))) }
                     catch { await send(.contentFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
@@ -299,23 +266,6 @@ public struct MacPresentationFeature: Sendable {
             case .contentFailed(let message):
                 state.contentLoading = false
                 state.contentError = message
-            case .diffNeeded(let content):
-                let identity = content.digest ?? content.fetch
-                guard state.diff?.digest != identity else { return .none }
-                return fetchDiff(content, state: &state)
-            case let .diffLoaded(identity, fetched):
-                guard identity == state.diffRequested else { return .none }
-                state.diff = MacDiff(digest: identity, files: UnifiedDiff.parse(fetched.text), truncated: fetched.truncated)
-                state.viewed = ViewedFilesFeature.State(saved: fetched.marks)
-                state.diffFailed = nil
-                if state.contentIsDiff, state.contentDigest == identity { state.contentLoading = false }
-            case .diffLoadFailed(let identity):
-                guard identity == state.diffRequested else { return .none }
-                state.diffFailed = identity
-                if state.contentIsDiff, state.contentDigest == identity {
-                    state.contentLoading = false
-                    state.contentError = String(localized: "Couldn’t load this from your Mac. Try again.")
-                }
             case .contentPresented(let value):
                 state.contentPresented = value
             case .actionPresented(let value):
@@ -593,20 +543,6 @@ public struct MacPresentationFeature: Sendable {
             }
         }
         .ifLet(\.$mcpSignIn, action: \.mcpSignIn) { McpSignInFeature() }
-    }
-
-    private func fetchDiff(_ content: AlondraContract.ContentRef, state: inout State) -> Effect<Action> {
-        let identity = content.digest ?? content.fetch
-        guard state.diffRequested != identity || state.diffFailed == identity else { return .none }
-        state.diffRequested = identity
-        state.diffReference = content
-        state.diffFailed = nil
-        return .run { [viewsClient] send in
-            do { await send(.diffLoaded(identity, try await viewsClient.fetchDiff(content))) }
-            catch is CancellationError { return }
-            catch { await send(.diffLoadFailed(identity)) }
-        }
-        .cancellable(id: CancelID.diff, cancelInFlight: true)
     }
 
     /// The daemon asks about an answer again: its card is shown, unless the person is already

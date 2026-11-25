@@ -22,13 +22,6 @@ public struct CardDetailFeature: Sendable {
         public var content: String?
         public var contentDigest: String?
         public var contentFailed = false
-        public var diff: [DiffFile]?
-        public var diffDigest: String?
-        public var diffFailed = false
-        public var diffTruncated = false
-        public var collapsedFiles: Set<String> = []
-        public var viewed = ViewedFilesFeature.State()
-        public var showsChanges = false
         public var comments: [String: ActionComment] = [:]
         public var reply = ""
         public var composing: Composing?
@@ -65,6 +58,8 @@ public struct CardDetailFeature: Sendable {
     public struct Subject: Equatable, Sendable {
         /// An action bar shows at most three buttons; the rest go behind "More…".
         static let barLimit = 3
+        /// `diff` is the section an older daemon still sends with a pull request; nothing shows it.
+        static let hiddenSections: Set<String> = ["card", "actions", "diff"]
 
         public let card: Card?
         public let title: String
@@ -80,7 +75,7 @@ public struct CardDetailFeature: Sendable {
             }.first
             self.card = card
             title = card?.title ?? card?.need ?? document.title ?? ""
-            sections = document.sections.filter { $0.id != "card" && $0.id != "actions" }
+            sections = document.sections.filter { !Self.hiddenSections.contains($0.id) }
             if let card {
                 buttons = card.actions
                 menu = card.more
@@ -96,16 +91,6 @@ public struct CardDetailFeature: Sendable {
         }
 
         public var allActions: [WireAction] { buttons + menu + (replyAction.map { [$0] } ?? []) }
-
-        /// The view that opens the diff a `content_ref` points at: the pull request's own screen.
-        public static func diffKey(of reference: ContentRef) -> ViewKey? {
-            let prefix = "/pull-requests/"
-            guard reference.kind == .diff, reference.fetch.hasPrefix(prefix) else { return nil }
-            let rest = reference.fetch.dropFirst(prefix.count)
-            guard let end = rest.range(of: "/diff") else { return nil }
-            guard let id = String(rest[..<end.lowerBound]).removingPercentEncoding, !id.isEmpty else { return nil }
-            return .pullRequest(id)
-        }
     }
 
     public struct Composing: Equatable, Identifiable, Sendable {
@@ -128,13 +113,6 @@ public struct CardDetailFeature: Sendable {
         case attachments(AttachmentFeature.Action)
         case contentLoaded(digest: String?, String)
         case contentFailed
-        case diffLoaded(digest: String?, [DiffFile], truncated: Bool = false, marks: FileMarks? = nil)
-        case diffFailed(digest: String?)
-        case retryDiff
-        case toggleFile(String)
-        case viewed(ViewedFilesFeature.Action)
-        case changesShown(Bool)
-        case toggleAllFiles
         case blockTapped(anchor: String, quote: String)
         case composingChanged(String)
         case commentSaved
@@ -171,7 +149,6 @@ public struct CardDetailFeature: Sendable {
         Scope(state: \.screen, action: \.screen) { ScreenFeature() }
         Scope(state: \.actions, action: \.actions) { ActionFeature() }
         Scope(state: \.attachments, action: \.attachments) { AttachmentFeature() }
-        Scope(state: \.viewed, action: \.viewed) { ViewedFilesFeature() }
         Reduce { state, action in
             switch action {
             case .task:
@@ -200,42 +177,7 @@ public struct CardDetailFeature: Sendable {
                     state.contentFailed = false
                     return .cancel(id: CancelID.loadDeadline)
                 }
-                return .merge(.cancel(id: CancelID.loadDeadline), fetchContent(of: document, state: &state), fetchDiff(of: document, state: &state))
-            case .diffLoaded(let digest, let files, let truncated, let marks):
-                guard digest == state.diffDigest else { return .none }
-                state.diff = files
-                state.diffTruncated = truncated
-                state.diffFailed = false
-                state.collapsedFiles = Set(files.filter { $0.startsCollapsed || marks?.files[$0.id] == .viewed }.map(\.id))
-                state.viewed = ViewedFilesFeature.State(saved: marks)
-                return .none
-            case .viewed(.toggle(let path)):
-                if state.viewed.isViewed(path) { state.collapsedFiles.insert(path) } else { state.collapsedFiles.remove(path) }
-                return .none
-            case .viewed(.delegate(.reload)):
-                guard let document = state.screen.document else { return .none }
-                state.diffDigest = nil
-                return fetchDiff(of: document, state: &state)
-            case .viewed:
-                return .none
-            case .diffFailed(let digest):
-                guard digest == state.diffDigest else { return .none }
-                state.diffFailed = true
-                return .none
-            case .retryDiff:
-                guard let document = state.screen.document else { return .none }
-                state.diffDigest = nil
-                return fetchDiff(of: document, state: &state)
-            case .toggleFile(let id):
-                if !state.collapsedFiles.insert(id).inserted { state.collapsedFiles.remove(id) }
-                return .none
-            case .changesShown(let shown):
-                state.showsChanges = shown
-                return .none
-            case .toggleAllFiles:
-                guard let files = state.diff else { return .none }
-                state.collapsedFiles = state.collapsedFiles.count == files.count ? [] : Set(files.map(\.id))
-                return .none
+                return .merge(.cancel(id: CancelID.loadDeadline), fetchContent(of: document, state: &state))
             case .screen, .delegate:
                 return .none
             case .opened(let key):
@@ -374,24 +316,6 @@ public struct CardDetailFeature: Sendable {
             do { await send(.contentLoaded(digest: reference.digest, try await viewsClient.fetchContent(reference))) }
             catch is CancellationError { return }
             catch { await send(.contentFailed) }
-        }
-    }
-
-    private func fetchDiff(of document: ViewDocument, state: inout State) -> Effect<Action> {
-        guard let reference = document.sections.lazy.flatMap(\.items).compactMap({ item -> ContentRef? in
-            if case .contentRef(let reference) = item, reference.kind == .diff { reference } else { nil }
-        }).first, reference.digest != state.diffDigest else { return .none }
-        state.diffDigest = reference.digest
-        state.diff = nil
-        state.diffTruncated = false
-        state.diffFailed = false
-        return .run { [viewsClient] send in
-            do {
-                let fetched = try await viewsClient.fetchDiff(reference)
-                await send(.diffLoaded(digest: reference.digest, UnifiedDiff.parse(fetched.text), truncated: fetched.truncated, marks: fetched.marks))
-            }
-            catch is CancellationError { return }
-            catch { await send(.diffFailed(digest: reference.digest)) }
         }
     }
 }

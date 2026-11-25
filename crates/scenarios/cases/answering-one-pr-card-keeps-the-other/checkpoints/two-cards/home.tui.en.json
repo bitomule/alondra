@@ -168,7 +168,7 @@
             "key": "card:github.com/demo/app#7",
             "kind": "view"
           },
-          "meta": "demo/app · csv-export → main · 1 file · +1 −0 · 1 of 1 passed",
+          "meta": "demo/app · csv-export → main · 1 of 1 passed",
           "more": [
             {
               "attachments": false,
@@ -202,30 +202,6 @@
               "link": {
                 "kind": "url",
                 "url": "https://github.com/demo/app/pull/7"
-              },
-              "presentation": "button",
-              "resolves_card": false,
-              "role": "neutral",
-              "style": "plain"
-            },
-            {
-              "attachments": false,
-              "enabled": true,
-              "id": "",
-              "input": {
-                "kind": "none"
-              },
-              "key": "l",
-              "label": "Review local clone",
-              "link": {
-                "kind": "local",
-                "local": {
-                  "branch": "0000000000000000000000000000000000000001",
-                  "kind": "review_clone",
-                  "pr": 7,
-                  "pr_id": "github.com/demo/app#7",
-                  "repo": "demo/app"
-                }
               },
               "presentation": "button",
               "resolves_card": false,

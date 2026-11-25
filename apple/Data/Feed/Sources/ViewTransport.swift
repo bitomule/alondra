@@ -21,9 +21,6 @@ public protocol ViewTransport: Sendable {
     /// Sends an action again with the sealed bytes it already went out with, or seals it now if it never left.
     func resendAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse?
     func fetchContent(_ content: ContentRef) async throws -> String
-    func fetchDiff(_ content: ContentRef) async throws -> FetchedDiff
-    /// Ticks or clears GitHub's «Viewed» box of one file, for the head the reader saw.
-    func setFileViewed(_ viewed: Bool, path: String, marks: FileMarks) async throws -> FileViewed
     func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data
     /// Writes a card attachment to `file` block by block, verified against its digest before it returns.
     func downloadAttachment(_ attachment: AlondraContract.Attachment, to file: URL,
@@ -46,8 +43,6 @@ public extension ViewTransport {
     }
     func resendAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse? { nil }
     func fetchContent(_ content: ContentRef) async throws -> String { throw FeedError.unsupportedContent }
-    func fetchDiff(_ content: ContentRef) async throws -> FetchedDiff { throw FeedError.unsupportedContent }
-    func setFileViewed(_ viewed: Bool, path: String, marks: FileMarks) async throws -> FileViewed { throw FeedError.unsupportedContent }
     func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data { throw FeedError.unsupportedContent }
     func downloadAttachment(_ attachment: AlondraContract.Attachment, to file: URL,
                             progress: @escaping @Sendable (UInt64, UInt64) -> Void) async throws { throw FeedError.unsupportedContent }
@@ -116,10 +111,7 @@ extension AlondraAPIClient: ViewTransport {
 
     public func fetchContent(_ content: ContentRef) async throws -> String {
         let path = content.fetch.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        let ordinaryPath = path.allSatisfy(Self.validPathComponent)
-        let encodedDiffPath = content.kind == .diff && path.count == 3
-            && Self.validPathComponent(path[0]) && Self.validPathComponent(path[2])
-        guard content.fetch.hasPrefix("/"), ordinaryPath || encodedDiffPath else {
+        guard content.fetch.hasPrefix("/"), path.allSatisfy(Self.validPathComponent) else {
             throw FeedError.unsupportedContent
         }
         switch content.kind {
@@ -130,7 +122,7 @@ extension AlondraAPIClient: ViewTransport {
             }
             return try await readChunks(path: path, expectedDigest: digest, expectedID: path[1])
         case .diff:
-            return try await fetchDiff(content).text
+            throw FeedError.unsupportedContent
         case .file:
             guard path.first == "files", let digest = content.digest else { throw FeedError.unsupportedContent }
             let data = try await readFileChunks(reference: content.fetch, digest: digest)
@@ -218,51 +210,6 @@ extension AlondraAPIClient: ViewTransport {
         let offset: UInt64; let total: UInt64; let nextOffset: UInt64; let eof: Bool
         enum CodingKeys: String, CodingKey { case contentDigest = "content_digest", version, data, offset, total, nextOffset = "next_offset", eof }
     }
-    private struct DiffResponse: Decodable {
-        let prID: String; let head: String; let diff: String; let truncated: Bool?; let files: [Mark]?
-        enum CodingKeys: String, CodingKey { case prID = "pr_id", head, diff, truncated, files }
-    }
-    private struct Mark: Decodable {
-        let path: String; let viewed: String
-    }
-    private struct MarkResponse: Decodable {
-        let prID: String; let head: String; let path: String; let viewed: FileViewed
-        enum CodingKeys: String, CodingKey { case prID = "pr_id", head, path, viewed }
-    }
-
-    public func fetchDiff(_ content: ContentRef) async throws -> FetchedDiff {
-        let path = content.fetch.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        guard content.kind == .diff, content.fetch.hasPrefix("/"), path.count == 3, path[0] == "pull-requests", path[2] == "diff",
-              Self.validPathComponent(path[0]), Self.validPathComponent(path[2]),
-              let rawID = Self.decodedPullRequestID(from: content.fetch), let expectedHead = content.digest else {
-            throw FeedError.unsupportedContent
-        }
-        let diff = try await send(Endpoint<DiffResponse>(.get, path: ["pull-requests", rawID, "diff"]) {
-            try JSONDecoder().decode(DiffResponse.self, from: $0)
-        })
-        guard diff.prID == rawID, diff.head == expectedHead else { throw FeedError.invalidContent }
-        let marks = diff.files.map { files in
-            FileMarks(prID: rawID, head: diff.head, files: Dictionary(files.compactMap { mark in
-                FileViewed(rawValue: mark.viewed).map { (mark.path, $0) }
-            }, uniquingKeysWith: { first, _ in first }))
-        }
-        return FetchedDiff(text: diff.diff, truncated: diff.truncated ?? false, marks: marks)
-    }
-
-    public func setFileViewed(_ viewed: Bool, path: String, marks: FileMarks) async throws -> FileViewed {
-        let body = try JSONSerialization.data(withJSONObject: ["path": path, "viewed": viewed, "head": marks.head], options: [.sortedKeys])
-        let endpoint = Endpoint<MarkResponse>(.post, path: ["pull-requests", marks.prID, "viewed-files"], body: body,
-                                              requiresJSONObjectResponse: true) {
-            try JSONDecoder().decode(MarkResponse.self, from: $0)
-        }
-        let response: MarkResponse
-        do { response = try await send(endpoint, operationID: UUID().uuidString) }
-        catch APIError.conflict { throw FileMarkError.stale }
-        catch APIError.server(let status, _, _, _) where status == 404 || status == 422 { throw FileMarkError.refused }
-        guard response.prID == marks.prID, response.head == marks.head, response.path == path else { throw FeedError.invalidContent }
-        return response.viewed
-    }
-
     private func readChunks(path: [String], expectedDigest: String, expectedID: String) async throws -> String {
         let bytes = try await readChunksData(path: path, expectedDigest: expectedDigest, expectedID: expectedID)
         guard let text = String(data: bytes, encoding: .utf8) else { throw FeedError.invalidContent }
@@ -323,16 +270,6 @@ extension AlondraAPIClient: ViewTransport {
     private static func validPathComponent(_ value: String) -> Bool {
         !value.isEmpty && value != "." && value != ".." && value.utf8.count <= 256
             && value.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }
-    }
-    static func decodedPullRequestID(from fetch: String) -> String? {
-        let parts = fetch.split(separator: "/", omittingEmptySubsequences: false)
-        guard parts.count == 4, parts[0].isEmpty, parts[1] == "pull-requests", parts[3] == "diff",
-              let decoded = String(parts[2]).removingPercentEncoding,
-              APIRequest.validViewID(decoded) else { return nil }
-        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-        guard let canonical = decoded.addingPercentEncoding(withAllowedCharacters: unreserved),
-              canonical == parts[2] else { return nil }
-        return decoded
     }
     private static func validDigest(_ digest: String) -> Bool {
         digest.utf8.count == 64 && digest.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }

@@ -97,9 +97,6 @@ fn outline(blocks: &[Block]) -> Vec<String> {
                 }
             }
             Kind::Rule => format!("rule {depth} |"),
-            Kind::DiffFiles { .. } | Kind::DiffEntry(_) | Kind::DiffFile(_) | Kind::DiffLine(_) => {
-                format!("diff {depth} | {text}")
-            }
             Kind::Image { cols, rows } => format!("image:{cols}x{rows} {depth} | {text}"),
         };
         if !matches!(b.kind, Kind::Row { .. }) {

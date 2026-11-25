@@ -50,12 +50,6 @@ crates/views/src/card.rs	markdown.lines().find_map(|line| line.strip_prefix("# "
 crates/views/src/card.rs	.filter(|line| !(line.trim_start().to_ascii_lowercase().starts_with("pr:") && line.contains(&marker)))	display	text picked or cased for display
 crates/views/src/card.rs	.filter(|text| report.as_deref().is_none_or(|report| !report.contains(*text) && !text.contains(report)))	display	text picked or cased for display
 web/app/components/device-label.tsx	{error instanceof Error && !(error instanceof ApiError) ? <p className="feedback error" role="alert">{error.message}</p> : error != null && <Feedback error={error}/>}	display	error text only shown
-apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("diff --git ") {	format	git diff headers
-apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("new file mode") { status = .added; continue }	format	git diff headers
-apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("deleted file mode") { status = .deleted; continue }	format	git diff headers
-apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("rename from ") {	format	git diff headers
-apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("rename to ") { path = String(raw.dropFirst(10)); continue }	format	git diff headers
-apple/Design/Sources/Diff/UnifiedDiff.swift	if raw.hasPrefix("Binary files ") || raw == "GIT binary patch" { binary = true; continue }	format	git diff headers
 apple/Mermaid/Sources/Parse/Sequence.swift	if let alias = text.range(of: " as ") {	format	Mermaid diagram syntax
 apple/Mermaid/Sources/Parse/State.swift	if line == "end note" {	format	Mermaid diagram syntax
 crates/cli/src/account_native_smoke.rs	.to_ascii_lowercase()	format	environment variable names compare without case
@@ -70,16 +64,8 @@ crates/cli-report/src/report/github.rs	if !url.starts_with(RAW_GISTS) {	format	G
 crates/cli-report/src/report/send.rs	let rest = text.strip_prefix("https://github.com/")?;	format	GitHub URL
 crates/cli/src/service_setup.rs	anyhow::ensure!(config.agreement_key_path == format!("{prefix}/service-keys/{AGREEMENT_FILE}")	format	configured file paths
 crates/cli/src/service_setup.rs	&& config.journal_path.as_deref() == Some(format!("{prefix}/service-receipts.sqlite").as_str()), "mixed service generation");	format	configured file paths
-crates/cli-tui/src/tui.rs	t.split_once(". ")	format	tuicr's export format: numbered comments
 crates/cli-tui/src/tui/dropped.rs	.map(|e| e.to_string_lossy().to_lowercase())	format	file extension or URL scheme
 crates/cli-tui/src/tui/md.rs	let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());	format	file extension or URL scheme
-crates/cli-tui/src/tui/unified_diff.rs	if let Some(header) = raw.strip_prefix("diff --git ") {	format	git diff headers
-crates/cli-tui/src/tui/unified_diff.rs	if raw.starts_with("new file mode") {	format	git diff headers
-crates/cli-tui/src/tui/unified_diff.rs	if raw.starts_with("deleted file mode") {	format	git diff headers
-crates/cli-tui/src/tui/unified_diff.rs	if let Some(from) = raw.strip_prefix("rename from ") {	format	git diff headers
-crates/cli-tui/src/tui/unified_diff.rs	if let Some(to) = raw.strip_prefix("rename to ") {	format	git diff headers
-crates/cli-tui/src/tui/unified_diff.rs	if raw.starts_with("Binary files ") || raw == "GIT binary patch" {	format	git diff headers
-crates/daemon-server/src/domain_api.rs	for names in diff.lines().filter_map(|line| line.strip_prefix("diff --git a/")) {	format	git diff headers
 crates/daemon-engine/src/domain_messages.rs	hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>() == digest	format	digest hex
 crates/system/src/launch_worktree.rs	let dir = PathBuf::from(entry.lines().find_map(|line| line.strip_prefix("worktree "))?);	format	git worktree list --porcelain
 crates/system/src/launch_worktree.rs	let branch = entry.lines().find_map(|line| line.strip_prefix("branch refs/heads/")).map(str::to_owned);	format	git worktree list --porcelain

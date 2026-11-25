@@ -647,26 +647,11 @@ pub fn menu_lines(menu: &Menu, room: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// A diff says what it changes ("Changes · 4 files · +120 −30 · d view changes") and leaves its
-/// lines to the reader: the card's count, or else `changes`, the count of the diff once loaded.
-/// Another body says its size only when it has one.
-fn content_ref_label(view: &View, content: &alondra_view_model::ContentRef, changes: &dyn Fn(&str, &str) -> Option<String>) -> String {
-    let summary = detail_card(view)
-        .and_then(|card| card.content_row.as_ref())
-        .filter(|row| row.kind == "diff" && content.kind == alondra_view_model::ContentKind::Diff)
-        .map(|row| row.summary.clone())
-        .filter(|summary| !summary.is_empty())
-        .or_else(|| {
-            let head = content.digest.as_deref()?;
-            changes(&content.fetch, head).filter(|_| content.kind == alondra_view_model::ContentKind::Diff)
-        });
-    let changes = tr!("Changes", "Cambios");
-    let open = tr!("d view changes", "d ver cambios");
-    match summary {
-        Some(summary) => format!("{changes} · {summary} · {open}"),
-        None if content.kind == alondra_view_model::ContentKind::Diff => format!("{changes} · {open}"),
-        None if content.size == 0 => content.title.clone(),
-        None => format!("{} · {} B", content.title, content.size),
+/// A stored body says its size only when it has one.
+fn content_ref_label(content: &alondra_view_model::ContentRef) -> String {
+    match content.size {
+        0 => content.title.clone(),
+        size => format!("{} · {size} B", content.title),
     }
 }
 
@@ -684,17 +669,6 @@ pub fn folded_sections(view: &View) -> bool {
 /// The view as one document; `open_checks` shows the checks a summary folds and `open_folds` the
 /// sections the daemon sends folded.
 pub fn document_lines(view: &View, width: usize, open_checks: bool, open_folds: bool) -> Vec<Line<'static>> {
-    document_lines_with(view, width, open_checks, open_folds, &|_, _| None)
-}
-
-/// `document_lines`, with `changes` counting a diff the view references by its route and head.
-pub fn document_lines_with(
-    view: &View,
-    width: usize,
-    open_checks: bool,
-    open_folds: bool,
-    changes: &dyn Fn(&str, &str) -> Option<String>,
-) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(title) = view.title.as_ref().filter(|_| view.view != "card" || typed_card(view).is_none()) {
         lines.push(Line::from(Span::styled(
@@ -744,9 +718,10 @@ pub fn document_lines_with(
                 Item::Markdown(markdown) => {
                     lines.extend(super::md::render(&super::md::parse(&markdown.text), width).lines)
                 }
+                Item::ContentRef(content) if content.kind == alondra_view_model::ContentKind::Diff => {}
                 Item::ContentRef(content) => lines.push(Line::from(vec![
                     Span::styled("▤ ", Style::new().fg(Color::Cyan)),
-                    Span::raw(content_ref_label(view, content, changes)),
+                    Span::raw(content_ref_label(content)),
                 ])),
                 Item::Facts(facts) if section.id == DOCUMENTS => {
                     for fact in &facts.items {

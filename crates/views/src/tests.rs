@@ -1225,7 +1225,7 @@ fn golden_live() -> LiveSnapshot {
 }
 
 #[test]
-fn real_pr_id_opens_detail_diff_and_actions() {
+fn real_pr_id_opens_detail_and_actions() {
     let mut state = pr_fixture();
     let id = "github.com/bitomule/alondra#154";
     let mut pr = state.pull_requests.remove(&"pr-1".into()).unwrap();
@@ -1240,13 +1240,10 @@ fn real_pr_id_opens_detail_diff_and_actions() {
     assert!(push_actions(&state, "i-3", Lang::En).unwrap().iter().any(|action|
         action.id.starts_with("reply:i-3@") && action.text), "a push replies in text");
     let detail = render(&state, &live, Client::Mac, Lang::En, &format!("pull_request:{id}"), "");
-    assert!(detail.sections.iter().flat_map(|section| &section.items).any(|item|
-        matches!(item, Item::ContentRef(content) if content.fetch ==
-            "/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff")));
+    assert!(detail.sections.iter().flat_map(|section| &section.items).all(|item| !matches!(item, Item::ContentRef(_))));
     let tui = render(&state, &live, Client::Tui, Lang::En, &format!("card:{id}"), "");
     let Item::Card(tui_card) = &tui.sections[0].items[0] else { panic!("PR card") };
-    assert!(tui_card.more.iter().any(|action| action.key.as_deref() == Some("l") &&
-        matches!(&action.link, Some(Link::Local { local: LocalLink::ReviewClone { pr_id, pr: 12, .. } }) if pr_id == id)));
+    assert!(tui_card.more.iter().all(|action| action.key.as_deref() != Some("l")), "no local review of a clone is offered");
 }
 
 #[test]
@@ -1745,7 +1742,7 @@ fn a_delivery_carrying_a_claude_artifact_asks_for_changes_in_a_sheet_with_commen
 }
 
 #[test]
-fn pull_request_card_exposes_the_diff_and_read_actions_stay_primary() {
+fn pull_request_card_exposes_no_diff_and_read_actions_stay_primary() {
     let state = golden_fixture();
     let pr_id = "github.com/example/repo#12";
     let view = render(
@@ -1756,20 +1753,8 @@ fn pull_request_card_exposes_the_diff_and_read_actions_stay_primary() {
         &format!("card:{pr_id}"),
         "",
     );
-    let diff = view
-        .sections
-        .iter()
-        .flat_map(|section| &section.items)
-        .find_map(|item| match item {
-            Item::ContentRef(content) if content.kind == ContentKind::Diff => Some(content),
-            _ => None,
-        })
-        .expect("PR card exposes the diff used by the review surface");
-    assert_eq!(
-        diff.fetch,
-        "/pull-requests/github.com%2Fexample%2Frepo%2312/diff"
-    );
-    assert!(diff.commentable);
+    assert!(section_of(&view, "diff").is_none(), "a pull request card has no diff section");
+    assert!(view.sections.iter().flat_map(|section| &section.items).all(|item| !matches!(item, Item::ContentRef(_))));
 
     let information = render(
         &state,
@@ -4920,12 +4905,10 @@ fn content_checks(view: &View) -> Option<&Checks> {
 }
 
 #[test]
-fn a_pull_request_detail_puts_the_diff_before_the_folded_description_and_drops_the_table() {
+fn a_pull_request_detail_has_no_diff_and_folds_the_description_and_drops_the_table() {
     let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
     let ids = view.sections.iter().map(|section| section.id.as_str()).collect::<Vec<_>>();
-    assert_eq!(ids, ["card", "checks", "diff", "description", "context"]);
-    let diff = section_of(&view, "diff").unwrap();
-    assert!(matches!(&diff.items[..], [Item::ContentRef(reference)] if reference.kind == super::ContentKind::Diff));
+    assert_eq!(ids, ["card", "checks", "description", "context"]);
     let description = section_of(&view, "description").unwrap();
     assert!(matches!(&description.items[..], [Item::Markdown(body)] if body.text.starts_with("Replaces the long schedule form")));
     assert!(view.sections.iter().flat_map(|section| &section.items).all(|item| !matches!(item, Item::Facts(facts)
@@ -4951,7 +4934,7 @@ fn alondras_delivery_of_an_open_pr_explains_itself_in_the_readers_language() {
 }
 
 #[test]
-fn a_pull_request_delivery_carries_checks_branch_and_change_size_in_its_detail() {
+fn a_pull_request_delivery_carries_checks_and_branch_but_no_change_size_in_its_detail() {
     let card_key = "card:github.com/example/repo#12";
     let state = golden_fixture();
     let view = render(&state, &golden_live(), Client::Ios, Lang::En, card_key, "");
@@ -4963,11 +4946,10 @@ fn a_pull_request_delivery_carries_checks_branch_and_change_size_in_its_detail()
     assert_eq!(card.title, "Review the beta candidate", "an explicit card subject remains authoritative");
     assert_eq!(
         card.meta.as_deref(),
-        Some("example/repo · feature/compact-schedule-editor → main · 4 files · +120 −30 · 2 of 3 passed, 1 running")
+        Some("example/repo · feature/compact-schedule-editor → main · 2 of 3 passed, 1 running")
     );
     assert!(card.body.is_none(), "the card holds none of it");
-    let row = card.content_row.as_ref().expect("content row");
-    assert_eq!((row.kind.as_str(), row.label.as_str(), row.summary.as_str()), ("diff", "Changes", "4 files · +120 −30"));
+    assert!(card.content_row.is_none(), "a pull request delivery shows no diff and no change size");
     assert_eq!(
         content_checks(&view).unwrap().items.iter().map(|check| (check.name.as_str(), check.state)).collect::<Vec<_>>(),
         [("Lint", CheckState::Pending), ("Build", CheckState::Pass), ("Unit tests", CheckState::Pass)],
@@ -4978,15 +4960,11 @@ fn a_pull_request_delivery_carries_checks_branch_and_change_size_in_its_detail()
     let pill = card.state.as_ref().unwrap();
     assert_eq!((pill.text.as_str(), pill.tone), ("Checks running", Tone::Info));
     let spanish = render(&state, &golden_live(), Client::Ios, Lang::Es, card_key, "");
-    assert_eq!(card_of(&spanish).content_row.as_ref().unwrap().summary, "4 archivos · +120 −30");
+    assert!(card_of(&spanish).content_row.is_none());
     assert_eq!(
         card_of(&spanish).meta.as_deref(),
-        Some("example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · 2 de 3 correctos, 1 en marcha")
+        Some("example/repo · feature/compact-schedule-editor → main · 2 de 3 correctos, 1 en marcha")
     );
-    let mut single = golden_live();
-    single.pull_requests[0].changed_files = 1;
-    let view = render(&state, &single, Client::Ios, Lang::En, card_key, "");
-    assert!(card_of(&view).meta.as_deref().unwrap().contains("1 file · +120 −30"));
 }
 
 fn reviewed_fixture(verdict: alondra_domain_rules::Verdict) -> DomainState {
@@ -5128,7 +5106,7 @@ fn a_pull_request_without_ci_shows_no_checks_and_its_state_comes_from_merging() 
     let key = "card:github.com/example/repo#12";
     let view = render(&state, &live, Client::Ios, Lang::En, key, "");
     let card = card_of(&view);
-    assert_eq!(card.content_row.as_ref().unwrap().summary, "example/repo #12");
+    assert!(card.content_row.is_none());
     assert_eq!(card.meta.as_deref(), Some("example/repo · → main"), "no checks, so no line about them");
     assert_eq!(card.title, "Review the beta candidate", "without GitHub's title the node's own is kept");
     assert!(content_checks(&view).is_none(), "no checks section without checks");
@@ -5273,12 +5251,12 @@ fn every_content_kind_has_a_one_line_row_and_the_card_has_no_body() {
 }
 
 #[test]
-fn pull_request_detail_shows_the_change_size() {
+fn pull_request_detail_shows_no_change_size() {
     let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En,
         "pull_request:github.com/example/repo#12", "");
     let facts = view.sections.iter().find(|section| section.id == "facts").unwrap();
     let Item::Facts(facts) = &facts.items[0] else { panic!("facts") };
-    assert!(facts.items.iter().any(|fact| fact.label == "Changes" && fact.value == "4 files · +120 −30"));
+    assert!(facts.items.iter().all(|fact| fact.label != "Changes"));
 }
 
 #[test]
@@ -10477,7 +10455,6 @@ fn every_card_numbers_its_options_from_its_main_one_and_keeps_each_letter_for_on
                             Err(_) => {
                                 let what = match (&action.link, verb(action)) {
                                     (Some(Link::Url { .. }), _) => "open on GitHub",
-                                    (Some(Link::Local { .. }), _) => "local clone",
                                     _ => "close without merging",
                                 };
                                 seen.insert(what);
@@ -10534,9 +10511,8 @@ fn every_card_numbers_its_options_from_its_main_one_and_keeps_each_letter_for_on
         }
     }
     assert!(problems.is_empty(), "{problems:#?}");
-    assert_eq!(meaning, BTreeMap::from([("k".into(), "close without merging".into()), ("l".into(), "local clone".into()),
-        ("w".into(), "open on GitHub".into())]));
-    assert_eq!(seen, BTreeSet::from(["close without merging", "local clone", "open on GitHub", "pace", "permission", "provide", "request changes"]),
+    assert_eq!(meaning, BTreeMap::from([("k".into(), "close without merging".into()), ("w".into(), "open on GitHub".into())]));
+    assert_eq!(seen, BTreeSet::from(["close without merging", "open on GitHub", "pace", "permission", "provide", "request changes"]),
         "every class of card was reached");
 }
 

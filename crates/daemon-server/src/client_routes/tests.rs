@@ -621,13 +621,6 @@ impl Github for FakeGithub {
         Box::pin(async { Err("unexpected PR state".into()) })
     }
 
-    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<alondra_engine_ports::github::Marks, String>> {
-        Box::pin(async { Err("viewed files are not available here".into()) })
-    }
-
-    fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> close::Answer<'a, Result<(), String>> {
-        Box::pin(async { Err("viewed files are not available here".into()) })
-    }
 }
 
 const USER_OPTION: &str = "
@@ -1274,12 +1267,6 @@ impl Github for HeldIssueSearch {
     fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
         Box::pin(async { Err("unexpected PR state".into()) })
     }
-    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<alondra_engine_ports::github::Marks, String>> {
-        Box::pin(async { Err("unexpected viewed files".into()) })
-    }
-    fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> close::Answer<'a, Result<(), String>> {
-        Box::pin(async { Err("unexpected viewed mark".into()) })
-    }
 }
 struct ReleaseIssueSearch(Arc<tokio::sync::Semaphore>);
 impl Drop for ReleaseIssueSearch {
@@ -1407,238 +1394,17 @@ async fn the_mcp_sign_in_routes_take_only_a_signed_device_and_their_own_body() {
     }
 }
 
-const PR_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
-
-fn diff_marks(head: &str) -> alondra_engine_ports::github::Marks {
-    use alondra_engine_ports::github::{Mark, Marks, Viewed};
-    Marks { node: "PR_node".into(), head: head.into(), files: vec![
-        Mark { path: "src/a.rs".into(), viewed: Viewed::Viewed },
-        Mark { path: "src/b.rs".into(), viewed: Viewed::Changed },
-    ] }
-}
-
-fn diff_github(fixture: &Fixture, heads: Vec<Result<String, alondra_engine_ports::github::HeadError>>,
-    diff: Result<Vec<u8>, alondra_engine_ports::github::DiffError>,
-    marks: Result<alondra_engine_ports::github::Marks, String>,
-) -> Arc<alondra_engine_doubles::github::PullRequests> {
-    use alondra_engine_doubles::github::{PrReads, PullRequests};
-    use alondra_engine_ports::github::GitHub;
-    let gh = Arc::new(PullRequests::default());
-    gh.insert("https://github.com/me/app/pull/7", PrReads { heads: heads.into(), diff, marks });
-    let mut port = (*fixture.domain.ports().port::<GitHub>().unwrap()).clone();
-    port.reads = gh.clone();
-    fixture.domain.ports().provide(Arc::new(port));
-    gh
-}
-
-fn diff_bytes() -> Vec<u8> {
-    b"diff --git a/src/a.rs b/src/a.rs\n+a\ndiff --git a/src/b.rs b/src/b.rs\n+b\n".to_vec()
-}
-
-async fn diff_response(fixture: &Fixture) -> (StatusCode, Value) {
-    let response = crate::domain_api::pull_request_diff_inner(&fixture.domain, "pr-1".into()).await;
-    let status = response.status();
-    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-    (status, serde_json::from_slice(&body).unwrap())
-}
-
-async fn diff_body(fixture: &Fixture) -> Value {
-    let (status, body) = diff_response(fixture).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    body
-}
-
 #[tokio::test]
-async fn the_diff_of_a_pull_request_carries_the_viewed_mark_github_keeps_for_each_file() {
-    use alondra_engine_doubles::github::Call;
+async fn a_pull_request_has_no_diff_or_viewed_files_route() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
-    let gh = diff_github(&fixture, vec![Ok(PR_HEAD.into())], Ok(diff_bytes()), Ok(diff_marks(PR_HEAD)));
-    let body = diff_body(&fixture).await;
-    assert_eq!(body["head"], PR_HEAD);
-    assert!(body["diff"].as_str().unwrap().contains("src/b.rs"));
-    assert_eq!(body["files"], json!([{"path": "src/a.rs", "viewed": "viewed"}, {"path": "src/b.rs", "viewed": "changed"}]));
-    let url = "https://github.com/me/app/pull/7".to_owned();
-    let calls = gh.calls();
-    assert_eq!(calls.len(), 4);
-    assert_eq!(calls.first(), Some(&Call::Head(url.clone())));
-    assert_eq!(calls.last(), Some(&Call::Head(url.clone())));
-    assert!(calls[1..3].contains(&Call::Diff(url.clone())));
-    assert!(calls[1..3].contains(&Call::Marks(url)));
-}
-
-#[tokio::test]
-async fn the_diff_comes_without_marks_when_github_gives_none_for_its_head() {
-    let fixture = Fixture::start().await;
-    seed_work(&fixture);
-    for marks in [Ok(diff_marks("fedcba9876543210fedcba9876543210fedcba98")), Err("GraphQL unavailable".into()), Err("invalid response".into())] {
-        diff_github(&fixture, vec![Ok(PR_HEAD.into())], Ok(diff_bytes()), marks);
-        let body = diff_body(&fixture).await;
-        assert!(body["diff"].as_str().unwrap().contains("src/a.rs"));
-        assert!(body.get("files").is_none(), "{body}");
-    }
-}
-
-#[tokio::test]
-async fn diff_reads_use_the_registered_port_without_process_deadlines() {
-    use std::future::{Future as _, poll_fn};
-    use std::task::Poll;
-    let fixture = Fixture::start().await;
-    seed_work(&fixture);
-    let gh = diff_github(&fixture, vec![Ok(PR_HEAD.into())], Ok(diff_bytes()), Ok(diff_marks(PR_HEAD)));
-    let release = gh.hold_next_head("https://github.com/me/app/pull/7");
-    tokio::time::pause();
-    let read = diff_body(&fixture);
-    tokio::pin!(read);
-    poll_fn(|cx| {
-        assert!(read.as_mut().poll(cx).is_pending());
-        Poll::Ready(())
-    }).await;
-    tokio::time::advance(std::time::Duration::from_secs(3600)).await;
-    poll_fn(|cx| {
-        assert!(read.as_mut().poll(cx).is_pending(), "the reader must still wait for its port");
-        Poll::Ready(())
-    }).await;
-    release.send(()).unwrap();
-    let body = read.await;
-    assert_eq!(body["head"], PR_HEAD);
-    assert_eq!(body["files"][0]["viewed"], "viewed");
-}
-
-#[tokio::test]
-async fn diff_reads_reject_a_stale_or_unverifiable_head_before_and_after_loading() {
-    use alondra_engine_doubles::github::Call;
-    use alondra_engine_ports::github::{GhFailure, HeadError};
-    let fixture = Fixture::start().await;
-    seed_work(&fixture);
-    for next in [
-        Ok("fedcba9876543210fedcba9876543210fedcba98".into()),
-        Err(HeadError::Unavailable(GhFailure::TimedOut("head unavailable".into()))),
-        Err(HeadError::InvalidResponse),
-        Err(HeadError::InvalidHead),
-    ] {
-        let code = if next.is_ok() { "stale_head" } else { "external_read_failed" };
-        for after in [false, true] {
-            let heads = if after { vec![Ok(PR_HEAD.into()), next.clone()] } else { vec![next.clone()] };
-            let gh = diff_github(&fixture, heads, Ok(diff_bytes()), Ok(diff_marks(PR_HEAD)));
-            let (status, body) = diff_response(&fixture).await;
-            assert_eq!((status, body["code"].as_str()), (StatusCode::CONFLICT, Some(code)), "{body}");
-            assert_eq!(gh.calls().len(), if after { 4 } else { 1 });
-            assert!(matches!(gh.calls().last(), Some(Call::Head(_))));
-        }
-    }
-}
-
-#[tokio::test]
-async fn diff_read_failures_keep_their_errors_without_rechecking_the_head() {
-    use alondra_engine_ports::github::{DiffError, GhFailure};
-    let fixture = Fixture::start().await;
-    seed_work(&fixture);
-    for (error, message) in [
-        (DiffError::Start(GhFailure::Launch(std::io::ErrorKind::NotFound, "missing".into())), "could not start PR diff"),
-        (DiffError::Read, "PR diff timed out"),
-        (DiffError::Finish, "could not load PR diff"),
-    ] {
-        let gh = diff_github(&fixture, vec![Ok(PR_HEAD.into())], Err(error), Ok(diff_marks(PR_HEAD)));
-        let (status, body) = diff_response(&fixture).await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(body["code"], "external_read_failed");
-        assert_eq!(body["message"], message);
-        assert_eq!(gh.calls().len(), 3);
-    }
-}
-
-/// Answers the reads and marks of viewed files from memory, and keeps every mark it is asked for.
-struct ViewedGithub {
-    marks: Result<alondra_engine_ports::github::Marks, String>,
-    set: std::sync::Mutex<Vec<(String, String, String, bool)>>,
-}
-
-impl ViewedGithub {
-    fn at(head: &str) -> Arc<Self> {
-        use alondra_engine_ports::github::{Mark, Marks, Viewed};
-        Arc::new(Self {
-            marks: Ok(Marks { node: "PR_node".into(), head: head.into(), files: vec![Mark { path: "src/a.rs".into(), viewed: Viewed::Unviewed }] }),
-            set: Default::default(),
-        })
-    }
-}
-
-impl Github for ViewedGithub {
-    fn search_issues<'a>(&'a self, _: &'a [String]) -> close::Answer<'a, Result<Value, String>> {
-        Box::pin(async { Err("unexpected issue search".into()) })
-    }
-    fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> close::Answer<'a, Result<Value, String>> {
-        Box::pin(async { Err("unexpected issue detail".into()) })
-    }
-    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a alondra_domain_rules::ProviderPrKey, _: &'a str) -> close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
-        Box::pin(async { Err("unexpected PR close".into()) })
-    }
-    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
-        Box::pin(async { Err("unexpected PR state".into()) })
-    }
-    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<alondra_engine_ports::github::Marks, String>> {
-        Box::pin(async { self.marks.clone() })
-    }
-    fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> close::Answer<'a, Result<(), String>> {
-        Box::pin(async move {
-            self.set.lock().unwrap().push((host.into(), node.into(), path.into(), viewed));
-            Ok(())
-        })
-    }
-}
-
-#[tokio::test]
-async fn marking_a_file_viewed_sets_the_github_mark_of_the_head_the_reader_saw() {
-    let fixture = Fixture::start().await;
-    seed_work(&fixture);
-    let github = ViewedGithub::at(PR_HEAD);
-    fixture.client.use_github(github.clone());
-    let path = "/pull-requests/pr-1/viewed-files";
-    let (status, body) = fixture.local_send(path, &json!({"path": "src/a.rs", "viewed": true, "head": PR_HEAD})).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body, json!({"pr_id": "pr-1", "head": PR_HEAD, "path": "src/a.rs", "viewed": "viewed"}));
-    let (status, body) = fixture.local_send(path, &json!({"path": "src/a.rs", "viewed": false, "head": PR_HEAD})).await;
-    assert_eq!((status, body["viewed"].as_str()), (StatusCode::OK, Some("unviewed")));
-    assert_eq!(*github.set.lock().unwrap(), [
-        ("github.com".to_owned(), "PR_node".to_owned(), "src/a.rs".to_owned(), true),
-        ("github.com".to_owned(), "PR_node".to_owned(), "src/a.rs".to_owned(), false),
-    ]);
-    assert_eq!(parse_write(path), Some(Write::FileViewed("pr-1".into())));
-    assert_eq!(parse_write("/pull-requests/github.com%2Fme%2Fapp%237/viewed-files"), Some(Write::FileViewed("github.com/me/app#7".into())));
-    assert!(approved_write_path(path) && !atomic_write_path(path), "a mark goes through the relay as a write of its own and is never replayed");
-}
-
-#[tokio::test]
-async fn a_file_is_never_marked_for_a_head_or_a_file_the_reader_did_not_see() {
-    let fixture = Fixture::start().await;
-    seed_work(&fixture);
-    let path = "/pull-requests/pr-1/viewed-files";
-    let mark = |file: &str, head: &str| json!({"path": file, "viewed": true, "head": head});
-    let github = ViewedGithub::at(PR_HEAD);
-    fixture.client.use_github(github.clone());
-    let refused = [
-        (fixture.local_send(path, &mark("src/a.rs", "fedcba9876543210fedcba9876543210fedcba98")).await, StatusCode::CONFLICT, "stale_head"),
-        (fixture.local_send(path, &mark("src/elsewhere.rs", PR_HEAD)).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input"),
-        (fixture.local_send(path, &json!({"path": "src/a.rs", "viewed": true, "head": PR_HEAD, "extra": 1})).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input"),
-        (fixture.local_send(path, &mark("", PR_HEAD)).await, StatusCode::UNPROCESSABLE_ENTITY, "invalid_input"),
-        (fixture.local_send("/pull-requests/nothing/viewed-files", &mark("src/a.rs", PR_HEAD)).await, StatusCode::NOT_FOUND, "not_found"),
-    ];
-    for ((status, error), expected, code) in refused {
-        assert_eq!((status, error["code"].as_str()), (expected, Some(code)), "{error}");
-    }
-    fixture.client.use_github(ViewedGithub::at("fedcba9876543210fedcba9876543210fedcba98"));
-    let (status, error) = fixture.local_send(path, &mark("src/a.rs", PR_HEAD)).await;
-    assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("stale_head")), "GitHub's head moved past the registered one");
-    fixture.command(Actor::System, "closed", Command::ObservePrState {
-        pr_id: "pr-1".into(), head: PR_HEAD.into(), base: "main".into(),
-        state: alondra_domain_rules::PrState::Closed, merged_head: None });
-    fixture.client.use_github(github.clone());
-    let (status, error) = fixture.local_send(path, &mark("src/a.rs", PR_HEAD)).await;
-    assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));
-    assert!(github.set.lock().unwrap().is_empty(), "nothing reached GitHub");
-    let unsigned = reqwest::Client::new().post(format!("{}{path}", fixture.base)).json(&mark("src/a.rs", PR_HEAD)).send().await.unwrap();
-    assert_eq!(unsigned.status(), StatusCode::NOT_FOUND);
+    let diff = "/pull-requests/pr-1/diff";
+    let viewed = "/pull-requests/pr-1/viewed-files";
+    assert_eq!(fixture.get(diff).await.0, StatusCode::NOT_FOUND);
+    let mark = json!({"path": "src/a.rs", "viewed": true, "head": "0123456789abcdef0123456789abcdef01234567"});
+    assert_eq!(fixture.send("POST", viewed, &mark).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(parse_write(viewed), None);
+    assert!(!approved_write_path(viewed) && !crate::domain_api::approved_resource_read_path(diff), "the relay carries neither");
 }
 
 #[tokio::test]
@@ -1728,14 +1494,10 @@ impl alondra_engine_ports::github::Gh for RegisteredReads {
         Box::pin(async { Some(serde_json::json!({"state": "MERGED"})) })
     }
 
-    fn set_viewed<'a>(&'a self, _: &'a str, node: &'a str, path: &'a str, viewed: bool) -> alondra_engine_ports::github::Read<'a, Result<(), String>> {
-        self.0.lock().unwrap().push(format!("viewed {node} {path} {viewed}"));
-        Box::pin(async { Ok(()) })
-    }
 }
 
 /// A client no test gave a GitHub asks the one registered in the runtime, the root's in the
-/// daemon: its reads, its marks and its view of a PR reach that GitHub and no `gh` of its own.
+/// daemon: its reads and its view of a PR reach that GitHub and no `gh` of its own.
 #[test]
 fn the_client_asks_the_registered_github() {
     let directory = crate::test_support::Directory::new();
@@ -1749,9 +1511,8 @@ fn the_client_asks_the_registered_github() {
     let url = "https://github.com/me/app/pull/7";
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
-        client.github().set_viewed("github.com", "PR_node", "src/a.rs", true).await.unwrap();
         assert_eq!(client.github().pr_state("github.com", "me/app", 7).await, Ok(alondra_domain_rules::PrState::Merged));
         assert_eq!(client.pr_view().view(url).await, Some(serde_json::json!({"state": "MERGED"})));
     });
-    assert_eq!(*reads.0.lock().unwrap(), ["viewed PR_node src/a.rs true".to_owned(), format!("view {url}"), format!("view {url}")]);
+    assert_eq!(*reads.0.lock().unwrap(), [format!("view {url}"), format!("view {url}")]);
 }

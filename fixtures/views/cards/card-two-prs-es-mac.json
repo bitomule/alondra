@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/bitomule/alondra#17",
   "client": "mac",
-  "version": "vcbc6a18f6660622e",
+  "version": "v3ef18b0ee0642fd5",
   "cursor": "cursor-1",
   "title": "Review the result · alondra#17",
   "status": {
@@ -199,22 +199,6 @@
               }
             }
           ]
-        }
-      ]
-    },
-    {
-      "id": "diff",
-      "title": "Diferencias",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "content_ref",
-          "kind": "diff",
-          "title": "Diferencias",
-          "size": 0,
-          "digest": "1111111111111111111111111111111111111111",
-          "fetch": "/pull-requests/github.com%2Fbitomule%2Falondra%2317/diff",
-          "commentable": true
         }
       ]
     },

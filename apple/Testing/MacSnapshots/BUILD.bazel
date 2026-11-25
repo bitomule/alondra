@@ -32,14 +32,12 @@ swift_test(
     args = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"],
     srcs = glob(["Tests/*.swift"]) + [
         "//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift",
-        "//apple/Testing/Fixtures:DiffFixture.swift",
         "//apple/Testing/Fixtures:RequestedFormCard.swift",
         "//apple/Testing/Fixtures:SpanishTestData.swift",
     ],
     data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [
         "//apple:macOS/Resources/Localizable.xcstrings",
         "//apple/Design:Resources/AlondraDesign.xcstrings",
-        "//fixtures/diffs",
         "//fixtures/views:cards",
         "//fixtures/views:metrics",
         "//fixtures/views:newer_daemon",

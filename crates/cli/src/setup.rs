@@ -83,8 +83,6 @@ pub struct Observed {
     /// Alondra's plugins that a global install enables in every session, with the scope of
     /// each install.
     pub enabled_globally: Vec<(String, String)>,
-    pub tuicr: bool,
-    pub brew: bool,
     /// The release ships a launcher that its fixed path does not hold yet.
     pub launcher_outdated: bool,
 }
@@ -320,18 +318,6 @@ fn plan_with_context(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, path
             }
         }
     }
-    if !seen.tuicr {
-        match seen.brew {
-            true => steps.push(Step::Run { program: "brew".into(), args: vec!["install".into(), "tuicr".into()] }),
-            false => steps.push(Step::Warn(
-                tr!(
-                    "tuicr is missing, so PR cards have no diff in the TUI: cargo install tuicr",
-                    "Falta tuicr, así que las tarjetas de PR no tienen diff en la TUI: cargo install tuicr"
-                )
-                .into(),
-            )),
-        }
-    }
     Plan { steps, config: merged, conflicts }
 }
 
@@ -428,10 +414,6 @@ fn wanted_from(args: &Args, existing: Option<&FileConfig>) -> Result<FileConfig>
     Ok(wanted)
 }
 
-fn command_ok(program: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new(program).args(args).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
-}
 
 fn launchctl(args: &[&str]) -> Result<Output> {
     Command::new("launchctl")
@@ -647,8 +629,6 @@ fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args, context
         marketplace: claude_enabled && has_marketplace(&context),
         marketplace_path: if claude_enabled { marketplace_path(&context) } else { None },
         enabled_globally: plugins.as_ref().map(enabled_globally).unwrap_or_default(),
-        tuicr: command_ok("tuicr", &["--version"]).is_some(),
-        brew: command_ok("brew", &["--version"]).is_some(),
         launcher_outdated: launcher_outdated(paths),
     }
 }
@@ -1105,7 +1085,14 @@ esac
     }
 
     fn fresh() -> Observed {
-        Observed { connected: vec![alondra_core::accounts::Provider::Claude], binaries: true, claude: true, tuicr: true, ..Default::default() }
+        Observed { connected: vec![alondra_core::accounts::Provider::Claude], binaries: true, claude: true, ..Default::default() }
+    }
+
+    #[test]
+    fn setup_never_installs_or_mentions_tuicr() {
+        let seen = Observed { connected: vec![alondra_core::accounts::Provider::Claude], binaries: true, claude: true, ..Default::default() };
+        let planned = plan(&named("Ana"), None, &Args::default(), &paths(), &seen);
+        assert!(!format!("{:?}", planned.steps).contains("tuicr"), "{:?}", planned.steps);
     }
 
     fn named(n: &str) -> FileConfig {
@@ -1589,7 +1576,7 @@ fn continue_after_recovery(outcome: crate::service_setup::RecoveryOutcome, resum
     #[test]
     fn codex_only_and_unconnected_installations_do_not_plan_claude_commands() {
         for connected in [vec![], vec![alondra_core::accounts::Provider::Codex]] {
-            let observed = Observed { connected, claude: false, binaries: true, tuicr: true, ..Default::default() };
+            let observed = Observed { connected, claude: false, binaries: true, ..Default::default() };
             let paths = Paths { home: "/fixture/user".into(), alondra_home: "/fixture/user/.alondra".into(), bin: "/fixture/bin".into(), repo: Some("/fixture/assets".into()), uid: 501 };
             let planned = plan(&FileConfig::default(), None, &Args::default(), &paths, &observed);
             assert!(planned.steps.iter().all(|step| !matches!(step, Step::Run { program, .. } if program == "claude")));

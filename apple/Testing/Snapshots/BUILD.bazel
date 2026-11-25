@@ -91,7 +91,6 @@ swift_library(
 DETAIL_SUITES = [
     "CardDetailSnapshotTests",
     "MachineBadgeSnapshotTests",
-    "PRChangesSnapshotTests",
     "PRReviewSnapshotTests",
 ]
 
@@ -110,7 +109,6 @@ TRIAGE_SUITE = "TriageSnapshotTests"
             "Fixtures/triage-native-button-label.png",
             "//apple:iOS/Resources/Localizable.xcstrings",
             "//apple/Testing/Samples:all",
-            "//fixtures/diffs",
             "//fixtures/views:all",
             "//fixtures/views:cards",
             "//fixtures/views:metrics",
