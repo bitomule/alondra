@@ -241,7 +241,6 @@ generated from the BUILD files: `bazel run //tools:test_execs -- write` rewrites
 | `/usr/bin/make` | `//deploy/apple:increment_version_test`, `//tools:bazel_artifact_paths_test` | The test runs Makefile targets to check the paths they print. |
 | `/usr/bin/sw_vers` | `//crates/alondra:cli_api_test`, `//crates/alondra:doctor_service_test` | The CLI's doctor reads the macOS version. |
 | `e2e` | `//crates/alondrad:codex_adoption_process_test`, `//crates/engine-sdk:engine_sdk_host_test` | End to end: runs without the guard, only when the release names it in `RELEASE_ONLY_TESTS` or on request. |
-| `//agent-host:alondra-codex-host` | `//crates/engine-orchestrator:engine_orchestrator_host_test` | Orchestrator tests run the Codex host a release ships. |
 | `//agent-host:descendant-fake-claude.py` | `//agent-host:sdk_descendant_test` | A fake Claude Code that leaves a descendant behind. |
 | `//agent-host:fake-codex.py` | `//agent-host:codex_session_test` | A fake Codex the Codex host under test talks to. |
 | `//agent-host:pinned_node` | `//crates/provider-claude:sdk_worker_test` | The SDK worker tests run the host on the pinned Node. |

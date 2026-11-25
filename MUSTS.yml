@@ -1322,7 +1322,6 @@ checks:
       - "agent-host/*.ts"
       - "agent-host/BUILD.bazel"
       - "agent-host/bundle.mjs"
-      - "agent-host/fake-codex.py"
       - "agent-host/host-entitlements.plist"
       - "agent-host/orchestrator-fake-claude.py"
       - "agent-host/persistent-fake-claude.py"

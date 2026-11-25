@@ -1,9 +1,11 @@
 //! The orchestrator's batches with no process behind them: the domain's hosts are the doubled hosts
-//! of `engine-doubles`, the orchestrator model of the Claude host model plays each batch's host and
-//! native Claude as the fake orchestrator Claude plays them behind the real host, and the Node,
-//! host and native Claude of the backend are files no process runs.
+//! of `engine-doubles`, the orchestrator model of the Claude host model plays each Claude batch's
+//! host and native Claude as the fake orchestrator Claude plays them behind the real host, the Codex
+//! host model plays each Codex batch's host and app-server as the fake Codex plays them, and the
+//! Node, host and native programs of the backend are files no process runs.
 use alondra_claude_host_model::OrchestratorModel;
-use alondra_engine_doubles::agent_host::InProcessHosts;
+use alondra_codex_host_model::CodexModel;
+use alondra_engine_doubles::agent_host::{InProcessHosts, Serve, Served, Stop};
 use std::collections::BTreeMap;
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
@@ -14,26 +16,50 @@ use std::sync::Arc;
 /// already.
 pub(crate) struct Played {
     pub model: OrchestratorModel,
+    codex: CodexModel,
     _hosts: Arc<InProcessHosts>,
 }
 
 impl Played {
-    /// Every runtime opened at `home` from now on runs its batches on hosts the model plays.
+    /// Every runtime opened at `home` from now on runs its batches on hosts the models play.
     pub fn serve(home: &Path) -> Self {
         let hosts = Arc::new(InProcessHosts::default());
-        let model = OrchestratorModel::default();
-        hosts.set_serve(model.clone());
+        let (model, codex) = (OrchestratorModel::default(), CodexModel::default());
+        hosts.set_serve(Models { claude: model.clone(), codex: codex.clone() });
         crate::wiring::serve(home, &hosts);
-        Self { model, _hosts: hosts }
+        Self { model, codex, _hosts: hosts }
     }
 }
 
 impl Drop for Played {
     fn drop(&mut self) {
         self.model.close();
-        if let Some(trouble) = self.model.trouble().filter(|_| !std::thread::panicking()) {
+        self.codex.close();
+        if std::thread::panicking() {
+            return;
+        }
+        if let Some(trouble) = self.model.trouble() {
             panic!("the orchestrator model: {}", trouble.0);
         }
+        if let Some(trouble) = self.codex.trouble() {
+            panic!("the Codex host model: {trouble}");
+        }
+    }
+}
+
+/// Each doubled host goes to the Claude or the Codex model, by the SDK its bootstrap says it runs.
+struct Models {
+    claude: OrchestratorModel,
+    codex: CodexModel,
+}
+
+impl Serve for Models {
+    fn connect(&self, served: &Served, stream: std::os::unix::net::UnixStream) {
+        if alondra_codex_host_model::plays(served.bootstrap()) { self.codex.connect(served, stream) } else { self.claude.connect(served, stream) }
+    }
+
+    fn stop(&self, served: &Served, stop: Stop) {
+        if alondra_codex_host_model::plays(served.bootstrap()) { self.codex.stop(served, stop) } else { self.claude.stop(served, stop) }
     }
 }
 
@@ -59,6 +85,22 @@ pub(crate) fn backend(root: &Path, environment: BTreeMap<String, String>) -> cra
         provider: alondra_core::accounts::Provider::Claude,
         origin: None,
     }
+}
+
+/// `backend` on Codex: its host and native app-server are files in `root` no process runs, which the
+/// Codex host model plays, and the app-server gets `environment` too.
+pub(crate) fn on_codex(root: &Path, mut backend: crate::sdk_backend::SdkBackend, environment: BTreeMap<String, String>) -> crate::sdk_backend::SdkBackend {
+    let host = model_file(&root.join("model-host"), "codex-host.cjs");
+    backend.native = model_file(root, "codex-native");
+    backend.native_sha256 = crate::sdk_backend::digest(&backend.native).unwrap();
+    backend.host_sha256 = crate::sdk_backend::digest(&host).unwrap();
+    backend.node_sha256 = backend.host_sha256.clone();
+    backend.node = host.clone();
+    backend.host = host;
+    backend.native_environment.extend(environment);
+    backend.provider = alondra_core::accounts::Provider::Codex;
+    backend.origin = None;
+    backend
 }
 
 /// A file in `folder` that stands for `name`, which no process runs: the model plays it.

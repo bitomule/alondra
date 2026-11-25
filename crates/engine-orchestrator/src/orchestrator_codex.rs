@@ -621,18 +621,21 @@ mod tests {
 
 }
 
+/// Batches on Codex, whose hosts and app-server the Codex host model plays as the real host and the
+/// fake Codex play them.
 #[cfg(test)]
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 mod policy_integration{
     use super::*;
     use alondra_core::accounts::{AccountId,AccountKey,AccountState,AccountStatus,Provider};
     use alondra_domain_rules::{Actor,Command};
     use alondra_core::model_selection::{AccountModelCatalog,CatalogModel};
-    use std::os::unix::fs::PermissionsExt;
+    use crate::domain_orchestrator::testing::Fixture;
+    use std::path::PathBuf;
 
-    #[tokio::test]
-    async fn a_normal_codex_batch_persists_its_native_exit_without_a_storage_failure() {
-        let mode = "complete";
+    /// A fixture whose orchestrator runs on its one signed-in Codex account, with `environment` for
+    /// the fake app-server, which writes every message it gets to the returned transcript.
+    fn on_codex(environment: impl FnOnce(&Path) -> BTreeMap<String,String>) -> (Fixture, PathBuf) {
         let f=crate::domain_orchestrator::testing::fixture();
         let key=AccountKey::native(Provider::Codex);
         let text=r#"[accounts]
@@ -649,12 +652,17 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
         f.run(Actor::System,"codex-policy-profiles",Command::RecordModelProfiles{profiles:options.model_profiles,version});
         f.run(Actor::System,"codex-policy-catalog",Command::RecordModelCatalog{catalog:AccountModelCatalog{account:key,revision:"codex-policy-models".into(),models:vec![CatalogModel{model:"fixture-model".into(),display_name:"Native fixture".into(),reasoning_efforts:vec!["high".into()],default_reasoning_effort:Some("high".into()),context_window:None,input_modalities:vec!["text".into()],is_default:true,hidden:false}],native_default:Some("fixture-model".into()),measured_at:1}});
         let skill=f.root.join("assets").join(crate::plugins::ORCHESTRATOR).join("skills/alondra-orchestrator");std::fs::create_dir_all(&skill).unwrap();std::fs::write(skill.join("SKILL.md"),"You are the Alondra orchestrator. Use only Alondra role tools.").unwrap();
-        let native=f.root.join("codex-native");let fake=std::fs::canonicalize(std::env::var("FIXTURE_CODEX_NATIVE").unwrap()).unwrap();std::fs::copy(fake,&native).unwrap();std::fs::set_permissions(&native,std::fs::Permissions::from_mode(0o700)).unwrap();
-        let trace=f.root.join("codex-transcript");let mut backend=f.domain().sdk().unwrap().0.clone();
-        let host=std::fs::canonicalize(std::env::var("FIXTURE_CODEX_HOST").unwrap()).unwrap();backend.provider=Provider::Codex;backend.origin=None;backend.node=host.clone();backend.host=host;backend.node_sha256=crate::sdk_backend::digest(&backend.node).unwrap();backend.host_sha256=backend.node_sha256.clone();backend.native=native;backend.native_sha256=crate::sdk_backend::digest(&backend.native).unwrap();backend.native_environment.insert("ALONDRA_FAKE_MODE".into(),mode.into());backend.native_environment.insert("ALONDRA_FAKE_TRANSCRIPT".into(),trace.display().to_string());
-        backend.native_environment.insert("ALONDRA_FAKE_FINAL_TEXT".into(), "Normal Codex batch handled".into());
+        let trace=f.root.join("codex-transcript");
+        let mut native=environment(&f.root);native.insert("ALONDRA_FAKE_TRANSCRIPT".into(),trace.display().to_string());
+        let backend=crate::domain_orchestrator::model_fixture::on_codex(&f.root,f.domain().sdk().unwrap().0.clone(),native);
         std::fs::write(f.executor.home.join("codex-backend.json"),serde_json::to_vec(&backend).unwrap()).unwrap();
-        let state_root = backend.state_root.clone();
+        (f,trace)
+    }
+
+    #[tokio::test]
+    async fn a_normal_codex_batch_persists_its_native_exit_without_a_storage_failure() {
+        let (f,_)=on_codex(|_|BTreeMap::from([("ALONDRA_FAKE_MODE".into(),"complete".into()),("ALONDRA_FAKE_FINAL_TEXT".into(),"Normal Codex batch handled".into())]));
+        let state_root = f.domain().sdk().unwrap().0.state_root.clone();
         f.tell("normal-codex-request", "Finish this batch through its normal native result");
         f.tick().await;
         let runtime = crate::domain_orchestrator::load(&f.executor.home).unwrap();
@@ -680,26 +688,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
     #[tokio::test]
     async fn actual_native_request_rejections_park_the_executor_without_retry_or_account_rotation() {
         for mode in ["bad_request", "context_exceeded"] {
-            let f=crate::domain_orchestrator::testing::fixture();
-            let key=AccountKey::native(Provider::Codex);
-            let text=r#"[accounts]
-connected=["codex"]
-[model_profiles.codex.orchestrator]
-mode="ordered_candidates"
-candidates=[{model="fixture-model",reasoning_effort="high"}]
-"#;
-            std::fs::write(alondra_core::options::path_in(&f.executor.home),text).unwrap();
-            let options=alondra_core::options::OptionsFile::parse(text).unwrap();
-            f.run(Actor::System,"codex-policy-roster",Command::RecordAccounts{accounts:vec![AccountStatus{ antigravity: None,provider:Provider::Codex,id:AccountId::default_account(),name:"Native fixture".into(),state:AccountState::SignedIn,native_identity:Some("fixture-workspace".into()),email:Some("first@example.test".into()),plan:None,billing:Default::default(),sign_ins: 0, profile: None}],reserve:alondra_core::usage::default_reserve()});
-            f.run(Actor::System,"codex-policy-order",Command::RecordAccountConfiguration{order:vec![key.clone()],version:"codex-policy-fixture".into()});
-            let version=alondra_core::model_selection::profiles_version(&options.model_profiles);
-            f.run(Actor::System,"codex-policy-profiles",Command::RecordModelProfiles{profiles:options.model_profiles,version});
-            f.run(Actor::System,"codex-policy-catalog",Command::RecordModelCatalog{catalog:AccountModelCatalog{account:key,revision:"codex-policy-models".into(),models:vec![CatalogModel{model:"fixture-model".into(),display_name:"Native fixture".into(),reasoning_efforts:vec!["high".into()],default_reasoning_effort:Some("high".into()),context_window:None,input_modalities:vec!["text".into()],is_default:true,hidden:false}],native_default:Some("fixture-model".into()),measured_at:1}});
-            let skill=f.root.join("assets").join(crate::plugins::ORCHESTRATOR).join("skills/alondra-orchestrator");std::fs::create_dir_all(&skill).unwrap();std::fs::write(skill.join("SKILL.md"),"You are the Alondra orchestrator. Use only Alondra role tools.").unwrap();
-            let native=f.root.join("codex-native");let fake=std::fs::canonicalize(std::env::var("FIXTURE_CODEX_NATIVE").unwrap()).unwrap();std::fs::copy(fake,&native).unwrap();std::fs::set_permissions(&native,std::fs::Permissions::from_mode(0o700)).unwrap();
-            let trace=f.root.join("codex-transcript");let mut backend=f.domain().sdk().unwrap().0.clone();
-            let host=std::fs::canonicalize(std::env::var("FIXTURE_CODEX_HOST").unwrap()).unwrap();backend.provider=Provider::Codex;backend.origin=None;backend.node=host.clone();backend.host=host;backend.node_sha256=crate::sdk_backend::digest(&backend.node).unwrap();backend.host_sha256=backend.node_sha256.clone();backend.native=native;backend.native_sha256=crate::sdk_backend::digest(&backend.native).unwrap();backend.native_environment.insert("ALONDRA_FAKE_MODE".into(),mode.into());backend.native_environment.insert("ALONDRA_FAKE_TRANSCRIPT".into(),trace.display().to_string());
-            std::fs::write(f.executor.home.join("codex-backend.json"),serde_json::to_vec(&backend).unwrap()).unwrap();
+            let (f,trace)=on_codex(|_|BTreeMap::from([("ALONDRA_FAKE_MODE".into(),mode.into())]));
             let accounts = f.domain().state().unwrap().accounts.clone();
             let usage = f.domain().state().unwrap().account_usage.clone();
             f.tell("rejected-request", "Run this request only after correcting its native rejection");
@@ -722,27 +711,8 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
     #[tokio::test]
     async fn actual_batch_host_policy_denial_is_durable_before_ack_and_never_reoffered(){
         for (refuse_report, failed_write) in [(false,None),(true,None),(false,Some(("delivery_finish",1))),(false,Some(("runtime_write",3))),(true,Some(("runtime_write",3)))]{
-            let f=crate::domain_orchestrator::testing::fixture();
-            let key=AccountKey::native(Provider::Codex);
-            let text=r#"[accounts]
-connected=["codex"]
-[model_profiles.codex.orchestrator]
-mode="ordered_candidates"
-candidates=[{model="fixture-model",reasoning_effort="high"}]
-"#;
-            std::fs::write(alondra_core::options::path_in(&f.executor.home),text).unwrap();
-            let options=alondra_core::options::OptionsFile::parse(text).unwrap();
-            f.run(Actor::System,"codex-policy-roster",Command::RecordAccounts{accounts:vec![AccountStatus{ antigravity: None,provider:Provider::Codex,id:AccountId::default_account(),name:"Native fixture".into(),state:AccountState::SignedIn,native_identity:Some("fixture-workspace".into()),email:Some("first@example.test".into()),plan:None,billing:Default::default(),sign_ins: 0, profile: None}],reserve:alondra_core::usage::default_reserve()});
-            f.run(Actor::System,"codex-policy-order",Command::RecordAccountConfiguration{order:vec![key.clone()],version:"codex-policy-fixture".into()});
-            let version=alondra_core::model_selection::profiles_version(&options.model_profiles);
-            f.run(Actor::System,"codex-policy-profiles",Command::RecordModelProfiles{profiles:options.model_profiles,version});
-            f.run(Actor::System,"codex-policy-catalog",Command::RecordModelCatalog{catalog:AccountModelCatalog{account:key,revision:"codex-policy-models".into(),models:vec![CatalogModel{model:"fixture-model".into(),display_name:"Native fixture".into(),reasoning_efforts:vec!["high".into()],default_reasoning_effort:Some("high".into()),context_window:None,input_modalities:vec!["text".into()],is_default:true,hidden:false}],native_default:Some("fixture-model".into()),measured_at:1}});
-            let skill=f.root.join("assets").join(crate::plugins::ORCHESTRATOR).join("skills/alondra-orchestrator");std::fs::create_dir_all(&skill).unwrap();std::fs::write(skill.join("SKILL.md"),"You are the Alondra orchestrator. Use only Alondra role tools.").unwrap();
-            let native=f.root.join("codex-native");let fake=std::fs::canonicalize(std::env::var("FIXTURE_CODEX_NATIVE").unwrap()).unwrap();std::fs::copy(fake,&native).unwrap();std::fs::set_permissions(&native,std::fs::Permissions::from_mode(0o700)).unwrap();
-            let account=f.root.join("native-account-report.json");std::fs::write(&account,serde_json::to_vec(&json!({"accountRead":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true},"authStatus":{"authMethod":"apikey","authToken":null,"requiresOpenaiAuth":true}})).unwrap()).unwrap();
-            let trace=f.root.join("codex-transcript");let mut backend=f.domain().sdk().unwrap().0.clone();let state_root=backend.state_root.clone();
-            let host=std::fs::canonicalize(std::env::var("FIXTURE_CODEX_HOST").unwrap()).unwrap();backend.provider=Provider::Codex;backend.origin=None;backend.node=host.clone();backend.host=host;backend.node_sha256=crate::sdk_backend::digest(&backend.node).unwrap();backend.host_sha256=backend.node_sha256.clone();backend.native=native;backend.native_sha256=crate::sdk_backend::digest(&backend.native).unwrap();backend.native_environment.insert("ALONDRA_FAKE_ACCOUNT_FILE".into(),account.display().to_string());backend.native_environment.insert("ALONDRA_FAKE_TRANSCRIPT".into(),trace.display().to_string());
-            std::fs::write(f.executor.home.join("codex-backend.json"),serde_json::to_vec(&backend).unwrap()).unwrap();
+            let (f,trace)=on_codex(|root|{let account=root.join("native-account-report.json");std::fs::write(&account,serde_json::to_vec(&json!({"accountRead":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true},"authStatus":{"authMethod":"apikey","authToken":null,"requiresOpenaiAuth":true}})).unwrap()).unwrap();BTreeMap::from([("ALONDRA_FAKE_ACCOUNT_FILE".into(),account.display().to_string())])});
+            let state_root=f.domain().sdk().unwrap().0.state_root.clone();
             f.tell("policy-request","Do not run a model until native payment and identity policy is valid");
             if refuse_report{rusqlite::Connection::open(crate::domain_store::active_path(&f.executor.home)).unwrap().execute_batch("CREATE TRIGGER reject_policy_report BEFORE INSERT ON orchestrator_batch_reports BEGIN SELECT RAISE(ABORT,'injected report failure'); END;").unwrap();}
             let fault = failed_write.map(|(point, occurrence)| alondra_daemon_engine_model::faults::Injection::at(&f.executor.home,point,occurrence));

@@ -199,7 +199,7 @@ mod deadline_tests;
 #[cfg(test)]
 #[cfg(not(feature = "real-hosts"))]
 #[path = "domain_orchestrator/tests/model.rs"]
-mod model_fixture;
+pub(crate) mod model_fixture;
 
 /// A failed batch's Problem is `problem-orchestrator-<run id>`; its options are the decisions.
 const PROBLEM_PREFIX: &str = BATCH_PROBLEM_PREFIX;

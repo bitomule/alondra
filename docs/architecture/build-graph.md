@@ -178,8 +178,9 @@ visibility on both).
   (`engine.rs`), no longer a field of the engine's `Live`.
 - Its tests are `//crates/engine-orchestrator:engine_orchestrator_test`, on the doubled hosts the
   orchestrator model of `//crates/provider-claude:claude_host_model` plays as the fake orchestrator
-  Claude plays them, with no program run, and `engine_orchestrator_host_test` (the feature
-  `real-hosts`), with the real hosts, fake Claude and Codex and processes the rest still need. They
+  Claude plays them, and `//crates/provider-codex:codex_host_model` as the Codex host and fake Codex
+  play a Codex batch, with no program run, and `engine_orchestrator_host_test` (the feature
+  `real-hosts`), with the real hosts, fake Claude and processes the rest still need. They
   link neither `daemon-engine` nor `engine-sdk`: they
   open a runtime with the doubles of `engine-doubles` registered for the ports they do not test. The
   tests that need the whole engine are in `alondrad` (`engine_tests/orchestrator_*_tests.rs`).
@@ -1310,3 +1311,23 @@ incremental state primed:
   it is fixed in the same change.
 - Next cut: the engine's shared fixtures stage through `Journal` instead of the SQLite store, so
   their test hooks stop linking the adapter.
+
+## The orchestrator's Codex batches in the Codex host model (2026-11-25)
+
+`//crates/provider-codex:codex_host_model` plays the orchestrator's host too: a bootstrap that names
+the orchestrator gets the batch `agent-host/codex-session.ts` runs for it (inherited MCP servers and
+native tools off, a read-only thread that asks nothing, one turn, the session closed once it
+completed), with the outbox and the fake app-server's transcript the model already kept. The three
+`orchestrator_codex::policy_integration` tests left `engine_orchestrator_host_test` for
+`engine_orchestrator_test`, and the host test no longer runs the Codex host or the fake Codex.
+
+`--report-time`, both targets in one run on the same Mac (load average 11 to 16):
+
+| | Tests | Run | The three Codex tests |
+|---|---:|---:|---:|
+| `engine_orchestrator_host_test`, before (main at b19779773) | 103 | 26.5 s | 22 s summed, longest 9.9 s |
+| `engine_orchestrator_host_test`, after | 100 | 25.4 s | — |
+| `engine_orchestrator_test`, after | 61 | 2.6 s | 0.98 s summed, longest 0.67 s |
+
+The host test's run still ends with its longest case, a `recovery_tests::a_write_failure_*` of
+25 s here; it falls to the three process tests once the decision tests move to the model.

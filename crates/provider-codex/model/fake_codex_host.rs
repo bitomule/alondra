@@ -14,7 +14,12 @@
 //! backend whose host is `LEGACY_HOST` gets the host of the release before, which lives on after
 //! its app-server exited.
 //!
-//! Gaps it leaves: no orchestrator host, no polling of a managed child that is still running, no
+//! A host whose bootstrap names the orchestrator instead of a task runs one batch as the real
+//! session does for it: it disables the app-server's inherited MCP servers and native tools, opens a
+//! read-only thread that asks nothing, refuses every native request, and closes once its one turn
+//! completed.
+//!
+//! Gaps it leaves: no polling of a managed child that is still running, no
 //! code-cell control refusal, the app-server never dies by itself, and a host whose app-server
 //! exited ends only once the daemon read it, never on the deadline the real host keeps when its
 //! owner does not read.
@@ -55,6 +60,17 @@ const APPROVED_PLAN: &str = "Implement the plan the user just approved. Continue
 /// The file name of the Codex host of the release before (`agent-host/codex-legacy-fixture.ts`),
 /// which lives on after its app-server exited and keeps taking owners.
 pub const LEGACY_HOST: &str = "codex-legacy-fixture";
+/// What `hosts_of` knows the orchestrator's hosts by.
+pub const ORCHESTRATOR: &str = "the orchestrator";
+/// The app-server's own tools and features the orchestrator's thread runs without.
+const ORCHESTRATOR_OFF: &[(&str, bool)] = &[
+    ("features.shell_tool", false), ("features.stable_environment_tools", false), ("agents.enabled", false), ("features.multi_agent", false),
+    ("features.goals", false), ("features.apps", false), ("tools.experimental_request_user_input.enabled", false), ("tools.update_plan.enabled", false),
+    ("features.plugins", false), ("features.hooks", false), ("features.skill_mcp_dependency_install", false), ("features.image_generation", false),
+    ("features.imagegenext", false), ("features.code_mode", false), ("features.code_mode_only", false), ("features.code_mode_host", false),
+    ("features.code_mode_tool_search", false), ("features.code_mode_only_strict_3p_tools", false), ("features.code_mode_host_grpc", false),
+    ("features.code_mode_prewarm", false), ("features.sleep_tool", false),
+];
 
 pub type Host = host_transport::Host<Session>;
 type State = HostState<Session>;
@@ -204,9 +220,13 @@ impl CodexModel {
     }
 
     fn start(&self, served: &Served) -> io::Result<Arc<Host>> {
+        let raw: Value = serde_json::from_slice(served.bootstrap()).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let (bootstrap, secret) = Bootstrap::read(served.bootstrap())?;
-        let Some(task) = bootstrap.task() else {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "the model plays no orchestrator host"));
+        let orchestrator = raw["orchestrator"].as_object().cloned();
+        let task = match (bootstrap.task(), &orchestrator) {
+            (Some(task), None) => task,
+            (None, Some(_)) => ORCHESTRATOR.to_owned(),
+            _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "a host runs the orchestrator or a task, never both or neither")),
         };
         let identity = Identity {
             account: bootstrap.fence.account_id.clone(),
@@ -217,7 +237,7 @@ impl CodexModel {
             task,
         };
         let legacy = bootstrap.manifest.artifact_path.file_name().is_some_and(|name| name == LEGACY_HOST);
-        let session = Session { process: Some(served.clone()), legacy, ..Session::default() };
+        let session = Session { process: Some(served.clone()), legacy, orchestrator, ..Session::default() };
         let host = Arc::new(Host::new(identity, (bootstrap, secret), CAPABILITIES, Box::new(Doubled(served.clone())), self.0.starting.clone(), session));
         {
             let mut hosts = lock(&self.0.hosts);
@@ -435,6 +455,8 @@ pub struct Session {
     process: Option<Served>,
     /// The host of the release before: it lives on after its app-server exited.
     legacy: bool,
+    /// The orchestrator's profile, for a host that runs one of its batches instead of a task.
+    orchestrator: Option<Map<String, Value>>,
     opened: bool,
     /// The session ended: the host takes no command any more.
     unavailable: bool,
@@ -507,8 +529,14 @@ fn private_json(path: &Path) -> Result<Option<Map<String, Value>>, Opening> {
 }
 
 impl Session {
-    fn settings(bootstrap: &Bootstrap) -> Map<String, Value> {
-        bootstrap.worker.as_ref().map(|worker| object(worker.settings.get("codex").unwrap_or(&Value::Null))).unwrap_or_default()
+    fn settings(&self, bootstrap: &Bootstrap) -> Map<String, Value> {
+        let settings = bootstrap.worker.as_ref().map(|worker| &worker.settings).or_else(|| self.orchestrator.as_ref().and_then(|profile| profile.get("settings")?.as_object()));
+        settings.map(|settings| object(settings.get("codex").unwrap_or(&Value::Null))).unwrap_or_default()
+    }
+
+    /// A field of the orchestrator's profile, for a host that runs one of its batches.
+    fn profile(&self, field: &str) -> Option<&Value> {
+        self.orchestrator.as_ref()?.get(field)
     }
 
     fn cwd(bootstrap: &Bootstrap) -> String {
@@ -688,8 +716,8 @@ impl Session {
     fn open(&mut self, out: &mut Out) {
         self.opened = true;
         let bootstrap = out.bootstrap();
-        self.model = bootstrap.worker.as_ref().and_then(|worker| worker.model.clone());
-        if Self::settings(bootstrap).get("initial_mode").and_then(Value::as_str) == Some("plan") {
+        self.model = bootstrap.worker.as_ref().and_then(|worker| worker.model.clone()).or_else(|| self.profile("model").and_then(text));
+        if self.settings(bootstrap).get("initial_mode").and_then(Value::as_str) == Some("plan") {
             self.mode = Mode::Plan;
         }
         let native = Native::new(&bootstrap.native.executable, &bootstrap.native.cwd, &bootstrap.native.env, self.process.clone());
@@ -714,12 +742,34 @@ impl Session {
         self.notify(out, json!({"method": "initialized"}));
         self.verify_account(out)?;
         let bootstrap = out.bootstrap();
-        let settings = Self::settings(bootstrap);
+        let settings = self.settings(bootstrap);
         let mut overrides = object(settings.get("config").unwrap_or(&Value::Null));
         overrides.insert("features.goals".into(), json!(false));
+        let orchestrator = self.orchestrator.is_some();
+        if orchestrator {
+            let read = self.rpc(out, "config/read", json!({"cwd": Self::cwd(bootstrap), "includeLayers": false}))?;
+            let inherited: Vec<String> = object(&read["config"]["mcp_servers"]).keys().cloned().collect();
+            if inherited.len() > 256 || inherited.iter().any(|name| name.is_empty() || name.len() > 256 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')) {
+                return Err(Opening::Failed);
+            }
+            for name in &inherited {
+                overrides.insert(format!("mcp_servers.{name}.enabled"), json!(false));
+            }
+            self.emit(out, "alondra/orchestratorPolicy", json!({"disabledMcpServers": inherited}), "message");
+            overrides.extend(ORCHESTRATOR_OFF.iter().map(|(key, on)| ((*key).to_owned(), json!(on))));
+            overrides.insert("web_search".into(), json!("disabled"));
+            overrides.insert("features.multi_agent_v2".into(), json!({"enabled": false, "disable_native_tools": true}));
+        }
         let role = Self::role_environment(bootstrap);
         let mut servers = object(settings.get("mcp_servers").unwrap_or(&Value::Null));
-        if bootstrap.worker.is_some() && !servers.keys().any(|name| name == "alondra" || name == "alondra-orchestrator") {
+        for (name, server) in object(self.profile("mcp_servers").unwrap_or(&Value::Null)) {
+            servers.insert(name, json!({"command": server["command"], "args": server["args"], "required": true, "tool_timeout_sec": 3900}));
+        }
+        if (bootstrap.worker.is_some() || orchestrator) && !servers.keys().any(|name| name == "alondra" || name == "alondra-orchestrator") {
+            return Err(Opening::Failed);
+        }
+        let env = &bootstrap.native.env;
+        if orchestrator && (env.get("ALONDRA_ORCHESTRATOR").map(String::as_str) != Some("1") || env.get("ALONDRA_ORCHESTRATOR_EXECUTION").is_none_or(String::is_empty)) {
             return Err(Opening::Failed);
         }
         for (name, server) in &mut servers {
@@ -737,7 +787,11 @@ impl Session {
             enabled.insert("required".into(), json!(true));
             overrides.insert(format!("mcp_servers.{name}"), Value::Object(enabled));
         }
-        let mut args = json!({"cwd": Self::cwd(bootstrap), "config": overrides, "approvalPolicy": "on-request", "approvalsReviewer": "auto_review", "sandbox": "workspace-write"});
+        let mut args = if orchestrator {
+            json!({"cwd": Self::cwd(bootstrap), "config": overrides, "approvalPolicy": "never", "approvalsReviewer": "user", "sandbox": "read-only"})
+        } else {
+            json!({"cwd": Self::cwd(bootstrap), "config": overrides, "approvalPolicy": "on-request", "approvalsReviewer": "auto_review", "sandbox": "workspace-write"})
+        };
         if let Some(model) = &self.model {
             args["model"] = json!(model);
         }
@@ -756,7 +810,7 @@ impl Session {
             }
             None => {
                 args["ephemeral"] = json!(false);
-                args["environments"] = Value::Null;
+                args["environments"] = if orchestrator { json!([]) } else { Value::Null };
                 self.rpc(out, "thread/start", args)?
             }
         };
@@ -816,15 +870,15 @@ impl Session {
 
     fn write_mapping(&self, bootstrap: &Bootstrap, thread: &str) -> io::Result<()> {
         let Some(mapping) = Self::mapping(bootstrap) else { return Ok(()) };
-        let instructions = Self::settings(bootstrap).get("developerInstructions").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let instructions = self.settings(bootstrap).get("developerInstructions").and_then(Value::as_str).unwrap_or_default().to_owned();
         let record = json!({"threadId": thread, "accountId": bootstrap.fence.account_id, "homeDigest": Self::home_digest(bootstrap), "instructionsDigest": sha256(instructions.as_bytes())});
         let next = PathBuf::from(format!("{}.next", mapping.display()));
         std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&next).and_then(|mut file| io::Write::write_all(&mut file, record.to_string().as_bytes()))?;
         std::fs::rename(next, mapping)
     }
 
-    fn policy(bootstrap: &Bootstrap) -> Result<Map<String, Value>, Opening> {
-        let mut policy = object(Self::settings(bootstrap).get("nativeAccountPolicy").unwrap_or(&Value::Null));
+    fn policy(&self, bootstrap: &Bootstrap) -> Result<Map<String, Value>, Opening> {
+        let mut policy = object(self.settings(bootstrap).get("nativeAccountPolicy").unwrap_or(&Value::Null));
         if bootstrap.worker.is_some() && !bootstrap.state_dir.as_os_str().is_empty() {
             let original = private_json(&bootstrap.state_dir.join("native-account.json"))?;
             if let Some(original) = original {
@@ -849,7 +903,7 @@ impl Session {
     fn check_account(&mut self, out: &mut Out) -> Result<(), Opening> {
         let refused = |code: &str| Opening::Refused(code.into());
         let bootstrap = out.bootstrap();
-        let policy = Self::policy(bootstrap)?;
+        let policy = self.policy(bootstrap)?;
         let cwd = Self::cwd(bootstrap);
         let effective = self.rpc(out, "config/read", json!({"cwd": cwd, "includeLayers": false}))?;
         if text(&effective["config"]["model_provider"]).unwrap_or_else(|| "openai".into()) != "openai" {
@@ -1184,7 +1238,7 @@ impl Session {
                 self.starting = false;
                 self.release_held(out);
             }
-            Err(Rpc::Refused(code)) if input.plan.is_none() => {
+            Err(Rpc::Refused(code)) if input.plan.is_none() && self.orchestrator.is_none() => {
                 self.starting = false;
                 self.emit(out, "alondra/inputRejected", json!({"threadId": thread, "inputId": input.id, "code": code}), "message");
                 self.release_held(out);
@@ -1219,18 +1273,24 @@ impl Session {
     /// What each turn is started with: the thread's working folder, model, effort and the policy
     /// of the session's mode.
     fn policy_for(&self, bootstrap: &Bootstrap) -> Value {
-        let settings = Self::settings(bootstrap);
+        let settings = self.settings(bootstrap);
         let worker = bootstrap.worker.as_ref();
-        let effort = settings.get("reasoning_effort").and_then(text).or_else(|| worker.and_then(|worker| worker.effort.clone()));
-        let chosen = self.model.clone().or_else(|| worker.and_then(|worker| worker.model.clone()));
+        let effort = settings.get("reasoning_effort").and_then(text)
+            .or_else(|| self.profile("reasoning_effort").and_then(text))
+            .or_else(|| worker.and_then(|worker| worker.effort.clone()));
+        let chosen = self.model.clone().or_else(|| worker.and_then(|worker| worker.model.clone())).or_else(|| self.profile("model").and_then(text));
         let cwd = Self::cwd(bootstrap);
-        let never = self.mode == Mode::DontAsk;
-        let sandbox = if self.mode == Mode::Plan {
+        let orchestrator = self.orchestrator.is_some();
+        let never = orchestrator || self.mode == Mode::DontAsk;
+        let sandbox = if orchestrator || self.mode == Mode::Plan {
             json!({"type": "readOnly"})
         } else {
             json!({"type": "workspaceWrite", "writableRoots": [cwd], "networkAccess": false, "excludeTmpdirEnvVar": true, "excludeSlashTmp": true})
         };
         let mut policy = json!({"cwd": cwd, "approvalPolicy": if never { "never" } else { "on-request" }, "approvalsReviewer": if never { "user" } else { "auto_review" }, "sandboxPolicy": sandbox});
+        if orchestrator {
+            policy["environments"] = json!([]);
+        }
         if let Some(model) = &chosen {
             policy["model"] = json!(model);
             let mode = if self.mode == Mode::Plan { "plan" } else { "default" };
@@ -1260,7 +1320,7 @@ impl Session {
         {
             self.work.push_back(Work::CheckChild(child));
         }
-        if method == "item/completed" && ours {
+        if method == "item/completed" && ours && self.orchestrator.is_none() {
             let item = &params["item"];
             if item["type"] == "plan"
                 && let (Some(id), Some(plan)) = (item["id"].as_str(), item["text"].as_str())
@@ -1278,7 +1338,11 @@ impl Session {
         }
         if method == "turn/completed" && ours && params["turn"]["id"].as_str().is_some() && text(&params["turn"]["id"]) == self.turn {
             self.turn = None;
-            self.work.push_back(Work::Pump);
+            if self.orchestrator.is_some() {
+                self.begin_close();
+            } else {
+                self.work.push_back(Work::Pump);
+            }
         }
     }
 
@@ -1404,13 +1468,14 @@ impl Session {
         let method = message["method"].as_str().unwrap_or_default().to_owned();
         let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
         let kind = match method.as_str() {
-            "item/tool/requestUserInput" => DecisionKind::Question,
-            "mcpServer/elicitation/request" => DecisionKind::Elicitation,
-            "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" | "item/permissions/requestApproval" => DecisionKind::Permission,
-            _ => {
-                self.notify(out, json!({"id": id, "error": {"code": -32601, "message": "This Alondra host does not expose that request"}}));
-                return;
-            }
+            "item/tool/requestUserInput" => Some(DecisionKind::Question),
+            "mcpServer/elicitation/request" => Some(DecisionKind::Elicitation),
+            "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" | "item/permissions/requestApproval" => Some(DecisionKind::Permission),
+            _ => None,
+        };
+        let Some(kind) = kind.filter(|_| self.orchestrator.is_none()) else {
+            self.notify(out, json!({"id": id, "error": {"code": -32601, "message": "This Alondra host does not expose that request"}}));
+            return;
         };
         let key = request_key(&id);
         let identity = sha256(json!({"method": method, "params": params}).to_string().as_bytes());
