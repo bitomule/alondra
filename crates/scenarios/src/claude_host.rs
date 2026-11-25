@@ -151,6 +151,9 @@ impl HostLauncher for ClaudeEdge {
         let back = bootstrap.socket_path.with_file_name("b");
         let listener = UnixListener::bind(&back)?;
         std::fs::set_permissions(&back, std::fs::Permissions::from_mode(0o600))?;
+        let interrupts = bootstrap.socket_path.with_file_name("i");
+        let interrupted = UnixListener::bind(&interrupts)?;
+        std::fs::set_permissions(&interrupts, std::fs::Permissions::from_mode(0o600))?;
         // The process the daemon supervises listens on the host's socket and holds the lock of the
         // host's folder, which the daemon hands over as its input, for as long as it lives: a
         // daemon that comes back finds it held, and finds it at the other end of the socket.
@@ -166,6 +169,7 @@ impl HostLauncher for ClaudeEdge {
         let child = relay
             .arg(&bootstrap.socket_path)
             .arg(&back)
+            .arg(&interrupts)
             .stdin(Stdio::from(spawn.stdin))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -173,6 +177,14 @@ impl HostLauncher for ClaudeEdge {
             .spawn()?;
         let host = self.0.start(text.as_bytes(), child.id(), Box::new(Relay { group: child.id() as i32, back }))?;
         let model = self.0.clone();
+        let (interrupting, stopped) = (self.0.clone(), host.clone());
+        self.0.spawn(move || {
+            for stream in interrupted.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let _ = std::io::Read::read(&mut stream, &mut [0]);
+                interrupting.interrupt_and_close(&stopped);
+            }
+        });
         self.0.spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };

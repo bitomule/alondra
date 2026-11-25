@@ -76,19 +76,19 @@
         "level": "calm",
         "parts": [
           {
-            "detail": "Aún sin medir",
+            "detail": "Le queda el 90 % de la semana",
             "group": "Claude",
             "label": "Default",
             "level": "calm",
             "lines": [
-              "Aún sin medir"
+              "Le queda el 90 % de la semana"
             ],
             "text": "con margen",
-            "value": 1.0
+            "value": 0.9
           }
         ],
         "text": "con margen",
-        "value": 0.0
+        "value": 0.8
       },
       {
         "id": "memory",

@@ -68,6 +68,12 @@ text = "Rename the column"
 do = "rest"
 max = "30m"
 
+# The home gauges keep what they showed for a minute: the checkpoint reads them once the Mac was
+# sampled again after the sign-in.
+[[step]]
+do = "advance"
+by = "1m"
+
 [[step]]
 do = "checkpoint"
 name = "signed-in-again"

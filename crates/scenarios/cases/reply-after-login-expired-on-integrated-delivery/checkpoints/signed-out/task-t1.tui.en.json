@@ -377,24 +377,24 @@
     ],
     "gauges": [
       {
-        "detail": "You can go on: Claude has room",
+        "detail": "Claude has no room: its new tasks wait",
         "id": "usage",
         "label": "Claude",
-        "level": "calm",
+        "level": "hot",
         "parts": [
           {
-            "detail": "Not measured yet",
+            "detail": "Signed out. Open Terminal on the Mac, run claude and sign in with /login",
             "group": "Claude",
             "label": "Default",
-            "level": "calm",
+            "level": "hot",
             "lines": [
-              "Not measured yet"
+              "Signed out. Open Terminal on the Mac, run claude and sign in with /login"
             ],
-            "text": "with room",
-            "value": 1.0
+            "text": "signed out",
+            "value": 0.9
           }
         ],
-        "text": "with room",
+        "text": "no room",
         "value": 0.0
       },
       {

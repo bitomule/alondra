@@ -1393,6 +1393,26 @@ impl ClaudeModel {
         }
     }
 
+    /// The turn Claude runs ends interrupted, as the result of an interrupt reports it.
+    fn abort_turn(&self, host: &Host, state: &mut State) {
+        let Some(taken) = state.turn.take() else { return };
+        let result = self.uuid();
+        let last = taken.last().cloned().unwrap_or_default();
+        self.emit(host, state, "result", json!({"type": "result", "subtype": "error_during_execution", "uuid": result, "user_message_uuid": last,
+            "user_message_uuids": taken, "is_error": true, "terminal_reason": "aborted_streaming", "session_id": host.session}));
+    }
+
+    /// The host got the SIGINT that stops it: it interrupts the turn Claude runs, reports it, and
+    /// closes once the daemon acknowledged all it said, as a host that closes on command does.
+    pub fn interrupt_and_close(&self, host: &Host) {
+        let mut state = lock(&host.state);
+        self.withdraw(host, &mut state, true);
+        self.abort_turn(host, &mut state);
+        state.queued.clear();
+        self.event(host, &mut state, json!({"type": "process_exited", "exit_code": 0, "signal": null}));
+        state.wire.closing = true;
+    }
+
     /// Answers a command as the host does.
     fn command(&self, host: &Host, state: &mut State, command: Command) {
         let id = command.command_id.to_string();
@@ -1449,13 +1469,7 @@ impl ClaudeModel {
                     lock(&self.0.controls).push(json!({"subtype": "interrupt"}));
                 }
                 self.withdraw(host, state, matches!(command.action, Action::Interrupt));
-                if state.turn.is_some() {
-                    let taken = state.turn.take().unwrap_or_default();
-                    let result = self.uuid();
-                    let last = taken.last().cloned().unwrap_or_default();
-                    self.emit(host, state, "result", json!({"type": "result", "subtype": "error_during_execution", "uuid": result, "user_message_uuid": last,
-                        "user_message_uuids": taken, "is_error": true, "terminal_reason": "aborted_streaming", "session_id": host.session}));
-                }
+                self.abort_turn(host, state);
                 if !matches!(command.action, Action::Interrupt) {
                     state.queued.clear();
                     self.event(host, state, json!({"type": "process_exited", "exit_code": 0, "signal": null}));

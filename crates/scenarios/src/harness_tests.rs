@@ -41,7 +41,7 @@ fn the_relay_socket_is_private_from_the_moment_it_is_bound() {
     std::fs::create_dir_all(&*directory).unwrap();
     let socket = directory.join("s");
     let mut command = Command::new(std::env::var_os("SCENARIO_HOST_RELAY").unwrap());
-    command.arg(&socket).arg(directory.join("b")).env("SCENARIO_TEST_BOUND", "1").stdin(Stdio::piped()).stdout(Stdio::piped());
+    command.arg(&socket).arg(directory.join("b")).arg(directory.join("i")).env("SCENARIO_TEST_BOUND", "1").stdin(Stdio::piped()).stdout(Stdio::piped());
     // SAFETY: only the forked test child changes its umask before exec.
     unsafe { command.pre_exec(|| { libc::umask(0o022); Ok(()) }); }
     let mut child = OwnedChild(command.spawn().unwrap());

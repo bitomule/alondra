@@ -68,19 +68,19 @@
         "level": "calm",
         "parts": [
           {
-            "detail": "Not measured yet",
+            "detail": "90% of the week left",
             "group": "Claude",
             "label": "Default",
             "level": "calm",
             "lines": [
-              "Not measured yet"
+              "90% of the week left"
             ],
             "text": "with room",
-            "value": 1.0
+            "value": 0.9
           }
         ],
         "text": "with room",
-        "value": 0.0
+        "value": 0.8
       },
       {
         "id": "memory",

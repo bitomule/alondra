@@ -153,24 +153,24 @@
         ],
         "gauges": [
           {
-            "detail": "Puedes seguir: Claude tiene margen",
+            "detail": "Claude no tiene margen: sus tareas nuevas esperan",
             "id": "usage",
             "label": "Claude",
-            "level": "calm",
+            "level": "hot",
             "parts": [
               {
-                "detail": "Aún sin medir",
+                "detail": "Sin sesión. Abre Terminal en el Mac, ejecuta claude e inicia sesión con /login",
                 "group": "Claude",
                 "label": "Default",
-                "level": "calm",
+                "level": "hot",
                 "lines": [
-                  "Aún sin medir"
+                  "Sin sesión. Abre Terminal en el Mac, ejecuta claude e inicia sesión con /login"
                 ],
-                "text": "con margen",
-                "value": 1.0
+                "text": "sin sesión",
+                "value": 0.9
               }
             ],
-            "text": "con margen",
+            "text": "sin margen",
             "value": 0.0
           },
           {
@@ -295,24 +295,24 @@
     ],
     "gauges": [
       {
-        "detail": "Puedes seguir: Claude tiene margen",
+        "detail": "Claude no tiene margen: sus tareas nuevas esperan",
         "id": "usage",
         "label": "Claude",
-        "level": "calm",
+        "level": "hot",
         "parts": [
           {
-            "detail": "Aún sin medir",
+            "detail": "Sin sesión. Abre Terminal en el Mac, ejecuta claude e inicia sesión con /login",
             "group": "Claude",
             "label": "Default",
-            "level": "calm",
+            "level": "hot",
             "lines": [
-              "Aún sin medir"
+              "Sin sesión. Abre Terminal en el Mac, ejecuta claude e inicia sesión con /login"
             ],
-            "text": "con margen",
-            "value": 1.0
+            "text": "sin sesión",
+            "value": 0.9
           }
         ],
-        "text": "con margen",
+        "text": "sin margen",
         "value": 0.0
       },
       {
