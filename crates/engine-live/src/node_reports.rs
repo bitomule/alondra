@@ -152,7 +152,7 @@ pub struct Reported {
     /// What only the Agent SDK host's events say, for a node that runs through it.
     pub sdk: Option<crate::sdk_live::Readings>,
     pub codex: Option<crate::codex_live::Readings>,
-    pub antigravity: Option<crate::antigravity_live::Readings>,
+    pub antigravity: Option<crate::antigravity_readings::Readings>,
 }
 
 const LABEL_LIMIT: usize = 80;
@@ -422,11 +422,12 @@ impl Reports {
         self.changed.publish();
     }
 
-    pub fn apply_antigravity(&self, session_id: &str, message: &Value, now: Millis) {
+    /// `observe` reads a host's message into the node's session, as `antigravity_live` does.
+    pub fn apply_with(&self, session_id: &str, now: Millis, observe: impl FnOnce(&mut Reported, Millis)) {
         let mut sessions = self.sessions.lock_or_exit("the node reports");
         let session = sessions.entry(session_id.to_owned()).or_default();
         session.last_event_at = Some(now);
-        crate::antigravity_live::observe(session, message, now);
+        observe(session, now);
         self.changes.record(session_id.to_owned());
         drop(sessions);
         self.changed.publish();
@@ -444,7 +445,10 @@ impl Reports {
         if let Some(session) = self.sessions.lock_or_exit("the node reports").get_mut(session_id) {
             crate::sdk_live::ended(session, now);
             crate::codex_live::ended(session, now);
-            crate::antigravity_live::ended(session, now);
+            if let Some(readings) = session.antigravity.as_mut() {
+                readings.end();
+                session.working_since = None;
+            }
             self.changes.record(session_id.to_owned());
         }
         self.changed.publish();

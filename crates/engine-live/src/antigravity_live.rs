@@ -2,25 +2,15 @@
 //! notifications as agy sent them, and the host's own `alondra/*` notices of the session and of
 //! each prompt. The answer, the calls under way and the plan go to the live view; nothing here
 //! moves the node's state.
+use crate::antigravity_readings::Readings;
 use crate::node_reports::{Answer, Report, Reported, short_label};
 use alondra_core::activity::Activity;
 use alondra_core::{Millis, ToolInFlight};
-use alondra_view_model::RunOutcome;
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 /// The most calls kept under way at once, and the longest answer kept.
 const CALLS: usize = 64;
 const ANSWER: usize = 8_000;
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Readings {
-    session: Option<String>,
-    turn: Option<String>,
-    answer: String,
-    calls: BTreeMap<String, ToolInFlight>,
-    since: Millis,
-}
 
 fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> { value.get(key).and_then(Value::as_str) }
 
@@ -106,19 +96,8 @@ pub fn activity(session: &Reported) -> Option<Vec<Activity>> {
     Some(main.into_iter().collect())
 }
 
-/// The host ended, and agy with it: nothing it ran goes on.
-pub fn ended(session: &mut Reported, now: Millis) {
-    let Some(readings) = session.antigravity.as_mut() else { return };
-    readings.calls.clear();
-    readings.turn = None;
-    session.tool = None;
-    session.working_since = None;
-    session.end_background(|_| true, RunOutcome::Stopped, now);
-    session.work.ended(now);
-}
-
 pub fn feed(reports: &crate::node_reports::Reports, agent: &alondra_domain_rules::AgentId, message: &Value) {
-    reports.apply_antigravity(&agent.0, message, alondra_core::now_millis());
+    reports.apply_with(&agent.0, alondra_core::now_millis(), |session, now| observe(session, message, now));
 }
 
 #[cfg(test)]
@@ -173,7 +152,10 @@ mod tests {
         assert!(session.working_since.is_none());
         send(&mut session, "alondra/promptSent", json!({"sessionId": "s", "turnId": "t3"}), 6);
         send(&mut session, "session/update", json!({"sessionId": "s", "update": {"sessionUpdate": "tool_call", "toolCallId": "c1", "kind": "execute"}}), 7);
-        ended(&mut session, 8);
+        let reports = crate::node_reports::Reports::default();
+        reports.apply_with("n", 7, |reported, _| *reported = session);
+        reports.sdk_ended("n", 8);
+        let session = reports.session("n").unwrap();
         assert!(session.tool.is_none() && session.working_since.is_none());
         assert!(activity(&session).unwrap().is_empty());
     }

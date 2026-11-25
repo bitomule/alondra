@@ -14,6 +14,7 @@ use alondra_daemon_support::{hook_text, job_state, locks};
 use alondra_engine_kernel::{domain_runtime, extension, metrics_capture};
 
 pub mod antigravity_live;
+pub mod antigravity_readings;
 pub mod codex_live;
 pub mod contexts;
 pub mod node_reports;
