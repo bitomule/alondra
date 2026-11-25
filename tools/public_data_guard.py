@@ -27,6 +27,7 @@ ALLOWLIST = "tools/public_data_allowlist.tsv"
 ANY = "*"
 PRIVATE_RULE = "private-literal"
 PRIVATE_LITERALS_ENV = "ALONDRA_PRIVATE_LITERALS"
+NO_PRIVATE_LITERALS = "none"
 OWN_FILES = {
     "tools/public_data_guard.py",
     "tools/public_data_allowlist.tsv",
@@ -189,7 +190,10 @@ def private_literals():
     path = os.environ.get(PRIVATE_LITERALS_ENV)
     if not path or not Path(path).is_file():
         return []
-    lines = Path(path).read_text().splitlines()
+    text = Path(path).read_text()
+    if text.strip() == NO_PRIVATE_LITERALS:
+        return []
+    lines = text.splitlines()
     return [line.strip().lower() for line in lines if line.strip() and not line.startswith("#")]
 
 

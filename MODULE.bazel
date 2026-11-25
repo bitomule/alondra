@@ -97,6 +97,10 @@ alondra_signing = use_repo_rule("//signing:repo.bzl", "alondra_signing")
 
 alondra_signing(name = "alondra_signing")
 
+private_literals = use_repo_rule("//tools:private_literals.bzl", "private_literals")
+
+private_literals(name = "private_literals")
+
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")

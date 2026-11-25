@@ -69,6 +69,12 @@ pub fn literals_from(value: Option<&std::ffi::OsStr>) -> Result<Vec<String>, Lit
         return Err(LiteralsError::Unset);
     }
     let text = std::fs::read_to_string(value).map_err(|error| LiteralsError::Unreadable(error.to_string()))?;
+    if text.is_empty() {
+        return Err(LiteralsError::Unset);
+    }
+    if text.trim() == NO_PRIVATE_LITERALS {
+        return Ok(Vec::new());
+    }
     let literals: Vec<String> = text.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).map(str::to_lowercase).collect();
     if literals.is_empty() {
         return Err(LiteralsError::Empty(Path::new(value).display().to_string()));
@@ -432,5 +438,9 @@ mod tests {
         std::fs::write(&list, "# names\nCanaryHorizon\n").unwrap();
         assert_eq!(literals_from(Some(list.as_os_str())), Ok(vec!["canaryhorizon".to_owned()]));
         assert_eq!(literals_from(Some(NO_PRIVATE_LITERALS.as_ref())), Ok(Vec::new()), "a CI without a list says so");
+        std::fs::write(&list, NO_PRIVATE_LITERALS).unwrap();
+        assert_eq!(literals_from(Some(list.as_os_str())), Ok(Vec::new()), "the build copies `none` as it is");
+        std::fs::write(&list, "").unwrap();
+        assert_eq!(literals_from(Some(list.as_os_str())), Err(LiteralsError::Unset), "the build copies an unset list as an empty file");
     }
 }
