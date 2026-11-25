@@ -3,9 +3,11 @@ PLUGIN := $(CURDIR)/plugin
 LABEL = $(shell $(BIN)/alondra config get service_label 2>/dev/null)
 DEVICE ?=
 # A Rust target's executable: cquery also lists the clippy report it builds beside it.
-exe = $$(bazelisk cquery --output=files $(1) 2>/dev/null | grep -v '\.ok$$')
+exe_path = $$(bazelisk cquery --output=files $(1) 2>/dev/null | grep -v '\.ok$$')
+# That path is relative to the execution root, which the symlink prefix in .bazelrc links as .bazel-links/bazel-out.
+exe = $$(path=$(call exe_path,$(1)); case "$$path" in (bazel-out/*) path="$(CURDIR)/.bazel-links/$$path" ;; esac; printf '%s\n' "$$path")
 # External source artifacts may not have a link in the execution root until an action uses them.
-bazel_artifact = "$$(path=$(call exe,$(1)); root=$$(bazelisk info execution_root 2>/dev/null); \
+bazel_artifact = "$$(path=$(call exe_path,$(1)); root=$$(bazelisk info execution_root 2>/dev/null); \
 	case "$$path" in (external/*) \
 		if [ ! -e "$$root/$$path" ]; then root=$$(bazelisk info output_base 2>/dev/null); fi ;; \
 	esac; printf '%s\n' "$$root/$$path")"
