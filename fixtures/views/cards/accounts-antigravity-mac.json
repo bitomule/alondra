@@ -4,7 +4,7 @@
   "view": "accounts",
   "key": "accounts",
   "client": "mac",
-  "version": "v8d816fb2cc1734ad",
+  "version": "vfa033cae144795be",
   "cursor": "cursor-1",
   "title": "Accounts",
   "status": {
@@ -616,7 +616,7 @@
           "type": "row",
           "id": "antigravity-add",
           "icon": "action",
-          "title": "Add a Antigravity account",
+          "title": "Add an Antigravity account",
           "subtitle": "Choose a name; then sign it in to Antigravity in Terminal on the Mac",
           "depth": 0,
           "struck": false,
@@ -689,6 +689,182 @@
           "subtitle": "Compare every provider by remaining quota; account order does not affect margin routing",
           "depth": 0,
           "struck": false
+        }
+      ],
+      "style": "list"
+    },
+    {
+      "id": "model_profiles",
+      "title": "Models by role",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "antigravity-implementation",
+          "icon": "machine",
+          "title": "Antigravity · Implementation",
+          "subtitle": "Native default when advertised",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:antigravity-implementation@0",
+              "label": "Choose model",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Refresh models for this provider first",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Edit ordered candidates",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:antigravity-implementation"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "antigravity-general",
+          "icon": "machine",
+          "title": "Antigravity · General work",
+          "subtitle": "Native default when advertised",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:antigravity-general@0",
+              "label": "Choose model",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Refresh models for this provider first",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Edit ordered candidates",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:antigravity-general"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "antigravity-design",
+          "icon": "machine",
+          "title": "Antigravity · Design",
+          "subtitle": "Native default when advertised",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:antigravity-design@0",
+              "label": "Choose model",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Refresh models for this provider first",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Edit ordered candidates",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:antigravity-design"
+              },
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "antigravity-review",
+          "icon": "machine",
+          "title": "Antigravity · Review",
+          "subtitle": "Native default when advertised",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "model_profile:antigravity-review@0",
+              "label": "Choose model",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Refresh models for this provider first",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Edit ordered candidates",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "model_profile:antigravity-review"
+              },
+              "resolves_card": false
+            }
+          ]
         }
       ],
       "style": "list"
