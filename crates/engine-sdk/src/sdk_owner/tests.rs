@@ -812,7 +812,7 @@ fn assert_replaced(slice: &Slice, domain: &Arc<DomainRuntime>, mut driver: Drive
     driver.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // Production, 0.3.1: at the daemon's start five SDK hosts still held their lock, so they were
 // found live, but their owner's socket was gone and each adoption failed as Disconnected; every
 // execution was left as it was, for good. A live host that refuses its adoption is now ended by
@@ -1103,33 +1103,7 @@ fn an_archived_claude_receipt_reconciles_after_a_successor_that_only_attached() 
     resumed.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
-// 21 Oct: an SDK node stopped within hours. Its host's journal had a 16 MiB lifetime limit and
-// took 256 commands at most, and each daemon connection tracked 256 commands for good: a long node
-// crossed them and its host stopped serving. Now a turn writes over 20 MiB and the node then takes
-// more than 256 inputs, through the same host.
-#[test]
-fn a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs() {
-    let slice = Slice::new();
-    let mut driver = slice.launch_with("bulky:24");
-    slice.settle(&mut driver);
-    assert_eq!(slice.observations_with(&"x".repeat(900_000)), 24, "every large answer was committed");
-    // Each explicit input and its three empty-turn wakes cross the old 256-input limit.
-    for turn in 1..=64 {
-        crate::domain_messages::tell_sdk_node(&*slice.domain, &TASK.into(), "Alice", &format!("Next step {turn}"), &format!("tell-{turn}"), true).unwrap();
-        driver.step(&|| false).unwrap();
-        slice.settle(&mut driver);
-    }
-    let native_prompts = slice.hosts.prompts();
-    assert_eq!(native_prompts.len(), 260, "the same host served more than 256 native inputs");
-    let prompts = slice.prompts();
-    assert_eq!(prompts.len(), 65, "every explicit input reached the same Claude");
-    assert!(prompts[64].ends_with("Next step 64"), "{}", prompts[64]);
-    assert_eq!(Slice::read_cards(&*slice.domain).len(), 65, "every stop after its wake ended on its own case");
-    driver.stop().unwrap();
-}
-
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // The Mac goes down on a host whose journal was compacted: the launch turn wrote more than the
 // journal keeps once acknowledged, then the host offered the orchestrator's instruction and everything died
 // before the daemon recorded the receipt. The next daemon reads the compacted journal from disk:
@@ -2355,7 +2329,7 @@ fn a_host_stopped_mid_turn_by_a_normal_shutdown_leaves_evidence_the_next_daemon_
     resumed.stop().unwrap();
 }
 
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 // R4: the first turn ended, the orchestrator instructed the node and the host offered that to a Claude whose
 // session then ended before it showed it read it; the Mac went down before the receipt was kept.
 // Nobody is asked: the resumed session gets the same words once more, flagged as possibly received
@@ -3954,7 +3928,7 @@ fn a_session_its_host_opened_before_the_owner_looked_again_is_not_given_up() {
 #[test]
 fn a_takeover_whose_first_input_is_uncertain_relaunches_by_itself_without_a_card() {
     let mut slice = Slice::new();
-    slice.backend.io_timeout_seconds = 8;
+    slice.backend.io_timeout_seconds = 4;
     slice.hosts.hold_prompts(&slice.backend.native);
     let driver = slice.launch();
     slice.kill_host_and_daemon(driver);

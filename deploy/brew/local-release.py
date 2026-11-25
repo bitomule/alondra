@@ -31,9 +31,9 @@ PREVIOUS_DOCTOR = 'previous-doctor'
 HANDOVER_CRASHES = ('planned', 'bg_stopped', 'sdk_admitted')
 SDK_REHEARSAL = {'--sandbox-tool': '//tools/sandbox:alondra-sandbox'}
 RELEASE_CONFIG = '--config=release'
-# Tests too slow for every edit, which no wildcard runs: a release names them. They start the real
-# daemon several times.
-RELEASE_ONLY_TESTS = ('//crates/alondrad:codex_adoption_process_test',)
+# End-to-end tests, which no wildcard runs: a release names them. They start the real daemon or the
+# real hosts and their fake native Claude and Codex.
+RELEASE_ONLY_TESTS = ('//crates/alondrad:codex_adoption_process_test', '//crates/engine-sdk:engine_sdk_host_test')
 # The repository's test wrapper and its guard, whatever --run_under the user's own bazelrc sets, and
 # the test that fails when the tests ran under another one.
 TEST_WRAPPER = '--run_under=//tools:test_tmpdir'

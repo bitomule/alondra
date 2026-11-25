@@ -539,6 +539,13 @@ impl ClaudeModel {
         lock(&self.0.forgotten).insert(session.to_lowercase());
     }
 
+    /// Another Claude Code ran `session` before any host: its transcript in the profile holds
+    /// `prompts` prompts, which a host that resumes it starts on.
+    pub fn ran_elsewhere(&self, session: &str, prompts: usize) {
+        lock(&self.0.forgotten).remove(&session.to_lowercase());
+        lock(&self.0.sessions).insert(session.to_lowercase(), prompts);
+    }
+
     /// The process of `task`'s host dies, with whatever it started.
     pub fn kill(&self, task: &str) {
         if let Some(host) = self.running(task) {
