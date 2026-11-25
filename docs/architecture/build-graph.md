@@ -873,7 +873,9 @@ No edit meets its goal. What is left above it, measured:
 
 Failures during the run: `//tools:test_execs_test` on every edit (main was red, fixed with this
 measurement), `relaunch_test` on four edits and `engine_sdk_engine_test` once, both under the
-bench's load.
+bench's load. `relaunch_test`'s were macOS's first-launch scan killing daemons whose binary path the
+test had already removed or replaced, fixed since (`docs/running-tests.md`, "Executables a test
+writes").
 
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 

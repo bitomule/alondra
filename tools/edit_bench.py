@@ -9,7 +9,9 @@ crate the edit reaches, as it does in a real edit loop (a crate taken from a cac
 makes a second change that reaches the binaries (a `#[used]` static in Rust, a comment elsewhere)
 and times `bazel build` over the same targets: what compiling costs. A third change times `bazel
 test` with an execution log: the whole edit, and the test target that took longest. It puts the
-file back exactly as it was, also when interrupted. `--build-only` stops after the build.
+file back exactly as it was, also when interrupted. `--build-only` stops after the build. The log of
+every test target that fails, times out or never reports, with its earlier attempts, is copied to
+`.scratch/edit-bench-failures/` before the next pass overwrites it; the newest runs are kept.
 
 Under bazelqueue a `bazel run` holds its build slot while the bench runs, so on a shared Mac build
 the script and run it outside Bazel:
@@ -21,6 +23,7 @@ import collections
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,6 +48,8 @@ RAN_TEST = re.compile(r"^(//\S+)\s+(?:PASSED|FAILED|FLAKY|TIMEOUT)\b.* in (\d+(?
 CRITICAL = re.compile(r"Critical Path: (\d+(?:\.\d+)?)s")
 QUEUE_RAN = re.compile(r"^bazelqueue: finished \S+ exit=\d+ queued=\S+ ran=(\S+)", re.M)
 DURATION = re.compile(r"(\d+(?:\.\d+)?)(h|ms|m|s)")
+FAILURES = Path(".scratch") / "edit-bench-failures"
+KEPT_RUNS = 20
 
 
 def label_of(root, relative):
@@ -195,7 +200,31 @@ def measure(root, relative, query_only, build_only=False, flags=()):
         test_runs=ran.get("TestRunner", 0),
         actions=sum(ran.values()),
     )
+    if row["failed"] and verb == "test":
+        row["kept"] = keep_failures(root, relative, row["failed"])
     return row
+
+
+def keep_failures(root, relative, failed):
+    """Copies each failed target's test log and earlier attempts out of Bazel's testlogs, which the
+    next pass overwrites, into a folder of this run, and keeps only the newest KEPT_RUNS runs."""
+    testlogs = Path(root) / ".bazel-links" / "bazel-testlogs"
+    kept = Path(root) / FAILURES
+    run = kept / f"{time.time_ns()}-{relative.replace('/', '_')}"
+    for label in failed:
+        package, name = label.removeprefix("//").split(":", 1)
+        source, target = testlogs / package / name, run / package / name
+        for item in ("test.log", "test.attempts"):
+            if (source / item).is_dir():
+                shutil.copytree(source / item, target / item)
+            elif (source / item).is_file():
+                target.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source / item, target / item)
+    if not run.exists():
+        return None
+    for old in sorted(kept.iterdir())[:-KEPT_RUNS]:
+        shutil.rmtree(old)
+    return run
 
 
 def table(rows):
@@ -244,6 +273,9 @@ def main(argv):
         edits = frequent_edits(log, root, args.count)
     rows = [measure(root, edit, args.query_only, args.build_only, args.bazel_flag) for edit in edits]
     print(table(rows))
+    for row in rows:
+        if row.get("kept"):
+            print(f"Logs of the tests that failed after editing {row['edit']}: {row['kept']}")
     return 0 if all(row.get("passed", True) for row in rows) else 1
 
 

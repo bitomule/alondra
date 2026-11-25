@@ -92,6 +92,24 @@ class EditBenchTest(unittest.TestCase):
         }
         self.assertIn("9 s (test) (failed: `//crates/alondrad:relaunch_test`) |", bench.table([row]))
 
+    def test_the_logs_of_failed_targets_outlive_the_next_pass_and_only_the_newest_runs_stay(self):
+        logs = self.root / ".bazel-links" / "bazel-testlogs" / "crates" / "alondrad" / "relaunch_test"
+        (logs / "test.attempts").mkdir(parents=True)
+        (logs / "test.log").write_text("daemon exited signal: 9 (SIGKILL)")
+        (logs / "test.attempts" / "attempt_1.log").write_text("first attempt")
+        failed = ["//crates/alondrad:relaunch_test", "//crates/views:views_test"]
+        kept = bench.keep_failures(self.root, "crates/views/src/task_state.rs", failed)
+        self.assertTrue(kept.name.endswith("-crates_views_src_task_state.rs"), kept)
+        self.assertEqual((kept / "crates/alondrad/relaunch_test/test.log").read_text(), "daemon exited signal: 9 (SIGKILL)")
+        self.assertEqual((kept / "crates/alondrad/relaunch_test/test.attempts/attempt_1.log").read_text(), "first attempt")
+        self.assertFalse((kept / "crates/views").exists(), "a target with no log leaves nothing")
+        for _ in range(bench.KEPT_RUNS):
+            bench.keep_failures(self.root, "a.rs", failed[:1])
+        runs = sorted((self.root / bench.FAILURES).iterdir())
+        self.assertEqual(len(runs), bench.KEPT_RUNS)
+        self.assertNotIn(kept, runs, "the oldest run goes first")
+        self.assertIsNone(bench.keep_failures(self.root, "a.rs", failed[1:]), "nothing to keep, no folder")
+
     def test_a_row_tells_compiling_from_testing(self):
         row = {
             "edit": "crates/github-gh/src/cli.rs", "crates": 10, "tests": 36, "verb": "test", "seconds": 150,

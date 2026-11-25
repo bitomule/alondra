@@ -79,6 +79,18 @@ too. Test code never falls back to `/tmp`: a fixture that finds no short folder 
 through Bazel. `//tools:test_scratch_guard_test` refuses a fallback to, or a file created in, a shared
 temporary folder in test-side Rust code.
 
+### Executables a test writes
+
+macOS checks a binary it has not seen before (Gatekeeper's first-launch scan) after the process has
+started, and reads it again at the path the process ran from. The scan waits in a queue, seconds
+behind under load, and when it finds no file at that path it kills the process with SIGKILL before
+it writes anything; `syspolicyd` logs `Terminating process due to Gatekeeper rejection: <pid>` (or
+`Malware rejection`). Every build makes a new binary, so the first runs after an edit are the
+exposed ones. A test that copies a binary and runs it therefore never removes or replaces the
+file a live process ran from: it starts the process through a link and moves only the link
+(`crates/alondrad/tests/relaunch.rs`), and removes the file once the processes that ran it are gone.
+A hard link does not help: it is the removed name, not the file, that the scan looks for.
+
 ## Invalid cached executables
 
 `make test` selects the repository's test wrapper explicitly, including when a user bazelrc
