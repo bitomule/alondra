@@ -3521,6 +3521,15 @@ impl DomainState {
                 self.account_reserve = *reserve;
                 self.account_usage.retain(|usage| seen.contains(&(usage.provider, usage.account.clone())));
             }
+            Command::RecordAccountPolicyRefused { provider, account } => {
+                system(actor)?;
+                let Some(status) = self.accounts.iter_mut().find(|status| status.provider == *provider && status.id == *account) else {
+                    return fail("not_found", "The refused account is unknown");
+                };
+                if matches!(status.state, alondra_core::accounts::AccountState::SignedIn | alondra_core::accounts::AccountState::Unchecked) {
+                    status.state = alondra_core::accounts::AccountState::PolicyRefused;
+                }
+            }
             Command::RecordDistribution { policy, move_when_exhausted } => {
                 system(actor)?;
                 self.account_policy = *policy;

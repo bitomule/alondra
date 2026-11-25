@@ -525,7 +525,12 @@ impl DomainState {
                     credentials_changed.insert(key.clone());
                     status.sign_ins += 1;
                 }
-                if status.state == AccountState::SignedIn && !identity_changed
+                let refusal_stands = prior.is_some_and(|prior| prior.state == AccountState::PolicyRefused)
+                    && !identity_changed && !billing_changed
+                    && matches!(status.state, AccountState::SignedIn | AccountState::Unchecked);
+                if refusal_stands {
+                    status.state = AccountState::PolicyRefused;
+                } else if status.state == AccountState::SignedIn && !identity_changed
                     && prior.is_none_or(|prior| prior.state != AccountState::SignedIn) && held.contains(&key)
                 {
                     status.state = AccountState::SignedOut;

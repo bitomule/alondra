@@ -678,6 +678,8 @@ impl Executor {
             }
         };
         let changes = self.domain.end_execution(&run_id);
+        let refused_before_any_work = output.stream.denied && changes.is_empty() && !output.stream.may_have_effects()
+            && self.domain.store.lock_or_exit("the domain store").tool_operations(&run_id)?.is_empty();
         let logical_stop = if output.stream.denied { Some(BatchStop::Denied) }
             else if output.stream.native_request_rejected { Some(BatchStop::Interrupted) }
             else { None };
@@ -701,6 +703,8 @@ impl Executor {
         let end = if runtime.cancel_requested {
             let has_effects = !changes.is_empty() || !self.domain.store.lock_or_exit("the domain store").tool_operations(&run_id)?.is_empty();
             BatchEnd::Cancelled { effects: has_effects.then_some(changes.clone()) }
+        } else if refused_before_any_work {
+            BatchEnd::NotStarted { why: output.stream.error.clone().unwrap_or_else(|| "The provider denied the batch before it called any Alondra tool".into()) }
         } else if output.stream.denied {
             BatchEnd::Denied { calls:changes.clone(),why:output.stream.error.clone().unwrap_or_else(|| "The provider denied an Alondra tool".into()) }
         } else if output.stream.native_request_rejected {
@@ -732,6 +736,9 @@ impl Executor {
             && let Some(reset) = output.stream.limit()
         {
             crate::orchestrator_provider::record_limit(&self.domain, &selection, reset, now_millis());
+        }
+        if output.stream.denied && matches!(end, BatchEnd::NotStarted { .. }) && selection.account.provider == alondra_core::accounts::Provider::Codex {
+            crate::orchestrator_provider::record_policy_refused(&self.domain, &selection, now_millis());
         }
         if !matches!(end, BatchEnd::Handled) {
             log!("orchestrator: batch {} did not end handled ({:?}); result received: {}, success: {}, denied: {}, storage failure: {}, native request rejected: {}, restarted: {}; admitted {:?}; unconfirmed {:?}",
@@ -964,7 +971,8 @@ impl Executor {
                 problem.error = "Orchestrator execution was cancelled; check its effects before retrying".into();
             }
             runtime.active_run = Some(run.clone());
-            self.failed(runtime, &run, problem.error.clone(), Some(problem))?;
+            let nothing_ran = problem.stop == BatchStop::Denied && problem.calls.is_empty();
+            self.failed(runtime, &run, problem.error.clone(), (!nothing_ran).then_some(problem))?;
         }
         Ok(())
     }
@@ -2262,6 +2270,20 @@ mod tests {
         assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && !runtime.cancel_requested, "{runtime:?}");
         assert_eq!(runtime.pending_resolutions.len(), 1, "the orchestrator hears it was stopped");
         assert!(outbox(domain).is_empty(), "a stopped batch is not replayed");
+    }
+
+    #[tokio::test]
+    async fn a_denial_before_any_call_retries_later_without_asking_the_user() {
+        let f = fixture();
+        f.mark("fixture:denied-first");
+        let domain = &f.executor.domain;
+        ask_orchestrator(&f, 1);
+        f.tick().await;
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.active_run.is_none() && runtime.retry_at.is_some(), "{runtime:?}");
+        assert_eq!(runtime.failure, Some(Failure::Launch));
+        assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(PROBLEM_PREFIX)), "nothing ran, so nobody is asked");
+        assert!(attempts(domain).iter().all(|(_, state, reason)| state == "retryable" && reason.as_deref() == Some("orchestrator_launch_failed")));
     }
 
     #[tokio::test]

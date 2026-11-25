@@ -1224,6 +1224,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordAccountLogin { .. }
         | Command::RecordAccounts { .. }
         | Command::RecordAccountUsage { .. }
+        | Command::RecordAccountPolicyRefused { .. }
         | Command::RecordDistribution { .. }
         | Command::ChangeAccounts { .. }
         | Command::InterruptTurn { .. }

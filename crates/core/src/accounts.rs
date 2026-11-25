@@ -648,6 +648,10 @@ pub enum AccountState {
     Unavailable,
     /// The user turned it off: no new work starts on it.
     Disabled,
+    /// The provider refused to run work on it because of its native account policy (the account
+    /// or its configuration is not one it accepts). No new work starts on it until the account
+    /// changes: it is signed in again, enabled again, or its identity or billing read differently.
+    PolicyRefused,
 }
 
 /// An account as every screen reads it: never a path.

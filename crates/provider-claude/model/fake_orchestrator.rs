@@ -10,6 +10,7 @@
 //!   fixture:tool-then-exit    calls an Alondra tool that changes something, then exits with 1
 //!   fixture:read-then-exit    reads, then exits with 1
 //!   fixture:denied            calls an Alondra tool and ends with it refused
+//!   fixture:denied-first      is refused before calling any tool
 //!   fixture:limited           usage runs out before it answers
 //!   fixture:exit-before-init  exits with 3 before it initializes
 //!   fixture:another-input     ends with the result of a prompt that is not this one
@@ -323,6 +324,11 @@ impl OrchestratorModel {
             if says("fixture:read-then-exit") {
                 self.assistant(host, state, json!([{"type": "text", "text": "Inspected the current state"}]), None);
                 return self.exit(host, state, 1);
+            }
+            if says("fixture:denied-first") {
+                let denials = json!([{"tool_name": format!("mcp__{SERVER}__create_task"), "tool_use_id": "toolu_fixture", "tool_input": {}}]);
+                self.result(host, state, None, json!({"permission_denials": denials}));
+                return self.exit(host, state, 0);
             }
             if says("fixture:denied") {
                 self.assistant(host, state, tool_use, None);

@@ -630,3 +630,12 @@ fn a_signed_in_codex_account_without_a_quota_reading_is_eligible() {
     assert_eq!(eligible_account_keys(&[], &accounts, &[], NOW), [key(Provider::Claude), key(Provider::Codex)]);
     assert_eq!(eligible_account_keys(&[], &accounts, &[exhausted], NOW), [key(Provider::Codex)]);
 }
+
+#[test]
+fn an_account_its_provider_refused_takes_no_new_work() {
+    let subscription = || AccountBilling::Subscription { plan: None, weight: None };
+    let codex = AccountStatus { provider: Provider::Codex, ..status("default", AccountState::PolicyRefused, subscription()) };
+    let accounts = vec![status("default", AccountState::SignedIn, subscription()), codex];
+    assert_eq!(eligible_account_keys(&[], &accounts, &[], NOW), [AccountKey::new(Provider::Claude, id("default"))]);
+    assert_eq!(own_margin(AccountState::PolicyRefused, None, default_reserve(), NOW, TODAY), None);
+}

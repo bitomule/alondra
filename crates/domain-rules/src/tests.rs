@@ -3269,9 +3269,10 @@ fn variant_index(c: &Command) -> usize {
         Command::PauseQueuedTask { .. } => 139,
         Command::ResumeQueuedTask { .. } => 140,
         Command::ObserveMergeVerdict { .. } => 141,
+        Command::RecordAccountPolicyRefused { .. } => 142,
     }
 }
-const COMMAND_KINDS: usize = 142;
+const COMMAND_KINDS: usize = 143;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3420,6 +3421,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordAccounts { accounts: vec![], reserve: alondra_core::usage::default_reserve() }, true),
         (Command::RecordAccountUsage { provider: alondra_core::accounts::Provider::Claude, account: alondra_core::accounts::AccountId::default_account(),
             reading: alondra_core::usage::UsageReading::default(), at: 1, day: "2026-10-21".into() }, true),
+        (Command::RecordAccountPolicyRefused { provider: alondra_core::accounts::Provider::Codex, account: alondra_core::accounts::AccountId::default_account() }, false),
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }, false),
         (Command::RecordClaudeHold { task_id: ids.task.into(), generation: 1, failure: SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None, ..Default::default() } }, false),
         (Command::RecordHostReleased { task_id: ids.task.into(), generation: 1 }, false),
@@ -5428,3 +5430,38 @@ fn a_crash_report_is_offered_for_the_last_failure_a_report_explains() {
         [ReportedFailure::SessionEnded.word(), ReportedFailure::MessageNotDelivered.word(), ReportedFailure::NotResumed.word()]);
 }
 
+
+
+#[test]
+fn a_policy_refusal_stands_until_the_account_itself_changes() {
+    use alondra_core::accounts::{AccountBilling, AccountKey, AccountState, AccountStatus, Provider};
+    let codex = AccountKey::native(Provider::Codex);
+    let status = |state: AccountState, email: &str, billing: AccountBilling| AccountStatus { antigravity: None, provider: Provider::Codex, id: codex.account.clone(), name: "codex".into(),
+        state, native_identity: None, email: Some(email.into()), plan: None, billing, sign_ins: 0, profile: None };
+    let record = |s: &mut DomainState, seen: AccountStatus| { exec(s, Actor::System, Command::RecordAccounts { accounts: vec![seen], reserve: alondra_core::usage::default_reserve() }).unwrap(); };
+    let refused = || {
+        let mut s = fixture();
+        record(&mut s, status(AccountState::SignedIn, "same@example.invalid", AccountBilling::default()));
+        exec(&mut s, Actor::System, Command::RecordAccountPolicyRefused { provider: Provider::Codex, account: codex.account.clone() }).unwrap();
+        assert_eq!(s.accounts[0].state, AccountState::PolicyRefused);
+        s
+    };
+    let mut s = refused();
+    for _ in 0..3 { record(&mut s, status(AccountState::SignedIn, "same@example.invalid", AccountBilling::default())); }
+    record(&mut s, status(AccountState::Unchecked, "same@example.invalid", AccountBilling::default()));
+    assert_eq!(s.accounts[0].state, AccountState::PolicyRefused, "probing again decides nothing: time does not clear it");
+    for (name, seen) in [
+        ("another identity", status(AccountState::SignedIn, "other@example.invalid", AccountBilling::default())),
+        ("another billing", status(AccountState::SignedIn, "same@example.invalid", AccountBilling::PayPerUse)),
+        ("turned off", status(AccountState::Disabled, "same@example.invalid", AccountBilling::default())),
+        ("signed out", status(AccountState::SignedOut, "same@example.invalid", AccountBilling::default())),
+    ] {
+        let mut s = refused();
+        record(&mut s, seen);
+        assert_ne!(s.accounts[0].state, AccountState::PolicyRefused, "{name} closes the refusal");
+    }
+    let mut s = refused();
+    record(&mut s, status(AccountState::Disabled, "same@example.invalid", AccountBilling::default()));
+    record(&mut s, status(AccountState::SignedIn, "same@example.invalid", AccountBilling::default()));
+    assert_eq!(s.accounts[0].state, AccountState::SignedIn, "enabling it again closes the refusal");
+}
