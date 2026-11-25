@@ -42,6 +42,10 @@ esac
 .PHONY: probe
 probe:
 	@$(SDK_HOST_ENV) /bin/sh -c 'test -x "$$SDK_NODE" && test -f "$$SDK_HOST" && "$$SDK_NODE" && printf "%s\\n" "$$SDK_NODE" "$$SDK_HOST"'
+
+.PHONY: exe-probe
+exe-probe:
+	@printf '%s\\n' "$(call exe,//agent-host:persistent.cjs)"
 ''')
         self.env = dict(os.environ, PATH=f"{self.root}:/usr/bin:/bin",
                         HOME=str(self.root), EXECROOT=str(self.execroot),
@@ -61,6 +65,14 @@ probe:
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["pinned-node", str(node), str(self.host)])
+
+    def test_exe_resolves_through_the_symlink_prefix(self):
+        result = subprocess.run(["/usr/bin/make", "--no-print-directory", "-f",
+                                 str(self.makefile), "exe-probe"], cwd=self.root,
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines(),
+                         [str(self.root.resolve() / ".bazel-links" / self.host_path)])
 
     def test_external_without_execroot_link_uses_output_base(self):
         self.assert_resolved(self.node(self.base))
