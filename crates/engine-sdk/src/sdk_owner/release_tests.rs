@@ -49,12 +49,14 @@ async fn until_released(domain: &DomainRuntime, tasks: &[&str]) {
     arrived.await.unwrap();
     let ended = async { while !domain.node_groups().is_empty() { tokio::task::yield_now().await } };
     ended.await;
-    // An owner reads as ended once its host closed, but its driver keeps the task's execution and
-    // slot until its thread lets go of them: a look of the gate before that finds the task in hand
-    // and takes nothing over, and the owner's end then withdraws the slot the look granted.
-    let in_hand = || tasks.iter().any(|task| domain.sdk_owners().in_hand.lock_or_recover("the executions in hand").contains_key(&TaskId::from(*task)));
-    let let_go = async { while in_hand() { tokio::task::yield_now().await } };
-    let_go.await;
+    // An owner reads as ended, and lets go of its task's execution, before its thread drops its
+    // driver. That drop withdraws the slot the gate gave the task (`owner_ended`): a look of the
+    // gate that came before it has its slot withdrawn, and nothing looks again to give it back. So
+    // the wait is for the thread to finish, which is after the drop.
+    let settling = || domain.sdk_owners().held.lock_or_recover("the SDK owners").iter()
+        .any(|owner| owner.ended.load(std::sync::atomic::Ordering::SeqCst) && owner.thread.as_ref().is_some_and(|thread| !thread.is_finished()));
+    let finished = async { while settling() { tokio::task::yield_now().await } };
+    finished.await;
 }
 
 /// The daemon's own looks, one a wait after the other, from the takeover of a closed node until its
@@ -491,6 +493,36 @@ async fn an_owner_that_reads_as_ended_no_longer_holds_its_task() {
     until_released(&slice.domain, &[TASK]).await;
     slice.domain.stop_sdk_owners();
     assert!(!held_by_the_ended_owner, "the owner reads as ended while its task is still in its hand");
+}
+
+#[cfg(not(feature = "real-hosts"))]
+// An owner reads as ended and holds nothing of its task before its thread drops its driver, and that
+// drop withdraws the slot the gate gave the task. A wait for the release that returns before the
+// drop lets a look of the gate run first, and the old owner then takes back the slot it gave: under
+// load the node-limit resume test waited for a slot nothing gave again, until its target's timeout.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_wait_for_a_release_ends_only_once_the_old_owner_dropped_its_driver() {
+    let slice = Slice::new();
+    enable(&slice);
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    let (reached, at_the_end) = std::sync::mpsc::channel();
+    let (finish, finishing) = std::sync::mpsc::channel::<()>();
+    driver.before_release_ends = Some(Box::new(move || {
+        reached.send(()).unwrap();
+        let _ = finishing.recv();
+    }));
+    slice.domain.add_sdk_owner(Owner::spawn(driver));
+    look_after_the_wait(&slice.domain);
+    at_the_end.recv().expect("the owner never closed its host");
+    let mut waiting = std::pin::pin!(until_released(&slice.domain, &[TASK]));
+    let returned = std::future::poll_fn(|context| std::task::Poll::Ready(waiting.as_mut().poll(context).is_ready())).await;
+    finish.send(()).unwrap();
+    if !returned {
+        waiting.await;
+    }
+    slice.domain.stop_sdk_owners();
+    assert!(!returned, "the wait returned while the old owner still had to drop its driver");
 }
 
 #[cfg(not(feature = "real-hosts"))]
