@@ -332,8 +332,8 @@ Null values, empty changes and unknown fields are refused. Use `set_launch_plan`
 replace the whole plan. Neither mutation changes a task that has started or bypasses a pending
 plan review or the user's fixed effort; settle a held plan through `settle_plan_review`.
 
-Use only reasoning efforts the row lists. Name the model with its provider in every launch plan and `launch`: `claude/opus`, `codex/gpt-…`. A name without provider
-is placed by the catalogs when only one provider offers it, and refused with a tool error you can correct when both do; `launch` also takes `provider` with an unqualified id. `reasoning_effort` is
+Use only reasoning efforts the row lists. Name the model with its provider in every launch plan and `launch`: `claude/opus`, `codex/gpt-…`, `antigravity/gemini-…`. A name without provider
+is placed by the catalogs when only one provider offers it, and refused with a tool error you can correct when more than one does; `launch` also takes `provider` with an unqualified id. `reasoning_effort` is
 native reasoning effort; the request's light/normal/hard effort is work intent, not a provider or
 permission to replace the user's model.
 

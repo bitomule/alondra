@@ -1949,7 +1949,7 @@ async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the
     command(&domain, Actor::System, "merged", Command::ObservePrState { pr_id: "pr".into(), head: "1".repeat(40),
         base: "main".into(), state: alondra_domain_rules::PrState::Merged, merged_head: Some("1".repeat(40)) });
     command(&domain, Actor::System, "lost", Command::RecordHostLost { task_id: task_id.clone(),
-        reason: "The host stopped".into(), quiet: false });
+        reason: "The host stopped".into(), quiet: false, signed_out: false });
     let state = domain.state().unwrap();
     let card = state.interactions.values().find(|card| alondra_domain_rules::retakes(card)).unwrap().id.clone();
     domain.store.lock().unwrap().sqlite().conn_for_test().execute(

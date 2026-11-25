@@ -39,11 +39,12 @@ impl DomainState {
         if selection.native_tool_denials.as_ref()!=task.selection.as_ref().and_then(|previous|previous.native_tool_denials.as_ref()) {
             return fail("invalid_input","A model choice cannot change the execution's verified tool policy");
         }
-        if pending.account.provider==alondra_core::accounts::Provider::Codex {
+        if pending.account.provider.lacks_tool_denials() {
+            let name = pending.account.provider.display_name();
             match selection.native_tool_denials.as_deref() {
                 Some([])=>{},
-                Some(_)=>return fail("unsupported_tool_policy","Codex cannot enforce this task's retained tool restrictions"),
-                None=>return fail("unsupported_tool_policy","The current execution's tool policy must be verified before choosing Codex"),
+                Some(_)=>return fail("unsupported_tool_policy",&format!("{name} cannot enforce this task's retained tool restrictions")),
+                None=>return fail("unsupported_tool_policy",&format!("The current execution's tool policy must be verified before choosing {name}")),
             }
         }
         if pending.reason.trim().is_empty() || pending.reason.len() > 2000 { return fail("invalid_input", "A pending selection needs a bounded reason"); }
@@ -124,22 +125,19 @@ impl DomainState {
         let task = self.active(task_id)?;
         if task.pending_selection.is_some() { return fail("selection_pending", "This task is already changing its model or account"); }
         if self.current_account(task).as_ref() == Some(account) { return fail("same_account", "The task already runs on this account"); }
-        if account.provider == alondra_core::accounts::Provider::Antigravity {
-            return fail("provider_unavailable", alondra_core::antigravity_account::NODES_NOT_AVAILABLE)
-                .map_err(|error| error.because(Refusal::ProviderNotYet { provider: account.provider.display_name().into() }));
-        }
         let status = self.accounts.iter().find(|status| AccountKey::new(status.provider, status.id.clone()) == *account)
             .ok_or_else(|| DomainError::new("not_found", "The destination account is not connected"))?;
         if status.state != AccountState::SignedIn { return fail("account_unavailable", "The destination account is off or signed out"); }
         if matches!(status.billing, AccountBilling::PayPerUse) && !matches!(actor, Actor::User { .. }) {
             return fail("paid_authorization_required", "Only the user moves a task to an account paid per use");
         }
-        if account.provider == alondra_core::accounts::Provider::Codex {
+        if account.provider.lacks_tool_denials() {
             let ran = task.started || task.agent_id.is_some();
+            let name = account.provider.display_name();
             match task.selection.as_ref().and_then(|selection| selection.native_tool_denials.as_deref()) {
                 Some([]) => {}
-                Some(_) => return fail("unsupported_tool_policy", "Codex cannot enforce this task's tool restrictions"),
-                None if ran => return fail("unsupported_tool_policy", "The task's tool policy must be verified before moving it to Codex"),
+                Some(_) => return fail("unsupported_tool_policy", &format!("{name} cannot enforce this task's tool restrictions")),
+                None if ran => return fail("unsupported_tool_policy", &format!("The task's tool policy must be verified before moving it to {name}")),
                 None => {}
             }
         }

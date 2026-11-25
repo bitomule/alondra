@@ -13,6 +13,10 @@ pub struct ModelKey {
 
 impl ModelKey {
     pub fn wire_id(&self) -> String { format!("{}/{}", self.provider.as_str(), self.model) }
+    /// Whether `value` names its provider (`codex/gpt-…`), rather than being a model alone.
+    pub fn names_provider(value: &str) -> bool {
+        value.split_once('/').is_some_and(|(provider, _)| Provider::parse(provider).is_ok())
+    }
     pub fn parse_wire(value: &str) -> Result<Self, String> {
         let (provider, model) = value.split_once('/').ok_or("Choose a provider-qualified model")?;
         if model.trim().is_empty() || model.chars().any(char::is_control) { return Err("A model ID cannot be empty or contain control characters".into()); }
@@ -20,11 +24,11 @@ impl ModelKey {
     }
 }
 
-/// The connected providers that run nodes a model named without its provider can belong to: those whose catalogs
+/// The connected providers a model named without its provider can belong to: those whose catalogs
 /// advertise it, or whose model sheets or id family (`claude-…`) know it. One provider settles
 /// the name; two make it ambiguous.
 pub fn providers_offering(catalogs: &[AccountModelCatalog], connected: &[Provider], model: &str) -> Vec<Provider> {
-    connected.iter().copied().filter(|provider| provider.runs_nodes()).filter(|&provider| {
+    connected.iter().copied().filter(|&provider| {
         catalogs.iter().any(|catalog| catalog.account.provider == provider && catalog.models.iter().any(|entry| entry.model == model && !entry.hidden))
             || crate::model_sheets::sheet_for(provider, model).is_some()
             || (provider == Provider::Claude && model.starts_with("claude-"))
@@ -299,8 +303,8 @@ mod tests {
         assert!(providers_offering(&catalogs, &[Provider::Codex], "opus").is_empty(), "a provider that is not connected offers nothing");
         let with_antigravity = [Provider::Claude, Provider::Codex, Provider::Antigravity];
         let catalogs = [advertising(Provider::Claude, &["opus"]), advertising(Provider::Antigravity, &["opus", "gemini-4"])];
-        assert_eq!(providers_offering(&catalogs, &with_antigravity, "opus"), [Provider::Claude], "a provider that runs no nodes never makes a name ambiguous");
-        assert!(providers_offering(&catalogs, &with_antigravity, "gemini-4").is_empty(), "nor offers a model a node could not run");
+        assert_eq!(providers_offering(&catalogs, &with_antigravity, "opus"), [Provider::Claude, Provider::Antigravity], "Antigravity's catalog makes a name it shares ambiguous");
+        assert_eq!(providers_offering(&catalogs, &with_antigravity, "gemini-4"), [Provider::Antigravity], "and places a model only it offers");
     }
 
     #[test]

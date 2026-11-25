@@ -3,6 +3,7 @@
 //! users drive it. A scenario passes through checkpoints at which what the apps would show and the
 //! pushes sent are compared with what a reviewer accepted.
 
+pub mod antigravity_peer;
 pub mod checkpoint;
 pub mod claude_host;
 pub mod claude_peer;

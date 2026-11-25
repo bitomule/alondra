@@ -854,8 +854,9 @@ class LauncherMigrationTests(Fixture):
         self.assertFalse((keg / 'libexec/alondra/alondrad').exists())
         self.assertTrue((keg / 'libexec/alondra' / u.release.HOST).is_file(), "the host is where the daemon looks for it")
 
-    def test_the_release_about_to_ship_must_carry_the_launcher_and_the_sdk_host(self):
-        for files, missing in ((u.release.PRE_LAUNCHER_FILES, "'alondrad-launcher'"), (u.release.PRE_SDK_FILES, "'sdk/alondra-host'")):
+    def test_the_release_about_to_ship_must_carry_the_launcher_and_every_host(self):
+        for files, missing in ((u.release.PRE_LAUNCHER_FILES, "'alondrad-launcher'"), (u.release.PRE_SDK_FILES, "'sdk/alondra-host'"),
+                               (u.release.PRE_ANTIGRAVITY_FILES, "'antigravity/alondra-antigravity-host'")):
             with self.assertRaisesRegex(ValueError, f"Missing public files: .*{missing}"):
                 u.unpack(self.archive(files), self.work / 'new', signed=False)
         binary = u.unpack(self.archive(u.release.PUBLIC_FILES), self.work / 'new', signed=False)

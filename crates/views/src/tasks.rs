@@ -1240,7 +1240,7 @@ fn move_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Action
         || matches!(read.situation, alondra_domain_rules::Situation::Waiting(alondra_domain_rules::WaitsFor::Usage | alondra_domain_rules::WaitsFor::ProviderApi))
         || read.waiting.iter().filter_map(|id| context.domain.interactions.get(id)).any(|card| {
             card.author == alondra_domain_rules::Author::System && matches!(card.system_card,
-                Some(alondra_domain_rules::SystemCard::HostLost | alondra_domain_rules::SystemCard::SessionEnded
+                Some(alondra_domain_rules::SystemCard::HostLost { .. } | alondra_domain_rules::SystemCard::SessionEnded
                     | alondra_domain_rules::SystemCard::StartProblem | alondra_domain_rules::SystemCard::Stalled
                     | alondra_domain_rules::SystemCard::ClaudeUsage { .. } | alondra_domain_rules::SystemCard::ClaudeSignedOut
                     | alondra_domain_rules::SystemCard::ClaudeOutage { .. }))

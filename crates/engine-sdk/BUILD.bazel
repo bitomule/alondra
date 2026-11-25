@@ -17,6 +17,7 @@ WORKSPACE_DEPS = [
     "//crates/foundation:foundation",
     "//crates/process-group:process_group",
     "//crates/provider-claude:provider_claude",
+    "//crates/provider-antigravity:provider_antigravity",
     "//crates/provider-codex:provider_codex",
     "//crates/provider-contract:provider_contract",
     "//crates/store:store",
@@ -84,17 +85,23 @@ WHOLE_ENGINE_DEPS = [
 ]
 
 SDK_TEST_DATA = [
+    "//agent-host:alondra-antigravity-host",
     "//agent-host:alondra-codex-host",
     "//agent-host:alondra-host",
     "//agent-host:alondra-codex-plan-legacy-fixture-host",
     "//agent-host:codex-legacy-fixture",
     "//agent-host:codex-model-double.py",
     "//agent-host:fake-codex-mcp.py",
+    "//agent-host:fake-agy-acp.mjs",
     "//agent-host:fake-codex.py",
     "//agent-host:persistent-fake-claude.py",
+    "//agent-host:pinned_node",
 ]
 
 SDK_TEST_ENV = {
+    "FIXTURE_ANTIGRAVITY_HOST": "$(rootpath //agent-host:alondra-antigravity-host)",
+    "FIXTURE_ANTIGRAVITY_NATIVE": "$(rootpath //agent-host:fake-agy-acp.mjs)",
+    "FIXTURE_NODE_RUNTIME": "$(rootpath //agent-host:pinned_node)",
     "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
     "FIXTURE_CODEX_LEGACY_HOST": "$(rootpath //agent-host:codex-legacy-fixture)",
     "FIXTURE_CODEX_MCP_NATIVE": "$(rootpath //agent-host:fake-codex-mcp.py)",

@@ -298,9 +298,20 @@ impl<'connection> OwnerTransaction<'connection> {
                 ObservedFact::TurnEnded { turn, outcome } => {
                     turn_ended = true;
                     flush(&mut commands, &mut technical);
+                    // An Antigravity account read for usage holds until the limit's reset or its next reading; one
+                    // billed per use has no reading to lift a hold, and its limits are per minute.
+                    let limits_hold=|provider:Option<alondra_core::accounts::Provider>|match provider{
+                        Some(alondra_core::accounts::Provider::Codex)=>true,
+                        Some(alondra_core::accounts::Provider::Antigravity)=>{
+                            let account=alondra_daemon_engine_model::account_of(binding.credential());
+                            self.draft.state.accounts.iter().find(|status|status.provider==alondra_core::accounts::Provider::Antigravity && status.id==account)
+                                .and_then(|status|status.antigravity.as_ref()).is_some_and(|status|status.access.reads_usage())
+                        }
+                        _=>false,
+                    };
                     if let TurnOutcome::ApiFailed(failure)=outcome
                         && account_fresh
-                        && alondra_core::accounts::Provider::from_driver(binding.driver())==Some(alondra_core::accounts::Provider::Codex)
+                        && limits_hold(alondra_core::accounts::Provider::from_driver(binding.driver()))
                         && alondra_domain_rules::classify_sdk(&failure.error,failure.status)==Some(alondra_domain_rules::SdkFailureKind::Usage)
                     {
                         let account=self.draft.state.tasks.get(&task_id).ok_or_else(||DomainError::new("not_found","Task missing"))?.account_key();

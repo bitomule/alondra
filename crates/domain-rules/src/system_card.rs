@@ -34,7 +34,12 @@ pub enum SystemCard {
     },
     /// Claude's usage limit holds a task; it resets at `resets_at`, in Unix seconds, when Claude said.
     ClaudeUsage { resets_at: Option<u64> },
-    HostLost,
+    /// A task's host could not be taken over; `signed_out` says its provider refused the account
+    /// for want of a sign-in or a key, and the card asks to sign in.
+    HostLost {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        signed_out: bool,
+    },
     TurnEnded,
     Stalled,
     SessionEnded,
@@ -185,7 +190,7 @@ impl SystemCard {
             (super::SIGNED_OUT_PREFIX, |_| Some(Self::ClaudeSignedOut)),
             (super::OUTAGE_PREFIX, |_| Some(Self::ClaudeOutage { quiet: false, detail: None, said: None })),
             (super::USAGE_PREFIX, |_| Some(Self::ClaudeUsage { resets_at: None })),
-            (super::HOST_LOST_PREFIX, |_| Some(Self::HostLost)),
+            (super::HOST_LOST_PREFIX, |_| Some(Self::HostLost { signed_out: false })),
             (super::TURN_ENDED_PREFIX, |_| Some(Self::TurnEnded)),
             (super::STALLED_PREFIX, |_| Some(Self::Stalled)),
             (super::SESSION_ENDED_PREFIX, |_| Some(Self::SessionEnded)),

@@ -259,13 +259,7 @@ pub(crate) fn select_for_node_with_tools(domain: &dyn Runtime, home: &Path, inte
     use alondra_domain_rules::DomainError;
     require_initial_check(domain)?;
     let config = config(home).map_err(|why| DomainError::new("settings_unavailable", why))?;
-    let antigravity = provider == Some(Provider::Antigravity) || preferred_account.is_some_and(|key| key.provider == Provider::Antigravity)
-        || intent.account.as_ref().is_some_and(|key| key.provider == Provider::Antigravity)
-        || intent.requested.as_ref().is_some_and(|model| model.provider == Provider::Antigravity);
-    if antigravity {
-        return Err(DomainError::new("provider_unavailable", alondra_core::antigravity_account::NODES_NOT_AVAILABLE)
-            .because(alondra_domain_rules::Refusal::ProviderNotYet { provider: Provider::Antigravity.display_name().into() }));
-    }
+    let orchestrator = intent.profile == alondra_core::model_selection::ModelProfile::Orchestrator;
     let read = domain.read();
     let state = read.state();
     if let Some(pinned) = &intent.account
@@ -279,8 +273,8 @@ pub(crate) fn select_for_node_with_tools(domain: &dyn Runtime, home: &Path, inte
         if configured && explicit_paid && !eligible.contains(pinned) { eligible.push(pinned.clone()); }
     }
     let effective_denied = !denied_tools.is_empty() || intent.native_tool_denials.as_ref().is_some_and(|tools| !tools.is_empty());
-    eligible.retain(|key| key.provider != Provider::Antigravity && config.accounts(key.provider).iter().any(|account| account.id == key.account && account.enabled)
-        && provider.is_none_or(|provider| key.provider == provider) && (!effective_denied || key.provider != Provider::Codex));
+    eligible.retain(|key| (!orchestrator || key.provider.runs_orchestrator()) && config.accounts(key.provider).iter().any(|account| account.id == key.account && account.enabled)
+        && provider.is_none_or(|provider| key.provider == provider) && (!effective_denied || !key.provider.lacks_tool_denials()));
     let mut eligible = alondra_core::usage::ranked_for_launch(state.account_policy, &eligible, &state.accounts, &state.account_usage, state.account_reserve, now, &alondra_daemon_engine_model::local_day(now));
     if let Some(preferred) = preferred_account
         && let Some(at) = eligible.iter().position(|key| key == preferred) { let first = eligible.remove(at); eligible.insert(0, first); }

@@ -780,12 +780,11 @@ impl ProviderUsage {
     }
 }
 
-/// Every provider with accounts that runs nodes, each with its accounts' lines. An account Alondra has not checked
+/// Every provider with accounts, each with its accounts' lines. An account Alondra has not checked
 /// yet stands nowhere: it may have no sign-in at all.
 pub fn providers(accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Vec<ProviderUsage> {
     Provider::ALL
         .into_iter()
-        .filter(|provider| provider.runs_nodes())
         .map(|provider| ProviderUsage { provider, accounts: account_lines(provider, accounts, usage, reserve, now, today) })
         .filter(|provider| !provider.accounts.is_empty())
         .collect()

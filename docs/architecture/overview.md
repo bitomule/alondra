@@ -7,8 +7,8 @@ How Alondra's pieces fit. Each section names the code that owns it.
 ```
   iPhone app ─┐                                   ┌─ Claude Agent SDK host ─ Claude Code
   Mac app ────┼─ end-to-end sealed envelopes ─▶ alondrad ─┤
-  TUI / CLI ──┘   (direct or relay)               │       └─ Codex host ─ Codex
-                                                  │
+  TUI / CLI ──┘   (direct or relay)               │       ├─ Codex host ─ Codex
+                                                  │       └─ Antigravity host ─ agy acp
                                    SQLite: domain state, journals, schedules
 ```
 
@@ -40,10 +40,20 @@ keep replaying journals recorded before them.
 ## Providers
 
 A provider is a way to run a node. `crates/provider-contract` is the technical contract;
-`crates/provider-claude` and `crates/provider-codex` implement it, through the Agent SDK host for
-Claude and the Codex app server for Codex (`agent-host/`). A node uses the login the provider's
-own tool already holds on the Mac: Alondra never sees or stores provider credentials, and several
-accounts of each provider can be configured.
+`crates/provider-claude`, `crates/provider-codex` and `crates/provider-antigravity` implement it,
+through the Agent SDK host for Claude, the Codex app server for Codex and Antigravity CLI's Agent
+Client Protocol server (`agy acp`) for Antigravity (`agent-host/`). `engine-sdk` holds one
+`Worker` per provider and binds each execution to its driver (`claude-agent-sdk`,
+`codex-app-server`, `antigravity-acp`) and the capabilities it declares: an Antigravity node offers
+no background work, MCP status or compaction, which ACP does not carry. The orchestrator runs on
+Claude or Codex; nodes run on all three.
+
+A node uses the login the provider's own tool already holds on the Mac, and several accounts of each
+provider can be configured. Alondra never stores a provider's sign-in. The one credential it keeps
+is the API key of an Antigravity account, in a `0600` file of the account's `0700` folder: the
+node's settings name only that file's path, and the Antigravity host reads it into the
+environment of that account's `agy` alone. It never reaches the domain journal, a log, `host.lock`,
+another node or a client.
 
 The daemon and a host speak a versioned protocol. A new action names a new capability; changing
 an existing frame takes a new protocol version that the daemon speaks beside the old one, so an

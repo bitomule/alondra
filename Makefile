@@ -194,8 +194,8 @@ mac:
 # MACS=n daemons in service mode with a loopback relay and a synthetic phone (tools/e2e-sandbox.sh).
 # Every Mac runs its tasks through the Agent SDK host with the sandbox's scripted Claude; SDK=1
 # FAKES=1 gives Mac 1 the pinned native Claude instead (tools/e2e_sdk_backend.py).
-SDK_HOST_TARGETS = //agent-host:pinned_node //agent-host:persistent.cjs
-SDK_HOST_ENV = SDK_NODE=$(call bazel_artifact,//agent-host:pinned_node) SDK_HOST=$(call bazel_artifact,//agent-host:persistent.cjs)
+SDK_HOST_TARGETS = //agent-host:pinned_node //agent-host:persistent.cjs //agent-host:antigravity.cjs
+SDK_HOST_ENV = SDK_NODE=$(call bazel_artifact,//agent-host:pinned_node) SDK_HOST=$(call bazel_artifact,//agent-host:persistent.cjs) SDK_ANTIGRAVITY_HOST=$(call bazel_artifact,//agent-host:antigravity.cjs)
 e2e-sandbox:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS) \
 		$(if $(filter 1,$(SDK)),@claude_native_test//:archive)

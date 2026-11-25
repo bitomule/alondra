@@ -726,6 +726,7 @@ dependencies = [
  "alondra-engine-ports",
  "alondra-foundation",
  "alondra-process-group",
+ "alondra-provider-antigravity",
  "alondra-provider-claude",
  "alondra-provider-codex",
  "alondra-provider-contract",

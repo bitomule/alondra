@@ -21,30 +21,35 @@ HOST = 'sdk/alondra-host'
 HOST_MANIFEST = 'sdk/alondra-host.json'
 CODEX_HOST = 'codex/alondra-codex-host'
 CODEX_MANIFEST = 'codex/alondra-codex-host.json'
-HOST_MANIFESTS = {HOST_MANIFEST, CODEX_MANIFEST}
-BINARIES = {'alondra', 'alondrad', 'alondrad-launcher', HOST, CODEX_HOST}
+ANTIGRAVITY_HOST = 'antigravity/alondra-antigravity-host'
+ANTIGRAVITY_MANIFEST = 'antigravity/alondra-antigravity-host.json'
+HOST_MANIFESTS = {HOST_MANIFEST, CODEX_MANIFEST, ANTIGRAVITY_MANIFEST}
+BINARIES = {'alondra', 'alondrad', 'alondrad-launcher', HOST, CODEX_HOST, ANTIGRAVITY_HOST}
 PUBLIC_FILES = {
-    'alondra', 'alondrad', 'alondrad-launcher', HOST, HOST_MANIFEST, CODEX_HOST, CODEX_MANIFEST, '.claude-plugin/marketplace.json',
+    'alondra', 'alondrad', 'alondrad-launcher', HOST, HOST_MANIFEST, CODEX_HOST, CODEX_MANIFEST,
+    ANTIGRAVITY_HOST, ANTIGRAVITY_MANIFEST, '.claude-plugin/marketplace.json',
     'plugin/bin/alondra', 'plugin/.mcp.json', 'plugin/hooks/hooks.json',
     'plugin/hooks/register.ts', 'plugin/tests/register.test.ts', 'plugin/tests/holds.test.ts',
     'plugin/.claude-plugin/plugin.json', 'plugin/skills/alondra/SKILL.md',
     'plugin-orchestrator/.mcp.json', 'plugin-orchestrator/.claude-plugin/plugin.json',
     'plugin-orchestrator/skills/alondra-orchestrator/SKILL.md',
     'plugin-orchestrator/bin/alondra',
-    'LICENSE.md', 'THIRD_PARTY_NOTICES.md', 'sdk/NODE_LICENSE', 'codex/NODE_LICENSE',
+    'LICENSE.md', 'THIRD_PARTY_NOTICES.md', 'sdk/NODE_LICENSE', 'codex/NODE_LICENSE', 'antigravity/NODE_LICENSE',
 }
-LICENSE_FILES = {'LICENSE.md', 'THIRD_PARTY_NOTICES.md', 'sdk/NODE_LICENSE', 'codex/NODE_LICENSE'}
+LICENSE_FILES = {'LICENSE.md', 'THIRD_PARTY_NOTICES.md', 'sdk/NODE_LICENSE', 'codex/NODE_LICENSE', 'antigravity/NODE_LICENSE'}
 # Where each runtime file is copied from when it is not at the same path in the checkout.
 ASSET_SOURCES = {
     'plugin-orchestrator/bin/alondra': 'plugin/bin/alondra',
     'sdk/NODE_LICENSE': 'deploy/brew/node/LICENSE',
     'codex/NODE_LICENSE': 'deploy/brew/node/LICENSE',
+    'antigravity/NODE_LICENSE': 'deploy/brew/node/LICENSE',
 }
-PRE_LICENSE_FILES = PUBLIC_FILES - LICENSE_FILES
+PRE_ANTIGRAVITY_FILES = PUBLIC_FILES - {ANTIGRAVITY_HOST, ANTIGRAVITY_MANIFEST, 'antigravity/NODE_LICENSE'}
+PRE_LICENSE_FILES = PRE_ANTIGRAVITY_FILES - LICENSE_FILES
 PRE_CODEX_FILES = PRE_LICENSE_FILES - {CODEX_HOST, CODEX_MANIFEST}
 PRE_SDK_FILES = PRE_CODEX_FILES - {HOST, HOST_MANIFEST}
 PRE_LAUNCHER_FILES = PRE_SDK_FILES - {'alondrad-launcher'}
-PUBLISHED_FILES = (PUBLIC_FILES, PRE_LICENSE_FILES, PRE_CODEX_FILES, PRE_SDK_FILES, PRE_LAUNCHER_FILES)
+PUBLISHED_FILES = (PUBLIC_FILES, PRE_ANTIGRAVITY_FILES, PRE_LICENSE_FILES, PRE_CODEX_FILES, PRE_SDK_FILES, PRE_LAUNCHER_FILES)
 
 
 def version(value):
@@ -73,19 +78,25 @@ def stage_assets(root, destination):
         shutil.copy2(source, output)
 
 
+PROVIDER_HOSTS = {'claude': (HOST, HOST_MANIFEST), 'codex': (CODEX_HOST, CODEX_MANIFEST),
+                  'antigravity': (ANTIGRAVITY_HOST, ANTIGRAVITY_MANIFEST)}
+STAGE_HOST_MODES = {'stage-host': 'claude', 'stage-codex-host': 'codex', 'stage-antigravity-host': 'antigravity'}
+
+
 def stage_host(host, built, destination, *, provider="claude"):
     """The signed host and its manifest: the SDK and Node it carries, from the Bazel build's
     manifest, and the SHA256 of the bytes that ship."""
     source = json.loads(built.read_text())
     if source.get('laboratory') is not False:
         raise ValueError('The host is not the release host target')
-    if provider not in ('claude', 'codex'):
+    if provider not in PROVIDER_HOSTS:
         raise ValueError('Unknown runtime provider')
-    output = destination / (CODEX_HOST if provider == 'codex' else HOST)
+    executable, host_manifest = PROVIDER_HOSTS[provider]
+    output = destination / executable
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(host, output)
     manifest = {'sdk': source['sdk'], 'node': source['node'], 'bundle_sha256': source['bundle_sha256'], 'sha256': sha(output)}
-    (destination / (CODEX_MANIFEST if provider == 'codex' else HOST_MANIFEST)).write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+    (destination / host_manifest).write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
 
 
 def validate_archive(path, allowed=(PUBLIC_FILES,)):
@@ -286,7 +297,7 @@ def publish(ver, directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('validate', 'render', 'publish', 'stage-assets', 'stage-host', 'stage-codex-host'))
+    parser.add_argument('mode', choices=('validate', 'render', 'publish', 'stage-assets', *STAGE_HOST_MODES))
     parser.add_argument('version')
     parser.add_argument('path', type=pathlib.Path)
     parser.add_argument('--host', type=pathlib.Path)
@@ -295,8 +306,8 @@ def main():
     version(args.version)
     if args.mode == 'stage-assets':
         stage_assets(ROOT, args.path)
-    elif args.mode in ('stage-host', 'stage-codex-host'):
-        stage_host(args.host, args.host_manifest, args.path, provider='codex' if args.mode == 'stage-codex-host' else 'claude')
+    elif args.mode in STAGE_HOST_MODES:
+        stage_host(args.host, args.host_manifest, args.path, provider=STAGE_HOST_MODES[args.mode])
     elif args.mode == 'validate':
         validate_archive(args.path)
     elif args.mode == 'render':

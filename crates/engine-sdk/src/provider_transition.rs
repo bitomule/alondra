@@ -63,7 +63,7 @@ pub fn request(domain:&dyn Runtime,actor:&Actor,task:&TaskId,target_account:Acco
         let effective=source.selection.as_ref().and_then(|selection|selection.effective.as_ref()).ok_or_else(||DomainError::new("native_session_required","This older session cannot prove its active model; create a new node with the desired selection"))?;
         if effective.reasoning_effort!=target_model.reasoning_effort{return Err(DomainError::new("unsupported_live_effort","This native session cannot change reasoning effort with the verified model control; choose that effort when creating a new node").into())}
         if effective.model!=target_model.model && !source.turn_model{return Err(DomainError::new("unsupported_live_model","This native session cannot change its model in place; create a new node").into())}
-        if target_account.provider==alondra_core::accounts::Provider::Codex && !source.disallowed_tools.is_empty(){return Err(DomainError::new("unsupported_tool_policy","Codex cannot enforce this task's tool deny list; keep the current provider or explicitly revise the task policy").into())}
+        if target_account.provider.lacks_tool_denials() && !source.disallowed_tools.is_empty(){return Err(DomainError::new("unsupported_tool_policy",format!("{} cannot enforce this task's tool deny list; keep the current provider or explicitly revise the task policy",target_account.provider.display_name())).into())}
         owner.stage_command(actor,&command,Attached::None)?;
         owner.request_provider_transition(&Plan{id:id.clone(),kind:Kind::Model,task:task.clone(),expected_selection:expected_selection.into(),source,target_account,target_model,intent,reason:reason.into(),conversation_file:None})
     }).map_err(store_failure)?;

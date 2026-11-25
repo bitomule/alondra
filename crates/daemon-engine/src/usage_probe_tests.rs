@@ -467,10 +467,9 @@ fn hosts() -> alondra_agent_runtime::owned_host::ProcessHosts {
     alondra_agent_runtime::owned_host::ProcessHosts::new(Default::default())
 }
 
-// Antigravity accounts run no node yet: one signed in, by subscription or with a key, neither ends
-// nor shortens the wait while every Claude account is out.
+// A signed-in Antigravity account runs nodes: while it has room, Claude's limit holds no Mac-wide wait.
 #[test]
-fn an_antigravity_account_never_ends_the_wait_for_claude() {
+fn an_antigravity_account_with_room_keeps_the_mac_working_while_claude_waits() {
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     let domain = crate::wiring::open(&home).unwrap();
@@ -483,5 +482,5 @@ fn an_antigravity_account_never_ends_the_wait_for_claude() {
     let now = now_millis();
     record_limit(&domain, &id("default"), Some(now + 3_600_000), now);
     follow(&domain, now);
-    assert_eq!(domain.live().usage_pause.current().map(|standing| standing.until), Some(now + 3_600_000), "the Mac waits for Claude's reset");
+    assert_eq!(domain.live().usage_pause.current().map(|standing| standing.until), None, "the Antigravity account takes the work");
 }

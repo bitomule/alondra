@@ -13,6 +13,7 @@ file	announced.json	cache of the relay announcement kept inside the report folde
 file	auth.json	a provider's own credential file (Codex profile) and its test fixture; Alondra only checks it exists or moves it, never owns its state
 file	capture.json	file a test fixture host writes to record what it received; not production state
 file	closed-task-nodes.json	retired file: current code only deletes it at startup, the domain keeps this in task_released_nodes
+file	antigravity-backend.json	alternate backend description a test or sandbox installs; the daemon only reads it
 file	codex-backend.json	alternate backend description a test or sandbox installs; the daemon only reads it
 file	doctor.json	report section name, and the doctor command's memory of when a slow check last passed; neither is a lifecycle
 file	domain-cutover.json	legacy marker written by an older daemon binary; current code only reads it to refuse an unmigrated home

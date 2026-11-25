@@ -488,7 +488,7 @@ impl DomainState {
         }
     }
 
-    fn account_signed_out(&mut self, account: &AccountKey) {
+    pub(super) fn account_signed_out(&mut self, account: &AccountKey) {
         if let Some(status) = self.accounts.iter_mut().find(|status| status.provider == account.provider && status.id == account.account && status.state != AccountState::Disabled) {
             status.state = AccountState::SignedOut;
         }
@@ -588,11 +588,7 @@ fn credential_cause(key: &AccountKey, generation: u64) -> String {
 }
 
 fn hold_card(id: InteractionId, task: &TaskId, provider: Provider, hold: ClaudeHold, system: SystemCard, revision: u64) -> Interaction {
-    let (need,why)=if provider==Provider::Claude {(hold.need(),hold.why())} else {match hold {
-        ClaudeHold::SignedOut=>("Sign in to Codex outside Alondra","The Codex sign-in needs attention. On the Mac, run codex login, then press I signed in."),
-        ClaudeHold::Outage=>("Codex is not answering: tasks wait for it","Alondra checks native account metadata before continuing an existing waiting task. No model prompt is sent as a health check."),
-        ClaudeHold::Usage=>("The Codex usage limit is reached: tasks wait for it","Alondra checks the native account quota and continues waiting tasks when fresh account-wide capacity is available."),
-    }};
+    let (need, why) = hold_text(provider, hold);
     let mut card = CardSpec::new(CardKind::Problem, need).why(why);
     let option = hold.option();
     card.recommended = Some(option.id.clone());
@@ -611,6 +607,19 @@ fn hold_card(id: InteractionId, task: &TaskId, provider: Provider, hold: ClaudeH
         withdrawn: false,
         card,
         clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(system), shortened: false,
+    }
+}
+
+/// What the card of `hold` on `provider` asks and why.
+pub(crate) fn hold_text(provider: Provider, hold: ClaudeHold) -> (&'static str, &'static str) {
+    match (provider, hold) {
+        (Provider::Claude, _) => (hold.need(),hold.why()),
+        (Provider::Codex, ClaudeHold::SignedOut)=>("Sign in to Codex outside Alondra","The Codex sign-in needs attention. On the Mac, run codex login, then press I signed in."),
+        (Provider::Codex, ClaudeHold::Outage)=>("Codex is not answering: tasks wait for it","Alondra checks native account metadata before continuing an existing waiting task. No model prompt is sent as a health check."),
+        (Provider::Codex, ClaudeHold::Usage)=>("The Codex usage limit is reached: tasks wait for it","Alondra checks the native account quota and continues waiting tasks when fresh account-wide capacity is available."),
+        (Provider::Antigravity, ClaudeHold::SignedOut)=>("Sign in to Antigravity outside Alondra","The Antigravity account is signed out or its key was refused. In Terminal on the Mac, run the sign-in command Accounts shows for it (agy acp --login for the default account), or set its API key, then press I signed in."),
+        (Provider::Antigravity, ClaudeHold::Outage)=>("Antigravity is not answering: tasks wait for it","Alondra checks the account with agy acp before continuing a waiting task. No model prompt is sent as a health check."),
+        (Provider::Antigravity, ClaudeHold::Usage)=>("The Antigravity usage limit is reached: tasks wait for it","Alondra reads the account's usage with agy and continues waiting tasks once a group of models has room again."),
     }
 }
 

@@ -105,7 +105,7 @@ impl SystemCard {
             Self::ClaudeSignedOut => K::ClaudeSignedOut,
             Self::ClaudeOutage { .. } => K::ClaudeOutage,
             Self::ClaudeUsage { .. } => K::ClaudeUsage,
-            Self::HostLost => K::HostLost,
+            Self::HostLost { .. } => K::HostLost,
             Self::TurnEnded => K::TurnEnded,
             Self::Stalled => K::Stalled,
             Self::SessionEnded => K::SessionEnded,

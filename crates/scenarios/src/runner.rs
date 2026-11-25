@@ -319,11 +319,21 @@ async fn execute(
     let github = Arc::new(GithubWorld::new());
     let pushes = RecordedPushes::default();
     let leaks = Arc::new(Mutex::new(Vec::new()));
-    let codex = codex_transcripts(scenario);
+    let native = native_transcripts(scenario)?;
     write_accounts(&config.home, &scenario.world.accounts).map_err(|e| invalid(&e))?;
     let mut claude = None;
     let mut startup_probe = None;
-    let (launcher, backend, peer) = if codex.is_empty() {
+    let (launcher, backend, peer) = if let Some((provider, transcripts)) = &native {
+        let case = scenario.case.as_deref().ok_or_else(|| ScenarioError::Invalid("a step that starts a provider reads the transcripts of its case".into()))?;
+        let peer = match provider {
+            alondra_core::accounts::Provider::Antigravity => crate::antigravity_peer::launcher(case, transcripts)?,
+            _ => crate::codex_peer::launcher(case, transcripts)?,
+        };
+        let (seen, activity) = (peer.seen.clone(), peer.activity.clone());
+        let launcher = Launcher::new(peer);
+        let backend = native_backend(&config.home, *provider).map_err(|e| invalid(&e))?;
+        (launcher, Backend::Given(Some(backend)), Some(Peer { seen, activity, hosts: transcripts.len() }))
+    } else {
         let edge = ClaudeEdge::new(&config.home, leaks.clone());
         if let Some(by) = slowness.exit {
             edge.set_slow_exit(by);
@@ -343,13 +353,6 @@ async fn execute(
         let backend = claude_backend(&config.home, &scenario.world.release, edge.io_timeout_seconds()).map_err(|e| invalid(&e))?;
         claude = Some(edge);
         (launcher, Backend::Given(Some(backend)), None)
-    } else {
-        let case = scenario.case.as_deref().ok_or_else(|| ScenarioError::Invalid("a step that starts a provider reads the transcripts of its case".into()))?;
-        let peer = crate::codex_peer::launcher(case, &codex)?;
-        let (seen, activity) = (peer.seen.clone(), peer.activity.clone());
-        let launcher = Launcher::new(peer);
-        let backend = codex_backend(&config.home).map_err(|e| invalid(&e))?;
-        (launcher, Backend::Given(Some(backend)), Some(Peer { seen, activity, hosts: codex.len() }))
     };
     probe(&launcher);
     let mac = CalmMac::default();
@@ -464,21 +467,28 @@ async fn carry_out(context: &mut Context<'_>, index: usize, step: &Step) -> Resu
     Ok(())
 }
 
-/// The transcripts of every host the scenario's `codex_node` steps start, in order.
-fn codex_transcripts(scenario: &Scenario) -> Vec<String> {
-    scenario
-        .steps
-        .iter()
-        .filter_map(|step| match step {
-            Step::CodexNode { transcripts, .. } => Some(transcripts.clone()),
-            _ => None,
-        })
-        .flatten()
-        .collect()
+/// The provider of the scenario's `codex_node` or `antigravity_node` steps, and the transcripts of
+/// every host they start, in order: one provider's peer plays them all.
+fn native_transcripts(scenario: &Scenario) -> Result<Option<(alondra_core::accounts::Provider, Vec<String>)>, ScenarioError> {
+    use alondra_core::accounts::Provider;
+    let mut native: Option<(Provider, Vec<String>)> = None;
+    for step in &scenario.steps {
+        let (provider, transcripts) = match step {
+            Step::CodexNode { transcripts, .. } => (Provider::Codex, transcripts),
+            Step::AntigravityNode { transcripts, .. } => (Provider::Antigravity, transcripts),
+            _ => continue,
+        };
+        let (known, all) = native.get_or_insert_with(|| (provider, Vec::new()));
+        if *known != provider {
+            return Err(ScenarioError::Invalid("a scenario starts nodes on one provider other than Claude, not two".into()));
+        }
+        all.extend(transcripts.iter().cloned());
+    }
+    Ok(native)
 }
 
-fn runs_on_codex(scenario: &Scenario, task: &str) -> bool {
-    scenario.steps.iter().any(|step| matches!(step, Step::CodexNode { task: named, .. } if named == task))
+fn runs_on_a_native(scenario: &Scenario, task: &str) -> bool {
+    scenario.steps.iter().any(|step| matches!(step, Step::CodexNode { task: named, .. } | Step::AntigravityNode { task: named, .. } if named == task))
 }
 
 /// The test's own folder short enough for a host's socket to live deep inside it, which the test
@@ -491,8 +501,8 @@ fn short_root() -> Result<std::path::PathBuf, ScenarioError> {
     }
 }
 
-fn codex_backend(home: &Path) -> Result<alondra_engine_sdk::sdk_owner::backend::SdkBackend, String> {
-    sdk_backend(home, alondra_core::accounts::Provider::Codex, "codex", &alondra_engine_sdk::sdk_owner::backend::this_release())
+fn native_backend(home: &Path, provider: alondra_core::accounts::Provider) -> Result<alondra_engine_sdk::sdk_owner::backend::SdkBackend, String> {
+    sdk_backend(home, provider, provider.as_str(), &alondra_engine_sdk::sdk_owner::backend::this_release())
 }
 
 /// The backend of a daemon whose Claude nodes run `release`.
@@ -701,7 +711,8 @@ impl Context<'_> {
                     ready: true,
                 }).await?;
             }
-            Step::CodexNode { task, .. } => self.start_codex_node(index, task).await?,
+            Step::CodexNode { task, .. } => self.start_native_node(index, task, alondra_core::accounts::Provider::Codex).await?,
+            Step::AntigravityNode { task, .. } => self.start_native_node(index, task, alondra_core::accounts::Provider::Antigravity).await?,
             Step::Github(change) => match change {
                 GithubChange::OpenPr { number, head, base, draft } => {
                     let commit = self.github.open_pr(*number, head, base);
@@ -920,9 +931,9 @@ impl Context<'_> {
         }
     }
 
-    /// The task's node starts on Codex as a launch in production starts it: the daemon picks the
-    /// account and model, writes the mission and starts the host it supervises.
-    async fn start_codex_node(&mut self, index: usize, task: &str) -> Result<(), ScenarioError> {
+    /// The task's node starts on Codex or Antigravity as a launch in production starts it: the daemon
+    /// picks the account and model, writes the mission and starts the host it supervises.
+    async fn start_native_node(&mut self, index: usize, task: &str, provider: alondra_core::accounts::Provider) -> Result<(), ScenarioError> {
         use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountStatus, Provider};
         use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, ModelKey, ModelProfile, ModelSelection, TaskSelection};
         // The daemon's first look at its accounts finishes before the scenario says which exist.
@@ -930,17 +941,18 @@ impl Context<'_> {
             self.pass(Duration::from_secs(1), index).await?;
         }
         let mut settings = alondra_core::accounts::AccountsConfig::fresh();
-        settings.connect(Provider::Codex);
+        settings.connect(provider);
         std::fs::write(alondra_core::options::path_in(&self.config.home), settings.to_toml()).map_err(|e| Self::failed(index, e))?;
         let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
         let mut accounts = state.accounts.clone();
-        accounts.push(AccountStatus { antigravity: None,
-            provider: Provider::Codex, id: AccountId::default_account(), name: "Codex".into(), state: AccountState::SignedIn,
+        let antigravity = (provider == Provider::Antigravity).then(|| alondra_core::accounts::AntigravityStatus::of(&Default::default(), false));
+        accounts.push(AccountStatus { antigravity,
+            provider, id: AccountId::default_account(), name: provider.display_name().into(), state: AccountState::SignedIn,
             native_identity: Some("demo-workspace".into()), email: Some("ana@example.com".into()), plan: None, billing: Default::default(),
             sign_ins: 0, profile: None,
         });
         self.command(index, Actor::System, Command::RecordAccounts { accounts, reserve: state.account_reserve })?;
-        let key = AccountKey { provider: Provider::Codex, account: AccountId::default_account() };
+        let key = AccountKey { provider, account: AccountId::default_account() };
         self.command(index, Actor::System, Command::RecordModelCatalog { catalog: AccountModelCatalog {
             account: key.clone(), revision: "demo-catalog".into(), measured_at: 1, native_default: Some("demo-model".into()),
             models: vec![CatalogModel {
@@ -950,7 +962,7 @@ impl Context<'_> {
             }],
         } })?;
         alondra_daemon_engine::accounts::finish_initial_check(&*self.daemon().domain);
-        let model = ModelKey { provider: Provider::Codex, model: "demo-model".into() };
+        let model = ModelKey { provider, model: "demo-model".into() };
         let mut selection = TaskSelection::automatic(ModelProfile::General);
         selection.request_model(Some(model.clone()));
         selection.effective = Some(ModelSelection { model, reasoning_effort: Some("high".into()), catalog_revision: "demo-catalog".into() });
@@ -963,7 +975,7 @@ impl Context<'_> {
             .map_err(|e| Self::failed(index, e))?;
         let title = state.tasks.get(&task.to_owned().into()).map(|task| task.title.clone()).unwrap_or_default();
         let options = alondra_engine_sdk::sdk_owner::LaunchOptions {
-            provider: Provider::Codex, model: Some("demo-model".into()), effort: Some("high".into()), selection: Some(selection),
+            provider, model: Some("demo-model".into()), effort: Some("high".into()), selection: Some(selection),
             ..Default::default()
         };
         alondra_engine_sdk::sdk_owner::launch(&*self.daemon().domain, alondra_engine_sdk::sdk_owner::Launch {
@@ -981,7 +993,7 @@ impl Context<'_> {
             task_id: task.to_owned().into(),
             request_id: request.into(),
             title: title.to_owned(),
-            agent_id: (!runs_on_codex(self.scenario, task) && !self.runs_on_a_provider(task)).then(|| agent_of(task).into()),
+            agent_id: (!runs_on_a_native(self.scenario, task) && !self.runs_on_a_provider(task)).then(|| agent_of(task).into()),
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack,
@@ -1077,7 +1089,7 @@ impl Context<'_> {
     }
 
     fn edge(&self, index: usize) -> Result<&ClaudeEdge, ScenarioError> {
-        self.claude.as_ref().ok_or_else(|| Self::failed(index, "a case with Codex nodes plays no Claude"))
+        self.claude.as_ref().ok_or_else(|| Self::failed(index, "a case with Codex or Antigravity nodes plays no Claude"))
     }
 
     /// The task's node starts on Claude as a launch in production starts it, on `account`: the
@@ -1574,14 +1586,14 @@ impl Context<'_> {
                 }
             }
             Expect::Answered { task, request, answer } => {
-                let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex nodes plays no Claude host".into()))?;
+                let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex or Antigravity nodes plays no Claude host".into()))?;
                 let actual = edge.answer_of(task, request).unwrap_or_else(|| "none".into());
                 if actual != *answer {
                     return Err(failed(format!("the permission {request} of {task} answered {answer}"), actual));
                 }
             }
             Expect::Hosts { task, started, running, sessions } => {
-                let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex nodes plays no Claude host".into()))?;
+                let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex or Antigravity nodes plays no Claude host".into()))?;
                 let hosts = edge.hosts_of(task);
                 let alive = hosts.iter().filter(|host| host.alive()).count();
                 let held: BTreeSet<&str> = hosts.iter().map(|host| host.session.as_str()).collect();
@@ -1593,7 +1605,7 @@ impl Context<'_> {
                 }
             }
             Expect::CacheWritten { task, max } => {
-                let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex nodes plays no Claude host".into()))?;
+                let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex or Antigravity nodes plays no Claude host".into()))?;
                 match edge.first_written(task) {
                     Some(written) if written <= *max => {}
                     written => return Err(failed(format!("the first request of the last host of {task} wrote at most {max} tokens to the prompt cache"),

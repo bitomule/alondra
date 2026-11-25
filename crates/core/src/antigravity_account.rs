@@ -17,8 +17,6 @@ pub const MINIMUM_VERSION: Version = Version(1, 5, 12);
 pub const AGENT_NAME: &str = "Antigravity ACP Server";
 /// The ACP protocol version Alondra speaks.
 pub const PROTOCOL_VERSION: u64 = 1;
-/// Why a node is refused on an Antigravity account: accounts are checked, but no node runs on one yet.
-pub const NODES_NOT_AVAILABLE: &str = "Antigravity nodes are not available yet";
 /// The JSON-RPC code ACP answers a session with when the account is not signed in.
 pub const AUTH_REQUIRED: i64 = -32000;
 /// The file of a named account's folder that keeps its key.

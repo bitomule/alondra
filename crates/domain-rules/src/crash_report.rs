@@ -24,7 +24,7 @@ impl ReportedFailure {
         match record {
             LifecycleRecord::HostEnded { .. } => Some(ReportedFailure::SessionEnded),
             LifecycleRecord::InputDropped { .. } | LifecycleRecord::HandoffDoubted { .. } => Some(ReportedFailure::MessageNotDelivered),
-            LifecycleRecord::Paused { card, .. } if cards.get(card).is_some_and(|card| card.system_card == Some(SystemCard::HostLost)) => Some(ReportedFailure::NotResumed),
+            LifecycleRecord::Paused { card, .. } if cards.get(card).is_some_and(|card| matches!(card.system_card, Some(SystemCard::HostLost { .. }))) => Some(ReportedFailure::NotResumed),
             _ => None,
         }
     }

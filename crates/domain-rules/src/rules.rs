@@ -2310,7 +2310,7 @@ impl DomainState {
         }
         self.invalidate(task_id);
         let closing_cards: Vec<InteractionId> = self.interactions.values().filter(|i| {
-            matches!(i.system_card, Some(SystemCard::CloseProblem | SystemCard::SessionEnded | SystemCard::HostLost | SystemCard::HandoffDoubt))
+            matches!(i.system_card, Some(SystemCard::CloseProblem | SystemCard::SessionEnded | SystemCard::HostLost { .. } | SystemCard::HandoffDoubt))
                 && i.scope == (Scope::Task { task_id: task_id.clone() })
                 && !i.withdrawn && matches!(&i.payload, InteractionPayload::Question { answer: None, .. })
         }).map(|i| i.id.clone()).collect();
@@ -5759,11 +5759,11 @@ impl DomainState {
                 self.task(task_id)?;
                 self.reconcile_recovery_cards(task_id, lifecycles)?;
             }
-            Command::RecordHostLost { task_id, reason, quiet } => {
+            Command::RecordHostLost { task_id, reason, quiet, signed_out } => {
                 system(actor)?;
                 self.task(task_id)?;
                 nonempty(reason)?;
-                self.record_host_lost(task_id, reason, *quiet, effects, lifecycles)?;
+                self.record_host_lost(task_id, reason, *quiet, *signed_out, effects, lifecycles)?;
             }
             Command::ResendUntakenInput { task_id, generation, input, text } => {
                 system(actor)?;

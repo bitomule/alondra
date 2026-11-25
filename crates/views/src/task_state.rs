@@ -332,7 +332,7 @@ fn answering_fact(task: &Task, context: &RenderContext<'_>) -> String {
 }
 
 fn provider_name(task: &Task) -> &'static str {
-    match task.provider { alondra_core::accounts::Provider::Codex => "Codex", _ => "Claude" }
+    task.provider.display_name()
 }
 
 /// Why a task waits for a slot: its retry, the refusal that sent it back, or its place in the queue.

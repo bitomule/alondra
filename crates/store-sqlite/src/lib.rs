@@ -668,6 +668,7 @@ impl DomainStore {
         tx.execute_batch(TASK_MODELS)?;
         tx.execute_batch(TASK_ACCOUNTS)?;
         tx.execute_batch(provider_accounts::SCHEMA)?;
+        provider_accounts::upgrade(&tx)?;
         tx.execute_batch(provider_settings::SCHEMA)?;
         tx.execute_batch(batch_effects::SCHEMA)?;
         tx.execute_batch(TASK_PROJECTS)?;

@@ -14,7 +14,7 @@ mod wire;
 mod conformance_tests;
 
 pub use adapter::{AntigravityConfiguration, AntigravityWorker, Found, NativeLiveness, WorkerProfile, native_exited};
-pub use context::{SessionFailure, account_refusal, failure_message, native_message, session_failure};
+pub use context::{SessionFailure, account_refusal, failure_message, native_message, session_failure, signed_out};
 pub use decisions::{chosen_option, is_question};
 pub use effort::{LevelRefused, effort_of, level_for};
 pub use ended::{EndedJournal, Retained};

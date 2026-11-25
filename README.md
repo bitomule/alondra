@@ -2,7 +2,7 @@
 
 **Run a team of coding agents on your Mac and steer them from your iPhone.**
 
-Alondra is a daemon that runs Claude Code and Codex sessions on your Mac, turns each piece of work
+Alondra is a daemon that runs Claude Code, Codex and Antigravity sessions on your Mac, turns each piece of work
 into a task with its own worktree and pull request, and brings every decision to you as a card:
 a question, a plan, a permission, a finished pull request. You answer from the terminal, the Mac
 app or the iPhone; the agents carry on.
@@ -39,8 +39,8 @@ alondra
 `alondra` sets up the rest the first time: your projects folder, the background service and the
 Claude Code plugin. Run it again at any time; it only changes what is missing.
 
-You need a Mac on Apple Silicon with macOS 26 or later, and Claude Code, Codex or both, already
-installed and signed in. [`INSTALL.md`](INSTALL.md) has the details, the iPhone and Mac apps, and
+You need a Mac on Apple Silicon with macOS 26 or later, and Claude Code, Codex or Antigravity CLI
+(1.5.12 or later), already installed and signed in. [`INSTALL.md`](INSTALL.md) has the details, the iPhone and Mac apps, and
 what to do when something fails.
 
 Before installing, read [what Alondra does on your Mac](docs/on-your-mac.md): installed programs,
@@ -52,8 +52,8 @@ agent to audit the checkout.
 1. **You write a request** in the TUI, the Mac app or the iPhone: "add rate limiting to the API".
 2. **The orchestrator** reads it, makes a plan and splits it into tasks. A plan that needs your approval comes back to you
    as a card for approval before any code changes.
-3. **Each task gets a node**: an agent session in its own git worktree, running Claude Code or
-   Codex with your own account. The orchestrator picks the model and the reasoning effort of each
+3. **Each task gets a node**: an agent session in its own git worktree, running Claude Code,
+   Codex or Antigravity CLI with your own account. The orchestrator picks the model and the reasoning effort of each
    task, and Alondra runs it on one of your accounts. A task that depends on another waits until
    that one has landed; the rest work in parallel, within what your Mac and your plans allow.
 4. **Cards bring you in only when needed.** A node that has a question, wants a plan approved or
@@ -70,7 +70,7 @@ A task that gets stuck anyway is a bug, and fixing those is part of the work.
 |---|---|
 | `alondrad` | The daemon: runs 24/7 under launchd, keeps the state in SQLite and serves the API |
 | Orchestrator | Turns requests into plans and tasks; runs only when there is work, never as an idle process |
-| Nodes | One agent session per task, in its own worktree, through the Claude Agent SDK host or Codex |
+| Nodes | One agent session per task, in its own worktree, through the Claude Agent SDK host, Codex or Antigravity CLI |
 | Cards | Questions, plans, permissions and deliveries, each decided from the card alone |
 | `alondra` | The CLI and TUI, and the MCP server the nodes use to ask you things |
 | iPhone and Mac apps | The same cards and tasks, with push notifications |
@@ -106,7 +106,7 @@ screens use, is in [`docs/architecture/overview.md`](docs/architecture/overview.
 - **Review where you are.** Pull request cards open the diff in the iPhone and Mac apps, and in the
   terminal UI in `tuicr` (installed separately).
 - **Model and effort per task.** For each task the orchestrator picks a model and a reasoning
-  effort from what your connected Claude and Codex accounts offer, and records why. Alondra runs the
+  effort from what your connected Claude, Codex and Antigravity accounts offer, and records why. Alondra runs the
   task on one of your accounts that offers that model, in the order you set, passing over any whose
   plan has run out. You can choose the model, the effort and the account yourself instead. A decider
   that learns from the results of past tasks is coming soon.
@@ -121,16 +121,19 @@ screens use, is in [`docs/architecture/overview.md`](docs/architecture/overview.
 
 ### Providers and sign-in
 
-Alondra supports **Claude** (through Claude Code) and **Codex**, alone or together, with several
-accounts of each.
+Alondra supports **Claude** (through Claude Code), **Codex** and **Antigravity** (through
+Antigravity CLI, `agy`), alone or together, with several accounts of each. The orchestrator runs on
+Claude or Codex; nodes run on any of the three.
 
 Agent sessions use your Claude Code or Codex login. You can use an existing profile or add an
 account through the provider's native sign-in. Claude Code owns its tokens; Alondra's Codex
 sign-in flow can publish credentials to the selected profile and Keychain. The
 [credential inventory](docs/on-your-mac.md#credentials-and-authority) explains those boundaries.
 
-Antigravity accounts can be connected too, through your `agy` sign-in or a Gemini API key, and
-Alondra shows their models and usage; nodes do not run on Antigravity yet.
+An Antigravity account signs in with your Google account or Gemini Enterprise through `agy`, or
+uses a Gemini API key or a Google Cloud project. A key you enter in the app or with
+`alondra accounts set-key` stays in a `0600` file of the account's folder, and only that account's
+`agy` receives it. Alondra shows each account's models and usage.
 
 ## Alondra Cloud
 

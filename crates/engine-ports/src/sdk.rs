@@ -124,6 +124,8 @@ pub trait SdkEngine: Send + Sync {
 
     /// What a host of `provider` observed, for the live view and the node's metrics.
     fn feed(&self, runtime: &dyn Runtime, provider: Provider, agent: &AgentId, observation: &OrderedObservation);
+    /// A message an Antigravity host passed on from its `agy acp`, for the live view.
+    fn feed_antigravity(&self, runtime: &dyn Runtime, agent: &AgentId, message: &serde_json::Value);
     /// The host of `agent` ended.
     fn host_ended(&self, runtime: &dyn Runtime, agent: &AgentId);
     /// An adopted Codex host goes on with the live scope its `checkpoint` holds, if it holds one.

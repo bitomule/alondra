@@ -23,9 +23,12 @@ pub fn validate_request_selection(domain: &dyn Runtime, resolved: &alondra_core:
 }
 
 pub fn validate_native_requirements(intent: Option<&alondra_core::model_selection::TaskSelection>, denied_tools: &[String]) -> Result<(), DomainError> {
-    if !denied_tools.is_empty() && intent.is_some_and(|intent| intent.account.as_ref().is_some_and(|account| account.provider == alondra_core::accounts::Provider::Codex)
-        || (!intent.allow_model_substitution && intent.requested.as_ref().is_some_and(|model| model.provider == alondra_core::accounts::Provider::Codex)))
-    { return Err(DomainError::new("unsupported_capability", "Codex cannot enforce this task's denied tools; choose a compatible provider or permit model substitution with Automatic accounts")); }
+    let Some(intent) = intent.filter(|_| !denied_tools.is_empty()) else { return Ok(()) };
+    let pinned = intent.account.as_ref().map(|account| account.provider)
+        .into_iter().chain(intent.requested.as_ref().filter(|_| !intent.allow_model_substitution).map(|model| model.provider));
+    if let Some(provider) = pinned.into_iter().find(|provider| provider.lacks_tool_denials()) {
+        return Err(DomainError::new("unsupported_capability", format!("{} cannot enforce this task's denied tools; choose a compatible provider or permit model substitution with Automatic accounts", provider.display_name())));
+    }
     Ok(())
 }
 
