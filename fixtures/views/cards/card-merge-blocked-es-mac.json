@@ -1,0 +1,308 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:hf-weekly-2026-09-30",
+  "client": "mac",
+  "version": "ve4e392637373a382",
+  "cursor": "cursor-1",
+  "title": "Review the beta candidate",
+  "status": {
+    "version": "ve47aaae2024e68d7",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "badge": 3,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "hf-weekly-2026-09-30",
+          "kind": "review",
+          "need": "Revisa el resultado",
+          "title_is_separate": true,
+          "why": "Two checks passed; one is still running, and the branch is up to date with main.",
+          "meta": "example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · 2 de 3 correctos, 1 en marcha",
+          "content_row": {
+            "kind": "diff",
+            "icon": "pull_request",
+            "label": "Cambios",
+            "summary": "4 archivos · +120 −30"
+          },
+          "reply": {
+            "id": "changes:github.com/example/repo#12@6~abcdef12",
+            "label": "Pedir cambios",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Describe los cambios",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "comments": {
+              "kind": "diff_lines"
+            },
+            "enabled": true,
+            "stamp": "Cambios solicitados",
+            "key": "r",
+            "link": {
+              "kind": "view",
+              "key": "pull_request:github.com/example/repo#12"
+            },
+            "resolves_card": true
+          },
+          "more": [
+            {
+              "id": "close_unmerged:hf-weekly-2026-09-30@1",
+              "label": "Cerrar sin hacer merge",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Cerrar la PR #12 sin hacer merge?",
+                "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.",
+                "button": "Cerrar la PR"
+              },
+              "enabled": true,
+              "stamp": "Cerrando…",
+              "key": "k",
+              "resolves_card": true
+            },
+            {
+              "id": "",
+              "label": "Abrir en GitHub",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "w",
+              "link": {
+                "kind": "url",
+                "url": "https://github.com/example/repo/pull/12"
+              },
+              "resolves_card": false
+            }
+          ],
+          "link": {
+            "kind": "view",
+            "key": "card:hf-weekly-2026-09-30"
+          },
+          "icon": "pull_request",
+          "eyebrow": {
+            "text": "Revisar · PR #12",
+            "tone": "accent"
+          },
+          "title": "Review the beta candidate",
+          "subtitle": "Two checks passed; one is still running, and the branch is up to date with main.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Te necesita",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Checks en marcha",
+            "tone": "info"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
+              "label": "Squash and merge",
+              "style": "primary",
+              "role": "advance",
+              "option_id": "squash",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "La PR #12 aún no se puede mergear: falta una revisión en GitHub; el check build falla.",
+              "stamp": "Haciendo merge…",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "checks",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "checks",
+          "summary": {
+            "text": "2 de 3 correctos, 1 en marcha",
+            "tone": "info"
+          },
+          "items": [
+            {
+              "name": "Lint",
+              "state": "pending"
+            },
+            {
+              "name": "Build",
+              "state": "pass"
+            },
+            {
+              "name": "Unit tests",
+              "state": "pass"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "diff",
+      "title": "Diferencias",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "content_ref",
+          "kind": "diff",
+          "title": "Diferencias",
+          "size": 0,
+          "digest": "abcdef12",
+          "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
+          "commentable": true
+        }
+      ]
+    },
+    {
+      "id": "description",
+      "title": "Descripción",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Replaces the long schedule form with a compact editor.\n\n- Repeat and time on one row\n- Launch options in a sheet",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Contexto",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tarea",
+              "value": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

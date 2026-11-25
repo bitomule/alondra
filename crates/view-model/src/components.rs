@@ -620,9 +620,8 @@ pub struct Notice {
 pub struct ActionBar {
     pub actions: Vec<Action>,
 }
-/// An action of a card: one the user can use now. A card never carries one that cannot be used,
-/// so there is no way to build it disabled. The wire still says `enabled: true` for the clients
-/// that read it; they stop reading it when they move to this type.
+/// An action of a card: one the user can use now, or one shown disabled that always says why. A
+/// card never carries a disabled action without its reason, so there is no way to build one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(from = "Action", into = "Action")]
 pub struct CardAction(Action);
@@ -630,6 +629,14 @@ impl CardAction {
     /// The action as a card carries it; `None` when it cannot be used, so the card omits it.
     pub fn usable(action: Action) -> Option<Self> {
         action.enabled.then(|| Self(Action { disabled_reason: None, ..action }))
+    }
+    /// The action as a card carries it, disabled and saying why. An action that cannot be used and
+    /// has no reason to give is omitted.
+    pub fn offered(action: Action) -> Option<Self> {
+        if action.enabled {
+            return Self::usable(action);
+        }
+        action.disabled_reason.as_deref().is_some_and(|reason| !reason.is_empty()).then(|| Self(action))
     }
     /// The action itself, for a client that keeps on the card, disabled, one from a newer daemon
     /// it cannot carry out.
@@ -639,7 +646,11 @@ impl CardAction {
 }
 impl From<Action> for CardAction {
     fn from(action: Action) -> Self {
-        Self(Action { enabled: true, disabled_reason: None, ..action })
+        let reason = action.disabled_reason.clone().filter(|reason| !reason.is_empty());
+        match (action.enabled, reason) {
+            (false, Some(reason)) => Self(Action { enabled: false, disabled_reason: Some(reason), ..action }),
+            _ => Self(Action { enabled: true, disabled_reason: None, ..action }),
+        }
     }
 }
 impl From<CardAction> for Action {

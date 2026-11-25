@@ -382,8 +382,9 @@ fn a_card_from_a_newer_daemon_loads_with_what_the_tui_cannot_use_disabled_or_lef
     let screen = drawn(&mut app, 160, 60);
     assert!(screen.contains("Sign in to the calendar: 1 task waits for it"), "{screen}");
     assert!(screen.contains("Update the TUI to see this"), "{screen}");
-    assert!(screen.contains("Sign in with a passkey — Update the TUI to use this"), "{screen}");
-    assert!(screen.contains("Pick a time — Update the TUI to use this"), "{screen}");
+    assert!(screen.contains("Sign in with a passkey"), "{screen}");
+    assert!(screen.contains("Pick a time"), "{screen}");
+    assert_eq!(screen.matches("Update the TUI to use this").count(), 3, "each of the three disabled buttons says why: {screen}");
     assert!(screen.contains(" 2  Go on without the calendar"), "{screen}");
     assert!(screen.contains("Save — Update the TUI to use this"), "{screen}");
 }

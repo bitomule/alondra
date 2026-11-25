@@ -45,7 +45,7 @@ final class FixtureContractTests: XCTestCase {
                 let name = "\(url.lastPathComponent) \(card.id)"
                 XCTAssertLessThanOrEqual(card.actions.count, 3, name)
                 for action in card.actions + card.more + (card.reply.map { [$0] } ?? []) {
-                    XCTAssertTrue(action.enabled, "\(name): \(action.label)")
+                    XCTAssertTrue(action.enabled || action.disabledReason?.isEmpty == false, "\(name): \(action.label) is disabled and does not say why")
                     XCTAssertNotNil(action.role, "\(name): \(action.label)")
                     XCTAssertEqual(action.role == .risk, action.style == .destructive, "\(name): \(action.label)")
                     if action.description != nil { XCTAssertNotNil(action.optionId, "\(name): \(action.label)") }

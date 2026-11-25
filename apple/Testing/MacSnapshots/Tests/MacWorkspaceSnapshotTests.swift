@@ -224,6 +224,16 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 620)) { MacServiceDetail(presentation: store) }
     }
 
+    func test_card_aMergeGitHubDoesNotAllowYetIsDisabledAndSaysWhy() throws {
+        let store = try presentation(detail: "card-merge-blocked-mac")
+        assertWindow(size: CGSize(width: 900, height: 620), variants: Appearance.allCases) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_aMergeGitHubDoesNotAllowYetIsDisabledAndSaysWhy_spanish() throws {
+        let store = try presentation(sidebar: "sidebar-mac-es", detail: "card-merge-blocked-es-mac")
+        assertWindow(size: CGSize(width: 900, height: 620), spanish: true, variants: Appearance.allCases) { MacServiceDetail(presentation: store) }
+    }
+
     private func newerDaemonCard(spanish: Bool = false) throws -> StoreOf<MacPresentationFeature> {
         try presentation(sidebar: spanish ? "sidebar-mac-es" : "sidebar-mac") { state in
             let card = try? self.document(spanish ? "card-es" : "card", folder: "newer-daemon")

@@ -53,7 +53,6 @@ text = "it needs a review on GitHub"
 check = "view_shows"
 screen = "home"
 text = "Squash and merge"
-present = false
 
 [[step.expect]]
 check = "gh_calls"

@@ -330,7 +330,7 @@ fn flash_kinds_draw_with_their_own_mark() {
 }
 
 #[test]
-fn no_waiting_card_fixture_has_an_unusable_action() {
+fn no_card_fixture_has_an_unusable_action_that_does_not_say_why() {
     for name in std::fs::read_dir(fixtures_dir())
     .unwrap()
     .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
@@ -338,7 +338,8 @@ fn no_waiting_card_fixture_has_an_unusable_action() {
     {
         let view: alondra_views::View = serde_json::from_value(view_fixture(&name)).unwrap();
         for action in crate::tui::view_render::actions(&view) {
-            assert!(action.enabled && action.disabled_reason.is_none(), "{name}: {}", action.label);
+            let explained = action.disabled_reason.as_deref().is_some_and(|reason| !reason.is_empty());
+            assert!(action.enabled != explained, "{name}: {}", action.label);
         }
     }
 }

@@ -479,8 +479,8 @@ fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLi
             chip: chip(node.and_then(|node| node.project.as_ref())), state: None });
     }
     lines.extend(review_lines(item, context));
-    lines.extend(merge_unavailable(item, context).into_iter().chain(merge_notes(item, context))
-        .map(|text| ContextLine { icon: Icon::Warning, text, link: None, chip: None, state: None }));
+    lines.extend(merge_notes(item, context)
+        .into_iter().map(|text| ContextLine { icon: Icon::Warning, text, link: None, chip: None, state: None }));
     lines
 }
 
@@ -717,7 +717,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     if !uncheckable {
         more.extend(extra_actions(item, interaction, context));
     }
-    visible.retain(|action| action.enabled);
+    visible.retain(|action| action.enabled || action.disabled_reason.is_some() && ActionId::parse(&action.id).is_ok_and(|id| id.verb == Verb::Merge));
     more.retain(|action| action.enabled);
     if visible.len() > VISIBLE_ACTIONS {
         let rest = visible.split_off(VISIBLE_ACTIONS);
@@ -742,7 +742,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         if field_first && let Some(reply) = reply.as_mut() {
             reply.key = Some("1".into());
         }
-        let options = visible.iter_mut().chain(more.iter_mut()).filter(|action| action.key.is_none());
+        let options = visible.iter_mut().chain(more.iter_mut()).filter(|action| action.key.is_none() && action.enabled);
         for (action, n) in options.zip((if field_first { 2 } else { 1 })..=9) {
             action.key = Some(n.to_string());
         }
@@ -752,7 +752,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         painted(action, item.card.kind == CardKind::Authorize)
     };
     card.reply = reply.map(settles).and_then(CardAction::usable);
-    card.actions = visible.into_iter().map(settles).filter_map(CardAction::usable).collect();
+    card.actions = visible.into_iter().map(settles).filter_map(CardAction::offered).collect();
     card.more = more.into_iter().map(settles).filter_map(CardAction::usable).collect();
     Ok(card)
 }
@@ -1827,6 +1827,16 @@ fn merge_button(subject: &str, interaction: &Interaction, pr: &PullRequest, head
     Some(merge)
 }
 
+/// The merge of a PR GitHub does not allow yet: the button is there, disabled, and says why.
+fn blocked_merge(subject: &str, item: &InboxItem, interaction: &Interaction, pr: &PullRequest, head: &str, context: &RenderContext<'_>) -> Option<Action> {
+    let reason = merge_unavailable(item, context)?;
+    let mut merge = merge_button(subject, interaction, pr, head, context)?;
+    merge.confirm = None;
+    merge.enabled = false;
+    merge.disabled_reason = Some(reason);
+    Some(merge)
+}
+
 /// The short line beside a merge the user can still press while the task works on a message of
 /// theirs: what it is doing, and since when.
 fn unanswered_message_line(item: &InboxItem, context: &RenderContext<'_>) -> Option<String> {
@@ -1949,11 +1959,14 @@ fn delivery_actions(
     if held || conflicts || stacked {
         // The task shows what it waits for; the card has nothing to press until that is over.
     } else if own_pr(item).is_some() {
-        visible.extend(open.first().and_then(|(pr, head)| merge_of(item, interaction, pr, head, context)));
+        visible.extend(open.first().and_then(|(pr, head)| merge_of(item, interaction, pr, head, context)
+            .or_else(|| blocked_merge(&pr.id.0, item, interaction, pr, head, context))));
     } else if let Some(available) = open.first().and_then(|(pr, head)| merge_available(item, pr, head)).filter(|available| available.enabled)
         && let Some(head) = available.expected_head.as_deref()
     {
         visible.extend(merge_button(&interaction.id.0, interaction, pr, head, context));
+    } else if let Some(blocked) = open.first().and_then(|(pr, head)| blocked_merge(&interaction.id.0, item, interaction, pr, head, context)) {
+        visible.push(blocked);
     } else if find("authorize_merge").is_none() {
         visible.extend(accept(Role::Advance, accept_label));
     }
