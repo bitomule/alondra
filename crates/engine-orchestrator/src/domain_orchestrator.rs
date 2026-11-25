@@ -1380,15 +1380,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         _root: Box<dyn Send>,
     }
 
-    /// A daemon home of its own whose orchestrator runs through the SDK.
-    #[cfg(test)]
-#[cfg(feature = "real-hosts")]
-    pub(crate) fn fixture() -> Fixture {
-        let (root, home) = daemon_home();
-        let domain = Arc::new(crate::wiring::open(&home).unwrap());
-        Fixture::over(root, domain, home, alondra_engine_doubles::host_root::HostRoot::new())
-    }
-
     /// A daemon home of its own whose orchestrator runs through the SDK on doubled hosts, which the
     /// orchestrator model of the Claude host model plays as the fake orchestrator Claude plays them.
     /// Every runtime the test opens at its home gets the same hosts.
@@ -1406,6 +1397,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
     }
 
     #[cfg(test)]
+    #[cfg(not(feature = "real-hosts"))]
     fn daemon_home() -> (crate::test_support::Directory, PathBuf) {
         use std::os::unix::fs::DirBuilderExt;
         let root = crate::test_support::Directory::new();

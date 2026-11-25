@@ -26,10 +26,10 @@ pub mod stall_context;
 
 use alondra_engine_kernel::domain_runtime::DomainRuntime;
 
-/// The runtime the orchestrator's tests open: the orchestrator's own port, the agent hosts (the
-/// real ones with the feature real-hosts, the doubled ones the Claude host model plays without it),
-/// doubles of the rest of the engine, and the faults a test injects at its home failing the orchestrator's writes there.
+/// The runtime the orchestrator's tests open: the orchestrator's own port, the doubled agent hosts
+/// the host models play, doubles of the rest of the engine, and the faults a test injects at its home failing the orchestrator's writes there.
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod wiring {
     use crate::engine::OrchestratorOf as _;
     use alondra_daemon_engine_model::faults;
@@ -53,18 +53,11 @@ mod wiring {
         Ok(domain)
     }
 
-    #[cfg(feature = "real-hosts")]
-    fn provide_hosts(domain: &super::DomainRuntime, _: &std::path::Path) {
-        alondra_agent_runtime::wire(domain.ports(), Default::default());
-    }
-
     /// The doubled hosts a fixture serves at each home, held weakly so they end with the fixture.
-    #[cfg(not(feature = "real-hosts"))]
     static SERVED: std::sync::Mutex<Vec<(std::path::PathBuf, std::sync::Weak<alondra_engine_doubles::agent_host::InProcessHosts>)>> = std::sync::Mutex::new(Vec::new());
 
     /// Every runtime opened at `home` from now on gets `hosts`, as a restarted daemon finds the
     /// hosts the one before left.
-    #[cfg(not(feature = "real-hosts"))]
     pub fn serve(home: &std::path::Path, hosts: &Arc<alondra_engine_doubles::agent_host::InProcessHosts>) {
         let mut served = SERVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         served.retain(|(at, kept)| at != home && kept.strong_count() > 0);
@@ -74,7 +67,6 @@ mod wiring {
     /// The hosts a fixture serves at `home`, or doubled hosts of its own that nothing plays. No
     /// doubled host is a process of the kernel: each is born at the same moment for the batch that
     /// records it.
-    #[cfg(not(feature = "real-hosts"))]
     fn provide_hosts(domain: &super::DomainRuntime, home: &std::path::Path) {
         let served = SERVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter().find(|(at, _)| at == home).and_then(|(_, kept)| kept.upgrade());
