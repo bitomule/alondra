@@ -1994,6 +1994,26 @@ async fn a_replacement_that_gives_up_with_a_claimed_message_leaves_no_claim_hold
     assert!(!Slice::lifecycle(&*restarted).pending_inputs().is_empty(), "the message waits for the next host");
 }
 
+// A runtime the slice restarted keeps the owner it was given until it is stopped, and the owner
+// writes in the slice's folder: dropping the slice ends it first, so the folder is removed with
+// nothing writing in it.
+#[cfg(not(feature = "real-hosts"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runtime_the_slice_restarted_ends_its_owners_when_the_slice_goes() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    slice.kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    let resumed = slice.take_over(&restarted);
+    let agent = resumed.agent().clone();
+    restarted.add_sdk_owner(Owner::spawn(resumed));
+    assert!(restarted.owns_sdk_host(&agent));
+    drop(slice);
+    assert!(!restarted.owns_sdk_host(&agent), "the restarted runtime still owns a host after its slice went");
+}
+
 #[cfg(not(feature = "real-hosts"))]
 // The daemon's start could not take the execution over (here no new host can get its folder): the
 // task gets a card with that reason instead of being left as it is. Once that is fixed, «Try
