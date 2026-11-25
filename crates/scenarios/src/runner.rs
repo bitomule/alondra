@@ -214,8 +214,9 @@ struct Peer {
 /// naming what is left, instead of waiting for the test's own limit.
 const WATCHDOG: Duration = Duration::from_secs(120);
 
-/// Real time a wait for calm may last: it watches for a hang, never decides that the daemon is
-/// calm. A daemon that never comes to rest ends the run with what kept moving.
+/// Real time a wait for calm may last with nothing of the daemon moving: it watches for a hang,
+/// never decides that the daemon is calm. A daemon whose work keeps starting and ending, however
+/// slowly on a loaded Mac, is waited for; one that stopped ends the run with what is left.
 const PATIENCE: Duration = Duration::from_secs(20);
 /// How often the daemon samples the Mac and the accounts' usage for the gauges the apps show: by
 /// then a scenario has started.
