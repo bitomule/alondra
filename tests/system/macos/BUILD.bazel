@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 # The CLI gate's local daemon checks against this checkout's binaries; the Tart gate runs the
 # same checks on the published package.
 sh_test(

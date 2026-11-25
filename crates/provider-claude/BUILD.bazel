@@ -1,10 +1,10 @@
 load("//tools/layers:crates.bzl", "adapter_out_crate")
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 load(":build_inputs_test.bzl", "rust_inputs_test")
-load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library")
-load("//tools:rust_sources.bzl", "production_sources")
+load("//bazel/rules:rust_sources.bzl", "production_sources")
 
 _PROVIDER_SOURCES = glob(["src/*.rs"], exclude = ["src/*_tests.rs"])
 _PROVIDER_TEST_SOURCES = _PROVIDER_SOURCES + [

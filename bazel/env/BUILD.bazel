@@ -1,5 +1,5 @@
 load("@bazel_env.bzl", "bazel_env")
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 
 exports_files(
     ["tools.bzl"],

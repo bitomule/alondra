@@ -1,0 +1,4 @@
+load("//bazel/rules:tree.bzl", "repo_tree")
+
+# Shared Bazel macros. Kept apart from //tools so that adding a target there reopens no check that only loads a macro.
+repo_tree()

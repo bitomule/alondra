@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 filegroup(
     name = "sources",
     testonly = True,

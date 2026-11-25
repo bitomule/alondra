@@ -1,8 +1,8 @@
 load("//tools/layers:crates.bzl", "adapter_private_crate")
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("//tools:rust_sources.bzl", "production_sources")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:rust_sources.bzl", "production_sources")
 
 adapter_private_crate(
     name = "agent_protocol",

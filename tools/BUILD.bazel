@@ -1,5 +1,5 @@
-load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:tree.bzl", "repo_tree")
 load(":private_literals_source_test.bzl", "private_literals_source_suite")
 
 private_literals_source_suite(name = "private_literals_source_test")

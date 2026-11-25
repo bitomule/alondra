@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 sh_test(
     name = "prepare_test",
     env = {"TEST_EXECS": "/usr/bin/lsbom /usr/bin/mkbom /usr/bin/pkgbuild /usr/bin/productbuild /usr/bin/xattr /usr/sbin/pkgutil"},

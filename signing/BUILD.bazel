@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 exports_files(["repo.bzl", "signing.example.bzl"])
 
 filegroup(

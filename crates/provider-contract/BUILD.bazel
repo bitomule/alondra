@@ -1,6 +1,6 @@
 load("//tools/layers:crates.bzl", "port_crate")
-load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_sources.bzl", "production_sources")
+load("//bazel/rules:tree.bzl", "repo_tree")
+load("//bazel/rules:rust_sources.bzl", "production_sources")
 
 port_crate(
     name = "provider_contract",

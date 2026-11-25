@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 exports_files(["Cargo.toml", "Cargo.lock", "clippy.toml"])
 
 exports_files(["LICENSE.md", "THIRD_PARTY_NOTICES.md", "version.bzl"], visibility = ["//deploy/brew:__pkg__"])

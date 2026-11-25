@@ -1,9 +1,9 @@
 load("//tools/layers:crates.bzl", "port_crate")
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("//:version.bzl", "VERSION")
-load("//tools:rust_sources.bzl", "production_sources")
+load("//bazel/rules:rust_sources.bzl", "production_sources")
 
 # The ports the engine's pieces call each other through, and their registry. It depends on no piece
 # of the engine: every piece depends on it, and only the root sees which piece implements which.

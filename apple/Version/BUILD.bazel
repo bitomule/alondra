@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("//tools:shared.bzl", "versions")
 

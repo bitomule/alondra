@@ -1,5 +1,5 @@
-load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:tree.bzl", "repo_tree")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("//:version.bzl", "VERSION")
 
 # The model of the whole machine: generated histories through the real domain and the decisions of

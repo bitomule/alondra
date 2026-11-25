@@ -1,4 +1,4 @@
-load("//tools:tree.bzl", "repo_tree")
+load("//bazel/rules:tree.bzl", "repo_tree")
 
 # Transcripts in the shape a real session leaves, below every crate that replays them.
 # `//crates/scenarios:transcript_guard_test` checks each.

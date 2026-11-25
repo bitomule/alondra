@@ -1,10 +1,10 @@
 load("//tools/layers:crates.bzl", "application_crate")
-load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:tree.bzl", "repo_tree")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+load("//bazel/rules:rust_inputs_test.bzl", "rust_inputs_test")
 load("//:version.bzl", "VERSION")
-load("//tools:rust_sources.bzl", "production_sources")
+load("//bazel/rules:rust_sources.bzl", "production_sources")
 
 # The orchestrator knows the engine only through the ports of engine-ports: it depends on no engine
 # subsystem, no subsystem depends on it, and only alondrad, which puts the daemon together, sees it.
