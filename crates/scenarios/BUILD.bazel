@@ -138,17 +138,20 @@ rust_binary(
 )
 
 # Every transcript the repository keeps, wherever it is and whatever its name, is anonymized. It
-# reads the private literals file ALONDRA_PRIVATE_LITERALS names, outside the checkout, so it is
-# never cached; without that list it fails, unless the variable says `none` (the public CI).
+# reads the private literals through @private_literals, a copy of the file ALONDRA_PRIVATE_LITERALS
+# names that Bazel watches, so it is cached until the list or a transcript changes; without that list
+# it fails, unless the variable says `none` (the public CI).
 low_opt_rust_test(
     name = "transcript_guard_test",
     size = "small",
     srcs = ["tests/transcript_guard.rs"],
     crate_root = "tests/transcript_guard.rs",
-    data = ["//:tree"],
+    data = [
+        "//:tree",
+        "@private_literals//:literals.txt",
+    ],
     edition = "2024",
-    env_inherit = ["ALONDRA_PRIVATE_LITERALS"],
-    tags = ["external", "local"],
+    env = {"ALONDRA_PRIVATE_LITERALS": "$(rootpath @private_literals//:literals.txt)"},
     deps = ["//crates/scenarios-transcript:scenarios_transcript"],
 )
 

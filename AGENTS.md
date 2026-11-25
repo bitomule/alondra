@@ -34,9 +34,10 @@ or in the private repository that keeps it, never here.
   `python3 tools/public_data_guard.py --against origin/main` checks just the lines a branch adds.
   The maintainer's name, names of private apps or repositories and hosts are never written in this
   repository, not even in the guard: they go one per line in a file outside the checkout that
-  `ALONDRA_PRIVATE_LITERALS` points to, which the test inherits from its environment and never
-  prints. Without that variable (a contributor's Mac) only the generic rules run, and the test
-  passes or fails on them alone.
+  `ALONDRA_PRIVATE_LITERALS` points to. Bazel copies and watches that file (`@private_literals`), so the
+  test is cached until the list or a tracked file changes, and never prints it. Without that
+  variable (a contributor's Mac) only the generic rules run, and the test passes or fails on them
+  alone.
 - `//crates/scenarios:transcript_guard_test` checks every transcript of the repository, whatever
   its name, and fails without that list: set `ALONDRA_PRIVATE_LITERALS=none` where there is no list
   on purpose, as the public CI does.

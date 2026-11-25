@@ -21,8 +21,16 @@ def checkout():
     return Path(__file__).resolve().parents[2]
 
 
+def literals_in_runfiles():
+    """The literals file the build copied next to this test, which the environment names relative to the runfiles."""
+    declared = os.environ.get(guard.PRIVATE_LITERALS_ENV)
+    if declared and os.environ.get("TEST_SRCDIR"):
+        os.environ[guard.PRIVATE_LITERALS_ENV] = str(checkout() / declared)
+
+
 class CheckoutTest(unittest.TestCase):
     def test_no_tracked_file_carries_personal_or_private_data(self):
+        literals_in_runfiles()
         problems = guard.report(checkout())
         self.assertEqual(problems, [], "\n" + "\n".join(problems))
 

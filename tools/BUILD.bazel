@@ -78,19 +78,22 @@ sh_test(
     size = "small",
 )
 
-# Reads a private literals file outside the checkout (ALONDRA_PRIVATE_LITERALS), so it is never cached.
+# The private literals come from @private_literals, a copy of the file ALONDRA_PRIVATE_LITERALS names
+# that Bazel watches, so this test is cached until the list or a tracked file changes.
 sh_test(
     name = "public_data_guard_test",
-    env = {"TEST_EXECS": "/usr/bin/git"},
+    env = {
+        "ALONDRA_PRIVATE_LITERALS": "$(rootpath @private_literals//:literals.txt)",
+        "TEST_EXECS": "/usr/bin/git",
+    },
     srcs = ["tests/test_public_data_guard.py"],
     data = [
         "public_data_guard.py",
         "public_data_allowlist.tsv",
         "//:tree",
+        "@private_literals//:literals.txt",
     ],
-    env_inherit = ["ALONDRA_PRIVATE_LITERALS"],
     size = "medium",
-    tags = ["external", "local"],
 )
 
 sh_test(
