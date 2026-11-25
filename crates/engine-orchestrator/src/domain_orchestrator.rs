@@ -18,7 +18,7 @@ use alondra_domain_rules::{Actor, Author, Command, CommandEnvelope, DomainError,
 use alondra_core::now_millis;
 use alondra_domain_rules::orchestrator_batch::{BATCH_CONTINUE, BATCH_CONTINUE_LABEL, BATCH_PROBLEM_PREFIX, BATCH_RETRY, BATCH_RETRY_LABEL, BatchProblem, BatchStop};
 #[cfg(test)]
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 use alondra_domain_rules::orchestrator_cards::{STUCK_PROBLEM_PREFIX, STUCK_RETRY, STUCK_RETRY_LABEL, StuckProblem};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -128,6 +128,7 @@ pub fn load(home: &Path) -> Result<Runtime> {
 
 /// Writes the runtime record a test seeds, with no fault injected.
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 pub(crate) fn save(home: &Path, runtime: &Runtime) -> Result<()> {
     write(home, runtime, &crate::engine::Injected::default())
 }
@@ -178,6 +179,7 @@ impl Executor {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 use alondra_daemon_engine_model::faults;
 #[path = "domain_orchestrator/recovery.rs"]
 mod recovery;
@@ -185,7 +187,7 @@ mod recovery;
 mod watchdog;
 pub(crate) use watchdog::HostGuard;
 #[cfg(test)]
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[path = "domain_orchestrator/tests/recovery.rs"]
 mod recovery_tests;
 #[cfg(test)]
@@ -193,7 +195,7 @@ mod recovery_tests;
 #[path = "domain_orchestrator/tests/recovery_decisions.rs"]
 mod recovery_decisions;
 #[cfg(test)]
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 #[path = "domain_orchestrator/tests/deadline.rs"]
 mod deadline_tests;
 #[cfg(test)]
@@ -209,7 +211,7 @@ const SUBJECT_LINE: usize = 120;
 /// A newer batch card replaces an open one.
 const BATCH_CAUSE: &str = "orchestrator_batch";
 #[cfg(test)]
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 const STUCK_CAUSE: &str = "orchestrator_stuck";
 
 pub struct Executor {
@@ -978,7 +980,7 @@ impl Executor {
     }
 
     #[cfg(test)]
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
     fn raise_stuck_problem(&self, run_id: &str, failures: u32, error: &str) -> Option<String> {
         let id = format!("{STUCK_PROBLEM_PREFIX}{run_id}");
         let problem = StuckProblem { failures, error: error.to_owned() };
@@ -1378,15 +1380,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         _root: Box<dyn Send>,
     }
 
-    /// A daemon home of its own whose orchestrator runs through the SDK.
-    #[cfg(test)]
-#[cfg(feature = "real-hosts")]
-    pub(crate) fn fixture() -> Fixture {
-        let (root, home) = daemon_home();
-        let domain = Arc::new(crate::wiring::open(&home).unwrap());
-        Fixture::over(root, domain, home, alondra_engine_doubles::host_root::HostRoot::new())
-    }
-
     /// A daemon home of its own whose orchestrator runs through the SDK on doubled hosts, which the
     /// orchestrator model of the Claude host model plays as the fake orchestrator Claude plays them.
     /// Every runtime the test opens at its home gets the same hosts.
@@ -1396,6 +1389,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         let (root, home) = daemon_home();
         let played = super::model_fixture::Played::serve(&home);
         let domain = Arc::new(crate::wiring::open(&home).unwrap());
+        played.count_recorded(&domain, &home);
         let backend = super::model_fixture::backend(&root, environment(&root));
         let mut fixture = Fixture::serving(root, domain, home, backend, Box::new(()));
         fixture.played = Some(played);
@@ -1403,6 +1397,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
     }
 
     #[cfg(test)]
+    #[cfg(not(feature = "real-hosts"))]
     fn daemon_home() -> (crate::test_support::Directory, PathBuf) {
         use std::os::unix::fs::DirBuilderExt;
         let root = crate::test_support::Directory::new();
@@ -1678,19 +1673,49 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
             assert_eq!(text, "held\n");
         }
 
-        /// Waits, off the runtime, until the fake Claude holds its turn.
-        pub async fn held(&self) {
+        /// Waits, off the runtime, until the fake Claude holds its turn, and returns what it told
+        /// the test: `held`, or its domain capability for `fixture:quiet-hold`.
+        pub async fn held(&self) -> String {
             #[cfg(test)]
 #[cfg(not(feature = "real-hosts"))]
-            if let Some(model) = self.model().cloned() {
-                alondra_core::clock::spawn_blocking_unwatched(move || model.held()).await.unwrap();
-                return;
+            if let Some(played) = &self.played {
+                let (model, recorded, home) = (played.model.clone(), Arc::clone(&played.recorded), self.executor.home.clone());
+                return alondra_core::clock::spawn_blocking_unwatched(move || {
+                    let told = model.held();
+                    super::model_fixture::Played::wait_recorded(&model, &recorded, &home);
+                    told
+                }).await.unwrap();
             }
             let held = self.held.clone();
             alondra_core::clock::spawn_blocking_unwatched(move || {
                 let mut text = String::new();
                 std::fs::File::open(held).unwrap().read_to_string(&mut text).unwrap();
-            }).await.unwrap();
+                text.trim_end().to_owned()
+            }).await.unwrap()
+        }
+
+        /// Each answer from now on reports `tokens` input tokens.
+        #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
+        pub fn set_tokens(&self, tokens: u64) {
+            self.model().expect("the orchestrator model plays this fixture").set_tokens(tokens);
+        }
+
+        /// Claude no longer finds any conversation it had.
+        #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
+        pub fn forget_sessions(&self) {
+            self.model().expect("the orchestrator model plays this fixture").forget_sessions();
+        }
+
+        /// Every live host stops where it is: no stop request ends it any more, only a kill.
+        #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
+        pub fn freeze_hosts(&self) {
+            let played = self.played.as_ref().expect("the orchestrator model plays this fixture");
+            for state_dir in played.hosts.live() {
+                played.hosts.served(&state_dir).expect("a live host is served").freeze();
+            }
         }
 
         pub fn release(&self) {
@@ -1705,7 +1730,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
 }
 
 #[cfg(test)]
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use alondra_store_sqlite::AsSqlite as _;
     use super::testing::{Fixture, fixture};

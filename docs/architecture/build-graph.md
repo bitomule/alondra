@@ -180,7 +180,7 @@ visibility on both).
   orchestrator model of `//crates/provider-claude:claude_host_model` plays as the fake orchestrator
   Claude plays them, and `//crates/provider-codex:codex_host_model` as the Codex host and fake Codex
   play a Codex batch, with no program run, and `engine_orchestrator_host_test` (the feature
-  `real-hosts`), with the real hosts, fake Claude and processes the rest still need. They
+  `real-hosts`), with only the real processes of the child the orchestrator owns. They
   link neither `daemon-engine` nor `engine-sdk`: they
   open a runtime with the doubles of `engine-doubles` registered for the ports they do not test. The
   tests that need the whole engine are in `alondrad` (`engine_tests/orchestrator_*_tests.rs`).
@@ -568,6 +568,10 @@ needs. No test runs on the double yet.
   native command line): `sdk_worker_test` runs them on the real Node host with the fake native
   Claude, `claude_host_model_test` on the model, with the same expectations. A model that answered
   a prompt without starting it failed the turns case while the real host passed it.
+  `host_cases/orchestrator_tests.rs` is the orchestrator's batch: a new conversation, a resumed
+  one, one Claude never had and a turn stopped while held, on the real host with the fake
+  orchestrator Claude and on the orchestrator model `engine_orchestrator_test` runs on. A model
+  that resumed any conversation, or answered another prompt, fails it.
   `agent-host:sdk_worker_test` checks the worker's `--model`, `--effort`, `--disallowedTools`,
   `--session-id` and `--resume` itself.
 

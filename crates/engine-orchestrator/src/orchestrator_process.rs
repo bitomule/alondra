@@ -468,10 +468,9 @@ impl Output {
 }
 
 #[cfg(test)]
-#[cfg(feature = "real-hosts")]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
-    use std::process::Stdio;
 
     const INIT: &str = r#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","model":"opus","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__create_task","mcp__alondra-orchestrator__ask"]}"#;
     const WORKED: &str = r#"{"type":"assistant","session_id":"s","message":{"model":"opus","content":[{"type":"text","text":"On it"}],"usage":{"input_tokens":2}}}"#;
@@ -524,30 +523,6 @@ mod tests {
             "a result that names no input is not this batch's either");
     }
 
-    #[test]
-    fn a_process_a_dead_daemon_left_for_its_unfinished_run_is_ended_at_recovery() {
-        let directory = crate::test_support::Directory::new();
-        std::fs::create_dir_all(&directory).unwrap();
-        let mut gone = std::process::Command::new("/usr/bin/true").spawn().unwrap();
-        let daemon = gone.id();
-        gone.wait().unwrap();
-        use std::os::unix::process::CommandExt;
-        let mut left = std::process::Command::new("/bin/cat").stdin(Stdio::piped()).process_group(0).spawn().unwrap();
-        let (child_pid, child_started) = (left.id(), identity(left.id(), None).unwrap());
-        let record = |run: &str| std::fs::write(directory.join("owner.json"), serde_json::to_vec(&ProcessOwner {
-            daemon_pid: daemon, daemon_started: 1, child_pid, child_started, run_id: run.into(),
-        }).unwrap()).unwrap();
-        record("another-run");
-        end_recorded(&directory, "unfinished").unwrap();
-        assert!(left.try_wait().unwrap().is_none(), "a process recorded for another run is left alone");
-        assert!(!directory.join("owner.json").exists());
-        record("unfinished");
-        end_recorded(&directory, "unfinished").unwrap();
-        use std::os::unix::process::ExitStatusExt;
-        assert_eq!(left.wait().unwrap().signal(), Some(libc::SIGKILL));
-        assert!(!directory.join("owner.json").exists());
-        end_recorded(&directory, "unfinished").unwrap();
-    }
     #[test]
     fn latest_main_call_not_aggregate_or_child_usage() {
         let mut s = Stream::default();
@@ -684,6 +659,63 @@ mod tests {
         assert!(Ownership::acquire(&dir).unwrap().is_some());
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn a_diagnostic_never_ends_a_batch_and_a_native_decision_does() {
+        let mut output = Output::not_started("");
+        let report = output.diagnosed("Unexpected native decision in the Alondra orchestrator");
+        assert_eq!((report.failure, output.stream.error.as_deref()), (None, None), "stderr that quotes the phrase is only shown");
+        assert!(output.diagnostic.contains("Unexpected native decision"));
+        let report = output.unexpected_decision();
+        assert!(report.failure.is_some() && output.stream.error.is_some());
+        assert!(matches!(output.end(), BatchEnd::NotStarted { .. }));
+    }
+
+    #[test]
+    fn a_limit_is_only_what_claude_reports_as_one_never_its_words() {
+        let quoted = r#"{"type":"result","session_id":"s","subtype":"success","is_error":true,"result":"I hit your limit on retries"}"#;
+        assert!(!matches!(ended(None, &[INIT, quoted], false, ""), BatchEnd::Limited { .. }));
+        for words in ["You've hit your session limit · resets 3:45pm", "I hit your daily limit of 3 tasks"] {
+            let mut stream = Stream::for_input("input"); stream.error = Some(words.into());
+            assert_eq!(stream.limit(), None);
+            let output = Output { stream, diagnostic: words.into(), exit_ok: false };
+            assert!(!matches!(output.end(), BatchEnd::Limited { .. }), "{words}");
+        }
+        let mut reported = Stream::for_input("input"); reported.limited = true; reported.limit_reset = Some(20);
+        assert_eq!(reported.limit(), Some(Some(20)));
+    }
+}
+
+/// The child the orchestrator owns, run as a real process: its group, its kill and its identity.
+#[cfg(test)]
+#[cfg(feature = "real-hosts")]
+mod process_tests {
+    use super::*;
+    use std::process::Stdio;
+
+    #[test]
+    fn a_process_a_dead_daemon_left_for_its_unfinished_run_is_ended_at_recovery() {
+        let directory = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut gone = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let daemon = gone.id();
+        gone.wait().unwrap();
+        use std::os::unix::process::CommandExt;
+        let mut left = std::process::Command::new("/bin/cat").stdin(Stdio::piped()).process_group(0).spawn().unwrap();
+        let (child_pid, child_started) = (left.id(), identity(left.id(), None).unwrap());
+        let record = |run: &str| std::fs::write(directory.join("owner.json"), serde_json::to_vec(&ProcessOwner {
+            daemon_pid: daemon, daemon_started: 1, child_pid, child_started, run_id: run.into(),
+        }).unwrap()).unwrap();
+        record("another-run");
+        end_recorded(&directory, "unfinished").unwrap();
+        assert!(left.try_wait().unwrap().is_none(), "a process recorded for another run is left alone");
+        assert!(!directory.join("owner.json").exists());
+        record("unfinished");
+        end_recorded(&directory, "unfinished").unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(left.wait().unwrap().signal(), Some(libc::SIGKILL));
+        assert!(!directory.join("owner.json").exists());
+        end_recorded(&directory, "unfinished").unwrap();
+    }
     /// Holds a child between fork and exec, where it owns duplicates of every descriptor
     /// in this process, including other threads' close-on-exec lock descriptors.
     fn paused_fork() -> (std::thread::JoinHandle<()>, libc::c_int) {
@@ -754,31 +786,5 @@ mod tests {
         terminate_orphan(&dir, Some("test-run")).unwrap();
         assert!(!child.wait().await.unwrap().success());
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-
-    #[test]
-    fn a_diagnostic_never_ends_a_batch_and_a_native_decision_does() {
-        let mut output = Output::not_started("");
-        let report = output.diagnosed("Unexpected native decision in the Alondra orchestrator");
-        assert_eq!((report.failure, output.stream.error.as_deref()), (None, None), "stderr that quotes the phrase is only shown");
-        assert!(output.diagnostic.contains("Unexpected native decision"));
-        let report = output.unexpected_decision();
-        assert!(report.failure.is_some() && output.stream.error.is_some());
-        assert!(matches!(output.end(), BatchEnd::NotStarted { .. }));
-    }
-
-    #[test]
-    fn a_limit_is_only_what_claude_reports_as_one_never_its_words() {
-        let quoted = r#"{"type":"result","session_id":"s","subtype":"success","is_error":true,"result":"I hit your limit on retries"}"#;
-        assert!(!matches!(ended(None, &[INIT, quoted], false, ""), BatchEnd::Limited { .. }));
-        for words in ["You've hit your session limit · resets 3:45pm", "I hit your daily limit of 3 tasks"] {
-            let mut stream = Stream::for_input("input"); stream.error = Some(words.into());
-            assert_eq!(stream.limit(), None);
-            let output = Output { stream, diagnostic: words.into(), exit_ok: false };
-            assert!(!matches!(output.end(), BatchEnd::Limited { .. }), "{words}");
-        }
-        let mut reported = Stream::for_input("input"); reported.limited = true; reported.limit_reset = Some(20);
-        assert_eq!(reported.limit(), Some(Some(20)));
     }
 }

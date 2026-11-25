@@ -61,8 +61,8 @@ low_opt_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + TEST_DEPS + ["//crates/provider-claude:claude_host_model", "//crates/provider-codex:codex_host_model"],
 )
 
-# The tests that still need a real Agent SDK host, a fake native Claude, or real processes: the same
-# sources with the feature real-hosts, which compiles only them.
+# The tests that still need real processes for the child the orchestrator owns: the same sources
+# with the feature real-hosts, which compiles only them.
 low_opt_rust_test(
     name = "engine_orchestrator_host_test",
     size = "large",
