@@ -166,9 +166,10 @@ if [ "$fakes" = 1 ]; then
 	# The marketplace sits in the sandbox so the plugin's bin/alondra wrapper finds $dir/bin/alondra.
 	cp -RL "$repo/plugin" "$repo/plugin-orchestrator" "$dir/"
 	printf '{"alondra": {"installLocation": "%s"}}\n' "$dir" >"$dir/claude-home/plugins/known_marketplaces.json"
-	git init -q --bare -b main "$dir/remote.git"
-	git init -q -b main "$dir/repo"
+	git init -q --template= --bare -b main "$dir/remote.git"
+	git init -q --template= -b main "$dir/repo"
 	printf '# Sandbox repository\n' >"$dir/repo/README.md"
+	mkdir -p "$dir/repo/.git/info"
 	printf '.env\n' >>"$dir/repo/.git/info/exclude"
 	git -C "$dir/repo" add README.md
 	git -C "$dir/repo" -c user.name="Alondra Sandbox" -c user.email=sandbox@alondra.invalid -c commit.gpgsign=false commit -q -m "Start the sandbox repository"

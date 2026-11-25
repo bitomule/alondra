@@ -12,6 +12,10 @@ use crate::{
     sandbox::Sandbox,
 };
 
+/// How many times Alondra hands a stopped node its turn back before the next stop is a case for the
+/// orchestrator (`EMPTY_TURN_WAKES`).
+const WAKES_BEFORE_THE_CASE: u32 = 3;
+
 fn reworking(request: &str, task: &str, title: &str, pr: u64, file: &str) -> RequestScript {
     let mut script = task_script(request, task, title);
     script.tasks[0].on_feedback = vec![
@@ -137,7 +141,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         request(report, &fakes, &user, &task_script("req-two-prs", "t-two-prs", "Fix the phone menu on the site"), "Fix the phone menu on the site")?;
         let fixing = launched(report, &fakes, "t-two-prs")?;
         state(report, &user, "t-two-prs", WORKING)?;
-        act(report, &fakes, &fixing, "the node opens two PRs, registers neither and delivers", &[
+        act(report, &fakes, &fixing, "the node opens two PRs, registers the one it delivers and delivers it", &[
             Step::Commit { file: "menu.css".into(), text: "nav { background: #111; }\n".into() },
             Step::Push,
             Step::OpenPr { number: 51, draft: false, checks: Checks::Success },
@@ -145,6 +149,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
             Step::Commit { file: "site-menu.css".into(), text: "nav a { color: #fff; }\n".into() },
             Step::Push,
             Step::OpenPr { number: 52, draft: false, checks: Checks::Success },
+            Step::RegisterPr { number: 52 },
             Step::Deliver { need: "Review the phone menu fix".into(), pr: Some(52), is_final: true },
         ])?;
 
@@ -203,7 +208,16 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
                 })?;
             }
             wait(report, &format!("Alondra wakes the node to present PR #{number}"), || told(&fakes, &node, &format!("#{number}")))?;
-            act(report, &fakes, &node, "the woken node stops again", &[Step::Speak { said: "Done.".into(), behind: None, listed: None }])?;
+            for stop in 2..=WAKES_BEFORE_THE_CASE + 1 {
+                let before = fakes.received(&node.short)?.len();
+                act(report, &fakes, &node, &format!("the woken node stops again (stop {stop})"), &[Step::Speak { said: "Done.".into(), behind: None, listed: None }])?;
+                if stop <= WAKES_BEFORE_THE_CASE {
+                    wait(report, "Alondra wakes the node again", || {
+                        let inputs = fakes.received(&node.short)?.len();
+                        Ok(((inputs > before).then_some(()), format!("{inputs} inputs")))
+                    })?;
+                }
+            }
             if conflicts {
                 wait(report, &format!("the orchestrator closes {task}, Alondra delivers PR #{number} and hands it back to its node to resolve the conflicts"), || {
                     told(&fakes, &node, &format!("/pull/{number} with main"))
