@@ -121,7 +121,7 @@ class MustsScopesTests(unittest.TestCase):
 
     def test_a_build_number_bump_reopens_only_the_checks_that_read_it(self):
         self.assertEqual(self.reopened_by("tools/shared.bzl"), {
-            "apple-app-build", "deploy-apple", "public-data-guard", "transcript-guard", "test-limits",
+            "apple-app-build", "deploy-apple", "public-data-guard", "transcript-guard", "test-limits", "test-execs",
             "hermetic-tests", "low-opt-rust-tests", "no-old-commands", "prose-decisions", "state-inventory",
         })
 

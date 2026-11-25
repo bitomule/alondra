@@ -22,10 +22,10 @@ class Repository(unittest.TestCase):
         tests = test_execs.read_tests(ROOT / test_execs.RULES)
         self.assertEqual(test_execs.check(tests, ROOT), [])
 
-    def test_the_release_only_test_is_the_only_one_that_turns_the_guard_off(self):
+    def test_only_the_release_only_tests_turn_the_guard_off(self):
         tests = test_execs.read_tests(ROOT / test_execs.RULES)
         off = sorted(label for label, test in tests.items() if test["execs"] == test_execs.E2E)
-        self.assertEqual(off, ["//crates/alondrad:codex_adoption_process_test"])
+        self.assertEqual(off, ["//crates/alondrad:codex_adoption_process_test", "//crates/engine-sdk:engine_sdk_host_test"])
 
 
 class Entries(unittest.TestCase):
