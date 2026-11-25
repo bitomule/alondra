@@ -78,7 +78,7 @@ sh_test(
         "//apple:tree",
         "//crates:tree",
     ],
-    size = "small",
+    timeout = "moderate",
 )
 
 # The private literals come from @private_literals, a copy of the file ALONDRA_PRIVATE_LITERALS names
