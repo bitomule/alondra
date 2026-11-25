@@ -45,7 +45,7 @@ fn hook_cli_sends_json_to_local_daemon_and_returns_its_reply() {
         assert_eq!(sent["payload"]["hook_event_name"], "SessionStart");
         stream.write_all(&200u16.to_be_bytes()).unwrap();
         stream.write_all(br#"{"hookSpecificOutput":{"hookEventName":"SessionStart"}}"#).unwrap();
-        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        close_after_reply(&stream, std::net::Shutdown::Write);
         let mut ack = [0];
         stream.read_exact(&mut ack).unwrap();
         assert_eq!(ack, [6]);
@@ -193,6 +193,30 @@ enum Daemon {
     RepliesAndAwaitsAck(&'static str),
 }
 
+/// The hook acknowledges a complete reply and exits without waiting for the daemon to close, so
+/// the connection may already be gone when the fake daemon shuts it down. A closed connection is
+/// the state being simulated; any other error still fails the test.
+fn close_after_reply(stream: &std::os::unix::net::UnixStream, how: std::net::Shutdown) {
+    match stream.shutdown(how) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotConnected => (),
+        other => other.unwrap(),
+    }
+}
+
+#[test]
+fn closing_after_the_peer_hung_up_is_not_a_failure() {
+    let home = crate::test_support::Directory::for_unix_socket();
+    std::fs::create_dir_all(&*home).unwrap();
+    let socket = home.join("s.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let mut client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    let (mut server, _) = listener.accept().unwrap();
+    server.write_all(b"reply").unwrap();
+    client.read_exact(&mut [0; 5]).unwrap();
+    drop(client);
+    close_after_reply(&server, std::net::Shutdown::Both);
+}
+
 fn run_hook(name: &str, daemon: Daemon, launched: bool, input: &[u8]) -> std::process::Output {
     let scratch_directory = crate::test_support::Directory::new();
     let home = scratch_directory.parent().unwrap().join(format!("alondra-hook-{name}-{}", std::process::id()));
@@ -213,7 +237,7 @@ fn run_hook(name: &str, daemon: Daemon, launched: bool, input: &[u8]) -> std::pr
                     Daemon::Replies(status, body) => {
                         stream.write_all(&status.to_be_bytes()).unwrap();
                         stream.write_all(body.as_bytes()).unwrap();
-                        stream.shutdown(std::net::Shutdown::Write).unwrap();
+                        close_after_reply(&stream, std::net::Shutdown::Write);
                         let _ = stream.read(&mut [0]);
                     }
                     Daemon::RepliesAndAwaitsAck(body) => {
@@ -227,7 +251,7 @@ fn run_hook(name: &str, daemon: Daemon, launched: bool, input: &[u8]) -> std::pr
                     Daemon::RepliesAndDropsAck(body) => {
                         stream.write_all(&200u16.to_be_bytes()).unwrap();
                         stream.write_all(body.as_bytes()).unwrap();
-                        stream.shutdown(std::net::Shutdown::Both).unwrap();
+                        close_after_reply(&stream, std::net::Shutdown::Both);
                     }
                 }
             }))
@@ -326,7 +350,7 @@ fn post_tool_hook_sends_only_the_last_stdout_line() {
         assert_eq!(sent["payload"]["tool_response"]["stdout"], "https://github.com/example/repo/pull/1");
         stream.write_all(&200u16.to_be_bytes()).unwrap();
         stream.write_all(b"{}").unwrap();
-        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        close_after_reply(&stream, std::net::Shutdown::Write);
         let mut ack = [0];
         stream.read_exact(&mut ack).unwrap();
         assert_eq!(ack, [6]);
