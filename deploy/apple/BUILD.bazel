@@ -10,7 +10,7 @@ sh_test(
 sh_test(
     name = "increment_version_test",
     env = {"TEST_EXECS": "/bin/chmod /bin/cp /bin/mkdir /bin/rm /bin/sh /usr/bin/git /usr/bin/make /usr/bin/mktemp /usr/bin/sed tmpdir"},
-    size = "small",
+    timeout = "moderate",
     srcs = ["increment_version_test.sh"],
     args = ["$(rootpath //:Makefile)", "$(rootpath //tools:shared.bzl)"],
     data = ["//:Makefile", "//tools:shared.bzl"],

@@ -87,7 +87,7 @@ UPDATE_KEEPS_SESSION_FILES = [
 
 sh_test(
     name = "update_keeps_session_test",
-    size = "small",
+    timeout = "moderate",
     srcs = ["update_keeps_session_test.py"],
     args = ["--ios-bundle-id=" + IOS_BUNDLE_ID] + ["$(rootpath %s)" % path for path in UPDATE_KEEPS_SESSION_FILES],
     data = UPDATE_KEEPS_SESSION_FILES,

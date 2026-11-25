@@ -352,5 +352,23 @@ class BazelTestTmpdirTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["bt.alive", "bt.unowned"])
 
 
+def cases(suite):
+    for item in suite:
+        yield from cases(item) if isinstance(item, unittest.TestSuite) else [item]
+
+
+def load_tests(loader, tests, pattern):
+    """Each test starts several wrappers, so the target runs in shards (`shard_count`): Bazel gives each
+    its index and the total, and the cases are dealt out in name order."""
+    total = int(os.environ.get("TEST_TOTAL_SHARDS", "1"))
+    if total > 1:
+        status = os.environ.get("TEST_SHARD_STATUS_FILE")
+        if status:
+            Path(status).touch()
+    index = int(os.environ.get("TEST_SHARD_INDEX", "0"))
+    chosen = sorted(cases(tests), key=lambda case: case.id())[index::total]
+    return unittest.TestSuite(chosen)
+
+
 if __name__ == "__main__":
     unittest.main()

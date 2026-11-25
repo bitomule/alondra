@@ -327,6 +327,8 @@ load never fails a good test. `python3 tools/test_durations.py .musts/bep.json` 
 target took in the last `bazelisk test`; a result read from a cache keeps its original duration, so a
 run that reuses everything still prints what each target costs.
 
+A script test that reads a source tree (`//:tree`, `//crates:tree` or a crate's `tree` in its `data`) spends most of its time staging the files, so it declares `moderate` from the start: its time grows with the repository and is the first to pass 20 seconds when the machine is busy.
+
 To see what is slow inside a Rust target:
 
 ```sh
