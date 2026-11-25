@@ -26,6 +26,7 @@ public struct SettingsView: View {
             LicensesRow()
             about
         }
+        .serverSettingsPresentations(store.scope(state: \.accounts, action: \.accounts))
         .scrollContentBackground(.hidden)
         .background(DawnBackground())
         .navigationTitle("Settings")

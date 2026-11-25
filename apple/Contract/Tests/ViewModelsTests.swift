@@ -190,6 +190,15 @@ final class ViewModelsTests: XCTestCase {
         }
     }
 
+    func testAnAccountSaysWhetherItKeepsAKeyAndAnOlderDaemonsAccountHasNoKeyField() throws {
+        let account = #"{"key":{"provider":"antigravity","account":"studio"},"position":1,"availability":{"text":"Signed in","tone":"success"},"active_nodes":0,"freshness":{"text":"Usage not reported","tone":"neutral"},"windows":[]"#
+        let keyed = try JSONDecoder().decode(AccountPresentation.self, from: Data((account + #","credential":{"label":"Gemini API key","state":{"text":"Key set","tone":"success"},"set":true}}"#).utf8))
+        XCTAssertEqual(keyed.credential?.label, "Gemini API key")
+        XCTAssertEqual(keyed.credential?.state.text, "Key set")
+        XCTAssertEqual(keyed.credential?.set, true)
+        XCTAssertNil(try JSONDecoder().decode(AccountPresentation.self, from: Data((account + "}").utf8)).credential)
+    }
+
     func testAnAntigravityAccountLinkKeepsItsProviderAndIsNeverReadAsClaudes() throws {
         let json = #"{"kind":"local","local":{"kind":"account_sign_in","account":"work","command":"alondra accounts login work","provider":"antigravity","argv":["accounts","login","work"]}}"#
         let link = try JSONDecoder().decode(Link.self, from: Data(json.utf8))

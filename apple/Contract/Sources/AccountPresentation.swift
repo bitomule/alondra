@@ -48,7 +48,17 @@ public struct AccountPresentation: Codable, Equatable, Sendable {
     public let activeNodes: UInt32
     public let freshness: Label
     public let windows: [AccountWindowPresentation]
-    enum CodingKeys: String, CodingKey { case key, position, availability, reason, email, plan, freshness, windows; case activeNodes = "active_nodes", modelCatalog = "model_catalog", usageSummary = "usage_summary", quotaSource = "quota_source" }
+    /// The key a named Antigravity account keeps for `agy`: whether one is set, never the key.
+    public let credential: AccountCredentialPresentation?
+    enum CodingKeys: String, CodingKey { case key, position, availability, reason, email, plan, freshness, windows, credential; case activeNodes = "active_nodes", modelCatalog = "model_catalog", usageSummary = "usage_summary", quotaSource = "quota_source" }
+}
+
+/// What the apps show of an account's key: what it is called (`Gemini API key`) and whether one is
+/// set. The daemon never sends the key back.
+public struct AccountCredentialPresentation: Codable, Equatable, Sendable {
+    public let label: String
+    public let state: Label
+    public let set: Bool
 }
 
 public struct AccountWindowPresentation: Codable, Equatable, Identifiable, Sendable {

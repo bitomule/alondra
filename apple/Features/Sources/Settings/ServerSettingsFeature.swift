@@ -18,6 +18,17 @@ import Foundation
         public var accountDetail: AlondraContract.Row?
         public var afterAccountDetail: AccountDetailCommand?
         public var orderDraft: AccountOrderDraft?
+        /// The key typed into the open account's key field. It starts empty every time an account
+        /// opens, and is emptied the moment it is sent and when the account closes.
+        public var credentialDraft = ""
+        /// What became of the last key sent or removed from the open account.
+        public var credentialSend: CredentialSend?
+
+        /// The open account's action that sets its key, and the one that removes it.
+        public var credentialActions: (set: WireAction?, clear: WireAction?) {
+            let actions = accountDetail?.actions.filter { $0.command == "account_credential" } ?? []
+            return (actions.first { $0.optionId == nil }, actions.first { $0.optionId == "clear" })
+        }
 
         public var accountRows: [AlondraContract.Row] {
             document?.sections.flatMap(\.items).compactMap { item in
@@ -52,6 +63,7 @@ import Foundation
         case fromAccountDetail(AccountDetailCommand), accountDetailClosed
         case orderBegan, orderMoved(String, to: Int), orderRowsMoved(IndexSet, to: Int), orderSaved
         case orderDraftPresented(AccountOrderDraft?)
+        case credentialDraftChanged(String), credentialSaved, credentialRemoved, credentialSent
     }
 
     @Dependency(\.viewsClient) var viewsClient
@@ -90,15 +102,58 @@ import Foundation
                 return .none
             case .accountOpened(let id):
                 state.accountDetail = state.accountRows.first { $0.id == id }
+                state.forgetCredential()
                 return .none
             case .accountDetailPresented(let row):
+                if row?.id != state.accountDetail?.id { state.forgetCredential() }
                 state.accountDetail = row
                 return .none
             case .fromAccountDetail(let command):
                 state.afterAccountDetail = command
                 state.accountDetail = nil
+                state.forgetCredential()
+                return .none
+            case .credentialDraftChanged(let text):
+                state.credentialDraft = text
+                return .none
+            case .credentialSaved:
+                let key = state.credentialDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let action = state.credentialActions.set, action.enabled, !key.isEmpty, state.credentialSend?.phase != .sending,
+                      !(state.actions.inFlight && state.actions.stamp == nil) else { return .none }
+                state.credentialDraft = ""
+                state.credentialSend = CredentialSend(phase: .sending, removing: false)
+                state.notice = nil; state.error = nil
+                return .concatenate(.send(.actions(.present(action))), .send(.actions(.textChanged(key))), .send(.actions(.submit)), .send(.credentialSent))
+            case .credentialRemoved:
+                guard let action = state.credentialActions.clear, action.enabled, state.credentialSend?.phase != .sending,
+                      !(state.actions.inFlight && state.actions.stamp == nil) else { return .none }
+                state.credentialDraft = ""
+                state.credentialSend = CredentialSend(phase: .sending, removing: true)
+                state.notice = nil; state.error = nil
+                let confirmed: Effect<Action> = action.confirm == nil ? .none : .send(.actions(.confirm))
+                return .concatenate(.send(.actions(.present(action))), .send(.actions(.submit)), confirmed, .send(.credentialSent))
+            case .credentialSent:
+                // The request holds the key until the Mac answers; the field and the draft do not.
+                state.actions.text = ""
+                guard let pending = state.actions.pending, state.actions.action?.command == "account_credential" else {
+                    let reason = state.actions.error ?? OutcomeStyle.transportFailure
+                    if state.credentialSend?.phase == .sending { state.credentialSend?.phase = .failed(reason) }
+                    return .none
+                }
+                state.credentialSend?.commandNonce = ActionRequest.deliveryNonce(pending.commandId)
+                return .none
+            case let .actions(.answered(request, reply)) where state.credentialSend?.answers(request) == true:
+                switch OutcomeStyle(reply) {
+                case .success(let message): state.credentialSend?.phase = .done(message)
+                case .failure(let message): state.credentialSend?.phase = .failed(message)
+                case .ask(let changed): state.credentialSend?.phase = .failed(changed.title)
+                }
+                return .none
+            case let .actions(.undelivered(request, failure)) where state.credentialSend?.answers(request) == true:
+                state.credentialSend?.phase = .failed(failure.message)
                 return .none
             case .accountDetailClosed:
+                state.forgetCredential()
                 let next = state.afterAccountDetail
                 state.afterAccountDetail = nil
                 switch next {
@@ -223,6 +278,33 @@ import Foundation
     }
 }
 
+
+extension ServerSettingsFeature.State {
+    mutating func forgetCredential() {
+        credentialDraft = ""
+        credentialSend = nil
+    }
+}
+
+/// A key sent or removed from an account's settings, and how the daemon answered it. It never holds
+/// the key: only the delivery of the request that carries it.
+public struct CredentialSend: Equatable, Sendable {
+    public enum Phase: Equatable, Sendable {
+        case sending
+        /// The daemon stored or removed the key and checked the account again; the words are its own.
+        case done(String)
+        case failed(String)
+    }
+    public var phase: Phase
+    /// Whether the key was being removed rather than set.
+    public let removing: Bool
+    public var commandNonce: String?
+    public init(phase: Phase, removing: Bool, commandNonce: String? = nil) { self.phase = phase; self.removing = removing; self.commandNonce = commandNonce }
+
+    func answers(_ request: ActionRequest) -> Bool {
+        commandNonce != nil && commandNonce == ActionRequest.deliveryNonce(request.commandId)
+    }
+}
 
 public enum AccountDetailCommand: Equatable, Sendable {
     case perform(WireAction), follow(AlondraContract.Link), option(WireAction, String), reorder

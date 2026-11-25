@@ -11004,5 +11004,42 @@ fn antigravity_accounts_show_their_access_key_and_sign_in_and_never_the_key() {
         let add = rows.iter().find(|row| row.id == "antigravity-add").unwrap();
         let options: Vec<_> = add.actions[0].options.iter().map(|option| option.id.as_str()).collect();
         assert_eq!(options, ["google", "enterprise", "api_key"], "a Cloud project account is added from the CLI, which takes its project");
+        let credential = |row: &Row| row.account.as_ref().and_then(|account| account.credential.clone());
+        let set = credential(&studio).expect("an API key account has a key field");
+        assert_eq!((set.label.as_str(), set.state.text.as_str(), set.set), if es { ("Clave de API de Gemini", "Clave puesta", true) } else { ("Gemini API key", "Key set", true) });
+        assert_eq!(set.state.tone, Tone::Success);
+        let unset = credential(&fresh).unwrap();
+        assert_eq!((unset.state.text.as_str(), unset.set, unset.state.tone), (if es { "Sin clave" } else { "No key" }, false, Tone::Neutral));
+        assert_eq!(credential(&row("lab")).unwrap().label, if es { "Clave de Agent Platform" } else { "Agent Platform key" });
+        assert!(credential(&default).is_none() && credential(&row("work-g")).is_none(), "the default account and a Google or Enterprise account keep no key");
+    }
+}
+
+/// The key field of the account settings in the apps: an API key account with a key and one without, and a
+/// Cloud project account without one.
+#[test]
+fn antigravity_key_views_match_goldens() {
+    use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountStatus, AntigravityStatus, Provider};
+    use alondra_core::antigravity_account::Access;
+    let (mut state, live) = accounts_fixture();
+    let account = |id: &str, name: &str, access, state, key_set| AccountStatus {
+        provider: Provider::Antigravity, id: AccountId::parse(id).unwrap(), name: name.into(), state, native_identity: None, email: None, plan: None,
+        billing: Access::default_billing(access), sign_ins: 0, profile: Some(format!("~/.alondra/provider-accounts/antigravity/{id}")),
+        antigravity: Some(AntigravityStatus { access, project: (access == Access::CloudProject).then(|| "demo-project".into()), location: None, key_set, unavailable: None }),
+    };
+    state.accounts = vec![
+        account("studio", "Studio", Access::ApiKey, AccountState::SignedIn, true),
+        account("fresh", "Fresh", Access::ApiKey, AccountState::SignedOut, false),
+        account("lab", "Lab", Access::CloudProject, AccountState::SignedOut, false),
+    ];
+    state.account_order = state.accounts.iter().map(|account| AccountKey::new(Provider::Antigravity, account.id.clone())).collect();
+    state.account_usage.clear();
+    for (client, lang, filename, expected) in [
+        (Client::Ios, Lang::En, "accounts-antigravity-ios.json", include_str!("../../../fixtures/views/cards/accounts-antigravity-ios.json")),
+        (Client::Ios, Lang::Es, "accounts-antigravity-ios-es.json", include_str!("../../../fixtures/views/cards/accounts-antigravity-ios-es.json")),
+        (Client::Mac, Lang::En, "accounts-antigravity-mac.json", include_str!("../../../fixtures/views/cards/accounts-antigravity-mac.json")),
+        (Client::Mac, Lang::Es, "accounts-antigravity-mac-es.json", include_str!("../../../fixtures/views/cards/accounts-antigravity-mac-es.json")),
+    ] {
+        assert_golden(filename, &render(&state, &live, client, lang, "accounts", "2026-09-30T10:00:00Z"), expected);
     }
 }
