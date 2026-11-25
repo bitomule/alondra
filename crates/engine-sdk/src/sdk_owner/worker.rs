@@ -99,6 +99,7 @@ impl Worker {
     pub fn stop(&mut self) -> Result<(), AdapterError> { dispatch!(self, stop) }
     pub fn poll(&mut self) -> Result<Option<OrderedObservation>, AdapterError> { dispatch!(self, poll) }
     pub fn readable(&self, timeout: Duration) -> Result<bool, AdapterError> { dispatch!(self, readable, timeout) }
+    pub fn readable_unless_rung(&self, timeout: Duration, bell: &alondra_core::clock::Bell) -> Result<bool, AdapterError> { dispatch!(self, readable_unless_rung, timeout, bell) }
     pub fn normalizer(&self) -> &Self { self }
     pub fn acknowledge(&mut self, observation: &CommittedObservation) -> Result<(), AdapterError> { dispatch!(self, acknowledge, observation) }
     pub fn background_left(&self, bytes: &[u8]) -> Vec<String> { match self { Self::Claude(_) => alondra_provider_claude::background_left(bytes), Self::Codex(_) => alondra_provider_codex::background_left(bytes) } }

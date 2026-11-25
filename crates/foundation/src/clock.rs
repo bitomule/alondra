@@ -49,6 +49,12 @@ pub struct Work {
     count: AtomicUsize,
     held: std::sync::Mutex<Hold>,
     idle: std::sync::Condvar,
+    /// The frames written to each host, by its id, that it has not read and acted on yet.
+    transit: std::sync::Mutex<BTreeMap<String, usize>>,
+    /// The jobs of the blocking pool still running, by where they were submitted.
+    jobs: std::sync::Mutex<BTreeMap<&'static std::panic::Location<'static>, usize>>,
+    /// The runtime's own thread has no task to run and sleeps.
+    runtime_parked: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Default)]
@@ -57,6 +63,8 @@ struct Hold {
     runtime: Option<tokio::runtime::Handle>,
     /// A task of its blocking pool waits for the threads that work.
     waiting: bool,
+    /// How many times the count came back to zero.
+    rests: u64,
 }
 
 impl PartialEq for Work {
@@ -89,10 +97,65 @@ impl Work {
     }
 
     fn remove(&self) {
-        let _held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.count.fetch_sub(1, Ordering::SeqCst) == 1 {
+            held.rests += 1;
             self.idle.notify_all();
         }
+    }
+
+    /// The runtime's thread sleeps: a wait for calm looks again.
+    fn parked(&self) {
+        let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.runtime_parked.store(true, Ordering::SeqCst);
+        held.rests += 1;
+        self.idle.notify_all();
+    }
+
+    fn unparked(&self) {
+        self.runtime_parked.store(false, Ordering::SeqCst);
+    }
+
+    /// The runtime's thread sleeps and no task was woken for it from another thread.
+    fn runtime_idle(&self) -> bool {
+        let runtime = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).runtime.clone();
+        self.runtime_parked.load(Ordering::SeqCst) && runtime.is_some_and(|runtime| runtime.metrics().global_queue_depth() == 0)
+    }
+
+    fn until_idle(&self, patience: Duration, settled: impl Fn() -> bool) -> bool {
+        let limit = std::time::Instant::now() + patience;
+        loop {
+            let rests = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).rests;
+            if self.count.load(Ordering::SeqCst) == 0 && self.runtime_idle() && settled() {
+                return true;
+            }
+            let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            while held.rests == rests {
+                let left = limit.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() || held.runtime.is_none() {
+                    return false;
+                }
+                held = self.idle.wait_timeout(held, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+            }
+        }
+    }
+
+    fn jobs(&self) -> std::sync::MutexGuard<'_, BTreeMap<&'static std::panic::Location<'static>, usize>> {
+        self.jobs.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn job_ended(&self, at: &'static std::panic::Location<'static>) {
+        let mut jobs = self.jobs();
+        if let Some(running) = jobs.get_mut(at) {
+            *running -= 1;
+            if *running == 0 {
+                jobs.remove(at);
+            }
+        }
+    }
+
+    fn transit(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, usize>> {
+        self.transit.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The runtime ends: nothing waits for its threads any more.
@@ -173,7 +236,7 @@ thread_local! {
 }
 
 /// The thread waits: virtual time no longer waits for it.
-fn rest() {
+pub(crate) fn rest() {
     let _ = HELD.try_with(|held| {
         if let Some(work) = held.unit.take() {
             work.remove();
@@ -236,6 +299,155 @@ pub fn working() -> usize {
     match Clock::current() {
         Clock::Virtual { work, .. } => work.count.load(Ordering::SeqCst),
         Clock::System => 0,
+    }
+}
+
+/// Blocks until no thread of the current virtual runtime works, the runtime's own thread sleeps with
+/// no task woken for it, and `settled` holds, looking again each time [`working`] comes back to zero
+/// or the runtime's thread goes to sleep, which is what notifies it: whatever makes `settled` hold
+/// must be done by work these see. False once `patience` of real time passes first, or the runtime
+/// ended. Under the system clock it is `settled`.
+pub fn until_idle(patience: Duration, settled: impl Fn() -> bool) -> bool {
+    match Clock::current() {
+        Clock::Virtual { work, .. } => work.until_idle(patience, settled),
+        Clock::System => settled(),
+    }
+}
+
+/// A frame was written to the host `host` (its instance): until the host has read it and done what
+/// it says ([`frame_handled`]), it counts in [`working`], since what the host answers moves the
+/// daemon.
+pub fn frame_sent(host: &str) {
+    Clock::current().frame_sent(host);
+}
+
+/// The host `host` read one frame written to it and did what it says.
+pub fn frame_handled(host: &str) {
+    Clock::current().frame_handled(host);
+}
+
+/// The host `host` reads nothing more of what was written to it: it ended, or stopped reading.
+pub fn frames_dropped(host: &str) {
+    Clock::current().frames_dropped(host);
+}
+
+/// Whether the current virtual runtime's own thread sleeps with no task woken for it; true under the
+/// system clock.
+pub fn runtime_idle() -> bool {
+    match Clock::current() {
+        Clock::Virtual { work, .. } => work.runtime_idle(),
+        Clock::System => true,
+    }
+}
+
+/// The frames written to hosts that they have not read and acted on yet.
+pub fn frames_in_transit() -> usize {
+    Clock::current().frames_in_transit()
+}
+
+impl Clock {
+    /// [`frame_sent`] on this clock, from a thread that may not have entered it.
+    pub fn frame_sent(self, host: &str) {
+        let Clock::Virtual { work, .. } = self else { return };
+        *work.transit().entry(host.to_owned()).or_default() += 1;
+        work.add();
+    }
+
+    pub fn frame_handled(self, host: &str) {
+        let Clock::Virtual { work, .. } = self else { return };
+        let mut transit = work.transit();
+        let Some(frames) = transit.get_mut(host) else { return };
+        *frames -= 1;
+        if *frames == 0 {
+            transit.remove(host);
+        }
+        drop(transit);
+        work.remove();
+    }
+
+    pub fn frames_dropped(self, host: &str) {
+        let Clock::Virtual { work, .. } = self else { return };
+        let frames = work.transit().remove(host).unwrap_or(0);
+        for _ in 0..frames {
+            work.remove();
+        }
+    }
+
+    pub fn frames_in_transit(self) -> usize {
+        match self {
+            Clock::Virtual { work, .. } => work.transit().values().sum(),
+            Clock::System => 0,
+        }
+    }
+}
+
+/// What wakes a thread that waits for a stream before the stream has anything to read, such as a
+/// new input for the owner of a host that waits for the host. Ringing it counts the waiting thread
+/// as working before it runs, as a notification of a [`Monitor`] does; a ring while nobody waits
+/// ends the next wait at once.
+pub struct Bell {
+    ringing: Mutex<Ringing>,
+    rope: std::os::unix::net::UnixStream,
+    pub(crate) clapper: std::os::unix::net::UnixStream,
+}
+
+#[derive(Default)]
+struct Ringing {
+    /// The clock of the thread that waits for the bell now.
+    waiting: Option<&'static Work>,
+    /// A ring counted that thread as working.
+    counted: bool,
+}
+
+impl Bell {
+    pub fn new() -> std::io::Result<Bell> {
+        let (rope, clapper) = std::os::unix::net::UnixStream::pair()?;
+        rope.set_nonblocking(true)?;
+        clapper.set_nonblocking(true)?;
+        Ok(Bell { ringing: Mutex::default(), rope, clapper })
+    }
+
+    pub fn ring(&self) {
+        use std::io::Write as _;
+        let mut ringing = self.ringing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(work) = ringing.waiting
+            && !std::mem::replace(&mut ringing.counted, true)
+        {
+            work.add();
+        }
+        // A full buffer already holds a ring that ends the wait.
+        let _ = (&self.rope).write(&[1]);
+    }
+
+    /// The calling thread waits for the bell from now on: what [`Bell::ring`] counts is its.
+    pub(crate) fn arm(&self) -> Option<&'static Work> {
+        let work = match Clock::current() {
+            Clock::Virtual { work, .. } => Some(work),
+            Clock::System => None,
+        };
+        *self.ringing.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Ringing { waiting: work, counted: false };
+        work
+    }
+
+    /// The wait ends: whether a ring counted the thread, which then holds that unit.
+    pub(crate) fn disarm(&self) -> bool {
+        std::mem::take(&mut *self.ringing.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).counted
+    }
+
+    /// Empties the rings the wait saw.
+    pub(crate) fn silence(&self) {
+        use std::io::Read as _;
+        let mut rings = [0u8; 64];
+        while matches!((&self.clapper).read(&mut rings), Ok(read) if read > 0) {}
+    }
+}
+
+/// The thread that waited for a stream and a bell goes on: it works again, holding the unit a ring
+/// counted for it if one did.
+pub(crate) fn woke(work: Option<&'static Work>, rested: bool, counted: bool) {
+    let Some(work) = work else { return };
+    if rested || counted {
+        resume(work, counted);
     }
 }
 
@@ -514,14 +726,17 @@ where
 /// daemon calm before the job read the clock or committed, and what it did lands at a later instant.
 /// `clippy.toml` refuses the plain call. A job that must not count, because it waits on the clock
 /// for a long time or is what the runner polls with, uses [`spawn_blocking_unwatched`].
+#[track_caller]
 pub fn spawn_blocking<F, T>(work: F) -> tokio::task::JoinHandle<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
     let Clock::Virtual { work: counter, .. } = Clock::current() else { return spawn_blocking_unwatched(work) };
+    let at = std::panic::Location::caller();
+    *counter.jobs().entry(at).or_default() += 1;
     counter.add();
-    let submitted = Submitted(Some(counter));
+    let submitted = Submitted(Some((counter, at)));
     spawn_blocking_unwatched(move || {
         let _running = submitted.start();
         work()
@@ -530,20 +745,22 @@ where
 
 /// The unit [`spawn_blocking`] counted for a job, held until its thread starts it, or given back if
 /// the job never starts.
-struct Submitted(Option<&'static Work>);
+struct Submitted(Option<(&'static Work, &'static std::panic::Location<'static>)>);
 
 impl Submitted {
     /// The thread of the pool takes over the unit as a thread of its own does ([`started`]): the job
     /// rests while it waits on the clock or on a stream, and works again after.
     fn start(mut self) -> Running {
-        started(self.0.take());
-        Running
+        let job = self.0.take();
+        started(job.map(|(work, _)| work));
+        Running(job)
     }
 }
 
 impl Drop for Submitted {
     fn drop(&mut self) {
-        if let Some(work) = self.0.take() {
+        if let Some((work, at)) = self.0.take() {
+            work.job_ended(at);
             work.remove();
         }
     }
@@ -551,13 +768,22 @@ impl Drop for Submitted {
 
 /// A job that runs on a thread of the pool: when it ends, or panics, the thread gives back what it
 /// held and counts for no later job.
-struct Running;
+struct Running(Option<(&'static Work, &'static std::panic::Location<'static>)>);
 
 impl Drop for Running {
     fn drop(&mut self) {
+        if let Some((work, at)) = self.0 {
+            work.job_ended(at);
+        }
         rest();
         let _ = HELD.try_with(|held| held.counted.set(false));
     }
+}
+
+/// Where each job of the blocking pool still running was submitted, with how many run from there.
+pub fn running_jobs() -> Vec<(String, usize)> {
+    let Clock::Virtual { work, .. } = Clock::current() else { return Vec::new() };
+    work.jobs().iter().map(|(at, running)| (at.to_string(), *running)).collect()
 }
 
 /// Runs `wait`, a wait for something outside the daemon that no wait on the clock or on a stream
@@ -780,6 +1006,7 @@ impl VirtualRuntime {
     pub fn new(epoch_millis: Millis) -> std::io::Result<VirtualRuntime> {
         let shared: Arc<OnceLock<Clock>> = Arc::new(OnceLock::new());
         let for_threads = shared.clone();
+        let work: &'static Work = Box::leak(Box::default());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .start_paused(true)
@@ -788,9 +1015,10 @@ impl VirtualRuntime {
                     std::mem::forget(clock.enter());
                 }
             })
+            .on_thread_park(|| work.parked())
+            .on_thread_unpark(|| work.unparked())
             .build()?;
         let origin = runtime.block_on(async { Instant::now() });
-        let work: &'static Work = Box::leak(Box::default());
         work.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).runtime = Some(runtime.handle().clone());
         // Leaked so the clock stays `Copy` on every thread that carries it: one map per runtime.
         let deadlines: &'static Deadlines = Box::leak(Box::default());

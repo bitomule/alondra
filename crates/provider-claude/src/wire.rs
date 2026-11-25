@@ -154,6 +154,7 @@ impl Connection {
         };
         pending_attach.proof = owner_proof(&control.secret, &pending_attach).map_err(protocol)?;
         write(
+            &control.host_instance_id,
             &mut writer,
             &encode(&Frame::new(Body::Attach(pending_attach.clone()))).map_err(protocol)?,
             deadline,
@@ -221,7 +222,7 @@ impl Connection {
         if self.commands.record(command).map_err(protocol)? == CommandStatus::Duplicate {
             return Err(invalid("command replay requires positive reconciliation"));
         }
-        write(&mut self.writer, prepared.bytes(), deadline)?;
+        write(&self.pending_attach.host_instance_id, &mut self.writer, prepared.bytes(), deadline)?;
         let expected_command = command.command_id.clone();
         loop {
             let received = receive(&mut self.reader, &self.read_deadline, deadline)?;
@@ -290,7 +291,7 @@ impl Connection {
         }
         // A re-send is a deliberate replay, so a duplicate is expected, not a conflict.
         self.commands.record(command).map_err(protocol)?;
-        write(&mut self.writer, prepared.bytes(), deadline)?;
+        write(&self.pending_attach.host_instance_id, &mut self.writer, prepared.bytes(), deadline)?;
         let expected_command = command.command_id.clone();
         loop {
             let received = receive(&mut self.reader, &self.read_deadline, deadline)?;
@@ -401,6 +402,7 @@ impl Connection {
             cursor,
         }));
         let result = write(
+            &self.pending_attach.host_instance_id,
             &mut self.writer,
             &encode(&frame).map_err(protocol)?,
             deadline,
@@ -422,6 +424,16 @@ impl Connection {
             return Err(AdapterError::Disconnected);
         }
         alondra_foundation::readable(&self.probe, timeout).map_err(disconnected)
+    }
+    /// `readable`, ended early, with false, when `bell` rings first.
+    pub fn readable_unless_rung(&self, timeout: std::time::Duration, bell: &alondra_foundation::clock::Bell) -> Result<bool, AdapterError> {
+        if !self.queued.is_empty() {
+            return Ok(true);
+        }
+        if self.failed {
+            return Err(AdapterError::Disconnected);
+        }
+        alondra_foundation::readable_unless_rung(&self.probe, bell, timeout).map_err(disconnected)
     }
     fn check_owner(&self, owner: &impl HostOwner) -> Result<(), AdapterError> {
         if self.failed {
@@ -491,8 +503,14 @@ fn receive(
         .map_err(protocol)?
         .ok_or(AdapterError::Disconnected)
 }
-fn write(writer: &mut UnixStream, bytes: &[u8], deadline: Instant) -> Result<(), AdapterError> {
-    write_bounded(writer, bytes, deadline, || alondra_foundation::clock::instant().into_std()).map_err(disconnected)
+/// Writes one frame to `host`, counted on the clock until the host has read and handled it.
+fn write(host: &str, writer: &mut UnixStream, bytes: &[u8], deadline: Instant) -> Result<(), AdapterError> {
+    alondra_foundation::clock::frame_sent(host);
+    let written = write_bounded(writer, bytes, deadline, || alondra_foundation::clock::instant().into_std()).map_err(disconnected);
+    if written.is_err() {
+        alondra_foundation::clock::frame_handled(host);
+    }
+    written
 }
 fn write_bounded<W: Write + TimeoutWriter>(
     writer: &mut W,

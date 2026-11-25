@@ -342,6 +342,8 @@ pub struct Host<P> {
     frozen: AtomicBool,
     starting: Arc<AtomicU64>,
     process: Box<dyn Process>,
+    /// The clock the daemon counts the frames it writes to this host on.
+    clock: alondra_core::clock::Clock,
     pub bootstrap: Bootstrap,
     secret: [u8; 32],
     capabilities: &'static [&'static str],
@@ -365,6 +367,7 @@ impl<P> Host<P> {
             frozen: AtomicBool::new(false),
             starting,
             process,
+            clock: alondra_core::clock::Clock::current(),
             bootstrap,
             secret,
             capabilities,
@@ -411,6 +414,7 @@ impl<P> Host<P> {
         state.wire.outbox = None;
         let connections = std::mem::take(&mut state.wire.connections);
         drop(state);
+        self.clock.frames_dropped(&self.bootstrap.host_instance_id);
         self.process.end(closed);
         for connection in connections {
             let _ = connection.shutdown(std::net::Shutdown::Both);
@@ -484,13 +488,17 @@ pub trait Model {
 /// frame it sends, until it goes. It returns once the connection closes. A frozen host leaves the
 /// connection open and unread.
 pub fn serve<M: Model>(model: &M, host: &Arc<Host<M::Play>>, stream: UnixStream) {
+    let mut reading = Reading { host, to_the_end: false };
     if host.frozen() {
         return;
     }
     let Ok(clone) = stream.try_clone() else { return };
     let (mut reader, mut writer) = (FramedReader::new(stream), FramedWriter::new(clone));
     match host.handshake(&mut reader, &mut writer) {
-        Ok(()) => host.attached(),
+        Ok(()) => {
+            host.attached();
+            host.clock.frame_handled(&host.bootstrap.host_instance_id);
+        }
         Err(why) if why.is_empty() => return,
         Err(why) => return model.troubled(format!("the attach of the host of {}: {why}", host.task)),
     }
@@ -505,7 +513,16 @@ pub fn serve<M: Model>(model: &M, host: &Arc<Host<M::Play>>, stream: UnixStream)
         }
     }
     model.tick();
-    while let Ok(Some(received)) = reader.read_received() {
+    loop {
+        let received = match reader.read_received() {
+            Ok(Some(received)) => received,
+            Ok(None) => {
+                reading.to_the_end = true;
+                break;
+            }
+            Err(_) => break,
+        };
+        let _handled = Handled(host);
         model.tick();
         if host.frozen() {
             continue;
@@ -546,6 +563,31 @@ pub fn serve<M: Model>(model: &M, host: &Arc<Host<M::Play>>, stream: UnixStream)
     }
     lock(&host.state).wire.detach(connection);
     model.tick();
+}
+
+/// A frame the daemon wrote to the host, read: it is handled once what it says is done, its answer
+/// written, at the end of the turn of the loop that read it.
+struct Handled<'a, P>(&'a Host<P>);
+
+impl<P> Drop for Handled<'_, P> {
+    fn drop(&mut self) {
+        self.0.clock.frame_handled(&self.0.bootstrap.host_instance_id);
+    }
+}
+
+/// One connection the host serves: when it stops reading before the daemon closed it, what the
+/// daemon wrote after is never handled.
+struct Reading<'a, P> {
+    host: &'a Host<P>,
+    to_the_end: bool,
+}
+
+impl<P> Drop for Reading<'_, P> {
+    fn drop(&mut self) {
+        if !self.to_the_end {
+            self.host.clock.frames_dropped(&self.host.bootstrap.host_instance_id);
+        }
+    }
 }
 
 /// A doubled host of `engine-doubles` as the process of a host of a model.

@@ -400,12 +400,23 @@ a Mac. The world decides what the provider answers:
   cases whose name contains it. `//crates/scenarios:scenarios_harness_test` tests the harness
   itself: it names each failure with its own error, runs a scenario twice to the same bytes, and
   refuses anything that reaches a real process.
-- `scenarios_test` runs in 16 shards, about one case each, so an edit waits for the longest case.
+- `scenarios_test` runs one case per shard (`shard_count` is the number of cases; the runner fails
+  every shard, naming the count to set, when they differ), so an edit waits for the longest case.
   Each case's line carries its real time (`scenario <name> ... ok (7.42 s)`), followed by where it
-  went: assembly, steps by kind, the runner's waits for calm, checkpoints, teardown. Nearly all of it
-  is those waits. The clock is virtual and knows the deadlines of the daemon's pending timed waits,
-  so the runner waits for calm after a virtual second only when one of them fell inside it
-  (`clock::deadline_within`, asked before the advance); a second that can wake nobody needs no wait.
+  went: assembly, steps by kind, the runner's waits for calm, checkpoints, teardown. The clock is
+  virtual and knows the deadlines of the daemon's pending timed waits, so the runner waits for calm
+  after a virtual second only when one of them fell inside it (`clock::deadline_within`, asked
+  before the advance); a second that can wake nobody needs no wait.
+- A wait for calm is one condition, looked at each time the daemon's last working thread rests or
+  its runtime goes to sleep (`clock::until_idle`, on the condvar the clock's count of working
+  threads already has): nothing works, the runtime is asleep, every host is attached with all it
+  said acknowledged, and no takeover of a host is under way. "Works" counts the threads the clock or a notification woke, the jobs of the daemon's blocking
+  pool (`clock::spawn_blocking`), each frame the daemon wrote to a host until the host has read it
+  and answered (`clock::frame_sent`/`frame_handled`), and an owner of a host whose input arrived
+  (`Seals::put` and `Seals::wake` ring its bell). "Asleep" is the runtime's own thread parked with
+  no task woken for it from another thread, so the daemon's async tasks count too. No poll decides
+  it; its 20 s patience only names a hang, with what kept moving (each running blocking job by
+  where it was submitted).
 - `bazel run //crates/scenarios:accept -- <case>...` writes what the checkpoints read into each
   case's folder; the pull request shows that diff for a reviewer to read. `bazel run` has no test
   wrapper, so `accept` makes its own short folder under `/tmp` (unless `ALONDRA_SHORT_TMPDIR`

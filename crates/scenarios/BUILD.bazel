@@ -99,11 +99,12 @@ rust_binary(
 )
 
 # Every edit of any crate relinks the runner and reruns this test, so its cases run in shards side
-# by side: the edit loop waits for the longest shard, not for every case one after another.
+# by side, one case each: the edit loop waits for the longest case. The runner fails when the
+# count differs from the number of cases.
 sh_test(
     name = "scenarios_test",
     size = "medium",
-    shard_count = 16,
+    shard_count = 29,
     srcs = ["run_scenarios.sh"],
     data = [":host_relay", ":scenarios_runner"] + glob(["cases/**"]),
     env = {"HOME": ".", "TEST_EXECS": "own-sandbox", "TZ": "UTC"} | RELAY_ENV,

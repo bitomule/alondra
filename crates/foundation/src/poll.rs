@@ -21,19 +21,44 @@ pub fn readable(stream: &UnixStream, timeout: Duration) -> io::Result<bool> {
     poll_once(stream, timeout)
 }
 
+/// `readable`, ended early by `bell`: false when a ring came first. The thread rests while it
+/// waits, and a ring counts it as working again before it runs.
+pub fn readable_unless_rung(stream: &UnixStream, bell: &crate::clock::Bell, timeout: Duration) -> io::Result<bool> {
+    let work = bell.arm();
+    let mut ready = poll_both(stream, bell, Duration::ZERO);
+    let rested = matches!(ready, Ok((false, false))) && !timeout.is_zero();
+    if rested {
+        crate::clock::rest();
+        ready = poll_both(stream, bell, timeout);
+    }
+    crate::clock::woke(work, rested, bell.disarm());
+    let (readable, rung) = ready?;
+    if rung {
+        bell.silence();
+    }
+    Ok(readable)
+}
+
+fn poll_both(stream: &UnixStream, bell: &crate::clock::Bell, timeout: Duration) -> io::Result<(bool, bool)> {
+    let mut fds = [rustix::event::PollFd::new(stream, rustix::event::PollFlags::IN), rustix::event::PollFd::new(&bell.clapper, rustix::event::PollFlags::IN)];
+    poll_fds(&mut fds, timeout)?;
+    Ok((!fds[0].revents().is_empty(), !fds[1].revents().is_empty()))
+}
+
 fn poll_once(stream: &UnixStream, timeout: Duration) -> io::Result<bool> {
-    use rustix::event::{PollFd, PollFlags, Timespec, poll};
-    let timeout = Timespec::try_from(timeout).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let mut fds = [rustix::event::PollFd::new(stream, rustix::event::PollFlags::IN)];
+    poll_fds(&mut fds, timeout).map(|ready| ready > 0)
+}
+
+fn poll_fds(fds: &mut [rustix::event::PollFd<'_>], timeout: Duration) -> io::Result<usize> {
+    let timeout = rustix::event::Timespec::try_from(timeout).map_err(|_| io::ErrorKind::InvalidInput)?;
     loop {
-        let mut fds = [PollFd::new(stream, PollFlags::IN)];
-        let polled = poll(&mut fds, Some(&timeout));
+        let polled = rustix::event::poll(fds, Some(&timeout));
         #[cfg(test)]
         WORKING_AFTER_POLL.with(|seen| seen.borrow_mut().push(crate::clock::working()));
         match polled {
-            Ok(0) => return Ok(false),
-            Ok(_) => return Ok(true),
             Err(rustix::io::Errno::INTR) => continue,
-            Err(error) => return Err(error.into()),
+            polled => return polled.map_err(io::Error::from),
         }
     }
 }

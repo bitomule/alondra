@@ -92,6 +92,9 @@ pub trait Runtime: Any + Send + Sync + AsRuntime {
     fn system_command(&self, envelope: CommandEnvelope) -> Result<CommandOutcome, DomainError>;
     /// Wakes the owners of the SDK hosts to what waits for them.
     fn wake_seals(&self);
+    /// From now on `bell` rings whenever something of `node`'s execution of `task` arrives, while
+    /// its owner keeps it.
+    fn ring_on_seals(&self, task: &TaskId, node: &AgentId, bell: &std::sync::Arc<alondra_core::clock::Bell>);
     /// The plan `task` starts with, if it has one.
     fn launch_plan(&self, task: &TaskId) -> Option<LaunchPlan>;
 

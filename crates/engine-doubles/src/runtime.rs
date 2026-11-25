@@ -80,6 +80,9 @@ impl Runtime for Forwarded {
     fn wake_seals(&self) {
         self.0.wake_seals();
     }
+    fn ring_on_seals(&self, task: &TaskId, node: &AgentId, bell: &std::sync::Arc<alondra_core::clock::Bell>) {
+        self.0.ring_on_seals(task, node, bell);
+    }
     fn launch_plan(&self, task: &TaskId) -> Option<LaunchPlan> {
         self.0.launch_plan(task)
     }

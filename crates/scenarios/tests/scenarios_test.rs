@@ -1,5 +1,5 @@
 //! Every case of `cases/`, each one a test of its own: `--test_arg=<case>` runs the ones whose name
-//! contains it, and the shards Bazel asks for split the rest.
+//! contains it, and the shards Bazel asks for split the rest, one case each.
 
 use std::path::PathBuf;
 
@@ -18,6 +18,11 @@ fn main() {
     }
     let cases = alondra_scenarios::cases(&cases_root()).expect("the cases folder is readable");
     assert!(!cases.is_empty(), "there is no scenario in {}", cases_root().display());
+    // One case per shard: the edit loop waits for the longest case, never for two of them.
+    if std::env::var_os("TEST_TOTAL_SHARDS").is_some() && filters.is_empty() && shards != cases.len() {
+        println!("scenarios_test runs in {shards} shards for {} cases: set shard_count in crates/scenarios/BUILD.bazel to {}", cases.len(), cases.len());
+        std::process::exit(1);
+    }
     let mut failed = Vec::new();
     for (index, case) in cases.iter().enumerate() {
         let name = case.file_name().expect("a case has a name").to_string_lossy().into_owned();

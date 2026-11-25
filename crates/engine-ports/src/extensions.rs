@@ -142,6 +142,7 @@ mod tests {
             unreachable!("no extension here commits")
         }
         fn wake_seals(&self) {}
+        fn ring_on_seals(&self, _: &alondra_domain_rules::TaskId, _: &alondra_domain_rules::AgentId, _: &std::sync::Arc<alondra_core::clock::Bell>) {}
         fn launch_plan(&self, _: &alondra_domain_rules::TaskId) -> Option<alondra_domain_rules::LaunchPlan> {
             None
         }

@@ -513,3 +513,184 @@ fn a_blocking_job_resting_for_a_gate_holds_no_virtual_time_and_works_after() {
         assert_eq!(working(), 0);
     });
 }
+
+/// The wait for calm is told each time the last working thread rests: it returns once nothing works
+/// and its own condition holds, not before, and without looking in between.
+#[test]
+fn until_idle_returns_once_the_last_thread_rests_and_the_condition_holds() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let setting = done.clone();
+        let thread = spawn_thread(move || {
+            gone.recv().ok();
+            setting.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let looks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (looking, watched) = (looks.clone(), done.clone());
+        let waiting = spawn_blocking_unwatched(move || {
+            until_idle(Duration::from_secs(10), || {
+                looking.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                watched.load(std::sync::atomic::Ordering::SeqCst)
+            })
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!waiting.is_finished(), "a thread still works");
+        assert_eq!(looks.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing rested, so nothing looked");
+        go.send(()).unwrap();
+        assert!(waiting.await.unwrap());
+        assert_eq!(looks.load(std::sync::atomic::Ordering::SeqCst), 1);
+        thread.join().unwrap();
+    });
+}
+
+#[test]
+fn until_idle_gives_up_after_its_patience_while_a_thread_works() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let thread = spawn_thread(move || gone.recv().ok());
+        let started = std::time::Instant::now();
+        assert!(!spawn_blocking_unwatched(|| until_idle(Duration::from_millis(50), || true)).await.unwrap());
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        go.send(()).unwrap();
+        thread.join().unwrap();
+    });
+}
+
+/// A frame written to a host counts as work until the host read it and did what it says, so a wait
+/// for calm never sees the daemon idle while the host is about to answer.
+#[test]
+fn a_frame_works_from_its_writing_until_its_host_handled_it() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        frame_sent("host-a");
+        frame_sent("host-a");
+        frame_sent("host-b");
+        assert_eq!((working(), frames_in_transit()), (3, 3));
+        frame_handled("host-a");
+        assert_eq!((working(), frames_in_transit()), (2, 2));
+        frames_dropped("host-a");
+        assert_eq!((working(), frames_in_transit()), (1, 1), "a host that ended reads nothing more");
+        frame_handled("host-b");
+        frame_handled("host-b");
+        assert_eq!((working(), frames_in_transit()), (0, 0), "a frame nobody wrote is never handled");
+    });
+}
+
+#[test]
+fn frames_count_nothing_on_the_system_clock() {
+    frame_sent("host");
+    assert_eq!((working(), frames_in_transit()), (0, 0));
+    frame_handled("host");
+}
+
+/// A ring wakes a thread that waits for a stream with nothing to read, and counts it as working
+/// before it runs: the wait for calm never sees an idle moment between the ring and the thread.
+#[test]
+fn a_ring_wakes_a_thread_waiting_for_a_stream_and_counts_it_before_it_runs() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (stream, _writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let bell = std::sync::Arc::new(Bell::new().unwrap());
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let waiting = bell.clone();
+        let thread = spawn_thread(move || {
+            let readable = crate::readable_unless_rung(&stream, &waiting, HOUR).unwrap();
+            gone.recv().ok();
+            readable
+        });
+        until("the started thread waits for its stream", || working() == 0).await;
+        bell.ring();
+        assert_eq!(working(), 1, "the ring counts the thread it wakes");
+        bell.ring();
+        assert_eq!(working(), 1, "a second ring counts it once");
+        go.send(()).unwrap();
+        assert!(!thread.join().unwrap(), "the stream had nothing");
+        assert_eq!(working(), 0);
+    });
+}
+
+/// A ring while the thread does something else ends its next wait at once, counting nothing.
+#[test]
+fn a_ring_before_the_wait_ends_it_at_once() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (stream, _writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let bell = Bell::new().unwrap();
+        bell.ring();
+        assert_eq!(working(), 0);
+        let started = std::time::Instant::now();
+        assert!(!crate::readable_unless_rung(&stream, &bell, HOUR).unwrap());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(working(), 0);
+        let waited = std::time::Instant::now();
+        assert!(!crate::readable_unless_rung(&stream, &bell, Duration::from_millis(30)).unwrap(), "the ring was used up");
+        assert!(waited.elapsed() >= Duration::from_millis(30));
+    });
+}
+
+#[test]
+fn a_stream_with_something_to_read_wins_over_the_bell() {
+    use std::io::Write as _;
+    let (stream, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+    let bell = Bell::new().unwrap();
+    writer.write_all(b"x").unwrap();
+    bell.ring();
+    assert!(crate::readable_unless_rung(&stream, &bell, HOUR).unwrap());
+}
+
+/// A job of the blocking pool that waits for a stream holds no virtual time while it waits, as a
+/// thread of its own does, and works again once the stream has something.
+#[test]
+fn a_blocking_job_waiting_for_a_stream_rests() {
+    use std::io::Write as _;
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let job = spawn_blocking(move || {
+            let read = crate::readable(&reader, HOUR).unwrap();
+            gone.recv().ok();
+            read
+        });
+        until("the job waits for its stream", || working() == 0).await;
+        assert_eq!(running_jobs().len(), 1, "it still runs");
+        writer.write_all(b"x").unwrap();
+        until("the job read its stream", || working() == 1).await;
+        go.send(()).unwrap();
+        assert!(job.await.unwrap());
+        assert_eq!(working(), 0);
+        assert!(running_jobs().is_empty());
+        let plain = spawn_blocking_unwatched(|| {
+            let _waiting = stream_wait();
+            working()
+        });
+        assert_eq!(plain.await.unwrap(), 0, "a plain job on the same pool counts nothing");
+    });
+}
+
+/// A task of the runtime woken from another thread is work too: the wait for calm returns only once
+/// the runtime's thread ran it and went back to sleep.
+#[test]
+fn until_idle_waits_for_a_task_woken_from_another_thread() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (wake, woken) = tokio::sync::oneshot::channel::<()>();
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let running = ran.clone();
+        let task = tokio::spawn(async move {
+            woken.await.ok();
+            running.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let seen = ran.clone();
+        let waiting = spawn_blocking_unwatched(move || {
+            std::thread::spawn(move || wake.send(())).join().unwrap().unwrap();
+            assert!(until_idle(Duration::from_secs(10), || true));
+            seen.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        assert!(waiting.await.unwrap(), "calm came before the woken task ran");
+        task.await.unwrap();
+    });
+}

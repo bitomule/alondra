@@ -519,6 +519,13 @@ impl ClaudeWorker {
         }
         self.adapter.connection.as_ref().ok_or(AdapterError::Disconnected)?.readable(timeout)
     }
+    /// `readable`, ended early, with false, when `bell` rings first.
+    pub fn readable_unless_rung(&self, timeout: Duration, bell: &alondra_foundation::clock::Bell) -> Result<bool, AdapterError> {
+        if self.pending.is_some() {
+            return Ok(true);
+        }
+        self.adapter.connection.as_ref().ok_or(AdapterError::Disconnected)?.readable_unless_rung(timeout, bell)
+    }
     pub fn normalizer(&self) -> &impl ObservationNormalizer {
         self.adapter.normalizer()
     }

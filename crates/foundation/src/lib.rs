@@ -15,7 +15,7 @@ mod mcp;
 mod poll;
 pub use execution::*;
 pub use mcp::*;
-pub use poll::readable;
+pub use poll::{readable, readable_unless_rung};
 
 /// Whether this process runs under `bazel test`, which sets `BAZEL_TEST` (launchd never does): what
 /// only tests need, such as a Claude home of their own, is decided here at run time.
