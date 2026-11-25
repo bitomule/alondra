@@ -6,8 +6,9 @@ that ships Rust has no layer or a layer names a package with no crate, when a pr
 breaks the rule (in any branch of a select), when a test outside the root depends on a crate or
 binary of the root, when an exception list keeps an entry nothing uses or grows past its ceiling, when
 a test-only library builds a production crate a second time, when a test kept apart from a crate
-reaches it again, and when a Rust library or binary of the repository may be cached: it compiles
-incrementally, so it is declared with the rules of bazel/rules/rust.bzl, which tag it `no-cache`.
+reaches it again, and when a Rust library or binary of the repository, or a test with `-Cincremental`,
+may be cached: it compiles incrementally, so it is declared with the rules of bazel/rules/rust.bzl or
+incremental_rust_test, which tag it `no-cache`.
 """
 import json
 import os
@@ -67,9 +68,17 @@ def read_targets(path):
     return targets
 
 
+def compiles_incrementally(rule, attributes):
+    """A library or binary always does; a test only with `-Cincremental` among its flags."""
+    if rule.get("class") != "rust_test":
+        return True
+    flags = attributes.get("rustc_flags")
+    return flags is not None and any(entry.get("value").startswith("-Cincremental") for entry in flags.iter("string"))
+
+
 def cacheable_compiles(path):
-    """The repository's Rust targets without `no-cache`: their incremental rlibs would reach a cache. A
-    build script compiles for the build's own platform, where nothing is incremental."""
+    """The repository's incremental Rust targets without `no-cache`: their results would reach a cache.
+    A build script compiles for the build's own platform, where nothing is incremental."""
     found = []
     for rule in ElementTree.parse(path).getroot().iter("rule"):
         label = rule.get("name")
@@ -77,11 +86,13 @@ def cacheable_compiles(path):
         generator = attributes.get("generator_function")
         if not label.startswith("//") or (generator is not None and generator.get("value") in BUILD_SCRIPT_MACROS):
             continue
+        if not compiles_incrementally(rule, attributes):
+            continue
         tags = [entry.get("value") for entry in attributes["tags"].iter("string")] if "tags" in attributes else []
         if "no-cache" not in tags:
             found.append(
                 f"{label} ({rule.get('location')}) compiles incrementally but may be cached: declare it with "
-                "the rules of bazel/rules/rust.bzl, not rules_rust's."
+                "the rules of bazel/rules/rust.bzl or incremental_rust_test, not rules_rust's."
             )
     return found
 

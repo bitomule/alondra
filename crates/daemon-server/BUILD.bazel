@@ -1,7 +1,8 @@
 load("//tools/layers:crates.bzl", "adapter_in_crate")
 load("//bazel/rules:tree.bzl", "repo_tree")
+load("//bazel/incremental/tests:rust_incremental_test.bzl", "compiles_incrementally_test")
 load("//bazel/rules:rust_inputs_test.bzl", "rust_inputs_test")
-load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:rust_test.bzl", "incremental_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//:version.bzl", "VERSION")
 load("//bazel/rules:rust_sources.bzl", "production_sources")
@@ -81,7 +82,7 @@ TEST_RUSTC_FLAGS = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath /
 # `views`. These run on the doubled hosts of engine-doubles, which the Claude and Codex host models
 # and the orchestrator model play: no Agent SDK host, fake native Claude or binary of the root is an
 # input. The Apple packages run its fixture servers.
-low_opt_rust_test(
+incremental_rust_test(
     name = "daemon_server_test",
     size = "large",
     visibility = ["//apple/Data/Feed:__pkg__", "//apple/Data/Iroh:__pkg__"],
@@ -107,7 +108,7 @@ low_opt_rust_test(
 # The tests that still need a real Agent SDK host or a fake native Claude or Codex: the same sources
 # with the feature real-hosts, which compiles only them. No binary of the root is an input: the real
 # `alondra` and `alondrad` run in `//crates/alondrad:binary_smoke_test`.
-low_opt_rust_test(
+incremental_rust_test(
     name = "daemon_server_host_test",
     size = "medium",
     compile_data = TEST_COMPILE_DATA,
@@ -166,6 +167,17 @@ rust_inputs_test(
     test_only_sources = ["crates/daemon-server/src/operation_journal/process_fixture.rs", "crates/daemon-server/src/service/tests/iroh_tests.rs"],
     test_sources = True,
 )
+
+# Both test crates recompile the whole server on every edit of the engine or below: incremental,
+# that takes 12-26 s instead of 36-49 s, for 1.9 GB per checkout (docs/architecture/build-graph.md).
+[
+    compiles_incrementally_test(
+        name = target + "_compiles_incrementally_test",
+        size = "small",
+        target_under_test = ":" + target,
+    )
+    for target in ["daemon_server_test", "daemon_server_host_test"]
+]
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 

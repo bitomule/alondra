@@ -23,11 +23,12 @@ genquery(
     scope = ["//:tree"],
 )
 
-# Every Rust library and binary of the repository with its tags: each one compiles incrementally, so
-# none may be cached (bazel/rules/rust.bzl).
+# Every Rust library, binary and test of the repository with its tags and flags: each library and
+# binary compiles incrementally, and so does a test with `-Cincremental`, so none of those may be
+# cached (bazel/rules/rust.bzl).
 genquery(
     name = "rust_compiles",
-    expression = 'kind("rust_(library|binary|proc_macro|shared_library|static_library)", siblings(deps(//:tree)))',
+    expression = 'kind("rust_(library|binary|proc_macro|shared_library|static_library|test)", siblings(deps(//:tree)))',
     opts = ["--output=xml"],
     scope = ["//:tree"],
 )
