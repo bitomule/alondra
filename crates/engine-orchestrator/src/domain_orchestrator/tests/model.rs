@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::engine::OrchestratorOf as _;
 
 /// The doubled hosts of a fixture's home and the model that plays them. Dropping it ends every
 /// host; a test whose hosts were asked something the model does not play fails, unless it fails
@@ -17,7 +19,9 @@ use std::sync::Arc;
 pub(crate) struct Played {
     pub model: OrchestratorModel,
     codex: CodexModel,
-    _hosts: Arc<InProcessHosts>,
+    pub hosts: Arc<InProcessHosts>,
+    /// How many batches' hosts the executor recorded as started, the injected spawn hook run.
+    pub recorded: Arc<AtomicUsize>,
 }
 
 impl Played {
@@ -27,7 +31,31 @@ impl Played {
         let (model, codex) = (OrchestratorModel::default(), CodexModel::default());
         hosts.set_serve(Models { claude: model.clone(), codex: codex.clone() });
         crate::wiring::serve(home, &hosts);
-        Self { model, codex, _hosts: hosts }
+        Self { model, codex, hosts, recorded: Arc::default() }
+    }
+}
+
+impl Played {
+    /// Counts each host the executor of `domain`, whose home is `home`, records as started.
+    pub fn count_recorded(&self, domain: &crate::DomainRuntime, home: &Path) {
+        let (at, recorded) = (home.to_owned(), Arc::clone(&self.recorded));
+        domain.orchestrator().injected.on_spawn(move |capability| {
+            alondra_daemon_engine_model::faults::spawned(&at, capability);
+            recorded.fetch_add(1, Ordering::SeqCst);
+        });
+    }
+
+    /// Waits until the executor recorded every host the model started, or the batch of the last
+    /// one ended without recording it. A native Claude plays its prompt as soon as its host takes
+    /// it, inside the executor's start, before the executor records the host: a real host's
+    /// process only gets the prompt later, so a test that acts on a held turn acts after that.
+    pub fn wait_recorded(model: &OrchestratorModel, recorded: &AtomicUsize, home: &Path) {
+        let started = model.starts().len();
+        while recorded.load(Ordering::SeqCst) < started
+            && crate::domain_orchestrator::load(home).is_ok_and(|runtime| runtime.active_run.is_some_and(|run| !run.spawned))
+        {
+            alondra_core::clock::blocking_sleep(std::time::Duration::from_millis(2));
+        }
     }
 }
 

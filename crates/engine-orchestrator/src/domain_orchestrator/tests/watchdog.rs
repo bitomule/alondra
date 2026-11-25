@@ -289,33 +289,17 @@ async fn a_watchdog_retries_legacy_recovery_after_its_runtime_write_fails() {
     }
 }
 
-fn quiet_provider(f: &crate::domain_orchestrator::testing::Fixture, ignore_term: bool) {
-    let native = f.root.join("orchestrator-fake-claude.py");
-    let mut source = std::fs::read_to_string(&native).unwrap();
-    let before_events = "    for state in ('queued', 'started'):\n";
-    assert!(source.contains(before_events));
-    source = source.replace(before_events, &format!("    if 'fixture:quiet-hold' in text:\n        hold(os.environ['ALONDRA_DOMAIN_CAPABILITY'])\n{before_events}"));
-    if ignore_term {
-        assert!(source.contains("import time"));
-        source = source.replace(
-            "import time",
-            "import time\nimport signal\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)",
-        );
-    }
-    std::fs::write(&native, source).unwrap();
-    f.mark_once("fixture:quiet-hold");
-}
-
 #[tokio::test]
 async fn a_watchdog_cancels_a_held_provider_and_the_next_request_runs_without_a_problem() {
     use crate::domain_orchestrator::testing::fixture;
     let f = fixture();
     f.tell("held", "Wait before replying");
-    quiet_provider(&f, true);
+    f.mark_once("fixture:quiet-hold");
     let (mut watchdog, clock) = monitored();
     let executor = executor(&f);
     let running = tokio::spawn(async move { executor.supervised_tick(&mut watchdog).await });
     f.held().await;
+    f.freeze_hosts();
     let run = load(&f.executor.home).unwrap().active_run.unwrap().id;
     let drained = on_drain(&f, &run);
     let stop = f
@@ -370,7 +354,7 @@ async fn watchdog_keeps_monitoring_until_an_admitted_physical_writer_finishes() 
     use std::sync::atomic::AtomicUsize;
     let f = fixture();
     f.tell("held", "Wait while an admitted operation completes");
-    quiet_provider(&f, false);
+    f.mark_once("fixture:quiet-hold");
     let (mut watchdog, clock) = monitored();
     let executor = executor(&f);
     let running = tokio::spawn(async move { executor.supervised_tick(&mut watchdog).await });

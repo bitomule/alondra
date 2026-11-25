@@ -9,7 +9,6 @@ use alondra_domain_rules::*;
 use alondra_domain_rules::orchestrator_cards::{UNSETTLED_NOTICE_PREFIX, UNSPLIT_NOTICE_PREFIX, UNSPLIT_PROBLEM_PREFIX};
 use alondra_provider_contract::Handoff;
 use std::collections::BTreeSet;
-use std::io::{Read, Write};
 
 #[tokio::test]
 async fn a_batch_through_the_sdk_is_one_turn_and_is_handed_once() {
@@ -112,7 +111,7 @@ async fn every_batch_resumes_the_one_conversation_and_reads_only_what_changed() 
 async fn the_conversation_starts_anew_at_its_size_limit_after_its_cache_expired_large_or_once_it_is_lost() {
     use crate::orchestrator_conversation::{MIGRATE_TOKENS, Migration};
     let f = fixture();
-    let tokens = |n: u64| std::fs::write(format!("{}.tokens", f.capture.display()), n.to_string()).unwrap();
+    let tokens = |n: u64| f.set_tokens(n);
     let session = || load(&f.executor.home).unwrap().conversation.unwrap().id;
     let tick_at = |at: i64| {
         let (_hold, stop) = tokio::sync::watch::channel(false);
@@ -150,7 +149,7 @@ async fn the_conversation_starts_anew_at_its_size_limit_after_its_cache_expired_
     f.tell("m-6", "Where do I put change 6?");
     f.tick().await;
     assert_eq!(session(), third);
-    std::fs::remove_file(format!("{}.sessions", f.capture.display())).unwrap();
+    f.forget_sessions();
     f.tell("m-7", "Where do I put change 7?");
     tick_at(alondra_core::now_millis() + 3 * 60 * 60_000).await;
     assert_eq!(session(), third, "the batch that tried to resume it did not start");
@@ -193,14 +192,9 @@ async fn a_message_that_arrives_during_a_turn_waits_for_the_next_batch() {
     let f = fixture();
     f.ask(1, "fixture:hold Where do I put change 1?");
     let during = async {
-        let held = f.held.clone();
-        alondra_core::clock::spawn_blocking_unwatched(move || {
-            let mut text = String::new();
-            std::fs::File::open(held).unwrap().read_to_string(&mut text).unwrap();
-        }).await.unwrap();
+        f.held().await;
         f.tell("m-2", "Where do I put change 2?");
-        let release = f.release.clone();
-        alondra_core::clock::spawn_blocking_unwatched(move || std::fs::OpenOptions::new().write(true).open(release).unwrap().write_all(b"go").unwrap()).await.unwrap();
+        f.release();
     };
     let ((), ()) = tokio::join!(f.tick(), during);
     let prompts = f.prompts();
@@ -373,13 +367,8 @@ async fn cancelled_while_held(marker: &str, meanwhile: impl FnOnce(&Fixture, &st
     let f = fixture();
     f.ask(1, &format!("{marker} Where do I put change 1?"));
     let during = async {
-        let held = f.held.clone();
-        let said = alondra_core::clock::spawn_blocking_unwatched(move || {
-            let mut text = String::new();
-            std::fs::File::open(held).unwrap().read_to_string(&mut text).unwrap();
-            text
-        }).await.unwrap();
-        meanwhile(&f, said.trim_end());
+        let said = f.held().await;
+        meanwhile(&f, &said);
         let run = load(&f.executor.home).unwrap().active_run.unwrap().id;
         f.executor.cancel(&run).unwrap();
     };
