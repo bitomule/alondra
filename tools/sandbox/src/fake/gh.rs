@@ -103,6 +103,7 @@ pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
         ["repo", "view", _, "--json", _] => Ok(json!({"mergeCommitAllowed": false, "squashMergeAllowed": true, "rebaseMergeAllowed": false}).to_string()),
         ["api", "graphql", ..] => Ok("false".into()),
         ["api", "--hostname", _, "-H", accept, endpoint] => return api(fakes, accept, endpoint),
+        ["api", "--include", "--hostname", _, endpoint] => return branch_rules(endpoint),
         _ => Err(format!("the sandbox's gh does not know `gh {}`", args.join(" "))),
     };
     match answer {
@@ -119,6 +120,23 @@ pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
 
 /// The REST calls that bring a description's images: a file of the remote at a commit, the
 /// repository, and the rendered description, which has no uploads in the sandbox.
+/// What GitHub answers `gh api --include` about the rules of the sandbox repository's branches:
+/// none apply, and none of the classic branch protection is set.
+fn branch_rules(endpoint: &str) -> Result<i32> {
+    let path = endpoint.split_once('?').map_or(endpoint, |(path, _)| path);
+    match path.strip_prefix(&format!("repos/{REPOSITORY}/")) {
+        Some(rest) if rest.starts_with("rules/branches/") => {
+            print!("HTTP/2.0 200 OK\r\n\r\n[]");
+            Ok(0)
+        }
+        _ => {
+            print!("HTTP/2.0 404 Not Found\r\n\r\n{}", json!({"message": "Not Found"}));
+            eprintln!("gh: Not Found (HTTP 404)");
+            Ok(1)
+        }
+    }
+}
+
 fn api(fakes: &Fakes, accept: &str, endpoint: &str) -> Result<i32> {
     let not_found = || {
         eprintln!("gh: Not Found (HTTP 404)");
@@ -229,6 +247,7 @@ fn facts(fakes: &Fakes, pr: &Pr, fields: &str) -> Result<Value, String> {
         "isDraft": pr.draft, "url": format!("https://github.com/{}/pull/{}", pr.repository, pr.number),
         "title": title, "body": pr.body.as_deref().unwrap_or("Made by a scripted sandbox node."), "additions": additions, "deletions": deletions,
         "changedFiles": files, "mergeable": mergeable, "mergeStateStatus": merge_state,
+        "reviewDecision": "", "fullDatabaseId":(1_000_000 + pr.number).to_string(), "id": format!("PR_sandbox_{}", pr.number),
     });
     let mut picked = serde_json::Map::new();
     for field in fields.split(',') {
