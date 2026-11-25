@@ -68,7 +68,9 @@ or in the private repository that keeps it, never here.
   the checks whose `paths` a change touches (`MUSTS.yml`); a change that only touches prose or images
   no test loads must leave it empty, otherwise a `paths` entry is wrong: fix `MUSTS.yml`.
   Iterate with `bazelisk test <target>`, then `musts run` once when the change is done, never right
-  after a `bazelisk test` of the same tree. Commit `.musts/ledger/` (one file per check, `musts` 0.10.1 or later
+  after a `bazelisk test` of the same tree. `musts` 0.12.0 remembers failures: `musts run` does not rerun a
+  check that failed on unchanged files, so pass `--force` to run it again, and it prints only the last 6000
+  characters of a failure with the log path. Commit `.musts/ledger/` (one file per check, `musts` 0.10.1 or later
   migrates the old `ledger.lock.yaml` itself) and any `MODULE.bazel.lock` change with the code.
   A conflict in `.musts/ledger/` is resolved by taking the base's files and validating again, never
   by deleting the ledger. `musts` 0.11.1 decides what is validated from the committed ledger alone,

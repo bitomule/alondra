@@ -13,10 +13,10 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file"
 # musts validates and records the checks of `MUSTS.yml`. The pull request workflow runs it on a Linux
 # runner without Bazel, so it keeps its own copy of the version and the Linux hash, which the test
 # above compares with these.
-MUSTS_VERSION = "0.11.1"
+MUSTS_VERSION = "0.12.0"
 MUSTS_SHA256 = {
-    "aarch64-apple-darwin": "76ecd6de8f76dbdbaab96144020d8622b040947fc795680d5bcb708ba23cc79a",
-    "x86_64-unknown-linux-gnu": "e6b7d414645cf2aa6e19d4642d5836b27c4d61cad2aeaa1d70a8f8c98c4305a0",
+    "aarch64-apple-darwin": "ea8595e9b63a0ffcdf9ddb0256b58454613ca6c64b450e8e8f22856c3c252b0a",
+    "x86_64-unknown-linux-gnu": "f546bd6b06c6794db70e26076170f059f69cb448d187c1a5519a60424878c4c5",
 }
 
 def _simpool_env_impl(rctx):
