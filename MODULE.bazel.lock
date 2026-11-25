@@ -761,7 +761,7 @@
         "bzlTransitiveDigest": "ZTuTMGHXcKATrDSE7hB0CKevHjt7HCvOfBKUDlZAgoo=",
         "usagesDigest": "Xb/WJNeP11SsmvoBJWLZ5fEieWDV1OU+I/Ed/2tzUXQ=",
         "recordedFileInputs": {
-          "@@//Cargo.lock": "41f3ba098a7e0b853530dc50bd86caf4071c6d65c4d290d17388f86e9d3980a1",
+          "@@//Cargo.lock": "d6c329828cd45fb32f0140ca17c6a79da8475f9dac0a4a34699c8fafad6a745e",
           "@@//Cargo.toml": "202d0e12fa995e3e00fa30e5834def1b31b947f7313597abc36125eb305bd093",
           "@@//crates/agent-application/Cargo.toml": "ce6a54072a1c5e6bdb9f8a465f40cb283b345542c23a800f2d3f0a53a9e897c9",
           "@@//crates/agent-protocol/Cargo.toml": "125620e279bdef7b2ce0d2b3c57edcfd5296897a2ea47d3d4331f290adc3408b",
@@ -793,7 +793,7 @@
           "@@//crates/engine-mcp/Cargo.toml": "80e424bfd42e60c3912a71d2a8f06db7a56db8aab442f553139c23fb1b629a51",
           "@@//crates/engine-orchestrator/Cargo.toml": "1c2558c00e95f7060419871db9b13f501ed8228785b3be208e1416552023fe7c",
           "@@//crates/engine-ports/Cargo.toml": "a8a505eec137c1836ab92713f923f824246047142e2fb3e18260fea88697b108",
-          "@@//crates/engine-sdk/Cargo.toml": "1d4adac78033e5521e10bd33a62d170ada4f81bfcdc4a4fb708ae02f9f87ff74",
+          "@@//crates/engine-sdk/Cargo.toml": "49bc89b012936d0dc08ce9c4661576e9b20c0bd22c14ded2858c9575bace9953",
           "@@//crates/engine-worktrees/Cargo.toml": "aca3da70e40277f322e5f697e3af24ab0f250eceb170439f70a3733470d57e4b",
           "@@//crates/foundation/Cargo.toml": "caec9f866563ad8a66981b042fc84956c23bff0ac76fc7686ff738803424f8b6",
           "@@//crates/github-gh/Cargo.toml": "eb3a92e413a0cfe28ae37fba53039ae2ed09d003dcc81912f2e84d4b5be6afe1",
