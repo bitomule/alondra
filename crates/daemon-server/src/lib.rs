@@ -7,8 +7,6 @@ pub use alondra_daemon_engine::test_support;
 #[macro_use]
 extern crate alondra_daemon_support;
 
-pub use alondra_github_gh::{pr_viewed, prs};
-
 pub use alondra_engine_ports::plugins;
 pub use alondra_daemon_support::{
     approval_lease,

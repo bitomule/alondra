@@ -104,8 +104,10 @@ nothing uses, and on a count different from `EXCEPTION_CEILING` in
 that ceiling in the same change, in plain sight of review.
 
 The phases of the build-graph plan empty it: `engine-ports` (phase 3) and the wide application
-(phase 4) remove the application's dependencies on its sisters, and the six of `daemon-server` on
-the engine and on `github-gh`, which phase 6 added when it took the server out of the root (a
-decision of the user's while the engine is not yet behind ports). Phase 3b moved `agent-runtime`
+(phase 4) remove the application's dependencies on its sisters, and the five of `daemon-server` on
+the engine, which phase 6 added when it took the server out of the root (a decision of the user's
+while the engine is not yet behind ports). Its sixth, on `github-gh`, is gone: the server takes
+GitHub from the registry of ports, and only `alondrad_production`, the library of the `alondrad`
+binary, links the real client. Phase 3b moved `agent-runtime`
 behind the `AgentHost` port of `engine-ports`: no provider or piece of the engine depends on it,
 only the roots and the tests that start real hosts.

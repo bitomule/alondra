@@ -877,6 +877,40 @@ bench's load. `relaunch_test`'s were macOS's first-launch scan killing daemons w
 test had already removed or replaced, fixed since (`docs/running-tests.md`, "Executables a test
 writes").
 
+## The scenarios without the GitHub client (2026-11-25)
+
+The final measurement above has `scenarios_test` as the longest test of an edit of the `gh` client,
+because the scenarios link the root and the root linked `github-gh`. Now:
+
+- The pure readers of what `gh --json` answers (the facts of a PR, which PR answered, the card a
+  `gh pr view` makes, the latest run of each check) live in `engine-ports` (`github_json.rs`),
+  beside the port, and `Gh` has `set_viewed`, which `github-gh` implements.
+- `daemon-server` no longer builds a `GhCli`: the client's reads, marks, closes, PR view, images and
+  merger, and the final delivery's public content review, take the GitHub the root registered.
+  Its `LAYER_EXCEPTIONS` entry on `github-gh` is gone (`EXCEPTION_CEILING` 53 → 52).
+- `alondrad_production` (`crates/alondrad/src/production.rs`), a root library only the `alondrad`
+  binary links, holds the real seams (`GithubSeams::production`, `Seams::production`).
+  `alondrad_lib`, which the scenarios and the daemon's tests link, no longer depends on `github-gh`.
+- The server's and the root's tests register `engine-doubles`' `github::Offline`, a GitHub that
+  fails every call as a Mac without `gh` does and reaches no network.
+
+`bazel query 'somepath(//crates/scenarios:scenarios_runner, //crates/github-gh:github_gh)'` is empty;
+before it went through `alondrad_lib`. The tests that still link the client run the real binary
+(`binary_smoke_test`, `info_commands_test`, `relaunch_test`, the sandbox and system suites) or
+drive a scripted `gh` (`engine_github_test`).
+
+`edit_bench --edit crates/github-gh/src/cli.rs`, before (the final measurement above, main at
+d1bcdec12, under the bench's load) and after (this change, one run on the shared Mac):
+
+| | Crates reopened | Test targets reopened | Build: critical path | Longest test target | Edit + test |
+|---|---:|---:|---:|---|---:|
+| Before | 10 | 46 | 130 s | `scenarios_test` 31 s | 162 s |
+| After | 6 | 36 | 6 s | `//tools:state_inventory_test` 11 s | 33 s |
+
+- No scenario, `daemon-server` or `alondrad_test` target reruns on an edit of the client any more.
+- The two runs were not under the same load (the before's build critical path was 130 s), so the
+  time is indicative; the crates and targets reopened are what the graph decides.
+
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 
 `engine-admission` and `engine-orchestrator` compile and test without `daemon-engine` and without

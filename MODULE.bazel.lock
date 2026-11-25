@@ -761,7 +761,7 @@
         "bzlTransitiveDigest": "ZTuTMGHXcKATrDSE7hB0CKevHjt7HCvOfBKUDlZAgoo=",
         "usagesDigest": "Xb/WJNeP11SsmvoBJWLZ5fEieWDV1OU+I/Ed/2tzUXQ=",
         "recordedFileInputs": {
-          "@@//Cargo.lock": "c92adb619439289350b68927a419331666580876d5bf600c9ee8afe677c55bae",
+          "@@//Cargo.lock": "41f3ba098a7e0b853530dc50bd86caf4071c6d65c4d290d17388f86e9d3980a1",
           "@@//Cargo.toml": "202d0e12fa995e3e00fa30e5834def1b31b947f7313597abc36125eb305bd093",
           "@@//crates/agent-application/Cargo.toml": "ce6a54072a1c5e6bdb9f8a465f40cb283b345542c23a800f2d3f0a53a9e897c9",
           "@@//crates/agent-protocol/Cargo.toml": "125620e279bdef7b2ce0d2b3c57edcfd5296897a2ea47d3d4331f290adc3408b",
@@ -780,7 +780,7 @@
           "@@//crates/daemon-engine-machine/Cargo.toml": "528ac158b8c9dc9c4644e0b867a0e1b502e9a56e4c7b39544e4fe1a6003c5c94",
           "@@//crates/daemon-engine-model/Cargo.toml": "089f83255dfe25b84b02c3612ef2b251895514eb2f69356d3b94118b9f08ec49",
           "@@//crates/daemon-engine/Cargo.toml": "e831e1b22616b458ae4e3f47ec07964fe8639bcfdc260093cccf65b80cff1bc2",
-          "@@//crates/daemon-server/Cargo.toml": "9b1758c8f32d2b95e6e828a37ef35a4850573b6119636dc971dc9368307c95e9",
+          "@@//crates/daemon-server/Cargo.toml": "a47ac32741de4a1a506cf60720611bd19ac3dde17ffa7b63c256b86938c95176",
           "@@//crates/daemon-support/Cargo.toml": "5798d1c081eb0ebbe278c5e11727607cc2b182291e0df8707c6e791d2a5bfd97",
           "@@//crates/domain-rules/Cargo.toml": "4d01cdd536977cfe616331dce4f4547fd0ceceb29c55a1383b20b0d2dd9c84b8",
           "@@//crates/domain/Cargo.toml": "eba560970fabccf60ea3e517b86f23433ab0a9a9813a1046ae2bf3003d1aa710",

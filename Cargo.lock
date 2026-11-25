@@ -404,7 +404,6 @@ dependencies = [
  "alondra-engine-ports",
  "alondra-engine-sdk",
  "alondra-foundation",
- "alondra-github-gh",
  "alondra-host",
  "alondra-provider-contract",
  "alondra-store",

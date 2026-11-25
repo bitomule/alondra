@@ -126,7 +126,6 @@ LAYER_EXCEPTIONS = {
         "crates/engine-admission",
         "crates/engine-orchestrator",
         "crates/engine-sdk",
-        "crates/github-gh",
     ],
     "crates/daemon-support": [
         "crates/provider-claude",

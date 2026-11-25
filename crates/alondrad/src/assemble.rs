@@ -1,7 +1,8 @@
 //! The daemon is put together here from its edges: everything outside the process (GitHub, the
 //! push relay, the Mac, the SDK host's process, the network) comes in through [`Seams`], and
 //! everything inside is the production code. The daemon in production assembles with
-//! [`Seams::production`]; a scenario assembles the same daemon with edges it controls.
+//! `alondrad_production`'s seams, the only ones that reach the real GitHub; a scenario assembles
+//! the same daemon with edges it controls.
 use super::*;
 use alondra_agent_runtime::owned_host::Launcher;
 use alondra_daemon_engine::domain_github::PrObserver;
@@ -22,30 +23,27 @@ pub struct GithubSeams {
     pub observer: Arc<dyn PrObserver>,
     pub view: Arc<dyn PrView>,
     pub images: Arc<dyn GitHubImages>,
-    pub reads: Arc<dyn prs::Gh>,
+    pub reads: Arc<dyn alondra_engine_ports::github::Gh>,
 }
 
 impl GithubSeams {
-    /// The real GitHub, through `gh`.
-    pub fn production() -> Self {
-        Self::over(alondra_github_gh::github(), Arc::new(client_routes::GhView))
-    }
-
     /// One object that stands for the whole of GitHub.
     pub fn of<W>(world: Arc<W>) -> Self
     where
-        W: PrMerger + PrObserver + prs::Gh + GitHubImages,
+        W: PrMerger + PrObserver + alondra_engine_ports::github::Gh + GitHubImages,
     {
-        Self::over(GitHub::of(world.clone()), Arc::new(client_routes::ViaGh(world)))
-    }
-
-    fn over(github: GitHub, view: Arc<dyn PrView>) -> Self {
-        Self { merger: github.merger, observer: github.observer, view, images: github.images, reads: github.reads }
+        let github = GitHub::of(world.clone());
+        Self { merger: github.merger, observer: github.observer, view: Arc::new(client_routes::ViaGh(world)), images: github.images, reads: github.reads }
     }
 
     /// GitHub as the engine's port sees it.
     pub fn port(&self) -> GitHub {
         GitHub { observer: self.observer.clone(), merger: self.merger.clone(), images: self.images.clone(), reads: self.reads.clone() }
+    }
+
+    /// Gives the registry this GitHub, as the daemon does before it serves.
+    pub fn wire(&self, registry: &alondra_engine_ports::Registry) {
+        registry.provide(Arc::new(self.port()));
     }
 }
 
@@ -85,9 +83,10 @@ pub struct Seams {
 }
 
 impl Seams {
-    pub fn production() -> Self {
+    /// The edges of the daemon on the user's Mac, with `github` as GitHub.
+    pub fn over(github: GithubSeams) -> Self {
         Self {
-            github: GithubSeams::production(),
+            github,
             push: Pushes::default(),
             machine: None,
             machine_published: None,
@@ -249,7 +248,7 @@ pub(crate) async fn assemble_with(
 ) -> Result<Assembled> {
     crate::wire(domain.ports());
     let tasks = Tasks::default();
-    domain.ports().provide(Arc::new(seams.github.port()));
+    seams.github.wire(domain.ports());
     if let Some(machine) = seams.machine.clone() {
         domain.ports().provide::<dyn MachineProbe>(machine);
     }

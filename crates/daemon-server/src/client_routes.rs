@@ -34,7 +34,7 @@ pub(crate) use alondra_daemon_engine::live::Relaunch;
 pub(crate) use alondra_daemon_engine::live::Live;
 pub(crate) use alondra_daemon_engine::reply::Reply;
 pub use pr_details::PrView;
-pub use pr_details::{GhView, ViaGh};
+pub use pr_details::ViaGh;
 pub(crate) use pr_details::{hand_back_conflicts, Merge};
 #[cfg(test)]
 pub(crate) use pr_details::Viewed;
@@ -52,18 +52,17 @@ pub struct Client {
     /// A holder that panics leaves it whole, so it is recovered: `views::live` empties it instead.
     pub(crate) views_gauges: std::sync::Mutex<Option<(alondra_core::clock::Instant, Vec<alondra_view_model::Gauge>, Vec<alondra_view_model::Gauge>)>>,
     pub(crate) details: pr_details::PrDetails,
-    /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
-    pr_view: std::sync::Mutex<Arc<dyn PrView>>,
-    /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
-    pr_images: std::sync::Mutex<Arc<dyn crate::pr_images::GitHubImages>>,
-    /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
-    pr_merger: std::sync::Mutex<Arc<dyn alondra_daemon_engine::domain_merges::PrMerger>>,
+    /// The parts of GitHub given in place of the registered one, each `None` until given. A
+    /// holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
+    pr_view: std::sync::Mutex<Option<Arc<dyn PrView>>>,
+    pr_images: std::sync::Mutex<Option<Arc<dyn crate::pr_images::GitHubImages>>>,
+    pr_merger: std::sync::Mutex<Option<Arc<dyn alondra_daemon_engine::domain_merges::PrMerger>>>,
     pub(crate) views: crate::views::cache::Cache,
     pub(crate) feeds: crate::views::feed::Feeds,
     /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
     sessions: std::sync::Mutex<Arc<dyn Sessions>>,
     /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
-    github: std::sync::Mutex<Arc<dyn Github>>,
+    github: std::sync::Mutex<Option<Arc<dyn Github>>>,
     /// A holder that panics leaves it whole, so it is recovered: one assignment of a file already
     /// parsed.
     options: std::sync::Mutex<Option<alondra_core::options::OptionsFile>>,
@@ -318,13 +317,13 @@ impl Client {
             gauges,
             views_gauges: Default::default(),
             details: pr_details::PrDetails::observed(view_observation.clone()),
-            pr_view: std::sync::Mutex::new(Arc::new(GhView)),
-            pr_images: std::sync::Mutex::new(Arc::new(alondra_github_gh::GhCli::new())),
-            pr_merger: std::sync::Mutex::new(Arc::new(alondra_github_gh::GhCli::new())),
+            pr_view: Default::default(),
+            pr_images: Default::default(),
+            pr_merger: Default::default(),
             views: Default::default(),
             feeds: crate::views::feed::Feeds::observed(view_observation.clone()),
             sessions: std::sync::Mutex::new(machine),
-            github: std::sync::Mutex::new(Arc::new(new_work::Gh)),
+            github: Default::default(),
             options: Default::default(),
             issue_cache: Default::default(),
             live_reads: Default::default(),

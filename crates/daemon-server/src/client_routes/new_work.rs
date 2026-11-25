@@ -26,54 +26,53 @@ pub(crate) trait Github: Send + Sync + 'static {
         -> Answer<'a, Result<(), crate::domain_github::GhFailure>>;
     /// Whether GitHub has the PR open, closed or merged now.
     fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_rules::PrState, String>>;
-    fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>>;
+    fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Answer<'a, Result<alondra_engine_ports::github::Marks, String>>;
     fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> Answer<'a, Result<(), String>>;
 }
 
-pub(crate) struct Gh;
+/// GitHub as the root registered it.
+pub(crate) struct Ported(pub(crate) alondra_engine_ports::github::GitHub);
 
-impl Github for Gh {
+impl Github for Ported {
     fn search_issues<'a>(&'a self, owners: &'a [String]) -> Answer<'a, Result<Value, String>> {
-        Box::pin(async move { crate::prs::Gh::search_issues(&alondra_github_gh::GhCli::new(), owners).await })
+        self.0.reads.search_issues(owners)
     }
 
     fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> Answer<'a, Result<Value, String>> {
-        Box::pin(async move { crate::prs::Gh::issue_view(&alondra_github_gh::GhCli::new(), repo, number).await })
+        self.0.reads.issue_view(repo, number)
     }
 
     fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str)
         -> Answer<'a, Result<(), crate::domain_github::GhFailure>> {
-        Box::pin(async move { alondra_github_gh::GhCli::new().close_checked(host, repository, number, expected, comment).await })
+        Box::pin(alondra_engine_ports::github::close_checked(&self.0.observer, host, repository, number, expected, comment))
     }
 
     fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_rules::PrState, String>> {
         Box::pin(async move {
             let url = crate::domain_github::pr_url(host, repository, number);
-            let out = alondra_github_gh::GhCli::new()
-                .run(&["pr", "view", &url, "--json", "state", "--jq", ".state"], None, std::time::Duration::from_secs(30))
-                .await?;
-            match String::from_utf8_lossy(&out).trim() {
-                "OPEN" => Ok(alondra_domain_rules::PrState::Open),
-                "CLOSED" => Ok(alondra_domain_rules::PrState::Closed),
-                "MERGED" => Ok(alondra_domain_rules::PrState::Merged),
+            let view = self.0.reads.view(&url).await.ok_or("GitHub did not report the pull request")?;
+            match view["state"].as_str() {
+                Some("OPEN") => Ok(alondra_domain_rules::PrState::Open),
+                Some("CLOSED") => Ok(alondra_domain_rules::PrState::Closed),
+                Some("MERGED") => Ok(alondra_domain_rules::PrState::Merged),
                 other => Err(format!("gh reported an unknown PR state {other:?}")),
             }
         })
     }
 
-    fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>> {
-        Box::pin(async move { crate::pr_viewed::read(&alondra_github_gh::GhCli::new(), pr).await })
+    fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Answer<'a, Result<alondra_engine_ports::github::Marks, String>> {
+        self.0.reads.viewed_files(pr)
     }
 
     fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> Answer<'a, Result<(), String>> {
-        Box::pin(async move { crate::pr_viewed::set(&alondra_github_gh::GhCli::new(), host, node, path, viewed).await })
+        self.0.reads.set_viewed(host, node, path, viewed)
     }
 }
 
 /// The two reads of GitHub the shared issue code makes, over whatever answers for GitHub here.
 struct Issues<'a>(&'a dyn Github);
 
-impl crate::prs::Gh for Issues<'_> {
+impl alondra_engine_ports::github::Gh for Issues<'_> {
     fn view<'a>(&'a self, _: &'a str) -> alondra_engine_ports::github::Read<'a, Option<Value>> {
         Box::pin(async { None })
     }
@@ -127,13 +126,15 @@ fn issue_of(body: &Body, file: &OptionsFile) -> Result<Option<(String, u64)>, St
 }
 
 impl Client {
+    /// What the request path asks of GitHub: the one a test gave, or the registered GitHub.
     pub(crate) fn github(&self) -> std::sync::Arc<dyn Github> {
-        self.github.lock_or_recover("the GitHub backend").clone()
+        let given = self.github.lock_or_recover("the GitHub backend").clone();
+        given.unwrap_or_else(|| std::sync::Arc::new(Ported(self.github_port())))
     }
 
     #[cfg(test)]
     pub(crate) fn use_github(&self, github: std::sync::Arc<dyn Github>) {
-        *self.github.lock_or_recover("the GitHub backend") = github;
+        *self.github.lock_or_recover("the GitHub backend") = Some(github);
     }
 
     pub(super) fn options_answer(&self, project: Option<String>) -> Response {
@@ -162,7 +163,7 @@ impl Client {
 
     pub(super) async fn issues_answer(&self, refresh: bool) -> Response {
         let file = crate::options::load_in(&self.home, &self.options).file;
-        let github = self.github.lock_or_recover("the GitHub backend").clone();
+        let github = self.github();
         Json(json!(crate::issues::list_in(&self.issue_cache, &file, refresh, &Issues(&*github)).await)).into_response()
     }
 
@@ -236,7 +237,7 @@ impl Client {
         };
         crate::domain_orchestrator_tools::authorize_user_request_selection(&*self.domain, &mut resolved, body.options.contains_key("account"));
         if let Err(error) = crate::domain_orchestrator_tools::validate_request_selection(&*self.domain, &resolved) { return Ok(refused(error.message)); }
-        let github = self.github.lock_or_recover("the GitHub backend").clone();
+        let github = self.github();
         let issue_text = match &issue {
             Some((repo, number)) => {
                 resolved.issue = Some(format!("{repo}#{number}"));

@@ -16,7 +16,6 @@ WORKSPACE_DEPS = [
     "//crates/domain-rules:domain_rules",
     "//crates/e2e:alondra_e2e",
     "//crates/engine-ports:engine_ports",
-    "//crates/github-gh:github_gh",
     "//crates/view-model:view_model",
 ]
 

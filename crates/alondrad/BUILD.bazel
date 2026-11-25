@@ -13,14 +13,13 @@ exports_files(["Info.plist"], visibility = ["//crates/daemon-server:__pkg__", "/
 # together with the engine and registers the screens. Only it links `views`.
 root_library(
     name = "alondrad_lib",
-    srcs = production_sources(exclude = ["src/main.rs"]),
+    srcs = production_sources(exclude = ["src/main.rs", "src/production.rs"]),
     crate_name = "alondrad",
     crate_root = "src/lib.rs",
     version = VERSION,
     deps = all_crate_deps(normal = True) + [
         "//crates/agent-runtime:agent_runtime",
         "//crates/core:alondra_core",
-        "//crates/github-gh:github_gh",
         "//crates/system:system",
         "//crates/host:host",
         "//crates/daemon-engine:daemon_engine",
@@ -34,6 +33,19 @@ root_library(
     test_visibility = ["//crates/scenarios:__pkg__"],
 )
 
+# The daemon's real edges: GitHub through `gh`. Only the binary links it, so the daemon's tests and
+# the scenarios, which link `alondrad_lib`, never build or rerun on an edit of the GitHub client.
+root_library(
+    name = "alondrad_production",
+    srcs = ["src/production.rs"],
+    crate_root = "src/production.rs",
+    version = VERSION,
+    deps = crate_deps(["anyhow"]) + [
+        ":alondrad_lib",
+        "//crates/github-gh:github_gh",
+    ],
+)
+
 root_binary(
     name = "alondrad",
     srcs = ["src/main.rs"],
@@ -44,7 +56,7 @@ root_binary(
     rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
     version = VERSION,
     visibility = ["//visibility:public"],
-    deps = crate_deps(["anyhow"]) + [":alondrad_lib"],
+    deps = crate_deps(["anyhow"]) + [":alondrad_production"],
 )
 
 # launchd runs this at a fixed path so macOS keeps alondrad's Local Network permission across
@@ -75,7 +87,7 @@ low_opt_rust_test(
 low_opt_rust_test(
     name = "alondrad_test",
     size = "small",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["//crates/engine-sdk:fixtures"],
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/production.rs"]) + ["//crates/engine-sdk:fixtures"],
     crate_name = "alondrad",
     crate_root = "src/lib.rs",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
@@ -83,7 +95,6 @@ low_opt_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True) + [
         "//crates/agent-runtime:agent_runtime",
         "//crates/core:alondra_core",
-        "//crates/github-gh:github_gh",
         "//crates/system:system",
         "//crates/host:host",
         "//crates/daemon-engine:daemon_engine",

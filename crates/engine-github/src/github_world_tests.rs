@@ -1,5 +1,5 @@
 use super::*;
-use alondra_github_gh::cli::parse;
+use alondra_engine_ports::github::pr_facts as parse;
 use alondra_domain_rules::{PrId, TaskId};
 use alondra_engine_ports::github::PrObserver as _;
 
