@@ -5,8 +5,9 @@ scratch (docs/architecture/build-graph.md). The state lives in the output base, 
 unsandboxed execroot, and goes with it. `--//bazel/incremental=false` (release and CI) compiles
 from scratch. An incremental result never enters a cache: an rlib its state left incoherent would
 reach every checkout with the same sources, so these targets carry `no-cache`. Test crates compile
-from scratch and stay cached: incremental, they would take 8 GB more per checkout for about 25 s per
-edit of the domain. Third-party crates keep rules_rust's rules and their cache.
+from scratch and stay cached, but for the server's two (rust_test.bzl's incremental_rust_test):
+all of them incremental would take 8 GB more per checkout for about 25 s per edit of the domain.
+Third-party crates keep rules_rust's rules and their cache.
 """
 
 load(
@@ -18,7 +19,7 @@ load(
 INCREMENTAL_STATE = "../../rustc-incremental"
 NO_CACHE = "no-cache"
 
-def _incremental(kwargs):
+def incremental(kwargs):
     kwargs["rustc_flags"] = (kwargs.get("rustc_flags") or []) + select({
         Label("//bazel/incremental:on"): ["-Cincremental=" + INCREMENTAL_STATE],
         "//conditions:default": [],
@@ -27,7 +28,7 @@ def _incremental(kwargs):
     return kwargs
 
 def rust_library(**kwargs):
-    _rust_library(**_incremental(kwargs))
+    _rust_library(**incremental(kwargs))
 
 def rust_binary(**kwargs):
-    _rust_binary(**_incremental(kwargs))
+    _rust_binary(**incremental(kwargs))

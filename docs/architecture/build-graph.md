@@ -1056,7 +1056,8 @@ critical path, then the wall clock):
   (`--//bazel/incremental=false`) compile from scratch. Rustc and Clippy always run locally:
   under `--spawn_strategy=sandboxed` rustc cannot write its state (`could not create incremental
   compilation crate directory … Operation not permitted`). Nothing here compiles sandboxed
-  (`--spawn_strategy=worker,local`).
+  (`--spawn_strategy=worker,local`). The server's two test crates became incremental later (see
+  "The server's test crates incremental" below).
 - **Not adopted: `opt-level=1`.** It cuts a third without incremental and nothing with it.
 - **Not yet: pipelined compilation** (a crate starts once its dependencies' `.rmeta` exists). The bug
   that breaks it unsandboxed on this Mac ([rules_rust#3662](https://github.com/bazelbuild/rules_rust/issues/3662),
@@ -1084,8 +1085,8 @@ same crates). One run on the shared Mac; every test passed:
 
 The libraries on the path now take seconds; what is left of compiling is
 `//crates/daemon-server:daemon_server_test`, a test crate of 102 files that compiles from scratch on
-every edit of the engine or below (36 to 53 s). Making that one target incremental, or splitting it,
-is the next lever. Testing is the rest of each edit: `scenarios_test` and the engine's own targets.
+every edit of the engine or below (36 to 53 s). It is incremental now (next sections). Testing is the
+rest of each edit: `scenarios_test` and the engine's own targets.
 
 ### The disk it takes
 
@@ -1109,6 +1110,64 @@ test crates too). Adding test crates gains 24 to 27 s of critical path on a `dom
 → 38-48 s) and takes `daemon_server_test` from about 40 s to about 18 s on engine edits, for 8.4 GB
 more per output base: worth revisiting once output bases of closed tasks are collected and the live
 ones stay few.
+
+## The server's test crates incremental (2026-11-25, main at e4fea67a4)
+
+After the change above, `//crates/daemon-server:daemon_server_test` was most of the build's critical
+path on every edit of the engine or below, and `daemon_server_host_test`, the same 102 files with
+`real-hosts`, came second. Both compiled the whole server from scratch: the incremental `daemon_server`
+rlib took 4 s on an engine edit, the test crates 36-49 s and 19-29 s.
+
+- **Splitting the crate would not reopen less.** Its 698 tests live inside its modules (`service.rs`
+  alone holds 48) and every large module (`views`, `service`, `client_routes`, `domain_bootstrap`)
+  reaches `daemon_engine` and the `engine_tests` fixtures, so each part of a split still depends on
+  the engine and an engine edit reopens all of them. A split pays only if the tests stop recompiling
+  the library: out of the crate, onto its public API, each test file rewritten. At best that is the
+  incremental `daemon_server` (4-5 s) plus the largest piece from scratch, about what incremental
+  gets for a two-line change.
+- **Adopted: both test crates incremental** (`incremental_rust_test` in `bazel/rules/rust_test.bzl`:
+  rust.bzl's flag and `no-cache`). Off in release and CI like the libraries.
+
+`edit_bench --tracked --profile`, one run of each on the shared Mac; the run after had a load
+average of 57, the one before between 3 and 16. Build is the critical path of `bazel build`; edit + test is the
+whole `bazel test`. The two server test crates are the compile actions of each in the build:
+
+| Edit | Build, before → after | Edit + test, before → after | `daemon_server_test` | `daemon_server_host_test` | What is left on the build's critical path |
+|---|---:|---:|---:|---:|---|
+| `views/src/task_state.rs` | 48 → 30 s | 129 → 76 s | 46 → 22 s | 29 → 8 s | `views` 2 s → `views_budget_test` 28 s |
+| `engine-admission/src/admission.rs` | 40 → 19 s | 109 → 82 s | 38 → 12 s | 21 → 5 s | `engine_admission` 2 s → `engine_sdk_engine_test` 18 s |
+| `engine-orchestrator/src/domain_orchestrator.rs` | 38 → 18 s | 99 → 77 s | 36 → 13 s | 19 → 6 s | `engine_orchestrator` 1 s → `daemon_server` 5 s → `alondrad_lib` 2 s → `scenarios_harness_test` 10 s |
+| `engine-live/src/node_reports.rs` | 43 → 21 s | 94 → 81 s | 41 → 14 s | 23 → 5 s | `engine_live` 1 s → `daemon_engine` 1 s → `engine_sdk_engine_test` 19 s |
+| `engine-sdk/src/sdk_owner.rs` | 45 → 31 s | 96 → 101 s | 40 → 19 s | 23 → 6 s | `engine_sdk` 5 s → `daemon_server` 6 s → `alondrad_lib` 2 s → `scenarios_harness_test` 17 s |
+| `domain-rules/src/rules.rs` | 67 → 82 and 81 s | 205 → 192 s | 49 → 26 s | 27 → 15 s | `domain_rules` 11 s → 3 libraries, 4 s in all → `views_budget_test` 55 s (in the other run, the root's chain to `scenarios_harness_test` 33 s) |
+| `github-gh/src/cli.rs` | 4 → 5 s | 28 → 20 s | not reopened | not reopened | `github_gh` 2 s → `engine_github_test` 3 s |
+| `alondrad/src/assemble.rs` | 12 → 15 s | 48 → 55 s | not reopened | not reopened | `alondrad_lib` 5 s → `scenarios_harness_test` 9 s |
+
+Neither server test crate is on any critical path now. On an engine edit the build is bounded by
+`engine_sdk_engine_test` (18-19 s, from scratch) and by the root's chain to `scenarios_harness_test`;
+on `views` by `views_budget_test`, a one-file test crate at `-c opt` (28 s). A `domain-rules` edit gains
+nothing yet: `views_budget_test` (40 s before) and the root's chain were already right behind
+`daemon_server_test`, and this change touches neither; the build-only run (82 → 81 s) was on a load of
+5 to 24. Testing is still most of
+each edit: `engine_orchestrator_host_test` (53-71 s) and `engine_sdk_engine_test` are the longest
+targets. In the run before, `views_budget_test` (a time budget, on the loaded Mac) and
+`scenarios_test` failed once each; the run after passed every test.
+
+**The disk.** Measured in this checkout's output base after the eight edits: `daemon_server_test`
+1.4 GB, `daemon_server_host_test` 0.57 GB, 1.9 GB in all, on top of the 7 GB above (Clippy was already
+incremental for test crates, so its state does not grow). rustc keeps two sessions of each crate, the
+last one and the current; their object files are hard links, but the dependency graph (387 MB) and the
+query cache (230 MB) of `daemon_server_test` are written twice, and no stable flag changes that.
+
+**Guards**, each broken by hand and put back:
+
+- `//crates/daemon-server:daemon_server_test_compiles_incrementally_test` and its
+  `daemon_server_host_test` twin fail when the target is declared with `low_opt_rust_test` (`Expected
+  "["-Cincremental=../../rustc-incremental"]", but got "[]"`).
+- `//bazel/incremental/tests:test_compiles_from_scratch_test` fails when `incremental_rust_test`
+  passes `-Cincremental` whatever the switch: release and CI compile test crates from scratch.
+- `//tools/layers:crate_layers_test` fails when a test with `-Cincremental` lacks `no-cache`, naming
+  the fixture and both server test crates.
 
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 

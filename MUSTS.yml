@@ -464,6 +464,7 @@ checks:
       - "bazel/rules/tree.bzl"
       - "version.bzl"
       - "bazel/incremental/BUILD.bazel"
+      - "bazel/incremental/tests/rust_incremental_test.bzl"
       - "bazel/rules/rust.bzl"
     with:
       targets:
@@ -471,6 +472,8 @@ checks:
         - //crates/daemon-server:daemon_server_host_test
         - //crates/daemon-server:daemon_server_test_inputs_test
         - //crates/daemon-server:production_inputs_test
+        - //crates/daemon-server:daemon_server_test_compiles_incrementally_test
+        - //crates/daemon-server:daemon_server_host_test_compiles_incrementally_test
 
   crate-antigravity-protocol:
     uses: bazel/test
@@ -2162,6 +2165,8 @@ checks:
         - //tools:release_config_test
         - //bazel/incremental/tests:compiles_incrementally_test
         - //bazel/incremental/tests:compiles_from_scratch_test
+        - //bazel/incremental/tests:test_compiles_incrementally_test
+        - //bazel/incremental/tests:test_compiles_from_scratch_test
 
   module-lock:
     uses: bazel/test
