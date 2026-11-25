@@ -124,6 +124,10 @@ pub fn device_lines(v: &Value, now: i64) -> Vec<String> {
         if d.get("push_failing").and_then(|x| x.as_bool()) == Some(true) {
             last.push_str(tr!(" · the relay no longer has its notifications", " · el relay ya no tiene sus notificaciones"));
         }
+        if d.get("relay_refused").and_then(|x| x.as_bool()) == Some(true) {
+            last.push_str(tr!(" · the relay refused it: pair it again from the device to use it away from this network",
+                " · el relay lo rechazó: vuelve a vincularlo desde el dispositivo para usarlo fuera de esta red"));
+        }
         lines.push(format!("{}  {}  ({last})", d["id"].as_str().unwrap_or(""), d["name"].as_str().unwrap_or("")));
     }
     let expired = v.get("expired").and_then(|d| d.as_array()).cloned().unwrap_or_default();
@@ -541,7 +545,8 @@ mod tests {
         let listing = json!({
             "devices": [
                 {"id": "phone-a", "name": "iPhone", "created_at": 0, "last_seen": NOW - 5 * 60_000, "push_failing": false},
-                {"id": "client-b", "name": "Terminal", "created_at": NOW - 3 * DAY, "last_seen": null, "push_failing": true}
+                {"id": "client-b", "name": "Terminal", "created_at": NOW - 3 * DAY, "last_seen": null, "push_failing": true},
+                {"id": "phone-f", "name": "New iPhone", "created_at": NOW - DAY, "last_seen": NOW - 5 * 60_000, "push_failing": false, "relay_refused": true}
             ],
             "expired": [
                 {"id": "phone-c", "name": "Old iPhone", "reason": "unused", "days": 30.0, "expired_at_ms": NOW - 3 * DAY},
@@ -553,6 +558,7 @@ mod tests {
         assert_eq!(device_lines(&listing, NOW), [
             "phone-a  iPhone  (used 5 min ago)",
             "client-b  Terminal  (never used, paired 3 days ago · the relay no longer has its notifications)",
+            "phone-f  New iPhone  (used 5 min ago · the relay refused it: pair it again from the device to use it away from this network)",
             "Unpaired on their own (open the app on the device, or run alondra mac connect on it, to pair it again):",
             "  Old iPhone — unpaired on its own 3 days ago: unused for 30 days",
             "  iPad — unpaired on its own 2 h ago: the relay no longer has its notifications",
@@ -562,6 +568,7 @@ mod tests {
         assert_eq!(device_lines(&listing, NOW), [
             "phone-a  iPhone  (usado hace 5 min)",
             "client-b  Terminal  (sin uso, vinculado hace 3 días · el relay ya no tiene sus notificaciones)",
+            "phone-f  New iPhone  (usado hace 5 min · el relay lo rechazó: vuelve a vincularlo desde el dispositivo para usarlo fuera de esta red)",
             "Desvinculados solos (abre la app en el dispositivo, o ejecuta alondra mac connect en él, para volver a vincularlo):",
             "  Old iPhone — desvinculado solo hace 3 días: sin uso en 30 días",
             "  iPad — desvinculado solo hace 2 h: el relay ya no tiene sus notificaciones",

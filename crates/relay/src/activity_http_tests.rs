@@ -226,6 +226,31 @@ mod activity_http_tests {
     }
 
     #[tokio::test]
+    async fn a_revoked_mac_whose_reports_could_not_be_forgotten_leaves_on_the_next_round() {
+        let f = Fixture::new().await;
+        for device in ["client-a", "client-b"] {
+            assert_eq!(f.register(device, registration(None)).await, StatusCode::NO_CONTENT);
+        }
+        assert_eq!(f.report("mac-1", "client-a", true, false, false).await, StatusCode::ACCEPTED);
+        assert_eq!(f.report("mac-2", "client-b", false, false, false).await, StatusCode::ACCEPTED);
+        let blocked_write = f.server.activity.path().with_extension("tmp");
+        std::fs::create_dir(&blocked_write).unwrap();
+        {
+            let _gate = f.server.device_gate.write().await;
+            let mac_1 = auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() };
+            f.server.auth.revoke(&mac_1, "client-a").unwrap();
+            activity::after_revocation(&f.server).await;
+        }
+        assert!(f.server.activity.phone(PHONE_ID).unwrap().reports.contains_key("mac-1"), "the write failed");
+
+        std::fs::remove_dir(&blocked_write).unwrap();
+        activity::retry_round(&f.server).await;
+        let phone = f.server.activity.phone(PHONE_ID).unwrap();
+        assert_eq!(phone.reports.keys().collect::<Vec<_>>(), ["mac-2"], "the removed Mac leaves the Live Activity");
+        assert!(!phone.pairings.contains_key("client-a"));
+    }
+
+    #[tokio::test]
     async fn mac_reports_are_checked_and_only_the_latest_of_each_mac_is_kept() {
         let f = Fixture::new().await;
         assert_eq!(f.register("client-a", registration(None)).await, StatusCode::NO_CONTENT);
@@ -393,6 +418,7 @@ mod activity_http_tests {
             last_sent_ms: None,
             urgent_pending: false,
             unsent: false,
+            start_unanswered: false,
         };
         for push in [activity::Send::Start, activity::Send::Update { priority: 10 }, activity::Send::End] {
             let size = |state: &Value| serde_json::to_vec(&activity::payload(&push, state, T)).unwrap().len();

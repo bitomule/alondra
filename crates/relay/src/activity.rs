@@ -169,6 +169,10 @@ pub struct Phone {
     /// Something changed that no push carried yet.
     #[serde(default)]
     pub unsent: bool,
+    /// A start was recorded as sent and APNs has not answered it yet. Still set when the relay
+    /// opens its file, the relay stopped in between and nobody knows whether it went out.
+    #[serde(default)]
+    pub start_unanswered: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -286,6 +290,7 @@ impl Phone {
                 Send::Start => {
                     self.live = Some(Live { started_at_ms: now_ms, update_token: None, activity_id: None });
                     self.last_start_ms = Some(now_ms);
+                    self.start_unanswered = true;
                 }
                 Send::Update { priority: 10 } => self.last_urgent_ms = Some(now_ms),
                 Send::End | Send::Update { .. } => {}
@@ -294,6 +299,15 @@ impl Phone {
         if !pushes.is_empty() {
             self.urgent_pending = false;
             self.last_sent_ms = Some(now_ms);
+        }
+    }
+
+    /// A start the relay stopped before APNs answered is taken as never sent: an activity the
+    /// relay cannot end or update would otherwise hold the next start until the rotation.
+    fn forget_unanswered_start(&mut self) {
+        if std::mem::take(&mut self.start_unanswered) {
+            self.live = self.live.take().filter(|live| live.update_token.is_some());
+            self.unsent |= self.active();
         }
     }
 
@@ -372,7 +386,8 @@ pub struct Store {
 impl Store {
     pub fn open(device_registry_path: &Path) -> Result<Self> {
         let path = device_registry_path.with_file_name(LIVE_ACTIVITY_FILE);
-        let state = if path.exists() { serde_json::from_slice(&std::fs::read(&path)?)? } else { State::default() };
+        let mut state: State = if path.exists() { serde_json::from_slice(&std::fs::read(&path)?)? } else { State::default() };
+        state.phones.values_mut().for_each(Phone::forget_unanswered_start);
         Ok(Self {
             path,
             state: Mutex::new(state),
@@ -446,10 +461,12 @@ impl Store {
                 last_sent_ms: None,
                 urgent_pending: false,
                 unsent: false,
+                start_unanswered: false,
             });
             phone.environment = registration.environment;
             phone.frequent_updates = registration.frequent_updates;
             phone.start_token = registration.start_token;
+            phone.start_unanswered = false;
             phone.live = registration.update_token.map(|update_token| Live {
                 started_at_ms: registration.started_at_ms.unwrap_or(now).min(now),
                 update_token: Some(update_token),
@@ -581,6 +598,9 @@ impl Store {
         self.change(|state| {
             let Some(phone) = state.phones.get_mut(phone_id) else { return Ok(()) };
             for (push, token, outcome) in answers {
+                if *push == Send::Start {
+                    phone.start_unanswered = false;
+                }
                 match (push, outcome) {
                     (Send::Start, Outcome::DeadToken) => {
                         if phone.start_token.as_ref() == Some(token) {
@@ -661,14 +681,24 @@ pub async fn push(server: &Arc<Server>, phone_id: &str) {
     });
 }
 
-/// Picks up what no report will: a push lost to a restart, or an end APNs did not take.
+/// Picks up what no report will: a push lost to a restart, an end APNs did not take, or a
+/// revocation whose reports could not be forgotten when it happened. The first round runs at
+/// start.
 pub async fn retry_owed(server: Arc<Server>) {
     loop {
-        for phone_id in server.activity.owing() {
-            let _gate = server.device_gate.read().await;
-            push(&server, &phone_id).await;
-        }
+        retry_round(&server).await;
         tokio::time::sleep(Duration::from_millis(UPDATE_SPACING_MS)).await;
+    }
+}
+
+pub(crate) async fn retry_round(server: &Arc<Server>) {
+    {
+        let _gate = server.device_gate.read().await;
+        after_revocation(server).await;
+    }
+    for phone_id in server.activity.owing() {
+        let _gate = server.device_gate.read().await;
+        push(server, &phone_id).await;
     }
 }
 
@@ -750,6 +780,7 @@ mod tests {
             last_sent_ms: None,
             urgent_pending: false,
             unsent: false,
+            start_unanswered: false,
         }
     }
 
@@ -1010,6 +1041,63 @@ mod tests {
         store.settle(phone_id, &[(Send::Update { priority: 10 }, "cd".repeat(40), Outcome::Failed)]).unwrap();
         let phone = store.phone(phone_id).unwrap();
         assert_eq!(phone.plan(T + GROUP_WINDOW_MS), vec![Send::Update { priority: 10 }]);
+    }
+
+    #[test]
+    fn a_start_the_relay_stopped_before_apns_answered_does_not_hold_the_next_one() {
+        let directory = crate::test_support::Directory::new();
+        let registry = directory.join("device-registry.json");
+        let store = Store::open(&registry).unwrap();
+        store.set_clock(T);
+        let phone_id = store
+            .register("owner", "client-a", "mac-a", Registration {
+                phone_id: "0123456789abcdef".into(),
+                start_token: Some("ab".repeat(40)),
+                update_token: None,
+                activity_id: None,
+                started_at_ms: None,
+                environment: "sandbox".into(),
+                frequent_updates: true,
+            })
+            .unwrap();
+        mac_says(&store, true, false);
+        let taken = store.take(&phone_id).unwrap().unwrap();
+        assert_eq!(taken.pushes[0].0, Send::Start);
+        drop(store);
+
+        let reopened = Store::open(&registry).unwrap();
+        let after_spacing = T + START_SPACING_MS;
+        reopened.set_clock(after_spacing);
+        let phone = reopened.phone(&phone_id).unwrap();
+        assert_eq!(phone.plan(after_spacing), vec![Send::Start], "not seven hours forty-five later");
+        assert!(reopened.owing().contains(&phone_id), "no report has to come for it");
+    }
+
+    #[test]
+    fn a_start_apns_answered_stays_started_across_a_restart() {
+        let directory = crate::test_support::Directory::new();
+        let registry = directory.join("device-registry.json");
+        let store = Store::open(&registry).unwrap();
+        store.set_clock(T);
+        let phone_id = store
+            .register("owner", "client-a", "mac-a", Registration {
+                phone_id: "0123456789abcdef".into(),
+                start_token: Some("ab".repeat(40)),
+                update_token: None,
+                activity_id: None,
+                started_at_ms: None,
+                environment: "sandbox".into(),
+                frequent_updates: true,
+            })
+            .unwrap();
+        mac_says(&store, true, false);
+        let (push, token, _) = store.take(&phone_id).unwrap().unwrap().pushes.remove(0);
+        store.settle(&phone_id, &[(push, token, Outcome::Delivered)]).unwrap();
+        drop(store);
+
+        let reopened = Store::open(&registry).unwrap();
+        let after_spacing = T + START_SPACING_MS;
+        assert_eq!(reopened.phone(&phone_id).unwrap().plan(after_spacing), vec![], "it waits for the phone's update token");
     }
 
     #[test]

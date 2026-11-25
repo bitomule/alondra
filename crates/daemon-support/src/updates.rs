@@ -1,6 +1,7 @@
 //! Update awareness: the newest release in the Homebrew tap, checked at start (with jitter) and
 //! every 6 hours, quietly. With `auto_update`, a launchd daemon installed by Homebrew upgrades
-//! itself once per new version; `relaunch` then restarts it into the new binary.
+//! itself to each new version; a failed upgrade is tried again [`update::RETRIES`] times with a
+//! growing wait, then waits for the next version. `relaunch` restarts it into the new binary.
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use std::path::{Path, PathBuf};
@@ -43,8 +44,11 @@ pub fn last_attempt(home: &Path) -> Option<Attempt> {
 }
 
 fn record_attempt(home: &Path, attempt: &Attempt) {
+    let path = home.join(ATTEMPT_FILE);
+    let staged = path.with_extension("json.tmp");
     let written = serde_json::to_vec(attempt).map_err(std::io::Error::other)
-        .and_then(|bytes| std::fs::write(home.join(ATTEMPT_FILE), bytes));
+        .and_then(|bytes| std::fs::write(&staged, bytes))
+        .and_then(|()| std::fs::rename(&staged, &path));
     if let Err(e) = written {
         log!("cannot record the automatic update: {e}");
     }
@@ -66,10 +70,11 @@ pub enum Plan {
     Upgrade { brew: PathBuf, version: String },
 }
 
-/// At most one automatic upgrade per released version, and only for a Homebrew install.
-pub fn plan(auto_update: bool, latest: Option<&str>, last: Option<&Attempt>, prefix: Option<&Path>) -> Plan {
+/// One automatic upgrade per released version, tried again after a failure until it gave up, and
+/// only for a Homebrew install.
+pub fn plan(auto_update: bool, latest: Option<&str>, last: Option<&Attempt>, prefix: Option<&Path>, now: i64) -> Plan {
     let Some(latest) = latest.filter(|l| auto_update && update::newer(l, env!("CARGO_PKG_VERSION"))) else { return Plan::Nothing };
-    if last.is_some_and(|a| a.version == latest) { return Plan::Nothing; }
+    if last.is_some_and(|a| a.version == latest && a.retry_at().is_none_or(|at| now < at)) { return Plan::Nothing; }
     match prefix {
         Some(prefix) => Plan::Upgrade { brew: prefix.join("bin/brew"), version: latest.to_string() },
         None => Plan::NotHomebrew,
@@ -95,7 +100,8 @@ impl Updater {
                 known.checked_at = Some(alondra_core::now_millis());
             }
         }
-        match plan(self.auto_update, latest.as_deref(), last_attempt(&self.home).as_ref(), self.prefix.as_deref()) {
+        let last = last_attempt(&self.home);
+        match plan(self.auto_update, latest.as_deref(), last.as_ref(), self.prefix.as_deref(), alondra_core::now_millis()) {
             Plan::Nothing => (),
             Plan::NotHomebrew => log!("{} is available; auto_update only installs through Homebrew under launchd", latest.unwrap_or_default()),
             Plan::Upgrade { brew, version } => {
@@ -103,7 +109,7 @@ impl Updater {
                 let (ok, detail) = tokio::task::spawn_blocking(move || upgrade(&brew)).await
                     .unwrap_or_else(|e| (false, format!("upgrade crashed: {e}")));
                 log!("automatic update to {version} {}: {detail}", if ok { "installed" } else { "failed" });
-                record_attempt(&self.home, &Attempt { version, at: alondra_core::now_millis(), ok, detail });
+                record_attempt(&self.home, &Attempt::after(last.as_ref(), version, alondra_core::now_millis(), ok, detail));
             }
         }
     }
@@ -112,9 +118,16 @@ impl Updater {
         clock::sleep(Duration::from_secs(30 + u64::from_str_radix(&crate::auth::random_hex(2), 16).unwrap_or(0) % 300)).await;
         loop {
             self.check_once(brew_upgrade).await;
-            clock::sleep(EVERY).await;
+            clock::sleep(next_check(last_attempt(&self.home).as_ref(), alondra_core::now_millis())).await;
         }
     }
+}
+
+/// The next look at the releases: every 6 hours, or sooner when a failed upgrade is due again.
+fn next_check(last: Option<&Attempt>, now: i64) -> Duration {
+    last.and_then(Attempt::retry_at)
+        .map(|at| Duration::from_millis(u64::try_from(at.saturating_sub(now)).unwrap_or(0)))
+        .map_or(EVERY, |retry| retry.min(EVERY))
 }
 
 pub fn updater(config: &alondra_core::config::Config) -> Updater {
@@ -158,20 +171,47 @@ mod tests {
     const NEWER: &str = "999.0.0";
 
     fn attempt(version: &str) -> Attempt {
-        Attempt { version: version.into(), at: 1, ok: false, detail: "x".into() }
+        Attempt { version: version.into(), at: 1, ok: false, detail: "x".into(), attempts: 1 }
     }
 
     #[test]
     fn upgrades_only_when_asked_newer_homebrew_and_not_yet_tried() {
         let prefix = Path::new("/opt/homebrew");
-        assert_eq!(plan(false, Some(NEWER), None, Some(prefix)), Plan::Nothing);
-        assert_eq!(plan(true, None, None, Some(prefix)), Plan::Nothing);
-        assert_eq!(plan(true, Some(env!("CARGO_PKG_VERSION")), None, Some(prefix)), Plan::Nothing);
-        assert_eq!(plan(true, Some("0.0.1"), None, Some(prefix)), Plan::Nothing);
-        assert_eq!(plan(true, Some(NEWER), None, None), Plan::NotHomebrew);
-        assert_eq!(plan(true, Some(NEWER), Some(&attempt(NEWER)), Some(prefix)), Plan::Nothing, "at most once per version");
-        assert_eq!(plan(true, Some(NEWER), Some(&attempt("998.0.0")), Some(prefix)),
+        assert_eq!(plan(false, Some(NEWER), None, Some(prefix), 1), Plan::Nothing);
+        assert_eq!(plan(true, None, None, Some(prefix), 1), Plan::Nothing);
+        assert_eq!(plan(true, Some(env!("CARGO_PKG_VERSION")), None, Some(prefix), 1), Plan::Nothing);
+        assert_eq!(plan(true, Some("0.0.1"), None, Some(prefix), 1), Plan::Nothing);
+        assert_eq!(plan(true, Some(NEWER), None, None, 1), Plan::NotHomebrew);
+        let installed = Attempt { ok: true, ..attempt(NEWER) };
+        assert_eq!(plan(true, Some(NEWER), Some(&installed), Some(prefix), i64::MAX), Plan::Nothing, "an installed version is never upgraded to again");
+        assert_eq!(plan(true, Some(NEWER), Some(&attempt("998.0.0")), Some(prefix), 1),
             Plan::Upgrade { brew: prefix.join("bin/brew"), version: NEWER.into() });
+    }
+
+    #[test]
+    fn a_failed_upgrade_is_tried_again_three_times_with_a_growing_wait_then_waits_for_the_next_version() {
+        const MINUTE: i64 = 60_000;
+        let prefix = Path::new("/opt/homebrew");
+        let upgrade = Plan::Upgrade { brew: prefix.join("bin/brew"), version: NEWER.into() };
+        let mut last = Attempt::after(None, NEWER.into(), 0, false, "Error: Another active Homebrew update process is already in progress".into());
+        let mut waits = Vec::new();
+        while let Some(due) = last.retry_at() {
+            assert_eq!(plan(true, Some(NEWER), Some(&last), Some(prefix), due - 1), Plan::Nothing, "not before its wait");
+            assert_eq!(next_check(Some(&last), last.at), Duration::from_millis(u64::try_from(due - last.at).unwrap()).min(EVERY));
+            assert_eq!(plan(true, Some(NEWER), Some(&last), Some(prefix), due), upgrade);
+            waits.push((due - last.at) / MINUTE);
+            last = Attempt::after(Some(&last), NEWER.into(), due, false, "no network".into());
+        }
+        assert_eq!(waits, [30, 120, 480]);
+        assert_eq!(last.attempts, 1 + update::RETRIES);
+        assert!(last.gave_up());
+        assert_eq!(plan(true, Some(NEWER), Some(&last), Some(prefix), i64::MAX), Plan::Nothing, "it waits for the next version");
+        assert_eq!(next_check(Some(&last), last.at), EVERY);
+        assert_eq!(plan(true, Some("999.0.1"), Some(&last), Some(prefix), last.at),
+            Plan::Upgrade { brew: prefix.join("bin/brew"), version: "999.0.1".into() });
+        assert_eq!(Attempt::after(Some(&last), "999.0.1".into(), 1, false, "x".into()).attempts, 1, "a new version counts from one");
+        let legacy: Attempt = serde_json::from_str(r#"{"version":"999.0.0","at":5,"ok":false,"detail":"x"}"#).unwrap();
+        assert_eq!(legacy.attempts, 1, "a file from before the retries is its first try");
     }
 
     async fn releases_server(body: serde_json::Value) -> String {

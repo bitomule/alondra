@@ -144,9 +144,15 @@ pub fn update_check(health: &Value) -> Option<Outcome> {
     let status: alondra_core::update::Status = serde_json::from_value(health.get("update")?.clone()).ok()?;
     let current = &status.current;
     if let Some(attempt) = status.last_auto_update.as_ref().filter(|a| !a.ok && status.available && status.latest.as_deref() == Some(a.version.as_str())) {
-        let (version, detail) = (&attempt.version, &attempt.detail);
-        return Some(outcome("update", "update", Group::Service, Status::Warn,
-            trf!("automatic update to {version} failed: {detail}", "la actualización automática a {version} falló: {detail}"), manual("alondra update")));
+        let (version, detail, attempts) = (&attempt.version, &attempt.detail, attempt.attempts);
+        let summary = if attempt.gave_up() {
+            trf!("automatic update to {version} failed {attempts} times, so it waits for the next version: {detail}",
+                "la actualización automática a {version} falló {attempts} veces; espera a la siguiente versión: {detail}")
+        } else {
+            trf!("automatic update to {version} failed and will be tried again: {detail}",
+                "la actualización automática a {version} falló y se volverá a intentar: {detail}")
+        };
+        return Some(outcome("update", "update", Group::Service, Status::Warn, summary, manual("alondra update")));
     }
     Some(match status.latest.as_deref() {
         Some(latest) if status.available => outcome("update", "update", Group::Service, Status::Warn,

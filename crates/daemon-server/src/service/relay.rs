@@ -232,28 +232,30 @@ impl Service {
                 continue;
             }
             // Record one attempt before any network write. A relay-side revocation must
-            // survive retries and restarts; a new approval needs a new device ID.
+            // survive retries and restarts; a new approval needs a new device ID. An attempt
+            // no answer settled is sent again with the same body: the relay takes the same
+            // device, key, owner and Mac as the enrollment it already has, and refuses one it
+            // revoked, so a retry never brings a revoked device back.
             let (owned, key) = (id.clone(), device.signing.to_sec1_bytes());
             match self
                 .journal
                 .off_runtime(move |journal| journal.reserve_enrollment(&owned, &key))
                 .await?
             {
-                EnrollmentDecision::New => {}
-                EnrollmentDecision::Pending => {
-                    log!(
-                        "service device {id}: enrollment outcome unknown; approve again with a new device ID"
-                    );
-                    continue;
-                }
-                EnrollmentDecision::Active | EnrollmentDecision::Revoked => continue,
+                EnrollmentDecision::New | EnrollmentDecision::Pending => {}
+                EnrollmentDecision::Active | EnrollmentDecision::Revoked | EnrollmentDecision::Refused => continue,
             }
             let body = serde_json::to_vec(
                 &json!({"device_id":id,"owner_sub":owner_sub,"signing_key":device.signing_wire}),
             )?;
-            self.signed(Method::POST, "/v1/devices", body, epoch)
-                .await?
-                .error_for_status()?;
+            let answer = self.signed(Method::POST, "/v1/devices", body, epoch).await?;
+            if matches!(answer.status(), reqwest::StatusCode::CONFLICT | reqwest::StatusCode::BAD_REQUEST) {
+                log!("service device {id}: the relay refused its enrollment ({}); it has to pair again", answer.status());
+                let owned = id.clone();
+                self.journal.off_runtime(move |journal| journal.refuse_enrollment(&owned)).await?;
+                continue;
+            }
+            answer.error_for_status()?;
             let owned = id.clone();
             if self.auth.approved_key_matches(id, &device.signing) {
                 self.journal
@@ -400,8 +402,14 @@ impl Service {
                 .devices
                 .get(&id)
                 .is_some_and(|device| self.auth.approved_key_matches(&id, &device.signing));
-            if approved && state == "active" {
-                continue;
+            match state.as_str() {
+                "active" | "pending" | "refused" if approved => continue,
+                "refused" => {
+                    let owned = id.clone();
+                    self.journal.off_runtime(move |journal| journal.forget_refused_enrollment(&owned)).await?;
+                    continue;
+                }
+                _ => {}
             }
             let owned = id.clone();
             self.journal

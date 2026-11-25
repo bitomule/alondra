@@ -106,9 +106,9 @@ to its fix group and issue.
 | S2 | [F-ORCH-3](#f-orch-3--after-24-h-of-launch-failures-requests-are-left-untreated-and-the-watchdog-restarts-in-vain-every-5-min) · After 24 h of launch failures, requests are left untreated and the watchdog restarts in vain every 5 min | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-ORCH-4](#f-orch-4--a-scheduled-launch-that-did-start-is-considered-failed-after-a-restart-and-answering-the-card-cancels-the-live-task) · A scheduled launch that did start is considered failed after a restart, and answering the card cancels the live task | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | **FIXED** [F-PROV-1](#f-prov-1--a-usage-reading-measured-before-a-limit-erases-it-when-it-arrives-later-the-account-reads-as-having-margin-again) · A usage reading measured before a limit erases it when it arrives later: the account reads as having margin again | low | [G8](#g8--one-owner-per-host-and-provider-facts-in-order) · #525 · fixed in #613 |
-| S2 | [F-SERVER-D1](#f-server-d1--a-transient-failure-on-the-first-enrollment-permanently-revokes-a-devices-relay-access-while-it-still-shows-as-paired) · A transient failure on the first enrollment permanently revokes a device's relay access while it still shows as paired | medium-low | [G11](#g11--devices-relay-and-self-update) · #528 |
+| S2 | **FIXED** [F-SERVER-D1](#f-server-d1--a-transient-failure-on-the-first-enrollment-permanently-revokes-a-devices-relay-access-while-it-still-shows-as-paired) · A transient failure on the first enrollment permanently revokes a device's relay access while it still shows as paired | medium-low | [G11](#g11--devices-relay-and-self-update) · #528 · fixed |
 | S2 | **FIXED** [F-SERVER-D4](#f-server-d4--if-the-macs-own-terminal-is-revoked-the-tui-stays-on-device-not-paired-forever) · If the Mac's own terminal is revoked, the TUI stays on «device not paired» forever | low | [G9](#g9--terminal-client-and-local-pairing-recover-by-themselves) · #526 · fixed |
-| S2 | [F-SERVER-R4](#f-server-r4--if-live-activity-pruning-fails-after-a-revocation-the-removed-mac-keeps-the-live-activity-alive-indefinitely) · If Live Activity pruning fails after a revocation, the removed Mac keeps the Live Activity alive indefinitely | low | [G11](#g11--devices-relay-and-self-update) · #528 |
+| S2 | **FIXED** [F-SERVER-R4](#f-server-r4--if-live-activity-pruning-fails-after-a-revocation-the-removed-mac-keeps-the-live-activity-alive-indefinitely) · If Live Activity pruning fails after a revocation, the removed Mac keeps the Live Activity alive indefinitely | low | [G11](#g11--devices-relay-and-self-update) · #528 · fixed |
 | S2 | [F-STORE-1](#f-store-1--a-second-process-applies-restart-recovery-to-the-live-database) · A second process applies restart recovery to the live database | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S2 | [F-STORE-2](#f-store-2--alondrad---preflight-does-not-exercise-the-json-files-the-real-startup-requires) · `alondrad --preflight` does not exercise the JSON files the real startup requires | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S3 | [F-CARDS-6](#f-cards-6--createtask-and-setdependencies-accept-an-already-cancelled-dependency-the-task-is-born-waiting-for-something-that-will-not-come-issue-323) · `CreateTask` and `SetDependencies` accept an already cancelled dependency: the task is born waiting for something that will not come (issue #323) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
@@ -127,9 +127,9 @@ to its fix group and issue.
 | S3 | [F-ORCH-6](#f-orch-6--the-orchestrators-progress-marks-have-done-nothing-since-277) · The orchestrator's progress marks have done nothing since #277 | low | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S3 | [F-ORCH-7](#f-orch-7--an-accepted-cancellation-http-200-can-be-lost-orchestratorjson-is-written-without-a-lock-from-two-threads) · An accepted cancellation (HTTP 200) can be lost: `orchestrator.json` is written without a lock from two threads | very | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 | S3 | [F-ORCH-8](#f-orch-8--create_task-carries-no-priority-and-automatic-launch-wakes-in-the-same-commit-issue-352) · `create_task` carries no priority and automatic launch wakes in the same commit (issue #352) | medium | [G5](#g5--every-request-and-task-has-someone-who-moves-it-next) · #522 · fixed |
-| S3 | [F-SERVER-D5](#f-server-d5--a-direct-request-from-a-revoked-or-conflicting-id-reaches-the-user-approval-fails-with-500-and-the-client-ends-up-seeing-expired) · A direct request from a revoked or conflicting id reaches the user, approval fails with 500 and the client ends up seeing «Expired» | low | [G11](#g11--devices-relay-and-self-update) · #528 |
-| S3 | [F-SERVER-D7](#f-server-d7--a-failed-brew-upgrade-blocks-self-update-of-that-version-until-another-one-is-released) · A failed `brew upgrade` blocks self-update of that version until another one is released | medium | [G11](#g11--devices-relay-and-self-update) · #528 |
-| S3 | [F-SERVER-R6](#f-server-r6--a-crash-between-take-and-the-send-leaves-live--someno-token-and-blocks-the-start-for-up-to-7-h-45) · A crash between `take` and the send leaves `live = Some(no token)` and blocks the start for up to 7 h 45 | low | [G11](#g11--devices-relay-and-self-update) · #528 |
+| S3 | **FIXED** [F-SERVER-D5](#f-server-d5--a-direct-request-from-a-revoked-or-conflicting-id-reaches-the-user-approval-fails-with-500-and-the-client-ends-up-seeing-expired) · A direct request from a revoked or conflicting id reaches the user, approval fails with 500 and the client ends up seeing «Expired» | low | [G11](#g11--devices-relay-and-self-update) · #528 · fixed |
+| S3 | **FIXED** [F-SERVER-D7](#f-server-d7--a-failed-brew-upgrade-blocks-self-update-of-that-version-until-another-one-is-released) · A failed `brew upgrade` blocks self-update of that version until another one is released | medium | [G11](#g11--devices-relay-and-self-update) · #528 · fixed |
+| S3 | **FIXED** [F-SERVER-R6](#f-server-r6--a-crash-between-take-and-the-send-leaves-live--someno-token-and-blocks-the-start-for-up-to-7-h-45) · A crash between `take` and the send leaves `live = Some(no token)` and blocks the start for up to 7 h 45 | low | [G11](#g11--devices-relay-and-self-update) · #528 · fixed |
 | S3 | [F-STORE-3](#f-store-3--retry-of-an-uncertain-orchestrator-message-older-than-24-h-discards-itself) · "Retry" of an uncertain orchestrator message older than 24 h discards itself | medium | [G3](#g3--the-daemon-survives-its-own-restarts-and-recoverable-errors) · #520 · fixed in `2fc1e9349` |
 
 Hypotheses (not counted above) are listed at the end of each area, with what is missing to
@@ -497,6 +497,12 @@ F-CLIENTS-A4, F-CLIENTS-A5 · Depends on: none · Related: issue #386.
 
 ### G11 · Devices, relay and self-update
 
+**Status**: FIXED (issue #528) for F-SERVER-D1, F-SERVER-D5, F-SERVER-D7, F-SERVER-R4 and F-SERVER-R6, each with its
+test and ablation below, validated in #628. F-SERVER-R5 stays a hypothesis: no test could confirm it (see
+there). One part differs from the expected fix written here: an enrolment without a settling answer is sent again
+with the same device ID instead of being deleted first, because a signed DELETE marks the ID revoked at the relay
+for good, while a repeated POST of the same device, key, owner and Mac is answered as the enrolment it already has.
+
 Issue: #528 · Severity: S2/S3 · Findings: F-SERVER-D1, F-SERVER-D5, F-SERVER-D7,
 F-SERVER-R4, F-SERVER-R6 · Hypothesis: F-SERVER-R5 · Depends on: none.
 
@@ -509,6 +515,14 @@ F-SERVER-R4, F-SERVER-R6 · Hypothesis: F-SERVER-R5 · Depends on: none.
 - **Files**: `crates/daemon-support` (devices, pairing, self-update), `crates/relay` (activity,
   devices).
 - **Tests**: relay and daemon-support tests with injected failures at each step.
+- **Final behaviour**: a `pending` enrolment of a still approved device is sent again on the next round until the
+  relay answers; a 409 or 400 from the relay leaves it `refused`, never sent again, and the device list says «the
+  relay refused it: pair it again from the device» (`relay_refused` in `GET /devices`). A direct pairing request
+  from an ID this Mac revoked, or that it holds with other keys, is refused at `start` (`pairing_denied` /
+  `pairing_conflict`) and never listed; one that becomes so while it waits ends `denied` when approved. A failed
+  `brew upgrade` is tried again 30 min, 2 h and 8 h later, then waits for the next version, and `alondra doctor`
+  says which. The relay forgets revoked reports at start and on every one-minute round, and a start it recorded
+  but stopped before APNs answered counts as never sent when it opens its file.
 
 ### G12 · The architecture docs match the code
 
@@ -1760,6 +1774,10 @@ decides = "pace"
 [[timer]]
 name = "LAUNCH_WINDOW"
 where = "crates/core/src/tasks/derive.rs"
+decides = "pace"
+[[timer]]
+name = "FIRST_RETRY_AFTER_MS"
+where = "crates/core/src/update.rs"
 decides = "pace"
 [[timer]]
 name = "SAME_WEEK_MILLIS"
@@ -6242,11 +6260,11 @@ truth = ["memory", "file:tui-device"]
 
 ```toml state-machine
 id = "M-SERVER-D5"
-code = ["crates/daemon-server/src/service.rs::reserve_enrollment", "crates/daemon-server/src/service.rs::activate_enrollment", "crates/daemon-server/src/service.rs::revoke_enrollment", "crates/daemon-server/src/service/relay.rs::enroll"]
+code = ["crates/daemon-server/src/service.rs::reserve_enrollment", "crates/daemon-server/src/service.rs::activate_enrollment", "crates/daemon-server/src/service.rs::refuse_enrollment", "crates/daemon-server/src/service.rs::revoke_enrollment", "crates/daemon-server/src/service/relay.rs::enroll"]
 truth = ["sqlite:service_enrollments"]
 states = "crates/daemon-server/src/service.rs::EnrollmentDecision"
-variants = ["New", "Pending", "Active", "Revoked"]
-terminals = ["Revoked"]
+variants = ["New", "Pending", "Active", "Revoked", "Refused"]
+terminals = ["Revoked", "Refused"]
 ```
 
 - **Kind**: explicit, SQLite. **Defined in**: `service.rs:2425-2430` (`EnrollmentDecision`), `:2638-2715`
@@ -6254,16 +6272,21 @@ terminals = ["Revoked"]
   (`enroll`), `:386-420` (`sync_revocations`), `:443-470` (`keep_registered`).
 - **Source of truth**: table `service_enrollments(device_id, signing_key, state)` in `service-receipts.sqlite`;
   relay-side copies are covered by the relay part.
-- **States**: `none` → `pending` → `active` | `revoked`. `revoked` is terminal for that id (a new id is needed).
+- **States**: `none` → `pending` → `active` | `revoked` | `refused`. `revoked` and `refused` are terminal for that id
+  (a new id is needed).
 
 | from | event [guard] | to | effect |
 | --- | --- | --- | --- |
 | none | reserve [no row] | pending | before any network write |
 | pending | POST OK and still approved | active | |
 | pending | POST OK but revoked meanwhile | revoked | DELETE on the relay |
-| any row not (`active` and approved) | `sync_revocations` | revoked | DELETE on the relay |
+| pending | POST 409 or 400 | refused | `GET /devices` shows `relay_refused` |
+| pending | no answer, transport error, 401/403/429/5xx | pending | the round fails; the next one sends the same POST |
+| refused | `sync_revocations` [no longer approved] | none | row deleted, nothing sent (the relay never held it) |
+| any row not (`active`, `pending` or `refused`, and approved) | `sync_revocations` | revoked | DELETE on the relay |
 
-  A `pending` row is never retried.
+  Since G11 a `pending` row is sent again (F-SERVER-D1): the relay answers a repeat of the same device, key, owner
+  and Mac as the enrolment it has and refuses an ID it revoked, so the retry never revives a revoked device.
 - **Effects of revoked**: deletes push bindings, Live Activity keys and preferences (`service.rs:2688-2703`).
 - **Concurrency**: approval lease plus IMMEDIATE transaction.
 
@@ -6320,10 +6343,12 @@ truth = ["file:auto-update.json"]
 
 - **Kind**: implicit. **Defined in**: `daemon-support/src/updates.rs:17-118`; `alondra_core::update::{Attempt,
   Status}`.
-- **Source of truth**: `auto-update.json` (last `Attempt{version, at, ok, detail}`, written with a direct
-  `fs::write`, no tmp+rename, `:46-52`); `KNOWN` in memory (last version seen).
-- **States**: `Up to date` | `Available` → `Updating (brew)` → `Attempted(version, ok)`. `plan()` (`:71-78`): never
-  two attempts for the same version, whether it succeeded or failed.
+- **Source of truth**: `auto-update.json` (last `Attempt{version, at, ok, detail, attempts}`, written to a temporary
+  file and renamed since G11); `KNOWN` in memory (last version seen).
+- **States**: `Up to date` | `Available` → `Updating (brew)` → `Attempted(version, ok, attempts)`. Since G11
+  (F-SERVER-D7) `plan()` upgrades a version again after a failure once `Attempt::retry_at` passes (30 min, 2 h,
+  8 h after the 1st, 2nd and 3rd failure) and never after a success or the fourth failure (`gave_up`): that
+  version then waits for the next one. The check loop sleeps until the next retry when it comes before 6 h.
 
 ### M-SERVER-D10 · Relaunch after the binary is replaced
 
@@ -6370,6 +6395,7 @@ truth = ["file:service-pairing-pending.json"]
 
 #### F-SERVER-D1 · A transient failure on the first enrollment permanently revokes a device's relay access while it still shows as paired
 **Class**: CONFIRMED · **Severity**: S2 · **Probability**: medium-low (only on the first POST of each device, right after pairing) · **Overlap**: none known.
+**Status**: FIXED in group G11 (issue #528), validated in #628. `enroll` sends a `pending` row again (the relay answers a repeat of the same device, key, owner and Mac as the enrolment it has), `sync_revocations` leaves `pending` and `refused` rows of approved devices alone, and a 409 or 400 leaves the row `refused`, shown in `GET /devices` as `relay_refused` and in the CLI device list as «the relay refused it: pair it again from the device». No compensating DELETE: it would revoke the ID at the relay for good. Tests: `daemon-server` `service::tests::a_first_enrollment_without_a_settling_answer_is_sent_again_until_the_relay_takes_it` (503 then 201: two POSTs, no DELETE, `active`) and `an_enrollment_the_relay_refuses_says_to_pair_again_and_is_not_sent_again`; they replace `ambiguous_enrollment_is_deleted_and_never_retried`, which pinned the old behaviour. Ablation: without sending a `pending` row again the first test fails (`enrollment_active` is false after the second round), and without the 409/400 branch the second fails (`409 Conflict` comes back as an error); restored, both pass.
 - **Invalid state/transition and broken invariant**: `pending` → `revoked` although nobody revoked the device. It
   ends up «approved in `devices.json` + enrollment revoked»: it gets no pushes and the relay rejects its requests,
   but `/devices` lists it as paired (`domain_bootstrap.rs:675-700` does not show the enrollment state).
@@ -6422,6 +6448,7 @@ truth = ["file:service-pairing-pending.json"]
 
 #### F-SERVER-D5 · A direct request from a revoked or conflicting id reaches the user, approval fails with 500 and the client ends up seeing «Expired»
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: low (the «device_revoked» notice asks for a new id) · **Overlap**: none known.
+**Status**: FIXED in group G11 (issue #528), validated in #628. `direct_approval` now gives the pairing book an `admit` check, read without writing: an ID with a tombstone is `Denied` (403 `pairing_denied`) and one that `devices.json` or `service.toml` holds with other keys is `Conflict` (409 `pairing_conflict`, typed `ServiceApprovalError::OtherKey`). `start` asks it before booking, so such a request never reaches the user; `approve` asks it again and a refusal ends the request `denied` without writing anything. Tests: `daemon-server` `direct::tests::a_revoked_or_conflicting_id_is_refused_before_it_reaches_the_user` and `direct::pairing::tests::a_device_revoked_while_it_waits_ends_denied_instead_of_expiring`. Ablation: without `admit` in `start` and `approve`, the network test gets 200 with a pairing id instead of 403 `pairing_denied`, and the unit tests get `Ok` instead of `Err(Denied)`; restored, they pass.
 - **Invalid state/transition and broken invariant**: an `AwaitingApproval` that cannot be approved. The user
   compares the code, approves, gets `pairing_failed`, and the client sees `AwaitingApproval` → `Expired` instead of
   «revoked» or «conflict».
@@ -6441,6 +6468,7 @@ truth = ["file:service-pairing-pending.json"]
 
 #### F-SERVER-D7 · A failed `brew upgrade` blocks self-update of that version until another one is released
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: medium (a `brew upgrade` without network or with the Homebrew lock busy is common) · **Overlap**: none known.
+**Status**: FIXED in group G11 (issue #528), validated in #628, with the default decision: 3 retries per version with a growing wait (30 min, 2 h, 8 h), then wait for the next version. `Attempt` counts `attempts` (a file without it reads as 1); `plan` takes the time and `Attempt::retry_at`; `alondra doctor` says whether it will be tried again or waits for the next version; `auto-update.json` is written to a temporary file and renamed. Test: `daemon-support` `updates::tests::a_failed_upgrade_is_tried_again_three_times_with_a_growing_wait_then_waits_for_the_next_version`. Ablation: with `plan` back to «never the same version twice» the test fails (`Nothing` instead of `Upgrade` at the first retry); restored, it passes.
 - **Invalid state/transition and broken invariant**: `Attempted(v, ok=false)` is terminal for `v`.
 - **Evidence**:
   1. `updates.rs:73` `if last.is_some_and(|a| a.version == latest) { return Plan::Nothing; }` without looking at `ok`.
@@ -6597,8 +6625,10 @@ truth = ["file:live-activity.json"]
   any report with `active`), `pairings`, `held`, `ended`, `unsent`, `urgent_pending`, `last_*`.
 - **Events**: `register`/`unregister` (phone), `record` (Mac), `take` (records the send before APNs answers),
   `settle` (APNs response), `prune` (after revocations).
-- **Persistence**: everything; a write failure rolls back the in-memory change (`activity.rs:409-420`). There is no
-  pruning at startup (see F-SERVER-R4).
+- **Persistence**: everything; a write failure rolls back the in-memory change (`activity.rs:409-420`). Since G11
+  the first `retry_owed` round, at start, and every round after it prune against the registry (F-SERVER-R4), and
+  `Phone::start_unanswered` marks a start recorded before APNs answered: `Store::open` drops the activity it
+  stands for (F-SERVER-R6).
 
 ### M-SERVER-R7 · Web login flow (OIDC)
 
@@ -6737,6 +6767,7 @@ truth = ["memory"]
 
 #### F-SERVER-R4 · If Live Activity pruning fails after a revocation, the removed Mac keeps the Live Activity alive indefinitely
 **Class**: CONFIRMED (deterministic path on a write failure or a crash between two writes) · **Severity**: S2 (visible, recoverable with another revocation) · **Probability**: low (disk failure or crash in a short window) · **Overlap**: none known.
+**Status**: FIXED in group G11 (issue #528), validated in #628. `retry_owed` starts every round, the first one at start, with `retry_round`, which prunes against the registry (`after_revocation`) under the device gate before sending what is owed. Test: `relay` `activity_http_tests::a_revoked_mac_whose_reports_could_not_be_forgotten_leaves_on_the_next_round` (the write of `live-activity.json` fails because a directory takes its temporary file's place; the next round drops the revoked Mac). Ablation: without the prune in `retry_round` the test fails (`["mac-1", "mac-2"]` instead of `["mac-2"]`); restored, it passes.
 - **Invalid state/transition and broken invariant**: `live-activity.json` keeps pairings and reports of a device
   the registry already revoked. Breaks «a revoked Mac does not appear in the Live Activity».
 - **Evidence**:
@@ -6761,6 +6792,7 @@ truth = ["memory"]
 
 #### F-SERVER-R6 · A crash between `take` and the send leaves `live = Some(no token)` and blocks the start for up to 7 h 45
 **Class**: CONFIRMED (needs a process crash; deterministic path) · **Severity**: S3 · **Probability**: low · **Overlap**: none known.
+**Status**: FIXED in group G11 (issue #528), validated in #628. `apply(Start)` sets `Phone::start_unanswered`, `settle` and `register` clear it, and `Store::open` takes a start still unanswered as never sent: it drops the activity without a token and leaves the phone owing a push, so the next start waits only the 10-minute start spacing. Tests: `relay` `activity::tests::a_start_the_relay_stopped_before_apns_answered_does_not_hold_the_next_one` and `a_start_apns_answered_stays_started_across_a_restart`. Ablation: without `forget_unanswered_start` in `Store::open` the test fails (`[]` instead of `[Start]`); restored, it passes.
 - **Invalid state/transition and broken invariant**: the relay believes there is a Live Activity it started when
   none was ever sent.
 - **Evidence**: `take` persists the plan as sent before calling APNs (`activity.rs:549-576`; `apply` 283-297 sets
@@ -6779,6 +6811,9 @@ truth = ["memory"]
 
 #### F-SERVER-R5 · Canceling a browser request in the middle of the refresh closes the web session
 **Class**: HYPOTHESIS · **Severity**: S3 · **Probability**: medium if cancellation is confirmed.
+**Status** (G11, issue #528): still a hypothesis, not changed. The web session store is PostgreSQL itself
+(`web_session/store.rs`, no port or double), so the proposed test needs a real database, which the test rules of
+the fix groups do not allow. Confirming it needs a store port with a double, or an opt-in PostgreSQL run.
 - **Claim and path**: `authenticate` runs inside the request future (middleware `web_session/mod.rs:315-385`, no
   `tokio::spawn`). Between `begin_refresh` (`mod.rs:185-193`, state `refreshing`) and `activate_rotated`
   (`238-245`), dropping the future releases the lock (the connection closes, `store.rs:83-85`) and leaves

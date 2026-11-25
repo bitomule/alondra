@@ -57,10 +57,7 @@ pub fn add_device(home: &Path, _lock: &ServiceConfigLock, device: &NewDevice<'_>
         .or_insert_with(|| toml::Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| io::Error::other("service devices must be a list"))?;
-    let field = |entry: &toml::Value, key: &str| entry.get(key).and_then(toml::Value::as_str).map(str::to_owned);
-    if let Some(existing) = devices.iter().find(|entry| field(entry, "device_id").as_deref() == Some(device.device_id)) {
-        let same = field(existing, "signing_key").as_deref() == Some(device.signing_key)
-            && field(existing, "agreement_key").as_deref() == Some(device.agreement_key);
+    if let Some(same) = devices.iter().find_map(|entry| pins_same_keys(entry, device)) {
         return if same { Ok(()) } else { Err(io::Error::other("device ID already has other keys")) };
     }
     let mut entry = toml::Table::new();
@@ -70,6 +67,27 @@ pub fn add_device(home: &Path, _lock: &ServiceConfigLock, device: &NewDevice<'_>
     devices.push(toml::Value::Table(entry));
     let text = toml::to_string_pretty(&table).map_err(io::Error::other)?;
     write_atomically(&path, text.as_bytes())
+}
+
+/// `None` when the entry is another device; otherwise whether it pins the same keys.
+fn pins_same_keys(entry: &toml::Value, device: &NewDevice<'_>) -> Option<bool> {
+    let field = |key: &str| entry.get(key).and_then(toml::Value::as_str);
+    (field("device_id") == Some(device.device_id))
+        .then(|| field("signing_key") == Some(device.signing_key) && field("agreement_key") == Some(device.agreement_key))
+}
+
+/// Whether `service.toml` pins this device ID with other keys, which [`add_device`] refuses.
+pub fn pins_other_keys(home: &Path, device: &NewDevice<'_>) -> io::Result<bool> {
+    let path = home.join(FILE_NAME);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let table: toml::Table =
+        toml::from_str(&text).map_err(|error| io::Error::other(format!("invalid {}: {error}", path.display())))?;
+    Ok(table.get("devices").and_then(toml::Value::as_array)
+        .is_some_and(|devices| devices.iter().filter_map(|entry| pins_same_keys(entry, device)).any(|same| !same)))
 }
 
 /// Removes a device from `service.toml`; a device that is not there is already removed.

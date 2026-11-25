@@ -607,8 +607,8 @@ async fn service_approve_device(
         Err(crate::auth::ServiceApprovalError::Revoked) => {
             return (StatusCode::GONE, String::from(crate::auth::ServiceApprovalError::Revoked)).into_response();
         }
-        Err(crate::auth::ServiceApprovalError::Refused(error)) => {
-            return (StatusCode::CONFLICT, error).into_response();
+        Err(error @ (crate::auth::ServiceApprovalError::OtherKey | crate::auth::ServiceApprovalError::Refused(_))) => {
+            return (StatusCode::CONFLICT, String::from(error)).into_response();
         }
     }
     match state.reload_service_devices() {
@@ -691,8 +691,9 @@ async fn devices(
             let used = usage.devices.get(&d.id);
             let last_seen = used.and_then(|used| used.last_used_ms).max(d.last_seen);
             let push_failing = used.is_some_and(|used| used.push_missing.is_some());
+            let relay_refused = service.is_some_and(|service| service.relay_refused(&d.id));
             json!({"id": d.id, "name": d.name, "created_at": d.created_at, "last_seen": last_seen,
-                "push_failing": push_failing, "origin": origin})
+                "push_failing": push_failing, "relay_refused": relay_refused, "origin": origin})
         })
         .collect();
     let expired: Vec<&crate::device_usage::Expired> = usage.expired.iter()

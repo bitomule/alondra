@@ -149,30 +149,45 @@ pub fn ensure_domain_protocol(home: &std::path::Path) -> Result<()> {
 }
 
 /// What approving a direct pairing request does on this Mac: pin the device's keys in
-/// `service.toml`, approve it in the registry, and make the running service accept it.
+/// `service.toml`, approve it in the registry, and make the running service accept it. A device
+/// it could never approve (revoked here, or an id pinned with other keys) is refused before the
+/// request reaches the user.
 pub fn direct_approval(
     home: std::path::PathBuf,
     auth: Arc<auth::Auth>,
     service: Arc<service::Service>,
-) -> Box<dyn Fn(&direct::pairing::ApprovedDevice) -> std::result::Result<(), String> + Send + Sync> {
-    use alondra_core::service_config::{NewDevice, ServiceConfigLock, add_device};
-    Box::new(move |device| {
+) -> direct::DeviceApproval {
+    use alondra_core::service_config::{NewDevice, ServiceConfigLock, add_device, pins_other_keys};
+    use auth::ServiceApprovalError;
+    use direct::pairing::PairingError;
+    fn keys(device: &direct::pairing::ApprovedDevice) -> NewDevice<'_> {
+        NewDevice { device_id: &device.device_id, signing_key: &device.signing_key, agreement_key: &device.agreement_key }
+    }
+    let admit = {
+        let (home, auth) = (home.clone(), auth.clone());
+        Box::new(move |device: &direct::pairing::ApprovedDevice| {
+            match auth.service_admits(&device.device_id, &device.signing_key) {
+                Err(ServiceApprovalError::Revoked) => return Err(PairingError::Denied),
+                Err(ServiceApprovalError::OtherKey) => return Err(PairingError::Conflict),
+                Err(ServiceApprovalError::Refused(reason)) => return Err(PairingError::Internal(reason)),
+                Ok(()) => {}
+            }
+            match pins_other_keys(&home, &keys(device)) {
+                Ok(false) => Ok(()),
+                Ok(true) => Err(PairingError::Conflict),
+                Err(error) => Err(PairingError::Internal(error.to_string())),
+            }
+        })
+    };
+    let persist = Box::new(move |device: &direct::pairing::ApprovedDevice| {
         let lock = ServiceConfigLock::exclusive(&home).map_err(|error| error.to_string())?;
-        add_device(
-            &home,
-            &lock,
-            &NewDevice {
-                device_id: &device.device_id,
-                signing_key: &device.signing_key,
-                agreement_key: &device.agreement_key,
-            },
-        )
-        .map_err(|error| error.to_string())?;
+        add_device(&home, &lock, &keys(device)).map_err(|error| error.to_string())?;
         direct::remember_direct(&home, &device.device_id).map_err(|error| error.to_string())?;
         drop(lock);
         auth.approve_service(&device.device_id, &device.name, &device.signing_key)?;
         service.reload_devices().map_err(|error| format!("{error:#}"))
-    })
+    });
+    direct::DeviceApproval { admit, persist }
 }
 
 /// Before cutover, the legacy Hub creates an empty v2 sidecar for its API.

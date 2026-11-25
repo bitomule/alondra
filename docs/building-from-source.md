@@ -408,9 +408,11 @@ new releases without asking, add to `~/.alondra/config.toml`:
 auto_update = true
 ```
 
-The daemon then runs `brew upgrade bitomule/tap/alondra` itself, at most once per new version,
-logs the outcome in `~/.alondra/alondrad.log` (`alondra doctor` shows a failure) and restarts
-into the new binary as described above. It only does this when launchd runs a Homebrew install.
+The daemon then runs `brew upgrade bitomule/tap/alondra` itself once per new version. A failed
+upgrade (no network, Homebrew busy) is tried again three times, 30 minutes, 2 hours and 8 hours
+later; after that it waits for the next version. It logs each outcome in
+`~/.alondra/alondrad.log` (`alondra doctor` shows a failure and whether it will be tried again)
+and restarts into the new binary as described above. It only does this when launchd runs a Homebrew install.
 
 Other problems:
 

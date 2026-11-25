@@ -611,6 +611,10 @@ fn startup_update_and_upgrade_reports() {
     let newer = update_check(&health(json!({"current": "0.1.12", "latest": "0.1.13", "available": true}))).unwrap();
     assert_eq!((newer.status, newer.fix), (Status::Warn, Some(Fix::Manual("alondra update".into()))));
     assert_eq!(update_check(&health(json!({"current": "0.1.13", "latest": "0.1.13", "available": false}))).unwrap().status, Status::Pass);
+    let failed = |attempts: u32| update_check(&health(json!({"current": "0.1.12", "latest": "0.1.13", "available": true,
+        "last_auto_update": {"version": "0.1.13", "at": 1, "ok": false, "detail": "brew locked", "attempts": attempts}}))).unwrap().detail;
+    assert!(failed(2).contains("tried again"), "{}", failed(2));
+    assert!(failed(4).contains("4 times") && failed(4).contains("next version"), "{}", failed(4));
     assert!(preflight_check(&json!({"version": "0.1.12", "preflight_rejected": null})).is_none());
     let warned = preflight_check(&json!({"version": "0.1.12", "preflight_rejected": {"version": "0.1.13", "reason": "preflight failed: audit"}})).unwrap();
     assert!(warned.detail.contains("0.1.13") && warned.detail.contains("preflight failed: audit"), "{}", warned.detail);
