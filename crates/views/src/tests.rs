@@ -11002,6 +11002,7 @@ fn antigravity_accounts_show_their_access_key_and_sign_in_and_never_the_key() {
         assert!(reason(&row("lab")).contains("gcloud auth application-default login --project demo-project"), "{}", reason(&row("lab")));
         assert_eq!(reason(&row("work-g")), if es { "Actualiza Antigravity CLI con agy update" } else { "Update Antigravity CLI with agy update" });
         let add = rows.iter().find(|row| row.id == "antigravity-add").unwrap();
+        assert_eq!(add.title, if es { "Añadir una cuenta de Antigravity" } else { "Add an Antigravity account" });
         let options: Vec<_> = add.actions[0].options.iter().map(|option| option.id.as_str()).collect();
         assert_eq!(options, ["google", "enterprise", "api_key"], "a Cloud project account is added from the CLI, which takes its project");
         let credential = |row: &Row| row.account.as_ref().and_then(|account| account.credential.clone());

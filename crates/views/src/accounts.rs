@@ -250,7 +250,8 @@ fn remove_action(account: &AccountStatus, shown: &str, context: &RenderContext<'
 fn add_row(provider: Provider, context: &RenderContext<'_>) -> Item {
     let lang = context.lang;
     let name = provider_name(provider);
-    let mut row = common::row(&format!("{}-add", provider.as_str()), KEY, Icon::Action, tf!(lang, "Add a {name} account", "Añadir una cuenta de {name}"),
+    let article = if provider == Provider::Antigravity { "an" } else { "a" };
+    let mut row = common::row(&format!("{}-add", provider.as_str()), KEY, Icon::Action, tf!(lang, "Add {article} {name} account", "Añadir una cuenta de {name}"),
         Some(tf!(lang, "Choose a name; then sign it in to {name} in Terminal on the Mac", "Elige un nombre; luego inicia su sesión de {name} en Terminal en el Mac")));
     row.link = None;
     if let Some(mut add) = common::action(Verb::AccountAdd, provider.as_str(), context.domain.revision, t!(lang, "Add", "Añadir"), Style::Primary) {
