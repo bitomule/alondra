@@ -234,6 +234,7 @@ class LocalReleaseTests(unittest.TestCase):
 
     def test_a_release_names_tests_that_exist_and_that_no_wildcard_runs(self):
         self.assertIn('//crates/alondrad:codex_adoption_process_test', l.RELEASE_ONLY_TESTS)
+        self.assertIn('//crates/engine-sdk:engine_sdk_host_test', l.RELEASE_ONLY_TESTS)
         for label in l.RELEASE_ONLY_TESTS:
             package, name = label.removeprefix('//').split(':')
             declared = (REPO_ROOT / package / 'BUILD.bazel').read_text()

@@ -55,8 +55,6 @@ path:claude	The node mod's tests run with the Claude Code on PATH (`claude plugi
 //agent-host:alondra-codex-host	Orchestrator tests run the Codex host a release ships.
 /usr/bin/pgrep	Python reapers beside each host find the processes they end.
 /usr/bin/lsbom	The Apple release script reads the bill of materials of its package.
-//agent-host:alondra-codex-plan-legacy-fixture-host	A Codex host built from an older plan format.
-//agent-host:codex-legacy-fixture	A Codex host of an older release.
 /usr/bin/mkbom	The Apple release script rewrites the bill of materials of its package.
 own-sandbox	The test starts sandbox-exec itself, which cannot run inside the guard's sandbox, so the target runs unguarded.
 //crates/github-gh:diff_fixture	A double of `gh pr diff` the tests run in its place.

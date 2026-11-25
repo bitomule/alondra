@@ -88,6 +88,10 @@ impl super::owner::Hosts for ModelHosts {
         self.model().forget(session);
     }
 
+    fn ran_elsewhere(&self, session: &str, prompts: &[&str]) {
+        self.model().ran_elsewhere(session, prompts.len());
+    }
+
     fn hold(&self) {
         self.model().hold();
     }

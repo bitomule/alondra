@@ -49,6 +49,7 @@ sh_test(
         "release.sh",
         "tests/test_local_release.py",
         "//crates/alondrad:BUILD.bazel",
+        "//crates/engine-sdk:BUILD.bazel",
         "//:Cargo.lock",
         "//:Cargo.toml",
         "//agent-host:codex-main.ts",

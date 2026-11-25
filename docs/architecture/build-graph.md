@@ -247,8 +247,9 @@ only through the port `SdkEngine` (see "`engine-sdk` asks the engine through `Sd
   the engine and links neither `daemon-engine` nor `engine-admission`;
   `//crates/engine-sdk:engine_sdk_engine_test` opens the whole engine on the doubled hosts with the
   Claude host model and carries no host executable; `//crates/engine-sdk:engine_sdk_host_test`
-  compiles only the tests that need the real Node or Codex host or a fake native Claude or Codex
-  (see "The SDK's tests on the double" and "The owner's tests on the model"). None carries a binary of the root (see "Tests leave the
+  compiles only the tests that need the real Node or Codex host or a fake native Claude or Codex,
+  and is end to end: only the release runs it (see "The SDK's tests on the double", "The owner's
+  tests on the model" and "The last real-host tests of the SDK"). None carries a binary of the root (see "Tests leave the
   root"), and no test runs on a name filter.
 
 ## Output adapters
@@ -804,6 +805,40 @@ Four that kill a host also hold its prompts with `HOLDING_NATIVE`, a script only
 moved, now listed in `engine_sdk_engine_test`, and the 5 decision cases in each of the two case
 targets), none lost.
 
+
+## The last real-host tests of the SDK (phase 9, 2026-11-25)
+
+`engine_sdk_host_test` kept 40 tests on real hosts, 32.2 s inside the binary on the shared Mac, its
+longest test 27.6 s. Now:
+
+- **The move from `claude --bg`.** `bg_handover`'s tests ran on the pinned Node host and a real
+  `/bin/sleep` standing for the node's `claude --bg` process. The move sees that process only
+  through `BgSessions`, so the double `Bg` is now an identity and a flag, and the world takes its
+  hosts from `crate::engine_tests::SliceHosts`. The Claude host model learnt a session another
+  Claude Code ran before any host (`ClaudeModel::ran_elsewhere`, `Hosts::ran_elsewhere`), which a
+  host that resumes it starts on. 4 of the 5 run on the model (1.3 s together, about 44 s before);
+  the one on a release's installed Claude Code, which runs a real `claude --version`, stays.
+- **Three of the owner's tests** pass on the model as they are (a compacted journal, a doubtful
+  answer resumed, a live host that refuses its adoption).
+- **`a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs` is gone.** Its three
+  causes are each tested where they live: the host's journal past 20 MiB and its 256 held commands
+  in `agent-host/journal-compaction.test.mjs`, the daemon's 256 tracked commands per connection in
+  `agent-protocol/tests/contract.rs` (`duplicate_command_conflict_capacity_and_receipt_phases_are_explicit`).
+- **The uncertain takeover** waits out its stopped host's I/O timeout: 4 s instead of 8, the rest of
+  the test answering in milliseconds (five runs in a row, 6.9 s each).
+- **`engine_sdk_host_test` is end to end**: `manual`, tagged `e2e`, `TEST_EXECS = "e2e"`, in the
+  release's `RELEASE_ONLY_TESTS`, out of `MUSTS.yml`. The exec ceiling goes from 215 to 204.
+  `TEST_HOOK_EXCEPTIONS` had already left the table (phase 4b).
+
+| Target | Before (main at 36c0386a6) | After |
+|---|---:|---:|
+| `engine_sdk_host_test`, alone | 40 tests, 32.2 s in the binary | 29 tests, 11.0 s in the binary, 12.7 s the target |
+| `engine_sdk_engine_test` | 525 tests | 532 tests, 19.1 s |
+
+The goal of 10 s alone is not met by 1 s. What is left is the Codex host (14 tests, the longest a
+thread that opens after its I/O timeout, 7.2 s), the uncertain takeover (6.9 to 8.3 s), the
+engine's pause of a delivering task whose hosts end (7.0 s), hosts of an older release, and the
+tests of a test process holding, killing or leaving a host, which exist to run real processes.
 
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 

@@ -180,6 +180,8 @@ pub trait Hosts: Default {
     fn watch(&self, group: i32) -> HostWatch;
     /// Claude loses what it kept of `session`, apart from the transcript in its profile.
     fn forget(&self, session: &str);
+    /// Another Claude Code ran `session` before any host, and its transcript holds `prompts`.
+    fn ran_elsewhere(&self, session: &str, prompts: &[&str]);
     /// Claude keeps working on each host's first prompt from now on, and leaves the rest unread.
     fn hold(&self);
     /// The native Claudes the hosts start from now on, from the executable `native`, never get a
@@ -311,6 +313,10 @@ impl Hosts for ProcessHosts {
 
     fn forget(&self, session: &str) {
         std::fs::remove_file(format!("{}.transcript-{session}", self.capture.display())).unwrap();
+    }
+
+    fn ran_elsewhere(&self, session: &str, prompts: &[&str]) {
+        std::fs::write(format!("{}.transcript-{session}", self.capture.display()), prompts.iter().map(|prompt| format!("{prompt}\n")).collect::<String>()).unwrap();
     }
 
     fn hold(&self) {

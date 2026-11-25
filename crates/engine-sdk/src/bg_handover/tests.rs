@@ -1,8 +1,8 @@
-//! A `claude --bg` node's move through the real owner: the daemon's store and commands, the
-//! pinned Node host with the official SDK, and the fake native Claude, which records every start
-//! with the session it resumed and its folder. The node's `claude --bg` process is a real child
-//! process, named by its identity; Claude Code's `claude stop` is the double here. Every wait is
-//! on a fact the domain publishes, never on a clock.
+//! A `claude --bg` node's move through the real owner: the daemon's store and commands, and the
+//! hosts of `crate::engine_tests::SliceHosts`, which record every start with the session it
+//! resumed and its folder. The node's `claude --bg` process and Claude Code's `claude stop` are the
+//! double `Bg`: the move sees the process only through `BgSessions`. Every wait is on a fact the
+//! domain publishes, never on a clock.
 use crate::domain_runtime::DomainRuntime;
 use alondra_store_sqlite::AsSqlite as _;
 use crate::sdk_owner::SdkOwners as _;
@@ -11,51 +11,42 @@ use crate::sdk_handover::HandoversOf as _;
 use super::*;
 use crate::domain_store::HandoverProcess;
 use crate::node_close::Answer;
-use crate::sdk_handover::{BgSessions, identity, member};
+use crate::sdk_handover::BgSessions;
+use crate::sdk_owner::fixtures::Hosts as _;
 use crate::domain_store::StoreError;
 use crate::test_support::Directory;
 use std::collections::BTreeSet;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::DirBuilderExt;
+#[cfg(feature = "real-hosts")]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const TASK: &str = "t-release-notes";
 const SESSION: &str = "11111111-2222-4333-8444-555555555555";
 const CARD: &str = "q-format";
 
-/// The node's `claude --bg` process: a real process this test owns and ends. `claude stop` ends
-/// it, unless it is told to answer some stops while the process goes on, as Claude Code can answer
-/// before its process exited.
+/// The node's `claude --bg` process, by the identity Claude Code lists it under. `claude stop`
+/// ends it, unless it is told to answer some stops while the process goes on, as Claude Code can
+/// answer before its process exited.
 struct Bg {
-    child: Mutex<Option<std::process::Child>>,
     process: HandoverProcess,
+    runs: AtomicBool,
     early_answers: AtomicUsize,
     stops: AtomicUsize,
 }
 
 impl Bg {
     fn spawn() -> Arc<Self> {
-        let child = std::process::Command::new("/bin/sleep").arg("600").stdin(std::process::Stdio::null()).spawn().unwrap();
-        let member = alondra_process_group::process(i32::try_from(child.id()).unwrap()).unwrap().unwrap();
-        Arc::new(Self { child: Mutex::new(Some(child)), process: identity(member), early_answers: AtomicUsize::new(0), stops: AtomicUsize::new(0) })
+        Arc::new(Self { process: HandoverProcess { pid: 4242, started: (1_790_000_000, 0) }, runs: AtomicBool::new(true), early_answers: AtomicUsize::new(0), stops: AtomicUsize::new(0) })
     }
 
     fn running(&self) -> bool {
-        alondra_process_group::alive(&member(&self.process)).unwrap()
+        self.runs.load(Ordering::SeqCst)
     }
 
     fn end(&self) {
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            let _ = child.kill();
-            child.wait().unwrap();
-        }
-    }
-}
-
-impl Drop for Bg {
-    fn drop(&mut self) {
-        self.end();
+        self.runs.store(false, Ordering::SeqCst);
     }
 }
 
@@ -77,7 +68,7 @@ impl BgSessions for Bg {
     }
 
     fn alive(&self, process: &HandoverProcess) -> bool {
-        alondra_process_group::alive(&member(process)).unwrap()
+        *process == self.process && self.running()
     }
 }
 
@@ -85,11 +76,10 @@ struct World {
     domain: Arc<DomainRuntime>,
     bg: Arc<Bg>,
     backend: crate::sdk_backend::SdkBackend,
-    capture: PathBuf,
+    hosts: crate::engine_tests::SliceHosts,
     worktree: PathBuf,
     database: PathBuf,
     home: Directory,
-    _state: crate::sdk_owner::fixtures::HostRoot,
 }
 
 fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
@@ -119,6 +109,7 @@ impl World {
     /// starts and the user's Claude Code is found on the PATH, here the fixture behind a `claude`
     /// that tells its release. Its first `claude --version` fails, as one that does not answer in
     /// time on a busy Mac: the admission that asked it fails and the move stays at its step.
+    #[cfg(feature = "real-hosts")]
     fn installed() -> Self {
         Self::with(|home, backend| {
             let bin = home.join("bin");
@@ -142,17 +133,17 @@ impl World {
     fn with(release: impl FnOnce(&Path, &mut crate::sdk_backend::SdkBackend)) -> Self {
         let home = Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
-        let state = crate::sdk_owner::fixtures::HostRoot::new();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         std::fs::DirBuilder::new().mode(0o700).create(home.join(crate::plugins::NODE)).unwrap();
-        let (mut backend, capture) = crate::sdk_owner::fixtures::fixture_backend(&home, &state);
+        let mut hosts = crate::engine_tests::SliceHosts::default();
+        let mut backend = hosts.backend(&home);
         release(&home, &mut backend);
-        std::fs::write(format!("{}.transcript-{SESSION}", capture.display()), "the claude --bg session's first prompt\n").unwrap();
+        hosts.ran_elsewhere(SESSION, &["the claude --bg session's first prompt"]);
         let database = home.join("domain.sqlite");
         let bg = Bg::spawn();
-        let domain = Self::boot(&home, &database, &backend, &bg);
-        let world = Self { domain, bg, backend, capture, worktree, database, home, _state: state };
+        let domain = Self::boot(&home, &database, &backend, &bg, &hosts);
+        let world = Self { domain, bg, backend, hosts, worktree, database, home };
         let orchestrator = Actor::Orchestrator { generation: 0 };
         run(&world.domain, &orchestrator, "request", Command::CreateRequest { request_id: "r".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
         run(&world.domain, &orchestrator, "title", Command::TitleRequest { request_id: "r".into(), title: "Release notes".into() }).unwrap();
@@ -167,8 +158,9 @@ impl World {
         world
     }
 
-    fn boot(home: &Path, database: &Path, backend: &crate::sdk_backend::SdkBackend, bg: &Arc<Bg>) -> Arc<DomainRuntime> {
+    fn boot(home: &Path, database: &Path, backend: &crate::sdk_backend::SdkBackend, bg: &Arc<Bg>, hosts: &crate::engine_tests::SliceHosts) -> Arc<DomainRuntime> {
         let domain = Arc::new(crate::engine_fixtures::open_at(home, database).unwrap());
+        hosts.serve(&domain);
         crate::sdk_owner::fixtures::measure_healthy_machine(&domain);
         domain.enable_sdk(backend.clone());
         domain.handovers().use_sessions(Arc::clone(bg) as Arc<dyn BgSessions>);
@@ -213,7 +205,7 @@ impl World {
     /// startup, takes over the SDK executions before it goes on with the moves.
     async fn restart(&mut self) {
         self.domain.stop_sdk_owners();
-        self.domain = Self::boot(&self.home, &self.database, &self.backend, &self.bg);
+        self.domain = Self::boot(&self.home, &self.database, &self.backend, &self.bg, &self.hosts);
         let (domain, backend) = (Arc::clone(&self.domain), self.backend.clone());
         tokio::task::spawn_blocking(move || crate::sdk_owner::adopt_all(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), &backend)).await.unwrap();
     }
@@ -237,12 +229,12 @@ impl World {
     }
 
     fn starts(&self) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(format!("{}.starts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+        self.hosts.starts()
     }
 
     /// The prompts Claude got, besides the wake Alondra sends after a turn that ended empty.
     fn prompts(&self) -> Vec<String> {
-        crate::sdk_owner::fixtures::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
+        crate::sdk_owner::fixtures::not_wakes(self.hosts.prompts().into_iter())
     }
 
     /// How the store left the launch of the task's current SDK execution.
@@ -308,6 +300,7 @@ async fn assert_moved(world: &World) {
 // A move an earlier release planned goes on to its end: its claude --bg process is stopped, its
 // exit is seen by the process's identity, and the SDK resumes its same session with the answer as
 // the first input. No new move is planned: a node without one stays.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_journaled_move_resumes_the_same_claude_session_with_its_input() {
     let world = World::new();
@@ -327,6 +320,7 @@ async fn a_journaled_move_resumes_the_same_claude_session_with_its_input() {
 // On a release with no configuration file, a move the daemon's death cut after its admission is
 // finished by the daemon that comes back, on the host the release installed and the user's Claude
 // Code found on the PATH, as every Mac that upgrades has them.
+#[cfg(feature = "real-hosts")]
 #[tokio::test]
 async fn a_move_cut_after_its_admission_starts_the_host_and_claude_code_a_release_installed() {
     let mut world = World::installed();
@@ -344,6 +338,7 @@ async fn a_move_cut_after_its_admission_starts_the_host_and_claude_code_a_releas
 // A daemon that dies right after any step of a move comes back and goes on from the step it
 // recorded: the claude --bg process is stopped once, Claude starts once with the same session and
 // the answer reaches it once.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn a_crash_after_each_step_of_the_move_goes_on_from_that_step_and_repeats_nothing() {
     for step in [HandoverStep::Planned, HandoverStep::BgStopped, HandoverStep::SdkAdmitted] {
@@ -366,6 +361,7 @@ async fn a_crash_after_each_step_of_the_move_goes_on_from_that_step_and_repeats_
 
 // `claude stop` can answer before the process exited: the SDK takes the session only once the
 // process is seen gone by its identity, never while the claude --bg process still runs.
+#[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn the_sdk_takes_the_session_only_once_the_claude_bg_process_has_exited() {
     let world = World::new();
@@ -387,6 +383,7 @@ proptest::proptest! {
 
     /// Whatever step the daemon dies at and however often `claude stop` answers early, the task
     /// never has its claude --bg process and its SDK host alive at once, and the move ends.
+    #[cfg(not(feature = "real-hosts"))]
     #[test]
     fn a_task_never_has_two_live_owners(crash in proptest::option::of(0..3usize), early in 0..3usize) {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
