@@ -48,6 +48,19 @@ impl CalmMac {
     async fn wait_for_second_publication(&self) {
         self.1.wait_for(2).await;
     }
+
+    /// Waits until the daemon stored and published every sample it started. A sample is taken in
+    /// the blocking pool and published by the sampler's task once the job ends, so a step that
+    /// advanced the clock can end with the sample of its instant still unpublished.
+    async fn wait_for_published_samples(&self) {
+        loop {
+            let changed = self.1.changed.notified();
+            if self.1.count.load(std::sync::atomic::Ordering::SeqCst) >= self.0.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            changed.await;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -91,6 +104,19 @@ mod publication_tests {
         assert!(matches!(ready.as_mut().poll(&mut context), Poll::Pending));
         mac.1.publish();
         assert!(matches!(ready.as_mut().poll(&mut context), Poll::Ready(())));
+    }
+
+    #[test]
+    fn a_checkpoint_waits_for_every_sample_that_started() {
+        let mac = CalmMac::default();
+        let mut context = Context::from_waker(Waker::noop());
+        let mut idle = Box::pin(mac.wait_for_published_samples());
+        assert!(matches!(idle.as_mut().poll(&mut context), Poll::Ready(())), "no sample started, none to wait for");
+        mac.sample();
+        let mut waiting = Box::pin(mac.wait_for_published_samples());
+        assert!(matches!(waiting.as_mut().poll(&mut context), Poll::Pending));
+        mac.1.publish();
+        assert!(matches!(waiting.as_mut().poll(&mut context), Poll::Ready(())));
     }
 }
 impl MachineProbe for CalmMac {
@@ -1364,6 +1390,9 @@ impl Context<'_> {
     }
 
     async fn read_checkpoint(&mut self, checkpoint: &Checkpoint) -> Result<(), ScenarioError> {
+        // The gauges of the home screen come from the sample of the Mac taken at this instant: the
+        // checkpoint waits until the sampler published it, however late its blocking job ran.
+        self.mac.wait_for_published_samples().await;
         let mut files = Files::new();
         let world = &self.scenario.world;
         for screen in &checkpoint.screens {

@@ -391,19 +391,20 @@
         "level": "calm",
         "parts": [
           {
-            "detail": "90% of the week left",
+            "detail": "90% of the week left · Measured 3 h ago",
             "group": "Claude",
             "label": "Default",
             "level": "calm",
             "lines": [
-              "90% of the week left"
+              "90% of the week left",
+              "Measured 3 h ago"
             ],
             "text": "with room",
             "value": 0.9
           }
         ],
         "text": "with room",
-        "value": 0.8
+        "value": 0.9
       },
       {
         "id": "memory",

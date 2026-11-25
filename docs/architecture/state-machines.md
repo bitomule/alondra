@@ -1762,6 +1762,11 @@ where = "crates/agent-runtime/src/owned_host.rs"
 decides = "pace"
 triggers = "how often an opening host's exit and the daemon's clock are looked at; the I/O timeout decides"
 [[timer]]
+name = "GAUGE_SAMPLE_LATE_MS"
+where = "crates/daemon-server/src/views/live.rs"
+decides = "pace"
+triggers = "a view that reads the home gauges from a sample older than this shows them but does not keep them for the minute the views cache them; no state depends on it"
+[[timer]]
 name = "NO_CHECKS_GRACE"
 where = "crates/core/src/automerge.rs"
 decides = "state"

@@ -597,7 +597,8 @@ async fn gather_inner(
     let mut published = cache(&client.views_gauges);
     let sample = client.gauges.lock_or_recover("the machine gauges").clone();
     let gauges = if let Some((machine, _, providers)) = sample {
-        published_gauges(&mut published, alondra_core::clock::instant(), lang, || (
+        let sampled = alondra_core::now_millis().saturating_sub(machine.at) <= GAUGE_SAMPLE_LATE_MS;
+        published_gauges(&mut published, alondra_core::clock::instant(), lang, sampled, || (
             gauges(&machine, &providers, Lang::En, machine.at),
             gauges(&machine, &providers, Lang::Es, machine.at),
         ))
@@ -1102,13 +1103,26 @@ fn activity_source_revision(client: &crate::client_routes::Client, id: &str) -> 
         .unwrap_or_default()
 }
 
+/// A sample older than this was taken before the sampler last woke: it is late, and the next one is
+/// about to replace it.
+const GAUGE_SAMPLE_LATE_MS: i64 = 2 * 10_000;
+
+/// The gauges the views show: recomputed at most once a minute, and only from a sample that is not
+/// late. A view that reads the gauges while their sample is late shows what that sample says but
+/// does not keep it for the minute, so the gauges of the sample that follows reach the next view.
 fn published_gauges(
     published: &mut Option<(alondra_core::clock::Instant, Vec<Gauge>, Vec<Gauge>)>,
     now: alondra_core::clock::Instant,
     lang: Lang,
+    sampled: bool,
     compute: impl FnOnce() -> (Vec<Gauge>, Vec<Gauge>),
 ) -> Vec<Gauge> {
-    if published.as_ref().is_none_or(|(at, _, _)| now.saturating_duration_since(*at) >= std::time::Duration::from_secs(60)) {
+    let due = published.as_ref().is_none_or(|(at, _, _)| now.saturating_duration_since(*at) >= std::time::Duration::from_secs(60));
+    if due && !sampled {
+        let (en, es) = compute();
+        return if lang == Lang::En { en } else { es };
+    }
+    if due {
         let (en, es) = compute();
         match published.as_mut() {
             Some((at, old_en, old_es)) => {
@@ -2028,19 +2042,33 @@ mod cache_tests {
             id: "usage".into(), label: "Usage".into(), value, text: text.into(),
             detail: None, level: Level::Calm, parts: vec![]
         };
-        assert_eq!(published_gauges(&mut published, now, Lang::En, || (vec![gauge("50%", 0.5)], vec![]))[0].text, "50%");
+        assert_eq!(published_gauges(&mut published, now, Lang::En, true, || (vec![gauge("50%", 0.5)], vec![]))[0].text, "50%");
         let mut computed = false;
-        assert_eq!(published_gauges(&mut published, now + std::time::Duration::from_secs(59), Lang::En, || {
+        assert_eq!(published_gauges(&mut published, now + std::time::Duration::from_secs(59), Lang::En, true, || {
             computed = true;
             (vec![gauge("60%", 0.6)], vec![])
         })[0].text, "50%");
         assert!(!computed, "a fresh sample must not be recomputed before the minute boundary");
-        assert_eq!(published_gauges(&mut published, now + std::time::Duration::from_secs(60), Lang::En, || {
+        assert_eq!(published_gauges(&mut published, now + std::time::Duration::from_secs(60), Lang::En, true, || {
             (vec![gauge("50%", 0.501)], vec![])
         })[0].value, 0.5, "a hidden fraction change must not change the published gauge");
-        assert_eq!(published_gauges(&mut published, now + std::time::Duration::from_secs(120), Lang::En, || {
+        assert_eq!(published_gauges(&mut published, now + std::time::Duration::from_secs(120), Lang::En, true, || {
             (vec![gauge("60%", 0.6)], vec![])
         })[0].text, "60%");
+    }
+
+    #[test]
+    fn a_late_sample_is_shown_but_not_kept_for_the_minute() {
+        let now = alondra_core::clock::instant();
+        let mut published = None;
+        let gauge = |text: &str| Gauge {
+            id: "usage".into(), label: "Usage".into(), value: 0.5, text: text.into(),
+            detail: None, level: Level::Calm, parts: vec![]
+        };
+        assert_eq!(published_gauges(&mut published, now, Lang::En, false, || (vec![gauge("late")], vec![]))[0].text, "late");
+        assert!(published.is_none(), "a late sample leaves nothing to keep");
+        assert_eq!(published_gauges(&mut published, now, Lang::En, true, || (vec![gauge("fresh")], vec![]))[0].text, "fresh",
+            "the sample that follows is read at once, not after the minute");
     }
 
     #[tokio::test]
@@ -2645,10 +2673,10 @@ mod tests {
         let start = alondra_core::clock::instant();
         let minute = |n: u64| start + std::time::Duration::from_secs(60 * n);
         let mut published = None;
-        let first = published_gauges(&mut published, start, Lang::En, || sample(&machine(61, 21.0), &usage(2.0)));
-        let wiggled = published_gauges(&mut published, minute(1), Lang::En, || sample(&machine(58, 26.0), &usage(2.0)));
+        let first = published_gauges(&mut published, start, Lang::En, true, || sample(&machine(61, 21.0), &usage(2.0)));
+        let wiggled = published_gauges(&mut published, minute(1), Lang::En, true, || sample(&machine(58, 26.0), &usage(2.0)));
         assert_eq!(wiggled, first, "RAM 39→42 % and CPU 21→26 % are not worth waking every phone");
-        let reading = published_gauges(&mut published, minute(2), Lang::En, || sample(&machine(58, 26.0), &usage(16.0)));
+        let reading = published_gauges(&mut published, minute(2), Lang::En, true, || sample(&machine(58, 26.0), &usage(16.0)));
         assert_eq!(reading.iter().find(|gauge| gauge.id == "usage").unwrap().text, "over pace");
         assert_eq!(reading.iter().find(|gauge| gauge.id == "memory").unwrap().text, "42%",
             "a published set carries the current machine readings along with the new usage one");
