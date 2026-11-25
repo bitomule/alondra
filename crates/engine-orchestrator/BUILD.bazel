@@ -47,7 +47,8 @@ TEST_DEPS = [
 ]
 
 # The orchestrator's own tests on the doubled hosts of engine-doubles, which the orchestrator model
-# of the Claude host model plays: they run no program, and no host or fake is an input.
+# of the Claude host model and the Codex host model play: they run no program, and no host or fake
+# is an input.
 low_opt_rust_test(
     name = "engine_orchestrator_test",
     size = "medium",
@@ -57,11 +58,11 @@ low_opt_rust_test(
     edition = "2024",
     env = {"HOME": "."},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + TEST_DEPS + ["//crates/provider-claude:claude_host_model"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + TEST_DEPS + ["//crates/provider-claude:claude_host_model", "//crates/provider-codex:codex_host_model"],
 )
 
-# The tests that still need a real Agent SDK or Codex host, a fake native Claude or Codex, or real
-# processes: the same sources with the feature real-hosts, which compiles only them.
+# The tests that still need a real Agent SDK host, a fake native Claude, or real processes: the same
+# sources with the feature real-hosts, which compiles only them.
 low_opt_rust_test(
     name = "engine_orchestrator_host_test",
     size = "large",
@@ -70,23 +71,19 @@ low_opt_rust_test(
     crate_name = "alondra_engine_orchestrator",
     crate_root = "src/lib.rs",
     data = [
-        "//agent-host:alondra-codex-host",
         "//agent-host:alondra-host",
-        "//agent-host:fake-codex.py",
         "//agent-host:orchestrator-fake-claude.py",
         "//agent-host:persistent-fake-claude.py",
     ],
     edition = "2024",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {
-        "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
-        "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
         "FIXTURE_HOST": "$(rootpath //agent-host:alondra-host)",
         "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
         "FIXTURE_NODE": "$(rootpath //agent-host:alondra-host)",
         "FIXTURE_ORCHESTRATOR_NATIVE": "$(rootpath //agent-host:orchestrator-fake-claude.py)",
         "HOME": ".",
-        "TEST_EXECS": "$(rootpath //agent-host:alondra-codex-host) $(rootpath //agent-host:alondra-host) /bin/cat /bin/sleep /usr/bin/id /usr/bin/mkfifo /usr/bin/pgrep /usr/bin/python3 /usr/bin/true /usr/sbin/lsof tmpdir",
+        "TEST_EXECS": "$(rootpath //agent-host:alondra-host) /bin/cat /bin/sleep /usr/bin/id /usr/bin/mkfifo /usr/bin/pgrep /usr/bin/python3 /usr/bin/true /usr/sbin/lsof tmpdir",
     },
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + TEST_DEPS + ["//crates/agent-runtime:agent_runtime"],

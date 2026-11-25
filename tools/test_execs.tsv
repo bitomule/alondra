@@ -52,7 +52,6 @@ path:claude	The node mod's tests run with the Claude Code on PATH (`claude plugi
 /bin/ls	Fake scripts list the folders they were given.
 /usr/sbin/pkgutil	The Apple release script checks the package it built.
 /usr/bin/xcode-select	SourceKit-LSP asks where Xcode is.
-//agent-host:alondra-codex-host	Orchestrator tests run the Codex host a release ships.
 /usr/bin/pgrep	Python reapers beside each host find the processes they end.
 /usr/bin/lsbom	The Apple release script reads the bill of materials of its package.
 /usr/bin/mkbom	The Apple release script rewrites the bill of materials of its package.
