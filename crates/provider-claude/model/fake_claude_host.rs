@@ -95,9 +95,23 @@ pub enum Turns {
     Ignored,
 }
 
+/// What a host does when it is asked to stop after interrupting Claude's turn (`SIGINT`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Interrupted {
+    /// The host just ends, as a process the signal ends: the turn it ran writes nothing more.
+    #[default]
+    Ends,
+    /// The host ends the running turn as an interrupted one, writes its result and then ends, once
+    /// `after` has passed on the model's clock, as the real host does after it signals Claude.
+    Writes { after: std::time::Duration },
+    /// The host goes on as if nothing was asked: only a kill ends it.
+    Ignores,
+}
+
 /// The provider's side of the world: its accounts and whether its API answers.
 #[derive(Default)]
 struct World {
+    interrupted: Interrupted,
     /// The accounts whose sign-in expired, by id.
     signed_out: BTreeSet<String>,
     /// The API fails every turn of these tasks with this error; of every task when none is named.
@@ -1480,6 +1494,44 @@ impl ClaudeModel {
         }
     }
 
+    /// The turn Claude runs ends as an interrupted one: its result says it was aborted.
+    fn abort_turn(&self, host: &Host, state: &mut State) {
+        if state.turn.is_some() {
+            let taken = state.turn.take().unwrap_or_default();
+            let result = self.uuid();
+            let last = taken.last().cloned().unwrap_or_default();
+            self.emit(host, state, "result", json!({"type": "result", "subtype": "error_during_execution", "uuid": result, "user_message_uuid": last,
+                "user_message_uuids": taken, "is_error": true, "terminal_reason": "aborted_streaming", "session_id": host.session}));
+        }
+    }
+
+    /// How the hosts react from now on to a stop that interrupts Claude's turn first.
+    pub fn set_interrupted(&self, interrupted: Interrupted) {
+        lock(&self.0.world).interrupted = interrupted;
+    }
+
+    /// The host `served` runs as was asked to stop after interrupting its turn.
+    fn interrupted(&self, served: &Served, stop: Stop) {
+        let reaction = lock(&self.0.world).interrupted;
+        match reaction {
+            Interrupted::Ends => served.end(stop.status()),
+            Interrupted::Ignores => {}
+            Interrupted::Writes { after } => {
+                let (model, served) = (self.clone(), served.clone());
+                self.spawn(move || {
+                    if !after.is_zero() {
+                        alondra_core::clock::blocking_sleep(after);
+                    }
+                    if let Some(host) = model.host(served.process_id()) {
+                        let mut state = lock(&host.state);
+                        model.abort_turn(&host, &mut state);
+                    }
+                    served.end(stop.status());
+                });
+            }
+        }
+    }
+
     /// Answers a run of Claude's command line or of the host's probes from the world, and refuses
     /// anything else, which it counts as a leak.
     pub fn probe(&self, run: &ProbeRun) -> io::Result<ProbeOutput> {
@@ -1686,6 +1738,10 @@ impl Serve for ClaudeModel {
     }
 
     fn stop(&self, served: &Served, stop: Stop) {
-        served.end(stop.status());
+        if stop == Stop::AfterInterrupt {
+            self.interrupted(served, stop);
+        } else {
+            served.end(stop.status());
+        }
     }
 }
