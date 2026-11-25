@@ -52,6 +52,7 @@ crate.from_cargo(
         "//crates/view-model:Cargo.toml",
         "//crates/views:Cargo.toml",
         "//crates/foundation:Cargo.toml",
+        "//crates/spec-engine:Cargo.toml",
         "//crates/domain:Cargo.toml",
         "//crates/agent-protocol:Cargo.toml",
         "//crates/antigravity-protocol:Cargo.toml",

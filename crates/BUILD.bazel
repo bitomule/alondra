@@ -37,6 +37,7 @@ WORKSPACE_MEMBERS = [
     "daemon-support",
     "domain",
     "domain-rules",
+    "spec-engine",
     "engine-admission",
     "engine-github",
     "engine-live",

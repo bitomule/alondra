@@ -76,6 +76,16 @@ root_binary(
     deps = crate_deps(["anyhow"]) + [":alondra_lib"],
 )
 
+# The spec commands alone, for a continuous integration run that needs nothing else of the terminal.
+root_binary(
+    name = "alondra-spec",
+    srcs = ["src/bin/alondra-spec.rs"],
+    crate_root = "src/bin/alondra-spec.rs",
+    version = VERSION,
+    visibility = ["//visibility:public"],
+    deps = crate_deps(["anyhow"]) + ["//crates/cli:cli"],
+)
+
 # Cargo integration tests. Paths are runfiles-relative: Bazel runs tests from the
 # workspace root inside runfiles.
 [low_opt_rust_test(

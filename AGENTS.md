@@ -163,6 +163,23 @@ or in the private repository that keeps it, never here.
   (`make tui-sandbox SESSION=<name>`, `make tui-sandbox-stop SESSION=<name>`), and its captures go
   in the pull request.
 
+## Specs
+
+- `alondra.toml` turns specs on for this repository. A component with a folder under `specs/` has
+  a boundary and feature files that are its source of truth; `docs/architecture/specs.md` has the
+  formats and `docs/reference/` explains them in plain words. Where prose and a spec disagree, the
+  spec wins.
+- A test says which scenario it verifies with a `spec: <spec>/<scenario>` comment above it. A
+  behaviour change in a component with specs changes its feature files first; never edit a spec
+  to make a failing test pass.
+- `alondra spec validate` lists what is not validated and runs nothing. After changing a component
+  with specs, its tests or its feature files: `alondra spec run <component>` records its suites,
+  and a session that did not write the change judges what `validate` still lists (that each test
+  checks its scenario, that a reference section is still true) and records each verdict with
+  `alondra spec record`. Commit `specs/ledger/` with the change.
+- `python3 tools/public_surface.py crates/<crate>/src` prints a crate's public surface; a changed
+  snapshot under `specs/` is a boundary change, not a detail.
+
 ## Release
 
 - GitHub Actions runs the repository's checks on every pull request to `main`, the owner's and

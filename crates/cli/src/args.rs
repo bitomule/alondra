@@ -1,5 +1,5 @@
 //! The command line: what `alondra` parses, and the commands this adapter runs.
-use crate::{account, cleanup, cli, client, commands, delivery, doctor, files, handover, help, metrics, node, ops, provider_accounts, report_wait, state, update};
+use crate::{account, cleanup, cli, client, commands, delivery, doctor, files, handover, help, metrics, node, ops, provider_accounts, report_wait, spec, state, update};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -189,6 +189,12 @@ pub enum Cmd {
     Cleanup {
         #[arg(long, help = tr!("Only show what it would close", "Solo enseña lo que cerraría"))]
         dry_run: bool,
+    },
+    #[command(about = tr!("What the specs of this repository need validated", "Qué falta por validar en las specs de este repositorio"),
+        after_help = examples(&["alondra spec validate", "alondra spec run billing", "alondra spec packet billing"]))]
+    Spec {
+        #[command(subcommand)]
+        command: spec::SpecCmd,
     },
     #[command(about = tr!("Who owns the files Alondra keeps and which ones the retention rule would remove", "De quién son los ficheros que guarda Alondra y cuáles quitaría la regla de retención"),
         after_help = examples(&["alondra files sweep"]))]
@@ -493,7 +499,7 @@ pub fn main(run: impl FnOnce(Option<Cmd>, bool, bool) -> Result<()>) -> Result<(
 /// `update` has just replaced this binary, so the service it installed is never newer than the release it ran.
 fn warns_when_older(command: Option<&Cmd>, json: bool) -> bool {
     match command {
-        None | Some(Cmd::ReportWait { .. } | Cmd::McpNode | Cmd::McpOrchestrator | Cmd::Hook | Cmd::Node { .. } | Cmd::Keys | Cmd::Update { .. }) => false,
+        None | Some(Cmd::ReportWait { .. } | Cmd::McpNode | Cmd::McpOrchestrator | Cmd::Hook | Cmd::Node { .. } | Cmd::Keys | Cmd::Update { .. } | Cmd::Spec { .. }) => false,
         Some(_) => !json,
     }
 }
@@ -502,6 +508,7 @@ fn warns_when_older(command: Option<&Cmd>, json: bool) -> bool {
 pub(crate) fn takes_json(command: Option<&Cmd>) -> bool {
     matches!(command, Some(
         Cmd::Status | Cmd::Observe { .. } | Cmd::Doctor { .. } | Cmd::Metrics { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. } | Cmd::Files { .. }
+        | Cmd::Spec { command: spec::SpecCmd::Validate { .. } }
         | Cmd::Report { command: None | Some(ReportCmd::List | ReportCmd::Send { .. }), .. }
         | Cmd::Config { command: ConfigCmd::List | ConfigCmd::Get { .. } }
         | Cmd::Device { command: DeviceCmd::List }
@@ -590,6 +597,7 @@ pub fn run(command: Cmd, json: bool, no_input: bool) -> Result<()> {
         Cmd::Cleanup { dry_run } => cleanup::run(dry_run, json),
         Cmd::Handover { .. } => handover::run(json),
         Cmd::Files { command: FilesCmd::Sweep } => files::sweep(json),
+        Cmd::Spec { command } => spec::run(command, json),
         Cmd::Metrics { period, compare, project, model } => metrics::run(&metrics::Options {
             period: &period, compare: &compare, project: project.as_deref(), model: model.as_deref(),
         }, json),

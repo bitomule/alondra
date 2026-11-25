@@ -1,0 +1,68 @@
+load("//tools/layers:crates.bzl", "foundation_crate")
+load("//bazel/rules:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:rust_sources.bzl", "production_sources")
+
+foundation_crate(
+    name = "spec_engine",
+    srcs = production_sources(),
+    crate_name = "alondra_spec_engine",
+    version = "0.1.0",
+    deps = all_crate_deps(normal = True),
+)
+
+low_opt_rust_test(
+    name = "spec_engine_test",
+    size = "small",
+    srcs = glob(["tests/**/*.rs"], exclude = ["tests/repository.rs"]),
+    compile_data = glob(["fixtures/**"]),
+    crate_root = "tests/all.rs",
+    edition = "2024",
+    deps = [":spec_engine"] + all_crate_deps(normal_dev = True),
+)
+
+REPOSITORY_FILES = [
+    ":files",
+    "//:alondra.toml",
+    "//:spec_files",
+    "//tools:public_surface.py",
+]
+
+# The source paths the engine is handed when it validates this repository: a walk of the runfiles
+# would also list what Bazel builds.
+genrule(
+    name = "repository_files",
+    srcs = REPOSITORY_FILES,
+    outs = ["repository_files.txt"],
+    cmd = "printf '%s\\n' $(SRCS) > $@",
+)
+
+low_opt_rust_test(
+    name = "repository_test",
+    size = "small",
+    srcs = ["tests/repository.rs"],
+    crate_root = "tests/repository.rs",
+    data = REPOSITORY_FILES + [":repository_files"],
+    edition = "2024",
+    rustc_env = {"REPOSITORY_FILES": "$(rootpath :repository_files)"},
+    deps = [":spec_engine"],
+)
+
+sh_test(
+    name = "contract_test",
+    size = "small",
+    srcs = ["tests/contract_test.py"],
+    data = glob(["src/**/*.rs"]) + [
+        "Cargo.toml",
+        "//:specs/spec-engine/surface.txt",
+        "//tools:public_surface.py",
+    ],
+)
+
+exports_files(
+    ["BUILD.bazel", "Cargo.toml"],
+    visibility = ["//crates:__pkg__"],
+)
+
+repo_tree()

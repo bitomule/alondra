@@ -59,6 +59,18 @@ exports_files(
     visibility = ["//:__pkg__"],
 )
 
+exports_files(
+    ["public_surface.py"],
+    visibility = ["//crates/spec-engine:__pkg__"],
+)
+
+sh_test(
+    name = "public_surface_test",
+    srcs = ["tests/test_public_surface.py"],
+    data = ["public_surface.py"],
+    size = "small",
+)
+
 sh_test(
     name = "sandbox_accounts_test",
     srcs = ["tests/test_sandbox_accounts.py"],

@@ -22,7 +22,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: clean-incremental action-outcomes worktree-volume-bench connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record tui-shots mac-snapshots-record mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-explore skill-evals
+.PHONY: clean-incremental action-outcomes worktree-volume-bench connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record tui-shots mac-snapshots-record mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox regeneration-pilot e2e-sandbox-stop tui-sandboxtui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-explore skill-evals
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -404,6 +404,20 @@ e2e-explore:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox $(SDK_HOST_TARGETS)
 	$(SDK_HOST_ENV) tools/e2e-explore.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) \
 		$$(bazelisk cquery --output=files //crates/relay:alondra-relay 2>/dev/null) $$(bazelisk cquery --output=files //tools/sandbox:alondra-sandbox 2>/dev/null)
+
+# Has a model write the inside of COMPONENT again from its specs, RUNS times, and measures each
+# result with the component's real suites (tools/regeneration_pilot.py). It costs tokens, and while
+# it measures it replaces files of this checkout: run it by hand on a clean checkout. MODEL names
+# the model of the generator, JOBS how many write at once, and BASELINE=1 hands it a short
+# description instead of the specs and the tests.
+PILOT_COMPONENT = $(or $(COMPONENT),spec-engine)
+PILOT_GENERATOR = claude -p "$$(cat {prompt})" --model $(or $(MODEL),sonnet) --permission-mode acceptEdits --setting-sources project --strict-mcp-config --allowedTools "Bash(cargo build:*)" "Bash(cargo check:*)" "Bash(cargo test:*)" Read Write Edit Glob Grep
+regeneration-pilot:
+	bazelisk build //crates/alondra:alondra-spec
+	python3 tools/regeneration_pilot.py $(PILOT_COMPONENT) --runs $(or $(RUNS),5) --jobs $(or $(JOBS),1) \
+		--timeout-minutes $(or $(TIMEOUT_MINUTES),60) $(if $(filter 1,$(BASELINE)),--baseline) \
+		--packet "$$($(call exe,//crates/alondra:alondra-spec) packet $(PILOT_COMPONENT))" \
+		--generator '$(PILOT_GENERATOR)'
 
 # MAC=n for that daemon's log, MAC=relay for the relay's.
 e2e-sandbox-logs:

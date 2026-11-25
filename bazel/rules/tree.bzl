@@ -15,6 +15,7 @@ LOCAL_STATE = [
     ".musts/.lock*",
     ".musts/evidence/**",
     ".musts/ledger/**",
+    "specs/ledger/**",
     ".musts/bep.json",
     ".bazelrc.local",
     ".bazelrc.local.*",

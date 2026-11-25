@@ -1,0 +1,65 @@
+enum Code { BoundaryWithoutScenario, ComponentIdMismatch, DecisionIdMismatch, DecisionNotAccepted, DependencyCycle, DuplicateScenarioId, DuplicateSectionId, DuplicateSpecId, DuplicateSuiteId, EvidenceRequired, EvidenceWithoutCapture, InvalidBoundary, InvalidDecision, InvalidIdentifier, InvalidLedger, InvalidMarker, InvalidResults, InvalidSettings, InvalidUtf8, LedgerInsideComponent, MarkerOutsideComponent, MissingScenarioId, MissingSection, MissingSpecTag, NotJudged, OrphanMarker, PathOutsideRepository, RegeneratesOutsideOwns, SectionExplainsNothing, SpecWithoutComponent, SupersessionMismatch, TooLarge, TooManyScenarios, UnknownComponent, UnknownDecision, UnknownReferenceTarget, UnknownSubject, UnknownSuite, UnknownTag, UnreadableFile, UnsupportedFormat, UnsupportedSyntax }
+enum EvidenceKind { None, Capture, Video }
+enum Keyword { Given, When, Then, And, But }
+enum Kind { Suite, Passes, Adequate, Judged, Reference }
+enum Promise { Surface, Data, Dependencies }
+enum ReportStatus { Clean, Pending, Unreadable }
+enum State { Valid, Missing, Stale, Unmet, Failed, Uncovered }
+enum Status { Proposed, Accepted, Rejected, Superseded, Deprecated }
+enum Verdict { Met, Unmet }
+fn evidence_kind(&str) -> EvidenceKind
+fn load(&dyn Files) -> Result<Project, Vec<Problem>>
+fn matches(&str, &str) -> bool
+fn read_results(&[u8]) -> Result<TestResults, Problem>
+fn read_settings(Option<&[u8]>) -> Result<Settings, Vec<Problem>>
+fn read_spec(&str, &[u8]) -> Result<Spec, Vec<Problem>>
+fn write_spec(&Spec) -> String
+impl Code: fn as_str(self) -> &'static str
+impl EvidenceKind: fn as_str(self) -> &'static str
+impl Keyword: fn as_str(self) -> &'static str
+impl Kind: fn as_str(self) -> &'static str
+impl Project: fn components(&self) -> &[Component]
+impl Project: fn decisions(&self) -> &[Decision]
+impl Project: fn fingerprint(&self, &str, Kind) -> Option<String>
+impl Project: fn listing(&self) -> String
+impl Project: fn markers(&self) -> &[Marker]
+impl Project: fn packet(&self, &str) -> Result<String, Problem>
+impl Project: fn plan(&self, &str, Option<&str>) -> Result<Vec<Run>, Problem>
+impl Project: fn recorded(&self, &str, Kind) -> Option<Recorded>
+impl Project: fn report(&self, Option<&TestResults>) -> Report
+impl Project: fn sections(&self) -> &[Section]
+impl Project: fn settings(&self) -> &Settings
+impl Project: fn specs(&self) -> &[LoadedSpec]
+impl Project: fn suite_passed(&self, &str, &str) -> Result<Entry, Problem>
+impl Project: fn verdict(&self, &str, Kind, Verdict, &[Evidence]) -> Result<Entry, Problem>
+impl Promise: fn as_str(self) -> &'static str
+impl Report: fn to_json(&self) -> String
+impl Report: fn unreadable(Vec<Problem>) -> Report
+impl ReportStatus: fn as_str(self) -> &'static str
+impl State: fn as_str(self) -> &'static str
+impl Status: fn as_str(self) -> &'static str
+impl TestResults: fn passed(&self, &str) -> bool
+impl Verdict: fn as_str(self) -> &'static str
+struct Component { id: String, path: String, owns: Vec<String>, regenerates: Vec<String>, inputs: Vec<String>, depends_on: Vec<String>, data: Vec<String>, fixtures: Vec<String>, surface: Option<String>, suites: Vec<Suite> }
+struct Decision { id: String, path: String, title: String, status: Status, date: String, supersedes: Vec<String>, superseded_by: Option<String>, context: String, decision: String, consequences: String, confirmation: String }
+struct Entry { path: String, bytes: Vec<u8> }
+struct Evidence { name: String, bytes: Vec<u8> }
+struct FolderSettings { enabled: bool, dir: String }
+struct Item { subject: String, component: String, kind: Kind, state: State }
+struct Judgment { evidence: EvidenceKind, pattern: Option<String> }
+struct LoadedSpec { path: String, component: String, spec: Spec }
+struct Marker { path: String, line: usize, scenario: String, test: Option<String> }
+struct Problem { code: Code, path: String, line: usize, message: String }
+struct Project { }
+struct Recorded { inputs: String, verdict: Option<Verdict>, evidence: Vec<String> }
+struct Report { status: ReportStatus, items: Vec<Item>, leftover: Vec<String>, problems: Vec<Problem> }
+struct Run { component: String, suite: String, arguments: Vec<String>, timeout_minutes: u32 }
+struct Scenario { id: String, title: String, line: usize, outline: bool, judgment: Option<Judgment>, promise: Option<Promise>, reserved: bool, steps: Vec<Step>, examples: Vec<Vec<String>> }
+struct Section { id: String, path: String, line: usize, heading: String, text: String, explains: Vec<String> }
+struct Settings { specs: SpecsSettings, decisions: FolderSettings, reference: FolderSettings }
+struct Spec { id: String, decisions: Vec<String>, title: String, description: Vec<String>, background: Vec<Step>, scenarios: Vec<Scenario> }
+struct SpecsSettings { enabled: bool, committed: bool, dir: String }
+struct Step { keyword: Keyword, text: String, doc: Option<String>, table: Vec<Vec<String>> }
+struct Suite { id: String, run: Vec<String>, tests: Vec<String>, results: Option<String>, timeout_minutes: u32 }
+struct TestResults { }
+trait Files { fn paths(&self) -> Vec<String>; fn read(&self, &str) -> Option<Vec<u8>> }
