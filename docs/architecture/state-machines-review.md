@@ -34,7 +34,8 @@ written after a commit, or a table written after a file, is the pattern of F-STO
 **2. Allowed transitions.** Which transitions does the change add, remove or move? Each one goes
 through the machine's single transition function or command, which refuses what is not allowed with
 a typed refusal and leaves the state untouched. A state set by assignment from outside that function,
-or a new path that skips its guard, is a finding.
+or a new path that skips its guard, is a finding. When the machine's block declares `transitions`, a new move is a new line there: the domain's
+tests fail on a move the block does not declare.
 
 **3. No state without a way out.** For every state a task, request, card, PR, node or owner can now
 be in: who moves it next (the user, capacity, another task, the provider, Alondra), and what fact makes

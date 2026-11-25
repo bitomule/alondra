@@ -73,6 +73,8 @@ struct Seen {
     closing_cards: Vec<String>,
     /// An answer given again to a card already answered that changed the state.
     stale_answers: Vec<String>,
+    /// Each move one command made in a machine whose inventory block declares its transitions.
+    moves: BTreeSet<(String, String, String)>,
 }
 
 struct Machine {
@@ -233,7 +235,9 @@ impl Machine {
         };
         drop(state);
         let closing: BTreeSet<TaskId> = self.state().tasks.values().filter(|task| self.state().node_closing(task)).map(|task| task.id.clone()).collect();
+        let before = self.state();
         let result = Arc::make_mut(&mut self.domain).execute(&actor, &envelope).map_err(|error| error.code);
+        self.seen.moves.extend(alondra_domain_rules::transition_table::moves(&before, &self.state()));
         let state_revision = key.0;
         match &result {
             Ok(_) if self.revision() == state_revision => self.seen.unchanged.push(name.clone()),

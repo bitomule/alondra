@@ -36,6 +36,7 @@ mod refusal;
 pub mod reads;
 mod read_index;
 pub mod invariants;
+pub mod transition_table;
 mod rules;
 mod schedule;
 mod situation;

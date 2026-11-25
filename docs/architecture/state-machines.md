@@ -11,7 +11,9 @@ line), where its truth lives, and, when one enum is its state, that enum's varia
 block in [M-STORE-12](#m-store-12--state-in-json-files-in-the-home-folder-implicit-machines-split-with-sqlite) names
 the one writer of every state file, and the `timers` block in
 [Timers that act on state](#timers-that-act-on-state-outside-obligation_policy) says of every time constant whether
-it decides state or only paces. `//tools:state_inventory_test` fails when the code and these blocks disagree (a
+it decides state or only paces. A block may also declare `initial` and `transitions` (`"From -> To"`): today
+M-LIFE-1 (the task's phase), M-GH-2 (the merge attempt) and M-LIFE-9 (the node's phase). Every command the domain's
+tests and the machine model run fails if it makes a move its block does not declare. `//tools:state_inventory_test` fails when the code and these blocks disagree (a
 section, symbol, variant, state file, table, timer or state enum the other side lacks); what is not state is in
 `tools/state_inventory_exempt.tsv` and what an open fix owns in `tools/state_inventory_known.tsv`. The judgment the
 test cannot make is the `state-machines-review` check of `MUSTS.yml`, with the questions of
@@ -623,6 +625,11 @@ Scope: the task lifecycle aggregate and the node it runs on, and everything the 
 id = "M-LIFE-1"
 code = ["crates/domain/src/lifecycle.rs::TaskLifecycle", "crates/domain/src/lifecycle/commands.rs::transition", "crates/domain/src/lifecycle/observations.rs::runtime_fact", "crates/domain/src/lifecycle.rs::advanced", "crates/domain/src/lifecycle.rs::CallbackState", "crates/domain/src/lifecycle.rs::State", "crates/domain/src/lifecycle.rs::TaskPhase"]
 truth = ["sqlite:lifecycle_events", "sqlite:lifecycle_cards", "sqlite:lifecycle_tasks", "sqlite:task_user_inputs"]
+states = "crates/domain/src/lifecycle.rs::TaskPhase"
+variants = ["Unstarted", "InProgress", "Delivered", "Finishing", "Completed", "Cancelled"]
+terminals = ["Completed", "Cancelled"]
+initial = ["Unstarted", "InProgress"]
+transitions = ["Unstarted -> InProgress", "Unstarted -> Finishing", "InProgress -> Delivered", "InProgress -> Finishing", "Delivered -> InProgress", "Delivered -> Finishing", "Delivered -> Completed", "Finishing -> Completed", "Finishing -> Cancelled", "Completed -> InProgress", "Cancelled -> InProgress", "Completed -> Delivered", "Cancelled -> Delivered"]
 ```
 
 - **Kind**: explicit, composite. **Defined in**: `crates/domain/src/lifecycle.rs:1099-1196` (`Progress`, `DeliveryGate`, `Delivered`, `Finishing`, `State`, `TaskLifecycle`); transitions in `lifecycle/commands.rs:4-568` (`transition`) and `lifecycle/observations.rs:4-719` (`runtime_fact`); `advanced` in `lifecycle.rs:1668-1704` (copies, applies, bumps the revision, sets `owed_since`).
@@ -672,6 +679,7 @@ truth = ["sqlite:lifecycle_events", "sqlite:lifecycle_cards", "sqlite:lifecycle_
 | not terminal and not Finishing | Finish [Complete: gate Accepted, no cards except Recovery, no pending inputs] | Finishing{Cleanup + PostMerge + Execution + Work + Callback + Effects + Merge} |
 | Finishing | DrainObserved [obligation present] | removes it; the last one → Completed/Cancelled (`cancelled_through_generation = generation`) |
 | Completed/Cancelled | Reopen | Queued{Implement} |
+| Completed/Cancelled | `AdoptOpenPr` (system) [its PR is open again and no live task has the branch] | Reopen and, in the same command, the PR is delivered again (`settle_open_pr`): Delivered{Review} for the user (`rules.rs:5474-5510`) |
 | Executing/Waiting/Dependency/Delivered with an execution | ExecutionReleased / ExecutionLeftForReview [no work, callbacks or effects] | Session::Absent with what was not consumed |
 
 - **Rejected**: every `Err(Refusal::…)` is typed; `apply` leaves the aggregate untouched (`lifecycle.rs:1662-1666`). In `domain-rules` a refusal becomes a `DomainError` (`refused`, `lifecycle.rs:3198`) and aborts the whole command. Facts on terminal states: `runtime_fact` returns `StaleExecution` because there is no session (`observations.rs:10`). In `Finishing`, every fact other than `HostEnded/HostStopped/TakenOver/TakeoverUnanswered` is taken "unchanged" (only the cursor advances, `observations.rs:21-24`).
@@ -805,6 +813,8 @@ truth = ["sqlite:agents", "sqlite:task_released_nodes"]
 states = "crates/domain-rules/src/node_machine.rs::NodePhase"
 variants = ["ThroughSdk", "Closed"]
 terminals = ["Closed"]
+initial = ["ThroughSdk"]
+transitions = ["ThroughSdk -> Closed"]
 ```
 
 - **Kind**: explicit. **Defined in**: `node_machine.rs:104-190`, `node_next` (`:340-373`).
@@ -4566,6 +4576,8 @@ truth = ["sqlite:merge_authorizations", "sqlite:merge_method"]
 states = "crates/domain-rules/src/model.rs::MergeAttemptState"
 variants = ["Unclaimed", "Claimed", "Uncertain", "Confirmed", "Failed"]
 terminals = ["Confirmed", "Failed"]
+initial = ["Unclaimed"]
+transitions = ["Unclaimed -> Claimed", "Claimed -> Confirmed", "Claimed -> Failed", "Claimed -> Uncertain", "Uncertain -> Claimed", "Uncertain -> Confirmed", "Uncertain -> Failed"]
 ```
 
 - **Kind**: explicit. **Defined in**: `model.rs:1408-1413`: `MergeAttemptState {Unclaimed, Claimed, Uncertain, Confirmed,
