@@ -70,7 +70,8 @@ pub fn sweep(domain: &dyn Runtime, root: &Path) -> std::io::Result<usize> {
     Ok(removed)
 }
 
-#[cfg(all(test, not(feature = "whole-engine")))]
+#[cfg(test)]
+#[cfg(not(feature = "whole-engine"))]
 mod tests {
     use super::*;
     use std::time::Duration;

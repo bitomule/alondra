@@ -863,10 +863,12 @@ pub async fn run(
     }
 }
 
-#[cfg(all(test, not(feature = "real-hosts")))]
+#[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod fixture;
 
-#[cfg(all(test, not(feature = "whole-engine")))]
+#[cfg(test)]
+#[cfg(not(feature = "whole-engine"))]
 mod tests {
     use super::fixture::Fixture;
     use crate::sdk_owner::SdkOwners as _;
@@ -1655,5 +1657,7 @@ mod tests {
 
 }
 
-#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
+#[cfg(not(feature = "real-hosts"))]
 mod engine_tests;

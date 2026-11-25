@@ -1,7 +1,7 @@
 //! Tests of the engine that go through alondrad's routes, views or delivery. The engine crate
 //! cannot see those, so these run here, on the fixtures the engine's crates expose: on the doubled
 //! hosts the host models play, or with the feature real-hosts on the real hosts, for the few that
-//! need a real Agent SDK host, a fake native Claude or the daemon's binary.
+//! need a real Agent SDK host or a fake native Claude.
 #[cfg(not(feature = "real-hosts"))]
 mod acceptance_catalog_tests;
 #[cfg(not(feature = "real-hosts"))]
@@ -10,8 +10,6 @@ mod admission_tests;
 mod domain_github_tests;
 #[cfg(not(feature = "real-hosts"))]
 mod domain_orchestrator_tools_tests;
-#[cfg(feature = "real-hosts")]
-mod domain_store_tests;
 #[cfg(not(feature = "real-hosts"))]
 mod domain_transport_tests;
 #[cfg(not(feature = "real-hosts"))]

@@ -476,9 +476,8 @@ sources that a name filter and `#[ignore]` selected. They are now a test of the 
   wait for the owner the store records and the one the host attached to.
 - `crate_layers_test` fails on a test outside the root that reaches a crate or a binary of the
   root, through `deps` or `data` at any depth. `ROOT_TEST_CONSUMERS` lists the packages that still
-  do: the apps' client process, the system and sandbox suites, and `daemon-server`, whose test
-  target carries the daemon and the CLI for six of its 613 tests and reruns on every edit until
-  those six move to the root.
+  do: the system and sandbox suites. The server's six tests of the real daemon and CLI live in the
+  root as `//crates/alondrad:binary_smoke_test`, so no server test reruns on an edit of the root.
 - `test_catalog` lists every Rust test by target and compares two lists, so a change that moves
   tests shows that none was lost.
 - `edit_bench` times the build apart from the tests, names the test target that took longest and

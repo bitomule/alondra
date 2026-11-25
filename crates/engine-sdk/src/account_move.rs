@@ -148,7 +148,7 @@ pub(crate) async fn advance(domain: &Arc<dyn Runtime>, task: &TaskId) -> Result<
     loop {
         let moving = latest(&**domain, task).ok_or_else(|| format!("{task} has no account move"))?;
         let step = moving.step;
-        if *domain.moves().crash_after.lock().unwrap() == Some(step) && step != AccountMoveStep::Admitted {
+        if *domain.moves().crash_after.lock_or_recover("the account move's crash point") == Some(step) && step != AccountMoveStep::Admitted {
             return Err(format!("the daemon died after {step:?}"));
         }
         match step {
@@ -314,7 +314,8 @@ pub async fn run(domain: Arc<dyn Runtime>) {
     }
 }
 
-#[cfg(all(test, feature = "whole-engine"))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
 #[path = "account_move/tests.rs"]
 mod tests;
 

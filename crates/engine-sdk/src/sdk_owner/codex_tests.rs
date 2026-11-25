@@ -1455,10 +1455,10 @@ fn stop_codex_host(pid: libc::pid_t) {
     assert!(libc::WIFSTOPPED(status));
 }
 
-pub fn git(worktree:&Path,arguments:&[&str])->String{
-    let output=std::process::Command::new("/usr/bin/git").arg("-C").arg(worktree).args(arguments).output().unwrap();
-    assert!(output.status.success(),"git {arguments:?}: {}",String::from_utf8_lossy(&output.stderr));
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+/// Makes `worktree` a repository's checkout on `branch`, as the doubled git keeps it.
+pub fn on_branch(worktree:&Path,branch:&str){
+    alondra_engine_doubles::worktrees::repository(worktree);
+    alondra_engine_doubles::worktrees::checkout(worktree,branch);
 }
 /// What makes the task itself, which a move leaves as it was.
 #[cfg(not(feature = "real-hosts"))]
@@ -1474,7 +1474,7 @@ fn move_steps(slice:&Slice)->Vec<String>{
 /// A Codex node in the middle of its turn, with uncommitted work on its branch.
 pub fn working_on_codex(slice:&Slice)->AgentId{
     configured(slice,"hold");claude_ready(slice);
-    git(&slice.worktree,&["init","-q","-b","release-notes"]);
+    on_branch(&slice.worktree,"release-notes");
     slice.domain.enable_sdk(slice.backend.clone());
     let mut driver=launch(slice);
     while Slice::lifecycle(&*slice.domain).activity()!=ActivityView::Working{driver.observe_written().unwrap();}
@@ -1541,7 +1541,7 @@ async fn a_codex_task_moves_to_claude_as_itself_in_its_worktree_with_one_writer_
     assert_eq!(admitted.len(),2,"one node before the move and one after it");
     assert!(admitted[1]>ended,"the new node is admitted only once the source ended");
     assert!(!state.interactions.keys().any(|card|card.0.starts_with("session-ended-")),"the move asks nobody how the task goes on");
-    assert_eq!(git(&slice.worktree,&["symbolic-ref","--short","HEAD"]),"release-notes");
+    assert_eq!(slice.domain.ports().worktrees().branch_in(&slice.worktree).await.as_deref(),Some("release-notes"));
     assert_eq!(std::fs::read_to_string(slice.worktree.join("draft.md")).unwrap(),"unfinished notes");
     let prompt=slice.prompts().into_iter().find(|prompt|prompt.contains("The user moved this task to claude/default")).expect("Claude is told about the move");
     assert!(prompt.contains("Alondra task context (public records)") && prompt.contains("Write the release notes"),"the new node starts from the task's record: {prompt}");
@@ -1782,7 +1782,7 @@ fn source_host(slice:&Slice)->PathBuf{
 async fn a_task_held_by_the_codex_limit_starts_on_the_account_it_moved_to(){
     let slice=Slice::new();let task:TaskId=TASK.into();
     configured(&slice,"quota");claude_ready(&slice);
-    git(&slice.worktree,&["init","-q","-b","release-notes"]);
+    on_branch(&slice.worktree,"release-notes");
     slice.domain.enable_sdk(slice.backend.clone());
     let mut driver=launch(&slice);
     slice.settle(&mut driver);

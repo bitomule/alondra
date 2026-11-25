@@ -663,9 +663,9 @@ pub fn start_bound(domain: Arc<dyn Runtime>, backend: &SdkBackend, launch: Launc
         .map_err(failed("admitting the execution"))?;
     unadmitted.admitted();
     if match &continuation {
-        Some(Continuation::Node(_)) => *domain.handovers().crash_after.lock().unwrap() == Some(crate::domain_store::HandoverStep::SdkAdmitted),
-        Some(Continuation::Moved { .. }) => *domain.moves().crash_after.lock().unwrap() == Some(crate::domain_store::AccountMoveStep::Admitted),
-        None => *domain.moves().crash_after.lock().unwrap() == Some(crate::domain_store::AccountMoveStep::Admitted),
+        Some(Continuation::Node(_)) => *domain.handovers().crash_after.lock_or_recover("the handover's crash point") == Some(crate::domain_store::HandoverStep::SdkAdmitted),
+        Some(Continuation::Moved { .. }) => *domain.moves().crash_after.lock_or_recover("the account move's crash point") == Some(crate::domain_store::AccountMoveStep::Admitted),
+        None => *domain.moves().crash_after.lock_or_recover("the account move's crash point") == Some(crate::domain_store::AccountMoveStep::Admitted),
         Some(Continuation::Transition { .. }) | Some(Continuation::Native { .. }) => false,
     } {
         return Err(Failed::new("the daemon died after the admission's commit".into()));
@@ -2934,9 +2934,11 @@ impl Drop for Owner {
     }
 }
 
-#[cfg(all(test, feature = "whole-engine"))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
 pub use crate::engine_fixtures::owner as fixtures;
-#[cfg(all(test, feature = "whole-engine"))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
 #[path = "sdk_owner/tests.rs"]
 mod tests;
 
@@ -3124,7 +3126,7 @@ impl<R: alondra_engine_ports::Runtime + ?Sized> SdkOwners for R {
     }
 
     fn owns_sdk_host(&self, agent: &AgentId) -> bool {
-        if self.sdk_owners().driven_by_hand.lock().expect("driven by hand poisoned").contains(agent) {
+        if self.sdk_owners().driven_by_hand.lock_or_recover("the hosts driven by hand").contains(agent) {
             return true;
         }
         self.sdk_owners().held.lock_or_recover("the SDK owners").iter().any(|owner| owner.agent() == agent && !owner.ended())
@@ -3192,7 +3194,7 @@ impl<R: alondra_engine_ports::Runtime + ?Sized> SdkOwners for R {
     }
 
     fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static) {
-        *self.sdk_owners().after_owner_reserved.lock().unwrap() = Some(Box::new(hook));
+        *self.sdk_owners().after_owner_reserved.lock_or_recover("the owner reserved hook") = Some(Box::new(hook));
     }
 
     fn while_owners_stop(&self, hook: impl FnOnce() + Send + 'static) {
@@ -3200,18 +3202,18 @@ impl<R: alondra_engine_ports::Runtime + ?Sized> SdkOwners for R {
     }
 
     fn owner_reserved(&self) {
-        let hook = self.sdk_owners().after_owner_reserved.lock().unwrap().take();
+        let hook = self.sdk_owners().after_owner_reserved.lock_or_recover("the owner reserved hook").take();
         if let Some(hook) = hook {
             hook();
         }
     }
 
     fn on_takeover_wait(&self, hook: impl FnMut() + Send + 'static) {
-        *self.sdk_owners().takeover_waits.lock().unwrap() = Some(Box::new(hook));
+        *self.sdk_owners().takeover_waits.lock_or_recover("the takeover wait hook") = Some(Box::new(hook));
     }
 
     fn takeover_waited(&self) {
-        if let Some(hook) = self.sdk_owners().takeover_waits.lock().unwrap().as_mut() {
+        if let Some(hook) = self.sdk_owners().takeover_waits.lock_or_recover("the takeover wait hook").as_mut() {
             hook();
         }
     }
@@ -3223,11 +3225,11 @@ impl<R: alondra_engine_ports::Runtime + ?Sized> SdkOwners for R {
     }
 
     fn on_owner_failure(&self, hook: impl Fn(String) + Send + 'static) {
-        *self.sdk_owners().owner_failures.lock().unwrap() = Some(Box::new(hook));
+        *self.sdk_owners().owner_failures.lock_or_recover("the owner failure hook") = Some(Box::new(hook));
     }
 
     fn owner_failed(&self, why: String) {
-        if let Some(hook) = self.sdk_owners().owner_failures.lock().unwrap().as_ref() {
+        if let Some(hook) = self.sdk_owners().owner_failures.lock_or_recover("the owner failure hook").as_ref() {
             hook(why);
         }
     }
@@ -3275,7 +3277,7 @@ fn retake_told(domain: &dyn Runtime, command: &Command) {
 
 /// The SDK host of `agent` is one a test plays by hand, with no owner thread: it counts as owned.
 pub fn drive_by_hand(domain: &dyn Runtime, agent: &AgentId) {
-    domain.sdk_owners().driven_by_hand.lock().expect("driven by hand poisoned").insert(agent.clone());
+    domain.sdk_owners().driven_by_hand.lock_or_recover("the hosts driven by hand").insert(agent.clone());
 }
 
 /// What the rest of the engine asks of the owners of the SDK hosts.
@@ -3348,5 +3350,7 @@ impl alondra_engine_ports::hosts::SdkHosts for Hosts {
     }
 }
 
-#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
+#[cfg(not(feature = "real-hosts"))]
 mod pause_tests;

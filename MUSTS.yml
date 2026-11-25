@@ -375,19 +375,30 @@ checks:
     with:
       targets:
         - //crates/alondrad/...
-        - //crates/daemon-server:daemon_server_host_test
 
   crate-daemon-server:
     uses: bazel/test
     paths:
       - ".bazelrc"
       - ".bazelversion"
+      - "agent-host/*.ts"
+      - "agent-host/BUILD.bazel"
+      - "agent-host/bundle.mjs"
+      - "agent-host/codex-model-double.py"
+      - "agent-host/fake-codex-mcp.py"
+      - "agent-host/fake-codex.py"
+      - "agent-host/host-entitlements.plist"
+      - "agent-host/persistent-fake-claude.py"
+      - "agent-host/sea.mjs"
+      - "agent-host/toolchain.bzl"
+      - "agent-host/tsconfig.json"
       - "BUILD.bazel"
       - "Cargo.lock"
       - "Cargo.toml"
       - "clippy.toml"
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
       - "crates/alondrad/**"
       - "crates/daemon-server/**"
       - "crates/BUILD.bazel"
@@ -442,6 +453,7 @@ checks:
     with:
       targets:
         - //crates/daemon-server:daemon_server_test
+        - //crates/daemon-server:daemon_server_host_test
         - //crates/daemon-server:daemon_server_test_inputs_test
         - //crates/daemon-server:production_inputs_test
 

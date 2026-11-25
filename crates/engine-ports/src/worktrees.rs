@@ -120,6 +120,10 @@ pub trait Worktrees: Send + Sync {
     /// Why `path` cannot be a task's worktree, if it cannot.
     fn registrable(&self, path: &Path, protected: &Protected) -> Result<(), String>;
     fn branch_in<'a>(&'a self, dir: &'a Path) -> Git<'a, Option<String>>;
+    /// What the orchestrator reads of the worktree at `dir` with the case of a stopped node: its
+    /// branch against its upstream, what is not committed and its last commits, or that it is no
+    /// worktree git can read.
+    fn summary(&self, dir: &Path) -> String;
     /// What a node would leave behind in its worktree.
     fn leftovers<'a>(&'a self, session_id: &'a str) -> Git<'a, Option<String>>;
     fn release_task_worktree<'a>(&'a self, dir: &'a Path, slug: &'a str, remove: bool) -> Git<'a, Result<TaskWorktree, String>>;

@@ -145,6 +145,45 @@ low_opt_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True),
 )
 
+# The root's binaries against what they front: `alondrad --preflight` against the server's own
+# preflight, and the real `alondra` CLI against a daemon the test puts together as the root does.
+# The server's tests run none of them, so an edit of the root reruns only these.
+low_opt_rust_test(
+    name = "binary_smoke_test",
+    size = "medium",
+    srcs = ["tests/binary_smoke.rs", "tests/binary_smoke/cli_journeys.rs"],
+    crate_root = "tests/binary_smoke.rs",
+    data = [
+        ":alondrad",
+        "//crates/alondra:alondra",
+    ],
+    edition = "2024",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {
+        "FIXTURE_DAEMON": "$(rootpath :alondrad)",
+        "HOME": ".",
+        "TEST_EXECS": "$(rootpath //crates/alondra:alondra) $(rootpath :alondrad)",
+    },
+    rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + [
+        ":alondrad_lib",
+        "//crates/agent-runtime:agent_runtime",
+        "//crates/core:alondra_core",
+        "//crates/daemon-engine:daemon_engine",
+        "//crates/daemon-server:daemon_server",
+        "//crates/domain-rules:domain_rules",
+        "//crates/engine-admission:engine_admission",
+        "//crates/engine-doubles:engine_doubles",
+        "//crates/engine-ports:engine_ports",
+        "//crates/engine-sdk:engine_sdk",
+        "//crates/foundation:foundation",
+        "//crates/store-sqlite:store_sqlite",
+        "//crates/view-model:view_model",
+        "//crates/views:views",
+    ],
+)
+
 # The release runs codex_adoption_process_test, which no wildcard runs: this builds it with every
 # validation of this package, so a change to the engine's fixtures it compiles cannot break the
 # release unseen.

@@ -137,7 +137,8 @@ async fn looks<T>(mut changes: watch::Receiver<T>, mut look: impl FnMut(Millis, 
     }
 }
 
-#[cfg(all(test, not(feature = "whole-engine")))]
+#[cfg(test)]
+#[cfg(not(feature = "whole-engine"))]
 mod tests {
     use super::*;
 

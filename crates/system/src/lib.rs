@@ -196,6 +196,9 @@ impl Worktrees for GitWorktrees {
     fn branch_in<'a>(&'a self, dir: &'a Path) -> Git<'a, Option<String>> {
         Box::pin(worktree::branch_in(dir))
     }
+    fn summary(&self, dir: &Path) -> String {
+        worktree::summary(dir)
+    }
     fn leftovers<'a>(&'a self, session_id: &'a str) -> Git<'a, Option<String>> {
         Box::pin(async move { worktree::leftovers(&(self.claude_home)(), session_id).await })
     }

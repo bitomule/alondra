@@ -87,7 +87,7 @@ pub(crate) async fn advance(domain: &Arc<dyn Runtime>, agent: &AgentId) -> Resul
     loop {
         let handover = handover_of(&**domain, agent).ok_or_else(|| format!("{agent} has no move"))?;
         let step = handover.step;
-        if *domain.handovers().crash_after.lock().unwrap() == Some(step) && step != HandoverStep::SdkAdmitted {
+        if *domain.handovers().crash_after.lock_or_recover("the handover's crash point") == Some(step) && step != HandoverStep::SdkAdmitted {
             return Err(format!("the daemon died after {step:?}"));
         }
         match step {
@@ -243,6 +243,7 @@ async fn tick(domain: &Arc<dyn Runtime>) {
     }
 }
 
-#[cfg(all(test, feature = "real-hosts"))]
+#[cfg(test)]
+#[cfg(feature = "real-hosts")]
 #[path = "bg_handover/tests.rs"]
 mod tests;

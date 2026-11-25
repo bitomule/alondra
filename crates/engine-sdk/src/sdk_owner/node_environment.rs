@@ -119,7 +119,8 @@ fn collect_toml_references(value: &toml::Value, names: &mut BTreeSet<String>) {
     }
 }
 
-#[cfg(all(test, not(feature = "whole-engine")))]
+#[cfg(test)]
+#[cfg(not(feature = "whole-engine"))]
 mod tests {
     use super::*;
 

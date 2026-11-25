@@ -6,7 +6,7 @@ use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use crate::contexts::ContextsOf as _;
 use alondra_engine_admission::AdmissionOf as _;
-use super::codex_tests::{git, request_move, resumed_threads, until_moved};
+use super::codex_tests::{on_branch, request_move, resumed_threads, until_moved};
 use crate::sdk_owner::fixtures::codex::{configured, launch, transcript};
 use super::*;
 use crate::idle_release::{Rests, Timing, pass};
@@ -248,7 +248,7 @@ async fn a_closed_node_moves_to_another_provider_like_a_resting_one() {
     let task: TaskId = TASK.into();
     configured(&slice, "complete");
     claude_ready(&slice);
-    git(&slice.worktree, &["init", "-q", "-b", "release-notes"]);
+    on_branch(&slice.worktree, "release-notes");
     enable(&slice);
     let mut driver = launch(&slice);
     slice.settle(&mut driver);

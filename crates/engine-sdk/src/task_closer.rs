@@ -751,7 +751,9 @@ fn raise_card(domain: &dyn Runtime, task: &Task, stop: CloseStop, detail: &str, 
     }
 }
 
-#[cfg(all(test, feature = "whole-engine", not(feature = "real-hosts")))]
+#[cfg(test)]
+#[cfg(feature = "whole-engine")]
+#[cfg(not(feature = "real-hosts"))]
 mod tests;
 
 /// Settles the tasks a commit left due with nobody to close them.

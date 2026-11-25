@@ -46,8 +46,8 @@ A test has the layer of its package too. A test outside the root may not depend 
 binary of the root, through `deps` or `data` at any depth: it would rerun on every edit of every
 crate the daemon links, whatever it checks. It tests against a port or its double, or it lives in
 the root. `ROOT_TEST_CONSUMERS` in the table lists the packages whose tests run the binaries (the
-apps' client process, the system and sandbox suites, and the server's test target until its six
-tests of the real daemon and CLI move to the root), and only shrinks.
+system and sandbox suites), and only shrinks. The tests of the real `alondrad` and `alondra` are
+`//crates/alondrad:binary_smoke_test`.
 
 ## Declaring a crate
 

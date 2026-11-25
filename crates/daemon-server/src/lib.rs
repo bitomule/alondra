@@ -98,9 +98,6 @@ pub mod iroh_terminals;
 pub mod domain_bootstrap;
 pub mod delivery_review;
 pub mod domain_delivery;
-#[cfg(test)]
-#[cfg(feature = "real-hosts")]
-mod domain_e2e_tests;
 pub mod iroh_endpoint;
 pub mod reachability;
 pub mod device_expiry;
