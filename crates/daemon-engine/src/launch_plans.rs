@@ -48,18 +48,18 @@ fn validate_with_directory(domain: &dyn Runtime, home: &Path, request_id: &Reque
     };
     let auto = requested.effort == alondra_core::options::AUTO;
     let given = |text: &Option<String>| text.as_deref().is_some_and(|text| !text.trim().is_empty());
-    let bare_model = plan.model.as_deref().filter(|model| !model.starts_with("codex/") && !model.starts_with("claude/"));
+    let bare_model = plan.model.as_deref().filter(|model| !alondra_core::model_selection::ModelKey::names_provider(model));
     let offering = bare_model.map(|model| crate::domain_orchestrator_tools::providers_offering(domain, &file.accounts, model)).unwrap_or_default();
     let pinned = requested.selection.as_ref().is_some_and(|intent| intent.requested.is_some() || intent.account.is_some());
     if let Some(model) = bare_model.filter(|_| offering.len() > 1 && !pinned) {
         return Err(crate::domain_orchestrator_tools::ambiguous_model(model, &offering));
     }
-    if requested.selection.is_some() || plan.model.as_deref().is_some_and(|model| model.starts_with("codex/") || model.starts_with("claude/")) {
+    if requested.selection.is_some() || plan.model.as_deref().is_some_and(|model| alondra_core::model_selection::ModelKey::names_provider(model)) {
         use alondra_core::model_selection::{ModelKey, ModelProfile, TaskSelection};
         let mut native = requested.clone();
         let mut intent = native.selection.take().unwrap_or_else(|| TaskSelection::automatic(ModelProfile::Implementation));
         if let Some(model) = &plan.model {
-            let model = if model.starts_with("codex/") || model.starts_with("claude/") { ModelKey::parse_wire(model).map_err(&invalid)? }
+            let model = if alondra_core::model_selection::ModelKey::names_provider(model) { ModelKey::parse_wire(model).map_err(&invalid)? }
                 else {
                     let provider = intent.requested.as_ref().map(|model| model.provider).or_else(|| intent.account.as_ref().map(|account| account.provider))
                         .or_else(|| (offering.len() == 1).then(|| offering[0]))

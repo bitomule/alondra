@@ -25,7 +25,7 @@ fn system_fixture(kind: SystemCardKind) -> DomainState {
         K::ClaudeSignedOut => (SystemCard::ClaudeSignedOut, String::new()),
         K::ClaudeOutage => (SystemCard::ClaudeOutage { quiet: false, detail: None, said: None }, String::new()),
         K::ClaudeUsage => (SystemCard::ClaudeUsage { resets_at: None }, String::new()),
-        K::HostLost => (SystemCard::HostLost, String::new()),
+        K::HostLost => (SystemCard::HostLost { signed_out: false }, String::new()),
         K::TurnEnded => (SystemCard::TurnEnded, String::new()),
         K::SessionEnded => (SystemCard::SessionEnded, String::new()),
         K::HandoffDoubt => (SystemCard::HandoffDoubt, String::new()),

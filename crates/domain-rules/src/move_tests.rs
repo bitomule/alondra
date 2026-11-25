@@ -357,10 +357,9 @@ fn a_task_whose_account_used_up_its_session_is_out_of_quota_while_its_turn_still
     assert_eq!(s.moving_to(&t), Some(&claude()), "the open turn does not hold the move back");
 }
 
-/// Antigravity accounts are checked but run no node yet: a task never moves to one, and one never
-/// stands for the last account on, whatever it offers.
+/// Antigravity accounts run nodes: a task moves to one whose catalog offers a model.
 #[test]
-fn no_task_moves_to_antigravity_and_it_never_keeps_the_last_account_on() {
+fn a_task_moves_to_an_antigravity_account() {
     let mut s = on_codex();
     let mut statuses = s.accounts.clone();
     let mut antigravity = account(Provider::Antigravity, "default", AccountState::SignedIn);
@@ -369,18 +368,9 @@ fn no_task_moves_to_antigravity_and_it_never_keeps_the_last_account_on() {
     must(&mut s, Actor::System, Command::RecordAccounts { accounts: statuses, reserve: alondra_core::usage::default_reserve() });
     must(&mut s, Actor::System, Command::RecordModelCatalog { catalog: catalog(Provider::Antigravity, "default", "gemini") });
     let target = AccountKey::native(Provider::Antigravity);
-    let offered = s.move_task_action(&"t".into(), target.clone());
-    assert!(!offered.enabled);
-    assert_eq!(offered.disabled_reason.as_deref(), Some("provider_unavailable"));
-    let refused = move_to(&mut s, target).unwrap_err();
-    assert_eq!(refused.code, "provider_unavailable");
-    assert_eq!(refused.why(), Refusal::ProviderNotYet { provider: "Antigravity".into() });
-    for (provider, id) in [(Provider::Claude, "off"), (Provider::Codex, "default")] {
-        let _ = exec(&mut s, user(), Command::ChangeAccounts { provider, change: alondra_core::accounts::AccountChange::Disable { account: AccountId::parse(id).unwrap() } });
-    }
-    let last = exec(&mut s, user(), Command::ChangeAccounts { provider: Provider::Claude, change: alondra_core::accounts::AccountChange::Disable { account: AccountId::default_account() } });
-    assert!(last.is_err(), "an Antigravity account on does not let the last Claude or Codex account go off");
-    must(&mut s, user(), Command::ChangeAccounts { provider: Provider::Antigravity, change: alondra_core::accounts::AccountChange::Disable { account: AccountId::default_account() } });
+    assert!(s.move_task_action(&"t".into(), target.clone()).enabled);
+    move_to(&mut s, target.clone()).unwrap();
+    assert_eq!(s.moving_to(&"t".into()), Some(&target));
 }
 
 /// The key of a named Antigravity account changes while other commits land: its record is judged

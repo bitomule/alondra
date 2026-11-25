@@ -32,8 +32,8 @@ the application: they talk through ports, and the roots wire them together.
 | ports | `engine-ports`, `provider-contract`, `view-model`, `client-port`, `store`, `agent-application` |
 | application | `engine-kernel`, `daemon-engine`, `daemon-engine-model`, `daemon-engine-machine`, `engine-admission`, `engine-orchestrator`, `engine-sdk`, `engine-github`, `engine-live`, `engine-mcp`, `engine-worktrees`, `daemon-support` (mixed: most of it goes to the `system` adapter), `views` |
 | adapter-in | `daemon-server` (the daemon's routes, transports, pushes and screens' cache), `cli`, `cli-tui`, `cli-mcp`, `cli-report`, `client-transport` |
-| adapter-out | `github-gh`, `provider-claude`, `provider-codex`, `store-sqlite`, `agent-runtime`, `system` (git, the task worktrees, the disks, the provider accounts, the processes, Alondra's plugins and the MCP sign-in listeners, behind the `Worktrees`, `Disk`, `Accounts`, `Processes`, `Plugins` and `SignInReturns` ports) |
-| adapter-private | `agent-protocol` (of `provider-claude`), `codex-protocol` (of `provider-codex`) |
+| adapter-out | `github-gh`, `provider-antigravity`, `provider-claude`, `provider-codex`, `store-sqlite`, `agent-runtime`, `system` (git, the task worktrees, the disks, the provider accounts, the processes, Alondra's plugins and the MCP sign-in listeners, behind the `Worktrees`, `Disk`, `Accounts`, `Processes`, `Plugins` and `SignInReturns` ports) |
+| adapter-private | `agent-protocol` (of `provider-claude`), `antigravity-protocol` (of `provider-antigravity`), `codex-protocol` (of `provider-codex`) |
 | root | `alondrad`, `alondra`, `relay`, `scenarios`, `tools/sandbox` |
 
 `machine-model`, `provider-conformance`, `engine-doubles` and other `testonly` targets are tests:
@@ -111,3 +111,9 @@ GitHub from the registry of ports, and only `alondrad_production`, the library o
 binary, links the real client. Phase 3b moved `agent-runtime`
 behind the `AgentHost` port of `engine-ports`: no provider or piece of the engine depends on it,
 only the roots and the tests that start real hosts.
+
+`engine-sdk` reaches `provider-antigravity` the way it reaches the Claude and Codex providers, for
+its `Worker::Antigravity`: the one entry Antigravity nodes added, with the ceiling raised from 53 to
+54. Nothing else of the engine names the Antigravity crates: `engine-sdk` reads the host's frames
+and passes agy's messages to the live view through `SdkEngine::feed_antigravity`, so `engine-live`
+and `daemon-engine` read plain JSON.

@@ -3583,6 +3583,9 @@ fn a_live_host_of_a_release_older_than_the_oldest_adoptable_is_replaced_as_befor
 
 #[path = "codex_tests.rs"]
 mod codex_tests;
+#[cfg(feature = "real-hosts")]
+#[path = "antigravity_tests.rs"]
+mod antigravity_tests;
 
 #[cfg(not(feature = "real-hosts"))]
 #[path = "untaken_tests.rs"]

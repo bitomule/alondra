@@ -2195,7 +2195,9 @@ impl DomainState {
     /// The task's SDK execution could not be taken over and has no host: the task holds on a card
     /// that says why and offers to try again or to cancel it. Nothing runs it until the user says.
     /// A card that only asked how the task goes on becomes this one, so the task has one card.
-    pub(super) fn record_host_lost(&mut self, task: &TaskId, reason: &str, quiet: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    /// When the provider refused the account for want of a sign-in, the account is signed out, so
+    /// no other work starts on it, and the card asks to sign in before trying again.
+    pub(super) fn record_host_lost(&mut self, task: &TaskId, reason: &str, quiet: bool, signed_out: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         if self.tasks.get(task).is_some_and(|task| self.node_closing(task)) {
             return self.reconcile_recovery_cards(task, lifecycles);
         }
@@ -2213,12 +2215,29 @@ impl DomainState {
             return Ok(());
         }
         let title = self.tasks[task].title.clone();
+        let provider = signed_out.then(|| self.task_account_key(task));
+        if let Some(key) = &provider {
+            self.account_signed_out(key);
+        }
+        let lost_card = |id: InteractionId, revision: u64| {
+            let mut card = host_lost_card(id, task, &title, reason, revision);
+            if let Some(key) = &provider {
+                let (need, _) = crate::claude_access::hold_text(key.provider, ClaudeHold::SignedOut);
+                let why = format!("{} refused this task's account before taking its input: it is not signed in, or its key was refused. Sign in with the command Accounts shows for it, or set its key, then press {RETAKE_LABEL}.", key.provider.display_name());
+                card.card = CardSpec::new(CardKind::Problem, need).why(&why).content(ContentKind::Diagnosis, &capitalized(reason));
+                card.card.recommended = Some(RETAKE.into());
+                card.system_card = Some(SystemCard::HostLost { signed_out: true });
+            }
+            card
+        };
         let unheard = cards.into_iter().find(|(card, reason)| *reason == WaitReason::Unheard && self.interactions.get(card).is_some_and(|i| i.author == Author::System && self.open(i)));
         if let Some((card, _)) = unheard {
             let order = self.interactions[&card].order;
-            let mut lost = host_lost_card(card.clone(), task, &title, reason, self.revision + 1);
+            let mut lost = lost_card(card.clone(), self.revision + 1);
             lost.order = order;
-            lost.system_card = self.interactions[&card].system_card.clone();
+            if provider.is_none() {
+                lost.system_card = self.interactions[&card].system_card.clone();
+            }
             self.insert_system_card(lost)?;
             if !quiet {
                 effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
@@ -2227,7 +2246,7 @@ impl DomainState {
         }
         let card = InteractionId(format!("{HOST_LOST_PREFIX}{task}-{}", self.revision + 1));
         self.decide(lifecycles, task, LifecycleRecord::Paused { card: card.clone(), owner: Some(PauseOwner::User) })?;
-        self.insert_system_card(host_lost_card(card.clone(), task, &title, reason, self.revision + 1))?;
+        self.insert_system_card(lost_card(card.clone(), self.revision + 1))?;
         if !quiet {
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
         }
@@ -3100,7 +3119,7 @@ fn host_lost_card(id: InteractionId, task: &TaskId, title: &str, reason: &str, r
         order: revision,
         withdrawn: false,
         card,
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::HostLost), shortened: false,
+        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::HostLost { signed_out: false }), shortened: false,
     }
 }
 

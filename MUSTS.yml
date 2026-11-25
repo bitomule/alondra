@@ -2431,6 +2431,7 @@ checks:
       - "MODULE.bazel"
       - "THIRD_PARTY_NOTICES.md"
       - "agent-host/BUILD.bazel"
+      - "agent-host/antigravity-main.ts"
       - "agent-host/codex-main.ts"
       - "agent-host/host-entitlements.plist"
       - "agent-host/persistent-main.ts"

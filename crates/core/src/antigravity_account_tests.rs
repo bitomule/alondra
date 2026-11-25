@@ -251,7 +251,7 @@ fn a_pool_whose_reset_passed_has_room_again() {
 }
 
 #[test]
-fn the_account_that_stays_on_runs_nodes_unless_antigravity_is_alone() {
+fn an_antigravity_account_stays_on_as_the_last_one_that_runs_nodes() {
     let mut alone = AccountsConfig::fresh();
     alone.connect(Provider::Antigravity);
     assert!(alone.any_enabled_globally(), "Antigravity connected alone keeps its own account on");
@@ -259,5 +259,5 @@ fn the_account_that_stays_on_runs_nodes_unless_antigravity_is_alone() {
     both.connect(Provider::Claude);
     assert!(both.any_enabled_globally());
     let claude_off = both.changed(Provider::Claude, &AccountChange::Disable { account: AccountId::default_account() }).unwrap();
-    assert!(!claude_off.any_enabled_globally(), "an Antigravity account does not stand for the last Claude one");
+    assert!(claude_off.any_enabled_globally(), "the Antigravity account runs nodes once the Claude one is off");
 }

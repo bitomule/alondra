@@ -71,7 +71,8 @@ class LocalReleaseTests(unittest.TestCase):
             l.check_signature(details('com.bitomule.alondrad', True).replace('Timestamp=', 'Signed='), 'com.bitomule.alondrad')
 
     def test_each_signed_host_is_smoked_with_the_refusal_its_own_entry_prints(self):
-        entries = {l.release.HOST: 'agent-host/persistent-main.ts', l.release.CODEX_HOST: 'agent-host/codex-main.ts'}
+        entries = {l.release.HOST: 'agent-host/persistent-main.ts', l.release.CODEX_HOST: 'agent-host/codex-main.ts',
+                   l.release.ANTIGRAVITY_HOST: 'agent-host/antigravity-main.ts'}
         self.assertEqual(set(l.HOST_REFUSALS), set(entries))
         with tempfile.TemporaryDirectory() as directory, patch.object(l, 'run'):
             for name, refusal in l.HOST_REFUSALS.items():
@@ -356,6 +357,9 @@ class LocalReleaseTests(unittest.TestCase):
                 self.assertEqual(args[1], 'deploy/brew/package-cli.sh')
                 arch, payload, manifest = args[3], pathlib.Path(args[4]).parent, pathlib.Path(args[8])
                 self.assertEqual(manifest, built['alondra-host'].with_name('alondra-host.manifest.json'))
+                self.assertEqual(args[9:], (payload / 'alondra-codex-host', built['alondra-codex-host'].with_name('alondra-codex-host.manifest.json'),
+                                            payload / 'alondra-antigravity-host', built['alondra-antigravity-host'].with_name('alondra-antigravity-host.manifest.json'),
+                                            output))
                 path = output / f'alondra-0.1.2-{arch}.tar.gz'
                 self.assertFalse(path.exists())
                 with tarfile.open(path, 'w:gz') as archive:
@@ -391,7 +395,8 @@ class LocalReleaseTests(unittest.TestCase):
         l.prepare('0.1.2', 'source', output)
         self.assertEqual(built_with, [tuple(l.RELEASE_TARGETS.values())])
         self.assertEqual(sorted(signed), sorted([(name, identifier, None) for name, identifier in l.SIGNED.items()]
-                                               + [('alondra-host', l.HOST_IDENTIFIER, l.HOST_ENTITLEMENTS), ('alondra-codex-host', 'com.bitomule.alondra-codex-host', l.HOST_ENTITLEMENTS)]))
+                                               + [('alondra-host', l.HOST_IDENTIFIER, l.HOST_ENTITLEMENTS), ('alondra-codex-host', 'com.bitomule.alondra-codex-host', l.HOST_ENTITLEMENTS),
+                                                  ('alondra-antigravity-host', 'com.bitomule.alondra-antigravity-host', l.HOST_ENTITLEMENTS)]))
         self.assertTrue(all(path.read_bytes() == name.encode() for name, path in built.items()), 'Bazel outputs stay as built')
         for name, original in originals.items():
             self.assertEqual((output / name).read_bytes(), original)

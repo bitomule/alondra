@@ -52,6 +52,7 @@ sh_test(
         "//crates/engine-sdk:BUILD.bazel",
         "//:Cargo.lock",
         "//:Cargo.toml",
+        "//agent-host:antigravity-main.ts",
         "//agent-host:codex-main.ts",
         "//agent-host:host-entitlements.plist",
         "//agent-host:persistent-main.ts",

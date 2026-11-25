@@ -928,10 +928,12 @@ fn sdk_stopping(state: &DomainState, task: &TaskId) -> (bool, Option<alondra_dom
 pub(super) fn assert_index_matches(state: &DomainState) {
     for card in state.interactions.values().filter(|card| card.author == super::Author::System || card.system_card == Some(super::SystemCard::Unheard)) {
         if !matches!(card.system_card, Some(super::SystemCard::RefusedCards { .. })) {
-            // An outage card also keeps what Claude Code said and whether Alondra retried, which
-            // its id never held: only its kind is read from the id.
+            // An outage card also keeps what Claude Code said and whether Alondra retried, and a
+            // lost host whether its account was signed out, which their ids never held: only
+            // their kind is read from the id.
             let kind = match &card.system_card {
                 Some(super::SystemCard::ClaudeOutage { .. }) => Some(super::SystemCard::ClaudeOutage { quiet: false, detail: None, said: None }),
+                Some(super::SystemCard::HostLost { .. }) => Some(super::SystemCard::HostLost { signed_out: false }),
                 other => other.clone(),
             };
             assert_eq!(kind, super::SystemCard::of_stored_id(&card.id.0), "Alondra's card {} says what it is as its id does", card.id);

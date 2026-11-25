@@ -122,7 +122,7 @@ fn a_confirmed_close_never_offers_an_impossible_retry_after_repeated_host_loss()
     let journal = s.lifecycle_journal.clone();
     for _ in 0..67 {
         let outcome = must(&mut s, Actor::System, Command::RecordHostLost {
-            task_id: TASK.into(), reason: "Synthetic owner mismatch".into(), quiet: false,
+            task_id: TASK.into(), reason: "Synthetic owner mismatch".into(), quiet: false, signed_out: false,
         });
         assert!(!notifies_user(&outcome));
         assert_eq!(s.lifecycle_journal, journal, "closing does not queue another resume");
@@ -136,7 +136,7 @@ fn a_confirmed_close_never_offers_an_impossible_retry_after_repeated_host_loss()
 fn confirming_cleanup_retires_only_the_obsolete_recovery_decision() {
     {
         let mut s = accepted_in_an_open_turn();
-        must(&mut s, Actor::System, Command::RecordHostLost { task_id: TASK.into(), reason: "The host stopped".into(), quiet: false });
+        must(&mut s, Actor::System, Command::RecordHostLost { task_id: TASK.into(), reason: "The host stopped".into(), quiet: false, signed_out: false });
         let card = s.lifecycle_of(&TASK.into()).unwrap().cards()[0].0.clone();
         let before = s.lifecycle_of(&TASK.into()).unwrap();
         let pending = before.pending_inputs().iter().map(|input| input.as_str().to_owned()).collect::<Vec<_>>();
@@ -230,7 +230,7 @@ fn confirming_cleanup_retires_a_host_loss_that_reused_an_unheard_card() {
     assert!(!retakes(&s.interactions[&card]));
 
     must(&mut s, Actor::System, Command::RecordHostLost {
-        task_id: task_id.clone(), reason: "The replacement host could not start".into(), quiet: false,
+        task_id: task_id.clone(), reason: "The replacement host could not start".into(), quiet: false, signed_out: false,
     });
     let before = s.lifecycle_of(&task_id).unwrap();
     assert_eq!(before.cards(), [(&card, alondra_domain::WaitReason::Unheard)],

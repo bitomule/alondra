@@ -306,7 +306,7 @@ impl Live {
     }
 
     pub fn threads(&self, session_id: &str) -> Option<Vec<alondra_core::activity::Activity>> {
-        if let Some(activity) = self.mods.session(session_id).as_ref().and_then(|session| crate::codex_live::activity(session).or_else(|| crate::sdk_live::activity(session))) {
+        if let Some(activity) = self.mods.session(session_id).as_ref().and_then(|session| crate::codex_live::activity(session).or_else(|| crate::antigravity_live::activity(session)).or_else(|| crate::sdk_live::activity(session))) {
             return Some(activity);
         }
         let view = self.view.lock_or_exit("the live sessions");

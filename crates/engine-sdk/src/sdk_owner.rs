@@ -249,8 +249,10 @@ pub struct Driver {
     /// A step of this owner failed: its host is stopped and replaced like one that closed.
     owner_failed: bool,
     native_account_refusal:Option<String>,
-    /// Why the Codex session of this host ended on its own, as its host said it.
-    native_failure: Option<alondra_provider_codex::SessionFailure>,
+    /// That refusal is the account's sign-in or key.
+    native_signed_out: bool,
+    /// Why the Codex or Antigravity session of this host ended on its own, as its host said it.
+    native_failure: Option<String>,
     /// The proof of the native account the host recorded is kept apart from its folder.
     identity_kept: bool,
     /// The Claude session the host last said it runs, so the log names each one once.
@@ -478,7 +480,7 @@ fn native_recovery_status(domain: &dyn Runtime, backend: &SdkBackend, task: &Tas
     let Some(session) = metadata.as_deref().and_then(|metadata| match provider {
         Provider::Claude => alondra_provider_claude::conversation_session(metadata),
         Provider::Codex => alondra_provider_codex::conversation_session(metadata),
-        Provider::Antigravity => None,
+        Provider::Antigravity => alondra_provider_antigravity::conversation_session(metadata),
     }) else { return unavailable(unproven.into()); };
     let selected = backend.for_provider(provider, domain.home()).map_err(|error| Failed::new(format!("Locating the original native account: {error:#}")))?;
     let selected = on_account_provider(domain, &selected, provider, account)?;
@@ -767,8 +769,8 @@ fn binding(backend: &SdkBackend, capabilities: BTreeSet<Capability>, account: &a
 fn binding_for(provider: Provider, backend: &SdkBackend, capabilities: BTreeSet<Capability>, account: &alondra_core::accounts::AccountId, generation: u64) -> Result<ProviderBinding, Failed> {
     let configuration = backend.configuration_digest();
     let instance = if provider == Provider::Claude { format!("{HOST}-{}-{account}-{generation}", &configuration[..16]) }
-        else { format!("{HOST}-codex-{}-{account}-{generation}", &configuration[..16]) };
-    let driver = if provider == Provider::Claude { DRIVER } else { "codex-app-server" };
+        else { format!("{HOST}-{}-{}-{account}-{generation}", provider.as_str(), &configuration[..16]) };
+    let driver = match provider { Provider::Claude => DRIVER, Provider::Codex => "codex-app-server", Provider::Antigravity => "antigravity-acp" };
     ProviderBinding::new(
         format!("{driver}-{instance}"),
         driver.into(),
@@ -791,8 +793,12 @@ fn on_account_provider(domain: &dyn Runtime, started: &SdkBackend, provider: Pro
     started.for_account_provider(domain.home(), provider, account, &alondra_engine_kernel::accounts_file::registered_provider(domain.home(), provider)).map_err(|error| Failed::new(format!("{error:#}")))
 }
 fn provider_capabilities(provider: Provider) -> BTreeSet<Capability> {
-    if provider == Provider::Claude { return capabilities(); }
-    BTreeSet::from([Capability::OfferInput, Capability::Interrupt, Capability::ForceStop, Capability::SetModel, Capability::SetPermissionMode, Capability::McpStatus, Capability::McpSignIn, Capability::Decisions, Capability::BackgroundWork, Capability::DurableResume])
+    match provider {
+        Provider::Claude => capabilities(),
+        Provider::Codex => BTreeSet::from([Capability::OfferInput, Capability::Interrupt, Capability::ForceStop, Capability::SetModel, Capability::SetPermissionMode, Capability::McpStatus, Capability::McpSignIn, Capability::Decisions, Capability::BackgroundWork, Capability::DurableResume]),
+        // ACP names no background work, MCP state or compaction.
+        Provider::Antigravity => BTreeSet::from([Capability::OfferInput, Capability::Interrupt, Capability::ForceStop, Capability::SetModel, Capability::SetPermissionMode, Capability::Decisions, Capability::DurableResume]),
+    }
 }
 
 
@@ -1037,7 +1043,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
                 .map_err(|error| Failed::new(format!("its host refused to be taken over and did not stop: {error}")))?;
             return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
         }
-        if worker.native_liveness().map_err(adapter("checking the adopted native process"))? == Some(alondra_provider_codex::NativeLiveness::Lost) {
+        if worker.native_lost().map_err(adapter("checking the adopted native process"))? {
             worker.stop().map_err(adapter("stopping the adopted host without its app-server"))?;
             drop(worker);
             return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
@@ -1156,8 +1162,9 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
     .map_err(failed("recording the end of the host"))?;
     if !relaunch{*claimed=worker.take_ended();return Ok(None)}
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
-    let refused=adapter_state.checkpoint().and_then(|checkpoint|alondra_provider_codex::blocked_policy(checkpoint.bytes()))
-        .or_else(||journal.events().iter().find_map(|event|alondra_provider_codex::account_refusal(&OrderedObservation{owner_generation,execution:stamp.clone(),cursor:event.cursor,evidence:event.payload.clone()})).map(str::to_owned));
+    let provider = worker.provider();
+    let refused=adapter_state.checkpoint().and_then(|checkpoint|blocked_policy(provider, checkpoint.bytes()))
+        .or_else(||journal.events().iter().find_map(|event|account_refusal(provider, &OrderedObservation{owner_generation,execution:stamp.clone(),cursor:event.cursor,evidence:event.payload.clone()})).map(str::to_owned));
     if !explicit_account_retry && let Some(reason)=refused{return Err(Failed::new(reason))}
     let base = adapter_state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0);
     let resume = domain.read().state().lifecycle_of(&task).ok()
@@ -1217,7 +1224,7 @@ fn end_hosts_of_ended_tasks(domain: &dyn Runtime, backend: &SdkBackend) {
         .filter(|(id, _)| !state.lifecycle_of(id).is_ok_and(|lifecycle| matches!(lifecycle.phase(), alondra_domain::TaskPhase::Completed | alondra_domain::TaskPhase::Cancelled)))
         .filter_map(|(_, task)| task.agent_id.as_ref().map(|agent| agent.0.as_str()))
         .collect();
-    let roots: BTreeSet<PathBuf> = [Provider::Claude, Provider::Codex].into_iter()
+    let roots: BTreeSet<PathBuf> = Provider::ALL.into_iter()
         .filter_map(|provider| backend.for_provider(provider, domain.home()).ok().map(|selected| selected.state_root.clone()))
         .collect();
     for root in roots {
@@ -1293,6 +1300,11 @@ fn close_host_lost_card(domain: &dyn Runtime, task: &TaskId) {
 /// fails too. The user hears of an outage once: until a takeover works, another failure leaves its
 /// card without a push.
 pub fn lost(domain: &dyn Runtime, task: &TaskId, why: &str) {
+    lost_on(domain, task, why, false)
+}
+
+/// As `lost`; `signed_out` says the provider refused the account for want of a sign-in or a key.
+pub fn lost_on(domain: &dyn Runtime, task: &TaskId, why: &str, signed_out: bool) {
     log!("the SDK execution of {task} was not taken over: {why}");
     end_dead_host_claims(domain, task);
     let state = domain.state();
@@ -1310,7 +1322,7 @@ pub fn lost(domain: &dyn Runtime, task: &TaskId, why: &str) {
         data_epoch: state.data_epoch.clone(),
         command_id: format!("host-lost-{task}-{}", crate::auth::random_hex(8)).into(),
         expected_revision: 0,
-        command: Command::RecordHostLost { task_id: task.clone(), reason: why.to_owned(), quiet },
+        command: Command::RecordHostLost { task_id: task.clone(), reason: why.to_owned(), quiet, signed_out },
     };
     if let Err(error) = domain.execute_as_system(envelope) {
         log!("could not put the card of {task}, whose execution was not taken over: {}", store_text(&error));
@@ -1714,6 +1726,10 @@ fn configuration(domain: &dyn Runtime, backend: &SdkBackend, binding: &ProviderB
             native_environment.insert("ALONDRA_NODE_PLUGIN".into(), plugin.display().to_string());
         }
     }
+    let mut worker = worker;
+    if Provider::from_driver(binding.driver()) == Some(Provider::Antigravity) && let Some(profile) = worker.as_mut() {
+        antigravity_account(domain.home(), &account_of(binding), profile)?;
+    }
     Ok(ClaudeConfiguration {
         artifact: VerifiedArtifact::verify(&backend.node, &backend.host, &backend.node_sha256, &backend.host_sha256)
             .map_err(|error| Failed::new(format!("verifying the SDK host: {error}")))?,
@@ -1736,16 +1752,26 @@ fn configuration(domain: &dyn Runtime, backend: &SdkBackend, binding: &ProviderB
 /// Its Claude runs in the default permission mode, so the settings allow editing inside the node's
 /// own worktree: an edit there never puts a permission card to the user.
 fn worker_profile(plugin: &std::path::Path, options: &LaunchOptions, worktree: &str) -> Result<WorkerProfile, Failed> {
+    let initial_mode = if options.selection.as_ref().is_some_and(|selection| selection.profile == alondra_core::model_selection::ModelProfile::Design) { "plan" } else { "default" };
+    if options.provider == Provider::Antigravity {
+        if !options.disallowed_tools.is_empty() { return Err(Failed::new("Antigravity cannot enforce this task's per-tool deny list; choose a supported task tool policy before launching".into())); }
+        let instructions = node_instructions(plugin, "Antigravity")?;
+        let antigravity = serde_json::json!({
+            "instructions": instructions,
+            "mcp_servers": {"alondra": {"command": plugin.join("bin/alondra"), "args": ["mcp-node"]}},
+            "initial_mode": initial_mode,
+        });
+        return Ok(WorkerProfile { plugins: vec![plugin.to_path_buf()], settings: serde_json::Map::from_iter([("antigravity".into(), antigravity)]), model: options.model.clone(), effort: options.effort.clone(), disallowed_tools: Vec::new(), handoff_context: None });
+    }
     if options.provider == Provider::Codex {
         if !options.disallowed_tools.is_empty() { return Err(Failed::new("The selected Codex runtime cannot enforce this task's per-tool deny list; choose a supported task tool policy before launching".into())); }
-        let instructions = std::fs::read_to_string(plugin.join("skills/alondra/SKILL.md")).map_err(|_| Failed::new("Alondra's Codex node mission is missing; run alondra doctor --fix before starting this task".into()))?;
-        if instructions.trim().is_empty() || instructions.len() > 128 * 1024 { return Err(Failed::new("Alondra's Codex node mission is empty or too large; run alondra doctor --fix".into())); }
+        let instructions = node_instructions(plugin, "Codex")?;
         let codex = serde_json::json!({
             "developerInstructions": instructions,
             "mcp_servers": {"alondra": {"command": plugin.join("bin/alondra"), "args": ["mcp-node"], "tool_timeout_sec": 3900}},
             "nativeAccountPolicy": {"paidAccountId": options.selection.as_ref().and_then(|selection|selection.paid_account_grant.as_ref().filter(|grant|grant.provider==Provider::Codex && selection.account.as_ref()==Some(*grant))).map(|grant|grant.account.as_str())},
             "reasoning_effort": options.effort,
-            "initial_mode": if options.selection.as_ref().is_some_and(|selection| selection.profile == alondra_core::model_selection::ModelProfile::Design) { "plan" } else { "default" },
+            "initial_mode": initial_mode,
         });
         return Ok(WorkerProfile { plugins: vec![plugin.to_path_buf()], settings: serde_json::Map::from_iter([("codex".into(), codex)]), model: options.model.clone(), effort: None, disallowed_tools: Vec::new(), handoff_context: None });
     }
@@ -1758,6 +1784,41 @@ fn worker_profile(plugin: &std::path::Path, options: &LaunchOptions, worktree: &
         disallowed_tools: options.disallowed_tools.clone(),
         handoff_context: None,
     })
+}
+
+/// The node's instructions, which Codex and Antigravity take as text: Claude loads them as a skill of the plugin.
+fn node_instructions(plugin: &std::path::Path, provider: &str) -> Result<String, Failed> {
+    let instructions = std::fs::read_to_string(plugin.join("skills/alondra/SKILL.md")).map_err(|_| Failed::new(format!("Alondra's {provider} node mission is missing; run alondra doctor --fix before starting this task")))?;
+    if instructions.trim().is_empty() || instructions.len() > 128 * 1024 { return Err(Failed::new(format!("Alondra's {provider} node mission is empty or too large; run alondra doctor --fix"))); }
+    Ok(instructions)
+}
+
+/// What the host of a node on an Antigravity account needs of the account to start its `agy`: its
+/// access, the folder of a named account and, for a key, the path of the file that keeps it, which
+/// only the host reads. The key itself never passes through the daemon.
+fn antigravity_account(home: &std::path::Path, account: &alondra_core::accounts::AccountId, profile: &mut WorkerProfile) -> Result<(), Failed> {
+    let config = alondra_engine_kernel::accounts_file::config(home).map_err(Failed::new)?;
+    let settings = config.antigravity_settings(account);
+    let registered = alondra_engine_kernel::accounts_file::registered_provider(home, Provider::Antigravity);
+    let folder = alondra_engine_kernel::sdk_backend::managed_account_folder(home, Provider::Antigravity, account, &registered).map_err(|error| Failed::new(format!("{error:#}")))?;
+    use alondra_core::antigravity_account::Access;
+    // An API key account cannot run without its key, which the host says before agy starts; a Cloud
+    // project uses a key only when one is set, else Google's application default credentials.
+    let key_file = folder.as_ref().map(|folder| folder.join(alondra_core::antigravity_account::KEY_FILE)).filter(|file| match settings.access {
+        Access::ApiKey => true,
+        Access::CloudProject => std::fs::symlink_metadata(file).is_ok_and(|meta| meta.is_file()),
+        Access::Google | Access::Enterprise => false,
+    });
+    let entry = profile.settings.entry("antigravity").or_insert_with(|| serde_json::json!({}));
+    let fields = entry.as_object_mut().ok_or_else(|| Failed::new("the node's Antigravity settings are not an object".into()))?;
+    fields.insert("access".into(), settings.access.as_str().into());
+    for (name, value) in [("account_folder", folder), ("key_file", key_file), ("credentials_file", settings.credentials_file)] {
+        if let Some(path) = value { fields.insert(name.into(), path.display().to_string().into()); }
+    }
+    for (name, value) in [("project", settings.project), ("location", settings.location)] {
+        if let Some(value) = value { fields.insert(name.into(), value.into()); }
+    }
+    Ok(())
 }
 
 /// Claude Code's `Edit` rules cover Edit, Write and NotebookEdit; `//` anchors a rule at the root
@@ -1835,7 +1896,7 @@ impl Driver {
                 None
             }
         };
-        Self { bell, host_wait: WAKE, interrupt_grace: INTERRUPT_GRACE, pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, declines_next_release: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None, before_release_ends: None }
+        Self { bell, host_wait: WAKE, interrupt_grace: INTERRUPT_GRACE, pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_signed_out: false, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, declines_next_release: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None, before_release_ends: None }
     }
 
     /// The runtime of the daemon that owns this host.
@@ -2182,11 +2243,16 @@ impl Driver {
             self.domain.before_acknowledge();
             self.worker.acknowledge(&observation).map_err(adapter("acknowledging the observation"))?;
         }
-        if self.worker.provider()==Provider::Codex && let Some(failure)=alondra_provider_codex::session_failure(&batch){
-            log!("the Codex session of {} ended on its own: {failure}", self.task);
+        let provider = self.worker.provider();
+        if let Some(failure) = session_failure(provider, &batch) {
+            log!("the {} session of {} ended on its own: {failure}", provider.display_name(), self.task);
             self.native_failure=Some(failure);
         }
-        if self.worker.provider()==Provider::Codex && let Some(reason)=alondra_provider_codex::account_refusal(&batch){self.native_account_refusal=Some(reason.into());return Err(Failed::new(reason.into()))}
+        if let Some(reason)=account_refusal(provider, &batch){
+            self.native_signed_out = provider == Provider::Antigravity && alondra_provider_antigravity::signed_out(&batch);
+            self.native_account_refusal=Some(reason.into());
+            return Err(Failed::new(reason.into()))
+        }
         if !unrecorded.is_empty() {
             log!("the SDK owner of {} keeps its host after an observation omitted lifecycle reactions: {}", self.task, unrecorded.join("; "));
         }
@@ -2379,9 +2445,9 @@ impl Driver {
             return Err(Failed::new("a step of the owner failed".into()));
         }
         assert!(!std::mem::take(&mut self.panic_next_step), "a step of the owner panicked");
-        if self.worker.native_liveness().map_err(adapter("checking the native process"))? == Some(alondra_provider_codex::NativeLiveness::Lost) {
+        if self.worker.native_lost().map_err(adapter("checking the native process"))? {
             self.host_closed = true;
-            return Err(Failed::new("the Codex host lost its app-server".into()));
+            return Err(Failed::new(format!("the {} host lost its native process", self.worker.provider().display_name())));
         }
         self.sealed();
         if self.opening_overdue(now)? {
@@ -2593,7 +2659,7 @@ impl Driver {
     /// replacement stops what is left of the host and waits for its exit before it reads the host's
     /// lock, so whether the host ended is a fact, never a guess.
     pub fn host_to_replace(&self) -> bool {
-        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || self.untaken || self.requeued || self.host_closed && self.worker.provider() == alondra_core::accounts::Provider::Codex) && !self.gave_up_starting() && !crate::provider_transition::holds_execution(&*self.domain,&self.task)
+        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || self.untaken || self.requeued || self.host_closed && self.worker.provider() != alondra_core::accounts::Provider::Claude) && !self.gave_up_starting() && !crate::provider_transition::holds_execution(&*self.domain,&self.task)
     }
 }
 
@@ -2609,7 +2675,39 @@ impl Drop for Driver {
 }
 
 fn feed(provider: Provider, domain: &dyn Runtime, agent: &AgentId, batch: &OrderedObservation) {
-    domain.engine().feed(provider, agent, batch);
+    match provider {
+        // The live view reads agy's own messages; only this crate reads the host's frames.
+        Provider::Antigravity => if let Some(message) = alondra_provider_antigravity::native_message(batch) {
+            domain.engine().feed_antigravity(agent, &message);
+        },
+        Provider::Claude | Provider::Codex => domain.engine().feed(provider, agent, batch),
+    }
+}
+
+/// Why a provider's session ended without being asked to, as its host said it.
+fn session_failure(provider: Provider, batch: &OrderedObservation) -> Option<String> {
+    match provider {
+        Provider::Claude => None,
+        Provider::Codex => alondra_provider_codex::session_failure(batch).map(|failure| failure.to_string()),
+        Provider::Antigravity => alondra_provider_antigravity::session_failure(batch).map(|failure| failure.to_string()),
+    }
+}
+
+/// A refusal of the account before the provider took the input: the reason the task holds.
+fn account_refusal(provider: Provider, batch: &OrderedObservation) -> Option<&'static str> {
+    match provider {
+        Provider::Claude => None,
+        Provider::Codex => alondra_provider_codex::account_refusal(batch),
+        Provider::Antigravity => alondra_provider_antigravity::account_refusal(batch),
+    }
+}
+
+fn blocked_policy(provider: Provider, checkpoint: &[u8]) -> Option<String> {
+    match provider {
+        Provider::Claude => None,
+        Provider::Codex => alondra_provider_codex::blocked_policy(checkpoint),
+        Provider::Antigravity => alondra_provider_antigravity::blocked_policy(checkpoint),
+    }
 }
 
 /// Marks, in the host's folder, that Alondra itself ends the host: the daemon stops it, or its
@@ -2900,7 +2998,7 @@ impl Owner {
             }
             if let Some(why) = lost_because {
                 ending.store(true, Ordering::SeqCst);
-                lost(&*driver.domain, &driver.task, &why);
+                lost_on(&*driver.domain, &driver.task, &why, driver.native_signed_out);
             }
             let capability = driver.ended_capability();
             drop(driver);

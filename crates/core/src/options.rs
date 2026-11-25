@@ -510,7 +510,7 @@ impl OptionsFile {
     /// Automatic, or one of the accounts paid per use that are on: Alondra never picks those by
     /// itself, so a request runs on one only when the user chooses it. Absent without any.
     fn account_spec(&self) -> Option<Spec> {
-        let enabled: Vec<_> = self.accounts.ordered_accounts().into_iter().filter(|(key, account)| account.enabled && key.provider.runs_nodes())
+        let enabled: Vec<_> = self.accounts.ordered_accounts().into_iter().filter(|(_, account)| account.enabled)
             .collect();
         if enabled.is_empty() || (enabled.len() == 1 && self.accounts.connected.is_none() && self.accounts.claude.is_empty()) {
             return None;
@@ -1177,7 +1177,7 @@ mod node_limit_tests {
     }
 
     #[test]
-    fn a_request_is_never_offered_an_account_of_a_provider_that_runs_no_nodes() {
+    fn a_request_is_offered_the_antigravity_accounts_beside_the_claude_ones() {
         use crate::accounts::{AccountChange, Provider};
         let mut file = OptionsFile::fresh();
         file.accounts.connect(Provider::Claude);
@@ -1187,6 +1187,6 @@ mod node_limit_tests {
         let account = file.catalog(None).into_iter().find(|spec| spec.id == ACCOUNT).expect("two Claude accounts offer a choice");
         let ids: Vec<_> = account.values.iter().map(|value| value.id.as_str()).collect();
         assert!(ids.contains(&"claude/work"), "{ids:?}");
-        assert!(!ids.iter().any(|id| id.starts_with("antigravity/")), "{ids:?}");
+        assert!(ids.contains(&"antigravity/lab"), "{ids:?}");
     }
 }

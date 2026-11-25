@@ -759,6 +759,10 @@ pub enum Command {
         reason: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         quiet: bool,
+        /// The provider refused the task's account before taking its input, for want of a sign-in
+        /// or a key: the account is signed out and the card asks to sign in.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        signed_out: bool,
     },
     /// Claude will never read `input`, told `text`, handed to the Task's SDK host of `generation`:
     /// it leaves what the Task waits on and a card asks the user whether to send it again.

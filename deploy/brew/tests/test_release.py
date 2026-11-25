@@ -51,6 +51,12 @@ class PublicPayloadTests(unittest.TestCase):
             self.assertEqual(codex['sha256'],r.sha(stage / r.CODEX_HOST))
             self.assertEqual((stage / r.CODEX_HOST).read_bytes(),host.read_bytes())
             self.assertNotIn('codex',r.PRE_CODEX_FILES)
+            r.stage_host(host, built, stage, provider='antigravity')
+            antigravity = json.loads((stage / r.ANTIGRAVITY_MANIFEST).read_text())
+            self.assertEqual(antigravity['sha256'], r.sha(stage / r.ANTIGRAVITY_HOST))
+            self.assertEqual((stage / r.ANTIGRAVITY_HOST).read_bytes(), host.read_bytes())
+            with self.assertRaisesRegex(ValueError, 'Unknown runtime provider'):
+                r.stage_host(host, built, stage, provider='gemini')
             built.unlink()
             manifest = json.loads((stage / r.HOST_MANIFEST).read_text())
             self.assertEqual(manifest, {'sdk': '0.3.300', 'node': 'v24.19.0', 'bundle_sha256': 'b' * 64, 'sha256': r.sha(host)})
@@ -80,15 +86,36 @@ class PublicPayloadTests(unittest.TestCase):
                 r.validate_archive(path)
             r.validate_archive(path, r.PUBLISHED_FILES)
 
-    def test_the_package_carries_the_license_the_notices_and_node_license_for_both_hosts(self):
-        self.assertEqual(r.LICENSE_FILES, {'LICENSE.md', 'THIRD_PARTY_NOTICES.md', 'sdk/NODE_LICENSE', 'codex/NODE_LICENSE'})
+    def test_the_package_carries_the_license_the_notices_and_node_license_for_every_host(self):
+        self.assertEqual(r.LICENSE_FILES, {'LICENSE.md', 'THIRD_PARTY_NOTICES.md', 'sdk/NODE_LICENSE', 'codex/NODE_LICENSE', 'antigravity/NODE_LICENSE'})
         self.assertLessEqual(r.LICENSE_FILES, r.PUBLIC_FILES)
         with tempfile.TemporaryDirectory() as temp:
             stage = pathlib.Path(temp)
             r.stage_assets(r.ROOT, stage)
             self.assertEqual((stage / 'LICENSE.md').read_bytes(), (r.ROOT / 'LICENSE.md').read_bytes())
-            for host in ('sdk', 'codex'):
+            for host in ('sdk', 'codex', 'antigravity'):
                 self.assertEqual((stage / host / 'NODE_LICENSE').read_bytes(), (r.ROOT / 'deploy/brew/node/LICENSE').read_bytes())
+
+    def test_a_published_release_without_the_antigravity_host_passes_only_as_an_older_set(self):
+        self.assertEqual(r.PUBLIC_FILES - r.PRE_ANTIGRAVITY_FILES,
+                         {r.ANTIGRAVITY_HOST, r.ANTIGRAVITY_MANIFEST, 'antigravity/NODE_LICENSE'})
+        self.assertLessEqual(r.PRE_LICENSE_FILES, r.PRE_ANTIGRAVITY_FILES)
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / 'test.tar.gz'
+            with tarfile.open(path, 'w:gz') as output:
+                for name in sorted(r.PRE_ANTIGRAVITY_FILES):
+                    item = tarfile.TarInfo(name)
+                    item.size = len(name)
+                    output.addfile(item, io.BytesIO(name.encode()))
+            with self.assertRaisesRegex(ValueError, 'alondra-antigravity-host'):
+                r.validate_archive(path)
+            r.validate_archive(path, r.PUBLISHED_FILES)
+
+    def test_the_formula_installs_and_keeps_every_signed_host(self):
+        formula = (r.ROOT / 'deploy/brew/alondra.rb.in').read_text()
+        for host in (r.HOST, r.CODEX_HOST, r.ANTIGRAVITY_HOST):
+            self.assertIn(f'"libexec/alondra/{host}"', formula)
+            self.assertIn(f'"{pathlib.PurePath(host).parent}"', formula)
 
     def test_the_published_release_before_the_licenses_passes_only_as_an_older_set(self):
         with tempfile.TemporaryDirectory() as temp:

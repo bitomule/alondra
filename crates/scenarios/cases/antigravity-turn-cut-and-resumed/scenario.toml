@@ -1,0 +1,26 @@
+name = "an antigravity turn cut by its host dying goes on in the same session with a new host"
+max_virtual = "30m"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "antigravity_node"
+task = "t1"
+transcripts = ["host-dies-mid-turn.ndjson", "host-resumes-the-session.ndjson"]
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "after-recovery"
+screens = ["home", "tasks", "task:t1"]
+pushes = true
+
+[[step.expect]]
+check = "transcripts_played"

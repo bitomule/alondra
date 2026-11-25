@@ -10514,7 +10514,7 @@ fn client_text_contracts_account_move_is_only_offered_to_rescue_a_stuck_task() {
     state.account_usage.clear();
     let recovery = state.interactions.get_mut(&"i-1".into()).unwrap();
     recovery.author = Author::System;
-    recovery.system_card = Some(alondra_domain_rules::SystemCard::HostLost);
+    recovery.system_card = Some(alondra_domain_rules::SystemCard::HostLost { signed_out: false });
     let detail = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
     let moving = find_action(&detail, "move_task:t-1").expect("the task's detail offers to move it");
     assert_eq!(moving.label, "Mover a Codex · Work", "a single destination is named on the button");
@@ -10797,10 +10797,10 @@ fn host_recovery_cards_use_plain_localized_content_in_the_list_and_detail() {
             });
         }
         execute(&mut state, Actor::System, Command::RecordHostLost {
-            task_id: "t".into(), reason: "StaleOwner: the provider rejected the execution token".into(), quiet: false,
+            task_id: "t".into(), reason: "StaleOwner: the provider rejected the execution token".into(), quiet: false, signed_out: false,
         });
         let id = state.interactions.values().find(|i| alondra_domain_rules::retakes(i)).unwrap().id.clone();
-        assert_eq!(state.interactions[&id].system_card, Some(if legacy { SystemCard::SessionEnded } else { SystemCard::HostLost }));
+        assert_eq!(state.interactions[&id].system_card, Some(if legacy { SystemCard::SessionEnded } else { SystemCard::HostLost { signed_out: false } }));
         let live = LiveSnapshot::default();
         for client in [Client::Tui, Client::Mac, Client::Ios] {
             for lang in [Lang::En, Lang::Es] {

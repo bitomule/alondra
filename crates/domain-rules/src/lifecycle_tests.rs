@@ -708,7 +708,7 @@ fn nodes_of_the_sdk_waiting_on_the_user_inside_their_turn_hold_no_slot_until_ans
 
 #[test]
 fn non_actionable_provider_interruption_is_status_not_a_failure_card() {
-    for provider in [alondra_core::accounts::Provider::Claude, alondra_core::accounts::Provider::Codex] {
+    for provider in alondra_core::accounts::Provider::ALL {
         let mut s = world();
         sdk_turn_on_provider(&mut s, provider, "t", "a", "turn-1", None);
         let ended = must(&mut s, Actor::System, Command::RecordTurnBoundary {
@@ -2143,13 +2143,32 @@ fn a_mission_whose_session_never_opened_goes_again_after_every_host_that_ends() 
 fn a_quiet_host_loss_opens_its_card_without_a_push() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "the account changed".into(), quiet: true });
+    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "the account changed".into(), quiet: true, signed_out: false });
     assert!(s.interactions.keys().any(|id| id.0.starts_with(HOST_LOST_PREFIX)), "the card opens");
     assert!(!lost.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyUser { .. })), "and no push goes out");
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
     assert_aggregate_rules(&s);
     let stored: Command = serde_json::from_value(serde_json::json!({"kind": "record_host_lost", "task_id": "t", "reason": "before quiet existed"})).unwrap();
-    assert!(matches!(stored, Command::RecordHostLost { quiet: false, .. }), "a stored command without it tells the user");
+    assert!(matches!(stored, Command::RecordHostLost { quiet: false, signed_out: false, .. }), "a stored command without it tells the user");
+}
+
+/// The host said its account was refused for want of a sign-in or a key: the account is signed
+/// out, so no other work starts on it, and the task's card asks to sign in before trying again.
+#[test]
+fn a_host_refused_for_its_sign_in_signs_its_account_out_and_asks_to_sign_in() {
+    use alondra_core::accounts::{AccountId, AccountState, AccountStatus, Provider};
+    let mut s = world();
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![AccountStatus { antigravity: None, provider: Provider::Antigravity, id: AccountId::default_account(),
+        name: "Antigravity".into(), state: AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None }],
+        reserve: alondra_core::usage::default_reserve() });
+    sdk_turn_on_provider(&mut s, Provider::Antigravity, "t", "a", "turn-1", None);
+    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "Antigravity is not signed in on this account".into(), quiet: false, signed_out: true });
+    let card = s.interactions.values().find(|card| card.id.0.starts_with(HOST_LOST_PREFIX)).expect("the task holds on a card");
+    assert_eq!(card.card.effective_title(), "Sign in to Antigravity outside Alondra");
+    assert!(retakes(card), "the card tries again once the user signed in");
+    assert_eq!(s.accounts[0].state, AccountState::SignedOut);
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
+    assert_aggregate_rules(&s);
 }
 
 #[test]
@@ -2158,7 +2177,7 @@ fn a_task_the_usage_limit_holds_is_not_lost_when_its_host_ends_and_gives_up_its_
     sdk_turn(&mut s, "t", "a");
     usage_turn(&mut s, "t", 4_102_444_800);
     assert!(!s.task_holds_slot(&"t".into()), "the limit frees the slot");
-    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "its new host stopped".into(), quiet: false });
+    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "its new host stopped".into(), quiet: false, signed_out: false });
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(HOST_LOST_PREFIX)), "no lost-host card");
     assert_eq!(notices(&lost), 0);
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)], "it still waits for the limit");
@@ -2171,7 +2190,7 @@ fn a_task_the_usage_limit_holds_is_not_lost_when_its_host_ends_and_gives_up_its_
 fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user_retries_or_cancels() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "its host refused to be taken over and did not stop: pid 7 is still alive".into(), quiet: false });
+    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "its host refused to be taken over and did not stop: pid 7 is still alive".into(), quiet: false, signed_out: false });
     let card = s.interactions.keys().find(|id| id.0.starts_with(HOST_LOST_PREFIX)).expect("the task has a card").clone();
     let shown = &s.interactions[&card];
     assert_eq!(shown.card.effective_title(), "“Task t” stopped: Alondra could not resume its session");
@@ -2179,7 +2198,7 @@ fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user
     assert_eq!(options(&s, &card), [RETAKE, CANCEL_TASK]);
     assert!(lost.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == card)));
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::NeedsYou);
-    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "again".into(), quiet: false });
+    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "again".into(), quiet: false, signed_out: false });
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(HOST_LOST_PREFIX)).count(), 1, "one card while it waits");
     answer(&mut s, &card, RETAKE);
     assert!(matches!(s.lifecycle_journal[&TaskId::from("t")].last(),
@@ -2191,7 +2210,7 @@ fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user
     sdk_turn(&mut s, "t", "a");
     must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false });
     let asked = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).expect("the task asks how to go on").clone();
-    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "launching the host that resumes the session failed".into(), quiet: false });
+    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "launching the host that resumes the session failed".into(), quiet: false, signed_out: false });
     let open: Vec<&InteractionId> = s.interactions.values().filter(|i| s.open(i)).map(|i| &i.id).collect();
     assert_eq!(open, [&asked], "the card it waited on becomes the one that says it could not resume: one card for the task");
     assert_eq!(options(&s, &asked), [RETAKE, CANCEL_TASK]);
@@ -2203,7 +2222,7 @@ fn a_task_whose_execution_is_lost_holds_on_a_card_with_the_reason_until_the_user
 
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "the node plugin was not found".into(), quiet: false });
+    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "the node plugin was not found".into(), quiet: false, signed_out: false });
     let card = s.interactions.keys().find(|id| id.0.starts_with(HOST_LOST_PREFIX)).unwrap().clone();
     answer(&mut s, &card, CANCEL_TASK);
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Closing, "it ends, closing its execution first");
@@ -2829,7 +2848,7 @@ fn a_host_lost_while_the_orchestrator_holds_the_stalled_case_leaves_it_with_the_
     let mut s = world();
     let case = InteractionId::from(sdk_woken_turn(&mut s, "t", "a").as_str());
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
-    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "its host stopped".into(), quiet: false });
+    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "its host stopped".into(), quiet: false, signed_out: false });
     let open: Vec<&InteractionId> = s.interactions.values().filter(|i| s.open(i)).map(|i| &i.id).collect();
     assert_eq!(open, [&case], "the case stays the only card of the task, with the orchestrator");
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(HOST_LOST_PREFIX)), "no card for the user");

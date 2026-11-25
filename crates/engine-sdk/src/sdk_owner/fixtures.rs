@@ -1065,5 +1065,8 @@ impl Slice<ProcessHosts> {
 
 #[path = "codex_fixtures.rs"]
 pub mod codex;
+#[cfg(feature = "real-hosts")]
+#[path = "antigravity_fixtures.rs"]
+pub mod antigravity;
 #[path = "untaken_fixtures.rs"]
 pub mod untaken;

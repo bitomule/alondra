@@ -112,15 +112,38 @@ def fake(sandbox, mac, node, host, native):
             link.unlink()
         link.symlink_to(os.path.realpath(agy))
         native_path = str(tools) + ':' + native_path
+    native_environment = dict(synthetic, PATH=native_path, TMPDIR=str(tmp), LANG='C.UTF-8', TZ='UTC')
+    if agy and os.environ.get('SDK_ANTIGRAVITY_HOST'):
+        antigravity(mac, runtime, Path(os.environ['SDK_ANTIGRAVITY_HOST']), mac / 'agy-bin' / 'agy', synthetic, native_environment)
     backend = {
         'node': str(runtime / 'node'), 'node_sha256': checksum(runtime / 'node'),
         'host': str(runtime / 'persistent.cjs'), 'host_sha256': checksum(runtime / 'persistent.cjs'),
         'native': str(native), 'native_sha256': checksum(native),
         'host_environment': synthetic,
-        'native_environment': dict(synthetic, PATH=native_path, TMPDIR=str(tmp), LANG='C.UTF-8', TZ='UTC'),
+        'native_environment': native_environment,
         'state_root': str(state), 'io_timeout_seconds': 120,
     }
     (mac / 'sdk-backend.json').write_text(json.dumps(backend, indent=2) + '\n')
+
+
+def antigravity(mac, runtime, bundle, agy, synthetic, native_environment):
+    """The Mac's nodes on Antigravity accounts: the Antigravity host bundle under the pinned Node,
+    with SANDBOX_AGY as their agy, in the sandbox's HOME like the account checks."""
+    host = runtime / 'antigravity.cjs'
+    if not host.exists():
+        shutil.copyfile(bundle, host)
+        host.chmod(0o400)
+    state = Path(tempfile.mkdtemp(prefix='as-agy-', dir=os.path.realpath('/tmp')))
+    (mac / 'antigravity-state-root').write_text(str(state))
+    backend = {
+        'provider': 'antigravity',
+        'node': str(runtime / 'node'), 'node_sha256': checksum(runtime / 'node'),
+        'host': str(host), 'host_sha256': checksum(host),
+        'native': str(agy), 'native_sha256': checksum(agy),
+        'host_environment': synthetic, 'native_environment': native_environment,
+        'state_root': str(state), 'io_timeout_seconds': 120,
+    }
+    (mac / 'antigravity-backend.json').write_text(json.dumps(backend, indent=2) + '\n')
 
 
 def main():

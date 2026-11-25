@@ -4,21 +4,23 @@ use alondra_engine_ports::agent_host::HostStop;
 use alondra_core::accounts::Provider;
 use alondra_foundation::CommandId;
 use alondra_provider_claude::ClaudeWorker;
+use alondra_provider_antigravity::AntigravityWorker;
 use alondra_provider_codex::CodexWorker;
 use alondra_provider_contract::{AdapterError, Handoff, OrderedObservation, PreparedCommand, ProviderBinding};
 use alondra_store::{AdapterState, CommittedCommand, CommittedControl, CommittedObservation, ControlAttempt, DispatchAttempt, OwnerGrant};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-pub enum Worker { Claude(ClaudeWorker), Codex(CodexWorker) }
+pub enum Worker { Claude(ClaudeWorker), Codex(CodexWorker), Antigravity(AntigravityWorker) }
 pub(super) enum Found { Live, Ended(EndedJournal) }
-pub(super) enum EndedJournal { Claude(alondra_provider_claude::EndedJournal), Codex(alondra_provider_codex::EndedJournal) }
+pub(super) enum EndedJournal { Claude(alondra_provider_claude::EndedJournal), Codex(alondra_provider_codex::EndedJournal), Antigravity(alondra_provider_antigravity::EndedJournal) }
 pub(super) struct RetainedEvent { pub cursor: u64, pub payload: Vec<u8> }
 impl EndedJournal {
     pub fn events(&self) -> Vec<RetainedEvent> {
         match self {
             Self::Claude(journal) => journal.events().iter().map(|event| RetainedEvent { cursor: event.cursor, payload: event.payload.clone() }).collect(),
             Self::Codex(journal) => journal.events().iter().map(|event| RetainedEvent { cursor: event.cursor, payload: event.payload.clone() }).collect(),
+            Self::Antigravity(journal) => journal.events().iter().map(|event| RetainedEvent { cursor: event.cursor, payload: event.payload.clone() }).collect(),
         }
     }
     pub fn retained(&self, bytes: &[u8]) -> Result<alondra_provider_claude::Retained, AdapterError> {
@@ -30,12 +32,18 @@ impl EndedJournal {
                 alondra_provider_codex::Retained::AdmittedOnly => alondra_provider_claude::Retained::AdmittedOnly,
                 alondra_provider_codex::Retained::Absent => alondra_provider_claude::Retained::Absent,
             },
+            Self::Antigravity(journal) => match journal.retained(bytes)? {
+                alondra_provider_antigravity::Retained::Offered => alondra_provider_claude::Retained::Offered,
+                alondra_provider_antigravity::Retained::Refused => alondra_provider_claude::Retained::Refused,
+                alondra_provider_antigravity::Retained::AdmittedOnly => alondra_provider_claude::Retained::AdmittedOnly,
+                alondra_provider_antigravity::Retained::Absent => alondra_provider_claude::Retained::Absent,
+            },
         })
     }
-    pub fn last_cursor(&self) -> u64 { match self { Self::Claude(journal) => journal.last_cursor(), Self::Codex(journal) => journal.last_cursor() } }
+    pub fn last_cursor(&self) -> u64 { match self { Self::Claude(journal) => journal.last_cursor(), Self::Codex(journal) => journal.last_cursor(), Self::Antigravity(journal) => journal.last_cursor() } }
 }
 macro_rules! dispatch {
-    ($self:expr, $method:ident $(, $arg:expr)*) => { match $self { Worker::Claude(worker) => worker.$method($($arg),*), Worker::Codex(worker) => worker.$method($($arg),*) } };
+    ($self:expr, $method:ident $(, $arg:expr)*) => { match $self { Worker::Claude(worker) => worker.$method($($arg),*), Worker::Codex(worker) => worker.$method($($arg),*), Worker::Antigravity(worker) => worker.$method($($arg),*) } };
 }
 impl Worker {
     pub fn configured(binding: ProviderBinding, configuration: ClaudeConfiguration) -> Result<Self, AdapterError> {
@@ -52,11 +60,22 @@ impl Worker {
                 };
                 CodexWorker::configured(binding, configuration).map(Self::Codex)
             }
-            Some(Provider::Antigravity) | None => Err(AdapterError::Unsupported),
+            Some(Provider::Antigravity) => {
+                let configuration = alondra_provider_antigravity::AntigravityConfiguration {
+                    artifact: configuration.artifact, state_directory: configuration.state_directory,
+                    host_environment: configuration.host_environment, native_executable: configuration.native_executable,
+                    native_directory: configuration.native_directory, native_environment: configuration.native_environment,
+                    profile_id: configuration.profile_id, account_id: configuration.account_id,
+                    host_release: configuration.host_release, io_timeout: configuration.io_timeout, confinement: configuration.confinement, hosts: configuration.hosts,
+                    worker: configuration.worker.map(|profile| alondra_provider_antigravity::WorkerProfile { plugins: profile.plugins, settings: profile.settings, model: profile.model, effort: profile.effort, disallowed_tools: profile.disallowed_tools, handoff_context: profile.handoff_context }),
+                };
+                AntigravityWorker::configured(binding, configuration).map(Self::Antigravity)
+            }
+            None => Err(AdapterError::Unsupported),
         }
     }
     pub fn state_directory(&self)->&std::path::Path{dispatch!(self,state_directory)}
-    pub fn provider(&self) -> Provider { match self { Self::Claude(_) => Provider::Claude, Self::Codex(_) => Provider::Codex } }
+    pub fn provider(&self) -> Provider { match self { Self::Claude(_) => Provider::Claude, Self::Codex(_) => Provider::Codex, Self::Antigravity(_) => Provider::Antigravity } }
     pub fn binding(&self) -> &ProviderBinding { dispatch!(self, binding) }
     pub fn owner_generation(&self) -> Result<u64, AdapterError> { dispatch!(self, owner_generation) }
     pub fn install_owner(&mut self, grant: OwnerGrant, state: AdapterState) -> Result<(), AdapterError> { dispatch!(self, install_owner, grant, state) }
@@ -65,6 +84,7 @@ impl Worker {
         Ok(match self {
             Self::Claude(worker) => match worker.find_host(grant, state)? { alondra_provider_claude::Found::Live => Found::Live, alondra_provider_claude::Found::Ended(journal) => Found::Ended(EndedJournal::Claude(journal)) },
             Self::Codex(worker) => match worker.find_host(grant, state)? { alondra_provider_codex::Found::Live => Found::Live, alondra_provider_codex::Found::Ended(journal) => Found::Ended(EndedJournal::Codex(journal)) },
+            Self::Antigravity(worker) => match worker.find_host(grant, state)? { alondra_provider_antigravity::Found::Live => Found::Live, alondra_provider_antigravity::Found::Ended(journal) => Found::Ended(EndedJournal::Antigravity(journal)) },
         })
     }
     pub fn take_ended(&mut self) -> Option<alondra_engine_ports::agent_host::EndedHost> { dispatch!(self, take_ended) }
@@ -76,7 +96,9 @@ impl Worker {
     pub fn ended_handoffs(&self, grant: &OwnerGrant, state: &AdapterState, commands: &[&[u8]]) -> Result<Vec<alondra_provider_contract::HandoffProof>, AdapterError> {
         dispatch!(self, ended_handoffs, grant, state, commands)
     }
-    pub fn continue_session(&mut self, session: &str) -> Result<(), AdapterError> { dispatch!(self, continue_session, session) }
+    pub fn continue_session(&mut self, session: &str) -> Result<(), AdapterError> {
+        match self { Self::Claude(worker) => worker.continue_session(session), Self::Codex(worker) => worker.continue_session(session), Self::Antigravity(_) => Err(AdapterError::Unsupported) }
+    }
     pub fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> Result<(), AdapterError> { dispatch!(self, stage_input, metadata) }
     pub fn prepare(&mut self, attempt: &DispatchAttempt, metadata: InputMetadata<'_, '_>) -> Result<PreparedCommand, AdapterError> { dispatch!(self, prepare, attempt, metadata) }
     pub fn submit(&mut self, command: &CommittedCommand) -> Result<Handoff, AdapterError> { dispatch!(self, submit, command) }
@@ -87,12 +109,21 @@ impl Worker {
     pub fn retired_host(&mut self) -> Option<std::path::PathBuf> { dispatch!(self, retired_host) }
     pub fn host_group(&self) -> Option<i32> { dispatch!(self, host_group) }
     pub fn supports_plan_supersession(&self) -> bool {
-        match self { Self::Claude(_) => true, Self::Codex(worker) => worker.supports_plan_supersession() }
+        match self { Self::Claude(_) | Self::Antigravity(_) => true, Self::Codex(worker) => worker.supports_plan_supersession() }
     }
     pub fn runs_another_release(&self) -> bool { dispatch!(self, runs_another_release) }
     pub fn host_exited(&mut self) -> bool { dispatch!(self, host_exited) }
+    #[cfg(test)]
     pub fn native_liveness(&mut self) -> Result<Option<alondra_provider_codex::NativeLiveness>, AdapterError> {
-        match self { Self::Codex(worker) => worker.native_liveness().map(Some), Self::Claude(_) => Ok(None) }
+        match self { Self::Codex(worker) => worker.native_liveness().map(Some), Self::Claude(_) | Self::Antigravity(_) => Ok(None) }
+    }
+    /// Whether the host's native process is gone, for a host whose provider runs as a process of its own.
+    pub fn native_lost(&mut self) -> Result<bool, AdapterError> {
+        Ok(match self {
+            Self::Codex(worker) => matches!(worker.native_liveness()?, alondra_provider_codex::NativeLiveness::Lost),
+            Self::Antigravity(worker) => matches!(worker.native_liveness()?, alondra_provider_antigravity::NativeLiveness::Lost),
+            Self::Claude(_) => false,
+        })
     }
     pub fn prepare_control(&mut self, attempt: &ControlAttempt) -> Result<PreparedCommand, AdapterError> { dispatch!(self, prepare_control, attempt) }
     pub fn submit_control(&mut self, command: &CommittedControl) -> Result<Handoff, AdapterError> { dispatch!(self, submit_control, command) }
@@ -102,15 +133,15 @@ impl Worker {
     pub fn readable_unless_rung(&self, timeout: Duration, bell: &alondra_core::clock::Bell) -> Result<bool, AdapterError> { dispatch!(self, readable_unless_rung, timeout, bell) }
     pub fn normalizer(&self) -> &Self { self }
     pub fn acknowledge(&mut self, observation: &CommittedObservation) -> Result<(), AdapterError> { dispatch!(self, acknowledge, observation) }
-    pub fn background_left(&self, bytes: &[u8]) -> Vec<String> { match self { Self::Claude(_) => alondra_provider_claude::background_left(bytes), Self::Codex(_) => alondra_provider_codex::background_left(bytes) } }
-    pub fn answered_control(&self, batch: &OrderedObservation) -> Option<CommandId> { match self { Self::Claude(_) => alondra_provider_claude::answered_control(batch), Self::Codex(_) => alondra_provider_codex::answered_control(batch) } }
-    pub fn native_exited(&self, batch: &OrderedObservation) -> bool { match self { Self::Claude(_) => alondra_provider_claude::native_exited(batch), Self::Codex(_) => alondra_provider_codex::native_exited(batch) } }
+    pub fn background_left(&self, bytes: &[u8]) -> Vec<String> { match self { Self::Claude(_) => alondra_provider_claude::background_left(bytes), Self::Codex(_) => alondra_provider_codex::background_left(bytes), Self::Antigravity(_) => Vec::new() } }
+    pub fn answered_control(&self, batch: &OrderedObservation) -> Option<CommandId> { match self { Self::Claude(_) => alondra_provider_claude::answered_control(batch), Self::Codex(_) => alondra_provider_codex::answered_control(batch), Self::Antigravity(_) => None } }
+    pub fn native_exited(&self, batch: &OrderedObservation) -> bool { match self { Self::Claude(_) => alondra_provider_claude::native_exited(batch), Self::Codex(_) => alondra_provider_codex::native_exited(batch), Self::Antigravity(_) => alondra_provider_antigravity::native_exited(batch) } }
 }
 impl ObservationNormalizer for Worker {
     fn normalize(&self, batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Normalization, AdapterError> {
-        match self { Self::Claude(worker) => worker.normalizer().normalize(batch, metadata), Self::Codex(worker) => worker.normalizer().normalize(batch, metadata) }
+        match self { Self::Claude(worker) => worker.normalizer().normalize(batch, metadata), Self::Codex(worker) => worker.normalizer().normalize(batch, metadata), Self::Antigravity(worker) => worker.normalizer().normalize(batch, metadata) }
     }
     fn skip(&self, batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> Result<Normalization, AdapterError> {
-        match self { Self::Claude(worker) => worker.normalizer().skip(batch, metadata), Self::Codex(worker) => worker.normalizer().skip(batch, metadata) }
+        match self { Self::Claude(worker) => worker.normalizer().skip(batch, metadata), Self::Codex(worker) => worker.normalizer().skip(batch, metadata), Self::Antigravity(worker) => worker.normalizer().skip(batch, metadata) }
     }
 }

@@ -169,6 +169,7 @@ LAYER_EXCEPTIONS = {
         "crates/daemon-support",
         "crates/engine-github",
         "crates/engine-kernel",
+        "crates/provider-antigravity",
         "crates/provider-claude",
         "crates/provider-codex",
     ],

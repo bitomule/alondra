@@ -62,7 +62,11 @@ sandbox daemon honours it). No model and no GitHub are involved, and nothing rea
 `SANDBOX_AGY=<path to agy>` gives Mac 1 that Antigravity CLI for Antigravity accounts: it is
 linked into `mac-1/agy-bin`, the only folder added to its nodes' PATH, and runs in the sandbox's
 synthetic HOME, so it sees none of your own `agy` sign-ins. Without it the sandbox has no `agy` and
-its Antigravity accounts read "Install Antigravity CLI".
+its Antigravity accounts read "Install Antigravity CLI". With it, Mac 1 also runs nodes on its
+Antigravity accounts: `mac-1/antigravity-backend.json` names the Antigravity host bundle under the
+pinned Node and that `agy`, in the same synthetic HOME, so a node runs on an account the sandbox
+signed in (a named account's Google sign-in, made with the command its Accounts row shows) or on a
+key set with `alondra accounts set-key`. Its prompts reach Google and spend that account's quota.
 
 Startup connects the Claude provider and checks its accounts on each provisioned Mac before
 journeys or the TUI seed run. The fake Claude is already signed in inside the sandbox; no real

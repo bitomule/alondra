@@ -1176,22 +1176,23 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
         }));
     let named = status.as_ref().map(|status| status.name.clone());
     let sign_in = status.as_ref().map_or_else(|| super::accounts::sign_in_hint(provider, None, lang), |status| super::accounts::account_sign_in_hint(status, lang));
-    if provider == alondra_core::accounts::Provider::Codex {
+    if provider != alondra_core::accounts::Provider::Claude {
+        let provider = super::accounts::provider_name(provider);
         let need = match (hold, &named) {
-            (ClaudeHold::SignedOut, Some(name)) => tf!(lang, "Sign in to the Codex account {name}", "Inicia sesión en la cuenta de Codex {name}"),
-            (ClaudeHold::SignedOut, None) => t!(lang, "Sign in to Codex on the Mac", "Inicia sesión en Codex en el Mac").into(),
-            (ClaudeHold::Outage, _) => t!(lang, "Codex is unavailable: waiting tasks", "Codex no está disponible: hay tareas esperando").into(),
-            (ClaudeHold::Usage, Some(name)) => tf!(lang, "The Codex account {name} reached a usage limit", "La cuenta de Codex {name} alcanzó un límite de uso"),
-            (ClaudeHold::Usage, None) => t!(lang, "Codex reported a usage limit", "Codex ha indicado un límite de uso").into(),
+            (ClaudeHold::SignedOut, Some(name)) => tf!(lang, "Sign in to the {provider} account {name}", "Inicia sesión en la cuenta de {provider} {name}"),
+            (ClaudeHold::SignedOut, None) => tf!(lang, "Sign in to {provider} on the Mac", "Inicia sesión en {provider} en el Mac"),
+            (ClaudeHold::Outage, _) => tf!(lang, "{provider} is unavailable: waiting tasks", "{provider} no está disponible: hay tareas esperando"),
+            (ClaudeHold::Usage, Some(name)) => tf!(lang, "The {provider} account {name} reached a usage limit", "La cuenta de {provider} {name} alcanzó un límite de uso"),
+            (ClaudeHold::Usage, None) => tf!(lang, "{provider} reported a usage limit", "{provider} ha indicado un límite de uso"),
         };
         let why = match hold {
             ClaudeHold::SignedOut => tf!(lang, "{sign_in}, then press I signed in.", "{sign_in} y pulsa Ya he iniciado sesión."),
-            ClaudeHold::Outage => t!(lang,
-                "The task waits for Codex. Check this account in Accounts and try again when it is available.",
-                "La tarea espera a Codex. Revisa esta cuenta en Cuentas y vuelve a intentarlo cuando esté disponible.").into(),
-            ClaudeHold::Usage => t!(lang,
-                "Codex reported a usage limit. Check the account's native usage in Accounts before retrying.",
-                "Codex ha indicado un límite de uso. Revisa el uso nativo de la cuenta en Cuentas antes de reintentar.").into(),
+            ClaudeHold::Outage => tf!(lang,
+                "The task waits for {provider}. Check this account in Accounts and try again when it is available.",
+                "La tarea espera a {provider}. Revisa esta cuenta en Cuentas y vuelve a intentarlo cuando esté disponible."),
+            ClaudeHold::Usage => tf!(lang,
+                "{provider} reported a usage limit. Check the account's native usage in Accounts before retrying.",
+                "{provider} ha indicado un límite de uso. Revisa el uso nativo de la cuenta en Cuentas antes de reintentar."),
         };
         return Some((clip(&need, CardSpec::NEED_MAX), why));
     }
@@ -1376,7 +1377,14 @@ fn host_lost_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -
         return None;
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
-    let title = domain.tasks.get(task_id)?.title.as_str();
+    let task = domain.tasks.get(task_id)?;
+    if matches!(interaction.system_card, Some(SystemCard::HostLost { signed_out: true })) {
+        let provider = crate::accounts::provider_name(task.provider);
+        return Some((tf!(lang, "Sign in to {provider} outside Alondra", "Inicia sesión en {provider} fuera de Alondra"), tf!(lang,
+            "{provider} refused this task's account before taking its input: it is not signed in, or its key was refused. Sign in with the command Accounts shows for it, or set its key, then press Try again.",
+            "{provider} rechazó la cuenta de esta tarea antes de recibir su entrada: no tiene la sesión iniciada o rechazó su clave. Inicia sesión con el comando que muestra Cuentas o pon su clave, y pulsa Reintentar.")));
+    }
+    let title = task.title.as_str();
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped: Alondra could not resume its session", "«{title}» se paró: Alondra no pudo retomar su sesión"));
     Some((need, t!(lang,
         "Alondra could not resume this task. Try again, or cancel the task.",

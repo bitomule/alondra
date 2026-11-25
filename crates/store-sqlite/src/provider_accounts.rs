@@ -6,13 +6,25 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::repository::exec;
 
 pub(super) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS account_logins(singleton INTEGER PRIMARY KEY CHECK(singleton=1), logins TEXT NOT NULL CHECK(json_valid(logins)));\
-CREATE TABLE IF NOT EXISTS task_providers(task_id TEXT PRIMARY KEY REFERENCES tasks(id), provider TEXT NOT NULL CHECK(provider IN('claude','codex')));\
+CREATE TABLE IF NOT EXISTS task_providers(task_id TEXT PRIMARY KEY REFERENCES tasks(id), provider TEXT NOT NULL CHECK(provider IN('claude','codex','antigravity')));\
 CREATE TABLE IF NOT EXISTS account_configuration(singleton INTEGER PRIMARY KEY CHECK(singleton=1), account_order TEXT NOT NULL CHECK(json_valid(account_order)), config_version TEXT NOT NULL);\
 CREATE TABLE IF NOT EXISTS account_model_catalogs(provider TEXT NOT NULL, account TEXT NOT NULL, catalog TEXT NOT NULL CHECK(json_valid(catalog)), PRIMARY KEY(provider,account));\
 CREATE TABLE IF NOT EXISTS task_selections(task_id TEXT PRIMARY KEY REFERENCES tasks(id), selection TEXT NOT NULL CHECK(json_valid(selection)), pending TEXT CHECK(pending IS NULL OR json_valid(pending)));\
 CREATE TABLE IF NOT EXISTS task_move_refusals(task_id TEXT PRIMARY KEY REFERENCES tasks(id), refused TEXT NOT NULL CHECK(json_valid(refused)));\
 CREATE TABLE IF NOT EXISTS model_profiles(singleton INTEGER PRIMARY KEY CHECK(singleton=1), profiles TEXT NOT NULL CHECK(json_valid(profiles)), config_version TEXT NOT NULL);\
 CREATE TABLE IF NOT EXISTS schedule_paid_accounts(schedule_id TEXT PRIMARY KEY REFERENCES schedules(id), account TEXT NOT NULL CHECK(json_valid(account)));";
+
+/// A database made before tasks ran on Antigravity keeps a provider check that refuses it: the table
+/// is made again with the check of `SCHEMA`, its rows as they were.
+pub(super) fn upgrade(c: &Connection) -> Result<()> {
+    let table: String = c.query_row("SELECT sql FROM sqlite_schema WHERE type='table' AND name='task_providers'", [], |row| row.get(0))?;
+    if !table.contains("'antigravity'") {
+        c.execute_batch("ALTER TABLE task_providers RENAME TO task_providers_previous;")?;
+        c.execute_batch(SCHEMA)?;
+        c.execute_batch("INSERT INTO task_providers SELECT * FROM task_providers_previous; DROP TABLE task_providers_previous;")?;
+    }
+    Ok(())
+}
 
 pub(super) fn save(c: &Connection, before: &DomainState, after: &DomainState) -> Result<()> {
     if before.account_logins != after.account_logins {
@@ -124,6 +136,24 @@ mod tests {
     use super::*;
     use alondra_core::accounts::{AccountId, AccountKey};
     use alondra_core::model_selection::AccountModelCatalog;
+
+    #[test]
+    fn a_store_made_before_antigravity_nodes_keeps_its_tasks_and_takes_an_antigravity_one() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE tasks(id TEXT PRIMARY KEY); INSERT INTO tasks VALUES('t-codex'),('t-antigravity');\
+            CREATE TABLE task_providers(task_id TEXT PRIMARY KEY REFERENCES tasks(id), provider TEXT NOT NULL CHECK(provider IN('claude','codex')));\
+            INSERT INTO task_providers VALUES('t-codex','codex');").unwrap();
+        assert!(c.execute("INSERT INTO task_providers VALUES('t-antigravity','antigravity')", []).is_err(), "the old check refuses Antigravity");
+        c.execute_batch(SCHEMA).unwrap();
+        upgrade(&c).unwrap();
+        upgrade(&c).unwrap();
+        c.execute("INSERT INTO task_providers VALUES('t-antigravity','antigravity')", []).unwrap();
+        let rows: Vec<(String, String)> = c.prepare("SELECT task_id,provider FROM task_providers ORDER BY task_id").unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(rows, [("t-antigravity".to_owned(), "antigravity".to_owned()), ("t-codex".to_owned(), "codex".to_owned())]);
+        c.execute("DELETE FROM task_providers WHERE task_id='t-antigravity'", []).unwrap();
+        assert!(c.execute("INSERT INTO task_providers VALUES('t-antigravity','other')", []).is_err(), "only providers Alondra knows");
+    }
 
     #[test]
     fn pre_provider_stores_have_no_phantom_accounts_or_catalogs() {

@@ -314,8 +314,13 @@ impl SdkEngine for Engine {
         match provider {
             Provider::Claude => crate::sdk_live::feed(runtime, &runtime.live().mods, agent, observation),
             Provider::Codex => crate::codex_live::feed(runtime, &runtime.live().mods, agent, observation),
+            // engine-sdk reads the Antigravity host's frames and passes agy's messages to `feed_antigravity`.
             Provider::Antigravity => {}
         }
+    }
+
+    fn feed_antigravity(&self, runtime: &dyn Runtime, agent: &AgentId, message: &serde_json::Value) {
+        crate::antigravity_live::feed(&runtime.live().mods, agent, message);
     }
 
     fn host_ended(&self, runtime: &dyn Runtime, agent: &AgentId) {

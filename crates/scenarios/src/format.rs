@@ -121,6 +121,9 @@ pub enum Step {
     /// host it starts plays the first of `transcripts`. A host that ends, and the one that takes
     /// its place, each play the next.
     CodexNode { task: String, transcripts: Vec<String> },
+    /// The task starts on Antigravity, as `CodexNode` starts it on Codex: each host the daemon starts
+    /// plays the next of `transcripts`, the frames the Antigravity host passes on from `agy acp`.
+    AntigravityNode { task: String, transcripts: Vec<String> },
     /// Something happens on GitHub.
     Github(GithubChange),
     /// The user presses `action` (a verb of the action ids: `merge`, `accept`, `changes`...) on the

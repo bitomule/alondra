@@ -278,14 +278,14 @@ pub fn native_launch(domain: &dyn Runtime, home: &Path, task: &alondra_domain_ru
     let legacy_reselection = unstarted && task.selection.is_none() && requested.selection.is_none() && !file.accounts.any_enabled(Provider::Claude)
         && (requested.account_key().is_some() || file.accounts.any_enabled(Provider::Codex));
     let modern = legacy_reselection || task.selection.is_some() || requested.selection.is_some() || body.provider.is_some()
-        || body.model.as_ref().is_some_and(|model| model.starts_with("codex/") || model.starts_with("claude/") || (unstarted && file.accounts.any_enabled(Provider::Codex)));
+        || body.model.as_ref().is_some_and(|model| alondra_core::model_selection::ModelKey::names_provider(model) || (unstarted && file.accounts.any_enabled(Provider::Codex)));
     if !modern { return Ok(None); }
     let mut intent = task.selection.clone().or_else(|| requested.selection.clone()).unwrap_or_else(|| TaskSelection::automatic(ModelProfile::Implementation));
     if let Some(profile) = body.profile { intent.profile = profile; }
     if intent.account.is_none() { intent.account = requested.account_key(); }
     let mut initial = intent.clone();
     if let Some(model) = body.model.as_deref() {
-        let offered = if model.starts_with("claude/") || model.starts_with("codex/") {
+        let offered = if alondra_core::model_selection::ModelKey::names_provider(model) {
             ModelKey::parse_wire(model).map_err(|why| DomainError::new("invalid_input", why))?
         } else {
             let native_model = file.model_flag(model).unwrap_or_else(|| model.to_owned());

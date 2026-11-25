@@ -61,7 +61,7 @@ fn sample(kind: SystemCardKind) -> SystemCard {
         K::ClaudeSignedOut => SystemCard::ClaudeSignedOut,
         K::ClaudeOutage => SystemCard::ClaudeOutage { quiet: false, detail: None, said: None },
         K::ClaudeUsage => SystemCard::ClaudeUsage { resets_at: None },
-        K::HostLost => SystemCard::HostLost,
+        K::HostLost => SystemCard::HostLost { signed_out: false },
         K::TurnEnded => SystemCard::TurnEnded,
         K::Stalled => SystemCard::Stalled,
         K::SessionEnded => SystemCard::SessionEnded,

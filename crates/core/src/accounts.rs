@@ -78,9 +78,13 @@ impl Provider {
             Provider::Antigravity => "antigravity",
         }
     }
-    /// Whether Alondra starts nodes on the provider's accounts: Antigravity's are only signed in,
-    /// checked and read for usage, so nothing that chooses where work runs offers them.
-    pub fn runs_nodes(self) -> bool {
+    /// Whether a node on the provider's accounts cannot be kept from a tool the task denies: only
+    /// Claude Code takes a per-tool deny list.
+    pub fn lacks_tool_denials(self) -> bool {
+        self != Provider::Claude
+    }
+    /// Whether the orchestrator runs on the provider's accounts: Antigravity's run nodes only.
+    pub fn runs_orchestrator(self) -> bool {
         self != Provider::Antigravity
     }
     /// The name a screen gives the provider.
@@ -372,16 +376,9 @@ impl AccountsConfig {
         Ok(())
     }
 
-    /// Whether an account stays on. Antigravity's run no node yet: while an account of another
-    /// provider is listed, one of those stays on; with Antigravity alone, any of its accounts does.
+    /// Whether an account stays on.
     pub fn any_enabled_globally(&self) -> bool {
-        let accounts = self.ordered_accounts();
-        let runs_nodes = |key: &AccountKey| key.provider != Provider::Antigravity;
-        if accounts.iter().any(|(key, _)| runs_nodes(key)) {
-            accounts.iter().any(|(key, account)| account.enabled && runs_nodes(key))
-        } else {
-            accounts.iter().any(|(_, account)| account.enabled)
-        }
+        self.ordered_accounts().iter().any(|(_, account)| account.enabled)
     }
 
     pub fn listed(&self, provider: Provider) -> std::borrow::Cow<'_, [ProviderAccount]> {

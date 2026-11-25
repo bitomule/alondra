@@ -186,6 +186,10 @@ impl SdkEngine for Engine {
         self.note("feed");
     }
 
+    fn feed_antigravity(&self, _: &dyn Runtime, _: &AgentId, _: &serde_json::Value) {
+        self.note("feed");
+    }
+
     fn host_ended(&self, _: &dyn Runtime, _: &AgentId) {
         self.note("host_ended");
     }

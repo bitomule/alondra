@@ -170,6 +170,10 @@ impl<'a> Engine<'a> {
         self.port.feed(self.runtime, provider, agent, observation);
     }
 
+    pub fn feed_antigravity(&self, agent: &AgentId, message: &serde_json::Value) {
+        self.port.feed_antigravity(self.runtime, agent, message);
+    }
+
     pub fn host_ended(&self, agent: &AgentId) {
         self.port.host_ended(self.runtime, agent);
     }

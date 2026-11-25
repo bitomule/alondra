@@ -183,7 +183,7 @@ impl Folders<'_> {
 /// The state root of each provider, as the hosts of its nodes and batches use it.
 fn roots(domain: &dyn Runtime, backend: &SdkBackend) -> Vec<(PathBuf, Provider)> {
     let mut roots: Vec<(PathBuf, Provider)> = Vec::new();
-    for provider in [Provider::Claude, Provider::Codex] {
+    for provider in Provider::ALL {
         if let Ok(selected) = backend.for_provider(provider, domain.home())
             && !roots.iter().any(|(root, _)| *root == selected.state_root)
         {

@@ -207,6 +207,11 @@ env = {"TEST_EXECS": "/usr/bin/git $(rootpath :alondra) tmpdir"},
   tool. It leaves the validation of every edit and runs with the release, which names it in
   `RELEASE_ONLY_TESTS` (`deploy/brew/local-release.py`); `bazelisk test <target>` runs it on
   request.
+  Its Antigravity tests run the real Antigravity host on the fake `agy` of the host's own tests
+  (`agent-host/fake-agy-acp.mjs`, under the pinned Node). A run on a real `agy` with a Gemini API
+  key is opt-in, by hand: `an_actual_agy_runs_a_node_on_an_api_key_and_resumes_its_session`, with
+  `--test_env=ALONDRA_E2E_AGY=<agy> --test_env=ALONDRA_E2E_GEMINI_KEY_FILE=<0600 file with the key>`
+  and `--test_arg=--ignored`.
 
 The list only shrinks. `//tools:test_execs_test` fails on a malformed entry, on a program with no
 reason in `tools/test_execs.tsv`, and when the entries pass `EXEC_CEILING` or `OWN_SANDBOX_CEILING`

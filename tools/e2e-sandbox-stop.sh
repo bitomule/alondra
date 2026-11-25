@@ -60,10 +60,10 @@ short=$(cat "$dir/short-root" 2>/dev/null) || short=
 case $short in /private/tmp/asb.*) ;; *) short= ;; esac
 # The SDK hosts' state roots live outside the sandbox, where a Unix socket path is short enough.
 state=
-for file in "$dir/sdk/state-root" "$dir"/mac-*/sdk-state-root; do
+for file in "$dir/sdk/state-root" "$dir"/mac-*/sdk-state-root "$dir"/mac-*/antigravity-state-root; do
 	[ -f "$file" ] || continue
 	root=$(cat "$file")
-	case $root in /private/tmp/as-sdk-*) state="${state:+$state }$root" ;; esac
+	case $root in /private/tmp/as-sdk-* | /private/tmp/as-agy-*) state="${state:+$state }$root" ;; esac
 done
 
 if [ "${KEEP:-0}" = 1 ]; then

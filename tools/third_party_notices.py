@@ -281,10 +281,11 @@ redistributed with Alondra. No third-party icon set is bundled.
 
 ## Node.js
 
-The Agent SDK host and the Codex host are Node.js single-executable applications, so each one
-contains Node.js {node} (MIT license, with the notices for OpenSSL, ICU, V8 and the other components
-Node bundles). The complete license text is `deploy/brew/node/LICENSE` and ships in the Homebrew
-package as `sdk/NODE_LICENSE` and `codex/NODE_LICENSE`.
+The Agent SDK host, the Codex host and the Antigravity host are Node.js single-executable
+applications, so each one contains Node.js {node} (MIT license, with the notices for OpenSSL, ICU, V8
+and the other components Node bundles). The complete license text is `deploy/brew/node/LICENSE` and
+ships in the Homebrew package as `sdk/NODE_LICENSE`, `codex/NODE_LICENSE` and
+`antigravity/NODE_LICENSE`.
 
 ## Rust crates
 
@@ -295,7 +296,7 @@ https://github.com/sbstp/attohttpc.
 {rust}
 ## Agent SDK host packages
 
-Bundled into the Agent SDK host and the Codex host, besides the Anthropic SDK above.
+Bundled into the Agent SDK host, the Codex host and the Antigravity host, besides the Anthropic SDK above.
 
 {host}
 ## Website packages

@@ -74,6 +74,15 @@ pub fn account_refusal(observation: &OrderedObservation) -> Option<&'static str>
     refusal_of(&native_message(observation)?)
 }
 
+/// Whether the refusal is the account's sign-in or key: the user signs in before the task goes on.
+pub fn signed_out(observation: &OrderedObservation) -> bool {
+    native_message(observation).is_some_and(|message| signed_out_of(&message))
+}
+
+fn signed_out_of(message: &Value) -> bool {
+    refusal_of(message).is_some() && message.pointer("/params/code").and_then(Value::as_str) == Some("authentication_required")
+}
+
 fn refusal_of(message: &Value) -> Option<&'static str> {
     match message.get("method")?.as_str()? {
         "alondra/accountBlocked" => {}
@@ -111,6 +120,14 @@ mod tests {
             assert_eq!(refused("alondra/inputRefused", code, false), None, "{code} is retried with the next input");
         }
         assert_eq!(refused("alondra/transportFailed", "authentication_required", false), None);
+    }
+
+    #[test]
+    fn only_a_refused_sign_in_or_key_asks_to_sign_in() {
+        assert!(signed_out_of(&json!({"method": "alondra/accountBlocked", "params": {"code": "authentication_required"}})));
+        assert!(signed_out_of(&json!({"method": "alondra/inputRefused", "params": {"code": "authentication_required", "nativeSubmitted": false}})));
+        assert!(!signed_out_of(&json!({"method": "alondra/accountBlocked", "params": {"code": "native_version_unsupported"}})));
+        assert!(!signed_out_of(&json!({"method": "alondra/inputRefused", "params": {"code": "authentication_required", "nativeSubmitted": true}})));
     }
 
     #[test]

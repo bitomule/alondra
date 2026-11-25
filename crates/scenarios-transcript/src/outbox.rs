@@ -1,6 +1,6 @@
 //! The frames the hosts of a task wrote on this Mac, read where the daemon keeps them: each SDK
-//! host of Claude under `sdk/`, each host of Codex under `codex/`, one folder per host with its
-//! `outbox`. The outbox journals both directions: the commands the daemon sent the host and the
+//! host of Claude under `sdk/`, each host of Codex under `codex/` and each of Antigravity under
+//! `antigravity/`, one folder per host with its `outbox`. The outbox journals both directions: the commands the daemon sent the host and the
 //! receipts and events the host answered with.
 
 use serde_json::Value;
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 const MAX_FRAME: usize = 1_048_576;
 /// Where each provider's hosts keep their folders, under Alondra's home.
-const PROVIDERS: &[(&str, &str)] = &[("claude", "sdk"), ("codex", "codex")];
+const PROVIDERS: &[(&str, &str)] = &[("claude", "sdk"), ("codex", "codex"), ("antigravity", "antigravity")];
 
 /// One host of the task: its provider and its frames, in the order it wrote them.
 #[derive(Debug, PartialEq)]

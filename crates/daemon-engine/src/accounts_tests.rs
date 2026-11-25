@@ -655,10 +655,10 @@ fn antigravity_accounts_are_checked_with_their_models_and_usage_only_when_due_an
 
     let mut pinned = TaskSelection::automatic(ModelProfile::Implementation);
     pinned.account = Some(native.clone());
-    let refused = select_for_launch(&*domain, &f.home, &pinned, 100).unwrap_err();
-    assert_eq!((refused.code.as_str(), refused.message.as_str()), ("provider_unavailable", alondra_core::antigravity_account::NODES_NOT_AVAILABLE));
-    let automatic = select_for_launch(&*domain, &f.home, &TaskSelection::automatic(ModelProfile::Implementation), 100).unwrap_err();
-    assert_eq!(automatic.code, "account_unavailable", "automatic choice never starts a node on Antigravity");
+    let chosen = select_for_launch(&*domain, &f.home, &pinned, 100).unwrap();
+    assert_eq!((&chosen.account, chosen.selection.model.model.as_str()), (&native, "fixture-gemini"), "a node runs on the Antigravity account it names");
+    let orchestrator = select_for_launch(&*domain, &f.home, &TaskSelection::automatic(ModelProfile::Orchestrator), 100).unwrap_err();
+    assert_eq!(orchestrator.code, "account_unavailable", "the orchestrator never runs on Antigravity");
 }
 
 #[test]
