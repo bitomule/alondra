@@ -1,6 +1,6 @@
 //! Checks configured private names before a node delivers a public pull request.
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Arc;
 
 use alondra_core::config::{FileConfig, path_in};
 use alondra_domain_rules::{
@@ -9,10 +9,9 @@ use alondra_domain_rules::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use alondra_github_gh::GhCli;
+use alondra_engine_ports::github::Gh;
 
 const QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){visibility pullRequest(number:$number){title body headRefOid baseRefOid baseRefName changedFiles}}}";
-const LIMIT: Duration = Duration::from_secs(30);
 const MAX_FINDINGS: usize = 20;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -50,37 +49,14 @@ fn unavailable(reason: &str) -> DomainError {
     )
 }
 
-async fn snapshot(gh: &GhCli, pr: &PullRequest) -> Result<Repository, DomainError> {
+async fn snapshot(gh: &dyn Gh, pr: &PullRequest) -> Result<Repository, DomainError> {
     let (owner, name) = pr
         .repository
         .split_once('/')
         .ok_or_else(|| unavailable("invalid repository"))?;
     let host = alondra_domain_rules::normalize_pr_host(&pr.host);
-    let args = [
-        format!("query={QUERY}"),
-        format!("owner={owner}"),
-        format!("name={name}"),
-        format!("number={}", pr.number),
-    ];
     let bytes = gh
-        .run(
-            &[
-                "api",
-                "graphql",
-                "--hostname",
-                &host,
-                "-f",
-                &args[0],
-                "-f",
-                &args[1],
-                "-f",
-                &args[2],
-                "-F",
-                &args[3],
-            ],
-            None,
-            LIMIT,
-        )
+        .pr_graphql(&host, owner, name, pr.number, QUERY)
         .await
         .map_err(|_| unavailable("GitHub did not return the repository and PR"))?;
     let value: Value =
@@ -177,7 +153,7 @@ fn inspect_diff(
     Ok(())
 }
 
-async fn review_pr(gh: &GhCli, pr: &PullRequest, names: &[String]) -> Result<(), DomainError> {
+async fn review_pr(gh: &dyn Gh, pr: &PullRequest, names: &[String]) -> Result<(), DomainError> {
     let before = snapshot(gh, pr).await?;
     if before.visibility != Visibility::Public {
         return Ok(());
@@ -244,7 +220,7 @@ const CONCURRENT_REVIEWS: usize = 4;
 /// Reviews every PR at once, at most `CONCURRENT_REVIEWS` together; the refusal of the first PR
 /// in delivery order that has one is the one given.
 async fn review_concurrently(
-    gh: &GhCli,
+    gh: &Arc<dyn Gh>,
     prs: Vec<PullRequest>,
     names: Vec<String>,
 ) -> Result<(), DomainError> {
@@ -255,7 +231,7 @@ async fn review_concurrently(
         let (gh, permits, names) = (gh.clone(), permits.clone(), names.clone());
         reviews.spawn(async move {
             let _permit = permits.acquire().await.expect("the semaphore is never closed");
-            (index, review_pr(&gh, &pr, &names).await)
+            (index, review_pr(gh.as_ref(), &pr, &names).await)
         });
     }
     let mut refusals = Vec::new();
@@ -306,7 +282,7 @@ pub(crate) async fn check(
     home: &Path,
     state: &DomainState,
     command: &Command,
-    gh: &GhCli,
+    gh: &Arc<dyn Gh>,
 ) -> Result<Option<Reviewed>, DomainError> {
     let Command::PresentResult {
         task_id,

@@ -1,7 +1,10 @@
 use super::*;
 use alondra_domain_rules::*;
+use alondra_engine_ports::github::{DiffError, GhFailure, MAX_PR_DIFF_BYTES, PrDiff, Read};
 use serde_json::json;
-use std::os::unix::fs::PermissionsExt;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 const NAME: &str = "example-private-project";
@@ -119,39 +122,98 @@ fn metadata() -> Value {
     }}}})
 }
 
+/// GitHub in memory: the n-th GraphQL read answers `pages[n]` (a read past the last one fails), a
+/// PR with an answer of its own answers that one, and the diff is the same for every PR.
+struct Github {
+    pages: Vec<Value>,
+    by_number: HashMap<u64, Value>,
+    next: AtomicUsize,
+    diff: Mutex<Option<Vec<u8>>>,
+    calls: Mutex<Vec<String>>,
+    running: AtomicUsize,
+    peak: AtomicUsize,
+    held_reads: usize,
+}
+
+impl Github {
+    fn new(pages: &[Value], diff: &str) -> Self {
+        Self {
+            pages: pages.to_vec(),
+            by_number: HashMap::new(),
+            next: AtomicUsize::new(0),
+            diff: Mutex::new(Some(diff.as_bytes().to_vec())),
+            calls: Mutex::new(Vec::new()),
+            running: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            held_reads: 0,
+        }
+    }
+}
+
+impl Gh for Github {
+    fn pr_graphql<'a>(
+        &'a self,
+        host: &'a str,
+        owner: &'a str,
+        name: &'a str,
+        number: u64,
+        _query: &'a str,
+    ) -> Read<'a, Result<Vec<u8>, GhFailure>> {
+        Box::pin(async move {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("api graphql {host} {owner}/{name} number={number}"));
+            let running = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(running, Ordering::SeqCst);
+            for _ in 0..self.held_reads {
+                tokio::task::yield_now().await;
+            }
+            self.running.fetch_sub(1, Ordering::SeqCst);
+            let index = self.next.fetch_add(1, Ordering::SeqCst);
+            self.by_number
+                .get(&number)
+                .or_else(|| self.pages.get(index))
+                .map(|page| page.to_string().into_bytes())
+                .ok_or_else(|| GhFailure::Exit(Some(1), String::new()))
+        })
+    }
+
+    fn view<'a>(&'a self, _url: &'a str) -> Read<'a, Option<Value>> {
+        Box::pin(async { None })
+    }
+
+    fn diff<'a>(&'a self, url: &'a str) -> Read<'a, Result<PrDiff, DiffError>> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push(format!("pr diff {url}"));
+            match self.diff.lock().unwrap().clone() {
+                Some(bytes) => Ok(PrDiff {
+                    truncated: bytes.len() > MAX_PR_DIFF_BYTES,
+                    bytes,
+                }),
+                None => Err(DiffError::Finish),
+            }
+        })
+    }
+}
+
 struct Fixture {
     home: crate::test_support::Directory,
-    gh: GhCli,
+    github: Arc<Github>,
 }
 
 impl Fixture {
     fn new(pages: &[Value], diff: &str) -> Self {
+        Self::on(Github::new(pages, diff))
+    }
+
+    fn on(github: Github) -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(path_in(&home), format!("private_names = [\"{NAME}\"]\n")).unwrap();
-        std::fs::write(home.join("diff"), diff).unwrap();
-        let mut script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/calls'\ncase \"$1 $2\" in\n'api graphql')\ni=0\nif test -f '{0}/counter'; then i=$(cat '{0}/counter'); fi\ni=$((i+1))\nprintf '%s' \"$i\" > '{0}/counter'\ncase \"$i\" in\n",
-            home.display()
-        );
-        for (index, page) in pages.iter().enumerate() {
-            std::fs::write(home.join(format!("page-{index}")), page.to_string()).unwrap();
-            script.push_str(&format!(
-                "{}) cat '{}/page-{index}';;\n",
-                index + 1,
-                home.display()
-            ));
-        }
-        script.push_str(&format!(
-            "*) exit 1;;\nesac;;\n'pr diff') cat '{}/diff';;\n*) exit 1;;\nesac\n",
-            home.display()
-        ));
-        let program = home.join("gh");
-        std::fs::write(&program, script).unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         Self {
             home,
-            gh: GhCli::at(program),
+            github: Arc::new(github),
         }
     }
 
@@ -160,11 +222,12 @@ impl Fixture {
         state: &DomainState,
         command: &Command,
     ) -> Result<Option<Reviewed>, DomainError> {
-        check(&self.home, state, command, &self.gh).await
+        let gh: Arc<dyn Gh> = self.github.clone();
+        check(&self.home, state, command, &gh).await
     }
 
     fn calls(&self) -> String {
-        std::fs::read_to_string(self.home.join("calls")).unwrap_or_default()
+        self.github.calls.lock().unwrap().join("\n")
     }
 }
 
@@ -261,19 +324,13 @@ async fn empty_configuration_and_private_repositories_do_not_read_a_diff() {
 async fn all_implicit_open_prs_are_checked() {
     let mut private = metadata();
     private["data"]["repository"]["visibility"] = json!("PRIVATE");
-    let fixture = Fixture::new(&[], PRIVATE_DIFF);
-    std::fs::write(fixture.home.join("public"), metadata().to_string()).unwrap();
-    std::fs::write(fixture.home.join("private"), private.to_string()).unwrap();
-    let script = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{home}/calls'\ncase \"$1 $2\" in\n'api graphql') case \"$*\" in *number=8*) cat '{home}/private';; *) cat '{home}/public';; esac;;\n'pr diff') cat '{home}/diff';;\n*) exit 1;;\nesac\n",
-        home = fixture.home.display()
-    );
-    let program = fixture.home.join("by-number-gh");
-    std::fs::write(&program, script).unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut github = Github::new(&[], PRIVATE_DIFF);
+    github.by_number = HashMap::from([(7, metadata()), (8, private)]);
+    let fixture = Fixture::on(github);
     let mut state = state();
     register(&mut state, 8);
-    let error = check(&fixture.home, &state, &delivery(), &GhCli::at(program))
+    let error = fixture
+        .check(&state, &delivery())
         .await
         .err()
         .unwrap();
@@ -325,7 +382,7 @@ async fn unknown_visibility_invalid_config_incomplete_diff_and_read_failures_ref
         assert!(fixture.calls().is_empty());
     }
     let fixture = Fixture::new(&[metadata()], CLEAN_DIFF);
-    std::fs::remove_file(fixture.home.join("diff")).unwrap();
+    fixture.github.diff.lock().unwrap().take();
     assert_eq!(
         fixture
             .check(&state(), &delivery())
@@ -470,28 +527,24 @@ fn diff_scanning_checks_added_lines_and_quoted_paths_but_allows_removal() {
 #[tokio::test]
 async fn many_open_prs_are_read_together_so_a_slow_github_does_not_add_up() {
     const PRS: u64 = 9;
-    let fixture = Fixture::new(&[], CLEAN_DIFF);
-    let marks = fixture.home.join("seen");
-    std::fs::create_dir_all(&marks).unwrap();
-    let script = format!(
-        "#!/bin/sh\ncase \"$1 $2\" in\n'api graphql')\ntouch '{marks}/'$$\ntries=0\nwhile test $(ls '{marks}' | wc -l) -lt {together}; do\ntries=$((tries+1))\ntest $tries -gt 100 && exit 1\nsleep 0.1\ndone\ncat '{page}';;\n'pr diff') cat '{diff}';;\n*) exit 1;;\nesac\n",
-        marks = marks.display(),
-        together = 4,
-        page = fixture.home.join("page").display(),
-        diff = fixture.home.join("diff").display(),
-    );
-    std::fs::write(fixture.home.join("page"), metadata().to_string()).unwrap();
-    let program = fixture.home.join("slow-gh");
-    std::fs::write(&program, script).unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut github = Github::new(&[], CLEAN_DIFF);
+    github.by_number = (7..7 + PRS).map(|number| (number, metadata())).collect();
+    github.held_reads = 20;
+    let fixture = Fixture::on(github);
     let mut state = state();
     for number in 8..7 + PRS {
         register(&mut state, number);
     }
 
-    let reviewed = check(&fixture.home, &state, &delivery(), &GhCli::at(program))
+    let reviewed = fixture
+        .check(&state, &delivery())
         .await
         .expect("every PR is clean")
         .expect("the names are configured");
     assert_eq!(reviewed.prs.len() as u64, PRS);
+    let peak = fixture.github.peak.load(Ordering::SeqCst);
+    assert!(
+        peak > 1 && peak <= CONCURRENT_REVIEWS,
+        "the reads of the PRs overlap, at most CONCURRENT_REVIEWS at once: {peak}"
+    );
 }

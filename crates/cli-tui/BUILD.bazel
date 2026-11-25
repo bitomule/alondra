@@ -26,10 +26,13 @@ adapter_in_crate(
 )
 
 # The screens are compared with what the daemon's renderer builds, so the test renders real views.
+# Pure computation (every key of every screen is drawn and pressed): about 6 seconds alone, with no
+# wait on a clock. A full run on a Mac at load 200 stretched it past the 60 seconds of `small`;
+# `moderate` leaves it three times the time that run took.
 low_opt_rust_test(
     name = "cli_tui_test",
     env = {"TEST_EXECS": "/bin/sh /usr/bin/defaults /usr/bin/id tmpdir"},
-    size = "small",
+    timeout = "moderate",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = ["//fixtures/diffs"],
     crate_name = "alondra_cli_tui",

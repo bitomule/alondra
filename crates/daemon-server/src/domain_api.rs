@@ -35,7 +35,7 @@ async fn final_delivery_review(
     home: &FsPath, merger: Arc<dyn crate::domain_merges::PrMerger>, state: Arc<DomainState>, command: &Command,
 ) -> Result<Option<crate::public_content::Reviewed>, DomainError> {
     let Command::PresentResult { task_id, targets, is_final: true, .. } = command else { return Ok(None) };
-    let gh = alondra_github_gh::GhCli::new();
+    let gh: Arc<dyn alondra_engine_ports::github::Gh> = Arc::new(alondra_github_gh::GhCli::new());
     if let Some(refusal) = crate::domain_merges::draft_refusal(&state, &state.with_open_prs(task_id, targets), &merger).await {
         return Err(refusal);
     }

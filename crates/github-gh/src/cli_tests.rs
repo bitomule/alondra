@@ -205,3 +205,19 @@ fn a_failed_read_is_gone_only_when_github_says_not_found() {
     assert!(matches!(after_failed_view(failed(), None), GhFailure::Exit(Some(1), _)), "no answer says nothing");
     assert!(after_failed_view(failed(), Some(&spent)).rate_limited());
 }
+
+#[tokio::test]
+async fn a_graphql_read_of_a_pr_passes_the_host_query_and_variables_and_reports_a_failed_gh() {
+    use alondra_engine_ports::github::Gh;
+    let fixture = directory();
+    let program = fixture.join("gh");
+    let log = fixture.join("calls");
+    std::fs::write(&program, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\ncase \"$*\" in *number=9*) echo boom >&2; exit 1;; *) printf '%s' '{{\"data\":{{}}}}';; esac\n", log.display())).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let gh = GhCli::at(program);
+    let answer = gh.pr_graphql("github.com", "owner", "repo", 7, "query{x}").await.unwrap();
+    assert_eq!(answer, br#"{"data":{}}"#);
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(calls.trim(), "api graphql --hostname github.com -f query=query{x} -f owner=owner -f name=repo -F number=7");
+    assert!(matches!(gh.pr_graphql("github.com", "owner", "repo", 9, "query{x}").await, Err(GhFailure::Exit(Some(1), message)) if message == "boom"));
+}
