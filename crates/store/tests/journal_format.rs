@@ -12,7 +12,13 @@ impl Database {
         let directory = test_support::Directory::new();
         std::fs::create_dir_all(&*directory).unwrap();
         let connection = Connection::open(directory.join("domain.db")).unwrap();
-        connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        // The schema goes in statement by statement, each its own commit: with the default
+        // settings every one creates, syncs and deletes a journal file, which takes seconds per
+        // test on a busy disk. These tests check the journal's schema, never that it survives a
+        // power cut; rollbacks still work with the journal in memory.
+        connection
+            .execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=OFF; PRAGMA journal_mode=MEMORY;")
+            .unwrap();
         connection
             .execute_batch(include_str!("../../domain-store-schema/schema.sql"))
             .unwrap();
