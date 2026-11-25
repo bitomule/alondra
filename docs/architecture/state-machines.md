@@ -1544,6 +1544,14 @@ truth = ["memory", "sqlite:provider_execution_owners"]
 | Waiting for space | `waiting_for_space ∋ task` |
 | Lost | host-lost card in the domain + `host_losses_told` |
 
+- **Lost for want of a sign-in** (Antigravity): when the host's last batch carries the `authentication_required`
+  code of `alondra/accountBlocked`, or of `alondra/inputRefused` before `agy` took the input
+  (`provider-antigravity/src/context.rs::signed_out`), the `Driver` keeps `native_signed_out` for that host only
+  (memory, recomputed from the host's next batch) and `lost_on` sends `RecordHostLost { signed_out: true }`. The rule
+  (`domain-rules/src/lifecycle.rs::record_host_lost`) marks the task's account signed out, so no new work starts on
+  it, and words the host-lost card as a sign-in problem (`SystemCard::HostLost { signed_out: true }`); its way out
+  is the same retake. A stored command or card without the field reads `false`.
+
 - **Paths that create or adopt a host**:
   - `start_bound` / `launch_prepared` (`:481`, `:730`);
   - `launch_admitted` (`:774`);
@@ -6060,7 +6068,7 @@ truth = ["derived", "sqlite:account_usage"]
 
 - **Kind**: implicit, derived from readings. **Defined in**: `crates/core/src/usage.rs:198-300` (`AccountUsage`, `ran_out`, `exhausted_until`), `:329-358` (`record`); `crates/domain-rules/src/rules.rs:3442-3453` (`RecordAccountUsage`).
 - **States per window**: Unmeasured, then With margin (`used < FULL`, not `exhausted`), then Exhausted until `resets_at` (`exhausted` or `used == FULL`, with a future reset), then Exhausted with no known time, then With margin again (`resets_at` passes, another reading arrives, or in Codex a working turn, `native_turn_worked`).
-- **Writers**: `usage_probe::measure_account` (full reading, always `exhausted:false`, `usage_probe.rs:100-121`), `usage_probe::record_limit` (orchestrator), turn observations (`store-sqlite/src/owner.rs:301-323`, `:486-497`), `accounts::check_current` (Codex). Codex's account check reads `account/rateLimits/read` through `ProbeReport::usage_reading` (`crates/core/src/codex_account.rs`): with `ordinaryUsageAllowed: true` it records the percentages; with `false` it records them too, plus the exhausted native-limit mark, so the account shows its current reading and stays held until a later check says `true`; with `null` (the provider does not know) it records nothing and the last reading stands. No reset time ends that hold: only Codex's answer does.
+- **Writers**: `usage_probe::measure_account` (full reading, always `exhausted:false`, `usage_probe.rs:100-121`), `usage_probe::record_limit` (orchestrator), turn observations (`store-sqlite/src/owner.rs:301-323`, `:486-497`; a turn that failed for usage holds a Codex account, and an Antigravity one only when its access reads usage with `agy -p /usage`, as a session window until its reset or that account's next reading; a key billed per use is never held, its limits being per minute), `accounts::check_current` (Codex). Codex's account check reads `account/rateLimits/read` through `ProbeReport::usage_reading` (`crates/core/src/codex_account.rs`): with `ordinaryUsageAllowed: true` it records the percentages; with `false` it records them too, plus the exhausted native-limit mark, so the account shows its current reading and stays held until a later check says `true`; with `null` (the provider does not know) it records nothing and the last reading stands. No reset time ends that hold: only Codex's answer does.
 - **Invariants**: enforced in `record`: an older reading does not overwrite a newer one. A window measured after the reading's `at` stays, and a complete reading removes only windows measured before it (F-PROV-1, fixed). Readings an ended host's journal commits on adoption still carry the commit time (see F-PROV-1).
 
 ### M-PROV-14 · Orchestrator batch over the host
