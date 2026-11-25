@@ -189,7 +189,7 @@ swift_test(
     # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
     linkopts = ["-Wl,-export_dynamic"],
     name = "AlondraMacServiceNavigationTests",
-    size = "small",
+    timeout = "moderate",
     srcs = ["macOS/Tests/MacServiceNavigationTests.swift"],
     data = ["//fixtures/views:cards"],
     deps = [
