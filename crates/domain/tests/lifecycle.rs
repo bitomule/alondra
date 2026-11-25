@@ -1248,7 +1248,7 @@ proptest! {
             if task.can_release_host() {
                 prop_assert!(task.activity() == ActivityView::Resting || (task.held_by_pause() && task.activity() == ActivityView::Starting),
                     "only a resting execution, or one a pause holds before its next input, closes its host: {:?}", task);
-                prop_assert!((task.pending_inputs().is_empty() || task.held_by_pause()) && task.post_merge().is_none(), "nothing waits on its host: {:?}", task);
+                prop_assert!((task.pending_inputs().is_empty() || task.held_by_pause()) && (task.post_merge().is_none() || task.in_review()), "nothing waits on its host, and work after a merge that has not happened is not running: {:?}", task);
             }
             let live = task.live();
             if matches!(task.phase(), TaskPhase::Unstarted | TaskPhase::Completed | TaskPhase::Cancelled) {

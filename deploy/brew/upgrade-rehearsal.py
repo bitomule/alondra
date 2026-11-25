@@ -1233,6 +1233,7 @@ def check_moved(world, task, session, first_input):
 
 
 UPGRADE_CASE = 'sdk-upgrade'
+DELIVERED_CASE = 'sdk-upgrade-delivered'
 LAUNCHD_CASE = 'to-launchd'
 SKEW_CASE = 'skew-card'
 # The last release that cannot read a card's title, which is what an upgraded CLI sends it.
@@ -1248,6 +1249,11 @@ KEEPS, CRASHES = 't-keeps', 't-crashes'
 UPGRADE_SEEDED = {KEEPS: 'Run the slow check', CRASHES: 'Run the long build'}
 BACKGROUND_COMMAND = 'background-command'
 AFTER_MOVE = 'Say what the command found'
+# 2026-11-24: a node that declared work after its merge and rests on a delivery still in review. Its
+# host never closed by itself, so the update ended it as a session cut mid-way and a card asked the
+# user how it went on.
+DELIVERED, DELIVERED_TITLE = 't-delivered', 'Write the weekly notes'
+WORK_AFTER_MERGE = 'Publish the notes once they merge'
 UPGRADE_CRASHES = ('adopted', 'moved')
 # The cards of a task whose host could not be taken over, whose session ended mid-way, or whose
 # input its host may have lost.
@@ -1444,6 +1450,50 @@ def background_node(world, task, title, version, known):
     return session, until(f'the node of {task} leaves a command running in the background', left_running)
 
 
+def delivered_node(world, task, title, version, known):
+    """A task whose node declared work after the merge, delivered, and rests with the delivery in
+    review: its session."""
+    world.request(task, title)
+
+    def started():
+        found = new_sessions(world.runtime, known)
+        return (found[0] if len(found) == 1 else None, found)
+    session = until(f'{version} starts the node of {task} on its own Agent SDK host', started, within=PATIENCE * 2)
+
+    def first_turn_ended():
+        log = world.log.read_text(errors='replace') if world.log.is_file() else ''
+        return (turns_ended(rows(world.home, 'interactions'), task, log) >= 1, None)
+    until(f'the first turn of {task} ends', first_turn_ended)
+    node = node_tools(world, world.root / 'bin/alondra', session)
+    answers, _ = node.communicate(mcp_call({'task_id': task, 'reason': WORK_AFTER_MERGE}, 'post_merge_work', 1)
+                                  + mcp_call({**node_result(task, f'{task}-result'), 'language': 'es'}, 'present_result', 2), timeout=PATIENCE)
+    failed = [line for line in answers.splitlines() if json.loads(line).get('result', {}).get('isError')]
+    if failed:
+        raise Failed(f'{version} refused what the node of {task} said: {failed}')
+    return session
+
+
+def delivered_node_moves_quietly(world, task, session, before):
+    """The update closes the host of the release before, as it does for any resting node, and
+    asks nobody; a message then resumes the same session in a host of the new release."""
+    until(f'the host of the release before of {task} closes', lambda: (identity(before['host'][0]) is None, host_facts(world, session, None)))
+    asked = move_cards(rows(world.home, 'interactions'), task)
+    if asked:
+        raise Failed(f'the update asked the user about {task}, which rests on a delivery in review: {asked}')
+    world.press(f'task:{task}', 'msg:', AFTER_MOVE)
+    recorded = world.runtime / f'capture-{session}.starts'
+    until(f'the message to {task} resumes its Claude session', lambda: (len(read_lines(recorded)) > 1, read_lines(recorded)))
+    starts = read_lines(recorded)
+    if len(starts) != 2 or starts[1]['resume'] != session or not starts[1]['history']:
+        raise Failed(f'the native Claude of {task} did not resume its session once: {starts}')
+    now = host_facts(world, session, None)
+    if now['host'] is None or now['host'] == before['host'] or now['release'] in (None, before['release']):
+        raise Failed(f'{task} did not resume under a host of the new release: {now["host"]}, {now["release"]}')
+    asked = move_cards(rows(world.home, 'interactions'), task)
+    if asked:
+        raise Failed(f'resuming {task} asked the user about a host: {asked}')
+
+
 def check_kept(world, sessions, commands, before, after_what):
     problems = [problem for task in sessions for problem in kept(task, before[task], host_facts(world, sessions[task], commands[task]))]
     if problems:
@@ -1518,6 +1568,39 @@ def run_upgrade(world, old, new):
             'crashed_after': crashed}
 
 
+def delivered_upgrade(rehearsal, old, new, sdk):
+    """The previous release leaves a node that declared work after its merge and rests on a delivery
+    still in review: the update closes its host as it does a resting node's, asks nobody, and a
+    message resumes the same session in a host of the new release."""
+    world = HandoverWorld(rehearsal, rehearsal.work / DELIVERED_CASE, sdk)
+    world.root.mkdir()
+    try:
+        return run_delivered_upgrade(world, old, new)
+    except Failed as error:
+        raise Failed(f'{error}\n{log_tail(world.log)}') from None
+    finally:
+        world.stop_everything()
+
+
+def run_delivered_upgrade(world, old, new):
+    world.lay_out(old, new['keg'], new['make_keg'])
+    install_router(world)
+    fresh_previous(world.rehearsal, world.home, old)
+    world.provision()
+    world.start(old['version'])
+    world.connect_claude_where_asked()
+    world.tool('phone', '--mac', '1', 'pair', '--direct')
+    session = delivered_node(world, DELIVERED, DELIVERED_TITLE, old['version'], ())
+    before = host_facts(world, session, None)
+    if before['host'] is None:
+        raise Failed(f'{old["version"]} left {DELIVERED} with no host: {before}')
+    restart_into(world, old, new)
+    shutil.rmtree(world.root / 'Cellar/alondra' / old['version'])
+    world.start(new['version'])
+    delivered_node_moves_quietly(world, DELIVERED, session, before)
+    return {'task': DELIVERED, 'session': session, 'host_release': {'before': before['release'], 'after': host_facts(world, session, None)['release']}}
+
+
 def to_launchd(rehearsal, old, new, sdk):
     """A daemon started by hand, with a node at work, gives way to the one launchd starts: that
     one waits for the HOME, takes the node's host, and the node goes on."""
@@ -1577,8 +1660,8 @@ def node_result(task, card):
             'targets': [{'kind': 'text', 'text': 'Nothing to change this week'}]}
 
 
-def mcp_call(arguments):
-    return json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call', 'params': {'name': 'present_result', 'arguments': arguments}}) + '\n'
+def mcp_call(arguments, tool='present_result', call=1):
+    return json.dumps({'jsonrpc': '2.0', 'id': call, 'method': 'tools/call', 'params': {'name': tool, 'arguments': arguments}}) + '\n'
 
 
 def node_tools(world, cli, session, hold=None):
@@ -1635,10 +1718,10 @@ def sdk_cases(previous):
     keep. Every release also installs fresh."""
     if not has_sdk_backend(previous):
         return (SDK_CASE, FRESH_SDK_CASE)
-    return (UPGRADE_CASE, LAUNCHD_CASE, *((SKEW_CASE,) if previous == SKEW_FROM else ()), FRESH_SDK_CASE)
+    return (UPGRADE_CASE, DELIVERED_CASE, LAUNCHD_CASE, *((SKEW_CASE,) if previous == SKEW_FROM else ()), FRESH_SDK_CASE)
 
 
-ALL_CASES = (*CASES, SDK_CASE, UPGRADE_CASE, LAUNCHD_CASE, SKEW_CASE, FRESH_SDK_CASE)
+ALL_CASES = (*CASES, SDK_CASE, UPGRADE_CASE, DELIVERED_CASE, LAUNCHD_CASE, SKEW_CASE, FRESH_SDK_CASE)
 
 
 def chosen_cases(previous, sdk, only=None):
@@ -1725,6 +1808,14 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version, new_keg
         print(f'{UPGRADE_CASE}: {len(kept_running["tasks"])} commands in the background outlived the update on the hosts of '
               f'{old_version}; each node moved to a host of {new["version"]} once it rested, resuming its session, '
               f'the daemon killed after {", ".join(kept_running["crashed_after"])}')
+    if DELIVERED_CASE in chosen:
+        keg = work / DELIVERED_CASE / 'Cellar/alondra' / new['version']
+        try:
+            result['cases'][DELIVERED_CASE] = delivered_upgrade(rehearsal, old, {**new, 'keg': keg, 'make_keg': new_keg}, sdk)
+        except Failed as error:
+            raise Failed(f'case {DELIVERED_CASE}: {error}') from None
+        print(f'{DELIVERED_CASE}: the node of a delivery in review with work after its merge lost no session to the update from '
+              f'{old_version} to {new["version"]}, and nobody was asked')
     if LAUNCHD_CASE in chosen:
         keg = work / LAUNCHD_CASE / 'Cellar/alondra' / new['version']
         try:
