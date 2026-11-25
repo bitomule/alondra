@@ -34,6 +34,9 @@ pub(super) enum Turn {
 #[derive(Clone, Copy, Debug)]
 pub(super) enum UserAct {
     Answer,
+    /// The user answers again, with another option, the last card of the task they answered: a
+    /// second tap, or an answer that arrives late from another device.
+    AnswerAgain,
     Tell,
     Pause,
     Resume,
@@ -245,6 +248,12 @@ pub(super) fn history() -> impl Strategy<Value = History> {
 pub(super) fn history_with_a_dependency() -> impl Strategy<Value = History> {
     let depends = prop_oneof![Just((0, 1)), Just((0, 2)), Just((1, 2))];
     (history(), depends).prop_map(|(history, depends)| History { depends: Some(depends), ..history })
+}
+
+/// Histories where the user also answers again a card they already answered.
+pub(super) fn history_with_answers_again() -> impl Strategy<Value = History> {
+    let action = prop_oneof![4 => action(), 1 => task().prop_map(|task| Action::User(UserAct::AnswerAgain, task))];
+    (script(), 1..=3usize, prop::collection::vec(action, 1..40)).prop_map(|(script, slots, actions)| History { script, slots, depends: None, actions })
 }
 
 /// Histories whose nodes also confirm their cleanup, whatever their session is doing.
