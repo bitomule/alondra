@@ -24,6 +24,7 @@ What is not state (a provider's own file, a test fixture name, an enum that only
 tools/state_inventory_exempt.tsv with its reason. What is wrong today and owned by an open fix is
 in tools/state_inventory_known.tsv with its finding; an entry that no longer fails is a failure
 too, so both lists only shrink."""
+import functools
 import importlib.util
 import re
 import sys
@@ -103,6 +104,12 @@ def line_of(text, offset):
     return text.count("\n", 0, offset) + 1
 
 
+@functools.lru_cache(maxsize=None)
+def blanked(text):
+    return guard.blank(text)
+
+
+@functools.lru_cache(maxsize=None)
 def literals(text, code):
     """Every string literal of production code: (offset of its opening quote, its text)."""
     found = []
@@ -120,11 +127,12 @@ def production_files(root):
         base = guard.absolute(crate)
         files = sorted(guard.absolute(path) for path in (base / "src").rglob("*.rs") if "fixtures" not in path.parts)
         test_only = {path for path in files if guard.is_test_file(path.relative_to(base))}
+        declared = {path: guard.declared_modules(path, path.read_text()) for path in files}
         changed = True
         while changed:
             changed = False
             for path in files:
-                for module, marked in guard.declared_modules(path, path.read_text()):
+                for module, marked in declared[path]:
                     module = guard.absolute(module)
                     if (marked or path in test_only) and module.exists() and module not in test_only:
                         test_only.add(module)
@@ -203,7 +211,7 @@ def defined(root, reference):
     if not symbol:
         return True
     pattern = DEFINITION.get(target.suffix)
-    return pattern is None or re.search(pattern.format(re.escape(symbol)), guard.blank(target.read_text())) is not None
+    return pattern is None or re.search(pattern.format(re.escape(symbol)), blanked(target.read_text())) is not None
 
 
 def enum_variants(root, reference):
@@ -211,7 +219,7 @@ def enum_variants(root, reference):
     target = root / path
     if not target.is_file():
         return None
-    code = guard.blank(target.read_text())
+    code = blanked(target.read_text())
     match = re.search(rf"\benum\s+{re.escape(name)}\b[^{{;]*\{{", code)
     if not match:
         return None

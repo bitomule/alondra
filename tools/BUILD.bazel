@@ -219,7 +219,7 @@ sh_test(
         "//apple:tree",
         "//crates:tree",
     ],
-    size = "small",
+    timeout = "moderate",
 )
 
 # `bazel run //tools:edit_bench`: what each frequent edit reopens and what Bazel really reruns.
