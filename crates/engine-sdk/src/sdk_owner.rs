@@ -46,6 +46,9 @@ const DRIVER: &str = "claude-agent-sdk";
 /// How long the owner waits for the host before it looks again on its own: what the store issues
 /// for its execution, an input or a control, rings its bell and ends the wait at once.
 const WAKE: Duration = Duration::from_millis(250);
+/// How long a host asked to interrupt its turn and stop may stay open and silent before the owner
+/// ends it by force. The turn's interrupted result and the host's exit come within it.
+const INTERRUPT_GRACE: Duration = Duration::from_secs(10);
 /// How long a host handed an input may take to open its native session before another takes its
 /// place. Opening starts the native process, which a loaded Mac makes slow; it has nothing to do
 /// with the I/O timeout, which bounds one frame on the host's socket.
@@ -302,6 +305,8 @@ pub struct Driver {
     bell: Option<Arc<clock::Bell>>,
     /// How long a step waits for the host before it looks again on its own (`WAKE`).
     pub(crate) host_wait: Duration,
+    /// How long `settle_interrupt` waits for a host that says nothing (`INTERRUPT_GRACE`).
+    pub(crate) interrupt_grace: Duration,
     /// Runs once a dispatch has recorded its command, just before the command goes to the host.
     pub(crate) before_handoff: Option<Box<dyn FnOnce(&Handoffs) + Send>>,
     /// Runs once the owner reads as ended after it closed the host of a resting node, just before its driver is dropped.
@@ -1830,7 +1835,7 @@ impl Driver {
                 None
             }
         };
-        Self { bell, host_wait: WAKE, pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, declines_next_release: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None, before_release_ends: None }
+        Self { bell, host_wait: WAKE, interrupt_grace: INTERRUPT_GRACE, pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, declines_next_release: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None, before_release_ends: None }
     }
 
     /// The runtime of the daemon that owns this host.
@@ -2526,6 +2531,37 @@ impl Driver {
         self.worker.stop().map_err(adapter("stopping the SDK host"))
     }
 
+    /// Once its host was asked to interrupt its turn and stop, reads and commits what the host still
+    /// says, the turn's interrupted result among it, until the host closes. A host still open
+    /// `interrupt_grace` after the request, by the clock or by the polls that found it silent, is
+    /// killed: its turn then has no result to record, and ends with the host as the turn of any
+    /// host that was lost.
+    fn settle_interrupt(&mut self) {
+        let deadline = clock::instant() + self.interrupt_grace;
+        let mut silent = Duration::ZERO;
+        while !self.host_closed {
+            if silent >= self.interrupt_grace || clock::instant() >= deadline {
+                log!("the host of {} stayed open {}s after it was asked to interrupt its turn and stop: it is killed", self.task, self.interrupt_grace.as_secs_f64());
+                if let Some(Err(error)) = self.worker.stopper().map(|host| host.kill()) {
+                    log!("could not kill the SDK host of {}: {error}", self.task);
+                }
+                return;
+            }
+            match self.worker.readable(WAKE) {
+                Ok(true) => {
+                    if let Err(error) = self.observe() {
+                        if !self.host_closed {
+                            log!("could not read what the host of {} said while it interrupted its turn: {error}", self.task);
+                        }
+                        return;
+                    }
+                }
+                Ok(false) => silent += WAKE,
+                Err(_) => return,
+            }
+        }
+    }
+
     /// The host this driver owns closed while the daemon runs, as a crash of Node or of the host
     /// does: what is left of its group ends, and a host that resumes the same Claude session takes
     /// its place, as a daemon that comes back does (`adopt`). The ended host's journal says what it
@@ -2854,6 +2890,9 @@ impl Owner {
                 && let Err(error) = host.request_after_interrupt()
             {
                 log!("could not ask the SDK host of {} to interrupt its turn and stop: {error}", driver.task);
+            }
+            if interrupting.load(Ordering::SeqCst) {
+                driver.settle_interrupt();
             }
             let stopped = driver.stop();
             if let Err(error) = &stopped {

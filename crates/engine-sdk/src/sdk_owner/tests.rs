@@ -510,6 +510,82 @@ async fn cancelling_an_sdk_task_mid_turn_interrupts_the_turn_stops_its_host_and_
     assert!(cards.is_empty(), "the user is never asked to close it: {cards:?}");
 }
 
+/// What a close of a node in mid-turn left: whether the commits hold the turn's interrupted
+/// result, what the host was asked, whether it still runs, and how the close ended.
+#[cfg(not(feature = "real-hosts"))]
+struct Closed {
+    recorded_interrupted: bool,
+    stops: Vec<alondra_engine_doubles::agent_host::Stop>,
+    runs: bool,
+    ended: Result<(), Failed>,
+}
+
+/// Closes the owner of a node whose turn runs, on a host that reacts to the interrupt as
+/// `interrupted` says, and gives up on a silent host after `grace`.
+#[cfg(not(feature = "real-hosts"))]
+fn close_in_mid_turn(interrupted: alondra_claude_host_model::Interrupted, grace: Duration) -> Closed {
+    let slice = Slice::new();
+    slice.hosts.model().set_interrupted(interrupted);
+    let seen = Arc::new(Mutex::new(false));
+    let (recorded, database) = (Arc::clone(&seen), slice.database.clone());
+    slice.on_acknowledge(move || {
+        let observer = Connection::open(&database).unwrap();
+        let aborted: i64 = observer.query_row("SELECT count(*) FROM provider_observations WHERE task_id=?1 AND CAST(bytes AS TEXT) LIKE '%aborted_streaming%'", [TASK], |row| row.get(0)).unwrap();
+        if aborted > 0 {
+            *recorded.lock().unwrap() = true;
+        }
+    });
+    let mut driver = slice.launch_working();
+    driver.interrupt_grace = grace;
+    let folder = driver.worker.state_directory().to_path_buf();
+    let mut owner = Owner::spawn(driver);
+    let ended = owner.close();
+    let stops = slice.hosts.hosts.stops(&folder);
+    let runs = slice.hosts.hosts.served(&folder).is_some();
+    let recorded_interrupted = *seen.lock().unwrap();
+    Closed { recorded_interrupted, stops, runs, ended }
+}
+
+// A close interrupts the turn Claude runs and stops the host, which writes the turn's interrupted
+// result as it ends. The owner used to read for one wake (250 ms) after the request and then drop
+// its connection, so a host that took longer to react left the turn without its result and the
+// task's view without «Last turn: Interrupted».
+#[cfg(not(feature = "real-hosts"))]
+#[test]
+fn a_close_records_the_interrupted_result_of_a_host_that_reacts_at_once() {
+    let closed = close_in_mid_turn(alondra_claude_host_model::Interrupted::Writes { after: Duration::ZERO }, Duration::from_secs(30));
+    assert!(closed.recorded_interrupted, "the turn's interrupted result was committed");
+    assert!(closed.ended.is_ok() && !closed.runs && !closed.stops.contains(&alondra_engine_doubles::agent_host::Stop::Kill), "{:?}", closed.stops);
+}
+
+#[cfg(not(feature = "real-hosts"))]
+#[test]
+fn a_close_records_the_interrupted_result_of_a_host_that_reacts_within_one_wake() {
+    let closed = close_in_mid_turn(alondra_claude_host_model::Interrupted::Writes { after: Duration::from_millis(100) }, Duration::from_secs(30));
+    assert!(closed.recorded_interrupted, "the turn's interrupted result was committed");
+    assert!(closed.ended.is_ok() && !closed.runs && !closed.stops.contains(&alondra_engine_doubles::agent_host::Stop::Kill), "{:?}", closed.stops);
+}
+
+#[cfg(not(feature = "real-hosts"))]
+#[test]
+fn a_close_records_the_interrupted_result_of_a_host_that_reacts_after_more_than_one_wake() {
+    let closed = close_in_mid_turn(alondra_claude_host_model::Interrupted::Writes { after: WAKE * 3 }, Duration::from_secs(30));
+    assert!(closed.recorded_interrupted, "the turn's interrupted result was committed");
+    assert!(closed.ended.is_ok() && !closed.runs && !closed.stops.contains(&alondra_engine_doubles::agent_host::Stop::Kill), "{:?}", closed.stops);
+}
+
+// A host that never reacts to the interrupt cannot hold the close for ever: once the owner's grace
+// passes, the host is killed and the close ends.
+#[cfg(not(feature = "real-hosts"))]
+#[test]
+fn a_close_kills_a_host_that_never_reacts_to_the_interrupt() {
+    let closed = close_in_mid_turn(alondra_claude_host_model::Interrupted::Ignores, WAKE);
+    assert!(closed.ended.is_ok(), "{:?}", closed.ended.as_ref().err().map(|failed| &failed.why));
+    assert!(!closed.recorded_interrupted, "a host that wrote nothing left no result to commit");
+    assert!(!closed.runs, "the host that never reacted was ended");
+    assert_eq!(closed.stops.last(), Some(&alondra_engine_doubles::agent_host::Stop::Kill), "{:?}", closed.stops);
+}
+
 // The node delivers, its host dies with nothing left in its worktrees, and the user accepts the
 // result: the task closes without the session, which is gone, with its node's end as the fact.
 #[cfg(not(feature = "real-hosts"))]
