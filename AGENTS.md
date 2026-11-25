@@ -36,10 +36,11 @@ or in the private repository that keeps it, never here.
   repository, not even in the guard: they go one per line in a file outside the checkout that
   `ALONDRA_PRIVATE_LITERALS` points to. Bazel copies and watches that file (`@private_literals`), so the
   test is cached until the list or a tracked file changes, and never prints it. Without that
-  variable (a contributor's Mac) only the generic rules run, and the test passes or fails on them
+  variable, Bazel reads `files/private-literals.txt` in Alondra's home (`ALONDRA_HOME`, else
+  `~/.alondra`), so a node's session needs no variable. Without either (a contributor's Mac) only the generic rules run, and the test passes or fails on them
   alone.
 - `//crates/scenarios:transcript_guard_test` checks every transcript of the repository, whatever
-  its name, and fails without that list: set `ALONDRA_PRIVATE_LITERALS=none` where there is no list
+  its name, and fails without that list (the same fallback applies): set `ALONDRA_PRIVATE_LITERALS=none` where there is no list
   on purpose, as the public CI does.
 - Found something private already published? Tell the user with a card. Never rewrite history, close
   or delete anything on your own.
