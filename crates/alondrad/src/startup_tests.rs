@@ -97,6 +97,53 @@ async fn the_port_answers_while_hosts_are_still_being_taken_over() {
     daemon.abort();
 }
 
+/// A start is served once it is fully up, not when the port first answers: a daemon that answers
+/// and then fails to take its hosts over must still count as a failed start, or launchd restarts it
+/// every 10 seconds with nothing counting the loop.
+#[tokio::test]
+async fn an_answering_port_does_not_clear_the_start_record_while_the_hosts_are_taken_over() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let home = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    let domain = Arc::new(crate::engine::open(&home).unwrap());
+    let state = domain_bootstrap::DomainDaemon::over_shared(&home, domain.clone()).unwrap();
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reserved.local_addr().unwrap().port();
+    let mut config = Config::defaults();
+    config.home = home.to_path_buf();
+    config.listen = "127.0.0.1".parse().unwrap();
+    config.port = port;
+    start_guard::begin(home.to_path_buf(), true);
+    assert!(alondra_host::startup::path(&home).exists(), "a start is recorded as it begins");
+    let (_hold, held) = oneshot::channel::<()>();
+    let recovering = domain.clone();
+    let recovery = async move {
+        let _ = held.await;
+        PreparedWorkers(recovering)
+    };
+    let seams = assemble::Seams { listener: Some(reserved), ..assemble::Seams::over(offline_github()) };
+    let daemon = tokio::spawn(async move { assemble::assemble_with(&config, state, domain, recovery, None, &seams).await.map(|_| ()) });
+    let connecting = async {
+        loop {
+            match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                Ok(stream) => break stream,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+    };
+    let mut stream = tokio::time::timeout(std::time::Duration::from_secs(60), connecting).await
+        .expect("the port never opened while the hosts were being taken over");
+    stream.write_all(b"GET /daemon HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).await.unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert!(!daemon.is_finished());
+    assert!(alondra_host::startup::path(&home).exists(), "the port answered, but the start is not served yet");
+    daemon.abort();
+    start_guard::served();
+    assert!(!alondra_host::startup::path(&home).exists());
+}
+
 /// Every port has its implementation once the root wired the daemon: the engine's pieces, the
 /// orchestrator the server adds, the screens only the root sees and the GitHub of its seams.
 #[test]

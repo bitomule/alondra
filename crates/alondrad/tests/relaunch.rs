@@ -270,10 +270,11 @@ fn preflight_checks_the_home_without_changing_it() {
 fn a_launchd_daemon_restarts_into_a_replacement_only_once_it_passes_preflight() {
     let mut fixture = Fixture::new("relaunch");
     let mut daemon = serve(&mut fixture, true);
-    assert!(
-        !fixture.home.join("startup-failures.json").exists(),
-        "a start that serves clears its record"
-    );
+    // A start counts as served once it is fully up, after the port already answers (the hosts are
+    // still being taken over until then), so the record goes a moment after `serve` returns.
+    until(HANG_LIMIT, "a start that serves to clear its record", || {
+        (!fixture.home.join("startup-failures.json").exists()).then_some(())
+    });
 
     install_script(
         &fixture.bin,
