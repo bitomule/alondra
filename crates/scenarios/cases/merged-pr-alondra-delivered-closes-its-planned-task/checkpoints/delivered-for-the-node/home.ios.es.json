@@ -1,0 +1,428 @@
+{
+  "client": "ios",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "first_cards": [
+    {
+      "client": "ios",
+      "cursor": "<cursor>",
+      "data_epoch": "<data_epoch>",
+      "key": "card:open-pr-t1-33",
+      "protocol": 1,
+      "sections": [
+        {
+          "collapsed": false,
+          "id": "card",
+          "items": [
+            {
+              "actions": [
+                {
+                  "attachments": false,
+                  "enabled": true,
+                  "id": "merge:open-pr-t1-33@<revision>~00000000-open-pr-t1-33",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Squash and merge",
+                  "option_id": "squash",
+                  "presentation": "button",
+                  "resolves_card": true,
+                  "role": "advance",
+                  "stamp": "Haciendo merge…",
+                  "style": "primary"
+                }
+              ],
+              "content_row": {
+                "icon": "notice",
+                "kind": "report",
+                "label": "Informe",
+                "summary": "4 puntos"
+              },
+              "context": [
+                {
+                  "icon": "task",
+                  "link": {
+                    "key": "task:t1",
+                    "kind": "view"
+                  },
+                  "state": {
+                    "text": "Entregada",
+                    "tone": "info"
+                  },
+                  "text": "Move the GitHub client behind a port"
+                }
+              ],
+              "detail": "included",
+              "eyebrow": {
+                "text": "Revisar · PR #7",
+                "tone": "accent"
+              },
+              "icon": "pull_request",
+              "id": "open-pr-t1-33",
+              "kind": "review",
+              "link": {
+                "key": "card:open-pr-t1-33",
+                "kind": "view"
+              },
+              "meta": "demo/app · github-port → main · 1 de 1 correctos",
+              "more": [
+                {
+                  "attachments": false,
+                  "confirm": {
+                    "button": "Cerrar la PR",
+                    "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.",
+                    "title": "¿Cerrar la PR #7 sin hacer merge?"
+                  },
+                  "enabled": true,
+                  "id": "close_unmerged:open-pr-t1-33@<revision>",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Cerrar sin hacer merge",
+                  "presentation": "button",
+                  "resolves_card": true,
+                  "role": "risk",
+                  "stamp": "Cerrando…",
+                  "style": "destructive"
+                },
+                {
+                  "attachments": false,
+                  "enabled": true,
+                  "id": "",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Abrir en GitHub",
+                  "link": {
+                    "kind": "url",
+                    "url": "https://github.com/demo/app/pull/7"
+                  },
+                  "presentation": "button",
+                  "resolves_card": false,
+                  "role": "neutral",
+                  "style": "plain"
+                }
+              ],
+              "need": "Revisa el resultado",
+              "reply": {
+                "attachments": true,
+                "comments": {
+                  "kind": "diff_lines"
+                },
+                "enabled": true,
+                "id": "changes:github.com/demo/app#7@<revision>~00000000",
+                "input": {
+                  "kind": "text",
+                  "multiline": true,
+                  "placeholder": "Describe los cambios",
+                  "required": true
+                },
+                "label": "Pedir cambios",
+                "link": {
+                  "key": "pull_request:github.com/demo/app#7",
+                  "kind": "view"
+                },
+                "presentation": "button",
+                "resolves_card": true,
+                "role": "neutral",
+                "stamp": "Cambios solicitados",
+                "style": "secondary"
+              },
+              "state": {
+                "text": "Listo para merge",
+                "tone": "success"
+              },
+              "subtitle": "Su tarea terminó sin entregarlo. GitHub solo dice si se puede hacer merge cuando Alondra lo intenta.",
+              "timestamps": [
+                {
+                  "at": "2026-11-15T09:01:43.000+00:00",
+                  "format": "relative",
+                  "role": "created"
+                }
+              ],
+              "title": "Revisa el PR #7 de «Move the GitHub client behind a port»",
+              "title_is_separate": true,
+              "type": "card",
+              "why": "Su tarea terminó sin entregarlo. GitHub solo dice si se puede hacer merge cuando Alondra lo intenta."
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "id": "description",
+          "items": [
+            {
+              "commentable": false,
+              "text": "Su tarea se cerró con el pull request demo/app#7 todavía abierto, así que Alondra te lo entrega en vez de dejarlo abierto sin nadie que responda por él.\n\n**Aceptar:** Alondra intenta hacer el merge; si GitHub lo rechaza, la tarea vuelve a trabajo para arreglarlo.\n\n**Lo que se hizo:**\n\nThe GitHub port and its adapter are in pull request #7",
+              "truncated": false,
+              "type": "markdown"
+            }
+          ],
+          "title": "Descripción"
+        },
+        {
+          "collapsed": false,
+          "id": "context",
+          "items": [
+            {
+              "items": [
+                {
+                  "label": "Tarea",
+                  "link": {
+                    "key": "task:t1",
+                    "kind": "view"
+                  },
+                  "value": "Move the GitHub client behind a port"
+                }
+              ],
+              "type": "facts"
+            }
+          ],
+          "title": "Contexto"
+        }
+      ],
+      "status": {
+        "badge": 1,
+        "counts": [
+          {
+            "id": "inbox",
+            "label": "Bandeja",
+            "value": 1
+          },
+          {
+            "id": "tasks",
+            "label": "Tareas",
+            "value": 2
+          },
+          {
+            "id": "working",
+            "label": "trabajando",
+            "value": 0
+          },
+          {
+            "id": "needs_you",
+            "label": "esperando por ti",
+            "value": 1
+          },
+          {
+            "id": "queued",
+            "label": "en cola",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "en pausa",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "en espera",
+            "value": 1
+          }
+        ],
+        "gauges": [
+          {
+            "detail": "Puedes seguir: Claude tiene margen",
+            "id": "usage",
+            "label": "Claude",
+            "level": "calm",
+            "parts": [
+              {
+                "detail": "Aún sin medir",
+                "group": "Claude",
+                "label": "Default",
+                "level": "calm",
+                "lines": [
+                  "Aún sin medir"
+                ],
+                "text": "con margen",
+                "value": 1.0
+              }
+            ],
+            "text": "con margen",
+            "value": 0.0
+          },
+          {
+            "id": "memory",
+            "label": "RAM",
+            "level": "calm",
+            "text": "25%",
+            "value": 0.25
+          },
+          {
+            "id": "cpu",
+            "label": "CPU",
+            "level": "calm",
+            "text": "5%",
+            "value": 0.05
+          },
+          {
+            "id": "disk",
+            "label": "Disco",
+            "level": "calm",
+            "text": "550 GB libres",
+            "value": 0.5
+          }
+        ],
+        "orchestrator": {
+          "text": "inactivo",
+          "tone": "neutral"
+        },
+        "summary": "1 por leer · 0 tareas trabajando",
+        "summary_parts": [
+          {
+            "count": 1,
+            "id": "to_read",
+            "one": "{count} por leer",
+            "other": "{count} por leer"
+          },
+          {
+            "count": 0,
+            "id": "working",
+            "one": "{count} tarea trabajando",
+            "other": "{count} tareas trabajando"
+          }
+        ],
+        "version": "<version>"
+      },
+      "title": "Revisa el PR #7 de «Move the GitHub client behind a port»",
+      "version": "<version>",
+      "view": "card"
+    }
+  ],
+  "key": "home",
+  "protocol": 1,
+  "sections": [
+    {
+      "card_ids": [
+        "open-pr-t1-33"
+      ],
+      "card_waits": [
+        "review"
+      ],
+      "collapsed": false,
+      "count": 1,
+      "id": "queue",
+      "items": [],
+      "title": "Te espera"
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 2
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Aún sin medir",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Aún sin medir"
+            ],
+            "text": "con margen",
+            "value": 1.0
+          }
+        ],
+        "text": "con margen",
+        "value": 0.0
+      },
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disco",
+        "level": "calm",
+        "text": "550 GB libres",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    },
+    "summary": "1 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "count": 1,
+        "id": "to_read",
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "count": 0,
+        "id": "working",
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "version": "<version>"
+  },
+  "version": "<version>",
+  "view": "home"
+}

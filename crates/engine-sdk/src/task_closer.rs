@@ -37,8 +37,9 @@ const FIRST_BACKOFF: Duration = Duration::from_secs(5);
 const LAST_BACKOFF: Duration = Duration::from_secs(5 * 60);
 
 pub struct Timing {
-    /// How long a node may take to clean up before Alondra closes it anyway; `None` closes it only
-    /// once it says it cleaned up.
+    /// How long a node of `claude --bg` may take to clean up before Alondra closes it anyway;
+    /// `None` closes it only once it says it cleaned up. An SDK node closes on the rest of a turn
+    /// after the request instead, which its lifecycle reports.
     pub wait: Option<Duration>,
     pub retry: Duration,
     pub tick: Duration,
@@ -307,7 +308,7 @@ async fn close_one(domain: &dyn Runtime, sessions: &dyn Sessions, timing: &Timin
     let mut row = domain.store().lock_or_exit("the domain store").begin_task_closing(task_id, now)?;
     if matches!(kind, Due::Cleanup) && !task.cancelled()
         && task.ending != Some(alondra_domain_model::TaskEnding::Cancelling)
-        && !state.unproved_checklist(task).is_empty()
+        && !state.checklist_owed(task).is_empty()
     {
         if state.node_session_closed(task) {
             return finish(domain, &row, task.agent_id.as_ref(), NodeEnd::Gone);
@@ -488,9 +489,11 @@ async fn close_sdk_node(
             return hold_while_working_after_merge(domain, now, row);
         } else if !folder_gone && working && task.wrap_up.cleaned_at.is_none() && !user_closed {
             return hold_while_working_after_merge(domain, now, row);
-        } else if !folder_gone && task.wrap_up.cleaned_at.is_none() && !user_closed && !timing.wait.is_some_and(|wait| now >= row.since + millis(wait)) {
-            // The node was asked to clean up: it closes once it says it did, or after the same
-            // wait as a node of `claude --bg`.
+        } else if !folder_gone && task.wrap_up.cleaned_at.is_none() && !user_closed
+            && task.wrap_up.cleanup_turn != Some(alondra_domain_model::CleanupTurn::Rested) && !state.cleanup_held_by_alondra(task) {
+            // The node was asked to clean up: it closes once it says it did, once a turn of it
+            // after the request ended at rest, or while Alondra's own pause keeps the request from
+            // it, whatever time any of that took.
             return Ok(());
         }
     }

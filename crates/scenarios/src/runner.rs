@@ -608,9 +608,9 @@ impl Context<'_> {
                 let request = self.new_request(index, text).await?;
                 self.command(index, orchestrator(), Command::TitleRequest { request_id: request.clone().into(), title: title.clone() })?;
                 self.request = Some(request);
-                self.create_task(index, task, title, None)?;
+                self.create_task(index, task, title, None, &[])?;
             }
-            Step::Task { id, title, stack_on } => {
+            Step::Task { id, title, stack_on, after } => {
                 self.command(index, Actor::System, Command::RegisterAgent { agent_id: agent_of(id).into(), name: id.clone(), at: 0 })?;
                 let stack = match stack_on {
                     Some(on) => Some(StackDependency {
@@ -621,7 +621,7 @@ impl Context<'_> {
                     }),
                     None => None,
                 };
-                self.create_task(index, id, title, stack)?;
+                self.create_task(index, id, title, stack, after)?;
             }
             Step::RegisterPr { task, number, repository } => {
                 let head = self.head(index, *number)?;
@@ -713,6 +713,18 @@ impl Context<'_> {
                     attachments: Vec::new(), interaction_id: card.clone().into(), scope: Scope::Task { task_id: task.clone().into() },
                     recipient: Recipient::User, body: title.clone(), blocking: false,
                     options: vec![alondra_domain_model::QuestionOption { id: "done".into(), label: "Done".into(), description: None }], card: spec,
+                })?;
+                self.settle().await?;
+            }
+            Step::SettleStall { task, result } => {
+                let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
+                let task_id = alondra_domain_model::TaskId::from(task.as_str());
+                let case_id = state.interactions.values()
+                    .find(|i| alondra_domain_model::is_stall_case(i) && state.open(i) && i.scope == (Scope::Task { task_id: task_id.clone() }))
+                    .map(|i| i.id.clone())
+                    .ok_or_else(|| Self::failed(index, format!("no open case about the stopped node of {task}")))?;
+                self.command(index, orchestrator(), Command::SettleStall {
+                    case_id, task_id, outcome: alondra_domain_model::StallOutcome::Close { result: result.clone() },
                 })?;
                 self.settle().await?;
             }
@@ -971,7 +983,7 @@ impl Context<'_> {
         Ok(())
     }
 
-    fn create_task(&mut self, index: usize, task: &str, title: &str, stack: Option<StackDependency>) -> Result<(), ScenarioError> {
+    fn create_task(&mut self, index: usize, task: &str, title: &str, stack: Option<StackDependency>, after: &[String]) -> Result<(), ScenarioError> {
         let request = self.request.clone().ok_or_else(|| Self::failed(index, "a task needs a request before it"))?;
         self.command(index, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(),
             task_id: task.to_owned().into(),
@@ -979,7 +991,7 @@ impl Context<'_> {
             title: title.to_owned(),
             agent_id: (!runs_on_a_native(self.scenario, task) && !self.runs_on_a_provider(task)).then(|| agent_of(task).into()),
             review_prs: true,
-            dependencies: BTreeSet::new(),
+            dependencies: after.iter().map(|task| task.clone().into()).collect(),
             stack,
             launch: Some(LaunchPlan { stages: self.staged(task).then(|| StageChoice { staged: true, reason: STAGED.into() }), ..LaunchPlan::new("node", "/work") }),
             plan_items: None,

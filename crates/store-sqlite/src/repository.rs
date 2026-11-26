@@ -361,6 +361,11 @@ fn save_wrap_up(c: &Connection, t: &Task) -> Result<()> {
          close_cancelled=excluded.close_cancelled,node_end=excluded.node_end",
         params![t.id.0, w.asked_at.map(|r| r as i64), w.cleaned_at.map(|r| r as i64), w.close_cancelled as i64, node_end],
     )?;
+    exec(c, "DELETE FROM task_cleanup_turns WHERE task_id=?1", [&t.id.0])?;
+    if let Some(turn) = w.cleanup_turn {
+        let turn = serde_json::to_value(turn)?.as_str().context("cleanup turn is a string")?.to_owned();
+        exec(c, "INSERT INTO task_cleanup_turns(task_id,turn) VALUES(?1,?2)", params![t.id.0, turn])?;
+    }
     exec(c, "DELETE FROM task_post_merge_turns WHERE task_id=?1", [&t.id.0])?;
     match &w.post_merge_work {
         Some(work) => {
@@ -1531,8 +1536,17 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
             close_cancelled: row.get::<_, i64>(3)? != 0,
             node: node.map(|n| decode(Value::String(n))).transpose()?,
             post_merge_work: None,
+            cleanup_turn: None,
         };
         state.tasks.get_mut(&TaskId::from(id)).context("wrap-up task missing")?.wrap_up = wrap_up;
+    }
+    drop(stored);
+    let mut cleanup_turns = c.prepare("SELECT task_id, turn FROM task_cleanup_turns")?;
+    let mut stored = cleanup_turns.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let turn = decode(Value::String(row.get(1)?))?;
+        state.tasks.get_mut(&TaskId::from(id)).context("cleanup turn task missing")?.wrap_up.cleanup_turn = Some(turn);
     }
     drop(stored);
     let mut worktrees = c.prepare("SELECT task_id, path, origin, branch, discard, end FROM task_worktree_records")?;

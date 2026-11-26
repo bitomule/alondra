@@ -180,6 +180,11 @@ const TASK_POST_MERGE_WORK: &str = "CREATE TABLE IF NOT EXISTS task_post_merge_w
 /// created on every open like task_relations.
 const TASK_POST_MERGE_TURNS: &str = "CREATE TABLE IF NOT EXISTS task_post_merge_turns(\
  task_id TEXT PRIMARY KEY REFERENCES task_post_merge_work(task_id));";
+/// How the node's turns went since Alondra asked it to clean up, kept beside the task's wrap-up;
+/// created on every open like task_relations.
+const TASK_CLEANUP_TURNS: &str = "CREATE TABLE IF NOT EXISTS task_cleanup_turns(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ turn TEXT NOT NULL CHECK(turn IN('began','rested')));";
 /// A task's priority other than Normal, kept beside the task; created on every open like task_relations.
 const TASK_PRIORITIES: &str = "CREATE TABLE IF NOT EXISTS task_priorities(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
@@ -719,6 +724,7 @@ impl DomainStore {
         tx.execute_batch(ORCHESTRATOR_DELIVERIES)?;
         tx.execute_batch(TASK_POST_MERGE_WORK)?;
         tx.execute_batch(TASK_POST_MERGE_TURNS)?;
+        tx.execute_batch(TASK_CLEANUP_TURNS)?;
         tx.execute_batch(TASK_PRIORITIES)?;
         tx.execute_batch(TASK_QUEUE_PAUSES)?;
         tx.execute_batch(TASK_STALLS)?;

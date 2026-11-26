@@ -1678,6 +1678,24 @@ impl DomainState {
                 }
             }
         }
+        if empty {
+            self.rest_after_cleanup_request(task, lifecycles)?;
+        }
+        Ok(())
+    }
+
+    /// A turn that began after Alondra asked the node to clean up ended with nothing of the node's
+    /// running, nothing waiting to reach it and no card holding it, and the node never confirmed
+    /// its cleanup: that rest is what lets Alondra close it.
+    fn rest_after_cleanup_request(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+        let t = &self.tasks[task];
+        if t.wrap_up.cleanup_turn != Some(CleanupTurn::Began) || t.wrap_up.cleaned_at.is_some() || !self.in_cleanup(t) {
+            return Ok(());
+        }
+        let lifecycle = self.lifecycle(lifecycles, task)?;
+        if lifecycle.activity() == ActivityView::Resting && lifecycle.cards().is_empty() && lifecycle.pending_inputs().is_empty() {
+            self.tasks.get_mut(task).unwrap().wrap_up.cleanup_turn = Some(CleanupTurn::Rested);
+        }
         Ok(())
     }
 
@@ -1695,10 +1713,15 @@ impl DomainState {
     }
 
     /// A turn of the node began: a declaration of work after the merge made before it ends when
-    /// this turn ends idle, unless the node declares it again first.
-    fn post_merge_turn_began(&mut self, task: &TaskId) {
-        if let Some(work) = self.tasks.get_mut(task).and_then(|t| t.wrap_up.post_merge_work.as_mut()) {
+    /// this turn ends idle, unless the node declares it again first, and so does a request to
+    /// clean up the node never confirmed.
+    fn turn_began(&mut self, task: &TaskId) {
+        let Some(t) = self.tasks.get_mut(task) else { return };
+        if let Some(work) = t.wrap_up.post_merge_work.as_mut() {
             work.turn_since = true;
+        }
+        if t.wrap_up.asked_at.is_some() && t.wrap_up.cleaned_at.is_none() {
+            t.wrap_up.cleanup_turn = Some(CleanupTurn::Began);
         }
     }
 
@@ -2422,7 +2445,7 @@ impl DomainState {
         }
         for fact in facts {
             if matches!(fact, RuntimeObservation::TurnStarted { .. } | RuntimeObservation::TurnUnprompted { .. }) {
-                self.post_merge_turn_began(task);
+                self.turn_began(task);
             }
             let record = match fact.clone() {
                 RuntimeObservation::ModelAnswered => {
@@ -2691,7 +2714,7 @@ impl DomainState {
         let settled: Vec<TaskId> = self.tasks.values()
             .filter(|t| !t.over() && !t.archived)
             .filter(|t| self.finished(t) && !self.unanswered(&t.id) && !self.blockers(&t.id) && !self.wraps_up(t) && !self.works_after_merge(t))
-            .filter(|t| self.unproved_checklist(t).is_empty())
+            .filter(|t| self.checklist_owed(t).is_empty())
             .map(|t| t.id.clone())
             .collect();
         for task in settled {
@@ -2703,7 +2726,7 @@ impl DomainState {
     /// A task whose PR merged: its node still works on what comes after, or waits for what that
     /// work needs from other Tasks, until its session is over.
     fn after_merge_state(&self, t: &Task) -> TaskState {
-        if (t.wrap_up.post_merge_work.is_none() && self.unproved_checklist(t).is_empty()) || self.node_session_closed(t) {
+        if (t.wrap_up.post_merge_work.is_none() && self.checklist_owed(t).is_empty()) || self.node_session_closed(t) {
             TaskState::Closing
         } else if self.waiting_after_merge(t).is_some() {
             TaskState::WaitingDependency

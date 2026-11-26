@@ -498,3 +498,101 @@ fn a_stall_explanation_for_a_user_message_is_delivered_with_the_open_pr() {
         assert_aggregate_rules(&s);
     }
 }
+
+const PLAN: &str = "- [ ] Move the client behind a port\n- [ ] Test the port\n";
+
+/// A node with an approved plan that registered its PR and kept stopping without presenting it.
+/// With `after_merge`, it had declared that work for after the merge first.
+fn planned_and_stalled(after_merge: Option<&str>) -> DomainState {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::HoldHook {
+        interaction_id: "plan".into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Plan, body: PLAN.into(),
+        options: Hold::Plan.options(), card: CardSpec::new(CardKind::Review, "Task t").content(ContentKind::Plan, PLAN),
+    });
+    must(&mut s, user(), Command::AnswerQuestion {
+        attachments: vec![], interaction_id: "plan".into(), option_id: Hold::APPROVE.into(), inputs: Default::default(),
+    });
+    must(&mut s, node("a"), Command::RegisterPr {
+        task_id: "t".into(), pr_id: PR.into(), host: "github.com".into(), repository: "bitomule/musts".into(), number: 113,
+        head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    if let Some(reason) = after_merge {
+        must(&mut s, node("a"), Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some(reason.into()), waits_for: vec![] });
+    }
+    end_empty(&mut s, "turn-1");
+    for n in 2..=alondra_domain::EMPTY_TURN_WAKES + 1 {
+        let turn = format!("turn-{n}");
+        start(&mut s, &turn);
+        end_empty(&mut s, &turn);
+    }
+    s
+}
+
+/// The orchestrator closes the stop, which delivers the PR for the node; the user merges it and
+/// GitHub reports it merged. What Alondra told the node then is returned.
+fn merged_from_alondras_delivery(s: &mut DomainState) -> Vec<String> {
+    settle_case(s, orchestrator(), StallOutcome::Close { result: "The port is in PR #113".into() });
+    let presentation = task(s).final_presentation.clone().unwrap();
+    let InteractionPayload::Delivery { targets, .. } = alondras_delivery(s).payload.clone() else { panic!("a delivery") };
+    must(s, user(), Command::AcceptDelivery { presentation_id: presentation, targets });
+    let observed = must(s, Actor::System, Command::ObservePrState {
+        pr_id: PR.into(), head: HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(HEAD.into()),
+    });
+    observed.effects.into_iter().filter_map(|effect| match effect {
+        DomainEffect::NotifyAgent { message, .. } => Some(message),
+        _ => None,
+    }).collect()
+}
+
+/// Two tasks of a plan in phases stayed delivered for eight days after their PRs merged, and the
+/// phases waiting on them never started: the orchestrator had delivered each PR for its stopped
+/// node, a delivery with none of the plan's evidence, and after the merge Alondra asked the node
+/// for that evidence instead of closing the task.
+#[test]
+fn a_pr_alondra_delivered_for_a_stopped_node_closes_its_planned_task_once_merged() {
+    let mut s = planned_and_stalled(None);
+    let told = merged_from_alondras_delivery(&mut s);
+    assert_eq!(told, vec![cleanup_request(&task(&s).title, &"t".into(), &[])], "the node is asked to clean up, not for evidence");
+    assert!(s.landed(task(&s)), "the tasks waiting on it can start");
+    assert_eq!(task(&s).state, TaskState::Closing);
+    must(&mut s, node("a"), Command::ConfirmCleanup { task_id: "t".into(), discard: vec![] });
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
+    assert_eq!(task(&s).state, TaskState::Done);
+    assert_aggregate_rules(&s);
+}
+
+/// The node that never confirms its cleanup is closed on the rest of the turn the request
+/// started, not after a wait.
+#[test]
+fn the_turn_a_cleanup_request_starts_ending_at_rest_lets_alondra_close_the_node() {
+    let mut s = planned_and_stalled(None);
+    let told = merged_from_alondras_delivery(&mut s);
+    assert_eq!(task(&s).wrap_up.cleanup_turn, None, "the node has not read the request yet");
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: told[0].clone(), from_user: false, answers: None });
+    start(&mut s, "cleanup-turn");
+    assert_eq!(task(&s).wrap_up.cleanup_turn, Some(CleanupTurn::Began));
+    end_empty(&mut s, "cleanup-turn");
+    assert_eq!(task(&s).wrap_up.cleanup_turn, Some(CleanupTurn::Rested));
+    assert_eq!(task(&s).wrap_up.cleaned_at, None);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn work_declared_for_after_the_merge_still_holds_a_task_alondra_delivered() {
+    let mut s = planned_and_stalled(Some("Publish the release after the merge"));
+    merged_from_alondras_delivery(&mut s);
+    assert!(!s.landed(task(&s)));
+    assert_eq!(exec(&mut s, node("a"), Command::ConfirmCleanup { task_id: "t".into(), discard: vec![] }).unwrap_err().code, "checklist_incomplete");
+    assert!(!task(&s).over());
+}
+
+#[test]
+fn another_open_pr_still_holds_a_task_alondra_delivered() {
+    let mut s = planned_and_stalled(None);
+    with_a_second_pr(&mut s);
+    merged_from_alondras_delivery(&mut s);
+    assert!(!s.landed(task(&s)));
+    assert!(!s.finished(task(&s)));
+    assert!(!task(&s).over());
+}
