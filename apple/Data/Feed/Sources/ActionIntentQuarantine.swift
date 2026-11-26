@@ -46,8 +46,9 @@ public final class SetAsideNotice: Sendable {
     }
 }
 
-/// Unreadable stores are moved here instead of deleted, so one can still be examined, and only the
-/// newest few are kept.
+/// An unreadable store is deleted; only the list of what it still showed stays here, for the
+/// notice, and only the newest few lists are kept. Nothing else stays: a store an earlier version
+/// moved here is deleted too, since an answer in it may carry a key.
 enum ActionIntentQuarantine {
     static let folderName = "set-aside"
     static let kept = 3
@@ -62,15 +63,23 @@ enum ActionIntentQuarantine {
     }
 
     static func record(_ answers: SetAsideAnswers, in folder: URL) throws {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try JSONEncoder().encode(answers).write(to: folder.appending(path: report),
                                                 options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
-    /// Drops the oldest folders past `kept`. Folder names start with a hex timestamp, so they sort in time.
+    /// Drops the oldest folders past `kept`, and from the others every file but the notice's.
+    /// Folder names start with a hex timestamp, so they sort in time.
     static func prune(_ directory: URL) {
         let root = root(directory)
         guard let folders = try? FileManager.default.contentsOfDirectory(atPath: root.path).sorted() else { return }
         for folder in folders.dropLast(kept) { try? FileManager.default.removeItem(at: root.appending(path: folder)) }
+        for folder in folders.suffix(kept) {
+            let url = root.appending(path: folder)
+            for entry in (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? [] where entry != report && entry != seen {
+                try? FileManager.default.removeItem(at: url.appending(path: entry))
+            }
+        }
     }
 
     /// The newest set-aside answers of this store's identity the person has not dismissed yet.
@@ -97,13 +106,14 @@ public struct OpenedActionIntents: Sendable {
 extension ViewActionIntentStore {
     private static let log = Logger(subsystem: "com.bitomule.alondra", category: "action-intents")
 
-    /// Opening the store never stops the connection. A store that cannot be read is set aside with
-    /// what it still shows of its answers, and a new one starts above every sequence the old one
-    /// may have used. When even that fails, answers go without a durable record.
+    /// Opening the store never stops the connection. A store that cannot be read is deleted, and
+    /// what it still shows of its answers is kept for the notice; a new one starts above every
+    /// sequence the old one may have used. When even that fails, answers go without a durable record.
     public static func openSettingAsideUnreadable(directory: URL, keyMaterial: Data, scope: ActionIntentScope,
                                                   now: @Sendable () -> Date = Date.init) async -> OpenedActionIntents {
         do {
             let store = try await ViewActionIntentStore(directory: directory, keyMaterial: keyMaterial, scope: scope)
+            ActionIntentQuarantine.prune(directory)
             return OpenedActionIntents(store: store, setAside: unseenNotice(directory: directory, keyMaterial: keyMaterial, scope: scope))
         } catch ViewActionIntentError.unreadableStore, ViewActionIntentError.invalidRecord {
             log.error("Action intent store unreadable; setting it aside")
@@ -116,15 +126,19 @@ extension ViewActionIntentStore {
         var notice = SetAsideNotice()
         do {
             let unreadable = try ActionIntentDatabase(directory: directory, keyMaterial: keyMaterial, scope: scope, legacyLimit: maxCompleted)
-            let folder = ActionIntentQuarantine.newFolder(in: directory, name: unreadable.name, now: started)
-            let answers = try await unreadable.setAside(into: folder)
+            let answers = try await unreadable.removeUnreadable()
             if !answers.lostNothing {
-                try ActionIntentQuarantine.record(answers, in: folder)
-                notice = SetAsideNotice(answers: answers, folder: folder)
+                let folder = ActionIntentQuarantine.newFolder(in: directory, name: unreadable.name, now: started)
+                do {
+                    try ActionIntentQuarantine.record(answers, in: folder)
+                    notice = SetAsideNotice(answers: answers, folder: folder)
+                } catch {
+                    log.error("Could not record what the unreadable action intent store showed: \(String(describing: error), privacy: .public)")
+                }
             }
             ActionIntentQuarantine.prune(directory)
         } catch {
-            log.error("Could not set the unreadable action intent store aside: \(String(describing: error), privacy: .public)")
+            log.error("Could not delete the unreadable action intent store: \(String(describing: error), privacy: .public)")
             return OpenedActionIntents(store: nil, setAside: notice)
         }
         do {

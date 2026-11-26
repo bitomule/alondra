@@ -2,6 +2,7 @@ import AlondraContract
 import AlondraTransport
 import CryptoKit
 import Foundation
+import OSLog
 
 public enum ViewActionIntentError: Error, Equatable, Sendable {
     case invalidScope, invalidRecord, unreadableStore, capacityExceeded
@@ -83,6 +84,19 @@ public actor ViewActionIntentStore {
             scope: scope, legacyLimit: completedLimit, sequenceFloor: sequenceFloor)
         restored = try await database.perform { try database.pending($0) }
         self.database = database; self.allowLegacyDispatch = allowLegacyDispatch
+        Self.excludeFromBackups(directory)
+    }
+
+    /// An answer waiting here may carry a key the Mac has not confirmed, and on a Mac the key that
+    /// decrypts the store is a file of the app's own folder: no backup takes the store's folder.
+    private static func excludeFromBackups(_ directory: URL) {
+        var folder = directory
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        do { try folder.setResourceValues(values) } catch {
+            Logger(subsystem: "com.bitomule.alondra", category: "action-intents")
+                .error("Action intent store not excluded from backups: \((error as NSError).code, privacy: .public)")
+        }
     }
     public func prepareNew(_ request: ActionRequest, generation: UInt64) async throws -> Record {
         let database = database

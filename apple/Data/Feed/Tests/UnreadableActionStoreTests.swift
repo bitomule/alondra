@@ -78,7 +78,39 @@ private actor SilentMac: ViewTransport {
         #expect(await mac.recoveries.isEmpty)
         let folders = try files(ActionIntentQuarantine.root(directory))
         #expect(folders.count == 1)
-        #expect(try files(ActionIntentQuarantine.root(directory).appending(path: folders[0])).contains { $0.hasSuffix(".sqlite") })
+        #expect(try files(ActionIntentQuarantine.root(directory).appending(path: folders[0])) == [ActionIntentQuarantine.report],
+                "only the notice stays: the unreadable store, which may hold a key, is deleted")
+    }
+
+    /// An earlier version moved the whole store into the set-aside folder: opening leaves only its notice.
+    @Test func aStoreAnEarlierVersionSetAsideKeepsOnlyItsNotice() async throws {
+        let directory = try TestFiles.directory()
+        _ = try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope)
+        let name = try #require(try files(directory).first { $0.hasSuffix(".sqlite") }).dropLast(".sqlite".count)
+        let folder = ActionIntentQuarantine.root(directory).appending(path: "0000019c6d4c3b00-" + name.prefix(16) + "-0000000a")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try ActionIntentQuarantine.record(SetAsideAnswers(cards: ["question"], otherActions: 0, complete: true), in: folder)
+        for file in [name + ".sqlite", name + ".sqlite-wal", name + ".sqlite-initialized"] {
+            try Data("encrypted answers".utf8).write(to: folder.appending(path: String(file)))
+        }
+
+        let opened = await ViewActionIntentStore.openSettingAsideUnreadable(directory: directory, keyMaterial: material, scope: scope)
+
+        #expect(opened.store != nil)
+        #expect(try files(folder) == [ActionIntentQuarantine.report])
+        #expect(opened.setAside.current == SetAsideAnswers(cards: ["question"], otherActions: 0, complete: true))
+    }
+
+    /// The folder carries the item flag every backup honours, whatever the folder it is in.
+    @Test func noBackupTakesTheStore() async throws {
+        let directory = try TestFiles.directory().appending(path: "action-intents")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let excluded = { getxattr(directory.path, "com.apple.metadata:com_apple_backup_excludeItem", nil, 0, 0, 0) >= 0 }
+        try #require(!excluded())
+
+        _ = try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope)
+
+        #expect(excluded())
     }
 
     /// The Mac may still hold the old store's sequences in this generation, and one reused under
@@ -143,5 +175,6 @@ private actor SilentMac: ViewTransport {
         let opened = await ViewActionIntentStore.openSettingAsideUnreadable(directory: directory, keyMaterial: material, scope: scope)
         #expect(opened.store != nil)
         #expect(opened.setAside.current == nil)
+        #expect(!FileManager.default.fileExists(atPath: ActionIntentQuarantine.root(directory).path), "nothing to tell, so nothing stays")
     }
 }
