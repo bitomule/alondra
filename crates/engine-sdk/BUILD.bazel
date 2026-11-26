@@ -64,9 +64,10 @@ application_crate(
 )
 
 # What every test target links: the doubles of the engine's other pieces and the store they open.
+# Antigravity is not among them: only its real-host cases (sdk_owner/antigravity_tests.rs) run its
+# provider, so an edit of it does not rebuild the engine's per-edit tests.
 TEST_HOOKS_DEPS = [
     "//crates/codex-protocol:codex_protocol",
-    "//crates/provider-antigravity:provider_antigravity",
     "//crates/provider-claude:provider_claude",
     "//crates/provider-codex:provider_codex",
     "//crates/daemon-engine-machine:daemon_engine_machine",
@@ -179,7 +180,10 @@ low_opt_rust_test(
         "manual",
     ],
     version = VERSION,
-    deps = ["//crates/domain-rules:domain_rules"] + all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS + WHOLE_ENGINE_DEPS,
+    deps = ["//crates/domain-rules:domain_rules"] + all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/agent-runtime:agent_runtime",
+        "//crates/provider-antigravity:provider_antigravity",
+    ] + TEST_HOOKS_DEPS + WHOLE_ENGINE_DEPS,
 )
 
 rust_inputs_test(

@@ -43,7 +43,6 @@ alondra-domain-rules.workspace = true
 alondra-engine-admission.workspace = true
 alondra-engine-orchestrator.workspace = true
 alondra-engine-sdk.workspace = true
-alondra-provider-antigravity.workspace = true
 alondra-provider-claude.workspace = true
 alondra-provider-codex.workspace = true
 alondra-agent-runtime.workspace = true
