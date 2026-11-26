@@ -88,3 +88,45 @@ fn a_frame_lost_with_a_host_s_process_stops_counting_once_the_process_exits() {
         assert!(rested, "{} frames still counted for a host whose process exited", alondra_core::clock::frames_in_transit());
     });
 }
+
+/// The daemon stops a host it never attached to, as one it adopts on a restart and stops at once,
+/// while nothing else of the daemon works: the relay's exit wakes a wait for calm that already
+/// looked, and the host it finds is settled.
+#[test]
+fn a_wait_for_calm_sees_a_host_settle_when_the_daemon_stops_its_process() {
+    struct Owned(std::process::Child);
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let runtime = alondra_core::clock::VirtualRuntime::new(1_700_000_000_000).unwrap();
+    runtime.block_on(async {
+        let (home, edge, _) = edge();
+        let process = Arc::new(Mutex::new(Owned(Process::new("/bin/sleep").arg("600").process_group(0).spawn().unwrap())));
+        let pid = process.lock().unwrap().0.id();
+        let bootstrap = json!({
+            "host_instance_id": "host-1",
+            "control_secret": "01".repeat(32),
+            "fence": {"profile_id": "default", "account_id": "default", "data_epoch": "epoch", "host_id": "host"},
+            "execution": {"task_id": "t1", "agent_id": "sdk-t1", "conversation_id": "conversation", "process_instance_id": "process", "generation": 1},
+            "manifest": {"host_release": "0.0.0", "host_sha256": "a".repeat(64), "executable_sha256": "b".repeat(64), "sdk_version": "sdk"},
+            "native": {"session_id": "session"},
+        });
+        let _host = edge.start_host(&serde_json::to_vec(&bootstrap).unwrap(), pid, home.path().join("b")).unwrap();
+        let (watching, stopped) = (edge.clone(), process.clone());
+        let stopping = std::sync::atomic::AtomicBool::new(true);
+        let calm = alondra_core::clock::spawn_blocking_unwatched(move || {
+            alondra_core::clock::until_idle(std::time::Duration::from_secs(20), move || {
+                if stopping.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    stopped.lock().unwrap().0.kill().unwrap();
+                }
+                watching.committed()
+            })
+        })
+        .await
+        .unwrap();
+        assert!(calm, "the wait for calm looked again once the host's process exited, and found it settled");
+    });
+}
