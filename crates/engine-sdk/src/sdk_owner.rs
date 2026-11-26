@@ -1385,11 +1385,20 @@ const UNOWNED_TAKE_EVERY: alondra_core::Millis = 60_000;
 /// one held by a pause waits for it, and is told to go on when the pause ends. A task the user
 /// holds on a pause, as when its host was lost, waits for their answer, and one a pause holds
 /// after it was taken over is taken over again when that pause ends.
+///
+/// `state` may be older than what an owner committed before it let its task go, such as the card
+/// of its lost host: a task found with no owner is taken only if it still reads as working in a
+/// state read after that.
 pub fn take_working_unowned(domain: &dyn Runtime, state: &DomainState, now: alondra_core::Millis) {
-    let working: Vec<(TaskId, u64)> = reads_as_working(state).into_iter()
-        .filter(|task| to_take(domain, state, task))
-        .filter_map(|task| Some((task.clone(), state.lifecycle_of(&task).ok()?.revision())))
-        .collect();
+    let unowned: Vec<TaskId> = reads_as_working(state).into_iter().filter(|task| to_take(domain, state, task)).collect();
+    let working: Vec<(TaskId, u64)> = if unowned.is_empty() { vec![] } else {
+        let current = domain.state();
+        let still = reads_as_working(&current);
+        unowned.into_iter()
+            .filter(|task| still.contains(task) && to_take(domain, &current, task))
+            .filter_map(|task| Some((task.clone(), current.lifecycle_of(&task).ok()?.revision())))
+            .collect()
+    };
     let due = due_unowned(&mut domain.sdk_owners().unowned_takes.lock_or_recover("the tasks taken over unowned"), working, now);
     for task in due {
         log!("{task} reads as working with no SDK host of its own: one that resumes its session takes it over");

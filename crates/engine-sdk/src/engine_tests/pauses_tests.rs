@@ -455,6 +455,32 @@ async fn a_task_waiting_for_its_turn_to_start_with_no_host_of_its_own_is_taken_o
     domain.stop_sdk_owners();
 }
 
+#[cfg(not(feature = "real-hosts"))]
+/// A scenario under load (antigravity-signed-out-holds-its-task): the gate read the task as waiting
+/// for its turn, then its owner put the card of the lost host and let the task go, and the gate,
+/// which saw no owner, took the task over from what it had read. That takeover ended the host a
+/// second time, and the crash report of a task held on its lost host's card said its session ended.
+/// The gate decides on what the task is once nobody holds it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_put_on_its_lost_host_card_after_the_gate_read_it_is_not_taken_over() {
+    super::wired();
+    let mut node = SdkNode::resting();
+    let domain = Arc::clone(&node.domain);
+    node.tell(SDK_TASK, "Carry on");
+    let read_by_the_gate = domain.state().unwrap();
+    assert!(crate::sdk_owner::reads_as_working(&read_by_the_gate).contains(&TaskId::from(SDK_TASK)), "the gate read the turn as waiting to start");
+    run(&domain, Actor::System, Command::RecordHostLost { task_id: SDK_TASK.into(), reason: "Antigravity is not signed in on this account".into(), quiet: false, signed_out: false });
+    node.lose_host();
+    let journal = domain.state().unwrap().lifecycle_journal[&TaskId::from(SDK_TASK)].len();
+    crate::sdk_owner::take_working_unowned(&*domain, &read_by_the_gate, alondra_core::now_millis());
+    domain.join_retakes();
+    assert!(!domain.owns_sdk_host(&AgentId(node.agent())), "no host takes a task its lost host's card holds for the user");
+    let state = domain.state().unwrap();
+    assert_eq!(state.lifecycle_journal[&TaskId::from(SDK_TASK)].len(), journal, "nothing ended its host again");
+    assert_eq!(state.task_failure(&SDK_TASK.into()), Some(alondra_domain_rules::ReportedFailure::NotResumed));
+    domain.stop_sdk_owners();
+}
+
 #[cfg(feature = "real-hosts")]
 /// 0.3.31, a task «delivering» with no host of its own: Alondra took it over every minute for
 /// hours, and nothing about the task changed. Here every new host ends before it takes the input
