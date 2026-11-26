@@ -4,6 +4,7 @@ load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//bazel/rules:rust.bzl", "rust_binary", "rust_library")
 load("//bazel/rules:rust_inputs_test.bzl", "rust_inputs_test")
+load("//bazel/rules:rust_link_test.bzl", "rust_link_test")
 load("//:version.bzl", "VERSION")
 
 DEPS = all_crate_deps(normal = True) + [
@@ -100,6 +101,13 @@ rust_binary(
     rustc_flags = ["-Copt-level=0"],
     version = VERSION,
     deps = DEPS + [":scenarios"],
+)
+
+# A runner left broken by a full disk failed every shard (bazel/rules/rust_link_test.bzl).
+rust_link_test(
+    name = "runner_link_test",
+    size = "small",
+    target_under_test = ":scenarios_runner",
 )
 
 # Every edit of any crate relinks the runner and reruns this test, so its cases run in shards side
