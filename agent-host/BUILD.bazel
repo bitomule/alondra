@@ -300,8 +300,9 @@ js_run_binary(
 js_test(
     name = "antigravity_session_test",
     timeout = "short",
+    no_copy_to_bin = ["//crates/core:fixtures/antigravity-credentials.json"],
     entry_point = "antigravity-session.test.mjs",
-    data = [":host_lib", "fake-agy-acp.mjs", ":node_modules/zod"],
+    data = [":host_lib", "fake-agy-acp.mjs", "//crates/core:fixtures/antigravity-credentials.json", ":node_modules/zod"],
 )
 exports_files(["fake-agy-acp.mjs"])
 

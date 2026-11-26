@@ -4,8 +4,11 @@
 use alondra_core::clock;
 use alondra_foundation::locks::Poisonable as _;
 
+/// The reply a local action got, kept for ten minutes to answer its repeats. It keeps a digest of
+/// the request, never the request: a key or a secret answer is in no receipt.
 pub struct LocalActionReceipt {
-    pub body: Vec<u8>,
+    /// The SHA-256 of the serialized request.
+    pub digest: [u8; 32],
     pub reply: serde_json::Value,
     pub at: clock::Instant,
 }

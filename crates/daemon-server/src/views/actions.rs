@@ -166,11 +166,24 @@ pub(crate) async fn relay(
         return Ok(json!({"status":403,"body":DomainError::new("forbidden", "invalid encrypted sender identity")}));
     }
     // Relay request receipts already deduplicate the transport command. Domain receipts still
-    // bind the submitted command_id to the semantic action and actor.
+    // bind the submitted command_id to the semantic action and actor. The resources it touches are
+    // held as a local action holds them, so it never interleaves with one on the same resource.
     let (action_id, client_name, started) = (request.action_id.clone(), request.client.clone(), clock::instant());
+    let action = ActionId::parse(&request.action_id).ok();
+    let _resources = hold_resources(&*client.domain, action.as_ref()).await;
     let response = execute_action(&*client.domain, client, client.home(), sender, request, Some(identity), authorize).await?;
     log_result(&action_id, &client_name, 200, &response, alondra_core::clock::since(started));
     Ok(json!({"status":200,"body":response}))
+}
+
+/// What a receipt keeps of `request` to tell a repeat from a reused command id: its SHA-256, so a
+/// key or a secret answer it carries is in no receipt. The serialized copy is zeroed once hashed.
+fn request_digest(request: &ActionRequest) -> [u8; 32] {
+    use sha2::Digest as _;
+    let mut bytes = serde_json::to_vec(request).unwrap_or_default();
+    let digest = sha2::Sha256::digest(&bytes).into();
+    bytes.fill(0);
+    digest
 }
 
 pub(super) async fn execute(
@@ -187,14 +200,14 @@ pub(super) async fn execute(
     let spanish = request.lang == "es";
     let receipt_key = (device.to_owned(), request.command_id.clone());
     let action_id = request.action_id.clone();
-    let body = serde_json::to_vec(&request).unwrap_or_default();
+    let body = request_digest(&request);
     let gate = if identity.is_none() && external {
         match domain.local_actions().gate(&receipt_key) {
             Some(gate) => Some(gate),
             None => {
                 if authorize().is_err() { return error("forbidden", "device approval was revoked"); }
                 if let Some(entry) = domain.local_actions().cached(&receipt_key) {
-                    if entry.body != body { return error("idempotency_conflict", if spanish {
+                    if entry.digest != body { return error("idempotency_conflict", if spanish {
                         "El identificador del comando ya se usó con otra acción"
                     } else { "command_id was reused with different input" }); }
                     return (StatusCode::OK, Json(entry.reply.clone())).into_response();
@@ -215,7 +228,7 @@ pub(super) async fn execute(
         let entry = command.as_ref().and_then(|guard| guard.as_ref().cloned())
             .or_else(|| domain.local_actions().cached(&receipt_key));
         if let Some(entry) = entry {
-            if entry.body != body { return error("idempotency_conflict", if spanish {
+            if entry.digest != body { return error("idempotency_conflict", if spanish {
                 "El identificador del comando ya se usó con otra acción"
             } else { "command_id was reused with different input" }); }
             **command.as_mut().expect("local command gate missing") = Some(entry.clone());
@@ -245,7 +258,7 @@ pub(super) async fn execute(
         Ok(reply) => {
             if gate.is_some() {
                 let entry = domain.local_actions().remember(receipt_key, LocalActionReceipt {
-                    body, reply: reply.clone(), at: clock::instant(),
+                    digest: body, reply: reply.clone(), at: clock::instant(),
                 });
                 **command.as_mut().expect("local command gate missing") = Some(entry);
             }
@@ -257,6 +270,25 @@ pub(super) async fn execute(
                 "No se pudo completar la acción"
             } else { "action could not be completed" })
         }
+    }
+}
+
+/// Locks what `action` touches, shared or exclusive, as the domain names them once they are held:
+/// a resource the action reaches only after another change (a task's node, say) is locked too.
+async fn hold_resources(domain: &dyn alondra_engine_ports::Runtime, action: Option<&ActionId>) -> Vec<LocalResourceGuard> {
+    let Some(action) = action else { return Vec::new() };
+    loop {
+        let requested = resources_of(&domain.state(), action);
+        let mut held = Vec::with_capacity(requested.len());
+        for (key, exclusive) in &requested {
+            let resource = domain.local_actions().resource(key.clone());
+            held.push(if *exclusive {
+                LocalResourceGuard::Write { _guard: resource.write_owned().await }
+            } else {
+                LocalResourceGuard::Read { _guard: resource.read_owned().await }
+            });
+        }
+        if resources_of(&domain.state(), action) == requested { return held; }
     }
 }
 
@@ -3293,7 +3325,7 @@ for line in sys.stdin:
         let newer = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
         for index in 0..1024 {
             domain.local_actions().remember(("other-device".into(), index.to_string()), LocalActionReceipt {
-                body: vec![], reply: json!({}), at: newer,
+                digest: [0; 32], reply: json!({}), at: newer,
             });
         }
         let Poll::Ready(reply) = retry.as_mut().poll(&mut context) else { panic!("cache eviction redispatched a waiting retry"); };
@@ -4479,8 +4511,10 @@ for line in sys.stdin:
     }
 
     /// A Gemini API key typed in an app reaches the account's `0600` file and that account's `agy`
-    /// alone: the reply, the domain, every file of Alondra's home (its journal and logs among them)
-    /// and the accounts screen hold no trace of it. Removing it removes the file.
+    /// alone: the reply, the action's receipt, the domain, every file of the test's folders
+    /// (Alondra's home with its journal and logs, the user's home, the hosts' state) and the
+    /// accounts screen hold no trace of it. One that comes through the relay waits, as a local one
+    /// does, for the account settings another change holds. Removing it removes the file.
     #[tokio::test]
     async fn an_antigravity_key_goes_to_its_file_and_its_own_agy_only() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -4515,16 +4549,37 @@ for line in sys.stdin:
         let folder = alondra_core::accounts::provider_folder(&home, &studio).unwrap();
         assert!(folder.is_dir(), "the named account has its folder");
 
-        let reply = execute_action(&*domain, &client, &home, "test-device", request(Verb::AccountCredential, "studio", Some("antigravity"), None, Some(SECRET)), None, || Ok(())).await.unwrap();
+        let file = folder.join(alondra_core::antigravity_account::KEY_FILE);
+        let relayed = serde_json::to_value(request(Verb::AccountCredential, "studio", Some("antigravity"), None, Some(SECRET))).unwrap();
+        let held = domain.local_actions().resource(LocalActionResource::AccountSettings).write_owned().await;
+        let mut sending = Box::pin(relay(&client, "phone", &relayed, ("phone", "relay-request-1", &[0; 32]), || Ok(())));
+        assert!(std::future::Future::poll(sending.as_mut(), &mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
+        assert!(!file.exists(), "a key that comes through the relay waits for the account settings a local change holds");
+        drop(held);
+        assert_eq!(sending.await.unwrap()["body"]["outcome"], "applied");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), SECRET);
+        let credential = request(Verb::AccountCredential, "studio", Some("antigravity"), None, Some(SECRET));
+        let response = execute(&*domain, &client, &home, "test-device", credential.clone(), None, || Ok(())).await;
+        let reply: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert!(!reply.to_string().contains(SECRET), "{reply}");
-        let file = folder.join(alondra_core::antigravity_account::KEY_FILE);
+        let receipt = domain.local_actions().cached(&("test-device".into(), credential.command_id.clone())).expect("the action keeps its receipt");
+        assert_eq!(receipt.digest, request_digest(&credential), "the receipt keeps a digest of the request, never the request with its key");
+        assert!(!receipt.reply.to_string().contains(SECRET));
+        let again = execute(&*domain, &client, &home, "test-device", credential.clone(), None, || Ok(())).await;
+        let again: Value = serde_json::from_slice(&axum::body::to_bytes(again.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(again, reply, "a repeat gets the same reply from its receipt");
+        let mut reused = credential.clone();
+        reused.input.text = Some("AIzaSy-another-key-for-the-same-command".into());
+        let reused = execute(&*domain, &client, &home, "test-device", reused, None, || Ok(())).await;
+        let reused: Value = serde_json::from_slice(&axum::body::to_bytes(reused.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(reused["error"]["code"].as_str().or(reused["code"].as_str()), Some("idempotency_conflict"), "{reused}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), SECRET);
         assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
         let state = domain.state().unwrap();
         let status = state.accounts.iter().find(|account| account.provider == Provider::Antigravity && account.id == studio.account).unwrap();
         assert!(status.antigravity.as_ref().unwrap().key_set, "the screens only learn that a key is set");
-        assert_eq!(status.sign_ins, 1, "a new key is the credential's next generation");
+        assert_eq!(status.sign_ins, 2, "each key set is the credential's next generation");
         assert!(!serde_json::to_string(&state).unwrap().contains(SECRET), "the domain never holds the key");
         let probes = alondra_engine_doubles::accounts::of(domain.ports()).antigravity_probes();
         let with_key: Vec<_> = probes.iter().filter(|probe| probe.launch.environment.values().any(|value| value == SECRET)).collect();
@@ -4534,6 +4589,7 @@ for line in sys.stdin:
         let screen = serde_json::to_string(&crate::accounts::read(&*domain, &home, Lang::En).body).unwrap();
         assert!(!screen.contains(SECRET), "the accounts reply never shows it");
         assert_eq!(files_holding(&home, SECRET.as_bytes()), vec![file.clone()], "no other file of Alondra's holds the key");
+        assert_eq!(files_holding(&directory, SECRET.as_bytes()), vec![file.clone()], "nor the user's home, the hosts' state or any temporary folder of the test");
 
         let reply = execute_action(&*domain, &client, &home, "test-device", request(Verb::AccountCredential, "studio", Some("antigravity"), Some("clear"), None), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");

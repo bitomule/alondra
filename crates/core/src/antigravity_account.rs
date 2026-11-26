@@ -30,6 +30,22 @@ pub fn key_problem(key: &str) -> Option<&'static str> {
         .then_some("A key is 1 to 512 characters, with no spaces")
 }
 
+/// The largest key file Alondra reads: a key and the white space a file written by hand adds
+/// around it.
+pub const KEY_FILE_LIMIT: usize = 4096;
+/// The key a key file's `text` holds: the text without the white space around it, `None` when
+/// nothing is left. The daemon and the Antigravity host read a key file by this one rule, and by
+/// [`key_file_private`].
+pub fn key_in_file(text: &str) -> Result<Option<&str>, &'static str> {
+    let key = text.trim();
+    if key.is_empty() { return Ok(None); }
+    key_problem(key).map_or(Ok(Some(key)), Err)
+}
+/// Whether a key file's permission bits keep it to its owner: none for its group or for others.
+pub fn key_file_private(mode: u32) -> bool {
+    mode & 0o077 == 0
+}
+
 /// What `SSH_CONNECTION` says so that `agy` keeps a named account's sign-in in its folder: it does
 /// so only when it believes it runs remotely.
 pub const FILE_STORAGE_SSH_CONNECTION: &str = "127.0.0.1 0 127.0.0.1 0";
@@ -48,9 +64,11 @@ pub const SHARED: [&str; 11] = [
     "antigravity-cli/mcp",
     "antigravity-cli/plugins",
 ];
-/// The variables that name a Google credential, a project or a folder of `agy`'s: none is ever
-/// inherited, so a process never runs on another account's key or project.
-pub const CREDENTIAL_VARIABLES: [&str; 11] = [
+/// The variables that name a Google credential, a project or a folder of `agy`'s, or say where it
+/// keeps its sign-in: none is ever inherited, so a process never runs on another account's key,
+/// project or sign-in. The Antigravity host removes the same ones
+/// (`fixtures/antigravity-credentials.json` holds the list both are tested against).
+pub const CREDENTIAL_VARIABLES: [&str; 12] = [
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
     "GOOGLE_APPLICATION_CREDENTIALS",
@@ -62,6 +80,7 @@ pub const CREDENTIAL_VARIABLES: [&str; 11] = [
     "GOOGLE_GEMINI_BASE_URL",
     "GEMINI_HOME",
     "AGY_ACP_FORCE_FILE_STORAGE",
+    "SSH_CONNECTION",
 ];
 /// What a process of Alondra's takes from the daemon's environment besides `HOME`, `PATH` and the
 /// user's name.
@@ -359,7 +378,8 @@ pub fn catalog_model(model: &str, name: &str, levels: &SelectOption, is_default:
 }
 
 /// A key as the daemon holds it on its way to the account's file or to its `agy` process: it never
-/// prints, never serializes, and its bytes are cleared when it goes.
+/// prints and never serializes, and the bytes of this value are cleared when it goes. Copies made
+/// before it was built (the request that carried it, its JSON) are freed without being cleared.
 pub struct Secret(String);
 
 impl Secret {

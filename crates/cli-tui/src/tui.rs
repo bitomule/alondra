@@ -2902,8 +2902,12 @@ impl App {
                 allow_attachments,
                 acting,
                 review,
+                secret,
                 ..
             } => {
+                if secret {
+                    self.optimistic.secret_action(&action_id);
+                }
                 let mut input = json!({});
                 if !text.trim().is_empty() {
                     input["text"] = Value::String(text);

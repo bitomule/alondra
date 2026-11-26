@@ -325,6 +325,8 @@ pub fn accounts(accounts: &dyn alondra_engine_ports::accounts::Accounts, trust: 
     accounts.remove_codex(&home, &codex).unwrap();
     assert!(!profile.exists());
 
+    antigravity_keys(accounts, &home, &user_home);
+
     let projects = scratch.join("projects");
     let repository = projects.join("Lumo");
     std::fs::create_dir_all(repository.join(".git")).unwrap();
@@ -345,6 +347,70 @@ pub fn accounts(accounts: &dyn alondra_engine_ports::accounts::Accounts, trust: 
     assert_eq!(accounts.untrusted(Some(&account), &fjord), Some(fjord.clone()));
     accounts.grant_trust(&fjord, std::slice::from_ref(&account)).unwrap();
     assert_eq!(accounts.untrusted(Some(&account), &fjord), None, "the user's trust holds on every account");
+}
+
+/// A named Antigravity account's key: written whole to a `0600` file of its private folder and
+/// read back by the rule the Antigravity host reads it with (`fixtures/antigravity-credentials.json`
+/// of `crates/core`, which the host's tests read too). A file that rule refuses is no key, and a
+/// folder others may open keeps none.
+fn antigravity_keys(accounts: &dyn alondra_engine_ports::accounts::Accounts, home: &Path, user_home: &Path) {
+    use alondra_core::accounts::{AccountId, AccountKey, Provider};
+    use alondra_core::antigravity_account::{KEY_FILE, Secret};
+    use std::os::unix::fs::PermissionsExt as _;
+    const RULES: &str = include_str!("../../core/fixtures/antigravity-credentials.json");
+    let gemini = user_home.join(".gemini");
+    std::fs::create_dir_all(&gemini).unwrap();
+    let studio = AccountKey::new(Provider::Antigravity, AccountId::parse("studio").unwrap());
+    let folder = accounts.prepare_antigravity(home, &studio, &gemini).unwrap().expect("a named account has a folder");
+    assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700);
+    let file = folder.join(KEY_FILE);
+    accounts.set_antigravity_key(home, &studio, Some(&Secret::new("AIza-contract-key".into()))).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "AIza-contract-key");
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "the key is the owner's alone");
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1, "no copy of the key is left beside it");
+    assert_eq!(accounts.antigravity_key(home, &studio).unwrap().as_ref().map(Secret::expose), Some("AIza-contract-key"));
+    assert!(accounts.antigravity_key_set(home, &studio));
+    assert!(accounts.set_antigravity_key(home, &studio, Some(&Secret::new("AIza with a space".into()))).is_err(), "only a key is kept");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "AIza-contract-key", "a refused key leaves the old one");
+
+    let rules: serde_json::Value = serde_json::from_str(RULES).unwrap();
+    for kind in rules["key_files"].as_array().unwrap() {
+        let name = kind["name"].as_str().unwrap();
+        for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+            if entry.file_name().to_string_lossy().starts_with(KEY_FILE) { std::fs::remove_file(entry.path()).unwrap(); }
+        }
+        let bytes = kind["hex"].as_str().map_or_else(|| kind["text"].as_str().unwrap().as_bytes().to_vec(),
+            |hex| (0..hex.len()).step_by(2).map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap()).collect());
+        std::fs::write(&file, bytes).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(u32::from_str_radix(kind["mode"].as_str().unwrap(), 8).unwrap())).unwrap();
+        for link in 1..kind["links"].as_u64().unwrap_or(1) { std::fs::hard_link(&file, folder.join(format!("{KEY_FILE}.link-{link}"))).unwrap(); }
+        let read = accounts.antigravity_key(home, &studio);
+        match kind["reads"].as_str().unwrap() {
+            "key" => assert_eq!(read.unwrap().as_ref().map(Secret::expose), kind["key"].as_str(), "{name}"),
+            "none" => assert!(matches!(read, Ok(None)), "{name}"),
+            _ => assert!(read.is_err(), "{name}"),
+        }
+        assert_eq!(accounts.antigravity_key_set(home, &studio), kind["reads"] == "key", "{name}: the screens say Key set only for a key it reads");
+    }
+    for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+        if entry.file_name().to_string_lossy().starts_with(KEY_FILE) { std::fs::remove_file(entry.path()).unwrap(); }
+    }
+
+    accounts.set_antigravity_key(home, &studio, Some(&Secret::new("AIza-contract-key".into()))).unwrap();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(accounts.antigravity_key(home, &studio).is_err(), "a folder others may open keeps no key");
+    assert!(!accounts.antigravity_key_set(home, &studio));
+    assert!(accounts.set_antigravity_key(home, &studio, Some(&Secret::new("AIza-other-key".into()))).is_err(), "nor takes one");
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "AIza-contract-key");
+    accounts.set_antigravity_key(home, &studio, None).unwrap();
+    assert!(!file.exists() && !accounts.antigravity_key_set(home, &studio), "removing the key removes its file");
+    accounts.set_antigravity_key(home, &studio, None).unwrap();
+    let native = AccountKey::native(Provider::Antigravity);
+    assert!(accounts.set_antigravity_key(home, &native, Some(&Secret::new("AIza-contract-key".into()))).is_err(), "the default account is agy's own sign-in");
+    assert!(matches!(accounts.antigravity_key(home, &native), Ok(None)));
+    accounts.remove_antigravity(home, &studio).unwrap();
+    assert!(!folder.exists());
 }
 
 /// What the Mac answers of its processes: a table with this process in it, under its parent.

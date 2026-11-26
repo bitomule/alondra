@@ -924,6 +924,13 @@ fn a_secret_card_names_its_file_and_its_value_is_typed_hidden() {
     dump("secret composer", &screen);
     assert!(!screen.contains("sk_test_4eC39HqLyjWDarjtT1zdp7dc") && screen.contains("••••••••"), "{screen}");
     assert!(app.to_restore().composer.is_none(), "a secret is never kept for the next process");
+    press(&mut app, KeyCode::Char('r'));
+    typed(&mut app, "sk_test_4eC39HqLyjWDarjtT1zdp7dc");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.posted.borrow().last().unwrap().1["input"]["text"], "sk_test_4eC39HqLyjWDarjtT1zdp7dc", "the secret is sent");
+    assert_eq!(app.optimistic.unconfirmed_count(), 1, "and waits for the Mac to confirm it");
+    let carried = serde_json::to_string(&app.optimistic.unconfirmed()).unwrap();
+    assert!(!carried.contains("sk_test_4eC39HqLyjWDarjtT1zdp7dc"), "a restart never hands a secret on its way to the restore file: {carried}");
 }
 
 fn with_note_input(required: bool) -> views::View {

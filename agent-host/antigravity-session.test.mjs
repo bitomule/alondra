@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, watch, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, watch, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
-import { AntigravitySession, ANTIGRAVITY_CAPABILITIES, ANTIGRAVITY_VERSION, alondraMcpEnvironment, antigravityEnvironment, parseAgyVersion, agyVersionSupported, readKeyFile } from './antigravity-session.js';
+import { AntigravitySession, ANTIGRAVITY_CAPABILITIES, ANTIGRAVITY_VERSION, CREDENTIAL_ENVIRONMENT, alondraMcpEnvironment, antigravityEnvironment, parseAgyVersion, agyVersionSupported, readKeyFile } from './antigravity-session.js';
 import { InputNotOffered } from './host-session.js';
 
 const ROOT = process.env.TEST_TMPDIR ?? tmpdir();
@@ -516,9 +516,11 @@ function keyFolder(t) {
   writeFileSync(key, `${KEY}\n`, { mode: 0o600 });
   return { folder, key };
 }
-const inherited = { HOME: '/Users/ana', PATH: '/usr/bin:/bin', GEMINI_API_KEY: 'inherited', GOOGLE_API_KEY: 'inherited', GOOGLE_APPLICATION_CREDENTIALS: '/Users/ana/other.json', GOOGLE_CLOUD_PROJECT: 'other', GOOGLE_CLOUD_LOCATION: 'other', GOOGLE_CLOUD_QUOTA_PROJECT: 'other', GOOGLE_GENAI_USE_VERTEXAI: 'true', AGY_ADC_AUTH: 'true', GOOGLE_GEMINI_BASE_URL: 'https://example.com', GEMINI_HOME: '/Users/ana/other' };
+const inherited = { HOME: '/Users/ana', PATH: '/usr/bin:/bin', GEMINI_API_KEY: 'inherited', GOOGLE_API_KEY: 'inherited', GOOGLE_APPLICATION_CREDENTIALS: '/Users/ana/other.json', GOOGLE_CLOUD_PROJECT: 'other', GOOGLE_CLOUD_LOCATION: 'other', GOOGLE_CLOUD_QUOTA_PROJECT: 'other', GOOGLE_GENAI_USE_VERTEXAI: 'true', AGY_ADC_AUTH: 'true', GOOGLE_GEMINI_BASE_URL: 'https://example.com', GEMINI_HOME: '/Users/ana/other', AGY_ACP_FORCE_FILE_STORAGE: '1', SSH_CONNECTION: '203.0.113.7 51022 203.0.113.8 22' };
 const environmentFor = (antigravity, accountId = 'work') => antigravityEnvironment({ env: inherited, accountId, stateDirectory: '/Users/ana/.alondra/hosts/execution', worker: { settings: { antigravity } } }, '/Users/ana/.alondra/hosts/execution/native-tmp-1');
-const credentialKeys = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_CLOUD_QUOTA_PROJECT', 'GOOGLE_GENAI_USE_VERTEXAI', 'AGY_ADC_AUTH', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_HOME', 'AGY_ACP_FORCE_FILE_STORAGE', 'SSH_CONNECTION'];
+// The daemon's own list (`CREDENTIAL_VARIABLES`) and its key file rule, which this host keeps too.
+const SHARED_RULES = JSON.parse(readFileSync(resolve('crates/core/fixtures/antigravity-credentials.json'), 'utf8'));
+const credentialKeys = SHARED_RULES.credential_variables;
 const credentials = (env) => Object.fromEntries(credentialKeys.filter((key) => key in env).map((key) => [key, env[key]]));
 
 test('each access builds its own environment and inherits no Google credential', (t) => {
@@ -554,6 +556,24 @@ test('a key file is read only when it is a private regular file of the user', (t
   const large = join(folder, 'large'); writeFileSync(large, 'k'.repeat(5000), { mode: 0o600 });
   assert.throws(() => readKeyFile(large), /native_initialization_failed/);
   assert.throws(() => readKeyFile(folder), /native_initialization_failed/);
+});
+
+test('the host strips the variables the daemon strips', () => {
+  assert.deepEqual([...CREDENTIAL_ENVIRONMENT].sort(), [...SHARED_RULES.credential_variables].sort());
+});
+
+test('a key file reads as the daemon reads it', (t) => {
+  const folder = mkdtempSync(join(ROOT, 'agy-key-rule-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  SHARED_RULES.key_files.forEach((kind, at) => {
+    const path = join(folder, `key-${at}`);
+    writeFileSync(path, kind.hex === undefined ? kind.text : Buffer.from(kind.hex, 'hex'));
+    chmodSync(path, Number.parseInt(kind.mode, 8));
+    for (let link = 1; link < (kind.links ?? 1); link++) linkSync(path, `${path}.link-${link}`);
+    if (kind.reads === 'key') assert.equal(readKeyFile(path), kind.key, kind.name);
+    else if (kind.reads === 'none') assert.throws(() => readKeyFile(path), notOffered('authentication_required'), kind.name);
+    else assert.throws(() => readKeyFile(path), /native_initialization_failed/, kind.name);
+  });
 });
 
 test('a named Google account runs agy on its own folder and file storage', { timeout: 30000 }, async (t) => {

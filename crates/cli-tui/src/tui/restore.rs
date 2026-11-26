@@ -51,18 +51,37 @@ pub struct OpenComposer {
     pub chips: Vec<Chip>,
 }
 
+/// Saves `restore` in the user's own temporary folder: `TMPDIR`, else the one macOS gives each user.
 pub fn save(restore: &Restore) -> std::io::Result<PathBuf> {
-    let tmp = std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
-    save_in(&tmp, restore)
+    save_in(&user_temporary()?, restore)
 }
 
+fn user_temporary() -> std::io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt as _;
+    if let Some(tmp) = std::env::var_os("TMPDIR").filter(|tmp| !tmp.is_empty()) { return Ok(tmp.into()); }
+    let mut folder = [0u8; 1024];
+    // SAFETY: confstr writes at most `folder.len()` bytes, ending in a NUL, and returns the length it needs.
+    let needed = unsafe { libc::confstr(libc::_CS_DARWIN_USER_TEMP_DIR, folder.as_mut_ptr().cast(), folder.len()) };
+    if needed == 0 || needed > folder.len() { return Err(std::io::Error::other("no temporary folder of the user's")); }
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&folder[..needed - 1])))
+}
+
+/// A new `0600` file of `dir` with a name nobody can guess: never a file already there, nor one a
+/// link left in its place points to.
 fn save_in(dir: &Path, restore: &Restore) -> std::io::Result<PathBuf> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let path = dir.join(format!("alondra-tui-restore-{}.json", std::process::id()));
+    let mut random = [0u8; 8];
+    // SAFETY: arc4random_buf fills exactly the bytes it is given.
+    unsafe { libc::arc4random_buf(random.as_mut_ptr().cast(), random.len()) };
+    let name: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    let path = dir.join(format!("alondra-tui-restore-{}-{name}.json", std::process::id()));
     let bytes = serde_json::to_vec(restore)?;
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
-    file.write_all(&bytes)?;
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path)?;
+    if let Err(error) = file.write_all(&bytes) {
+        let _ = std::fs::remove_file(&path);
+        return Err(error);
+    }
     Ok(path)
 }
 
@@ -137,6 +156,21 @@ mod tests {
         assert_eq!(composer.chips[0].name, "shot.png");
         assert!(take_from(&path).is_none());
     }
+    #[test]
+    fn each_restart_writes_a_new_private_restore_file_of_its_own() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = crate::test_support::Directory::new();
+        let dir = root.join("tmp");
+        std::fs::create_dir_all(&dir).unwrap();
+        let restore = || serde_json::from_value::<Restore>(serde_json::json!({"restarted_for":"0.2.53","screen":"inbox","schedules_open":false,"detail_focused":false,
+            "sel":null,"list_scroll":0,"detail_scroll":0,"task_sel":null,"task_scroll":0,"task_detail_scroll":0,"agent_sel":null,"agent_scroll":0,"agent_detail_scroll":0,"composer":null})).unwrap();
+        let first = save_in(&dir, &restore()).unwrap();
+        let second = save_in(&dir, &restore()).unwrap();
+        assert_ne!(first, second, "each restart writes a file of its own");
+        assert_eq!(std::fs::metadata(&first).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(take_from(&first).is_some() && take_from(&second).is_some());
+    }
+
     #[test]
     fn an_old_account_name_composer_is_dropped_and_the_rest_of_the_restore_state_survives() {
         let root = crate::test_support::Directory::new();
