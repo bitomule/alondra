@@ -1,5 +1,5 @@
 {
-  "client": "ios",
+  "client": "tui",
   "cursor": "<cursor>",
   "data_epoch": "<data_epoch>",
   "key": "task:t1",
@@ -13,14 +13,9 @@
           "items": [
             {
               "kind": "state",
-              "label": "State",
-              "tone": "neutral",
-              "value": "Waiting · Claude limit until 10:00"
-            },
-            {
-              "kind": "request",
-              "label": "Request",
-              "value": "Add the CSV export"
+              "label": "Estado",
+              "tone": "accent",
+              "value": "Trabajando · Turno en marcha desde las 09:02"
             }
           ],
           "type": "facts"
@@ -37,7 +32,7 @@
               "elapsed": {
                 "since": "2026-11-15T09:00:10.000+00:00"
               },
-              "text": "since 09:00",
+              "text": "desde las 09:00",
               "tone": "neutral"
             }
           ],
@@ -45,7 +40,7 @@
           "icon": "history",
           "id": "elapsed",
           "struck": false,
-          "title": "Running for",
+          "title": "En marcha",
           "type": "row"
         }
       ]
@@ -59,9 +54,9 @@
           "icon": "history",
           "id": "since",
           "struck": false,
-          "title": "Since",
+          "title": "Desde",
           "trailing": {
-            "at": "2026-11-15T09:00:10.000+00:00",
+            "at": "2026-11-15T09:02:13.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -71,11 +66,31 @@
     },
     {
       "collapsed": false,
+      "id": "activity",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "2026-11-15T09:02:13.000+00:00",
+          "struck": false,
+          "title": "Trabajando",
+          "trailing": {
+            "at": "2026-11-15T09:02:13.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ],
+      "title": "Ahora mismo"
+    },
+    {
+      "collapsed": false,
       "id": "last_message",
       "items": [
         {
           "commentable": false,
-          "text": "Done",
+          "text": "Working on it",
           "truncated": false,
           "type": "markdown"
         },
@@ -84,16 +99,16 @@
           "icon": "history",
           "id": "last_message_time",
           "struck": false,
-          "title": "Last message",
+          "title": "Último mensaje",
           "trailing": {
-            "at": "2026-11-15T09:00:10.000+00:00",
+            "at": "2026-11-15T09:02:13.000+00:00",
             "format": "relative",
             "kind": "time"
           },
           "type": "row"
         }
       ],
-      "title": "What it said last"
+      "title": "Lo último que dijo"
     },
     {
       "collapsed": true,
@@ -101,12 +116,12 @@
       "items": [
         {
           "commentable": false,
-          "text": "Export the report as CSV",
+          "text": "Move the GitHub client behind a port",
           "truncated": false,
           "type": "markdown"
         }
       ],
-      "title": "Request"
+      "title": "Solicitud"
     },
     {
       "collapsed": false,
@@ -121,12 +136,12 @@
             "kind": "view"
           },
           "struck": false,
-          "subtitle": "csv-export → main",
+          "subtitle": "github-port → main",
           "title": "1 · Pull request 7",
           "type": "row"
         }
       ],
-      "title": "Pull requests"
+      "title": "Solicitudes de cambios"
     },
     {
       "collapsed": false,
@@ -136,22 +151,22 @@
           "items": [
             {
               "kind": "priority",
-              "label": "Priority",
+              "label": "Prioridad",
               "value": "Normal"
             },
             {
-              "label": "PR handling",
-              "value": "You review it; accepting it merges it"
+              "label": "Gestión de PR",
+              "value": "La revisas tú; al aceptarla, Alondra hace el merge"
             },
             {
-              "label": "Effort",
-              "value": "Auto"
+              "label": "Esfuerzo",
+              "value": "Automático"
             }
           ],
           "type": "facts"
         }
       ],
-      "title": "Options"
+      "title": "Opciones"
     },
     {
       "collapsed": false,
@@ -166,13 +181,53 @@
               "input": {
                 "kind": "text",
                 "multiline": true,
-                "placeholder": "Write to this task's node…",
+                "placeholder": "Escribe al nodo de esta tarea…",
                 "required": true
               },
-              "label": "Message",
+              "key": "r",
+              "label": "Mensaje",
               "presentation": "button",
               "resolves_card": false,
               "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Interrumpir",
+                "message": "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.",
+                "title": "Interrumpir"
+              },
+              "enabled": true,
+              "id": "interrupt:<node>@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "key": "i",
+              "label": "Interrumpir",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Pausar",
+                "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                "title": "¿Pausar este nodo?"
+              },
+              "enabled": true,
+              "id": "pause:<node>@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "key": "p",
+              "label": "Pausar",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "stamp": "En pausa",
               "style": "secondary"
             },
             {
@@ -182,33 +237,34 @@
               "input": {
                 "kind": "none"
               },
-              "label": "Priority",
+              "key": "P",
+              "label": "Prioridad",
               "options": [
                 {
-                  "description": "Starts before Normal and Low",
+                  "description": "Arranca antes que Normal y Baja",
                   "id": "high",
                   "input": {
                     "kind": "none"
                   },
-                  "label": "High",
+                  "label": "Alta",
                   "style": "secondary"
                 },
                 {
-                  "description": "The default",
+                  "description": "La de siempre",
                   "id": "normal",
                   "input": {
                     "kind": "none"
                   },
-                  "label": "Normal · now",
+                  "label": "Normal · ahora",
                   "style": "secondary"
                 },
                 {
-                  "description": "Starts when nothing else waits",
+                  "description": "Arranca cuando no espera nada más",
                   "id": "low",
                   "input": {
                     "kind": "none"
                   },
-                  "label": "Low",
+                  "label": "Baja",
                   "style": "secondary"
                 }
               ],
@@ -220,16 +276,17 @@
             {
               "attachments": false,
               "confirm": {
-                "button": "Cancel Task",
-                "message": "Cancel this task?",
-                "title": "Cancel Task"
+                "button": "Cancelar tarea",
+                "message": "¿Cancelar esta tarea?",
+                "title": "Cancelar tarea"
               },
               "enabled": true,
               "id": "cancel:t1@<revision>",
               "input": {
                 "kind": "none"
               },
-              "label": "Cancel Task",
+              "key": "x",
+              "label": "Cancelar tarea",
               "presentation": "button",
               "resolves_card": false,
               "role": "risk",
@@ -237,13 +294,13 @@
             },
             {
               "attachments": false,
-              "disabled_reason": "Update Alondra to use this feature",
+              "disabled_reason": "Actualiza Alondra para usar esta función",
               "enabled": false,
               "id": "",
               "input": {
                 "kind": "none"
               },
-              "label": "Change model",
+              "label": "Cambiar modelo",
               "presentation": "button",
               "resolves_card": false,
               "role": "neutral",
@@ -272,60 +329,60 @@
     "counts": [
       {
         "id": "inbox",
-        "label": "Inbox",
+        "label": "Bandeja",
         "value": 0
       },
       {
         "id": "tasks",
-        "label": "Tasks",
-        "value": 1
+        "label": "Tareas",
+        "value": 2
       },
       {
         "id": "working",
-        "label": "working",
-        "value": 0
+        "label": "trabajando",
+        "value": 1
       },
       {
         "id": "needs_you",
-        "label": "waiting for you",
+        "label": "esperando por ti",
         "value": 0
       },
       {
         "id": "queued",
-        "label": "queued",
-        "value": 1
+        "label": "en cola",
+        "value": 0
       },
       {
         "id": "paused",
-        "label": "paused",
+        "label": "en pausa",
         "value": 0
       },
       {
         "id": "other_waiting",
-        "label": "waiting",
-        "value": 0
+        "label": "en espera",
+        "value": 1
       }
     ],
     "gauges": [
       {
-        "detail": "You can go on: Claude has room",
+        "detail": "Puedes seguir: Claude tiene margen",
         "id": "usage",
         "label": "Claude",
         "level": "calm",
         "parts": [
           {
-            "detail": "Not measured yet",
+            "detail": "Aún sin medir",
             "group": "Claude",
             "label": "Default",
             "level": "calm",
             "lines": [
-              "Not measured yet"
+              "Aún sin medir"
             ],
-            "text": "with room",
+            "text": "con margen",
             "value": 1.0
           }
         ],
-        "text": "with room",
+        "text": "con margen",
         "value": 0.0
       },
       {
@@ -344,35 +401,28 @@
       },
       {
         "id": "disk",
-        "label": "Disk",
+        "label": "Disco",
         "level": "calm",
-        "text": "550 GB free",
+        "text": "550 GB libres",
         "value": 0.5
       }
     ],
     "orchestrator": {
-      "text": "idle",
+      "text": "inactivo",
       "tone": "neutral"
     },
-    "summary": "0 tasks working",
+    "summary": "1 tarea trabajando",
     "summary_parts": [
       {
-        "count": 0,
+        "count": 1,
         "id": "working",
-        "one": "{count} task working",
-        "other": "{count} tasks working"
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
       }
     ],
-    "usage_exhausted": {
-      "macs_exhausted": 1,
-      "macs_total": 1,
-      "paused_by_user": false,
-      "scope": "this_mac",
-      "until": "2026-11-15T10:00:10.000+00:00"
-    },
     "version": "<version>"
   },
-  "title": "Add the CSV export",
+  "title": "Move the GitHub client behind a port",
   "version": "<version>",
   "view": "task"
 }

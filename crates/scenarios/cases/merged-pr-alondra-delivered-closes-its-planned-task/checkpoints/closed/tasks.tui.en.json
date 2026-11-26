@@ -1,0 +1,214 @@
+{
+  "client": "tui",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "key": "tasks",
+  "protocol": 1,
+  "sections": [
+    {
+      "collapsed": false,
+      "id": "scheduled",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "schedule",
+          "id": "schedules",
+          "link": {
+            "key": "schedules",
+            "kind": "view"
+          },
+          "struck": false,
+          "title": "Scheduled Tasks",
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "count": 1,
+      "id": "active",
+      "items": [
+        {
+          "children": [
+            {
+              "badges": [
+                {
+                  "text": "Waiting",
+                  "tone": "neutral"
+                },
+                {
+                  "elapsed": {
+                    "since": "2026-11-15T09:02:13.000+00:00"
+                  },
+                  "text": "since 09:02",
+                  "tone": "neutral"
+                }
+              ],
+              "depth": 1,
+              "icon": "task",
+              "id": "t2",
+              "link": {
+                "key": "task:t2",
+                "kind": "view"
+              },
+              "struck": false,
+              "subtitle": "Starting · since 09:02",
+              "title": "Use the GitHub port in the engine"
+            }
+          ],
+          "depth": 0,
+          "icon": "task",
+          "id": "block:waiting",
+          "struck": false,
+          "title": "Waiting",
+          "trailing": {
+            "kind": "text",
+            "text": "1"
+          },
+          "type": "row"
+        }
+      ],
+      "title": "Active"
+    },
+    {
+      "actions": [
+        {
+          "attachments": false,
+          "enabled": true,
+          "id": "clear_completed:view@<revision>",
+          "input": {
+            "kind": "none"
+          },
+          "key": "A",
+          "label": "Clear Completed",
+          "presentation": "button",
+          "resolves_card": true,
+          "role": "neutral",
+          "style": "secondary"
+        }
+      ],
+      "collapsed": true,
+      "count": 1,
+      "id": "finished",
+      "items": [],
+      "more": {
+        "key": "tasks?section=finished&after=0",
+        "remaining": 1
+      },
+      "title": "Completed"
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "90% of the week left",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "90% of the week left"
+            ],
+            "text": "with room",
+            "value": 0.9
+          }
+        ],
+        "text": "with room",
+        "value": 0.8
+      },
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disk",
+        "level": "calm",
+        "text": "550 GB free",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    },
+    "summary": "0 tasks working",
+    "summary_parts": [
+      {
+        "count": 0,
+        "id": "working",
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
+    "version": "<version>"
+  },
+  "title": "Tasks",
+  "version": "<version>",
+  "view": "tasks"
+}

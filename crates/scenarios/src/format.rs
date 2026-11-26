@@ -112,8 +112,9 @@ pub enum Step {
     /// The user asks for something from the app's new request screen, and the orchestrator makes
     /// the first task of it.
     Request { text: String, task: String, title: String },
-    /// A further task of the request, optionally stacked on a pull request of an earlier one.
-    Task { id: String, title: String, #[serde(default)] stack_on: Option<StackOn> },
+    /// A further task of the request, optionally stacked on a pull request of an earlier one, or
+    /// waiting for the earlier tasks of `after`.
+    Task { id: String, title: String, #[serde(default)] stack_on: Option<StackOn>, #[serde(default)] after: Vec<String> },
     /// The node of `task` registers a pull request it opened, by the scenario's repository or by
     /// `repository` when it names it at another address.
     RegisterPr { task: String, number: u64, #[serde(default)] repository: Option<String> },
@@ -208,6 +209,9 @@ pub enum Step {
     /// `card` scoped to that task. With `refused`, the daemon must turn it down with that code, and
     /// nothing is shown.
     OrchestratorAction { task: String, card: String, title: String, #[serde(default)] refused: Option<String> },
+    /// The orchestrator closes the case of the stopped node of `task` with `result`, as
+    /// `settle_stall` does with `close`.
+    SettleStall { task: String, result: String },
     /// The user writes `text` in the reply field of the card `card` of the home, as the app does.
     Reply { card: String, text: String },
     /// Files of the daemon's home are written as another process of the Mac writes them, each

@@ -1930,7 +1930,7 @@ fn a_tasks_wrap_up_survives_a_restart() {
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     let wrap_up = store.load().unwrap().tasks[&"task-1".into()].wrap_up.clone();
-    assert_eq!(wrap_up, WrapUp { asked_at: None, cleaned_at: None, close_cancelled: true, node: Some(NodeEnd::KeptByUser), post_merge_work: None });
+    assert_eq!(wrap_up, WrapUp { asked_at: None, cleaned_at: None, close_cancelled: true, node: Some(NodeEnd::KeptByUser), post_merge_work: None, cleanup_turn: None });
 
     execute(&mut store, &user(), "reopen", Command::ReopenTask { task_id: "task-1".into() });
     drop(store);

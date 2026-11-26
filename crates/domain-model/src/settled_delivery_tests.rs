@@ -212,7 +212,7 @@ impl World {
             return Err(format!("delivered {delivery:?}, which is withdrawn or gone"));
         }
         let unheld = self.s.finished(t) && !self.s.unanswered(&t.id) && !self.s.blockers(&t.id) && !self.s.wraps_up(t)
-            && !self.s.works_after_merge(t) && self.s.unproved_checklist(t).is_empty();
+            && !self.s.works_after_merge(t) && self.s.checklist_owed(t).is_empty();
         if unheld {
             return Err(format!("delivered {delivery:?}, settled, with nothing that holds it: {:?}", lifecycle.cards()));
         }

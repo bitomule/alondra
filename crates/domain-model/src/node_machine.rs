@@ -617,6 +617,15 @@ impl DomainState {
         card.author == Author::System && (is_node_pause(card) || matches!(card.system_card, Some(SystemCard::ClaudeUsage { .. })))
     }
 
+    /// The node of `task` was asked to clean up and never confirmed, and a pause of Alondra's own
+    /// (the gate's or the usage limit's) keeps the request from it: nothing will reach it before
+    /// that pause ends, so Alondra closes it as it closes one that rested after the request.
+    pub fn cleanup_held_by_alondra(&self, task: &Task) -> bool {
+        self.in_cleanup(task) && task.wrap_up.cleaned_at.is_none()
+            && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.cards().into_iter()
+                .any(|(card, reason)| reason == alondra_domain::WaitReason::Pause && self.interactions.get(card).is_some_and(|card| self.out_of_sight(card))))
+    }
+
     /// Whether the card named `card` is the card of a pause of the gate.
     pub fn node_pause_card(&self, card: &InteractionId) -> bool {
         self.interactions.get(card).is_some_and(is_node_pause)

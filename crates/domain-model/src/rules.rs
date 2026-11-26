@@ -690,8 +690,19 @@ impl DomainState {
         self.checklists.get(&task.id).into_iter().flat_map(|plan| &plan.items)
             .filter(|item| !marks.is_some_and(|marks| marks.iter().any(|mark| mark.item == item.id))).collect()
     }
+    /// The unproved points that still hold the task. A delivery Alondra made for the node carries
+    /// no checklist and never deferred a point to after the merge: once a PR of it merged, with none
+    /// left open and no work owed after the merge, the user's merge settles those points.
+    pub fn checklist_owed(&self, task: &Task) -> Vec<&ChecklistItem> {
+        let delivered_by_alondra = task.final_presentation.as_ref().and_then(|id| self.interactions.get(id))
+            .is_some_and(|p| p.system_card == Some(SystemCard::OpenPrDelivery));
+        if delivered_by_alondra && self.merged_pr(task).is_some() && self.open_prs(task).next().is_none() && !self.post_merge_owed(task) {
+            return Vec::new();
+        }
+        self.unproved_checklist(task)
+    }
     pub(super) fn require_checklist_proof(&self, task: &Task) -> Result<()> {
-        let pending = self.unproved_checklist(task);
+        let pending = self.checklist_owed(task);
         if pending.is_empty() { return Ok(()) }
         refuse("checklist_incomplete", "checklist", &format!(
             "the approved plan still needs evidence for {}. Finish that work and call present_result with every point and its evidence before ending post_merge_work or calling cleanup_done",
@@ -2063,7 +2074,7 @@ impl DomainState {
     /// What a Task waited on is in: it is done, or its PR merged with no work left after the merge.
     pub fn landed(&self, dep: &Task) -> bool {
         dep.state == TaskState::Done
-            || (!dep.cancelled() && dep.wrap_up.post_merge_work.is_none() && self.unproved_checklist(dep).is_empty()
+            || (!dep.cancelled() && dep.wrap_up.post_merge_work.is_none() && self.checklist_owed(dep).is_empty()
                 && self.merged_pr(dep).is_some() && self.open_prs(dep).next().is_none())
     }
     /// The Task's latest merged PR.
@@ -2741,12 +2752,15 @@ impl DomainState {
                         Ok(()) => cleanup_request(&t.title, &t.id, &t.open_worktrees().map(|(path, _)| path.as_str()).collect::<Vec<_>>()),
                     },
                 };
-                self.tasks.get_mut(&id).unwrap().wrap_up.asked_at = Some(revision);
+                let wrap_up = &mut self.tasks.get_mut(&id).unwrap().wrap_up;
+                wrap_up.asked_at = Some(revision);
+                wrap_up.cleanup_turn = None;
                 effects.push(DomainEffect::NotifyAgent { agent_id, task_id: Some(id), interaction_id: None, message });
             } else if !finished && (t.wrap_up.asked_at.is_some() || t.wrap_up.cleaned_at.is_some()) {
                 let wrap_up = &mut self.tasks.get_mut(&id).unwrap().wrap_up;
                 wrap_up.asked_at = None;
                 wrap_up.cleaned_at = None;
+                wrap_up.cleanup_turn = None;
             }
         }
     }
@@ -5621,7 +5635,7 @@ impl DomainState {
                     return fail("not_closing", &format!("Task {} has no node: its cleanup is the receipt", task_id.0));
                 }
                 let closing = self.in_cleanup(t) && self.wraps_up(t)
-                    && (t.cancelled() || t.ending == Some(TaskEnding::Cancelling) || self.unproved_checklist(t).is_empty());
+                    && (t.cancelled() || t.ending == Some(TaskEnding::Cancelling) || self.checklist_owed(t).is_empty());
                 if !closing && !t.state.terminal() && !t.ending() {
                     if matches!(end, NodeEnd::Closed | NodeEnd::Gone) && t.agent_id.is_some() {
                         let node = self.closed_node(task_id, None, Relaunch::ByItself);
