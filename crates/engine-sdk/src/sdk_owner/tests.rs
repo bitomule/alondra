@@ -4589,7 +4589,6 @@ fn a_task_whose_provider_nothing_wired_does_not_start_and_names_the_provider() {
     let ports = slice.domain.ports();
     ports.provide(Arc::new(alondra_engine_ports::agent_workers::AgentProviders::default()));
     alondra_provider_codex::wire(ports);
-    alondra_provider_antigravity::wire(ports);
     let refused = start_bound(slice.domain.clone(), &slice.backend, Launch {
         task: TASK.into(),
         name: "Release notes".into(),

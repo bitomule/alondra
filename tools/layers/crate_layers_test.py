@@ -24,17 +24,28 @@ ROOT_TEST_CONSUMER_CEILING = 2
 # Tests split from the crates they do not need, so an edit of those does not rerun them, with those
 # crates (docs/architecture/build-graph.md).
 TESTS_KEPT_APART = {
+    "//crates/daemon-engine:daemon_engine_test": [
+        "//crates/provider-antigravity:provider_antigravity",
+    ],
+    "//crates/daemon-server:daemon_server_host_test": [
+        "//crates/provider-antigravity:provider_antigravity",
+    ],
     "//crates/daemon-server:daemon_server_test": [
         "//crates/agent-runtime:agent_runtime",
         "//crates/alondra:alondra",
         "//crates/alondrad:alondrad",
+        "//crates/provider-antigravity:provider_antigravity",
     ],
     "//crates/engine-orchestrator:engine_orchestrator_test": [
         "//crates/agent-runtime:agent_runtime",
     ],
+    "//crates/engine-sdk:engine_sdk_engine_test": [
+        "//crates/provider-antigravity:provider_antigravity",
+    ],
     "//crates/engine-sdk:engine_sdk_test": [
         "//crates/daemon-engine:daemon_engine",
         "//crates/engine-admission:engine_admission",
+        "//crates/provider-antigravity:provider_antigravity",
     ],
 }
 

@@ -262,7 +262,8 @@ only through the port `SdkEngine` (see "`engine-sdk` asks the engine through `Sd
   compiles only the tests that need the real Node or Codex host or a fake native Claude or Codex,
   and is end to end: only the release runs it (see "The SDK's tests on the double", "The owner's
   tests on the model" and "The last real-host tests of the SDK"). None carries a binary of the root (see "Tests leave the
-  root"), and no test runs on a name filter.
+  root"), and no test runs on a name filter. Only `engine_sdk_host_test` links the real Antigravity
+  provider, for its real-host cases (see "Antigravity out of the engine's per-edit tests").
 
 ## Output adapters
 
@@ -1865,3 +1866,38 @@ for the plan of this phase:
   test crates faster (incremental, or split as the budgets were), which this phase does not do.
 - **Edit and tests**, 179 s, under 192-220 s but over the goal of 120 s. The longest test target is
   `domain_rules_test` (48 s), which now holds almost every test of the old crate.
+
+## Antigravity out of the engine's per-edit tests (2026-11-26, main at b2d1db1a5)
+
+The engine's test assemblies no longer wire the real Antigravity provider:
+
+- `engine-sdk`'s `model_fixture::open`;
+- `engine_assembly::open_engine_at`, which the tests of `daemon-server` compile too;
+- `daemon-engine`'s `engine_alone`;
+- the test of a task whose provider nothing wired.
+
+None of their tests runs an Antigravity node. Its cases (`sdk_owner/antigravity_tests.rs`) need the
+real host and the fake `agy`, so they compile only with `real-hosts`, and `engine_tests::open_at`
+wires the provider there.
+
+`provider-antigravity` left the deps of `engine_sdk_test`, `engine_sdk_engine_test`,
+`daemon_engine_test`, `daemon_server_test` and `daemon_server_host_test`. Only `engine_sdk_host_test`
+(manual, end to end) and the root link it. `TESTS_KEPT_APART` keeps it out of those five: with the
+dependency back, `crate_layers_test` fails with `//crates/engine-sdk:engine_sdk_engine_test depends
+on //crates/provider-antigravity:provider_antigravity again`. `test_catalog -- compare` over the
+three packages finds the same 1,740 tests in the same targets.
+
+`edit_bench --profile`, before and after on the same main, on the shared Bazel queue:
+
+| Edit | Crates / test targets reopened | Actions (rustc / clippy / tests) | Build: critical path | Edit + build | Longest test target | Edit + build or test |
+|---|---:|---|---:|---:|---|---:|
+| `provider-antigravity/src/adapter.rs` before | 8 / 40 | 145 (17 / 10 / 117) | 26 s | 35 s | `engine_sdk_engine_test` 27 s | 89 s |
+| `provider-antigravity/src/adapter.rs` after | 8 / 30 | 124 (12 / 5 / 106) | 11 s | 15 s | `alondrad:relaunch_test` 19 s | 60 s |
+
+- **Target met:** 30 s to build and 90 s to build and test an Antigravity edit. The build's
+  critical path is now compiling `alondrad_test` (9 s), which links every crate the daemon does.
+- **Load:** the before row is a quiet queue. On 2b43794b2, under memory pressure, the same edit
+  measured 43 s and 99 s.
+- **Codex:** its cases share the model hosts' fixtures with the rest of the engine's tests
+  (`model_fixture/launch_fixture.rs`, `engine_fixtures/model_hosts.rs`). They get a target of their
+  own in phase 4 of the plan that empties `LAYER_EXCEPTIONS`, when `daemon-engine` stops linking Codex.

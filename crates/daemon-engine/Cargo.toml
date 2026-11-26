@@ -45,7 +45,6 @@ url = "2.5"
 
 [dev-dependencies]
 alondra-domain-rules.workspace = true
-alondra-provider-antigravity.workspace = true
 alondra-agent-runtime.workspace = true
 alondra-engine-doubles.workspace = true
 alondra-store-sqlite.workspace = true
