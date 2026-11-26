@@ -777,6 +777,28 @@ impl ClaudeModel {
         Ok(())
     }
 
+    /// Claude asks to leave plan mode with `plan`, in the turn it runs, as Claude Code's
+    /// `ExitPlanMode` asks once it wrote the plan file; `request` names the request, and the turn
+    /// goes on whatever the answer.
+    pub fn ask_plan(&self, task: &str, request: &str, plan: &str) -> Result<(), String> {
+        let host = self.running(task).ok_or_else(|| format!("no host of {task} runs"))?;
+        let mut state = lock(&host.state);
+        if state.turn.is_none() {
+            return Err(format!("the node of {task} has no turn running to plan from"));
+        }
+        let file = format!("{}.plan.md", self.capture().display());
+        std::fs::write(&file, plan).map_err(|error| format!("the plan of {task}: {error}"))?;
+        let tool_use = format!("toolu_{}", self.uuid().replace('-', ""));
+        let cwd = std::fs::canonicalize(&host.bootstrap.native.cwd).unwrap_or_else(|_| host.bootstrap.native.cwd.clone()).display().to_string();
+        let payload = json!({"tool": "ExitPlanMode", "input": {"plan": plan, "planFilePath": file}, "request": {"toolUseID": tool_use, "requestId": request}, "cwd": cwd});
+        self.event(&host, &mut state, json!({"type": "decision_requested", "request_id": request, "tool_use_id": tool_use, "kind": DecisionKind::Plan, "payload": payload}));
+        let Value::Object(payload) = payload else { return Ok(()) };
+        let asked = Asked { kind: DecisionKind::Plan, tool: Some("ExitPlanMode".into()), tool_use_id: Some(tool_use), payload, epoch: state.wire.cursor,
+            taken: state.turn.clone().unwrap_or_default(), then: Then::GoOn };
+        state.asked.insert(request.to_owned(), asked);
+        Ok(())
+    }
+
     /// What the daemon answered the permission `request` of `task`'s node, if it has.
     pub fn answer_of(&self, task: &str, request: &str) -> Option<String> {
         self.hosts_of(task).iter().find_map(|host| lock(&host.state).answers.get(request).cloned())

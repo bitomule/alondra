@@ -1,0 +1,126 @@
+name = "a task in stages starts as its author; once the user approves the author's plan, the author ends its turn without building it, and a new implementer takes the task over in a new session instead of the author's conversation"
+max_virtual = "2h"
+
+[[step]]
+do = "request"
+text = "Stream the CSV export instead of building it in memory"
+task = "t1"
+title = "Stream the CSV export"
+
+[[step]]
+do = "node"
+task = "t1"
+model = "demo-model"
+stages = true
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "author-plans"
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t1"
+text = "1. Author"
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 1
+running = 1
+sessions = 1
+
+[[step]]
+do = "plan"
+task = "t1"
+request = "author-plan"
+plan = "# Stream the CSV export\n\n- [ ] Write rows to the response as they are read\n- [ ] Test an export larger than memory"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "plan-asked"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "decision-t1"
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "author-plan"
+answer = "none"
+
+[[step]]
+do = "press"
+presentation = "decision-t1-1-6"
+action = "accept"
+screen = "home"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "implementer-waits-for-the-author"
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "author-plan"
+answer = "deny"
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t1"
+text = "Implementer · starting once the current agent rests"
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 1
+running = 1
+sessions = 1
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "implementer-started"
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 2
+running = 1
+sessions = 2
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t1"
+text = "2. Implementer"
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t1"
+text = "starting once the current agent rests"
+present = false
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "running"

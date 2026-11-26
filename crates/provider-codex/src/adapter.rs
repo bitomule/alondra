@@ -156,7 +156,7 @@ fn respond_action(epoch: u64, request: &DecisionRequest, decision: &Decision) ->
             content: Some(crate::elicitation::elicitation_content(payload.pointer("/native/requestedSchema").unwrap_or(&serde_json::Value::Null), text, content.as_ref())),
         },
         (Decision::Decline, DecisionKind::Elicitation) => WireDecision::Decline {},
-        (Decision::Superseded, DecisionKind::Plan) => WireDecision::Superseded {},
+        (Decision::Superseded | Decision::HandedOver, DecisionKind::Plan) => WireDecision::Superseded {},
         _ => return Err(AdapterError::InvalidObservation),
     };
     Ok(Action::Respond {

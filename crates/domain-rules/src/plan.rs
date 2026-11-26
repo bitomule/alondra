@@ -25,11 +25,24 @@ pub struct LaunchPlan {
     /// created; whatever its creator sends is replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// Whether the task goes in stages, and why: an author plans it with the Design model, and once
+    /// the user approves the plan a new agent implements it with the Implementation model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stages: Option<StageChoice>,
+}
+
+/// The orchestrator's choice of stages for a task, by its size: a large task is planned, built and
+/// checked by separate agents; a small one by its own node, with subagents if it needs them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageChoice {
+    pub staged: bool,
+    pub reason: String,
 }
 
 impl LaunchPlan {
     pub fn new(name: impl Into<String>, cwd: impl Into<String>) -> Self {
-        LaunchPlan { name: name.into(), cwd: cwd.into(), mission: None, model: None, effort: None, approach: None, reason: None, role: None, tags: None, project: None }
+        LaunchPlan { name: name.into(), cwd: cwd.into(), mission: None, model: None, effort: None, approach: None, reason: None, role: None, tags: None, project: None, stages: None }
     }
 
     /// The required field a plan leaves blank, if any.

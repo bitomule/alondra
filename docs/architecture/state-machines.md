@@ -996,6 +996,51 @@ Differences between `docs/architecture/task-states.md` and the code:
    `PlanApproved`, `BlockDelivery`, `DeliveryUnblocked`, `MergeObserved`, `DependenciesResolved`,
    `RetireReleasedExecution` and `Event::Ask`. Removing them is not part of G12.
 
+### M-LIFE-15 · Task stages (`TaskStages`, added by the stages phase)
+
+```toml state-machine
+id = "M-LIFE-15"
+code = ["crates/domain-rules/src/stages.rs::TaskStages", "crates/domain-rules/src/stage_rules.rs::begin_stage_handover", "crates/domain-rules/src/stage_rules.rs::record_plan_approval", "crates/engine-sdk/src/provider_transition.rs::request_stage"]
+truth = ["sqlite:task_stages"]
+```
+
+- **Kind**: explicit, product. A task is no longer one agent: a task the orchestrator creates with
+  `stages: {staged: true}` is worked by successive executions, each a new agent instance with the
+  role (`ExecutionRole ∈ {Author, Implementer, Validator}`), model and account of its stage, one at
+  a time, in the same worktree and PR. A task without stages keeps one execution with no role, as
+  before.
+- **Components**: `staged` × `reason` (the orchestrator's choice, shown on the task) × `selections`
+  (the selection each role starts with, kept apart from `Task.selection`: what the user chose by
+  hand holds in every role, the role's profile fills the rest) × `handover: Option<StageHandover{to,
+  cause, transition, attempts, refused}>` × `approvals` (every plan the user approved: card,
+  revision, generation, role; at most 32) × `runs` (every execution: generation, agent, role,
+  provider, account, model; at most 64).
+- **Moves**:
+
+| From | Event [guard] | Result |
+|---|---|---|
+| no runs | `RecordTaskStages` [system, before the first node starts, a selection for every role iff staged] | `staged`, `reason`, `selections` set |
+| any | `AdmitExecution` | a run with `next_role()` (the handover's role, else the current one, else `Author` for a staged task); a handover to that role ends |
+| role `Author`, no handover | the user approves a plan (`AnswerQuestion` with `approve` on a `Hold::Plan` card) | approval recorded; `handover = Implementer`; the author's decision is `HandedOver` (Claude is denied with `HANDED_OVER_PLAN`, Codex settles without a new turn) |
+| any other role, or no stages | the same approval | approval recorded only; the decision is `Allow` |
+| handover due (`transition = None`, not `refused`) | `BeginStageHandover` [system, stamp matches, no pending selection, the role's selection allows the target] | `selection` = the role's, `pending_selection` = target, a `Told` input queued, `transition` set |
+| handover with `transition` | `StageHandoverFailed` | `transition = None`, `attempts + 1`; `refused` once `attempts = 3` |
+| handover `refused` | the user answers `retry` on its `StageStartRefused` start problem | `attempts = 0`, `refused = false` |
+
+- **Engine**: `provider_transition::pass` starts every due handover (`request_stage`: account and
+  model through `select_account` with the role's selection) as a `Kind::Stage` selection change
+  (M-ENGINE-7). While the task owes a role its current execution does not play
+  (`owes_role_change`), no input reaches that execution and nothing relaunches or retakes it.
+- **Roles and tools**: `ExecutionRole::allows(RoleTool)`. The author plans and never registers,
+  presents or declares work after a PR; the implementer does all but `record_verdict`; the
+  validator never plans, registers a PR or records a verdict. A refused call is
+  `role_forbids_tool` with the tool as subject and what the role does instead; a plan its role may
+  not send, or the author's plan after its approval, is denied by policy without a card.
+- **Persistence and restart**: the whole record is one JSON row of `task_stages`, written by the
+  commit that changes it and read with the task; a task without a row has no stages. The handover
+  survives a restart: its selection change resumes from its journal (M-ENGINE-7), or, aborted, the
+  next pass starts it again.
+
 ## Cards, plans, documents and requests (`CARDS`)
 
 Scope: the interaction machines and the work machines of the domain, outside the turn/node lifecycle. Code: `crates/domain-rules/src/` (mainly `rules.rs`, `guards.rs`, `model.rs`, `card_contract.rs`, `rules/plan_review.rs`, `rules/snooze.rs`, `rules/open_pr.rs`, `ownership.rs`, `projection.rs`, `attention.rs`), `crates/engine-orchestrator/src/orchestrator_inbox.rs` (only where it closes requests), `crates/store-sqlite/src/lib.rs` (schema) and `crates/store-sqlite/src/command.rs` (effect outbox). Audited commit: `1567967b9`.
@@ -1672,6 +1717,14 @@ variants = ["Requested", "Draining", "SourceFenced", "ContextReady", "TargetAdmi
   (`Transitions.fences`) and are rebuilt with `ensure_fence`.
 - **Rules**: any `Err` from `advance` leads to `abort()` in `pass` (`:521-526`). `Kind::Model` in transfer phases
   is always rejected: transfer is disabled.
+- **`Kind::Stage`** (M-LIFE-15): the change of role of a staged task. It may change account,
+  provider and model. At `Draining` it waits until the source rests with nothing pending
+  (`stage_drained`: no turn, no own work, no card it waits on, no doubt, no input sent to it) and
+  only then ends it; its context is the packet `launches::stage_packet` writes for the role, never
+  the conversation; at `ContextReady` it starts its target only once the gate gives the task's
+  next turn a slot (`may_take_turn`: slots and memory), else it waits there and looks again on the
+  next pass. Its abort records `StageHandoverFailed` and, after the third,
+  raises `StageStartRefused` for the user.
 - **Concurrency**: the `advancing` mutex serializes its own steps. It does **not** exclude retakes that were
   already running (F-ENGINE-12).
 

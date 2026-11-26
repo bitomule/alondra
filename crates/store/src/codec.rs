@@ -235,6 +235,7 @@ pub(super) enum DecisionRecord {
     },
     Decline,
     Superseded,
+    HandedOver,
 }
 impl From<&Decision> for DecisionRecord {
     fn from(decision: &Decision) -> Self {
@@ -252,6 +253,7 @@ impl From<&Decision> for DecisionRecord {
             },
             Decision::Decline => Self::Decline,
             Decision::Superseded => Self::Superseded,
+            Decision::HandedOver => Self::HandedOver,
         }
     }
 }
@@ -264,6 +266,7 @@ impl From<DecisionRecord> for Decision {
             DecisionRecord::Accept { text, content } => Self::Accept { text, content },
             DecisionRecord::Decline => Self::Decline,
             DecisionRecord::Superseded => Self::Superseded,
+            DecisionRecord::HandedOver => Self::HandedOver,
         }
     }
 }

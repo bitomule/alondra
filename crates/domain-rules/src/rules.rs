@@ -33,6 +33,9 @@ mod mcp;
 mod account_settings;
 #[path = "task_selection.rs"]
 mod task_selection;
+#[path = "stage_rules.rs"]
+mod stage_rules;
+pub use stage_rules::{HANDED_OVER_PLAN, STAGE_REFUSED};
 #[path = "mcp_wait.rs"]
 mod mcp_wait;
 pub use mcp::{MAX_MCP_SERVERS, McpNodeReading, McpServerState, McpSignIn, McpStatus, NodeMcp, OpenSignIn};
@@ -2370,6 +2373,7 @@ impl DomainState {
         }
         match (option, problem) {
             (START_CANCEL, _) => self.close_task(actor, &task_id, None, effects, created, lifecycles)?,
+            (START_RETRY, StartProblem::StageStartRefused { .. }) => self.retry_stage_handover(&task_id),
             (START_WITHOUT, StartProblem::DependencyCancelled { dependency }) => {
                 self.invalidate(&task_id);
                 let t = self.tasks.get_mut(&task_id).unwrap();
@@ -2969,6 +2973,9 @@ impl DomainState {
             | Command::RecordHostEnded { task_id, .. }
             | Command::DeferTaskMove { task_id, .. }
             | Command::AbortTaskSelection { task_id, .. }
+            | Command::RecordTaskStages { task_id, .. }
+            | Command::BeginStageHandover { task_id, .. }
+            | Command::StageHandoverFailed { task_id, .. }
             | Command::RecordHostReleased { task_id, .. }
             | Command::RecordHostRetaken { task_id, .. }
             | Command::RecordInterruptAccepted { task_id, .. }
@@ -3867,7 +3874,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: *priority, paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: *priority, paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;
@@ -4060,6 +4067,7 @@ impl DomainState {
                 self.tasks.get_mut(task_id).unwrap().paused_in_queue = None;
             }
             Command::RecordVerdict { task_id, presentation_id, verdict } => {
+                self.role_allows(actor, task_id, RoleTool::RecordVerdict)?;
                 let t = self.assigned(actor, task_id)?;
                 if t.final_presentation.as_ref() != Some(presentation_id) {
                     return fail("acceptance_stale", "The verdict is for a delivery that is no longer the final one");
@@ -4599,7 +4607,10 @@ impl DomainState {
                     && option_id == Hold::APPROVE
                 {
                     let checklist = Checklist { plan: interaction_id.clone(), items: checklist_items(&i.body) };
+                    let task_id = task_id.clone();
                     self.checklists.insert(task_id.clone(), checklist);
+                    let generation = self.lifecycle(lifecycles, &task_id)?.generation();
+                    self.record_plan_approval(&task_id, interaction_id, generation, lifecycles)?;
                 }
                 let written = inputs.values().find_map(|value| match value { InputValue::Text(text) => Some(text.clone()), _ => None });
                 if !self.settle_claude_card(interaction_id, written.as_deref(), lifecycles)?
@@ -4829,6 +4840,7 @@ impl DomainState {
                 base,
                 allowed_methods,
             } => {
+                self.role_allows(actor, task_id, RoleTool::RegisterPr)?;
                 if !self.assigned(actor, task_id)?.blocks.is_empty() {
                     return refuse(
                         "invalid_input",
@@ -5030,6 +5042,9 @@ impl DomainState {
                 card,
             } => {
                 self.assigned(actor, task_id)?;
+                if targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { .. })) {
+                    self.role_allows(actor, task_id, RoleTool::PresentPullRequest)?;
+                }
                 let targets = &self.with_open_prs(task_id, targets);
                 self.node_has_run(task_id, lifecycles)?;
                 if *nothing_to_review && !self.task(task_id)?.pending_user_inputs.is_empty() {
@@ -5560,6 +5575,7 @@ impl DomainState {
                 self.reconcile_recovery_cards(task_id, lifecycles)?;
             }
             Command::DeclarePostMergeWork { task_id, reason, waits_for } => {
+                self.role_allows(actor, task_id, RoleTool::PostMergeWork)?;
                 let task = self.assigned(actor, task_id)?;
                 let declared_at = self.revision + 1;
                 let work = reason.as_deref().map(str::trim).filter(|reason| !reason.is_empty())
@@ -5682,6 +5698,8 @@ impl DomainState {
                 if moved_here {
                     task.move_refused = None;
                 }
+                let generation = self.lifecycle(lifecycles, task_id)?.generation();
+                self.record_run(task_id, agent_id, generation, model.as_ref());
             }
             Command::RecordRuntimeFacts { task_id, generation, facts } => {
                 system(actor)?;
@@ -5737,6 +5755,15 @@ impl DomainState {
                 system(actor)?;
                 self.task(task_id)?;
                 self.record_host_retaken(task_id, *generation, lifecycles)?;
+            }
+            Command::RecordTaskStages { task_id, staged, reason, selections } => {
+                self.record_task_stages(actor, task_id, *staged, reason, selections)?;
+            }
+            Command::BeginStageHandover { task_id, expected_selection, transition, pending } => {
+                self.begin_stage_handover(actor, task_id, expected_selection, transition, pending)?;
+            }
+            Command::StageHandoverFailed { task_id, transition, refused } => {
+                self.stage_handover_failed(actor, task_id, transition, *refused)?;
             }
             Command::AbortTaskSelection { task_id, selection, refused } => {
                 system(actor)?;

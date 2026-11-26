@@ -156,6 +156,59 @@ The user approved this plan to be implemented: it is already this task's approve
 {}", plan.trim())
 }
 
+/// What the author of a staged task is told when it starts.
+pub const AUTHOR_MISSION: &str = "## Your stage
+
+This task goes in stages, and you are its author. Plan it through plan mode: ask the user every decision first, then present the plan with its checklist. Do not build it. Once the user approves the plan, Alondra hands the task to a new agent that implements it in this same worktree: end your turn then, without changing anything else. You never register or deliver a pull request.";
+
+/// What a new execution of a staged task starts from, written by Alondra instead of the
+/// conversation of the execution before it: the task's whole record, its approved plan, where its
+/// work is, and what its role does.
+pub fn stage_packet(state: &DomainState, task: &alondra_domain_rules::Task, role: alondra_domain_rules::ExecutionRole, worktree: &str, branch: Option<&str>) -> Result<String, Vec<String>> {
+    use alondra_domain_rules::ExecutionRole;
+    let canonical = canonical_task_context(state, task);
+    if !canonical.missing_sources.is_empty() {
+        return Err(canonical.missing_sources);
+    }
+    let plan = if approved_plan(state, task).is_empty() { stage_plan(state, task) } else { String::new() };
+    let instructions = match role {
+        ExecutionRole::Author => "You are the author of this task: plan it through plan mode, ask the user every decision first, and end your turn once the user approves the plan. Do not build it.",
+        ExecutionRole::Implementer => "You are the implementer of this task. The user approved the plan below, which another agent wrote: implement exactly that plan and its tests, validate them as the repository says, and deliver the result with present_result, marking every point of the plan done with its evidence. Do not plan again. When the plan does not cover something, ask the user with `ask` instead of deciding it.",
+        ExecutionRole::Validator => "You are the validator of this task: run every check it still needs, record what each found, and deliver that result. Never change its code, tests or plan.",
+    };
+    let mut lines = vec![
+        format!("# Alondra task {}: {}", task.id, task.title),
+        String::new(),
+        format!("This work is Alondra task {}; pass it as task_id to the Alondra tools. Load the role skill alondra:alondra before your first Alondra call and follow it: ask through Alondra, and deliver with present_result and is_final true.", task.id),
+        String::new(),
+        "## Your stage".to_owned(),
+        String::new(),
+        instructions.to_owned(),
+        String::new(),
+        format!("Work in {worktree}{}. Earlier work on this task is already there: read it, never redo it.", branch.map(|branch| format!(", on branch {branch}")).unwrap_or_default()),
+    ];
+    let prs: Vec<String> = state.task_prs(task).map(|pr| format!("- https://{}/{}/pull/{}", pr.host, pr.repository, pr.number)).collect();
+    if !prs.is_empty() {
+        lines.extend([String::new(), "Its pull requests:".to_owned()]);
+        lines.extend(prs);
+    }
+    if !plan.is_empty() {
+        lines.extend([String::new(), "## The plan the user approved".to_owned(), String::new(), plan]);
+    }
+    lines.extend([String::new(), "## The task's record".to_owned(), String::new(), canonical.text]);
+    Ok(lines.join("\n"))
+}
+
+/// The plan the user approved for the task, whoever wrote it.
+fn stage_plan(state: &DomainState, task: &alondra_domain_rules::Task) -> String {
+    use alondra_domain_rules::InteractionPayload;
+    let Some(source) = state.checklists.get(&task.id).and_then(|checklist| state.interactions.get(&checklist.plan)) else { return String::new() };
+    match &source.payload {
+        InteractionPayload::Delivery { .. } => source.card.plan.as_deref().unwrap_or_default(),
+        _ => source.body.as_str(),
+    }.trim().to_owned()
+}
+
 /// Who wrote the text a node starts with: a decision the orchestrator attributes to the user in a
 /// mission is its account of it, while a schedule's text is the user's own.
 #[derive(Clone, Copy, PartialEq, Eq)]

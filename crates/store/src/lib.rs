@@ -26,7 +26,7 @@ mod controls;
 pub use controls::{
     CommittedControl, ControlAttempt, ControlOperation, ControlPermit, DecisionRequest, Response, UnresolvedControl,
 };
-pub use alondra_domain::{Control, Decision, PermissionMode};
+pub use alondra_domain::{Control, Decision, HANDED_OVER_PLAN, PermissionMode};
 pub use alondra_provider_contract::DecisionKind;
 mod journal_format;
 mod receipt_proofs;

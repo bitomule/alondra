@@ -781,6 +781,9 @@ impl DomainRuntime {
             if state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).map(|node| node.0.as_str()) != Some(session_id.as_str()) {
                 return Err(DomainError::new("not_assigned","Only the current assigned node requests plan mode").into());
             }
+            if let Some(role) = state.tasks.get(task).and_then(|task| task.stages.role()).filter(|role| !role.allows(alondra_domain_rules::RoleTool::RequestPlanMode)) {
+                return Err(DomainError::new(alondra_domain_rules::STAGE_REFUSED, role.refusal_fix(alondra_domain_rules::RoleTool::RequestPlanMode)).into());
+            }
             let before_revision = state.revision;
             let already_requested = state.in_plan_mode(task);
             let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION,data_epoch:epoch,
@@ -1150,6 +1153,9 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordTaskSelection { task_id, .. }
         | Command::DeferTaskMove { task_id, .. }
         | Command::AbortTaskSelection { task_id, .. }
+        | Command::RecordTaskStages { task_id, .. }
+        | Command::BeginStageHandover { task_id, .. }
+        | Command::StageHandoverFailed { task_id, .. }
         | Command::RequestTaskSelection { task_id, .. }
         | Command::MoveTask { task_id, .. }
         | Command::SettlePlanReview { task_id, .. }

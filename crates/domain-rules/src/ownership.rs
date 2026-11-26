@@ -106,6 +106,9 @@ pub enum StartProblem {
     /// The task moved to `account` and its start there is refused for a reason trying again by
     /// itself does not change: it is never tried again until the user says so.
     MoveStartRefused { account: alondra_core::accounts::AccountKey, error: String },
+    /// The staged task's next role could not start, for a reason trying again by itself does not
+    /// change or after every try Alondra makes: it waits for the user.
+    StageStartRefused { role: crate::ExecutionRole, error: String },
 }
 
 pub const START_PROBLEM_PREFIX: &str = "start-problem-";
