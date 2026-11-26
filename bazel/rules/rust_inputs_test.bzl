@@ -28,6 +28,13 @@ def _rust_inputs_test_impl(ctx):
             )
         if not ctx.attr.test_sources:
             asserts.equals(env, [], sorted(test_inputs), "{} must not compile test files".format(action.mnemonic))
+        linked = [argument.removeprefix("--extern=").split("=")[0] for argument in action.argv if argument.startswith("--extern=")]
+        asserts.equals(
+            env,
+            [],
+            [crate for crate in ctx.attr.forbidden_externs if crate in linked],
+            "{} must not depend directly on these crates".format(action.mnemonic),
+        )
     return analysistest.end(env)
 
 rust_inputs_test = analysistest.make(
@@ -40,5 +47,8 @@ rust_inputs_test = analysistest.make(
         # Test support the crate compiles for the tests of the crates above it, which have no
         # build of their own to take it from.
         "fixture_sources": attr.string_list(default = []),
+        # Crates the target may not name in its own code: with one it would generate their
+        # generic code itself, on every edit below it.
+        "forbidden_externs": attr.string_list(default = []),
     },
 )

@@ -4,6 +4,7 @@ load("@crates//:defs.bzl", "all_crate_deps")
 load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//rust:defs.bzl", "rust_test")
 load("//bazel/rules:rust_sources.bzl", "production_sources")
+load("//bazel/rules:rust.bzl", "rust_library")
 load("//bazel/rules:rust_inputs_test.bzl", "rust_inputs_test")
 
 VIEWS_TEST_ONLY = ["src/domain_fixtures.rs"]
@@ -83,9 +84,29 @@ low_opt_rust_test(
     ] + all_crate_deps(normal = True, normal_dev = True),
 )
 
+# The domain the view budgets measure and every JSON they write or read, apart from them: its code
+# is generated incrementally here instead of from scratch in their crate on every edit below it.
+rust_library(
+    name = "budget_fixture",
+    testonly = True,
+    srcs = ["tests/views_budget_fixture.rs"],
+    crate_name = "alondra_views_budget_fixture",
+    crate_root = "tests/views_budget_fixture.rs",
+    edition = "2024",
+    version = "0.1.0",
+    deps = [
+        ":views",
+        "//crates/core:alondra_core",
+        "//crates/domain-rules:domain_rules",
+        "@crates//:serde_json",
+    ],
+)
+
 # Every family of views renders a real-size domain within its budget, with alondra_views built as
 # the daemon links it: without the checks only its own unit tests compile in.
-# It stays at the build's opt-level: the budget counts the instructions of that code.
+# It stays at the build's opt-level: the budget counts the instructions of that code. It compiles
+# from scratch on every edit below it, so it holds only what it measures: `budget_inputs_test` keeps
+# the fixture's source and the JSON library out of its compile.
 rust_test(
     name = "views_budget_test",
     size = "small",
@@ -96,13 +117,24 @@ rust_test(
     edition = "2024",
     version = "0.1.0",
     deps = [
+        ":budget_fixture",
         ":views",
         "//crates/core:alondra_core",
         "//crates/domain:domain",
         "//crates/domain-rules:domain_rules",
         "@crates//:libc",
-        "@crates//:serde_json",
     ],
+)
+
+rust_inputs_test(
+    name = "budget_inputs_test",
+    size = "small",
+    forbidden_externs = ["serde", "serde_json"],
+    required_sources = ["crates/views/tests/views_budget.rs"],
+    source_dir = "crates/views/src/",
+    target_under_test = ":views_budget_test",
+    test_only_sources = ["crates/views/tests/views_budget_fixture.rs"],
+    test_sources = False,
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

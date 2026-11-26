@@ -44,17 +44,17 @@ pub struct Outcome {
 /// The Mac of a scenario: always rested, with room for everything. It counts the samples the
 /// daemon takes of it.
 #[derive(Clone, Default)]
-struct CalmMac(Arc<std::sync::atomic::AtomicU64>, Arc<Publication>);
+pub struct CalmMac(Arc<std::sync::atomic::AtomicU64>, pub Arc<Publication>);
 
 impl CalmMac {
-    async fn wait_for_second_publication(&self) {
+    pub async fn wait_for_second_publication(&self) {
         self.1.wait_for(2).await;
     }
 
     /// Waits until the daemon stored and published every sample it started. A sample is taken in
     /// the blocking pool and published by the sampler's task once the job ends, so a step that
     /// advanced the clock can end with the sample of its instant still unpublished.
-    async fn wait_for_published_samples(&self) {
+    pub async fn wait_for_published_samples(&self) {
         loop {
             let changed = self.1.changed.notified();
             if self.1.count.load(std::sync::atomic::Ordering::SeqCst) >= self.0.load(std::sync::atomic::Ordering::SeqCst) {
@@ -66,13 +66,13 @@ impl CalmMac {
 }
 
 #[derive(Default)]
-struct Publication {
+pub struct Publication {
     count: std::sync::atomic::AtomicU64,
     changed: tokio::sync::Notify,
 }
 
 impl Publication {
-    fn publish(&self) {
+    pub fn publish(&self) {
         self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.changed.notify_one();
     }
@@ -88,39 +88,6 @@ impl Publication {
     }
 }
 
-#[cfg(test)]
-mod publication_tests {
-    use super::*;
-    use std::future::Future;
-    use std::task::{Context, Poll, Waker};
-
-    #[test]
-    fn a_started_sample_is_not_a_published_sample() {
-        let mac = CalmMac::default();
-        mac.sample();
-        mac.1.publish();
-        mac.sample();
-
-        let mut ready = Box::pin(mac.wait_for_second_publication());
-        let mut context = Context::from_waker(Waker::noop());
-        assert!(matches!(ready.as_mut().poll(&mut context), Poll::Pending));
-        mac.1.publish();
-        assert!(matches!(ready.as_mut().poll(&mut context), Poll::Ready(())));
-    }
-
-    #[test]
-    fn a_checkpoint_waits_for_every_sample_that_started() {
-        let mac = CalmMac::default();
-        let mut context = Context::from_waker(Waker::noop());
-        let mut idle = Box::pin(mac.wait_for_published_samples());
-        assert!(matches!(idle.as_mut().poll(&mut context), Poll::Ready(())), "no sample started, none to wait for");
-        mac.sample();
-        let mut waiting = Box::pin(mac.wait_for_published_samples());
-        assert!(matches!(waiting.as_mut().poll(&mut context), Poll::Pending));
-        mac.1.publish();
-        assert!(matches!(waiting.as_mut().poll(&mut context), Poll::Ready(())));
-    }
-}
 impl MachineProbe for CalmMac {
     fn sample(&self) -> alondra_core::Machine {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -177,8 +144,7 @@ pub fn run_with(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce
 }
 
 /// `run`, with every Claude host taking `by` to exit once the daemon tells it to stop.
-#[cfg(test)]
-pub(crate) fn run_with_slow_host_exits(scenario: &Scenario, by: Duration) -> Result<Outcome, ScenarioError> {
+pub fn run_with_slow_host_exits(scenario: &Scenario, by: Duration) -> Result<Outcome, ScenarioError> {
     match run_inner(scenario, None, |_| {}, Slowness { exit: Some(by), ..Slowness::default() })? {
         (outcome, None) => Ok(outcome),
         (_, Some(failure)) => Err(failure),
@@ -188,8 +154,7 @@ pub(crate) fn run_with_slow_host_exits(scenario: &Scenario, by: Duration) -> Res
 /// `run`, with every Claude host taking `by` to open its socket while the daemon gives each one
 /// `io_timeout_seconds` for its I/O: a start that outlasts that timeout in real time, as on a
 /// loaded Mac.
-#[cfg(test)]
-pub(crate) fn run_with_slow_host_starts(scenario: &Scenario, by: Duration, io_timeout_seconds: u64) -> Result<Outcome, ScenarioError> {
+pub fn run_with_slow_host_starts(scenario: &Scenario, by: Duration, io_timeout_seconds: u64) -> Result<Outcome, ScenarioError> {
     match run_inner(scenario, None, |_| {}, Slowness { start: Some((by, io_timeout_seconds)), ..Slowness::default() })? {
         (outcome, None) => Ok(outcome),
         (_, Some(failure)) => Err(failure),
@@ -197,8 +162,7 @@ pub(crate) fn run_with_slow_host_starts(scenario: &Scenario, by: Duration, io_ti
 }
 
 /// `run`, with every run of a command line or a probe around the Claude hosts taking `by`.
-#[cfg(test)]
-pub(crate) fn run_with_slow_probes(scenario: &Scenario, by: Duration) -> Result<Outcome, ScenarioError> {
+pub fn run_with_slow_probes(scenario: &Scenario, by: Duration) -> Result<Outcome, ScenarioError> {
     match run_inner(scenario, None, |_| {}, Slowness { probe: Some(by), ..Slowness::default() })? {
         (outcome, None) => Ok(outcome),
         (_, Some(failure)) => Err(failure),
@@ -207,8 +171,7 @@ pub(crate) fn run_with_slow_probes(scenario: &Scenario, by: Duration) -> Result<
 
 /// `run`, with every run of a command line or a probe around the Claude hosts starting `by` after
 /// the daemon submitted the blocking job that runs it.
-#[cfg(test)]
-pub(crate) fn run_with_late_probes(scenario: &Scenario, by: Duration) -> Result<Outcome, ScenarioError> {
+pub fn run_with_late_probes(scenario: &Scenario, by: Duration) -> Result<Outcome, ScenarioError> {
     match run_inner(scenario, None, |_| {}, Slowness { probe_late: Some(by), ..Slowness::default() })? {
         (outcome, None) => Ok(outcome),
         (_, Some(failure)) => Err(failure),

@@ -1,11 +1,20 @@
 //! The peer is played against the daemon's side of the protocol written with the same codec and
 //! the same proofs: if it speaks the real wire, a real owner reads it.
 
-use super::*;
-use alondra_agent_protocol::{Action, Attach, HostExpectation, PROTOCOL_VERSION, owner_proof, verify_host_proof};
-use alondra_agent_runtime::owned_host::HostSpawn;
-use serde_json::json;
+use alondra_agent_protocol::{
+    Action, Attach, Body, Command, Fence, Frame, FramedReader, FramedWriter, HostExpectation, PROTOCOL_VERSION, command_digest, owner_proof,
+    verify_host_proof,
+};
+use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn};
+use alondra_scenarios::claude_peer::{Activity, PeerError, PeerLauncher, Seen, decode_secret, is_expected};
+use alondra_scenarios_transcript::Transcript;
+use alondra_scenarios_transcript::frames::FrameComparator;
+use serde_json::{Value, json};
 use std::io::{Seek, SeekFrom, Write};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::process::Child;
+use std::sync::{Arc, Mutex};
 
 const SECRET_HEX: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 const INPUT: &str = "11111111-1111-4111-8111-111111111111";
