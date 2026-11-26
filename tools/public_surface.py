@@ -8,8 +8,13 @@ public methods of every `impl` and what `pub use` exports from another crate. Th
 in files, modules and lines, so a snapshot of it says whether a crate that was written again kept
 its surface.
 
-It reads the text, not the compiler's view: what a macro generates is not in the list, and an item
-is listed when it says `pub` even if the module around it is private.
+An item is listed when code outside the crate can name it: it says `pub` and every module around
+it does, or a `pub use` in a module that can be reached names it, or its module, or everything in
+its module. The methods and the trait implementations of a type are listed only when the type is.
+
+It reads the text, not the compiler's view: what a macro generates is not in the list, and names
+are compared without their paths, so an item that is not exported is still listed when an exported
+one of another module has its name.
 
     python3 tools/public_surface.py crates/spec-engine/src > specs/spec-engine/surface.txt
 """
@@ -21,6 +26,7 @@ from pathlib import Path
 OPENERS = {"(": ")", "[": "]", "{": "}", "<": ">"}
 QUALIFIERS = r"(?:(?:const|async|unsafe|extern)\s+)*"
 NAME_AND_TYPE = re.compile(r"(?<!:):(?!:)")
+TYPE = re.compile(r"(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?(?:struct|enum|union|trait|type)\s+(\w+)")
 
 
 def production_files(source_dir):
@@ -183,53 +189,135 @@ def exported(tree):
     return [path for piece in split_top(tree[opening + 1 : end], ",") if piece.strip() for path in exported(tree[:opening] + piece.strip() + tree[end + 1 :])]
 
 
-def surface_of(source, owner=None):
-    lines = []
+class Crate:
+    """What the sources of a crate declare, before deciding what of it can be reached from outside."""
+
+    def __init__(self):
+        self.entries = []
+        self.uses = []
+        self.types = set()
+        self.modules = {}
+
+
+def type_name(text):
+    """The name of a type without its references, path and parameters."""
+    match = re.match(r"(?:\w+::)*(\w+)", re.sub(r"^(?:&\s*|mut\s+|dyn\s+)+", "", text))
+    return match.group(1) if match else text
+
+
+def read_block(source, module, crate, owner=None):
     for header, body in items(source):
         public = re.match(r"pub\s+(?!\()", header) is not None
-        module = re.match(r"(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+$", header)
+        inner = re.match(r"(pub(?:\([^)]*\))?\s+)?mod\s+(\w+)$", header)
         implementation = re.match(r"(?:unsafe\s+)?impl\b\s*(<.*?>)?\s*(.*)$", header, re.S)
-        if module and body is not None:
-            lines += surface_of(body)
+        declared = None if owner else TYPE.match(header)
+        if declared:
+            crate.types.add(declared.group(1))
+        if inner:
+            child = module + (inner.group(2),)
+            crate.modules[child] = inner.group(1) is not None and "(" not in inner.group(1)
+            if body is not None:
+                read_block(body, child, crate)
         elif public and re.match(r"pub\s+use\b", header):
             tree = re.sub(r"^pub\s+use\s+", "", header) + ("" if body is None else "{" + body + "}")
-            lines += [f"use {path}" for path in exported(tree)]
+            crate.uses += [(path, module) for path in exported(tree)]
         elif implementation and body is not None:
             target = tidy(implementation.group(2))
             if " for " in target:
-                lines.append(f"impl {target}")
+                crate.entries.append(("of", f"impl {target}", type_name(target.split(" for ", 1)[1]), module))
             else:
-                lines += surface_of(body, owner=target)
+                read_block(body, module, crate, owner=target)
         elif public and re.match(r"pub\s+" + QUALIFIERS + r"fn\b", header):
             line = signature(header)
-            lines.append(f"impl {owner}: {line}" if owner else line)
+            if owner:
+                crate.entries.append(("of", f"impl {owner}: {line}", type_name(owner), module))
+            else:
+                crate.entries.append(("item", line, re.match(r"fn (\w+)", line).group(1), module))
         elif public and (match := re.match(r"pub\s+struct\s+(\w+)\s*(<.*?>)?", header, re.S)):
             name = match.group(1) + tidy(match.group(2) or "")
             if body is None:
-                lines.append(f"struct {name}{tidy(header[match.end():])}")
+                line = f"struct {name}{tidy(header[match.end():])}"
             else:
                 fields = [tidy(re.sub(r"^pub\s+", "", field)) for field in split_top(body, ",") if re.match(r"pub\s+(?!\()", field)]
-                lines.append(f"struct {name} {{ {', '.join(fields)} }}" if fields else f"struct {name} {{ }}")
+                line = f"struct {name} {{ {', '.join(fields)} }}" if fields else f"struct {name} {{ }}"
+            crate.entries.append(("type", line, match.group(1), module))
         elif public and (match := re.match(r"pub\s+enum\s+(\w+)", header)):
             variants = [re.match(r"\w+", variant).group(0) for variant in split_top(body or "", ",")]
-            lines.append(f"enum {match.group(1)} {{ {', '.join(variants)} }}")
+            crate.entries.append(("type", f"enum {match.group(1)} {{ {', '.join(variants)} }}", match.group(1), module))
         elif public and (match := re.match(r"pub\s+(?:unsafe\s+)?trait\s+(\w+)", header)):
             methods = [signature(method) for method, _ in items(body or "")]
-            lines.append(f"trait {match.group(1)} {{ {'; '.join(method for method in methods if method)} }}")
-        elif public and re.match(r"pub\s+(?:const|static|type)\b", header):
-            lines.append(tidy(re.sub(r"^pub\s+", "", header.split("=")[0])))
-    return lines
+            crate.entries.append(("type", f"trait {match.group(1)} {{ {'; '.join(method for method in methods if method)} }}", match.group(1), module))
+        elif public and (match := re.match(r"pub\s+(const|static|type)\s+(?:mut\s+)?(\w+)", header)):
+            line = tidy(re.sub(r"^pub\s+", "", header.split("=")[0]))
+            if owner:
+                crate.entries.append(("of", line, type_name(owner), module))
+            else:
+                crate.entries.append(("type" if match.group(1) == "type" else "item", line, match.group(2), module))
+
+
+def module_of(relative):
+    parts = relative.parts[:-1]
+    return parts if relative.stem in ("lib", "main", "mod") else parts + (relative.stem,)
+
+
+def exports(crate, inside):
+    """The names and the modules that a `pub use` of a module that can be reached hands outside."""
+    names, modules = set(), set()
+    while True:
+        found = (set(), set())
+        for path, module in crate.uses:
+            segments = path.split(" as ")[0].split("::")
+            if segments[0] not in inside or not reachable(crate, module, modules):
+                continue
+            everything = segments[-1] == "*"
+            target = resolved(segments[:-1] if everything else segments, module)
+            if everything or target in crate.modules:
+                found[1].add(target)
+            else:
+                found[0].add(segments[-1])
+        if found == (names, modules):
+            return names, modules
+        names, modules = found
+
+
+def resolved(segments, module):
+    """The module a path names, written from the root of the crate."""
+    if segments[0] == "crate":
+        return tuple(segments[1:])
+    while segments and segments[0] in ("self", "super"):
+        module = module[:-1] if segments[0] == "super" else module
+        segments = segments[1:]
+    return tuple(module) + tuple(segments)
+
+
+def reachable(crate, module, exported_modules):
+    if not module or module in exported_modules:
+        return True
+    return crate.modules.get(module, True) and reachable(crate, module[:-1], exported_modules)
 
 
 def surface(source_dir):
-    lines = []
+    crate = Crate()
     inside = {"crate", "self", "super"}
     for path in production_files(Path(source_dir)):
         source = without_attributes(without_comments_and_literals(path.read_text()))
         inside.update(re.findall(r"\bmod\s+(\w+)", source))
-        lines += surface_of(source)
-    moved = {line for line in lines if line.startswith("use ") and re.match(r"use (\w+)", line).group(1) in inside}
-    return "".join(f"{line}\n" for line in sorted(set(lines) - moved))
+        read_block(source, module_of(path.relative_to(source_dir)), crate)
+    names, modules = exports(crate, inside)
+
+    def named(name, module):
+        return name in names or reachable(crate, module, modules)
+
+    public_types = {name for kind, _, name, module in crate.entries if kind == "type" and named(name, module)}
+    lines = set()
+    for kind, line, name, module in crate.entries:
+        of_a_listed_type = name in public_types or name not in crate.types
+        if of_a_listed_type if kind == "of" else named(name, module):
+            lines.add(line)
+    for path, module in crate.uses:
+        if path.split("::")[0] not in inside and named(path.split(" as ")[-1].split("::")[-1], module):
+            lines.add(f"use {path}")
+    return "".join(f"{line}\n" for line in sorted(lines))
 
 
 def main():
