@@ -88,9 +88,16 @@ impl Eq for Work {}
 
 impl Work {
     fn add(&'static self) {
+        self.add_moving(true);
+    }
+
+    /// Counts one more unit; `moved` says whether it is a move the patience of a wait for calm sees.
+    fn add_moving(&'static self, moved: bool) {
         let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.count.fetch_add(1, Ordering::SeqCst);
-        self.moves.fetch_add(1, Ordering::SeqCst);
+        if moved {
+            self.moves.fetch_add(1, Ordering::SeqCst);
+        }
         if held.waiting {
             return;
         }
@@ -109,8 +116,14 @@ impl Work {
     }
 
     fn remove(&self) {
+        self.remove_moving(true);
+    }
+
+    fn remove_moving(&self, moved: bool) {
         let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.moves.fetch_add(1, Ordering::SeqCst);
+        if moved {
+            self.moves.fetch_add(1, Ordering::SeqCst);
+        }
         if self.count.fetch_sub(1, Ordering::SeqCst) == 1 {
             held.rests += 1;
             self.idle.notify_all();
@@ -214,6 +227,9 @@ impl Patience {
 struct Held {
     counted: Cell<bool>,
     unit: Cell<Option<&'static Work>>,
+    /// The thread's last wait for a stream ended on its own timeout, with nothing to read: until it
+    /// is woken by something, it moves nothing.
+    idle: Cell<bool>,
 }
 
 impl Drop for Held {
@@ -277,14 +293,16 @@ impl Eq for Deadlines {}
 
 thread_local! {
     static CURRENT: Cell<Clock> = const { Cell::new(Clock::System) };
-    static HELD: Held = const { Held { counted: Cell::new(false), unit: Cell::new(None) } };
+    static HELD: Held = const { Held { counted: Cell::new(false), unit: Cell::new(None), idle: Cell::new(false) } };
 }
 
-/// The thread waits: virtual time no longer waits for it.
+/// The thread waits: virtual time no longer waits for it. A thread that only looked at a silent
+/// stream since its last wait ends no work the patience of a wait for calm counts.
 pub(crate) fn rest() {
     let _ = HELD.try_with(|held| {
+        let idle = held.idle.take();
         if let Some(work) = held.unit.take() {
-            work.remove();
+            work.remove_moving(!idle);
         }
     });
 }
@@ -292,12 +310,21 @@ pub(crate) fn rest() {
 /// The thread works again. `handed` says whoever woke it already counted it: a thread that does not
 /// count gives that unit back at once.
 fn resume(work: &'static Work, handed: bool) {
+    resume_after(work, handed, true);
+}
+
+/// [`resume`], after a wait that `found` something to do. A wait for a stream that ended on its own
+/// timeout found nothing: a thread that looks again and again at a silent stream, as the owner of a
+/// host whose Claude works on a turn does, is no daemon moving, and never lets a wait for calm that
+/// waits for something else last past its patience.
+fn resume_after(work: &'static Work, handed: bool, found: bool) {
     let counted = HELD.try_with(|held| {
         if !held.counted.get() {
             return false;
         }
+        held.idle.set(!handed && !found);
         if !handed {
-            work.add();
+            work.add_moving(found);
         }
         if let Some(previous) = held.unit.replace(Some(work)) {
             previous.remove();
@@ -515,11 +542,12 @@ impl Bell {
 }
 
 /// The thread that waited for a stream and a bell goes on: it works again, holding the unit a ring
-/// counted for it if one did.
-pub(crate) fn woke(work: Option<&'static Work>, rested: bool, counted: bool) {
+/// counted for it if one did. `found` says whether the stream or the bell ended the wait, and not
+/// its timeout.
+pub(crate) fn woke(work: Option<&'static Work>, rested: bool, counted: bool, found: bool) {
     let Some(work) = work else { return };
     if rested || counted {
-        resume(work, counted);
+        resume_after(work, counted, found);
     }
 }
 
@@ -553,22 +581,32 @@ pub async fn real_time<F: Future>(future: F) -> F::Output {
 
 /// A wait for a stream another thread writes, such as a host's socket: what ends it is that
 /// writer's, never the clock's, so virtual time does not wait for the thread while it lasts.
-pub struct StreamWait(Option<&'static Work>);
+pub struct StreamWait {
+    work: Option<&'static Work>,
+    found: bool,
+}
 
 pub fn stream_wait() -> StreamWait {
     match Clock::current() {
         Clock::Virtual { work, .. } => {
             rest();
-            StreamWait(Some(work))
+            StreamWait { work: Some(work), found: true }
         }
-        Clock::System => StreamWait(None),
+        Clock::System => StreamWait { work: None, found: true },
+    }
+}
+
+impl StreamWait {
+    /// The wait ended on its own timeout, with nothing to read.
+    pub fn timed_out(mut self) {
+        self.found = false;
     }
 }
 
 impl Drop for StreamWait {
     fn drop(&mut self) {
-        if let Some(work) = self.0 {
-            resume(work, false);
+        if let Some(work) = self.work {
+            resume_after(work, false, self.found);
         }
     }
 }
