@@ -4,8 +4,9 @@
 //! model cannot drift from the host it stands for.
 use crate::test_support;
 use crate::{BatchHost, CodexConfiguration, Execution, HostEvent, HostOwner, McpServer, OrchestratorExecution, OrchestratorLane, OrchestratorProfile};
-use alondra_engine_ports::agent_host::{AgentHost, VerifiedArtifact};
+use alondra_engine_ports::agent_host::{AgentHost, Retained, VerifiedArtifact};
 use alondra_foundation::DataEpoch;
+use alondra_provider_contract::AdapterError;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -101,9 +102,18 @@ struct Batch {
     transcript: Vec<Value>,
 }
 
-/// Runs one batch whose fake app-server plays `mode`, reading every event as the orchestrator
-/// does: each acknowledged at a cursor above the last, until Codex exits.
-fn batch(mode: &str) -> Batch {
+/// What one batch of the orchestrator is started with.
+struct Setup {
+    directory: test_support::Directory,
+    under: UnderTest,
+    cwd: PathBuf,
+    transcript: PathBuf,
+    configuration: CodexConfiguration,
+    profile: OrchestratorProfile,
+}
+
+/// A batch whose fake app-server plays `mode`.
+fn setup(mode: &str) -> Setup {
     let directory = test_support::Directory::for_unix_socket();
     private_directory(&directory);
     let (home, state, cwd) = (directory.join("home"), directory.join("host"), directory.join("batch"));
@@ -155,9 +165,22 @@ fn batch(mode: &str) -> Batch {
         .unwrap()
         .clone(),
     };
-    let owner = BatchOwner { epoch: DataEpoch("case-epoch".into()) };
-    let mut host = BatchHost::start(owner, &configuration, SESSION, false, &profile, "Plan the pending requests")
-        .unwrap_or_else(|error| panic!("the batch did not start: {error:?} ({:?}) {:?}", (under.trouble)(), left_behind(&configuration.state_directory)));
+    Setup { directory, under, cwd, transcript, configuration, profile }
+}
+
+impl Setup {
+    fn start(&self) -> Result<BatchHost<BatchOwner>, AdapterError> {
+        let owner = BatchOwner { epoch: DataEpoch("case-epoch".into()) };
+        BatchHost::start(owner, &self.configuration, SESSION, false, &self.profile, "Plan the pending requests")
+    }
+}
+
+/// Runs one batch whose fake app-server plays `mode`, reading every event as the orchestrator
+/// does: each acknowledged at a cursor above the last, until Codex exits.
+fn batch(mode: &str) -> Batch {
+    let setup = setup(mode);
+    let mut host = setup.start()
+        .unwrap_or_else(|error| panic!("the batch did not start: {error:?} ({:?}) {:?}", (setup.under.trouble)(), left_behind(&setup.configuration.state_directory)));
     let (mut events, mut last) = (Vec::new(), None);
     loop {
         let pending = host.next_pending().unwrap();
@@ -174,8 +197,8 @@ fn batch(mode: &str) -> Batch {
             break;
         }
     }
-    let places = [(cwd.display().to_string(), "<cwd>"), (directory.display().to_string(), "<fixture>"), (host.input().to_owned(), "<input>")];
-    let transcript = fs::read_to_string(&transcript)
+    let places = [(setup.cwd.display().to_string(), "<cwd>"), (setup.directory.display().to_string(), "<fixture>"), (host.input().to_owned(), "<input>")];
+    let transcript = fs::read_to_string(&setup.transcript)
         .unwrap()
         .lines()
         .map(|line| {
@@ -236,6 +259,20 @@ fn a_codex_batch_refuses_the_native_request_of_its_turn_and_still_ends_when_the_
         &json!({"id": 88, "error": {"code": -32601, "message": "This Alondra host does not expose that request"}}),
         "the app-server's request for approval is refused, never granted",
     );
+}
+
+#[test]
+fn a_codex_host_with_an_incomplete_role_environment_starts_no_app_server_and_leaves_the_prompt_unanswered() {
+    for missing in ["ALONDRA_HOME", "ALONDRA_DOMAIN_CAPABILITY", "ALONDRA_DOMAIN_PROTOCOL", "ALONDRA_SESSION_ID", "ALONDRA_PROVIDER"] {
+        let mut setup = setup("complete");
+        assert!(setup.configuration.native_environment.remove(missing).is_some(), "{missing}");
+        let refused = setup.start().map(|_| ()).expect_err(missing);
+        assert!(matches!(refused, AdapterError::Disconnected), "without {missing}: {refused:?} ({:?})", (setup.under.trouble)());
+        assert!(!setup.transcript.exists(), "without {missing} the app-server was asked: {:?}", fs::read_to_string(&setup.transcript));
+        let left = setup.under.hosts.end_holders(&setup.configuration.state_directory).unwrap();
+        assert!(matches!(left, Retained::Ended(_)), "without {missing}");
+        assert_eq!((setup.under.trouble)(), None, "without {missing}");
+    }
 }
 
 /// What the app-server is asked, in order: who the account is before the thread opens and again

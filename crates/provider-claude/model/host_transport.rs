@@ -201,6 +201,15 @@ impl Wire {
         Self { cursor: base, acknowledged: base, outbox: Outbox::open(folder), ..Self::default() }
     }
 
+    /// The host cuts its connections and stays up, as the persistent host destroys its owner's
+    /// socket when a command fails with its outcome unknown.
+    pub fn cut(&mut self) {
+        self.lane = None;
+        for connection in self.connections.drain(..) {
+            let _ = connection.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
     /// Journals `frame` as the host sends it, before it goes on the lane.
     fn keep(&mut self, frame: &Frame) -> Result<(), String> {
         let bytes = encode(frame).map_err(|error| format!("the host made a frame it cannot send: {error}"))?;

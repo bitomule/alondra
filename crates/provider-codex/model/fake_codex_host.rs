@@ -52,6 +52,7 @@ const CAPABILITIES: &[&str] = &[
 ];
 const MAX_QUEUED: usize = 64;
 const MAX_PROMPT: usize = 900_000;
+const REQUIRED_ROLE_ENVIRONMENT: &[&str] = &["ALONDRA_HOME", "ALONDRA_DOMAIN_CAPABILITY", "ALONDRA_DOMAIN_PROTOCOL", "ALONDRA_SESSION_ID", "ALONDRA_PROVIDER"];
 const ROLE_ENVIRONMENT: &[&str] = &[
     "ALONDRA_HOME", "ALONDRA_DOMAIN_CAPABILITY", "ALONDRA_DOMAIN_PROTOCOL", "ALONDRA_SESSION_ID", "ALONDRA_ORCHESTRATOR", "ALONDRA_ORCHESTRATOR_EXECUTION", "ALONDRA_PORT",
     "ALONDRA_SANDBOX", "ALONDRA_BIN", "ALONDRA_PROVIDER",
@@ -562,12 +563,14 @@ impl Session {
                 if self.opened || cwd != Self::cwd(bootstrap) || bootstrap.journal_base.is_some() {
                     return out.troubled("the daemon started a session the host could not start".into());
                 }
-                self.open(out);
+                if !self.open(out) {
+                    return;
+                }
                 self.offered(out, command, input_id.to_string(), prompt);
             }
             Action::Offer { input_id, prompt } => {
-                if !self.opened && bootstrap.journal_base.is_some() {
-                    self.open(out);
+                if !self.opened && bootstrap.journal_base.is_some() && !self.open(out) {
+                    return;
                 }
                 if !self.opened {
                     return out.troubled("the daemon offered an input to a host with no session".into());
@@ -673,7 +676,9 @@ impl Session {
     /// refused.
     fn controlled(&mut self, out: &mut Out, command: &Command) -> bool {
         if !self.opened && out.bootstrap().opens_on_control {
-            self.open(out);
+            if !self.open(out) {
+                return false;
+            }
             self.drive(out, Phase::Soon);
         }
         if !self.opened {
@@ -712,10 +717,17 @@ impl Session {
         self.drive(out, Phase::All);
     }
 
-    /// The session starts its app-server and opens its thread.
-    fn open(&mut self, out: &mut Out) {
-        self.opened = true;
+    /// The session starts its app-server and opens its thread. With an incomplete role
+    /// environment there is no session and no app-server: the host cuts the daemon's connection,
+    /// leaving the command without an outcome, and says false.
+    fn open(&mut self, out: &mut Out) -> bool {
         let bootstrap = out.bootstrap();
+        let has_role = bootstrap.worker.is_some() || self.orchestrator.is_some();
+        if has_role && REQUIRED_ROLE_ENVIRONMENT.iter().any(|key| bootstrap.native.env.get(*key).is_none_or(String::is_empty)) {
+            out.wire.cut();
+            return false;
+        }
+        self.opened = true;
         self.model = bootstrap.worker.as_ref().and_then(|worker| worker.model.clone()).or_else(|| self.profile("model").and_then(text));
         if self.settings(bootstrap).get("initial_mode").and_then(Value::as_str) == Some("plan") {
             self.mode = Mode::Plan;
@@ -734,6 +746,7 @@ impl Session {
             Err(Opening::Failed) => Ready::Failed,
         };
         self.work.push_back(Work::Opened);
+        true
     }
 
     fn initialize(&mut self, out: &mut Out) -> Result<(), Opening> {
