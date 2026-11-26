@@ -1,4 +1,4 @@
-//! Every family of views renders a domain the size of the real one in under 50 ms, cold, right
+//! Every family of views renders a domain the size of the real one within its budget, cold, right
 //! after a commit: what a row needs is read from the committed index, never by walking the domain
 //! once per row.
 use alondra_domain_rules::{
@@ -14,8 +14,10 @@ use alondra_core::metrics::fold::Outcome;
 use alondra_core::metrics::report::{DayRow, MetricsInputs, Release, Spend, Sums, TaskRow, Tokens, WeekRow};
 use std::time::Instant;
 
-const BUDGET_MS: f64 = 50.0;
-const SAMPLES: usize = 5;
+mod views_budget_meter;
+use views_budget_meter::{SAMPLES, median_minstr};
+
+const VIEW_BUDGET_MINSTR: f64 = 750.0;
 /// What every id of a unit carries, replaced by the unit's own number in each copy.
 const TOKEN: &str = "u000";
 
@@ -497,43 +499,26 @@ fn every_view_renders_a_real_size_domain_cold_within_the_budget() {
         "index_ms": index_ms}));
     let mut over = vec![];
     for (key, client) in keys() {
-        let mut samples: Vec<f64> = (0..SAMPLES).map(|_| {
-            let start = Instant::now();
-            let view = build(&key, RenderContext {
-                domain: state, index, live: &live, client, lang: Lang::Es, transport: Transport::Loopback,
-                cursor: "budget", rendered_at: "",
-            });
-            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-            if let Err(error) = view {
-                panic!("{key} ({client:?}) does not render: {error:?}");
-            }
-            elapsed
-        }).collect();
-        samples.sort_by(f64::total_cmp);
-        let median = samples[SAMPLES / 2];
-        println!("{}", serde_json::json!({"view": key, "client": format!("{client:?}"), "median_ms": median, "max_ms": samples[SAMPLES - 1]}));
-        if median > BUDGET_MS {
-            over.push(format!("{key} ({client:?}): {median:.1} ms"));
+        let spent = median_minstr(|| build(&key, RenderContext {
+            domain: state, index, live: &live, client, lang: Lang::Es, transport: Transport::Loopback,
+            cursor: "budget", rendered_at: "",
+        }).unwrap_or_else(|error| panic!("{key} ({client:?}) does not render: {error:?}")));
+        println!("{}", serde_json::json!({"view": key, "client": format!("{client:?}"), "median_minstr": spent}));
+        if let Some(spent) = spent.filter(|spent| *spent > VIEW_BUDGET_MINSTR) {
+            over.push(format!("{key} ({client:?}): {spent:.0}M"));
         }
     }
-    assert!(over.is_empty(), "views over {BUDGET_MS} ms: {over:#?}");
+    assert!(over.is_empty(), "views over {VIEW_BUDGET_MINSTR}M instructions: {over:#?}");
 }
 
 /// The live domain on 6 November had ~1,000 requests, ~1,500 tasks and ~6,300 cards.
 const LIVE_SCALE: usize = 5;
-/// CPU a user's action may cost the domain on a domain the size of the live one: deciding its
-/// command on a copy of the state, building the read index every screen reads after it, and
+/// Instructions a user's action may cost the domain on a domain the size of the live one: deciding
+/// its command on a copy of the state, building the read index every screen reads after it, and
 /// letting the state it replaced go. Each of those grows with the domain once, never with its
-/// square; SQLite's part does not grow with it. Alone an action takes about 40 ms and under a
-/// full test run about 80: the budget is three times the first.
-const ACTION_BUDGET_MS: f64 = 120.0;
-
-/// CPU time of this thread: what the work costs, whatever else the machine runs meanwhile.
-fn cpu_ms() -> f64 {
-    let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut now) };
-    now.tv_sec as f64 * 1000.0 + now.tv_nsec as f64 / 1_000_000.0
-}
+/// square; SQLite's part does not grow with it. An action takes about 620M: the budget leaves 60%
+/// for the domain to grow.
+const ACTION_BUDGET_MINSTR: f64 = 1_000.0;
 
 fn envelope_on(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
     CommandEnvelope {
@@ -574,33 +559,23 @@ fn every_action_of_the_user_fits_its_budget_on_a_live_size_domain() {
     let mut state = sized(LIVE_SCALE);
     assert!(state.requests.len() >= 1000 && state.tasks.len() >= 1400 && state.interactions.len() >= 6000,
         "the domain is smaller than the live one: {} requests, {} tasks, {} cards", state.requests.len(), state.tasks.len(), state.interactions.len());
-    let median_of = |work: &dyn Fn()| {
-        let mut spent: Vec<f64> = (0..SAMPLES).map(|_| { let started = cpu_ms(); work(); cpu_ms() - started }).collect();
-        spent.sort_by(f64::total_cmp);
-        spent[SAMPLES / 2]
-    };
-    println!("copy of the state: {:.2} ms CPU, read index: {:.2} ms CPU",
-        median_of(&|| drop(std::hint::black_box(state.clone()))), median_of(&|| drop(std::hint::black_box(ReadSnapshot::build(Arc::new(state.clone())))))
-            - median_of(&|| drop(std::hint::black_box(state.clone()))));
+    println!("copy of the state: {:?}M instructions, copy and read index: {:?}M",
+        median_minstr(|| state.clone()), median_minstr(|| ReadSnapshot::build(Arc::new(state.clone()))));
     state.seed_every_open_pr_mergeable();
     let mut over = vec![];
     for (name, actor, command) in actions(&mut state) {
         let envelope = envelope_on(&state, &format!("budget-{name}"), command);
-        let mut spent: Vec<f64> = (0..SAMPLES).map(|_| {
-            let started = cpu_ms();
+        let spent = median_minstr(|| {
             let (next, outcome) = state.transition(&actor, &envelope).unwrap_or_else(|error| panic!("{name}: {error:?}"));
             assert!(outcome.changed, "{name} changed nothing");
-            std::hint::black_box(ReadSnapshot::build(Arc::new(next)));
-            cpu_ms() - started
-        }).collect();
-        spent.sort_by(f64::total_cmp);
-        let median = spent[SAMPLES / 2];
-        println!("{name}: {median:.2} ms CPU");
-        if median > ACTION_BUDGET_MS {
-            over.push(format!("{name}: {median:.2} ms"));
+            drop(std::hint::black_box(ReadSnapshot::build(Arc::new(next))));
+        });
+        println!("{name}: {spent:?}M instructions");
+        if let Some(spent) = spent.filter(|spent| *spent > ACTION_BUDGET_MINSTR) {
+            over.push(format!("{name}: {spent:.0}M"));
         }
     }
-    assert!(over.is_empty(), "actions over {ACTION_BUDGET_MS} ms of CPU on {} tasks and {} cards: {over:#?}", state.tasks.len(), state.interactions.len());
+    assert!(over.is_empty(), "actions over {ACTION_BUDGET_MINSTR}M instructions on {} tasks and {} cards: {over:#?}", state.tasks.len(), state.interactions.len());
 }
 
 /// What each app waits for before it can draw its first card, right after a commit: the iPhone's

@@ -133,14 +133,22 @@ every key shares is kept once per language; keys that read files or GitHub (`mac
 | Index equals the state's on-demand answers | `assert_index_matches`, after every command of arbitrary histories (`read_index_tests.rs`) and of the core tests (`tests.rs`, `card_tests.rs`) | the index disagrees on queue order, Waiting for You and its buttons, counts, acting cards, blockers, relations, items, reviewers, dependents, PRs, task buttons, schedule marks |
 | Guard equals execution, every button | `assert_guard_matches_execution`, in `action()` under `cfg(test)` | a button's guard accepts or refuses differently from running its command on a copy |
 | Guard equals execution, every refusal | `guards_refuse_what_the_commands_refuse` (`domain/tests.rs`) | any button command × 5 actors × 5 envelopes × 4 delivery states disagrees |
-| View budget | `//crates/views:views_budget_test` | any of 29 keys renders cold over 50 ms (median of 5) on a real-size domain, or a `Family` has no measured key |
+| View budget | `//crates/views:views_budget_test` | a key renders cold over 750M CPU instructions (median of 5) on a real-size domain, or a `Family` has no measured key |
 | Index cost | `bazelisk run -c opt //crates/core:read_index_cost -- --check-cost` | building the index of a real-size domain with 420 waiting cards takes over 10 ms |
 | Snapshot pairing | `domain_runtime.rs` tests | a commit publishes a state without its index, or a stale pair is accepted |
 | Live snapshot reuse | `views::live` cache tests | a fact change does not force exactly one new read, or a snapshot read across a change is kept |
-| Action budget | `//crates/views:views_budget_test` `every_action_of_the_user_fits_its_budget_on_a_live_size_domain` | reading, answering, accepting, requesting changes, messaging, prioritizing, cancelling or reopening costs over 120 ms of CPU (median of 5) on a domain of ~1,400 tasks and ~8,600 cards: the command on one copy of the state, the read index after it and letting the old state go |
+| Action budget | `//crates/views:views_budget_test` `every_action_of_the_user_fits_its_budget_on_a_live_size_domain` | reading, answering, accepting, requesting changes, messaging, prioritizing, cancelling or reopening costs over 1,000M CPU instructions (median of 5; about 620M today) on a domain of ~1,400 tasks and ~8,600 cards: the command on one copy of the state, the read index after it and letting the old state go |
 | Owner transactions read no whole domain | `an_observation_and_its_commands_never_read_the_whole_domain` (`wiring/owner_tests.rs`) | a command staged after an SDK observation reloads the domain from SQLite instead of building on the transaction's draft; under `test-hooks` every staged command also checks its draft equals a reload |
 | Ended tasks do not multiply card reads | `ended_tasks_do_not_multiply_the_cards_a_command_reads` (`transition_cost_tests.rs`) | sixteen times the ended tasks make a command read more than twice the cards |
 | A live gather is linear | `a_live_gather_looks_at_each_task_once_however_many_nodes_there_are` (`views/live.rs`) | four times the nodes make one gather look at more than four times the tasks (`measure::tasks_read`) |
+
+Both budgets count the instructions the CPU retired (`tests/views_budget_meter.rs`), not time. On
+a shared Mac time, CPU time included, grows with the load, because a thread lands on a slower core
+or shares caches; the instructions of the same work do not (under `taskpolicy -b`, the efficiency
+cores, the test took 2.5 times as long and no action or large view moved over 3%). macOS counts
+them for the whole process, so the target runs its tests one at a time; outside macOS the budgets
+are not enforced. They catch more work, such as a walk of the domain per row; they do not catch the
+same work missing the cache more often.
 
 `make views-measure DB=<copy>` measures each step on a copy of the real domain
 (`sqlite3 -readonly ~/.alondra/domain.db ".backup /path/copy.db"`); it never opens the live file.
