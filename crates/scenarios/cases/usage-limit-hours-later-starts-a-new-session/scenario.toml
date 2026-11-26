@@ -173,6 +173,7 @@ max = "10m"
 do = "checkpoint"
 name = "accepted-hours-later"
 screens = ["home", "task:t1"]
+settled_accounts = true
 
 [[step.expect]]
 check = "task_state"
@@ -236,6 +237,21 @@ tasks = ["t3"]
 [[step]]
 do = "turn_end"
 task = "t3"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "held-and-resting-without-a-host"
+
+[[step.expect]]
+check = "hosts"
+task = "t3"
+started = 1
+running = 0
+sessions = 1
 
 [[step]]
 do = "advance"

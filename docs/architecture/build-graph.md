@@ -960,8 +960,9 @@ in for work the clock's count of working threads did not see. Now the count sees
 waits for one condition, looked at only when the count comes back to zero or the runtime's thread
 goes to sleep (`clock::until_idle`, on the condvar the count already had): nothing works, the
 runtime sleeps with no task woken for it, every host is attached and acknowledged, no takeover runs.
-No poll and no new timer decides it; `PATIENCE` (20 s) only names a hang, with each blocking job
-still running by where it was submitted.
+No poll and no new timer decides it; `PATIENCE` (20 s) only names a hang, a stretch with no unit of
+work starting or ending (a daemon that moves, slowly on a loaded Mac, is waited for), with each
+blocking job still running by where it was submitted.
 
 What the count now sees:
 

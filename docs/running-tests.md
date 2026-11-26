@@ -442,6 +442,11 @@ a Mac. The world decides what the provider answers:
   checkpoint with `pushes = true` writes them to `pushes.json` (every alert; of the badge and
   retraction pushes, the last of each) and can assert `check = "no_pushes"` (optionally for one
   `delivery`: `alert`, `background` or `badge`) or `check = "badge"` with the `count` the icon ends at.
+- The gauges of a screen come from the sample of the Mac, which takes the accounts when it is
+  published, and a usage probe that woke at the same instant of the clock commits before or after
+  that as the threads run. A checkpoint that follows a probe sets `settled_accounts = true`: the
+  sample takes the accounts again from the settled daemon and the views build their gauges from
+  that, so the checkpoint reads what the daemon holds, not what won the race.
 - Views show local time: the runner needs `TZ=UTC`, which the Bazel targets and `accept` set.
 - `crates/scenarios-transcript` reads the transcript of a provider's process, one reader for
   every user of one.
