@@ -13,8 +13,10 @@ A third change times `bazel test` with an execution log: the whole edit, and the
 took longest. `--profile` keeps Bazel's profile of both and prints the actions on the build's
 critical path. It puts the file back exactly as it was, also when interrupted. `--build-only` stops
 after the build. The log of
-every test target that fails, times out or never reports, with its earlier attempts, is copied to
-`.scratch/edit-bench-failures/` before the next pass overwrites it; the newest runs are kept.
+every test target that fails, times out or never reports, shard by shard and with its earlier
+attempts, is copied to `.scratch/edit-bench-failures/` before the next pass overwrites it; the newest
+runs are kept. Each edit's row of the table is printed as soon as it is measured, so a bench cut
+halfway keeps what it measured.
 
 Under bazelqueue a `bazel run` holds its build slot while the bench runs, so on a shared Mac build
 the script and run it outside Bazel:
@@ -255,13 +257,15 @@ def keep_failures(root, relative, failed):
     run = kept / f"{time.time_ns()}-{relative.replace('/', '_')}"
     for label in failed:
         package, name = label.removeprefix("//").split(":", 1)
-        source, target = testlogs / package / name, run / package / name
-        for item in ("test.log", "test.attempts"):
-            if (source / item).is_dir():
-                shutil.copytree(source / item, target / item)
-            elif (source / item).is_file():
-                target.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source / item, target / item)
+        logs = testlogs / package / name
+        for source in [logs, *sorted(logs.glob("shard_*_of_*"))]:
+            target = run / package / name / source.relative_to(logs)
+            for item in ("test.log", "test.attempts"):
+                if (source / item).is_dir():
+                    shutil.copytree(source / item, target / item)
+                elif (source / item).is_file():
+                    target.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source / item, target / item)
     if not run.exists():
         return None
     for old in sorted(kept.iterdir())[:-KEPT_RUNS]:
@@ -269,30 +273,34 @@ def keep_failures(root, relative, failed):
     return run
 
 
+HEADER = (
+    "| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | From cache"
+    " | Build: critical path | Edit + build | Longest test target | Critical path | Edit + build or test |\n"
+    "|---|---:|---:|---|---:|---:|---:|---|---:|---:|"
+)
+
+
+def table_row(row):
+    if "seconds" in row:
+        ran = f"{row['actions']} ({row['rustc']} / {row['clippy']} / {row['test_runs']})"
+        failed = ": " + ", ".join(f"`{label}`" for label in row["failed"]) if row.get("failed") else ""
+        took = f"{row['seconds']} s ({row['verb']})" + ("" if row["passed"] else f" (failed{failed})")
+        took += " (retried: actions count only the last attempt)" if row["retried"] else ""
+        critical = "-" if row["critical"] is None else f"{round(row['critical'])} s"
+        cache = str(row["cached"])
+        build_critical = "-" if row.get("build_critical") is None else f"{round(row['build_critical'])} s"
+        build = f"{row['build_seconds']} s" if "build_seconds" in row else "-"
+        slowest = f"`{row['slowest'][0]}` {round(row['slowest'][1])} s" if row.get("slowest") else "-"
+    else:
+        ran = took = critical = cache = build_critical = build = slowest = "-"
+    return (
+        f"| `{row['edit']}` | {row['crates']} | {row['tests']} | {ran} | {cache} | {build_critical} | {build}"
+        f" | {slowest} | {critical} | {took} |"
+    )
+
+
 def table(rows):
-    lines = [
-        "| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | From cache"
-        " | Build: critical path | Edit + build | Longest test target | Critical path | Edit + build or test |",
-        "|---|---:|---:|---|---:|---:|---:|---|---:|---:|",
-    ]
-    for row in rows:
-        if "seconds" in row:
-            ran = f"{row['actions']} ({row['rustc']} / {row['clippy']} / {row['test_runs']})"
-            failed = ": " + ", ".join(f"`{label}`" for label in row["failed"]) if row.get("failed") else ""
-            took = f"{row['seconds']} s ({row['verb']})" + ("" if row["passed"] else f" (failed{failed})")
-            took += " (retried: actions count only the last attempt)" if row["retried"] else ""
-            critical = "-" if row["critical"] is None else f"{round(row['critical'])} s"
-            cache = str(row["cached"])
-            build_critical = "-" if row.get("build_critical") is None else f"{round(row['build_critical'])} s"
-            build = f"{row['build_seconds']} s" if "build_seconds" in row else "-"
-            slowest = f"`{row['slowest'][0]}` {round(row['slowest'][1])} s" if row.get("slowest") else "-"
-        else:
-            ran = took = critical = cache = build_critical = build = slowest = "-"
-        lines.append(
-            f"| `{row['edit']}` | {row['crates']} | {row['tests']} | {ran} | {cache} | {build_critical} | {build}"
-            f" | {slowest} | {critical} | {took} |"
-        )
-    return "\n".join(lines)
+    return "\n".join([HEADER, *map(table_row, rows)])
 
 
 def main(argv):
@@ -314,8 +322,11 @@ def main(argv):
             cwd=root, capture_output=True, text=True, check=True,
         ).stdout
         edits = frequent_edits(log, root, args.count)
-    rows = [measure(root, edit, args.query_only, args.build_only, args.bazel_flag, args.profile) for edit in edits]
-    print(table(rows))
+    rows = []
+    print(table(rows), flush=True)
+    for edit in edits:
+        rows.append(measure(root, edit, args.query_only, args.build_only, args.bazel_flag, args.profile))
+        print(table_row(rows[-1]), flush=True)
     for row in rows:
         if row.get("path"):
             print(f"Critical path of building after editing {row['edit']} ({row['profiles']}):")
