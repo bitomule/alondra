@@ -406,8 +406,11 @@ impl Clock {
             return;
         }
         *transit.frames.entry(host.to_owned()).or_default() += 1;
-        drop(transit);
+        // Counted before the frame can be dropped: a host that goes drops it under the same lock.
         work.add();
+        drop(transit);
+        #[cfg(test)]
+        tests::transit_released();
     }
 
     pub fn frame_handled(self, host: &str) {

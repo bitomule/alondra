@@ -598,6 +598,39 @@ fn a_frame_to_a_host_that_is_gone_never_works() {
     });
 }
 
+thread_local! {
+    /// What runs on a thread the moment its `frame_sent` lets go of the frames in transit.
+    static TRANSIT_RELEASED: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn transit_released() {
+    let hook = TRANSIT_RELEASED.with(|hook| hook.borrow_mut().take());
+    if let Some(mut hook) = hook {
+        hook();
+    }
+}
+
+/// The host goes the moment a frame written to it is in transit and the writer let go of what is
+/// in transit: the work it drops with the frame was already counted, so the count never runs
+/// below nothing and the rest it reaches wakes a wait for calm.
+#[test]
+fn a_host_gone_while_a_frame_to_it_is_being_written_drops_work_that_was_counted() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let seen = std::rc::Rc::new(Cell::new(None));
+        let after = seen.clone();
+        TRANSIT_RELEASED.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                host_gone("host");
+                after.set(Some(working()));
+            }))
+        });
+        frame_sent("host");
+        assert_eq!(seen.get(), Some(0), "the host's frame was counted as work before it went");
+        assert_eq!((working(), frames_in_transit()), (0, 0));
+    });
+}
+
 #[test]
 fn frames_count_nothing_on_the_system_clock() {
     frame_sent("host");
