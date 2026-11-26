@@ -156,7 +156,15 @@ none on the piece that implements a port it uses.
   (`agent_host::of(domain.ports())`). The values it carries moved with it (`VerifiedArtifact`,
   `LaunchIdentity`, `HostStop`, `EndedHost`…), and so did the owner wrappers `OwnedHost` and
   `AdoptedHost`. The file digest and the socket poll they need are plain computations, in
-  `foundation`.
+  `foundation`. The SDK backend asks Claude Code and Codex their version through `AgentHost::run`
+  (`SdkBackend::for_start`), so the kernel starts no process of its own.
+- `AgentProvider` and `AgentWorker` (`agent_workers.rs`) are how the engine runs a task's agent on
+  its provider: `AgentProvider::configured` gives the worker of one execution, and the provider reads
+  its host's frames and records (`conversation_session`, `native_exited`, `account_refusal`…). Each
+  provider crate adds itself with its `wire(&Registry)` to `AgentProviders`, which the root
+  (`alondrad::wire_providers`) and the engine's test assembly fill; `Registry::missing` names the
+  port and each provider left unwired. The values they carry are the providers' common ones
+  (`WorkerConfiguration`, `WorkerProfile`, `Retained`, `NativeLiveness`, `Found`).
 
 ## The orchestrator
 
@@ -1720,3 +1728,35 @@ targets as before this change, so its row is also what editing one of these modu
 
 The modules the server took were edited 55 times in the 60 days before this change, the ones moved
 to `engine-ports` 25 times: the first now reopen 41 test targets fewer each, the second 33 more.
+
+## The providers behind `AgentProvider` (phase 5f, 2026-11-26, measured at d68285a66)
+
+`engine-sdk` no longer depends on `provider-claude`, `provider-codex` or `provider-antigravity`: it
+asks the registry for the `AgentProvider` a task's binding names and runs the `AgentWorker` it
+returns. Its three `LAYER_EXCEPTIONS` entries are gone (`EXCEPTION_CEILING` 52 → 49 on today's
+main). `SdkBackend::for_start` asks Claude Code and Codex their version through `AgentHost::run`,
+so `engine-kernel` starts no process of its own. There is no `sdk-host` crate: the adapter of the
+SDK's hosts is `agent-runtime`, behind `AgentHost` since phase 3b.
+
+`edit_bench --profile`, before and after on the same main, one edit each, on the shared Bazel queue:
+
+| Edit | Crates / test targets reopened | Actions (rustc / clippy / tests) | Build: critical path | Edit + build | Longest test target | Edit + build or test |
+|---|---:|---|---:|---:|---|---:|
+| `provider-antigravity/src/adapter.rs` before | 10 / 44 | 141 (19 / 10 / 111) | 25 s | 42 s | `engine_sdk_engine_test` 28 s | 100 s |
+| `provider-antigravity/src/adapter.rs` after | 8 / 40 | 141 (17 / 10 / 113) | 36 s | 52 s | `engine_sdk_engine_test` 37 s | 103 s |
+| `provider-claude/src/adapter.rs` before | 24 / 96 | 191 (45 / 24 / 119) | 43 s | 58 s | `provider-claude:sdk_worker_test` 34 s | 138 s |
+| `provider-claude/src/adapter.rs` after | 24 / 96 | 218 (45 / 24 / 146) | 38 s | 62 s | `daemon_engine_test` 31 s | 133 s |
+| `agent-runtime/src/owned_host.rs` before | 11 / 49 | 143 (18 / 10 / 113) | 17 s | 27 s | `provider-claude:sdk_worker_test` 27 s | 79 s |
+| `agent-runtime/src/owned_host.rs` after | 11 / 49 | 144 (18 / 10 / 114) | 16 s | 24 s | `cli-report:cli_report_test` 22 s | 62 s |
+
+- **Antigravity**: in production only `alondrad` links the provider now, so an edit no longer
+  recompiles the engine's library. The seconds did not drop: the critical path of both runs is
+  compiling `engine_sdk_engine_test` (28–30 s), which links all three providers because its
+  Antigravity cases (`sdk_owner/antigravity_tests.rs`) run the real provider through the engine. The
+  target of 30 s to build and 90 s to build and test is not met until those cases get a test target
+  of their own. The 11 s between the two runs are the shared queue: the same action counts ran.
+- **Claude and Codex**: the same 24 crates reopen, because `daemon-engine`, `daemon-support`,
+  `engine-live`, `engine-mcp`, `engine-orchestrator` and `store-sqlite` still depend on them
+  directly (9 of the 49 exceptions).
+- **The hosts' adapter** (`agent-runtime`) stays within the target: 24 s to build, 62 s to build and
+  test.

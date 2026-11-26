@@ -8,7 +8,8 @@ use crate::domain_store::batch_effects::BatchReport;
 use crate::orchestrator_process::{self as process, Output, Stream, bounded};
 use crate::sdk_backend::SdkBackend;
 use alondra_engine_ports::agent_host::{Preparing, VerifiedArtifact};
-use alondra_provider_claude::{BatchHost, ClaudeConfiguration, HostEvent, McpServer, OrchestratorProfile};
+use alondra_engine_ports::agent_workers::WorkerConfiguration;
+use alondra_provider_claude::{BatchHost, HostEvent, McpServer, OrchestratorProfile};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -160,8 +161,9 @@ pub(crate) fn conversation_kept(domain: &crate::domain_runtime::DomainRuntime, b
     Some(alondra_engine_ports::claude_history::available(&backend.native_environment, session, directory))
 }
 
-fn configuration(batch: &Batch) -> Result<(ClaudeConfiguration, Preparing), String> {
-    let backend = &batch.backend.for_provider(alondra_core::accounts::Provider::Claude,&batch.home).and_then(|backend|backend.for_start())
+fn configuration(batch: &Batch) -> Result<(WorkerConfiguration, Preparing), String> {
+    let hosts = alondra_engine_ports::agent_host::of(batch.domain.ports()).map_err(|error| format!("starting the SDK host: {error}"))?;
+    let backend = &batch.backend.for_provider(alondra_core::accounts::Provider::Claude,&batch.home).and_then(|backend|backend.for_start(&*hosts))
         .and_then(|backend| backend.for_account(&batch.home, &batch.selection.account.account, &batch.domain.engine().registered_accounts(&batch.home, alondra_core::accounts::Provider::Claude)))
         .map_err(|error| format!("{error:#}"))?;
     std::fs::create_dir_all(&backend.state_root).map_err(|error| format!("creating the SDK state root: {error}"))?;
@@ -194,7 +196,7 @@ fn configuration(batch: &Batch) -> Result<(ClaudeConfiguration, Preparing), Stri
             native_environment.insert(name.to_owned(), value);
         }
     }
-    Ok((ClaudeConfiguration {
+    Ok((WorkerConfiguration {
         artifact: VerifiedArtifact::verify(&backend.node, &backend.host, &backend.node_sha256, &backend.host_sha256)
             .map_err(|error| format!("verifying the SDK host: {error}"))?,
         state_directory,

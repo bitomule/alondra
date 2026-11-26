@@ -102,7 +102,8 @@ fn plan(domain: &dyn Runtime, held: &ClaudeHeld, to: AccountId, now: Millis) -> 
         "account {to} does not read the conversations of account {}, so the session would not resume there", held.account);
     let mut store = domain.store().lock_or_exit("the domain store");
     let metadata = store.conversation_metadata(&held.task, stamp.conversation().as_str())?.context("its Claude session is not known")?;
-    let session = alondra_provider_claude::conversation_session(&metadata).context("its Claude session is not known")?;
+    let claude = alondra_engine_ports::agent_workers::of(domain.ports(), alondra_core::accounts::Provider::Claude)?;
+    let session = claude.conversation_session(&metadata).context("its Claude session is not known")?;
     let cwd = store.task_worktree(&held.task)?.context("the folder its session works in is not known")?;
     let plan = AccountMovePlan {
         from: held.account.clone(), to, card: held.card.clone(), node, instance: stamp.instance().as_str().to_owned(), session, cwd,

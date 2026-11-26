@@ -23,9 +23,6 @@ alondra-engine-github.workspace = true
 alondra-engine-kernel.workspace = true
 alondra-foundation.workspace = true
 alondra-process-group.workspace = true
-alondra-provider-claude.workspace = true
-alondra-provider-antigravity.workspace = true
-alondra-provider-codex.workspace = true
 alondra-provider-contract.workspace = true
 alondra-store.workspace = true
 anyhow.workspace = true
@@ -45,6 +42,9 @@ url = "2.5"
 tempfile.workspace = true
 
 [dev-dependencies]
+alondra-provider-antigravity.workspace = true
+alondra-provider-claude.workspace = true
+alondra-provider-codex.workspace = true
 alondra-daemon-engine.workspace = true
 alondra-engine-admission.workspace = true
 alondra-agent-runtime.workspace = true

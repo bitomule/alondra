@@ -23,6 +23,9 @@ alondra-engine-admission.workspace = true
 alondra-engine-orchestrator.workspace = true
 alondra-engine-sdk.workspace = true
 alondra-agent-runtime.workspace = true
+alondra-provider-antigravity.workspace = true
+alondra-provider-claude.workspace = true
+alondra-provider-codex.workspace = true
 alondra-e2e = { path = "../e2e" }
 alondra-domain.workspace = true
 anyhow.workspace = true

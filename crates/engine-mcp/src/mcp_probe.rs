@@ -99,7 +99,7 @@ fn parse(output: &str) -> Result<Vec<McpServerState>, String> {
 
 /// Starts the host in `directory` as a check and reads what it answers, within `DEADLINE`.
 fn run(hosts: &dyn AgentHost, backend: &SdkBackend, directory: &Path) -> Result<Vec<McpServerState>, String> {
-    let backend = backend.for_start().map_err(|error| error.to_string())?;
+    let backend = backend.for_start(hosts).map_err(|error| error.to_string())?;
     let mut command = match &backend.confinement {
         Some(profile) => {
             let mut command = Command::new("/usr/bin/sandbox-exec");

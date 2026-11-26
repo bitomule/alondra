@@ -18,6 +18,7 @@ adapter_out_crate(
     srcs = glob(["src/*.rs"], exclude = ["src/*_tests.rs"]),
     crate_name = "alondra_provider_antigravity",
     version = "0.1.0",
+    test_visibility = ["//crates/daemon-engine:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-sdk:__pkg__"],
     deps = _DEPS,
 )
 low_opt_rust_test(

@@ -4,6 +4,7 @@ mod fixture_controller;
 use fixture_controller::WorkerController;
 use super::*;
 use alondra_agent_application::Error as ControllerError;
+use alondra_engine_ports::agent_host::VerifiedArtifact;
 use alondra_store::{AuthorityScope, InputPayload};
 use alondra_agent_protocol::{FramedReader, ReceivedFrame};
 use alondra_domain::ActivityView;
@@ -199,7 +200,7 @@ fn scenario(prompt: &str, terminal_gap: bool) {
     let environment = test_support::fixture_environment(&home);
     let mut native_environment = environment.clone();
     native_environment.insert("FIXTURE_CAPTURE".into(), capture.to_str().unwrap().into());
-    let configuration = ClaudeConfiguration {
+    let configuration = WorkerConfiguration {
         artifact: VerifiedArtifact::verify(&node, &bundle, &hash(&node), &hash(&bundle)).unwrap(),
         state_directory: state.clone(),
         host_environment: environment,
@@ -536,7 +537,7 @@ impl FacadeFixture {
         let environment = test_support::fixture_environment(&home);
         let mut native_environment = environment.clone();
         native_environment.insert("FIXTURE_CAPTURE".into(), capture.to_str().unwrap().into());
-        let configuration = ClaudeConfiguration {
+        let configuration = WorkerConfiguration {
             artifact: VerifiedArtifact::verify(&node, &bundle, &hash(&node), &hash(&bundle))
                 .unwrap(),
             state_directory: state,

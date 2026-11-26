@@ -3,28 +3,9 @@
 //! host's own evidence; a frame cut short at its end is a write that never completed.
 use alondra_antigravity_protocol::{Action, Body, Execution, Fence, FramedReader, ReceiptOutcome, ReceiptPhase};
 use alondra_provider_contract::AdapterError;
+pub use alondra_engine_ports::agent_workers::{Retained, RetainedEvent};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-
-/// The last durable receipt the ended host kept for a command.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Retained {
-    /// The input reached the native session (or the decision was applied).
-    Offered,
-    /// Refused before anything was offered.
-    Refused,
-    /// The host took the command and may have acted on it: its outcome is unknown.
-    AdmittedOnly,
-    /// The host never took the command: nothing of it reached the native session.
-    Absent,
-}
-
-/// One unacknowledged event of the ended host, with its exact payload bytes.
-#[derive(Debug)]
-pub struct RetainedEvent {
-    pub cursor: u64,
-    pub payload: Vec<u8>,
-}
 
 #[derive(Debug, Default)]
 pub struct EndedJournal {

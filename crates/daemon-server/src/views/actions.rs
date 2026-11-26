@@ -922,8 +922,11 @@ async fn execute_external(
             let Some((backend, _)) = domain.sdk() else {
                 return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to reach Claude Code with"));
             };
+            let Ok(hosts) = alondra_engine_ports::agent_host::of(domain.ports()) else {
+                return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to reach Claude Code with"));
+            };
             let (nodes, probes, backend, subject) = (state.mcp_nodes(), client.mcp_probes.clone(), backend.clone(), action.subject.clone());
-            let removed = alondra_core::clock::spawn_blocking_unwatched(move || crate::mcp_remove::remove(&nodes, &probes, &projects, &backend, &subject)).await?;
+            let removed = alondra_core::clock::spawn_blocking_unwatched(move || crate::mcp_remove::remove(&nodes, &probes, &projects, &*hosts, &backend, &subject)).await?;
             match removed {
                 Ok(server) => {
                     client.feeds.wake();

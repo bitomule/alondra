@@ -9,6 +9,9 @@ pub fn open_engine_at(home: &Path, database: &Path, files: &dyn alondra_engine_p
     alondra_daemon_engine::wiring::wire(runtime.ports());
     alondra_engine_sdk::wiring::wire(runtime.ports());
     alondra_engine_admission::wire(runtime.ports());
+    alondra_provider_claude::wire(runtime.ports());
+    alondra_provider_codex::wire(runtime.ports());
+    alondra_provider_antigravity::wire(runtime.ports());
     Ok(runtime)
 }
 

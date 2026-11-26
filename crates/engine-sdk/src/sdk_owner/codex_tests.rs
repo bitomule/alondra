@@ -852,7 +852,7 @@ fn until_traced(trace: &Path, method: &str, times: usize) {
 
 pub fn native_process(driver: &mut Driver) -> alondra_process_group::Member {
     match driver.worker.native_liveness().unwrap() {
-        Some(alondra_provider_codex::NativeLiveness::Alive(native)) => native,
+        Some(alondra_engine_ports::agent_workers::NativeLiveness::Alive(native)) => native,
         other => panic!("the fixture must have a live app-server: {other:?}"),
     }
 }
@@ -866,13 +866,13 @@ fn an_unopened_codex_replacement_remains_unopened_after_reconciling_a_control() 
     while Slice::lifecycle(&*slice.domain).activity() != ActivityView::Working { driver.observe_written().unwrap(); }
     slice.kill_host_and_daemon(driver);
     let mut replacement = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
-    assert_eq!(replacement.worker.native_liveness().unwrap(), Some(alondra_provider_codex::NativeLiveness::NotStarted));
+    assert_eq!(replacement.worker.native_liveness().unwrap(), Some(alondra_engine_ports::agent_workers::NativeLiveness::NotStarted));
     slice.run(&system(), "cold-mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
     assert!(replacement.claim_and_record_control_without_sending());
     drop(replacement);
     let mut adopted = adopt(slice.domain.clone(), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
     assert_eq!(slice.control_rows()[0].2, "rejected", "the unopened host explicitly refused a control needing a session");
-    assert_eq!(adopted.worker.native_liveness().unwrap(), Some(alondra_provider_codex::NativeLiveness::NotStarted), "a reconciled control cannot prove native startup");
+    assert_eq!(adopted.worker.native_liveness().unwrap(), Some(alondra_engine_ports::agent_workers::NativeLiveness::NotStarted), "a reconciled control cannot prove native startup");
     adopted.stop().unwrap();
 }
 
@@ -965,7 +965,7 @@ fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken
     assert!(old_host.process().unwrap().is_none(), "native admission is detected before reconciling the dead control");
     assert_eq!(slice.control_rows()[0].2, "rejected", "the control never reached the old native process");
     assert_eq!(resumed_threads(&trace).len(), 1, "the replacement used the original native thread; the next host remains lazy");
-    assert_eq!(adopted.worker.native_liveness().unwrap(), Some(alondra_provider_codex::NativeLiveness::NotStarted));
+    assert_eq!(adopted.worker.native_liveness().unwrap(), Some(alondra_engine_ports::agent_workers::NativeLiveness::NotStarted));
     adopted.stop().unwrap();
 }
 

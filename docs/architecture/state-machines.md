@@ -1497,10 +1497,12 @@ Second pass: `machine_watch.rs`, `disk_peaks.rs`, `launches.rs`, `bg_sessions.rs
 confirmed and is now F-ENGINE-12. The overlap of each finding was checked against the related-coverage notes
 and the open-issues list.
 
-Paths that are about to change (the Bazel layers work (phase 4d-runtime) / 5f): `DomainRuntime::of`
-(`crates/engine-kernel/src/domain_runtime.rs`, used by `daemon-engine/src/wiring.rs`),
-`crates/engine-sdk/src/sdk_owner/worker.rs`, `crates/engine-kernel/src/sdk_backend.rs`. No finding below depends on
-them; the proposed tests use `Admission`, `Owners` and the test doubles, which do not move.
+Paths that are about to change (the Bazel layers work (phase 4d-runtime)): `DomainRuntime::of`
+(`crates/engine-kernel/src/domain_runtime.rs`, used by `daemon-engine/src/wiring.rs`). Phase 5f replaced
+`crates/engine-sdk/src/sdk_owner/worker.rs` with the `AgentProvider` port (`crates/engine-ports/src/agent_workers.rs`)
+and made `crates/engine-kernel/src/sdk_backend.rs` ask versions through `AgentHost::run`; neither changes a state or
+a transition. No finding below depends on them; the proposed tests use `Admission`, `Owners` and the test doubles,
+which do not move.
 
 ### M-ENGINE-1 · Admission gate (composite, implicit)
 
@@ -3430,7 +3432,7 @@ seconds. · **Overlap**: the Codex recovery work (phase 2) changes `take_host` i
 pending permit). It is the same function, but it does not deal with exclusion: the changes need coordination.
 the stalled-node recovery work (phase 3) removes `take_working_unowned` and `UNOWNED_TAKE_EVERY`, which is another retake
 path (this one already checks `unowned()`); it covers neither `take_again` nor `adopt_for_transition`.
-the Bazel layers work (phase 5f) moves `sdk_owner/worker.rs`, not these functions. No open issue covers it. New evidence. The
+the Bazel layers work (phase 5f) replaced `sdk_owner/worker.rs` with the `AgentProvider` port, not these functions. No open issue covers it. New evidence. The
 `git log` of `sdk_owner.rs` and `provider_transition.rs` has no fixes for this.
 **Status**: FIXED in #613. `adopt_for_transition` now takes the task's `TakeoverTurn`, checks `owned_now` inside
 it and adds its owner before releasing it, so it never overlaps `take_again`, `take_over_unowned` or any other
@@ -3829,7 +3831,7 @@ the tests-by-layer work (host model) (points 22 and 35) moves the `bg_handover` 
 - **Missing to confirm**:
   1. That real databases still have non-`Done` handovers: query `sdk_handover_steps` for nodes without a `done` row.
      No new ones are planned any more.
-  2. That `Worker::configured` does not launch a process per attempt.
+  2. That `Worker::configured` (the registry's `AgentProvider::configured`) does not launch a process per attempt.
   3. That `require_initial_check` does not cut earlier (in that case the retry is every 10 s, with no loop).
 - **Proposed test**: an `engine-sdk` test with the host double and the `test_support::Directory` store. Insert
   `planned` + `bg_stopped` for a cancelled task, advance two `tick`s and check that the handover closes (or is marked

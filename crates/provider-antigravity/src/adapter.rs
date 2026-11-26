@@ -5,8 +5,9 @@ use alondra_agent_application::{DurableAdapter, InputMetadata, ObservationNormal
 use alondra_antigravity_protocol::{
     Action, Body, Command, FramedReader, Observation as WireObservation, PermissionMode as WireMode, SDK_VERSION,
 };
-use alondra_engine_ports::agent_host::{AdoptedHost, EndedHost, HostLaunch, HostStop, LaunchIdentity, OwnedHost, Retained as RetainedHost, VerifiedArtifact};
+use alondra_engine_ports::agent_host::{AdoptedHost, EndedHost, HostLaunch, HostStop, LaunchIdentity, OwnedHost, Retained as RetainedHost};
 use crate::ended::EndedJournal;
+use alondra_engine_ports::agent_workers::{WorkerConfiguration, NativeLiveness};
 use alondra_foundation::{CommandId, ExecutionStamp, MessageUuid};
 use alondra_provider_contract::{
     Adapter, AdapterError, Handoff, Invocation, Operation, OrderedObservation, Placement,
@@ -17,46 +18,7 @@ use alondra_store::{
     DispatchAttempt, OwnerGrant, PermissionMode,
 };
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-/// Configuration carries no dispatch or process-launch authority.
-pub struct AntigravityConfiguration {
-    pub artifact: VerifiedArtifact,
-    pub state_directory: PathBuf,
-    pub host_environment: BTreeMap<String, String>,
-    pub native_executable: PathBuf,
-    pub native_directory: PathBuf,
-    pub native_environment: BTreeMap<String, String>,
-    pub profile_id: String,
-    pub account_id: String,
-    pub host_release: String,
-    pub io_timeout: Duration,
-    /// A Seatbelt profile the whole host runs under, the native process included.
-    pub confinement: Option<PathBuf>,
-    /// Starts, adopts and reclaims the host process; a scenario swaps it.
-    pub hosts: std::sync::Arc<dyn alondra_engine_ports::agent_host::AgentHost>,
-    /// What a task's Antigravity loads besides the user's own settings, rules, skills and MCP.
-    pub worker: Option<WorkerProfile>,
-}
-
-/// Alondra's launch settings for a task's Antigravity: `settings.antigravity` carries the account's
-/// access, its folder and key file, the node's instructions and Alondra's MCP server, which the host
-/// turns into `agy acp`'s environment and session.
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct WorkerProfile {
-    pub plugins: Vec<PathBuf>,
-    pub settings: serde_json::Map<String, serde_json::Value>,
-    /// The model and effort the task was launched with; absent, Antigravity's own defaults apply.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub disallowed_tools: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub handoff_context: Option<String>,
-}
 
 /// Opaque technical worker. The application owns SQL, policy and publication.
 /// Configuration alone creates no host, SDK query or native process.
@@ -155,14 +117,6 @@ pub fn native_exited(observation: &OrderedObservation) -> bool {
     }
 }
 
-/// Kernel-backed native availability, independent of the host's control socket. A replacement
-/// opens its `agy acp` lazily, so absence before its first input is not a failure.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NativeLiveness {
-    NotStarted,
-    Alive(alondra_process_group::Member),
-    Lost,
-}
 struct PreparedDispatch {
     command: PreparedCommand,
     intent: i64,
@@ -211,7 +165,7 @@ impl PreparedDispatch {
 impl AntigravityWorker {
     pub fn configured(
         binding: ProviderBinding,
-        configuration: AntigravityConfiguration,
+        configuration: WorkerConfiguration,
     ) -> Result<Self, AdapterError> {
         Ok(Self {
             adapter: AntigravityAdapter::new(binding, configuration)?,
@@ -562,7 +516,7 @@ impl Host {
 
 struct AntigravityAdapter {
     binding: ProviderBinding,
-    configuration: AntigravityConfiguration,
+    configuration: WorkerConfiguration,
     control: ControlIdentity,
     host: Option<Host>,
     connection: Option<Connection>,
@@ -574,37 +528,35 @@ struct AntigravityAdapter {
     native_process: Option<alondra_process_group::Member>,
     native_lost: bool,
 }
-impl AntigravityConfiguration {
-    /// Checks the configuration and makes the private control material of one host.
-    pub(super) fn control(&self) -> Result<ControlIdentity, AdapterError> {
-        if self.io_timeout.is_zero()
-            || self.io_timeout > Duration::from_secs(300)
-            || !self.native_executable.is_absolute()
-            || !self.native_directory.is_absolute()
-            || self.profile_id.trim().is_empty()
-            || self.account_id.trim().is_empty()
-            || self.host_release.trim().is_empty()
-        {
-            return Err(AdapterError::InvalidObservation);
-        }
-        let mut secret = [0; 32];
-        getrandom::fill(&mut secret).map_err(|_| AdapterError::Disconnected)?;
-        Ok(ControlIdentity {
-            profile_id: self.profile_id.clone(),
-            account_id: self.account_id.clone(),
-            host_instance_id: random_uuid()?.as_str().into(),
-            secret,
-            host_release: self.host_release.clone(),
-        })
+/// Checks the configuration and makes the private control material of one host.
+pub(super) fn control_of(configuration: &WorkerConfiguration) -> Result<ControlIdentity, AdapterError> {
+    if configuration.io_timeout.is_zero()
+        || configuration.io_timeout > Duration::from_secs(300)
+        || !configuration.native_executable.is_absolute()
+        || !configuration.native_directory.is_absolute()
+        || configuration.profile_id.trim().is_empty()
+        || configuration.account_id.trim().is_empty()
+        || configuration.host_release.trim().is_empty()
+    {
+        return Err(AdapterError::InvalidObservation);
     }
+    let mut secret = [0; 32];
+    getrandom::fill(&mut secret).map_err(|_| AdapterError::Disconnected)?;
+    Ok(ControlIdentity {
+        profile_id: configuration.profile_id.clone(),
+        account_id: configuration.account_id.clone(),
+        host_instance_id: random_uuid()?.as_str().into(),
+        secret,
+        host_release: configuration.host_release.clone(),
+    })
 }
 
 impl AntigravityAdapter {
     fn new(
         binding: ProviderBinding,
-        configuration: AntigravityConfiguration,
+        configuration: WorkerConfiguration,
     ) -> Result<Self, AdapterError> {
-        let control = configuration.control()?;
+        let control = control_of(&configuration)?;
         Ok(Self {
             binding,
             configuration,
@@ -1038,7 +990,7 @@ fn bootstrap(
     owner: &impl crate::wire::HostOwner,
     identity: &LaunchIdentity,
     control: &ControlIdentity,
-    configuration: &AntigravityConfiguration,
+    configuration: &WorkerConfiguration,
     session: &SessionRecord,
     continued: Option<Continued>,
 ) -> std::io::Result<Vec<u8>> {

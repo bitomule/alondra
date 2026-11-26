@@ -5,7 +5,8 @@ use crate::domain_store::batch_effects::BatchReport;
 use crate::orchestrator_process::{Output, Stream, bounded};
 use crate::orchestrator_provider::Batch;
 use alondra_engine_ports::agent_host::VerifiedArtifact;
-use alondra_provider_codex::{BatchHost, CodexConfiguration, HostEvent, McpServer, OrchestratorProfile};
+use alondra_engine_ports::agent_workers::WorkerConfiguration;
+use alondra_provider_codex::{BatchHost, HostEvent, McpServer, OrchestratorProfile};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -337,9 +338,9 @@ fn stop(host: BatchHost<ProviderOwner>, directory: &Path, spent: Option<&Path>) 
         Err(error)=>log!("orchestrator: Codex did not stop cleanly; its process owner record is retained: {error:?}"),
     }
 }
-fn configuration(batch: &Batch) -> anyhow::Result<(CodexConfiguration, alondra_engine_ports::agent_host::Preparing)> {
+fn configuration(batch: &Batch) -> anyhow::Result<(WorkerConfiguration, alondra_engine_ports::agent_host::Preparing)> {
     use std::os::unix::fs::DirBuilderExt;
-    let backend = batch.backend.for_provider(alondra_core::accounts::Provider::Codex, &batch.home)?.for_start()?
+    let backend = batch.backend.for_provider(alondra_core::accounts::Provider::Codex, &batch.home)?.for_start(&*alondra_engine_ports::agent_host::of(batch.domain.ports())?)?
         .for_account_provider(&batch.home, batch.selection.account.provider, &batch.selection.account.account, &batch.domain.engine().registered_accounts(&batch.home, batch.selection.account.provider))?;
     std::fs::create_dir_all(&backend.state_root)?;
     let state_directory = backend.state_root.join(format!("orchestrator-{}", alondra_foundation::random_hex(8)));
@@ -359,7 +360,7 @@ fn configuration(batch: &Batch) -> anyhow::Result<(CodexConfiguration, alondra_e
     for name in ["ALONDRA_PORT", "ALONDRA_SANDBOX"] {
         if !native_environment.contains_key(name) && let Ok(value) = std::env::var(name) { native_environment.insert(name.into(), value); }
     }
-    Ok((CodexConfiguration {
+    Ok((WorkerConfiguration {
         artifact: VerifiedArtifact::verify(&backend.node, &backend.host, &backend.node_sha256, &backend.host_sha256)?,
         state_directory, host_environment: backend.host_environment, native_executable: backend.native,
         native_directory: batch.directory.clone(), native_environment, profile_id: "alondra".into(),

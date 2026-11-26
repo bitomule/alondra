@@ -3,7 +3,8 @@
 //! `provider_codex_test` on the Codex host model: the same steps and the same expectations, so the
 //! model cannot drift from the host it stands for.
 use crate::test_support;
-use crate::{BatchHost, CodexConfiguration, Execution, HostEvent, HostOwner, McpServer, OrchestratorExecution, OrchestratorLane, OrchestratorProfile};
+use alondra_engine_ports::agent_workers::WorkerConfiguration;
+use crate::{BatchHost, Execution, HostEvent, HostOwner, McpServer, OrchestratorExecution, OrchestratorLane, OrchestratorProfile};
 use alondra_engine_ports::agent_host::{AgentHost, Retained, VerifiedArtifact};
 use alondra_foundation::DataEpoch;
 use alondra_provider_contract::AdapterError;
@@ -108,7 +109,7 @@ struct Setup {
     under: UnderTest,
     cwd: PathBuf,
     transcript: PathBuf,
-    configuration: CodexConfiguration,
+    configuration: WorkerConfiguration,
     profile: OrchestratorProfile,
 }
 
@@ -135,7 +136,7 @@ fn setup(mode: &str) -> Setup {
         ("ALONDRA_DOMAIN_CAPABILITY".into(), "case-capability".into()),
         ("ALONDRA_DOMAIN_PROTOCOL".into(), "2".into()),
     ]));
-    let configuration = CodexConfiguration {
+    let configuration = WorkerConfiguration {
         artifact: VerifiedArtifact::verify(&under.host, &under.host, &hash(&under.host), &hash(&under.host)).unwrap(),
         state_directory: state,
         host_environment: test_support::fixture_environment(&home),

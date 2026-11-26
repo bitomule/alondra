@@ -56,7 +56,8 @@ fn basis(last: Option<LastRequest>, source: Option<Source>, absent: &str, now: M
 /// The session `conversation` records and Claude Code's transcript of it.
 fn located(domain: &dyn Runtime, task: &TaskId, stamp_conversation: &str, conversation: &Conversation) -> Result<(String, PathBuf), &'static str> {
     let metadata = domain.store().lock_or_exit("the domain store").conversation_metadata(task, stamp_conversation);
-    let session = metadata.ok().flatten().as_deref().and_then(alondra_provider_claude::conversation_session).ok_or("its session is not recorded")?;
+    let claude = alondra_engine_ports::agent_workers::of(domain.ports(), alondra_core::accounts::Provider::Claude).map_err(|_| "no provider for Claude is wired")?;
+    let session = metadata.ok().flatten().as_deref().and_then(|metadata| claude.conversation_session(metadata)).ok_or("its session is not recorded")?;
     let transcript = claude_history::transcript(&conversation.native_environment, &session, std::path::Path::new(&conversation.directory))
         .ok_or("Claude Code's transcript of the session was not found")?;
     Ok((session, transcript))

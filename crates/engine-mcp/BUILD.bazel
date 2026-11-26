@@ -41,6 +41,7 @@ low_opt_rust_test(
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/daemon-support:daemon_support",
+        "//crates/engine-doubles:engine_doubles",
         "//crates/engine-kernel:engine_kernel",
     ],
 )

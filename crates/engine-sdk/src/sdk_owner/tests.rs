@@ -4571,3 +4571,23 @@ pub(super) fn node_with_a_background_group(slice: &Slice) -> (AgentId, String, B
     slice.domain.add_sdk_owner(Owner::spawn(driver));
     (agent, session, commands, host)
 }
+
+#[test]
+fn a_task_whose_provider_nothing_wired_does_not_start_and_names_the_provider() {
+    let slice = Slice::new();
+    let ports = slice.domain.ports();
+    ports.provide(Arc::new(alondra_engine_ports::agent_workers::AgentProviders::default()));
+    alondra_provider_codex::wire(ports);
+    alondra_provider_antigravity::wire(ports);
+    let refused = start_bound(slice.domain.clone(), &slice.backend, Launch {
+        task: TASK.into(),
+        name: "Release notes".into(),
+        directory: slice.worktree.to_str().unwrap().into(),
+        prompt: "Write the release notes".into(),
+        plugin: slice.plugin.clone(),
+        options: LaunchOptions::default(),
+        model: None,
+        account: AccountId::default_account(),
+    }, capabilities(), None, None).err().expect("no Claude provider is wired");
+    assert!(refused.to_string().contains("no provider for Claude is wired"), "{refused}");
+}

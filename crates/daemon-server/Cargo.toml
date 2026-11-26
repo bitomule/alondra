@@ -42,6 +42,9 @@ tokio.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+alondra-provider-antigravity.workspace = true
+alondra-provider-claude.workspace = true
+alondra-provider-codex.workspace = true
 alondra-agent-runtime.workspace = true
 alondra-engine-doubles.workspace = true
 alondra-store-sqlite.workspace = true

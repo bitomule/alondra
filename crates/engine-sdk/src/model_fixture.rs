@@ -26,6 +26,9 @@ pub fn open(home: &std::path::Path) -> anyhow::Result<crate::domain_runtime::Dom
     crate::wiring::wire(ports);
     alondra_engine_doubles::machine::wire(ports, alondra_daemon_support::watcher::claude_home);
     alondra_engine_doubles::agent_host::wire(ports);
+    alondra_provider_claude::wire(ports);
+    alondra_provider_codex::wire(ports);
+    alondra_provider_antigravity::wire(ports);
     ports.provide::<dyn AdmissionGate>(Arc::new(alondra_engine_doubles::gate::OpenGate::default()));
     alondra_engine_doubles::admission::Engine::wire(ports);
     ports.provide::<dyn OrchestratorEngine>(Arc::new(alondra_engine_doubles::orchestrator::Engine));
