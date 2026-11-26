@@ -127,7 +127,7 @@ fn a_change_of_role_that_keeps_failing_waits_for_the_user_who_can_try_again() {
         let expected_selection = s.task_selection_stamp(&"t".into()).unwrap();
         must(&mut s, Actor::System, Command::BeginStageHandover { task_id: "t".into(), expected_selection, transition: id.clone(), pending: pending() });
         must(&mut s, Actor::System, Command::AbortTaskSelection { task_id: "t".into(), selection: None, refused: None });
-        must(&mut s, Actor::System, Command::StageHandoverFailed { task_id: "t".into(), transition: id, refused: false });
+        must(&mut s, Actor::System, Command::StageHandoverFailed { task_id: "t".into(), transition: Some(id), refused: false });
     }
     let handover = stages(&s).handover.clone().unwrap();
     assert!(handover.refused && !handover.due(), "Alondra stops trying by itself after {MAX_STAGE_ATTEMPTS} tries");

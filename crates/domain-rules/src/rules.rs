@@ -5763,7 +5763,7 @@ impl DomainState {
                 self.begin_stage_handover(actor, task_id, expected_selection, transition, pending)?;
             }
             Command::StageHandoverFailed { task_id, transition, refused } => {
-                self.stage_handover_failed(actor, task_id, transition, *refused)?;
+                self.stage_handover_failed(actor, task_id, transition.as_deref(), *refused)?;
             }
             Command::AbortTaskSelection { task_id, selection, refused } => {
                 system(actor)?;

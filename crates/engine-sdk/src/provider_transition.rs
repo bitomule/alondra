@@ -273,7 +273,10 @@ pub(crate) fn request_stage(domain:&Arc<dyn Runtime>,task:&TaskId)->Result<bool,
     let Some(held)=initial.tasks.get(task) else{return Ok(false)};
     let Some(handover)=held.stages.handover.clone().filter(StageHandover::due) else{return Ok(false)};
     if held.state.terminal() || held.ending.is_some() || held.pending_selection.is_some() || current(&**domain,task)?.is_some(){return Ok(false)}
-    let Some(execution)=initial.lifecycle_of(task)?.execution().cloned() else{return Ok(false)};
+    let Some(execution)=initial.lifecycle_of(task)?.execution().cloned() else{
+        if !starts_elsewhere(&**domain,task){refuse_stage_without_execution(&**domain,task,&handover)?;}
+        return Ok(false)
+    };
     let intent=held.stages.selections.get(&handover.to).cloned().ok_or_else(||failure("The task has no selection for the role it hands over to"))?;
     let (backend,_)=domain.sdk().ok_or_else(||failure("The provider runtime is unavailable"))?;
     let selected=backend.for_provider(held.provider,domain.home()).map_err(failure)?;
@@ -293,6 +296,19 @@ pub(crate) fn request_stage(domain:&Arc<dyn Runtime>,task:&TaskId)->Result<bool,
     }).map_err(store_failure)?;
     log!("{task} hands over to its {}: {id}",handover.to.as_str());
     Ok(true)
+}
+/// A change of role leaves from the task's execution: without one no look can ever start it, so
+/// it waits for the user. A task has one open start problem at a time, so it waits while another
+/// one is open.
+fn refuse_stage_without_execution(domain:&dyn Runtime,task:&TaskId,handover:&StageHandover)->Result<(),DomainError>{
+    let id=format!("stage-{}",crate::auth::random_hex(16));
+    domain.own(scope(domain)?,|owner|{
+        let due=owner.state().tasks.get(task).is_some_and(|held|held.stages.handover.as_ref()==Some(handover));
+        if !due || owner.state().open_start_problem(task).is_some() || owner.state().lifecycle_of(task)?.execution().is_some(){return Ok(())}
+        owner.stage_command(&Actor::System,&envelope(domain,&format!("{id}-failed"),Command::StageHandoverFailed{task_id:task.clone(),transition:None,refused:true}),Attached::None)?;
+        owner.stage_command(&Actor::System,&envelope(domain,&format!("{id}-start-problem"),Command::RaiseStartProblem{task_id:task.clone(),problem:StartProblem::StageStartRefused{role:handover.to,error:"The task has no execution to hand over from".into()}}),Attached::None)?;
+        Ok(())
+    }).map_err(store_failure).map(drop)
 }
 /// What the measures keep of a stage's new execution: its model, provider and why, by the agent
 /// that runs it, whose role the task's record says.
@@ -401,7 +417,7 @@ fn current_target_model(domain:&dyn Runtime,plan:&Plan)->Result<ModelSelection,D
     catalog.resolve(&alondra_core::model_selection::ModelCandidate{model:plan.target_model.model.model.clone(),reasoning_effort:plan.target_model.reasoning_effort.clone()})
         .map_err(|reason|DomainError::new("model_unavailable",reason))
 }
-/// The refusals a moved task's start gets again however often it is tried: its context does not
+/// The refusals the start of a moved task or of a new role gets again however often it is tried: its context does not
 /// fit the destination, its model is no longer offered there, or the account cannot take it until
 /// the user acts.
 const REFUSED_STARTS:[&str;4]=["handoff_budget","model_unavailable","account_unavailable","paid_authorization_required"];
@@ -579,7 +595,7 @@ pub async fn advance(domain:&Arc<dyn Runtime>,task:&TaskId)->Result<Phase,Domain
             Phase::Consumed=>{phase(&**domain,&change,Phase::Done,change.facts.clone())?;}
             Phase::Done|Phase::Aborted|Phase::StartRefused=>{domain.selection_changes().fences.lock_or_recover("the provider transition fences").remove(&plan.id);return Ok(change.phase)}
             Phase::Uncertain=>{
-                abort(&**domain,task,change.facts["reason"].as_str().unwrap_or("The move was left without an outcome"))?;
+                abort(&**domain,task,change.facts["reason"].as_str().unwrap_or("The move was left without an outcome"),false)?;
                 return Ok(Phase::Aborted)
             }
         }
@@ -606,7 +622,7 @@ pub async fn pass(domain:&Arc<dyn Runtime>){
     for change in pending.unwrap_or_default(){
         if let Err(error)=advance(domain,&change.plan.task).await{
             log!("selection change of {} could not finish: {}",change.plan.task,error.message);
-            if let Err(failed)=abort(&**domain,&change.plan.task,&error.message){log!("selection change of {} could not be aborted: {}",change.plan.task,failed.message);}
+            if let Err(failed)=abort(&**domain,&change.plan.task,&error.message,REFUSED_STARTS.contains(&error.code.as_str())){log!("selection change of {} could not be aborted: {}",change.plan.task,failed.message);}
         }
     }
     let refused=domain.store().lock_or_exit("the domain store").refused_moves();
@@ -627,8 +643,9 @@ pub(crate) fn release_finished_fences(domain:&dyn Runtime){
     }
 }
 /// Ends a selection change that cannot finish: the task keeps the selection it had before, nothing
-/// stays pending, and a move says on the task why it did not happen.
-pub(crate) fn abort(domain:&dyn Runtime,task:&TaskId,reason:&str)->Result<(),DomainError>{
+/// stays pending, and a move says on the task why it did not happen. A change of role that is
+/// `refused` for good waits for the user at once.
+pub(crate) fn abort(domain:&dyn Runtime,task:&TaskId,reason:&str,refused:bool)->Result<(),DomainError>{
     let Some(change)=current(domain,task)? else{return Ok(())};
     let plan=&change.plan;
     let reason:String=reason.chars().take(1900).collect();
@@ -640,7 +657,7 @@ pub(crate) fn abort(domain:&dyn Runtime,task:&TaskId,reason:&str)->Result<(),Dom
         }
         owner.release_context(&plan.id,task)?;
         if plan.kind==Kind::Stage{
-            owner.stage_command(&Actor::System,&envelope(domain,&format!("{}-failed",plan.id),Command::StageHandoverFailed{task_id:task.clone(),transition:plan.id.clone(),refused:false}),Attached::None)?;
+            owner.stage_command(&Actor::System,&envelope(domain,&format!("{}-failed",plan.id),Command::StageHandoverFailed{task_id:task.clone(),transition:Some(plan.id.clone()),refused}),Attached::None)?;
             if let (Some(role),true)=(plan.role,owner.state().tasks.get(task).and_then(|held|held.stages.handover.as_ref()).is_some_and(|handover|handover.refused)){
                 owner.stage_command(&Actor::System,&envelope(domain,&format!("{}-start-problem",plan.id),Command::RaiseStartProblem{task_id:task.clone(),problem:StartProblem::StageStartRefused{role,error:reason.clone()}}),Attached::None)?;
             }

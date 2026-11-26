@@ -281,6 +281,103 @@ async fn a_change_of_role_survives_a_daemon_restart_after_every_step_without_a_s
 }
 
 #[tokio::test]
+async fn a_daemon_restart_between_the_approval_and_the_first_step_still_hands_over_once() {
+    for requested in [false, true] {
+        let slice = Slice::new();
+        let task: TaskId = TASK.into();
+        let (driver, _) = approved_author(&slice);
+        if requested {
+            assert!(request_stage(&slice.domain));
+            *slice.domain.selection_changes().crash_at.lock().unwrap() = Some(Phase::Requested);
+            assert_eq!(look(&slice.domain).await.unwrap_err().message, "the daemon died");
+            assert_eq!(stage_steps(&slice), ["requested"]);
+        }
+        drop(driver);
+        slice.domain.stop_sdk_owners();
+        slice.domain.selection_changes().die();
+        let domain = slice.restart();
+        ready(&slice, &domain);
+        assert_eq!(request_stage(&domain), !requested, "only a change of role that never started is started after the restart");
+        handed_over(&slice, &domain).await;
+        assert_eq!(admissions(&domain), 2);
+        assert_eq!(domain.state().unwrap().tasks[&task].stages.runs.iter().map(|run| run.role).collect::<Vec<_>>(), [Some(ExecutionRole::Author), Some(ExecutionRole::Implementer)]);
+        domain.stop_sdk_owners();
+    }
+}
+
+#[tokio::test]
+async fn an_author_whose_host_dies_before_its_change_of_role_starts_still_hands_over() {
+    let slice = Slice::new();
+    let (driver, _) = approved_author(&slice);
+    slice.kill_host(&driver);
+    drop(driver);
+    assert!(stage_steps(&slice).is_empty(), "the host died before the change of role started");
+    assert!(request_stage(&slice.domain));
+    handed_over(&slice, &slice.domain).await;
+    assert_eq!(admissions(&slice.domain), 2);
+    assert!(implementer_prompt(&slice).contains("Change the fixture"), "the implementer starts from the approved plan");
+    slice.domain.stop_sdk_owners();
+}
+
+/// The change of role waits for the user: no look starts it, and its card offers to try again.
+fn waits_for_the_user(domain: &Arc<DomainRuntime>, attempts: u8) {
+    let state = domain.state().unwrap();
+    let task: TaskId = TASK.into();
+    let handover = state.tasks[&task].stages.handover.clone().expect("the task still owes its implementer");
+    assert_eq!((handover.refused, handover.attempts, handover.transition), (true, attempts, None));
+    let card = state.open_start_problem(&task).expect("the user is asked");
+    assert!(matches!(alondra_domain_rules::start_problem::from_body(&card.body), Some(StartProblem::StageStartRefused { role: ExecutionRole::Implementer, .. })), "{}", card.body);
+    assert!(matches!(&card.payload, InteractionPayload::Question { options, .. }
+        if options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>() == [START_RETRY, START_CANCEL]), "{:?}", card.payload);
+}
+
+#[tokio::test]
+async fn a_change_of_role_of_a_task_left_without_an_execution_asks_the_user() {
+    let slice = Slice::new();
+    let (driver, _) = approved_author(&slice);
+    let mut changes = Changes::of(&slice.domain);
+    slice.domain.add_sdk_owner(Owner::spawn(driver));
+    changes.until("the author's rest", || rests(&slice.domain)).await;
+    slice.domain.stop_sdk_owners();
+    slice.run(&system(), "release", Command::ReleaseTask { task_id: TASK.into(), reason: "Its node is gone".into(), relaunch: Relaunch::ByItself, cwd: None });
+    assert!(Slice::lifecycle(&*slice.domain).execution().is_none());
+    slice.run(&system(), "node-closed", Command::RaiseStartProblem { task_id: TASK.into(), problem: StartProblem::NodeClosed });
+    assert!(!request_stage(&slice.domain));
+    let state = slice.domain.state().unwrap();
+    assert!(!state.tasks[&TaskId::from(TASK)].stages.handover.as_ref().unwrap().refused, "the change of role waits while another start problem is open");
+    let other = state.open_start_problem(&TASK.into()).unwrap().id.clone();
+    slice.answer(&other.0, START_RETRY, None).unwrap();
+    for _ in 0..2 {
+        assert!(!request_stage(&slice.domain));
+        waits_for_the_user(&slice.domain, 1);
+    }
+    assert!(stage_steps(&slice).is_empty());
+    slice.domain.stop_sdk_owners();
+}
+
+#[tokio::test]
+async fn an_implementer_whose_start_is_refused_for_good_asks_the_user_at_once() {
+    let slice = Slice::new();
+    handing_over(&slice).await;
+    gate(&slice.domain, 0);
+    stopped_at(&slice, &slice.domain, Phase::ContextReady).await;
+    let state = slice.domain.state().unwrap();
+    let mut accounts = state.accounts.clone();
+    for account in accounts.iter_mut().filter(|account| account.provider == Provider::Claude && account.id.is_default()) {
+        account.state = AccountState::SignedOut;
+    }
+    slice.run(&system(), "sign-out", Command::RecordAccounts { accounts, reserve: state.account_reserve });
+    gate(&slice.domain, 6);
+    let home = slice.domain.home().to_path_buf();
+    crate::admission::pass(&*slice.domain, &home).await.unwrap();
+    crate::provider_transition::pass(&runtime(&slice.domain)).await;
+    assert_eq!(stage_steps(&slice).last().map(String::as_str), Some("aborted"), "{:?}", stage_steps(&slice));
+    waits_for_the_user(&slice.domain, 1);
+    assert_eq!(admissions(&slice.domain), 1);
+    slice.domain.stop_sdk_owners();
+}
+
+#[tokio::test]
 async fn the_admission_gate_holds_the_implementers_first_turn_until_it_lets_it_through() {
     let slice = Slice::new();
     handing_over(&slice).await;

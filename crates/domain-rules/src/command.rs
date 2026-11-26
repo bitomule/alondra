@@ -878,10 +878,11 @@ pub enum Command {
         pending: alondra_core::model_selection::PendingTaskSelection,
     },
     /// The change of role `transition` could not start the next execution: `refused` when the
-    /// same start is refused however often it is tried, which waits for the user.
+    /// same start is refused however often it is tried, which waits for the user. No `transition`
+    /// names a change that could not even start.
     StageHandoverFailed {
         task_id: TaskId,
-        transition: String,
+        transition: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         refused: bool,
     },

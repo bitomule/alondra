@@ -3417,7 +3417,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             account: alondra_core::accounts::AccountKey::native(alondra_core::accounts::Provider::Claude),
             model: alondra_core::model_selection::ModelSelection { model: alondra_core::model_selection::ModelKey { provider: alondra_core::accounts::Provider::Claude, model: "fixture".into() }, reasoning_effort: None, catalog_revision: "fixture".into() }, reason: "The implementer takes it over".into(),
         } }, false),
-        (Command::StageHandoverFailed { task_id: ids.task.into(), transition: "stage".into(), refused: false }, false),
+        (Command::StageHandoverFailed { task_id: ids.task.into(), transition: Some("stage".into()), refused: false }, false),
         (Command::DeclarePostMergeWork { task_id: ids.task.into(), reason: Some("release.sh".into()), waits_for: vec![] }, false),
         (Command::RecordTaskCleanup { task_id: ids.task.into() }, false),
         (Command::AdmitExecution { provider: Default::default(), task_id: ids.task.into(), agent_id: "a".into(), conversation: "conversation".into(),
