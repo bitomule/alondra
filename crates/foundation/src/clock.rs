@@ -55,6 +55,9 @@ pub struct Work {
     jobs: std::sync::Mutex<BTreeMap<&'static std::panic::Location<'static>, usize>>,
     /// The runtime's own thread has no task to run and sleeps.
     runtime_parked: std::sync::atomic::AtomicBool,
+    /// How many times a unit of work started or ended: a wait for calm that sees it grow knows the
+    /// daemon is not stuck, only slow.
+    moves: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -87,6 +90,7 @@ impl Work {
     fn add(&'static self) {
         let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         self.count.fetch_add(1, Ordering::SeqCst);
+        self.moves.fetch_add(1, Ordering::SeqCst);
         if held.waiting {
             return;
         }
@@ -106,6 +110,7 @@ impl Work {
 
     fn remove(&self) {
         let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.moves.fetch_add(1, Ordering::SeqCst);
         if self.count.fetch_sub(1, Ordering::SeqCst) == 1 {
             held.rests += 1;
             self.idle.notify_all();
@@ -131,7 +136,7 @@ impl Work {
     }
 
     fn until_idle(&self, patience: Duration, settled: impl Fn() -> bool) -> bool {
-        let limit = std::time::Instant::now() + patience;
+        let mut patience = Patience::new(patience, std::time::Instant::now(), self.moves.load(Ordering::SeqCst));
         loop {
             let rests = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).rests;
             if self.count.load(Ordering::SeqCst) == 0 && self.runtime_idle() && settled() {
@@ -139,11 +144,12 @@ impl Work {
             }
             let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             while held.rests == rests {
-                let left = limit.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() || held.runtime.is_none() {
+                let now = std::time::Instant::now();
+                let left = patience.left(now);
+                if held.runtime.is_none() || left.is_zero() && !patience.extend(now, self.moves.load(Ordering::SeqCst)) {
                     return false;
                 }
-                held = self.idle.wait_timeout(held, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+                held = self.idle.wait_timeout(held, patience.left(now).max(Duration::from_millis(1))).unwrap_or_else(std::sync::PoisonError::into_inner).0;
             }
         }
     }
@@ -170,6 +176,37 @@ impl Work {
     fn end(&self) {
         self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).runtime = None;
         self.idle.notify_all();
+    }
+}
+
+/// How long a wait for calm lasts: `patience` of real time with nothing moving. While units of work
+/// keep starting and ending the daemon is slow, not stuck, as on a Mac whose threads wait long for a
+/// core; a wait that no unit moved for `patience` is a hang.
+#[derive(Debug)]
+struct Patience {
+    patience: Duration,
+    limit: std::time::Instant,
+    moves: u64,
+}
+
+impl Patience {
+    fn new(patience: Duration, now: std::time::Instant, moves: u64) -> Patience {
+        Patience { patience, limit: now + patience, moves }
+    }
+
+    fn left(&self, now: std::time::Instant) -> Duration {
+        self.limit.saturating_duration_since(now)
+    }
+
+    /// The limit came: it moves `patience` on from `now` when work moved since the last look, and
+    /// the wait is over when none did.
+    fn extend(&mut self, now: std::time::Instant, moves: u64) -> bool {
+        if moves == self.moves {
+            return false;
+        }
+        self.moves = moves;
+        self.limit = now + self.patience;
+        true
     }
 }
 
@@ -313,8 +350,8 @@ pub fn working() -> usize {
 /// Blocks until no thread of the current virtual runtime works, the runtime's own thread sleeps with
 /// no task woken for it, and `settled` holds, looking again each time [`working`] comes back to zero
 /// or the runtime's thread goes to sleep, which is what notifies it: whatever makes `settled` hold
-/// must be done by work these see. False once `patience` of real time passes first, or the runtime
-/// ended. Under the system clock it is `settled`.
+/// must be done by work these see. False once `patience` of real time passes with no unit of work
+/// starting or ending (a daemon that moves, however slowly, is not stuck), or the runtime ended. Under the system clock it is `settled`.
 pub fn until_idle(patience: Duration, settled: impl Fn() -> bool) -> bool {
     match Clock::current() {
         Clock::Virtual { work, .. } => work.until_idle(patience, settled),

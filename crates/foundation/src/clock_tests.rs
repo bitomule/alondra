@@ -713,3 +713,30 @@ fn until_idle_waits_for_a_task_woken_from_another_thread() {
         task.await.unwrap();
     });
 }
+
+/// A wait for calm gives up after `patience` with no unit of work moving, and each unit that starts
+/// or ends in the meantime moves its limit on, so a daemon slowed by a loaded Mac is waited for and
+/// one that stopped is not.
+#[test]
+fn a_wait_for_calm_lasts_as_long_as_the_daemon_moves() {
+    let start = std::time::Instant::now();
+    let patience = Duration::from_secs(20);
+    let mut wait = Patience::new(patience, start, 7);
+    assert_eq!(wait.left(start + Duration::from_secs(5)), Duration::from_secs(15));
+    assert!(!wait.extend(start + patience, 7), "nothing moved in the whole patience");
+    assert!(wait.extend(start + patience, 9), "two units moved");
+    assert_eq!(wait.left(start + patience), patience, "the limit moved on by a whole patience");
+    assert!(!wait.extend(start + 2 * patience, 9), "and nothing moved after");
+}
+
+#[test]
+fn every_unit_of_work_that_starts_or_ends_is_a_move() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let Clock::Virtual { work, .. } = Clock::current() else { unreachable!("a virtual runtime") };
+        let before = work.moves.load(Ordering::SeqCst);
+        frame_sent("host");
+        frame_handled("host");
+        assert_eq!(work.moves.load(Ordering::SeqCst) - before, 2);
+    });
+}
