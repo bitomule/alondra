@@ -1660,6 +1660,11 @@ truth = ["memory", "sqlite:provider_execution_owners"]
 - **Exclusion guards**:
   - `unowned()` (`:1520-1529`), which only the retake paths consult (`to_take`, `retake_waiting_for_space`,
     `wake_released`);
+  - `take_working_unowned` checks `to_take` on the gate's state, then reads the state again and takes only the
+    tasks that still read as working there. An owner commits what became of its task (the host-lost card of
+    `lost_on`) before its driver lets `in_hand` go, so a state read after the owner was found gone holds that
+    commit, where the gate's earlier read may not: deciding on the earlier one took over a task its host-lost card
+    held, and ended its host a second time;
   - `TakeoverTurn`, in only two paths;
   - the store's CAS generation, which is the only universal barrier.
 - **Copies and derivatives**: `add_sdk_owner` (`:2925-2934`) keeps **every** unfinished `Owner` of the same agent.
