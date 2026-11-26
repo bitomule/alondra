@@ -83,7 +83,6 @@ fn engine_alone(home: &Path, database: &Path, files: &dyn JournalFiles) -> Resul
     alondra_agent_runtime::wire(runtime.ports(), Default::default());
     alondra_provider_claude::wire(runtime.ports());
     alondra_provider_codex::wire(runtime.ports());
-    alondra_provider_antigravity::wire(runtime.ports());
     Ok(runtime)
 }
 

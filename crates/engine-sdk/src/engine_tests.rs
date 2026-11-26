@@ -54,6 +54,8 @@ pub fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn a
     alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
     #[cfg(feature = "real-hosts")]
     alondra_agent_runtime::wire(runtime.ports(), Default::default());
+    #[cfg(feature = "real-hosts")]
+    alondra_provider_antigravity::wire(runtime.ports());
     #[cfg(not(feature = "real-hosts"))]
     alondra_engine_doubles::agent_host::wire(runtime.ports());
     alondra_engine_admission::for_tests(&runtime);
