@@ -9,7 +9,7 @@ pub mod test_support;
 #[macro_use]
 extern crate alondra_foundation;
 
-use alondra_daemon_support::{auth, domain_cutover, locks};
+use alondra_daemon_support::{domain_cutover, locks};
 
 pub mod cancelled_worktrees;
 pub mod home_renames;

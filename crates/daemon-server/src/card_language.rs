@@ -49,6 +49,7 @@ pub fn refusal(command: &Command, user: Lang) -> Option<DomainError> {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_domain_model::{CardKind, CardSpec, InteractionId, Recipient, Scope, TaskId};

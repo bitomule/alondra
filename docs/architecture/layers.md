@@ -108,7 +108,11 @@ The phases of the build-graph plan empty it: `engine-ports` (phase 3) and the wi
 the engine, which phase 6 added when it took the server out of the root (a decision of the user's
 while the engine is not yet behind ports). Its sixth, on `github-gh`, is gone: the server takes
 GitHub from the registry of ports, and only `alondrad_production`, the library of the `alondrad`
-binary, links the real client. Phase 3b moved `agent-runtime`
+binary, links the real client. Its entry on `daemon-support` is gone too (phase 7e): the modules only the server
+used (device sign-in in `auth`, pushes, updates, relaunch, the scoped reads, …) live in the server;
+the ones it shares with the engine went lower, `blocking_work` and `uuid` to `foundation` and the
+file and network helpers (`approval_lease`, `uploads`, `service_files`, `watcher`, the cutover
+marker, …) to `engine-ports`, which `daemon-support` re-exports for the engine. Phase 3b moved `agent-runtime`
 behind the `AgentHost` port of `engine-ports`: no provider or piece of the engine depends on it,
 only the roots and the tests that start real hosts.
 

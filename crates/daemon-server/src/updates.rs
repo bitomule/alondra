@@ -163,6 +163,7 @@ fn brew_upgrade(brew: &Path) -> (bool, String) {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -7,11 +7,11 @@ load("//:version.bzl", "VERSION")
 load("//bazel/rules:rust_sources.bzl", "production_sources")
 
 WORKSPACE_DEPS = [
-    "//crates/core:alondra_core", "//crates/host:host", "//crates/foundation:foundation", "//crates/domain-model:domain_model", "//crates/view-model:view_model",
-    "//crates/e2e:alondra_e2e",
-    "//crates/process-group:process_group",
+    "//crates/core:alondra_core",
+    "//crates/foundation:foundation",
+    "//crates/domain-model:domain_model",
+    "//crates/engine-ports:engine_ports",
     "//crates/provider-claude:provider_claude",
-    "//crates/store:store",
 ]
 
 application_crate(
@@ -26,12 +26,11 @@ low_opt_rust_test(
     name = "daemon_support_test",
     timeout = "moderate",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    compile_data = ["//fixtures/workflow"],
     crate_name = "alondra_daemon_support",
     crate_root = "src/lib.rs",
     edition = "2024",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
-    env = {"HOME": ".", "TEST_EXECS": "/bin/sh /bin/sleep /usr/bin/sips /usr/bin/touch /usr/bin/true tmpdir"},
+    env = {"HOME": "."},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
 )
@@ -49,7 +48,7 @@ rust_inputs_test(
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
 # Evidence alondrad's check of the domain v2 acceptance catalog finds tests in.
-exports_files(["src/domain_authority.rs", "src/domain_cutover.rs"], visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"])
+exports_files(["src/domain_authority.rs"], visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"])
 
 # The crate's production sources: the crash report's log catalog reads them, and fails on a test
 # file among them; alondrad's lock policy test reads them too.

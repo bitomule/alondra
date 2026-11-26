@@ -60,7 +60,7 @@ pub fn take_out(domain: &dyn Runtime, session: &str, reason: &str, cwd: Option<S
     for task_id in released {
         let state = domain.state();
         let envelope = CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("release-{}-{}", task_id.0, crate::auth::random_hex(8)).into(),
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("release-{}-{}", task_id.0, alondra_foundation::random_hex(8)).into(),
             expected_revision: state.revision, command: Command::ReleaseTask { task_id: task_id.clone(), reason: reason.into(), relaunch, cwd: cwd.clone() },
         };
         match domain.execute_as_system(envelope) {

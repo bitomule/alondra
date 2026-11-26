@@ -9,7 +9,7 @@ pub mod test_support;
 #[macro_use]
 extern crate alondra_foundation;
 
-use alondra_daemon_support::{auth, locks, log};
+use alondra_daemon_support::{locks, log};
 use alondra_engine_kernel::{domain_runtime, domain_store, extension, sdk_backend};
 
 pub mod mcp_probe;

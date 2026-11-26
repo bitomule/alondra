@@ -128,7 +128,7 @@ async fn run(diagnostic: Option<String>, seams: fn() -> assemble::Seams) -> Resu
     log::rotate_when_full(&config.home);
     relaunch::record_supervision(&config.service_label);
     home_renames::apply(&config.home, domain_orchestrator::RECORDS, &alondra_store_sqlite::Sqlite)?;
-    domain_cutover::refuse_legacy_home(&config.home)?;
+    legacy_home::refuse_legacy_home(&config.home)?;
     let (database_migrated, _source_fence) =
         domain_database_migration::migrate_and_fence(&config.home)?;
     if database_migrated {
@@ -615,9 +615,9 @@ mod argument_tests {
     fn empty_new_home_selects_domain_startup() {
         let scratch_directory = crate::test_support::Directory::new();
         let home =
-            scratch_directory.parent().unwrap().join(format!("alondra-domain-start-{}", auth::random_hex(8)));
+            scratch_directory.parent().unwrap().join(format!("alondra-domain-start-{}", alondra_foundation::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
-        domain_cutover::refuse_legacy_home(&home).unwrap();
+        legacy_home::refuse_legacy_home(&home).unwrap();
         ensure_domain_protocol(&home).unwrap();
         let _domain = crate::engine::open(&home).unwrap();
         domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
@@ -630,10 +630,10 @@ mod argument_tests {
     fn legacy_only_home_fails_closed_without_creating_domain_database() {
         let scratch_directory = crate::test_support::Directory::new();
         let home =
-            scratch_directory.parent().unwrap().join(format!("alondra-domain-legacy-{}", auth::random_hex(8)));
+            scratch_directory.parent().unwrap().join(format!("alondra-domain-legacy-{}", alondra_foundation::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join("alondra.db"), b"preserve legacy bytes").unwrap();
-        let error = domain_cutover::refuse_legacy_home(&home).unwrap_err();
+        let error = legacy_home::refuse_legacy_home(&home).unwrap_err();
         assert!(error.to_string().contains("legacy data"));
         assert!(!home.join("domain.db").exists());
         assert_eq!(
@@ -648,7 +648,7 @@ mod argument_tests {
         let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::PermissionsExt;
         let home =
-            scratch_directory.parent().unwrap().join(format!("alondra-domain-guard-{}", auth::random_hex(8)));
+            scratch_directory.parent().unwrap().join(format!("alondra-domain-guard-{}", alondra_foundation::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
         let legacy_domain = home.join("domain-v2.db");
         drop(alondra_store_sqlite::DomainStore::open(&legacy_domain).unwrap());
@@ -693,7 +693,7 @@ mod engine {
     /// launches on the disk the machine watch measured.
     pub fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
         let runtime = crate::wiring::open_at(home, database, files)?;
-        alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
+        alondra_engine_doubles::machine::wire(runtime.ports(), alondra_engine_ports::watcher::claude_home);
         alondra_engine_doubles::github::wire(runtime.ports());
         alondra_agent_runtime::wire(runtime.ports(), Default::default());
         alondra_engine_admission::for_tests(&runtime);

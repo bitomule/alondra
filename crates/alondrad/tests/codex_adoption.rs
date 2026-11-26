@@ -36,7 +36,7 @@ mod engine_tests {
 /// The engine the slice of this test opens: the daemon's, over the doubles of the Mac.
 fn open_at(home: &Path, database: &Path, files: &dyn alondra_engine_sdk::domain_store::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
     let runtime = alondrad::wiring::open_at(home, database, files)?;
-    alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
+    alondra_engine_doubles::machine::wire(runtime.ports(), alondra_engine_ports::watcher::claude_home);
     alondra_agent_runtime::wire(runtime.ports(), Default::default());
     alondra_engine_admission::for_tests(&runtime);
     Ok(runtime)

@@ -29,6 +29,7 @@ fn soft_limit(soft: libc::rlim_t, hard: libc::rlim_t) -> libc::rlim_t {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::{soft_limit, CEILING};
 

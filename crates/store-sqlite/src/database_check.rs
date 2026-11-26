@@ -53,7 +53,7 @@ struct Scratch(PathBuf);
 impl Scratch {
     #[expect(clippy::disallowed_methods, reason = "The diagnostic owns and removes this private directory in Drop.")]
     fn new() -> Result<Self> {
-        let path = std::env::temp_dir().join(format!("alondrad-database-check-{}-{}", std::process::id(), crate::auth::random_hex(8)));
+        let path = std::env::temp_dir().join(format!("alondrad-database-check-{}-{}", std::process::id(), alondra_foundation::random_hex(8)));
         fs::DirBuilder::new().mode(0o700).create(&path)?;
         Ok(Self(path))
     }

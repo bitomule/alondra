@@ -4,7 +4,7 @@ use crate::domain_store::IntoDomainError as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::auth::{Signed, is_local};
-use crate::domain_authority::Principal;
+use crate::principal::Principal;
 use crate::domain_store::{StoreError, TransportIdentity};
 use crate::domain_runtime::DomainRuntime;
 pub(crate) use alondra_daemon_engine::reply::status_for;
@@ -1232,7 +1232,7 @@ fn store_error(error: StoreError) -> Response {
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
-    use crate::domain_authority::Principal;
+    use crate::principal::Principal;
     use axum::http::StatusCode;
     use base64::{
         Engine as _,

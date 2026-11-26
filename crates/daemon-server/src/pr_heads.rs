@@ -46,6 +46,7 @@ pub(crate) fn is_sha(head: &str) -> bool {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_domain_model::{MergeMethod, PrState, PullRequest};

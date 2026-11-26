@@ -414,7 +414,7 @@ async fn watch(domain: std::sync::Arc<dyn Runtime>, alerts: impl Alerts, jitter_
 }
 
 fn jitter(max_ms: u64) -> u64 {
-    u64::from_str_radix(&crate::auth::random_hex(4), 16).unwrap_or_default().checked_rem(max_ms).unwrap_or(0)
+    u64::from_str_radix(&alondra_foundation::random_hex(4), 16).unwrap_or_default().checked_rem(max_ms).unwrap_or(0)
 }
 
 /// An account has a session again: a wait for one ends now and what it held carries on.

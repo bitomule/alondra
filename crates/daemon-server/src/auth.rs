@@ -147,17 +147,6 @@ pub struct Auth {
     verification_hook: Mutex<Option<Arc<dyn Fn(VerificationStage) + Send + Sync>>>,
 }
 
-/// A random version 4 UUID.
-pub fn uuid() -> anyhow::Result<String> {
-    use ring::rand::{SecureRandom, SystemRandom};
-    let mut bytes = [0u8; 16];
-    SystemRandom::new().fill(&mut bytes).map_err(|_| anyhow::anyhow!("cannot generate execution identity"))?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let h: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    Ok(format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..]))
-}
-
 pub use alondra_foundation::random_hex;
 
 fn hex(bytes: &[u8]) -> String {
@@ -517,6 +506,7 @@ pub async fn guard(State(auth): State<Arc<Auth>>, ConnectInfo(peer): ConnectInfo
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use p256::ecdsa::SigningKey;

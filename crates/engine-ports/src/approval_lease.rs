@@ -15,7 +15,7 @@
 //!   therefore share one `flock` per file, counted here, and an exclusive holder waits for the
 //!   count to reach zero before it touches `flock`. The kernel sees at most one lock from this
 //!   process per file.
-use crate::locks::{Poisonable as _, AfterPanic as _};
+use alondra_foundation::locks::{Poisonable as _, AfterPanic as _};
 use anyhow::{Context, Result, ensure};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};

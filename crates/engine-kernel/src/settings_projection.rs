@@ -72,7 +72,7 @@ mod tests {
     fn user() -> Actor { Actor::User { user_id: "settings-user".into() } }
     fn envelope(runtime: &DomainRuntime, command: Command) -> CommandEnvelope {
         CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: runtime.read().state().data_epoch.clone(),
-            command_id: format!("settings-test-{}", crate::auth::random_hex(8)).into(), expected_revision: 0, command }
+            command_id: format!("settings-test-{}", alondra_foundation::random_hex(8)).into(), expected_revision: 0, command }
     }
     fn fixture() -> Fixture {
         let scratch = crate::test_support::Directory::new();

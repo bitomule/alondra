@@ -42,6 +42,7 @@ fn segment(id: &str) -> String {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_domain_model::{CardKind, CardSpec, ContentKind};

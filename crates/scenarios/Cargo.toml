@@ -12,6 +12,7 @@ alondra-agent-protocol.workspace = true
 alondra-agent-runtime.workspace = true
 alondra-core.workspace = true
 alondra-daemon-engine.workspace = true
+alondra-daemon-server.workspace = true
 alondra-daemon-support.workspace = true
 alondra-engine-admission.workspace = true
 alondra-engine-doubles.workspace = true

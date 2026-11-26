@@ -61,7 +61,7 @@ impl Phone {
         let bytes = body.map(|body| serde_json::to_vec(body).expect("a json value renders")).unwrap_or_default();
         self.sent.set(self.sent.get() + 1);
         let timestamp = alondra_core::now_millis() + self.sent.get();
-        let message = alondra_daemon_support::auth::signed_message(method, path, &timestamp.to_string(), &bytes);
+        let message = alondra_daemon_server::auth::signed_message(method, path, &timestamp.to_string(), &bytes);
         let signature: p256::ecdsa::Signature = self.key.sign(message.as_bytes());
         let signature = base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes());
         let mut request = format!(

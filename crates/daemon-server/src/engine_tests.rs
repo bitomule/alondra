@@ -7,6 +7,8 @@ mod acceptance_catalog_tests;
 #[cfg(not(feature = "real-hosts"))]
 mod admission_tests;
 #[cfg(not(feature = "real-hosts"))]
+mod approval_revocation_tests;
+#[cfg(not(feature = "real-hosts"))]
 mod domain_github_tests;
 #[cfg(not(feature = "real-hosts"))]
 mod domain_orchestrator_tools_tests;
@@ -68,7 +70,7 @@ pub(crate) fn wired() {
 pub(crate) fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
     alondra_domain_model::invariants::check_after_every_command();
     let runtime = engine_assembly::open_engine_at(home, database, files)?;
-    alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
+    alondra_engine_doubles::machine::wire(runtime.ports(), alondra_engine_ports::watcher::claude_home);
     alondra_engine_doubles::github::wire(runtime.ports());
     #[cfg(feature = "real-hosts")]
     alondra_agent_runtime::wire(runtime.ports(), Default::default());

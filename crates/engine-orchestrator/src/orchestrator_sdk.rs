@@ -165,7 +165,7 @@ fn configuration(batch: &Batch) -> Result<(ClaudeConfiguration, Preparing), Stri
         .and_then(|backend| backend.for_account(&batch.home, &batch.selection.account.account, &batch.domain.engine().registered_accounts(&batch.home, alondra_core::accounts::Provider::Claude)))
         .map_err(|error| format!("{error:#}"))?;
     std::fs::create_dir_all(&backend.state_root).map_err(|error| format!("creating the SDK state root: {error}"))?;
-    let state_directory = backend.state_root.join(format!("o-{}", crate::auth::random_hex(8)));
+    let state_directory = backend.state_root.join(format!("o-{}", alondra_foundation::random_hex(8)));
     let preparing = Preparing::hold(&state_directory);
     {
         use std::os::unix::fs::DirBuilderExt;

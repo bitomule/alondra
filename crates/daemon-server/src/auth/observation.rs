@@ -260,6 +260,7 @@ pub(super) fn configured() -> Observation {
 pub(super) fn configured() -> Observation { Observation::default() }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

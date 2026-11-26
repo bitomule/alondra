@@ -170,7 +170,7 @@ Issue: #518 · Severity: S1 · Findings: F-GH-2, F-GH-4, F-GH-3, F-GH-6, F-ENGIN
   `files/`; anything else is listed, never deleted (user decision).
 - **Files**: `crates/engine-worktrees/src/cancelled_worktrees.rs`, `task_worktrees.rs`,
   `crates/system/src/worktree.rs` (the branch decision as a pure function of facts),
-  `crates/engine-doubles/src/worktrees.rs` and its contract, `crates/daemon-support/src/files_retention.rs`,
+  `crates/engine-doubles/src/worktrees.rs` and its contract, `crates/engine-ports/src/files_retention.rs`,
   the store retention of attachments, `docs/on-your-mac.md`.
 - **Tests**: engine tests of the closer and of `cancelled_worktrees` with the `Worktrees`/`Disk`
   doubles (cancel with a dirty worktree, answer «delete», reopen, the double recreates the folder with
@@ -244,7 +244,7 @@ fix; the ablation output is in the pull request.
   row in the same commit, so a reload reads what was committed.
 - **Files**: `crates/store-sqlite/src/repository.rs` (request side tables), `crates/engine-sdk/src/domain_schedule_runner.rs`, `crates/alondrad/src/lib.rs`,
   `crates/engine-sdk/src/domain_orchestrator.rs` and the orchestrator inbox steps, the store's
-  startup recovery, `crates/daemon-support/src/auth.rs` (preflight reads), the delivery CLI.
+  startup recovery, `crates/daemon-server/src/auth.rs` (preflight reads), the delivery CLI.
 - **Tests**: `run_cycle` with a pending run and an invalid `options.toml` returns `Ok` and leaves the
   run pending with its reason (today `Err`; ablation: restore the `?` at `domain_schedule_runner.rs:415`);
   the orchestrator restart test through the path real startup takes (today the test only exercises
@@ -442,7 +442,7 @@ F-CLIENTS-R4, F-SERVER-D4 · Depends on: none.
   newer one. A terminal whose local device was removed pairs again once and says so; the Mac's own
   terminal cannot be revoked (default decisions).
 - **Files**: `crates/cli-tui` (optimistic replies, restart), `crates/client-transport/src/direct_client.rs`,
-  `local.rs`, `crates/cli` (device commands), `crates/daemon-support/src/auth.rs`.
+  `local.rs`, `crates/cli` (device commands), `crates/daemon-server/src/auth.rs`.
 - **Tests**: TUI state tests with transport doubles; a direct-client test with a refused response; a
   home ordering test.
 - **Final behaviour**: the restart hands every Mac's unconfirmed answers to the new process in the restore
@@ -2207,39 +2207,39 @@ where = "crates/daemon-server/src/views/live.rs"
 decides = "pace"
 [[timer]]
 name = "MAX_SKEW_MS"
-where = "crates/daemon-support/src/auth.rs"
+where = "crates/daemon-server/src/auth.rs"
 decides = "pace"
 [[timer]]
 name = "PAIRING_TTL"
-where = "crates/daemon-support/src/auth.rs"
+where = "crates/daemon-server/src/auth.rs"
 decides = "state"
 machine = "M-SERVER-D4"
 triggers = "a local pairing code expires"
 [[timer]]
 name = "EXPIRED_KEPT_MS"
-where = "crates/daemon-support/src/device_usage.rs"
+where = "crates/daemon-server/src/device_usage.rs"
 decides = "state"
 machine = "M-SERVER-D1"
 triggers = "the record of an expired device is forgotten"
 [[timer]]
 name = "RESULTS_KEPT_FOR"
-where = "crates/daemon-support/src/files_retention.rs"
+where = "crates/engine-ports/src/files_retention.rs"
 decides = "state"
 machine = "M-GH-13"
 triggers = "deletes a saved result after its task closed"
 [[timer]]
 name = "STORED_KEPT_FOR"
-where = "crates/daemon-support/src/files_retention.rs"
+where = "crates/engine-ports/src/files_retention.rs"
 decides = "state"
 machine = "M-GH-13"
 triggers = "deletes stored card files after the card and task ended"
 [[timer]]
 name = "AFTER_START"
-where = "crates/daemon-support/src/local_network.rs"
+where = "crates/engine-ports/src/local_network.rs"
 decides = "pace"
 [[timer]]
 name = "FRESH"
-where = "crates/daemon-support/src/local_network.rs"
+where = "crates/engine-ports/src/local_network.rs"
 decides = "pace"
 [[timer]]
 name = "EVERY"
@@ -2251,47 +2251,51 @@ where = "crates/daemon-support/src/node_cost.rs"
 decides = "pace"
 [[timer]]
 name = "JWT_LIFETIME_MS"
-where = "crates/daemon-support/src/push.rs"
+where = "crates/daemon-server/src/push.rs"
 decides = "pace"
 [[timer]]
 name = "EVERY"
-where = "crates/daemon-support/src/relaunch.rs"
+where = "crates/daemon-server/src/relaunch.rs"
 decides = "pace"
 [[timer]]
 name = "PREFLIGHT_TIMEOUT"
-where = "crates/daemon-support/src/relaunch.rs"
+where = "crates/daemon-server/src/relaunch.rs"
 decides = "pace"
 [[timer]]
 name = "RETRY_REJECTED"
-where = "crates/daemon-support/src/relaunch.rs"
+where = "crates/daemon-server/src/relaunch.rs"
 decides = "pace"
 [[timer]]
 name = "VERSION_TIMEOUT"
-where = "crates/daemon-support/src/relaunch.rs"
+where = "crates/daemon-server/src/relaunch.rs"
 decides = "pace"
 [[timer]]
 name = "EVERY"
-where = "crates/daemon-support/src/reports.rs"
+where = "crates/engine-ports/src/reports.rs"
 decides = "pace"
 [[timer]]
 name = "ONE_TRY"
-where = "crates/daemon-support/src/reports.rs"
+where = "crates/engine-ports/src/reports.rs"
 decides = "pace"
 [[timer]]
 name = "TTL"
-where = "crates/daemon-support/src/service_files.rs"
+where = "crates/daemon-server/src/service_files.rs"
+decides = "pace"
+[[timer]]
+name = "TTL"
+where = "crates/engine-ports/src/stored_files.rs"
 decides = "pace"
 [[timer]]
 name = "EVERY"
-where = "crates/daemon-support/src/updates.rs"
+where = "crates/daemon-server/src/updates.rs"
 decides = "pace"
 [[timer]]
 name = "FETCH_TIMEOUT"
-where = "crates/daemon-support/src/updates.rs"
+where = "crates/daemon-server/src/updates.rs"
 decides = "pace"
 [[timer]]
 name = "UPGRADE_TIMEOUT"
-where = "crates/daemon-support/src/updates.rs"
+where = "crates/daemon-server/src/updates.rs"
 decides = "pace"
 [[timer]]
 name = "API_RETRIES"
@@ -4164,7 +4168,7 @@ truth = ["file:database-migration.json", "derived", "sqlite:domain_meta", "sqlit
 
 ```toml state-machine
 id = "M-STORE-10"
-code = ["crates/alondrad/src/lib.rs::run", "crates/alondrad/src/assemble.rs", "crates/daemon-support/src/domain_cutover.rs::Phase"]
+code = ["crates/alondrad/src/lib.rs::run", "crates/alondrad/src/assemble.rs", "crates/engine-ports/src/domain_cutover.rs::Phase"]
 truth = ["derived"]
 ```
 
@@ -4233,11 +4237,11 @@ machine = "M-ENGINE-1"
 [[file]]
 name = "apns.json"
 writer = "crates/cli/src/setup.rs"
-readers = ["crates/cli/src/doctor/system.rs", "crates/daemon-support/src/push.rs"]
+readers = ["crates/cli/src/doctor/system.rs", "crates/daemon-server/src/push.rs"]
 machine = "M-SERVER-D8"
 [[file]]
 name = "auto-update.json"
-writer = "crates/daemon-support/src/updates.rs"
+writer = "crates/daemon-server/src/updates.rs"
 machine = "M-SERVER-D9"
 [[file]]
 name = "closed-sessions.json"
@@ -4262,11 +4266,11 @@ writer = "crates/daemon-server/src/client_routes.rs"
 machine = "M-SERVER-D8"
 [[file]]
 name = "device-usage.json"
-writer = "crates/daemon-support/src/device_usage.rs"
+writer = "crates/daemon-server/src/device_usage.rs"
 machine = "M-SERVER-D1"
 [[file]]
 name = "devices.json"
-writer = "crates/daemon-support/src/auth.rs"
+writer = "crates/daemon-server/src/auth.rs"
 readers = ["crates/cli-report/src/report/private.rs", "crates/cli/src/service_pair.rs", "crates/daemon-server/src/preflight.rs"]
 offline_writers = ["crates/cli/src/service_setup/recovery.rs"]
 offline_why = "service recovery rewrites it under the home lock while the daemon is stopped"
@@ -4347,7 +4351,7 @@ readers = ["crates/core/src/home_lock.rs"]
 machine = "M-SERVER-D1"
 [[file]]
 name = "revoked-devices.json"
-writer = "crates/daemon-support/src/revoked_devices.rs"
+writer = "crates/daemon-server/src/revoked_devices.rs"
 machine = "M-SERVER-D2"
 [[file]]
 name = "service-keys/public.json"
@@ -4367,7 +4371,7 @@ machine = "M-SERVER-D1"
 [[file]]
 name = "sending.json"
 writer = "crates/cli-report/src/report/send.rs"
-readers = ["crates/cli-report/src/report/bundle.rs", "crates/daemon-support/src/reports.rs"]
+readers = ["crates/cli-report/src/report/bundle.rs", "crates/engine-ports/src/reports.rs"]
 machine = "M-CLIENTS-R14"
 [[file]]
 name = "service.toml"
@@ -4487,7 +4491,7 @@ that task: its test could include a `domain-capabilities.json` of another format
      60-96`).
   2. The real startup fails with an unreadable `domain-capabilities.json` or one of another format
      (`engine-kernel/src/domain_runtime/capabilities.rs:46-72`, `deny_unknown_fields`, `format == 1`) and with an
-     unreadable `devices.json` (`daemon-support/src/auth.rs`, `Auth::open` from `DomainDaemon::over_shared`,
+     unreadable `devices.json` (`daemon-server/src/auth.rs`, `Auth::open` from `DomainDaemon::over_shared`,
      `daemon-server/src/domain_bootstrap.rs:80`).
   3. In the copy those files are missing and defaults are taken, so preflight passes (`preflight.rs:48-57`).
 - **Minimal sequence**: (1) a version changes the format of `Principal` or of `devices.json`; (2) preflight on the
@@ -4642,7 +4646,7 @@ The `git log` of `live.rs` shows only crate moves.
 **Class**: HYPOTHESIS (depends on the file system after a power cut) · **Severity if confirmed**: S2-S3.
 - **Files involved**: `orchestrator.json` (`domain_orchestrator.rs:125-131`), `closed-*.json` (`live.rs:22-29`),
   `config.toml` (`core/src/config.rs:396-397`), `startup-failures.json`; `auto-update.json` is written in place
-  (`daemon-support/src/updates.rs:47`). `save::atomic` does fsync of the file but not of the folder
+  (`daemon-server/src/updates.rs:47`). `save::atomic` does fsync of the file but not of the folder
   (`foundation/src/save.rs:9-29`). For `orchestrator.json` there is reconciliation with SQLite; for `closed-*` there
   is not.
 - **Missing to confirm**: the behaviour of APFS when an unsynced rename is lost; a test is only possible with a `Disk`
@@ -4662,7 +4666,7 @@ them: the node limit is written outside the two-phase protocol. No task in the r
 
 Scope: `crates/engine-github`, `crates/github-gh`, `crates/engine-worktrees`, `crates/system` (the `Worktrees` port),
 the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retention
-(`daemon-support/src/files_retention.rs`, `engine-kernel/src/retention.rs`) and PR #503. Retention of the store itself
+(`engine-ports/src/files_retention.rs`, `engine-kernel/src/retention.rs`) and PR #503. Retention of the store itself
 (M-STORE-13) is not repeated here. Audited at commit `1567967b9`.
 
 ### M-GH-1 · Pull request state (`PullRequest`)
@@ -4965,7 +4969,7 @@ turn that began after the last declaration ending idle after the merge (`PostMer
 
 ```toml state-machine
 id = "M-GH-13"
-code = ["crates/daemon-support/src/files_retention.rs::sweep"]
+code = ["crates/engine-ports/src/files_retention.rs::sweep"]
 truth = ["derived"]
 ```
 
@@ -5150,7 +5154,7 @@ task. Tests: `answered_card_tests::after_the_merge_a_turn_that_ends_idle_without
 
 #### F-GH-6 · An attachment of a user message to an open task is deleted after 30 days even though the task is still open
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: low · **Overlap**: STORE (M-STORE-13) does not cover the files folder; new.
-**Status**: FIXED in group G1 (PR #548), with the user's decision on `files/`. Retention indexes the lifecycle journal and pending inputs of open tasks and the bodies of open requests, so a message's upload stays while its task is open; only Alondra's own folders (`tasks`, `results`, `uploads`, `images`, `domain-v2`, `documents`) are ever deleted from, and anything else is listed and never removed (`crates/daemon-support/src/files_retention.rs`). Tests: `an_upload_a_message_of_an_open_task_names_stays_after_thirty_days`, `a_file_outside_alondras_folders_is_listed_and_never_deleted`. Ablation: both fail with the old rules; restored, both pass.
+**Status**: FIXED in group G1 (PR #548), with the user's decision on `files/`. Retention indexes the lifecycle journal and pending inputs of open tasks and the bodies of open requests, so a message's upload stays while its task is open; only Alondra's own folders (`tasks`, `results`, `uploads`, `images`, `domain-v2`, `documents`) are ever deleted from, and anything else is listed and never removed (`crates/engine-ports/src/files_retention.rs`). Tests: `an_upload_a_message_of_an_open_task_names_stays_after_thirty_days`, `a_file_outside_alondras_folders_is_listed_and_never_deleted`. Ablation: both fail with the old rules; restored, both pass.
 - **Invalid state/transition and broken invariant**: `files/uploads/<id>` deleted while a live entry of the task names it.
 - **Evidence**:
   1. The message carries the absolute path of the attachment in its text (`daemon-engine/src/domain_messages.rs:65-76`,
@@ -5165,7 +5169,7 @@ task. Tests: `answered_card_tests::after_the_merge_a_turn_that_ends_idle_without
   with `files/uploads/u-1/x.png` and the file with an mtime 31 days old; `sweep` today marks it `remove`. Ablation: also
   index entries of open tasks and request bodies.
 - **Expected fix and files**: `References::of` must include texts of entries of non-finished tasks, bodies of open
-  requests and scheduled launches. File: `crates/daemon-support/src/files_retention.rs`.
+  requests and scheduled launches. File: `crates/engine-ports/src/files_retention.rs`.
 
 #### F-GH-7 · A merge that GitHub blocks for a required review goes back to the node and invalidates the user's acceptance, in a loop
 **Status**: FIXED in G7 (PR #606). `Status` carries `review_required` (GitHub's `reviewDecision` is
@@ -6312,11 +6316,11 @@ fix for any finding. Relay machine ids `M-SERVER-R<n>` are kept as in the relay 
 
 ```toml state-machine
 id = "M-SERVER-D1"
-code = ["crates/daemon-support/src/auth.rs::Device", "crates/daemon-support/src/auth.rs::Auth", "crates/daemon-support/src/auth.rs::approve_service", "crates/daemon-support/src/auth.rs::revoke"]
+code = ["crates/daemon-server/src/auth.rs::Device", "crates/daemon-server/src/auth.rs::Auth", "crates/daemon-server/src/auth.rs::approve_service", "crates/daemon-server/src/auth.rs::revoke"]
 truth = ["file:devices.json"]
 ```
 
-- **Kind**: implicit. **Defined in**: `crates/daemon-support/src/auth.rs:36-44` (`Device`), `:96-121`
+- **Kind**: implicit. **Defined in**: `crates/daemon-server/src/auth.rs:36-44` (`Device`), `:96-121`
   (`PairedDevices`), `:129-150` (`Auth`), `:183-202` (`approved_devices` + `APPROVED` cache), `:264-344` (`save`,
   `pair`, `approve_service`), `:375-388` (`revoke`), `:402-454` (`verify_at`), `:475-495` (`guard`).
 - **Source of truth**: `devices.json` (list of `Device`). **Copies and derivatives**: `Auth.devices` in memory (one
@@ -6349,11 +6353,11 @@ truth = ["file:devices.json"]
 
 ```toml state-machine
 id = "M-SERVER-D2"
-code = ["crates/daemon-support/src/revoked_devices.rs::RevokedDevices", "crates/daemon-support/src/revoked_devices.rs::Tombstone"]
+code = ["crates/daemon-server/src/revoked_devices.rs::RevokedDevices", "crates/daemon-server/src/revoked_devices.rs::Tombstone"]
 truth = ["file:revoked-devices.json"]
 ```
 
-- **Kind**: implicit. **Defined in**: `crates/daemon-support/src/revoked_devices.rs:13-110`; writer
+- **Kind**: implicit. **Defined in**: `crates/daemon-server/src/revoked_devices.rs:13-110`; writer
   `service.rs:924-930`.
 - **Source of truth**: `revoked-devices.json` (FIFO of at most 64). **Copies**: in-memory `Service.revoked`;
   `approve_service` reads the file from scratch (`auth.rs:324`).
@@ -6404,7 +6408,7 @@ terminals = ["Approved", "Denied"]
 
 ```toml state-machine
 id = "M-SERVER-D4"
-code = ["crates/daemon-support/src/auth.rs::Auth", "crates/client-transport/src/local.rs::Pairing", "crates/daemon-server/src/domain_bootstrap.rs::revoke_device"]
+code = ["crates/daemon-server/src/auth.rs::Auth", "crates/client-transport/src/local.rs::Pairing", "crates/daemon-server/src/domain_bootstrap.rs::revoke_device"]
 truth = ["memory", "file:tui-device"]
 ```
 
@@ -6484,7 +6488,7 @@ truth = ["file:iroh-terminals.json"]
 
 ```toml state-machine
 id = "M-SERVER-D8"
-code = ["crates/daemon-server/src/service.rs::activity_phones", "crates/daemon-support/src/push.rs::Push", "crates/daemon-server/src/activity_push.rs::Phone"]
+code = ["crates/daemon-server/src/service.rs::activity_phones", "crates/daemon-server/src/push.rs::Push", "crates/daemon-server/src/activity_push.rs::Phone"]
 truth = ["derived", "sqlite:service_activity_keys", "sqlite:service_push_bindings", "sqlite:service_push_preference_revisions", "sqlite:service_push_preferences"]
 ```
 
@@ -6492,18 +6496,18 @@ truth = ["derived", "sqlite:service_activity_keys", "sqlite:service_push_binding
 - **Encrypted (service)**: `service.rs:1797-1850`: for each device in `service.toml`, approved in memory plus
   enrollment `active` plus binding. Live Activity: `activity_push.rs:149-160` replaces the phone list on every
   round.
-- **Legacy (direct APNs)**: `daemon-support/src/push.rs:48-118`, used when there is no `service.toml`
+- **Legacy (direct APNs)**: `daemon-server/src/push.rs:48-118`, used when there is no `service.toml`
   (`domain_delivery.rs:244-248`, `push_alerts.rs:40-42`).
 
 ### M-SERVER-D9 · Self-update
 
 ```toml state-machine
 id = "M-SERVER-D9"
-code = ["crates/daemon-support/src/updates.rs::plan", "crates/daemon-support/src/updates.rs::Updater", "crates/daemon-support/src/updates.rs::record_attempt"]
+code = ["crates/daemon-server/src/updates.rs::plan", "crates/daemon-server/src/updates.rs::Updater", "crates/daemon-server/src/updates.rs::record_attempt"]
 truth = ["file:auto-update.json"]
 ```
 
-- **Kind**: implicit. **Defined in**: `daemon-support/src/updates.rs:17-118`; `alondra_core::update::{Attempt,
+- **Kind**: implicit. **Defined in**: `daemon-server/src/updates.rs:17-118`; `alondra_core::update::{Attempt,
   Status}`.
 - **Source of truth**: `auto-update.json` (last `Attempt{version, at, ok, detail, attempts}`, written to a temporary
   file and renamed since G11); `KNOWN` in memory (last version seen).
@@ -6516,13 +6520,13 @@ truth = ["file:auto-update.json"]
 
 ```toml state-machine
 id = "M-SERVER-D10"
-code = ["crates/daemon-support/src/relaunch.rs::Watcher", "crates/daemon-support/src/relaunch.rs::watch", "crates/alondrad/src/lib.rs::relaunch_now"]
+code = ["crates/daemon-server/src/relaunch.rs::Watcher", "crates/daemon-server/src/relaunch.rs::watch", "crates/alondrad/src/lib.rs::relaunch_now"]
 truth = ["memory", "file:startup-failures.json"]
-states = "crates/daemon-support/src/relaunch.rs::Check"
+states = "crates/daemon-server/src/relaunch.rs::Check"
 variants = ["Unchanged", "Relaunch", "Rejected"]
 ```
 
-- **Kind**: explicit. **Defined in**: `daemon-support/src/relaunch.rs:113-232`; `alondrad/src/lib.rs:170-182`,
+- **Kind**: explicit. **Defined in**: `daemon-server/src/relaunch.rs:113-232`; `alondrad/src/lib.rs:170-182`,
   `:329-347`.
 - **States**: `Running(identity)` → binary changed → preflight → `Relaunch` (exits with 75 via `exit::now`, without
   draining) | `Rejected(identity, t)` (retried after 10 min). If the binary changes during preflight, the result is
@@ -7189,7 +7193,7 @@ variants = ["Unsent", "Unanswered", "Running", "Unknown", "Answered"]
 
 ```toml state-machine
 id = "M-CLIENTS-R14"
-code = ["crates/cli-report/src/report/send.rs::Sending", "crates/cli-report/src/report/send.rs::send_to", "crates/cli-report/src/report/send.rs::keep", "crates/cli-report/src/report/send.rs::postpone", "crates/daemon-support/src/reports.rs::retry_pending", "crates/daemon-engine/src/report_held_card.rs::check"]
+code = ["crates/cli-report/src/report/send.rs::Sending", "crates/cli-report/src/report/send.rs::send_to", "crates/cli-report/src/report/send.rs::keep", "crates/cli-report/src/report/send.rs::postpone", "crates/engine-ports/src/reports.rs::retry_pending", "crates/daemon-engine/src/report_held_card.rs::check"]
 truth = ["file:sending.json"]
 states = "crates/cli-report/src/report/send.rs::State"
 variants = ["Pending", "Sent", "Kept"]
@@ -7271,7 +7275,7 @@ terminals = ["Sent", "Kept"]
 - **Invalid state/transition and broken invariant**: the local signing pair is repaired by itself only when the daemon rejects it, and only for one rejection reason.
 - **Evidence**:
   1. The signed client presents a signature if a pair is saved (`local.rs:112-124`, `225-231`, `237-247`).
-  2. With a signature present, the guard does not apply the local bypass (`crates/daemon-support/src/auth.rs:477-481`) and verifies: absent device gives `"device not paired"` (`auth.rs:416-419`, `433`), then 401 (`auth.rs:469`, `488-491`).
+  2. With a signature present, the guard does not apply the local bypass (`crates/daemon-server/src/auth.rs:477-481`) and verifies: absent device gives `"device not paired"` (`auth.rs:416-419`, `433`), then 401 (`auth.rs:469`, `488-491`).
   3. The client only repairs on `"wrong signature"` (`local.rs:276-283`). `"device not paired"` is returned as is.
   4. The files `tui-device`/`tui-key.pem` remain; each new process loads them (`local.rs:149-155`).
   5. The automatic sweep excludes the own terminal (`crates/daemon-server/src/device_expiry.rs:38-50`); the only way is removing it by hand with the device remove command (`crates/cli/src/commands.rs:73-76`) or the local route `DELETE /devices/{id}` (`domain_bootstrap.rs:158`, `792-810`), which lists the terminal in the device list.

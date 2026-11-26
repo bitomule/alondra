@@ -241,7 +241,7 @@ impl Rig {
     }
 
     fn confirm(&self) {
-        let id = format!("confirm-{}", crate::auth::random_hex(6));
+        let id = format!("confirm-{}", alondra_foundation::random_hex(6));
         command(&self.domain, agent(), &id, Command::ConfirmCleanup { task_id: "t".into(), discard: Vec::new() });
     }
 
@@ -783,7 +783,7 @@ async fn when_closing_the_session_fails_inside_alondra_the_started_remove_is_for
 
 impl Rig {
     fn declare_post_merge_work(&self, reason: Option<&str>) {
-        let id = format!("post-merge-{}", crate::auth::random_hex(6));
+        let id = format!("post-merge-{}", alondra_foundation::random_hex(6));
         command(&self.domain, agent(), &id, Command::DeclarePostMergeWork { task_id: "t".into(), reason: reason.map(str::to_owned), waits_for: vec![] });
     }
 }
@@ -1879,7 +1879,7 @@ async fn stored_records_of_folders_that_are_no_worktree_are_ignored_and_the_task
     folders.stored_as_worktree_of(&rig.domain, "t", &folders.plain);
     folders.stored_as_worktree_of(&rig.domain, "t", &folders.projects);
     let state = rig.domain.state().unwrap();
-    let id = format!("confirm-discard-{}", crate::auth::random_hex(6));
+    let id = format!("confirm-discard-{}", alondra_foundation::random_hex(6));
     let discard = rig.domain.execute(&agent(), &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.as_str().into(), expected_revision: state.revision,
         command: Command::ConfirmCleanup { task_id: "t".into(), discard: vec![folders.plain.to_str().unwrap().into()] },

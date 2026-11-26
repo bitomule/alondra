@@ -2,6 +2,7 @@
 pub mod log;
 pub mod principal;
 pub mod artifact_digest;
+pub mod blocking_work;
 pub mod changes;
 pub mod clock;
 pub mod daemon_log;
@@ -67,6 +68,18 @@ pub fn random_hex(bytes: usize) -> String {
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A random version 4 UUID, from the system's entropy source.
+pub fn uuid() -> std::io::Result<String> {
+    let mut bytes = [0u8; 16];
+    if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let h: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..]))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Lang {
@@ -117,5 +130,19 @@ impl fmt::Display for MessageUuid {
 impl<'de> Deserialize<'de> for MessageUuid {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod uuid_tests {
+    #[test]
+    fn a_uuid_is_random_version_4_with_the_rfc_variant() {
+        let first = super::uuid().unwrap();
+        let groups: Vec<&str> = first.split('-').collect();
+        assert_eq!(groups.iter().map(|group| group.len()).collect::<Vec<_>>(), [8, 4, 4, 4, 12]);
+        assert!(first.bytes().all(|byte| byte == b'-' || byte.is_ascii_hexdigit()));
+        assert!(groups[2].starts_with('4'), "{first}");
+        assert!(groups[3].starts_with(['8', '9', 'a', 'b']), "{first}");
+        assert_ne!(first, super::uuid().unwrap());
     }
 }

@@ -217,6 +217,7 @@ pub fn execute(root: &Path, query: Query) -> Result<Value> {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use crate::test_support::Directory;

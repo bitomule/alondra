@@ -252,6 +252,6 @@ pub async fn sweep(domain: &dyn Runtime) -> Result<()> {
     if unsaved.is_empty() {
         return Ok(());
     }
-    let id = format!("{DISCARD_WORKTREES_PREFIX}startup-{}", crate::auth::random_hex(6));
+    let id = format!("{DISCARD_WORKTREES_PREFIX}startup-{}", alondra_foundation::random_hex(6));
     raise_card(domain, &id, Scope::Orchestrator { request_id: None }, unsaved)
 }

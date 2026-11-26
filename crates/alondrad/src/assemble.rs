@@ -283,7 +283,7 @@ pub(crate) async fn assemble_with(
     }
     if let Some(service) = service.clone().filter(|service| real && service.iroh_config().enabled) {
         tasks.spawn(iroh_endpoint::run(service));
-        tasks.spawn(local_network::watch());
+        tasks.spawn(local_network::watch(alondra_system::local_network::probe));
         tasks.spawn(local_network_card::run(domain.clone()));
     }
     tasks.spawn(device_expiry::run(state.clone(), config.home.clone(), config.device_expiry_days));

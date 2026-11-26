@@ -12,7 +12,6 @@ extern crate alondra_foundation;
 
 use alondra_daemon_support::{
     approval_lease,
-    auth,
     blocking_work,
     domain_authority,
     domain_content,
@@ -22,7 +21,7 @@ use alondra_daemon_support::{
     locks,
     runtime_mutex,
     save,
-    service_files,
+    stored_files,
 };
 
 pub use alondra_daemon_engine_model::options;

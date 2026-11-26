@@ -114,7 +114,7 @@ pub fn remove_listed(home: &Path, report: &Report) -> Removed {
                 removed.bytes += entry.bytes;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => log!("could not remove {}: {error}", entry.path),
+            Err(error) => alondra_foundation::log!("could not remove {}: {error}", entry.path),
         }
     }
     removed

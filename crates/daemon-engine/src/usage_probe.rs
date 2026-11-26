@@ -69,7 +69,7 @@ pub fn record_for_provider(domain: &dyn Runtime, account: &alondra_core::account
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: domain.read().state().data_epoch.clone(),
-        command_id: format!("account-usage-{}", crate::auth::random_hex(16)).into(),
+        command_id: format!("account-usage-{}", alondra_foundation::random_hex(16)).into(),
         expected_revision: 0,
         command: DomainCommand::RecordAccountUsage { provider: account.provider, account: account.account.clone(), reading, at: now, day: alondra_daemon_engine_model::local_day(now) },
     };

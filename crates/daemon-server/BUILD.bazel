@@ -30,7 +30,6 @@ adapter_in_crate(
     version = VERSION,
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine:daemon_engine",
-        "//crates/daemon-support:daemon_support",
         "//crates/engine-admission:engine_admission",
         "//crates/engine-orchestrator:engine_orchestrator",
         "//crates/engine-sdk:engine_sdk",
@@ -45,7 +44,8 @@ TEST_COMPILE_DATA = [
     "//crates/store-sqlite:src/schedule_acceptance_tests.rs",
     "//crates/store-sqlite:src/tests.rs",
     "//crates/daemon-support:src/domain_authority.rs",
-    "//crates/daemon-support:src/domain_cutover.rs",
+    "//crates/engine-ports:src/domain_cutover.rs",
+    "//fixtures/workflow",
     "//fixtures/domain-v2:acceptance.json",
     "//fixtures/client-v2",
     "//fixtures/push",
@@ -62,7 +62,6 @@ TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + 
     "//crates/daemon-engine:daemon_engine",
     "//crates/daemon-engine-model:daemon_engine_model",
     "//crates/store-sqlite:store_sqlite",
-    "//crates/daemon-support:daemon_support",
     "//crates/engine-doubles:engine_doubles",
     "//crates/engine-kernel:engine_kernel",
     "//crates/engine-admission:engine_admission",
@@ -93,7 +92,7 @@ incremental_rust_test(
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {
         "HOME": ".",
-        "TEST_EXECS": "/bin/cat /bin/ls /bin/sh /bin/sleep /usr/bin/defaults /usr/bin/head /usr/bin/id /usr/bin/python3 /usr/bin/touch /usr/bin/wc tmpdir",
+        "TEST_EXECS": "/bin/cat /bin/ls /bin/sh /bin/sleep /usr/bin/defaults /usr/bin/head /usr/bin/id /usr/bin/python3 /usr/bin/touch /usr/bin/true /usr/bin/wc tmpdir",
     },
     deps = TEST_DEPS + ["//crates/provider-claude:claude_host_model", "//crates/provider-codex:codex_host_model"],
     data = [

@@ -9,6 +9,7 @@ load("//bazel/rules:rust_inputs_test.bzl", "rust_inputs_test")
 WORKSPACE_DEPS = [
     "//crates/engine-ports:engine_ports",
     "//crates/core:alondra_core", "//crates/domain-model:domain_model",
+    "//crates/foundation:foundation",
     "//crates/store:store",
 ]
 

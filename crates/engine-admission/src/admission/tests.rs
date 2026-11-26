@@ -338,7 +338,7 @@ fn unmeasured_world() -> (Home, Arc<DomainRuntime>) {
 fn run(domain: &DomainRuntime, actor: Actor, command: Command) {
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: crate::auth::random_hex(8).into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: alondra_foundation::random_hex(8).into(),
         expected_revision: state.revision, command,
     }, None, || Ok(())).unwrap();
 }
@@ -791,7 +791,7 @@ fn setting_the_priority_a_task_already_has_is_refused() {
     run(&domain, Actor::Orchestrator { generation: 0 }, Command::SetPriority { task_id: "work".into(), priority: TaskPriority::High });
     let state = domain.state().unwrap();
     let again = domain.execute(&Actor::Orchestrator { generation: 0 }, &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: crate::auth::random_hex(8).into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: alondra_foundation::random_hex(8).into(),
         expected_revision: state.revision,
         command: Command::SetPriority { task_id: "work".into(), priority: TaskPriority::High },
     }, None, || Ok(()));

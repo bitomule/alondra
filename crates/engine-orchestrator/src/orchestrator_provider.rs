@@ -91,7 +91,7 @@ pub(crate) fn record_limit(domain: &crate::domain_runtime::DomainRuntime, select
     let scope = match alondra_store::AuthorityScope::new(read.state().data_epoch.clone()) { Ok(scope) => scope, Err(_) => return };
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(),
-        command_id: format!("native-limit-{}", crate::auth::random_hex(8)).into(), expected_revision: 0,
+        command_id: format!("native-limit-{}", alondra_foundation::random_hex(8)).into(), expected_revision: 0,
         command: Command::RecordAccountUsage { provider: account.provider, account: account.account.clone(), at: now,
             day: alondra_daemon_engine_model::local_day(now), reading: UsageReading { plan: None, complete: false,
                 windows: vec![WindowReading { kind: if account.provider == alondra_core::accounts::Provider::Codex { WindowKind::Other("codex:account:limit".into()) } else { WindowKind::Session }, used: if account.provider == alondra_core::accounts::Provider::Codex { Share::NONE } else { Share::FULL }, resets_at: reset, exhausted: true }] } },
@@ -120,7 +120,7 @@ pub(crate) fn record_policy_refused(domain: &crate::domain_runtime::DomainRuntim
     let scope = match alondra_store::AuthorityScope::new(read.state().data_epoch.clone()) { Ok(scope) => scope, Err(_) => return };
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(),
-        command_id: format!("native-policy-refused-{}", crate::auth::random_hex(8)).into(), expected_revision: 0,
+        command_id: format!("native-policy-refused-{}", alondra_foundation::random_hex(8)).into(), expected_revision: 0,
         command: Command::RecordAccountPolicyRefused { provider: account.provider, account: account.account.clone() },
     };
     drop(read);
@@ -155,7 +155,7 @@ mod tests {
                     native_identity: None, email: Some(email.into()), plan: None, billing: Default::default(), sign_ins: 0, profile: None };
                 let state = domain.read();
                 let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.state().data_epoch.clone(),
-                    command_id: crate::auth::random_hex(16).into(), expected_revision: 0,
+                    command_id: alondra_foundation::random_hex(16).into(), expected_revision: 0,
                     command: Command::RecordAccounts { accounts: vec![account], reserve: alondra_core::usage::default_reserve() } };
                 drop(state); domain.execute_as_system(envelope).unwrap();
             };

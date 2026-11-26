@@ -12,6 +12,7 @@ alondra-daemon-engine-machine.workspace = true
 alondra-daemon-engine-model.workspace = true
 alondra-daemon-support.workspace = true
 alondra-domain.workspace = true
+alondra-foundation.workspace = true
 alondra-domain-model.workspace = true
 alondra-process-group.workspace = true
 anyhow.workspace = true

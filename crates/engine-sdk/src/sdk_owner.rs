@@ -574,7 +574,7 @@ pub fn start_bound(domain: Arc<dyn Runtime>, backend: &SdkBackend, launch: Launc
     let backend = &backend.for_provider(provider, domain.home()).map_err(|error| Failed::new(format!("{error:#}")))?;
     let backend = &backend.for_start().map_err(|error| Failed::new(format!("{error:#}")))?;
     let backend = &on_account_provider(&*domain, backend, provider, &launch.account)?;
-    let suffix = crate::auth::random_hex(8);
+    let suffix = alondra_foundation::random_hex(8);
     let agent = AgentId(format!("sdk-{suffix}"));
     let _preparing = alondra_engine_ports::agent_host::Preparing::hold(&backend.state_root.join(&agent.0));
     let state = domain.state();
@@ -1287,7 +1287,7 @@ fn close_host_lost_card(domain: &dyn Runtime, task: &TaskId) {
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
-        command_id: format!("host-found-{task}-{}", crate::auth::random_hex(8)).into(),
+        command_id: format!("host-found-{task}-{}", alondra_foundation::random_hex(8)).into(),
         expected_revision: 0,
         command: Command::AnswerQuestion { interaction_id: card.id.clone(), option_id: RETAKE.into(), inputs: BTreeMap::new(), attachments: vec![] },
     };
@@ -1322,7 +1322,7 @@ pub fn lost_on(domain: &dyn Runtime, task: &TaskId, why: &str, signed_out: bool)
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
-        command_id: format!("host-lost-{task}-{}", crate::auth::random_hex(8)).into(),
+        command_id: format!("host-lost-{task}-{}", alondra_foundation::random_hex(8)).into(),
         expected_revision: 0,
         command: Command::RecordHostLost { task_id: task.clone(), reason: why.to_owned(), quiet, signed_out },
     };
@@ -1546,7 +1546,7 @@ fn take_again(runtime: &Arc<dyn Runtime>, backend: &SdkBackend, task: &TaskId, r
         runtime.execute_as_system(CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
-            command_id: format!("takeover-{task}-{}", crate::auth::random_hex(8)).into(),
+            command_id: format!("takeover-{task}-{}", alondra_foundation::random_hex(8)).into(),
             expected_revision: 0,
             command: Command::RecordRuntimeFacts { task_id: task.clone(), generation, facts: vec![fact] },
         }).map(drop)
@@ -2431,7 +2431,7 @@ impl Driver {
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: epoch,
-            command_id: format!("host-released-{}-{}", self.task, crate::auth::random_hex(8)).into(),
+            command_id: format!("host-released-{}-{}", self.task, alondra_foundation::random_hex(8)).into(),
             expected_revision: 0,
             command: Command::RecordHostReleased { task_id: self.task.clone(), generation },
         };

@@ -270,7 +270,7 @@ pub(crate) fn remove(settings: &Path, entry: &str) -> Result<Removal> {
     let edited = cut(&text, entry, &expected).with_context(|| format!("could not take the rule out of {}", settings.display()))?;
     let permissions = std::fs::metadata(settings)?.permissions().mode();
     let folder = settings.parent().context("settings file without a folder")?;
-    let temp = folder.join(format!(".settings.local.json.alondra-{}", crate::auth::random_hex(8)));
+    let temp = folder.join(format!(".settings.local.json.alondra-{}", alondra_foundation::random_hex(8)));
     let written = (|| -> Result<()> {
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
         file.write_all(edited.as_bytes())?;
@@ -315,7 +315,7 @@ pub(crate) fn add(settings: &Path, entries: &[String]) -> Result<()> {
     allow.extend(missing.into_iter().map(|entry| Value::String(entry.clone())));
     let folder = settings.parent().context("settings file without a folder")?;
     std::fs::create_dir_all(folder).with_context(|| format!("creating {}", folder.display()))?;
-    let temp = folder.join(format!(".settings.local.json.alondra-{}", crate::auth::random_hex(8)));
+    let temp = folder.join(format!(".settings.local.json.alondra-{}", alondra_foundation::random_hex(8)));
     let written = (|| -> Result<()> {
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
         file.write_all(serde_json::to_string_pretty(&value)?.as_bytes())?;

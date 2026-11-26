@@ -104,6 +104,7 @@ fn array<'a>(body: &'a mut Value, key: &str) -> impl Iterator<Item = &'a mut Val
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use serde_json::json;

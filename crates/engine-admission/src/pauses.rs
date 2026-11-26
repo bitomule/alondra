@@ -87,7 +87,7 @@ pub fn interrupt_sdk_node(runtime: &dyn alondra_engine_ports::Runtime, session: 
     let envelope = alondra_domain_model::CommandEnvelope {
         protocol_version: alondra_domain_model::PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
-        command_id: format!("pause-{session}-{}", crate::auth::random_hex(8)).into(),
+        command_id: format!("pause-{session}-{}", alondra_foundation::random_hex(8)).into(),
         expected_revision: state.revision,
         command: alondra_domain_model::Command::InterruptTurn { agent_id: alondra_domain_model::AgentId(session.to_owned()) },
     };

@@ -253,7 +253,7 @@ fn the_projects_root_is_readable_and_never_writable() {
     let f = fixture();
     let epoch = f.domain().state().unwrap().data_epoch.clone();
     let batch = |root: Option<&Path>| {
-        let (_, owner) = f.domain().store.lock().unwrap().claim_orchestrator_batch(&[], &crate::auth::random_hex(8), "00000000-0000-4000-8000-00000000c0de", epoch.clone()).unwrap();
+        let (_, owner) = f.domain().store.lock().unwrap().claim_orchestrator_batch(&[], &alondra_foundation::random_hex(8), "00000000-0000-4000-8000-00000000c0de", epoch.clone()).unwrap();
         let plugin = |name| f.domain().ports().plugins().registered(&f.claude_home, name).unwrap();
         Batch {
             owner, backend: f.domain().sdk().unwrap().0.clone(), home: f.executor.home.clone(), directory: f.executor.home.join("runtime/orchestrator"),

@@ -41,7 +41,7 @@ fn envelope(state: &DomainState, command: Command) -> CommandEnvelope {
     CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
-        command_id: format!("mcp-{}", crate::auth::random_hex(16)).into(),
+        command_id: format!("mcp-{}", alondra_foundation::random_hex(16)).into(),
         expected_revision: state.revision,
         command,
     }

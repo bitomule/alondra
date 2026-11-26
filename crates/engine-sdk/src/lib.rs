@@ -21,7 +21,7 @@ extern crate alondra_foundation;
 
 #[cfg(target_os = "macos")]
 use alondra_daemon_support::schedule_clock;
-use alondra_daemon_support::{auth, blocking_work, files_retention, locks, schedules};
+use alondra_daemon_support::{blocking_work, files_retention, locks, schedules};
 use alondra_engine_ports::plugins;
 use alondra_daemon_support::watcher;
 #[cfg(test)]

@@ -202,7 +202,7 @@ fn migrate_locked(
             let marker = Marker {
                 format: 2,
                 phase: Phase::Prepared,
-                stage_id: alondra_daemon_support::auth::random_hex(12),
+                stage_id: alondra_foundation::random_hex(12),
                 source_epoch: epoch,
                 source_revision: revision,
                 source_digest,
@@ -270,7 +270,7 @@ fn migrate_locked(
                     let valid = validate_stage(&stage, &marker).is_ok();
                     if !valid {
                         quarantine_stage(home, &marker)?;
-                        marker.stage_id = alondra_daemon_support::auth::random_hex(12);
+                        marker.stage_id = alondra_foundation::random_hex(12);
                         write_marker(home, &marker)?;
                         stage = stage_path(home, &marker.stage_id);
                         ensure_stage_owner(home, &marker)?;
@@ -735,7 +735,7 @@ fn read_marker(home: &Path) -> Result<Option<Marker>> {
 }
 
 fn write_marker(home: &Path, marker: &Marker) -> Result<()> {
-    let next = home.join(format!("{MARKER}.{}.tmp", alondra_daemon_support::auth::random_hex(12)));
+    let next = home.join(format!("{MARKER}.{}.tmp", alondra_foundation::random_hex(12)));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

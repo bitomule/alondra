@@ -357,7 +357,7 @@ fn record_probe_fixture(domain: &DomainRuntime, accounts: Vec<AccountStatus>) {
 
 fn record_account_command(domain: &DomainRuntime, command: Command) {
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: domain.read().state().data_epoch.clone(),
-        command_id: format!("fixture-probe-{}", crate::auth::random_hex(16)).into(), expected_revision: 0, command };
+        command_id: format!("fixture-probe-{}", alondra_foundation::random_hex(16)).into(), expected_revision: 0, command };
     domain.execute_as_system(envelope).unwrap();
 }
 

@@ -75,7 +75,7 @@ crates/engine-github/src/pr_images.rs	return uuid_like(uuid).then(|| Source::Upl
 crates/engine-github/src/pr_images.rs	["user-attachments", "assets", uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
 crates/engine-github/src/pr_images.rs	[_, _, "assets", _, uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
 crates/engine-github/src/pr_images.rs	links.entry(uuid.to_ascii_lowercase()).or_insert(link);	format	URL host and attachment uuid normalised
-crates/daemon-support/src/uploads.rs	Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()	format	file extension or URL scheme
+crates/engine-ports/src/uploads.rs	Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()	format	file extension or URL scheme
 crates/core/src/accounts.rs	if !names.insert(name.to_lowercase()) {	format	emails and account names compare without case
 crates/core/src/artifact.rs	if kind == "claude.ai/artifact/" && text[..i].ends_with("claude.ai/code/") {	format	artifact URL
 crates/core/src/config.rs	let flag = |v: String| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");	format	flag or setting value
@@ -193,8 +193,8 @@ crates/cli-tui/src/tui.rs	self.input.text().trim().to_lowercase()	user-search	th
 crates/cli-tui/src/tui.rs	self.blocks[i].selectable() && self.blocks[i].plain().to_lowercase().contains(&q)	user-search	the TUI's search box
 crates/cli-tui/src/tui/work.rs	let query = query.trim().to_lowercase();	user-search	search or sort over text the user filters
 crates/cli-tui/src/tui/work.rs	.filter(|item| query.is_empty() || [item.label.as_str(), item.group.as_deref().unwrap_or_default(), item.description.as_deref().unwrap_or_default()].join(" ").to_lowercase().contains(&query))	user-search	search or sort over text the user filters
-crates/daemon-support/src/classify.rs	text.to_lowercase()	user-search	search or sort over text the user filters
-crates/daemon-support/src/scoped_reads.rs	if text.contains(&query.query) {	user-search	search or sort over text the user filters
+crates/daemon-server/src/classify.rs	text.to_lowercase()	user-search	search or sort over text the user filters
+crates/daemon-server/src/scoped_reads.rs	if text.contains(&query.query) {	user-search	search or sort over text the user filters
 crates/core/src/issues.rs	let hay = format!("{} {} {}", self.reference(), self.title, self.labels.join(" ")).to_lowercase();	user-search	search or sort over text the user filters
 crates/core/src/issues.rs	query.to_lowercase().split_whitespace().all(|w| hay.contains(w))	user-search	search or sort over text the user filters
 crates/core/src/issues.rs	format!("{login} ({})", association.unwrap_or_default().to_lowercase())	user-search	search or sort over text the user filters

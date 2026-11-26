@@ -40,7 +40,7 @@ impl DomainRuntime {
         let identity = match operation {
             Some(identity) if !identity.is_empty() && identity.len() <= 1024 && identity.bytes().all(|byte| byte.is_ascii_hexdigit()) => identity.to_owned(),
             Some(_) => return Err(DomainError::new("invalid_input","Invalid native MCP operation identity").into()),
-            None => format!("legacy-{}",crate::auth::random_hex(16)),
+            None => format!("legacy-{}",alondra_foundation::random_hex(16)),
         };
         let call: String = Sha256::digest(identity.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
         if store.begin_tool_operation(execution_id,&call,kind,request)?.is_some() {

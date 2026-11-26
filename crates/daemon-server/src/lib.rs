@@ -5,40 +5,38 @@
 pub use alondra_daemon_engine::test_support;
 
 #[macro_use]
-extern crate alondra_daemon_support;
+extern crate alondra_foundation;
 
 pub use alondra_engine_ports::plugins;
-pub use alondra_daemon_support::{
+pub use alondra_foundation::{blocking_work, exit, locks, log, principal};
+pub use alondra_engine_ports::{
     approval_lease,
-    auth,
-    blocking_work,
-    card_language,
-    classify,
-    device_usage,
-    domain_authority,
     domain_cutover,
-    exit,
     files_retention,
     job_state,
     local_network,
-    locks,
-    log,
-    open_files,
-    pr_heads,
-    pr_ids,
-    push,
-    relaunch,
     reports,
-    result_files,
-    revoked_devices,
-    scoped_reads,
-    service_files,
-    start_guard,
-    updates,
+    stored_files,
     uploads,
     watcher,
-    workflow_state,
 };
+pub mod auth;
+pub mod card_language;
+pub mod classify;
+pub mod device_usage;
+pub mod legacy_home;
+pub mod open_files;
+pub mod pr_heads;
+pub mod pr_ids;
+pub mod push;
+pub mod relaunch;
+pub mod result_files;
+pub mod revoked_devices;
+pub mod scoped_reads;
+pub mod service_files;
+pub mod start_guard;
+pub mod updates;
+pub mod workflow_state;
 #[cfg(test)]
 pub use alondra_engine_ports::disk;
 #[cfg(test)]

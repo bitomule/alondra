@@ -57,6 +57,7 @@ pub fn became_true(mut check: impl FnMut() -> bool) -> impl FnMut() -> bool {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

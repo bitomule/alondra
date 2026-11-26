@@ -262,11 +262,11 @@ fn mutation_with_source(
         let envelope = d::CommandEnvelope {
             protocol_version: d::PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
-            command_id: format!("schedule-{}", crate::auth::random_hex(16)).into(),
+            command_id: format!("schedule-{}", alondra_foundation::random_hex(16)).into(),
             expected_revision: state.revision,
             command: d::Command::ClaimScheduleRun {
                 schedule_id: schedule.id.clone(),
-                run_id: format!("run-{}", crate::auth::random_hex(16)).into(),
+                run_id: format!("run-{}", alondra_foundation::random_hex(16)).into(),
                 origin: d::ScheduleRunOrigin::Manual,
                 now,
                 next_after_now: crate::domain_schedule_runner::next_after(schedule, now),
@@ -304,7 +304,7 @@ fn mutation_with_source(
         };
         if method == "POST" {
             let revision = 1;
-            let schedule = match draft.materialize(domain, home, crate::auth::random_hex(16).into(), revision, verified_user) {
+            let schedule = match draft.materialize(domain, home, alondra_foundation::random_hex(16).into(), revision, verified_user) {
                 Ok(schedule) => schedule,
                 Err(message) => return error("invalid_input", &message),
             };
@@ -330,7 +330,7 @@ fn mutation_with_source(
     let envelope = d::CommandEnvelope {
         protocol_version: d::PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
-        command_id: format!("schedule-{}", crate::auth::random_hex(16)).into(),
+        command_id: format!("schedule-{}", alondra_foundation::random_hex(16)).into(),
         expected_revision: state.revision,
         command,
     };
