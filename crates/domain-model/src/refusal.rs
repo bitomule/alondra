@@ -93,7 +93,7 @@ pub const INTERNAL_CODES: &[&str] = &[
     "invalid_input", "not_found", "forbidden", "post_merge_running", "worktrees_open", "conflict", "invalid_action_for_kind", "acceptance_stale",
     "stack_not_ready", "dependency_cycle", "task_not_active", "question_already_answered", "stale_revision",
     "stale_head", "stale_generation", "pr_mismatch", "payload_too_large", "not_assigned", "dependency_not_done",
-    "unknown_target", "pr_not_open", "cited_pr_not_target", "pr_being_read", "not_closing", "merge_not_confirmed", "idempotency_conflict",
+    "unknown_target", "pr_not_open", "cited_pr_not_target", "pr_being_read", "pr_base_unexpected", "not_closing", "merge_not_confirmed", "idempotency_conflict",
     "delivery_uncertain", "blocked", "withdrawn", "task_closing", "subject_already_linked", "stale_epoch",
     "request_title_required", "pr_owned_by_other_task", "pr_missing", "pr_needs_final", "no_task", "incompatible_protocol",
     "dependency_not_delivered", "clarification_pending", "blocking_open", "blocking_interaction",
@@ -108,7 +108,9 @@ pub const INTERNAL_CODES: &[&str] = &[
     "close_outcome_required", "close_outcome_mismatch", "close_answer_required", "role_forbids_tool", "selection_pending", "stale_selection",
     "specs_disabled", "spec_settings_unreadable", "specs_unreadable", "specs_need_stages", "specs_approved", "plan_open", "no_specs",
     "plan_not_open", "stale_specs", "no_approved_specs", "spec_change_pending", "no_spec_change", "decisions_disabled", "decision_pending",
-    "specs_unwritten",
+    "specs_unwritten", "evidence_unknown_scenario", "validation_needs_stages", "handover_pending", "validation_exhausted", "worktree_unreadable",
+    "nothing_to_validate", "no_validation", "unknown_subject", "nothing_failed", "validation_stuck", "validation_open", "validation_unmet",
+    "validation_pending",
 ];
 
 impl Refusal {

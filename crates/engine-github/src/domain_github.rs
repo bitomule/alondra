@@ -156,6 +156,7 @@ pub async fn catch_up_task_using(domain: &dyn alondra_engine_ports::Runtime, git
 pub async fn reconcile(
     domain: &DomainRuntime, observer: &impl PrObserver, failures: &mut ObservationFailures,
 ) -> Result<()> {
+    read_held(domain, observer).await?;
     deliver_held(domain, observer).await?;
     read_opened(domain, observer, None).await?;
     let state = domain.state()?;
@@ -211,6 +212,29 @@ fn pending<'a>(state: &'a DomainState, pr: &PullRequest) -> Option<&'a OpenPrPen
         OpenPrPending::Close { .. } => task.pr_ids().any(|id| *id == pr.id),
         OpenPrPending::Deliver { .. } => state.open_pr_of(&task.id).is_some_and(|open| open.id == pr.id),
     })
+}
+
+/// A delivery Alondra holds for a task in stages waits until Alondra has read the commits of its
+/// pull requests with the spec engine: they are read here, and the delivery goes out once the
+/// domain's guard of its validation admits it.
+async fn read_held(domain: &DomainRuntime, observer: &impl PrObserver) -> Result<()> {
+    let Some(port) = domain.ports().spec_worktrees() else { return Ok(()) };
+    let state = domain.state()?;
+    for task in state.tasks.values().filter(|task| task.stages.staged && matches!(task.open_pr, Some(OpenPrPending::Deliver { .. }))) {
+        let mut tips = std::collections::BTreeMap::new();
+        for pr in state.open_prs(task).filter(|pr| task.validation.reading_of(&pr.head, false).is_none()) {
+            let Ok(facts) = observer.observe(&pr.host, &pr.repository, pr.number).await else { continue };
+            let (Some(tip), Ok(default_branch)) = (facts.base_head, observer.default_branch_of(&pr.host, &pr.repository).await) else { continue };
+            tips.insert(pr.id.clone(), alondra_engine_ports::spec_reading::GitHubBase { branch: facts.base, tip, default_branch });
+        }
+        for reading in alondra_engine_ports::spec_reading::read_held(&*port, &state, &task.id, &tips) {
+            let head = reading.commit.clone();
+            if let Err(error) = execute_system(domain, Command::RecordCommitReading { task_id: task.id.clone(), reading }) {
+                log!("the reading of {head} for {} was not kept: {error}", task.id);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A close an older build left waiting for GitHub reaches the user now: as GitHub reports the PR
@@ -586,7 +610,7 @@ pub mod tests {
     const OTHER: &str = "89abcdef0123456789abcdef0123456789abcdef";
 
     fn facts(head: &str, state: PrState) -> PrFacts {
-        PrFacts { head: head.into(), base: "main".into(), state,
+        PrFacts { head: head.into(), base: "main".into(), base_head: None, state,
             merged_head: (state == PrState::Merged).then(|| head.to_owned()), allowed_methods: vec![],
             mergeable: PrMergeable::Computing, checks: PrChecks::None, identity: None }
     }

@@ -123,7 +123,7 @@ pub(crate) fn holds_source_inputs(domain:&dyn Runtime,task:&TaskId,instance:&str
 /// Whether the task owes a change of role its current execution does not play: nothing reaches
 /// that execution, and nothing takes it up again, until the new one starts.
 pub(crate) fn owes_role_change(task:&alondra_domain_model::Task)->bool{
-    task.stages.handover.as_ref().is_some_and(|handover|task.stages.role()!=Some(handover.to))
+    task.stages.handover.as_ref().is_some_and(|handover|handover.owed_by(task.stages.role()))
 }
 pub(crate) fn holds_execution(domain:&dyn Runtime,task:&TaskId)->bool{
     let read=domain.read();let instance=read.state().lifecycle_of(task).ok().and_then(|lifecycle|lifecycle.execution().map(|stamp|stamp.instance().as_str().to_owned()));

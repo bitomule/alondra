@@ -1,6 +1,7 @@
 //! The moves of the machines whose `state-machine` block in docs/architecture/state-machines.md
-//! declares `initial` and `transitions`: each task's phase (M-LIFE-1), each merge attempt (M-GH-2)
-//! and each node's phase (M-LIFE-9). A command whose move the inventory does not declare fails the
+//! declares `initial` and `transitions`: each task's phase (M-LIFE-1), each merge attempt (M-GH-2),
+//! each node's phase (M-LIFE-9), each round of validation (M-LIFE-17) and each validation in it
+//! (M-LIFE-18). A command whose move the inventory does not declare fails the
 //! tests that run it, so a new transition cannot land without its line in the inventory.
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,6 +20,14 @@ pub fn states(state: &DomainState) -> BTreeMap<(&'static str, String), String> {
     }
     for authorization in state.merge_authorizations.values() {
         states.insert(("M-GH-2", authorization.id.0.clone()), format!("{:?}", authorization.attempt));
+    }
+    for task in state.tasks.values() {
+        for round in &task.validation.rounds {
+            states.insert(("M-LIFE-17", format!("{}/{}", task.id, round.number)), format!("{:?}", round.state));
+            for item in &round.items {
+                states.insert(("M-LIFE-18", format!("{}/{}/{}/{}", task.id, round.number, item.subject, item.kind.as_str())), format!("{:?}", item.state));
+            }
+        }
     }
     for agent in state.agents.keys() {
         if let Some(phase) = state.node_phase(agent) {

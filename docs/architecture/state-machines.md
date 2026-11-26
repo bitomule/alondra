@@ -674,13 +674,13 @@ transitions = ["Unstarted -> InProgress", "Unstarted -> Finishing", "InProgress 
 | any state with a current execution | Runtime [stamp == current, cursor == current+1] | depends on the fact (M-LIFE-2) |
 | Unstarted/Queued/Executing/Waiting/Dependency/Delivered | Pause [owner≠Gate, no other pause], Ask, DoubtHandoff | Waiting (or the same Delivered/Dependency with the card added) |
 | Waiting/Dependency/Delivered | Answer/Resume/EndPause/Decide [card exists, right kind] | removes the card; if none are left: Queued/Executing (`ActiveExecution::new`) |
-| Executing/Waiting/Dependency | Present | Delivered{Review} (Waiting drops the orchestrator's cards) |
+| Executing/Waiting/Dependency | Present [a task in stages: the delivery guard of M-LIFE-17 admits it, checked by `DomainState::decide` on every path] | Delivered{Review} (Waiting drops the orchestrator's cards) |
 | Delivered{Review} | Accept{merge:None} | Delivered{Accepted} |
 | Delivered{Review} | HandBack | Executing/Waiting/Queued with stage ChangesRequested |
 | not terminal and not Finishing | Finish [Complete: gate Accepted, no cards except Recovery, no pending inputs] | Finishing{Cleanup + PostMerge + Execution + Work + Callback + Effects + Merge} |
 | Finishing | DrainObserved [obligation present] | removes it; the last one → Completed/Cancelled (`cancelled_through_generation = generation`) |
 | Completed/Cancelled | Reopen | Queued{Implement} |
-| Completed/Cancelled | `AdoptOpenPr` (system) [its PR is open again and no live task has the branch] | Reopen and, in the same command, the PR is delivered again (`settle_open_pr`): Delivered{Review} for the user (`rules.rs:5474-5510`) |
+| Completed/Cancelled | `AdoptOpenPr` (system) [its PR is open again and no live task has the branch] | Reopen and, in the same command, the PR is delivered again (`settle_open_pr`): Delivered{Review} for the user (`rules.rs:5474-5510`); a task in stages only when the delivery guard admits it, held or handed to a validator otherwise (M-LIFE-17) |
 | Executing/Waiting/Dependency/Delivered with an execution | ExecutionReleased / ExecutionLeftForReview [no work, callbacks or effects] | Session::Absent with what was not consumed |
 
 - **Rejected**: every `Err(Refusal::…)` is typed; `apply` leaves the aggregate untouched (`lifecycle.rs:1662-1666`). In `domain-model` a refusal becomes a `DomainError` (`refused`, `lifecycle.rs:3198`) and aborts the whole command. Facts on terminal states: `runtime_fact` returns `StaleExecution` because there is no session (`observations.rs:10`). In `Finishing`, every fact other than `HostEnded/HostStopped/TakenOver/TakeoverUnanswered` is taken "unchanged" (only the cursor advances, `observations.rs:21-24`).
@@ -1041,10 +1041,14 @@ truth = ["sqlite:task_stages"]
 - **Engine**: `provider_transition::pass` starts every due handover (`request_stage`: account and
   model through `select_account` with the role's selection) as a `Kind::Stage` selection change
   (M-ENGINE-7). While the task owes a role its current execution does not play
-  (`owes_role_change`), no input reaches that execution and nothing relaunches or retakes it.
+  (`owes_role_change`), no input reaches that execution and nothing relaunches or retakes it. A
+  handover to a new validator (`ValidatorRetry`) is owed by the validator that works too
+  (`StageHandover::owed_by`).
 - **Roles and tools**: `ExecutionRole::allows(RoleTool)`. The author plans and never registers,
   presents or declares work after a PR; the implementer does all but `record_verdict`; the
-  validator never plans, registers a PR or records a verdict. A refused call is
+  validator never plans, registers a PR or records a verdict. Only the implementer says its work is
+  ready (`ready_for_validation`); only the validator records a validation or ends its round
+  (`record_validation`, `end_validation`, M-LIFE-17). A refused call is
   `role_forbids_tool` with the tool as subject and what the role does instead; a plan its role may
   not send, or the author's plan after its approval, is denied by policy without a card.
 - **Persistence and restart**: the whole record is one JSON row of `task_stages`, written by the
@@ -1102,6 +1106,132 @@ transitions = ["Requested -> Proposed", "Proposed -> Approved", "Proposed -> Rej
 - **Persistence and restart**: the whole record is one JSON row of `task_specs`, written by the
   commit that changes it. A write cut by a restart is done again on the next pass: the files are
   written whole, and only their fingerprints clear them.
+
+### M-LIFE-17 · Rounds of validation (`ValidationRound`, added by the validation phase)
+
+```toml state-machine
+id = "M-LIFE-17"
+code = ["crates/domain-model/src/validation.rs::TaskValidation", "crates/domain-rules/src/rules/validation_rules.rs::ready_for_validation", "crates/domain-rules/src/rules/validation_rules.rs::end_validation", "crates/domain-rules/src/rules/validation_rules.rs::settle_validation_card", "crates/domain-model/src/delivery_validation.rs::delivery_check", "crates/domain-model/src/delivery_validation.rs::hold_unvalidated_delivery"]
+truth = ["sqlite:task_validations"]
+states = "crates/domain-model/src/validation.rs::RoundState"
+variants = ["Requested", "Validating", "Interrupted", "Failed", "Delivered"]
+terminals = ["Failed", "Delivered"]
+initial = ["Requested"]
+transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrupted -> Validating", "Validating -> Failed", "Validating -> Delivered", "Delivered -> Validating"]
+```
+
+- **Kind**: explicit, product. In a project with specs, the implementer of a task in stages never
+  delivers work the spec engine still lists as not validated: it says the work is ready, and a new
+  execution in the validator's role checks it (`docs/architecture/specs.md`, "Validation of a
+  task"). A round is one such check of one commit.
+- **Components**: `number` × `head` (the commit it validates: the implementer's, or one its pull
+  request received after the delivery) × `implemented` (the commit the implementer handed over;
+  only the ledger may change between it and a validator's delivered commit) × `items` (each
+  validation the engine lists on `head`, M-LIFE-18) × `scope` (files the branch changed outside the
+  task's components) × `state` × `generation` (its validator's execution) × `findings` × `retried`.
+  The task keeps `records` (what validators recorded, by subject, kind and fingerprint), `failed`
+  (rounds sent back in a row), `exhausted` (the card that asks the user), `delivered` (what each
+  validated delivery showed of its specs) and `readings` (what Alondra read of each commit the task
+  delivers, below).
+- **Moves**:
+
+| From | Event [guard] | Result |
+|---|---|---|
+| no open round | `ReadyForValidation` [the implementer of a staged task, no handover, no open change of specs, no decision card, a commit, items not empty] | `Requested`; handover to `Validator` (`ReadyForValidation`) |
+| `Requested`, `Interrupted` | a run in the validator's role is admitted, or its host is taken over | `Validating` with its generation; incomplete items owed again |
+| `Validating` | the validator's host is lost | `Interrupted`; what it owed is `Incomplete`, what it recorded stays; the lost host's own path follows |
+| `Validating` | `EndValidation` [an item `Unmet`] | `Failed`; `failed + 1`; handover to `Implementer` (`ValidationFailed`), or at the third the `system:spec_change` card `ValidationExhausted` |
+| `Validating` | `EndValidation` [no item `Unmet`, `head` ≠ `implemented`] | `Failed` without counting; handover to `Implementer` (`ValidationFailed`): the commits the pull request received after the implementer's are the implementer's to take |
+| `Validating` | `EndValidation` [no item `Unmet`, some owed] | `Interrupted`; handover to a new `Validator` (`ValidatorRetry`, which a validator owes too), or, already retried, the card `ValidationStuck` |
+| `Validating` | `RecordValidation` | `items` become what the engine lists on `head` as Alondra read it, keeping the state of an item at the same fingerprint (`Running` otherwise), then the record applies |
+| `Validating` | `PresentResult` final by the validator [the delivery guard admits it] | `Delivered` |
+| `Delivered` | the delivery is withdrawn because its pull request moved | `Validating` on the new head, `implemented` unchanged; the validator is told to validate again what changed, or to end the round when the commit changed anything but the ledger |
+| no open round | Alondra delivers the task's open pull request for its node [the guard finds what no validator checked on the pull request's commit] | a new round `Requested` on that commit with those items; handover to `Validator` (`ReadyForValidation`); nothing reaches the user |
+| `Delivered` | the user asks for changes, or the PR has conflicts | handover to `Implementer` (`DeliveryReturned`) |
+| a decision card | the user answers `stronger` / `change_specs` / `validate_again` / `cancel` | the implementer takes the author's selection / an amendment `Requested` for an author / a new validator / the task is cancelled; `failed = 0` |
+
+- **Readings**: what Alondra read of one commit of the task with git and the spec engine
+  (`CommitReading`): whether the project uses specs there, what the engine lists as not validated
+  (each at its fingerprint), its problems, the ledger entries the branch changed (subject, kind,
+  fingerprint, verdict), ledger files no entry explains, the files other than the ledger changed
+  since the round's `implemented`, and the spec files (specs, boundaries, decisions, `alondra.toml`)
+  it holds otherwise than its base or the user approved them, read on that commit whatever it says
+  of specs, so a branch that turns specs off reads as such. Every reading names the base it was
+  compared with: a commit whose base cannot be read is not read at all, and only a reading that
+  says why a commit could not be read has no base (`RecordCommitReading` refuses any other). A pull
+  request's commit is compared with where it leaves `tip`, the commit GitHub reports the pull
+  request's base branch at (`baseRefOid`), which the reading names too; never with the
+  repository's own references, which the agent can move. It also names the base branch GitHub
+  reported for the pull request and the repository's default branch. Git reads them with replacement
+  objects, grafts and the cached commit graph ignored. Facts only, recorded by the system command `RecordCommitReading`
+  (full commit shas, bounded; the latest reading of a commit wins, at most 16 kept). The daemon reads
+  the commit of every open pull request of the task and its worktree's HEAD before each final
+  `PresentResult` (`daemon-server/src/validation_checks.rs::read_delivery`, within the delivery
+  review's git limit, `worktree_unreadable` otherwise); the GitHub loop reads the commits of a held
+  delivery (`engine-github/src/domain_github.rs::read_held`). Every open pull request of the task is
+  read; a commit Alondra cannot read in the task's worktree, a pull request of another repository
+  included, refuses a node's delivery (`worktree_unreadable`, saying that a task in stages delivers
+  pull requests of its own repository only), and for a
+  held delivery is recorded as a reading whose problem says why, a task without a worktree left
+  included. No remote the agent can change decides what is read.
+- **Delivery guard**: the lifecycle records a delivery of a task in stages (`Presented`, M-LIFE-1)
+  only through `DomainState::decide`, which asks `delivery_check` first: the one guard, whoever
+  delivers. The commits it checks are the heads of the delivery's pull requests, or, without one,
+  the worktree's last reading. In order: `validation_unread` (a commit without a reading);
+  `validation_unread` also for a pull request's reading without `tip` or read for a base branch
+  other than the pull request's current one; `pr_base_unexpected` (a pull request of a task in
+  stages targets neither the default branch nor the branch of the task it is stacked on, also
+  refused by `RegisterPr` once the default branch is known); a pull request whose base changes
+  withdraws the delivery and invalidates its merge authorization like a new head, and
+  `ClaimMergeAuthorization` asks the same guard again before a merge; `commit_on_base` (a pull
+  request's commit is its own base: already on the base branch); `specs_differ` (a delivered
+  commit holds spec files otherwise than its base or the user approved them, turning specs off
+  included); then for each commit of a project with specs, `validation_required` (implementer) or `validation_pending`
+  (validator) when the engine lists anything there, `spec_change_open` (a change of the specs
+  waits), `ledger_unrecorded` for a ledger entry no validator recorded with that fingerprint and
+  verdict, and, for a validator, `changed_after_validation` when anything but the ledger changed
+  after `implemented` (`validation_unread` when its reading counted from another commit); then the
+  open round: `validation_open` (someone else delivers), `validation_unmet` / `validation_pending`
+  (its items). A node's `PresentResult` is refused with that code: the refusals about commits come
+  before its other checks, the ones about the round after its checklist, and `decide` asks the
+  same guard again before it records the delivery. Alondra delivering the open pull request for the node
+  (`close_task`, `settle_open_pr`, `AdoptOpenPr`) never delivers what the guard refuses
+  (`hold_unvalidated_delivery`): an unread commit holds the delivery (`OpenPrPending::Deliver`) until
+  the GitHub loop reads it and settles it again; what no validator checked opens a round for a
+  validator; code after `implemented`, spec files changed without approval, a commit already on
+  its base and a commit Alondra could not read go back to the implementer; an open round goes to a new validator; an open change of the specs already waits for its author or the user. No timer
+  decides any of it. `specs_differ` comes first, from M-LIFE-16.
+- **Persistence and restart**: the whole record is one JSON row of `task_validations`, written by
+  the commit that changes it; a task without a row was never validated. A restart keeps every round,
+  record and reading, and the guard is a function of them alone: replaying the journal never records
+  a new delivery, and a held delivery is read and settled again by the next GitHub round. A
+  validator whose host does not come back leaves its round `Interrupted`.
+
+### M-LIFE-18 · One validation of a round (`RoundItem`, added by the validation phase)
+
+```toml state-machine
+id = "M-LIFE-18"
+code = ["crates/domain-model/src/validation.rs::RoundItem", "crates/domain-rules/src/rules/validation_rules.rs::record_validation", "crates/daemon-server/src/validation_checks.rs::stamp_with"]
+truth = ["sqlite:task_validations"]
+states = "crates/domain-model/src/validation.rs::ValidationState"
+variants = ["Running", "Met", "Unmet", "Incomplete"]
+terminals = ["Met", "Unmet"]
+initial = ["Running"]
+transitions = ["Running -> Met", "Running -> Unmet", "Running -> Incomplete", "Incomplete -> Running", "Incomplete -> Met", "Incomplete -> Unmet", "Met -> Unmet", "Unmet -> Met", "Met -> Incomplete", "Unmet -> Incomplete"]
+```
+
+- **Kind**: explicit, product. One thing the spec engine listed as not validated on the round's
+  commit: a suite, that a scenario's tests check it (`adequate`), a judgment scenario
+  (`judged`) or a reference section, at the fingerprint Alondra read of that commit.
+- **Moves**: `RecordValidation` by the round's validator [the round `Validating`; Alondra stamps
+  `inputs` from the commit; a judgment has its reasoning, `adequate` met its nearest wrong
+  behaviour; incomplete its reason] first makes the round's items what the engine lists on its
+  commit (Alondra stamps `listed`; an item at the same fingerprint keeps its state, a new one is
+  `Running`), then sets `Met`, `Unmet` or `Incomplete` on the item of that subject, kind and
+  fingerprint, and keeps the record; a validator that ends before it records leaves its
+  `Running` items `Incomplete`, and the next validator of the round owes them again (`Running`).
+  `Incomplete` never counts as passed or failed.
+- **Persistence and restart**: inside its round's row of `task_validations`.
 
 ## Cards, plans, documents and requests (`CARDS`)
 

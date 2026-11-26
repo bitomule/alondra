@@ -1,0 +1,169 @@
+name = "an implementer who commits a weakened test and writes the validation ledger itself cannot deliver, as text or as a pull request"
+max_virtual = "3h"
+
+[[step]]
+do = "request"
+text = "Let customers get part of an order refunded"
+task = "t1"
+title = "Refund part of an order"
+
+[[step]]
+do = "node"
+task = "t1"
+model = "demo-model"
+stages = true
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "worktree"
+task = "t1"
+
+[[step.base]]
+path = "alondra.toml"
+text = "format = 1\n\n[specs]\nenabled = true\n"
+
+[[step.base]]
+path = "specs/billing/boundary.toml"
+text = "id = \"billing\"\nowns = [\"crates/billing/**\"]\n\n[[suite]]\nid = \"unit\"\nrun = [\"true\"]\ntests = [\"crates/billing/tests/*.rs\"]\n"
+
+[[step.base]]
+path = "specs/billing/partial.feature"
+text = "@spec:billing.partial\nFeature: Partial refunds\n  Any amount up to what is left of the order comes back.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n\n  @id:alone @boundary:dependencies\n  Scenario: Billing uses no other component\n    Given the billing crate\n    When its dependencies are listed\n    Then none is another component\n"
+
+[[step.base]]
+path = "crates/billing/tests/refunds.rs"
+text = "// spec: billing.partial/part\n#[test]\nfn part() { assert_eq!(refund(30, 10), 10); }\n\n// spec: billing.partial/alone\n#[test]\nfn alone() { assert!(dependencies().is_empty()); }\n"
+
+[[step.base]]
+path = "crates/billing/src/lib.rs"
+text = "pub fn refund(_paid: u32, _part: u32) -> u32 { 0 }\n"
+
+[[step]]
+do = "plan"
+task = "t1"
+request = "author-plan"
+plan = "# Refund part of an order\n\n- [ ] Refund any amount up to what is left (billing.partial/part)"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "press"
+presentation = "decision-t1-1-6"
+action = "accept"
+screen = "home"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+
+[[step]]
+do = "commit"
+task = "t1"
+message = "Refund part of an order"
+
+[[step.files]]
+path = "crates/billing/src/lib.rs"
+text = "pub fn refund(paid: u32, part: u32) -> u32 { part.min(paid) }\n"
+
+[[step]]
+do = "ready_for_validation"
+task = "t1"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "record_validation"
+task = "t1"
+subject = "billing/unit"
+check = "suite"
+verdict = "met"
+
+[[step]]
+do = "record_validation"
+task = "t1"
+subject = "billing.partial/part"
+check = "adequate"
+verdict = "unmet"
+
+[[step]]
+do = "end_validation"
+task = "t1"
+findings = "The test of billing.partial/part never checks the refunded amount"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "commit"
+task = "t1"
+message = "Weaken the test"
+
+[[step.files]]
+path = "crates/billing/tests/refunds.rs"
+text = "// spec: billing.partial/part\n#[test]\nfn part() { refund(30, 10); }\n\n// spec: billing.partial/alone\n#[test]\nfn alone() { assert!(dependencies().is_empty()); }\n"
+
+[[step]]
+do = "spec_ledger"
+task = "t1"
+message = "Write the ledger by hand"
+
+[[step]]
+do = "present"
+task = "t1"
+id = "result-text"
+text = "Partial refunds"
+body = "Partial refunds work."
+refused = "ledger_unrecorded"
+scenarios = ["billing.partial/part"]
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "refunds"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "push"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "result-pr"
+body = "Partial refunds work."
+refused = "ledger_unrecorded"
+scenarios = ["billing.partial/part"]
+prs = [7]
+

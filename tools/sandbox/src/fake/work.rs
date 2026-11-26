@@ -63,6 +63,9 @@ pub fn perform(fakes: &Fakes, worker: &Worker, step: &Step) -> Option<Result<mcp
     let dir = worker.dir;
     let result = match step {
         Step::Commit { file, text } => (|| -> Result<mcp::Reply> {
+            if let Some(folder) = dir.join(file).parent() {
+                fs::create_dir_all(folder)?;
+            }
             fs::write(dir.join(file), text)?;
             git(dir, &["add", "-A"])?;
             git(dir, &["commit", "-m", &format!("Add {file}")])?;

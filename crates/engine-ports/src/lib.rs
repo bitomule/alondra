@@ -36,6 +36,7 @@ pub mod reports;
 pub mod schedule_clock;
 pub mod schedule_routes;
 pub mod sdk;
+pub mod spec_reading;
 pub mod spec_worktrees;
 pub mod stored_files;
 pub mod uploads;

@@ -60,10 +60,12 @@ pub enum EvidenceKind {
     Pr,
     File,
     Link,
+    /// A scenario of the task's specs, `<spec>/<scenario>`: its delivery shows how it was validated.
+    Scenario,
 }
 
 impl EvidenceKind {
-    pub const ALL: [EvidenceKind; 7] = [Self::Commit, Self::Test, Self::Command, Self::Screenshot, Self::Pr, Self::File, Self::Link];
+    pub const ALL: [EvidenceKind; 8] = [Self::Commit, Self::Test, Self::Command, Self::Screenshot, Self::Pr, Self::File, Self::Link, Self::Scenario];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -74,6 +76,7 @@ impl EvidenceKind {
             Self::Pr => "pr",
             Self::File => "file",
             Self::Link => "link",
+            Self::Scenario => "scenario",
         }
     }
 

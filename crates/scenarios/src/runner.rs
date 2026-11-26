@@ -637,14 +637,16 @@ impl Context<'_> {
                     allowed_methods: vec![MergeMethod::Squash, MergeMethod::Merge],
                 }).await?;
             }
-            Step::Present { task, id, prs, text, body, refused } => {
+            Step::Present { task, id, prs, text, body, refused, scenarios } => {
                 let mut targets = Vec::new();
                 for number in prs {
                     targets.push(DeliveryTarget::PullRequest { pr_id: self.pr_id(*number), head: self.head(index, *number)? });
                 }
                 targets.extend(text.iter().map(|text| DeliveryTarget::Text { text: text.clone() }));
+                let evidence: Vec<alondra_domain_model::Evidence> = scenarios.iter()
+                    .map(|scenario| alondra_domain_model::Evidence { kind: alondra_domain_model::EvidenceKind::Scenario, value: scenario.clone(), detail: None }).collect();
                 self.node_command(index, task, &format!("/tasks/{task}/results"), refused.as_deref(), Command::PresentResult {
-                    checklist: Vec::new(),
+                    checklist: if evidence.is_empty() { Vec::new() } else { vec![alondra_domain_model::ChecklistMark { item: "1".into(), evidence }] },
                     attachments: Vec::new(),
                     task_id: task.clone().into(),
                     interaction_id: id.clone().into(),
@@ -762,7 +764,39 @@ impl Context<'_> {
                 self.node_command(index, task, &format!("/tasks/{task}/spec-changes"), None, Command::RequestSpecChange { task_id: task.clone().into(), reason: reason.clone() }).await?;
                 self.settle().await?;
             }
+            Step::ReadyForValidation { task, refused } => {
+                self.node_command(index, task, &format!("/tasks/{task}/validation-ready"), refused.as_deref(), Command::ReadyForValidation {
+                    task_id: task.clone().into(), head: String::new(), items: vec![], scope: vec![],
+                }).await?;
+                self.settle().await?;
+            }
+            Step::RecordValidation { task, subject, check, verdict, refused } => {
+                let kind = alondra_domain_model::ValidationKind::parse(check).ok_or_else(|| Self::failed(index, format!("{check} is not a check")))?;
+                let verdict = alondra_domain_model::ValidationVerdict::parse(verdict).ok_or_else(|| Self::failed(index, format!("{verdict} is not a verdict")))?;
+                let judged = kind.judgment() || verdict == alondra_domain_model::ValidationVerdict::Incomplete;
+                self.node_command(index, task, &format!("/tasks/{task}/validations"), refused.as_deref(), Command::RecordValidation {
+                    task_id: task.clone().into(), subject: subject.clone(), check: kind, verdict,
+                    reasoning: judged.then(|| "Read the scenario and the tests that declare it".to_owned()),
+                    nearest_wrong: (kind == alondra_domain_model::ValidationKind::Adequate).then(|| "Refunding the whole order".to_owned()),
+                    output: (kind == alondra_domain_model::ValidationKind::Suite).then(|| "test result: ok".to_owned()),
+                    evidence: vec![], inputs: String::new(), listed: None,
+                }).await?;
+                self.settle().await?;
+            }
+            Step::EndValidation { task, findings } => {
+                self.node_command(index, task, &format!("/tasks/{task}/validation-end"), None, Command::EndValidation { task_id: task.clone().into(), findings: findings.clone() }).await?;
+                self.settle().await?;
+            }
+            Step::SpecLedger { task, message } => self.spec_ledger(index, task, message)?,
             Step::Commit { task, files, message } => self.commit(index, task, files, message)?,
+            Step::Push { task, number } => {
+                let head = self.git_output(index, task, &["rev-parse", "HEAD"])?;
+                self.github.set_head(*number, head.trim());
+                self.heads.insert(*number, head.trim().to_owned());
+            }
+            Step::Checkout { task, to } => {
+                self.git_output(index, task, &["checkout", "-q", "--detach", to])?;
+            }
             Step::EditSpec { task, item, fields } => self.edit_spec(index, task, item, fields).await?,
             Step::Permission { task, request, command, cwd } => {
                 let top = self.worktrees.get(task).ok_or_else(|| Self::failed(index, format!("task {task} has no worktree")))?;
@@ -1076,6 +1110,8 @@ impl Context<'_> {
             git(&place, &["add", "-A"])?;
         }
         git(&place, &["commit", "-q", "--allow-empty", "-m", "Start"])?;
+        let start = std::process::Command::new("git").current_dir(&place).args(["rev-parse", "HEAD"]).output().map_err(|e| failed(&e))?;
+        self.github.set_branch("main", String::from_utf8_lossy(&start.stdout).trim());
         git(&place, &["worktree", "add", "-q", "-b", &branch, &top.display().to_string()])?;
         for file in files {
             let path = top.join(file);
@@ -1092,6 +1128,37 @@ impl Context<'_> {
         })?;
         self.worktrees.insert(task.to_owned(), top);
         Ok(())
+    }
+
+    /// The node of `task` writes the ledger entries the spec engine owes in its worktree, met, and
+    /// commits them.
+    fn spec_ledger(&mut self, index: usize, task: &str, message: &str) -> Result<(), ScenarioError> {
+        use alondra_domain_model::specs::engine;
+        let failed = |why: &dyn std::fmt::Display| Self::failed(index, why);
+        let top = self.worktrees.get(task).cloned().ok_or_else(|| failed(&format!("task {task} has no worktree")))?;
+        let tree = WorkingTree::of(&top).map_err(|e| failed(&e))?;
+        let project = engine::load(&tree).map_err(|problems| failed(&format!("{problems:?}")))?;
+        let mut files = vec![];
+        for item in project.report(None).items.iter().filter(|item| item.state != engine::State::Valid) {
+            let entry = match item.kind {
+                engine::Kind::Suite => project.suite_passed(&item.component, item.subject.rsplit('/').next().unwrap_or_default()),
+                engine::Kind::Passes => continue,
+                kind => project.verdict(&item.subject, kind, engine::Verdict::Met, &[]),
+            }.map_err(|problem| failed(&problem.message))?;
+            files.push(crate::format::ProposedFile { path: entry.path, text: Some(String::from_utf8_lossy(&entry.bytes).into_owned()) });
+        }
+        self.commit(index, task, &files, message)
+    }
+
+    fn git_output(&self, index: usize, task: &str, args: &[&str]) -> Result<String, ScenarioError> {
+        let failed = |why: &dyn std::fmt::Display| Self::failed(index, why);
+        let top = self.worktrees.get(task).cloned().ok_or_else(|| failed(&format!("task {task} has no worktree")))?;
+        let output = std::process::Command::new("git").current_dir(&top).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args).output().map_err(|e| failed(&e))?;
+        if !output.status.success() {
+            return Err(failed(&format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr))));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     /// The node of `task` writes `files` in its worktree and commits them.
@@ -1829,4 +1896,39 @@ fn find_message(view: &Value, task: &str) -> Option<Value> {
             })
         })
         .cloned()
+}
+
+/// The files of a worktree as a commit of the whole tree would hold them, without git's own folder.
+struct WorkingTree(std::collections::BTreeMap<String, Vec<u8>>);
+
+impl WorkingTree {
+    fn of(top: &std::path::Path) -> std::io::Result<Self> {
+        let mut files = std::collections::BTreeMap::new();
+        let mut folders = vec![top.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder)? {
+                let entry = entry?;
+                let path = entry.path();
+                if entry.file_name() == ".git" {
+                    continue;
+                }
+                if entry.file_type()?.is_dir() {
+                    folders.push(path);
+                } else if let Ok(relative) = path.strip_prefix(top) {
+                    files.insert(relative.to_string_lossy().replace('\\', "/"), std::fs::read(&path)?);
+                }
+            }
+        }
+        Ok(Self(files))
+    }
+}
+
+impl alondra_domain_model::specs::Files for WorkingTree {
+    fn paths(&self) -> Vec<String> {
+        self.0.keys().cloned().collect()
+    }
+
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        self.0.get(path).cloned()
+    }
 }

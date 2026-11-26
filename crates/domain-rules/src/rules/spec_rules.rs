@@ -184,7 +184,6 @@ pub(crate) fn propose_amendment(domain: &mut DomainState, actor: &Actor, task_id
     let before: BTreeMap<String, Option<String>> = files.keys()
         .map(|path| (path.clone(), approved.files.get(path).cloned().unwrap_or_else(|| check.before.get(path).cloned().flatten())))
         .collect();
-    let title = task.title.clone();
     let card_id = InteractionId(format!("{AMENDMENT_PREFIX}{}-{}", task_id.0, requested.id));
     let files = specs::accepted(&files, &check.dirs);
     let task = domain.tasks.get_mut(task_id).expect("assigned");
@@ -194,7 +193,7 @@ pub(crate) fn propose_amendment(domain: &mut DomainState, actor: &Actor, task_id
     amendment.before = before;
     amendment.card = Some(card_id.clone());
     let body = SpecCard::Amendment { task: task_id.0.clone(), id: requested.id.clone() };
-    raise_spec_card(domain, &card_id, task_id, &title, &body, effects, created)?;
+    raise_spec_card(domain, &card_id, task_id, &body, effects, created)?;
     let task = domain.tasks.get_mut(task_id).expect("assigned");
     task.stages.handover = Some(StageHandover { to: ExecutionRole::Implementer, cause: HandoverCause::AmendmentProposed { amendment: requested.id }, transition: None, attempts: 0, refused: false });
     let input = domain.next_input(task_id);
@@ -224,15 +223,14 @@ pub(crate) fn propose_decision(domain: &mut DomainState, actor: &Actor, task_id:
     if domain.interactions.contains_key(&card_id) {
         return refuse("decision_pending", "decision.id", "The user already answered a decision with this id in this task: choose another id");
     }
-    let title = task.title.clone();
     let proposed = ProposedDecision { id: fields.id.clone(), title: fields.title.trim().to_owned(), card: card_id.clone(), files: files.clone(), before: check.before.clone(), dirs: check.dirs.clone(), mode: check.mode };
     domain.tasks.get_mut(task_id).expect("assigned").specs.proposed_decisions.push(proposed);
     let body = SpecCard::Decision { task: task_id.0.clone(), id: fields.id.clone() };
-    raise_spec_card(domain, &card_id, task_id, &title, &body, effects, created)
+    raise_spec_card(domain, &card_id, task_id, &body, effects, created)
 }
-pub(crate) fn raise_spec_card(domain: &mut DomainState, card_id: &InteractionId, task_id: &TaskId, title: &str, body: &SpecCard, effects: &mut Vec<DomainEffect>, created: &mut Vec<String>) -> Result<()> {
+pub(crate) fn raise_spec_card(domain: &mut DomainState, card_id: &InteractionId, task_id: &TaskId, body: &SpecCard, effects: &mut Vec<DomainEffect>, created: &mut Vec<String>) -> Result<()> {
     let lang = alondra_core::text::Lang::En;
-    let card = CardSpec { system: Some(SystemCard::SpecChange), ..body.card(title, &domain.tasks[task_id].specs, lang) };
+    let card = CardSpec { system: Some(SystemCard::SpecChange), ..body.card(&domain.tasks[task_id], lang) };
     let options = body.options(lang);
     domain.insert_interaction(&Actor::System, card_id, &Scope::Task { task_id: task_id.clone() }, &Recipient::User, &body.to_body(), false, &[],
         InteractionPayload::Question { options, answer: None }, &card, Source::Question)?;
@@ -245,7 +243,7 @@ pub(crate) fn raise_spec_card(domain: &mut DomainState, card_id: &InteractionId,
 pub(crate) fn settle_spec_card(domain: &mut DomainState, card: &InteractionId, option: &str, words: Option<&str>, lifecycles: &mut Lifecycles) -> Result<()> {
     let Some(i) = domain.interactions.get(card).filter(|i| i.system_card == Some(SystemCard::SpecChange) && i.author == Author::System) else { return Ok(()) };
     let Scope::Task { task_id } = i.scope.clone() else { return Ok(()) };
-    let Some(body) = SpecCard::from_body(&i.body) else { return Ok(()) };
+    let Some(body @ (SpecCard::Amendment { .. } | SpecCard::Decision { .. })) = SpecCard::from_body(&i.body) else { return Ok(()) };
     if domain.tasks.get(&task_id).is_none_or(Task::over) {
         return Ok(());
     }
@@ -282,6 +280,7 @@ pub(crate) fn settle_spec_card(domain: &mut DomainState, card: &InteractionId, o
                 format!("The user rejected the decision «{}»: nothing is written.{said}", proposed.title)
             }
         }
+        SpecCard::ValidationExhausted { .. } | SpecCard::ValidationStuck { .. } => return Ok(()),
     };
     if approved && !task.specs.due().is_empty() {
         return Ok(());

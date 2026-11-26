@@ -74,17 +74,6 @@ pub(crate) fn stamp(domain: &dyn Runtime, command: &mut Command) -> Result<(), D
     Ok(())
 }
 
-/// The changes a task's branch may hold to spec files: what the user approved for it, and for the
-/// task whose branch it starts from.
-fn allowed(state: &DomainState, task: &Task) -> SpecFiles {
-    let mut allowed = SpecFiles::new();
-    let upstream = task.stack.as_ref().and_then(|stack| state.tasks.get(&stack.upstream_task));
-    for approved in upstream.into_iter().chain([task]).filter_map(|task| task.specs.approved.as_ref()) {
-        allowed.extend(approved.allowed());
-    }
-    allowed
-}
-
 /// Why the final delivery of `task` cannot be taken for its specs, if it cannot: in any worktree
 /// of the task, the settings cannot be read, the branch changed a spec, boundary or decision the
 /// user never approved, or holds an approved one otherwise than approved. A worktree git cannot
@@ -92,7 +81,7 @@ fn allowed(state: &DomainState, task: &Task) -> SpecFiles {
 pub(crate) fn delivery_refusal(domain: &dyn Runtime, state: &DomainState, task_id: &TaskId) -> Option<DomainError> {
     let port = domain.ports().spec_worktrees()?;
     let task = state.tasks.get(task_id)?;
-    let allowed = allowed(state, task);
+    let allowed = state.allowed_specs(task);
     let mut unapproved = vec![];
     let mut other = vec![];
     for root in port.all(state, task_id) {

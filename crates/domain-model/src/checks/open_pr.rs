@@ -63,9 +63,15 @@ impl DomainState {
 
 
 
-    /// Alondra's delivery of the open `pr` of `task` to the user, as `status` reports it.
+    /// Alondra's delivery of the open `pr` of `task` to the user, as `status` reports it, once the
+    /// guard of its validation admits it.
     pub fn deliver_open_pr(&mut self, task: &TaskId, pr: &PullRequest, status: &OpenPrStatus, result: Option<String>,
         created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let targets = self.with_open_prs(task, &[DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: status.head.clone() }]);
+        let check = self.delivery_check(task, &targets);
+        if !check.admits() {
+            return self.hold_unvalidated_delivery(task, check, result, lifecycles);
+        }
         let t = &self.tasks[task];
         let card = OpenPrDelivery { title: t.title.clone(), repository: pr.repository.clone(), number: pr.number,
             readiness: PrReadiness::of(status), result };
@@ -75,7 +81,6 @@ impl DomainState {
         let content = CardContent { kind: ContentKind::Report, summary: None, body: card.detail(alondra_core::text::Lang::En) };
         let spec = CardSpec { system: Some(SystemCard::OpenPrDelivery), need, why, content: Some(content),
             ..CardSpec::new(kind, clip(&t.title, CardSpec::TITLE_MAX)) };
-        let targets = self.with_open_prs(task, &[DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: status.head.clone() }]);
         self.insert_interaction(&Actor::System, &id, &Scope::Task { task_id: task.clone() }, &Recipient::User, &card.to_body(), false, &[],
             InteractionPayload::Delivery { targets, is_final: true, acceptance: None, feedback: vec![] }, &spec, Source::Delivery)?;
         self.invalidate(task);

@@ -387,6 +387,10 @@ pub fn delivery_withdrawn_behind_pr(number: u64) -> String {
     format!("Pull request #{number} has commits your final delivery does not include, so that delivery was withdrawn \
 and the task is in progress again. When the work is ready, present your result again with the pull request at its new head.")
 }
+pub fn delivery_withdrawn_base_moved(number: u64, base: &str) -> String {
+    format!("Pull request #{number} now targets {base}, a branch your final delivery was not validated against, so that delivery was withdrawn \
+and the task is in progress again. Present your result again so its commit is read against that branch.")
+}
 pub fn delivery_replaced() -> String {
     "Your new final delivery replaces the one you presented before, which was withdrawn. Nothing else is needed \
 for it.".into()
@@ -1724,6 +1728,11 @@ impl DomainState {
             | Command::RequestSpecChange { task_id, .. }
             | Command::ProposeAmendment { task_id, .. }
             | Command::ProposeDecision { task_id, .. }
+            | Command::ReadyForValidation { task_id, .. }
+            | Command::RecordValidation { task_id, .. }
+            | Command::EndValidation { task_id, .. }
+            | Command::RecordDeliveredValidation { task_id, .. }
+            | Command::RecordCommitReading { task_id, .. }
             | Command::BeginStageHandover { task_id, .. }
             | Command::StageHandoverFailed { task_id, .. }
             | Command::RecordHostReleased { task_id, .. }

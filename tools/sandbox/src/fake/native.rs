@@ -101,7 +101,7 @@ fn usage_probe(fakes: &Fakes) -> Result<i32> {
 fn initialized() -> Value {
     json!({
         "commands": [], "account": {"subscriptionType": "max"}, "output_style": "default",
-        "models": (["sonnet", "opus", "haiku"].map(|model| json!({"value": model, "displayName": model, "description": "A sandbox model"}))),
+        "models": (["default", "sonnet", "opus", "haiku"].map(|model| json!({"value": model, "displayName": model, "description": "A sandbox model"}))),
     })
 }
 
