@@ -4,6 +4,7 @@
 use alondra_agent_runtime::owned_host::{HostLauncher, ProbeRun};
 use alondra_scenarios::claude_host::{ClaudeEdge, assistant_errors};
 use serde_json::{Value, json};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command as Process;
 use std::sync::{Arc, Mutex};
@@ -52,4 +53,38 @@ fn the_errors_a_scenario_names_are_the_sdks_own() {
         assert!(errors.iter().any(|known| known == error), "{error} is in sdk-errors.json");
     }
     assert!(!errors.iter().any(|known| known == "outage"));
+}
+
+/// The daemon kills a host's group right after writing it a frame the relay had not passed on yet:
+/// the frame goes with the process and is never handled, so it stops counting once the process
+/// exited, and the wait for calm does not wait for it to its patience.
+#[test]
+fn a_frame_lost_with_a_host_s_process_stops_counting_once_the_process_exits() {
+    struct Owned(std::process::Child);
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let runtime = alondra_core::clock::VirtualRuntime::new(1_700_000_000_000).unwrap();
+    runtime.block_on(async {
+        let (home, edge, _) = edge();
+        let mut process = Owned(Process::new("/bin/sleep").arg("600").process_group(0).spawn().unwrap());
+        let pid = process.0.id();
+        let bootstrap = json!({
+            "host_instance_id": "host-1",
+            "control_secret": "01".repeat(32),
+            "fence": {"profile_id": "default", "account_id": "default", "data_epoch": "epoch", "host_id": "host"},
+            "execution": {"task_id": "t1", "agent_id": "sdk-t1", "conversation_id": "conversation", "process_instance_id": "process", "generation": 1},
+            "manifest": {"host_release": "0.0.0", "host_sha256": "a".repeat(64), "executable_sha256": "b".repeat(64), "sdk_version": "sdk"},
+            "native": {"session_id": "session"},
+        });
+        let _host = edge.start_host(&serde_json::to_vec(&bootstrap).unwrap(), pid, home.path().join("b")).unwrap();
+        alondra_core::clock::frame_sent("host-1");
+        process.0.kill().unwrap();
+        process.0.wait().unwrap();
+        let rested = alondra_core::clock::spawn_blocking_unwatched(|| alondra_core::clock::until_idle(std::time::Duration::from_secs(20), || true)).await.unwrap();
+        assert!(rested, "{} frames still counted for a host whose process exited", alondra_core::clock::frames_in_transit());
+    });
 }

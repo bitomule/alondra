@@ -959,7 +959,9 @@ What the count now sees:
 
 - each frame the daemon writes to a Claude host, until the host read it and wrote what it answers
   (`clock::frame_sent` in `provider-claude/src/wire.rs`, `frame_handled` in the doubled host's
-  `host_transport::serve`; a host that ends or stops reading drops the rest);
+  `host_transport::serve`; a host that stops reading drops the rest, and one whose process ended or
+  exited, killed by the daemon included, is gone: nothing written to it counts again,
+  `clock::host_gone`);
 - the daemon's blocking jobs, counted since #650 (`clock::spawn_blocking`); a hang now names each
   one still running by where it was submitted;
 - the daemon's async tasks: the runtime's park and unpark hooks and its injection queue;
