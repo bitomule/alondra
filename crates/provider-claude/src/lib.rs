@@ -4,6 +4,7 @@
 //! Terminal observations still require the real Task/card application transaction;
 //! the controller deliberately leaves those observations unacknowledged.
 mod adapter;
+mod agent;
 mod batch;
 mod context;
 mod elicitation;
@@ -15,12 +16,13 @@ mod session_worktrees;
 mod wire;
 
 pub use adapter::{
-    ClaudeConfiguration, ClaudeWorker, Found, WorkerProfile, answered_by_event, answered_control, native_exited,
+    ClaudeWorker, Found, answered_by_event, answered_control, native_exited,
 };
 pub use context::{Cached, ContextEvent, context_event, sdk_message};
 pub use mcp::{mcp_traits, remove_arguments, settings_file, still_configured};
 pub use elicitation::{elicitation_content, only_text_field};
 pub use ended::{EndedJournal, Retained};
+pub use agent::{wire, Claude};
 pub use batch::{BatchHost, PendingHostEvent, HostEvent, McpServer, OrchestratorProfile};
 pub use alondra_agent_protocol::{Execution, OrchestratorExecution, OrchestratorLane};
 pub use wire::HostOwner;

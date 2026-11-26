@@ -3,6 +3,7 @@
 use crate::accounts::Accounts;
 use crate::admission::{AdmissionEngine, AdmissionGate};
 use crate::agent_host::AgentHost;
+use crate::agent_workers::AgentProviders;
 use crate::disk::Disk;
 use crate::github::GitHub;
 use crate::hosts::SdkHosts;
@@ -86,14 +87,25 @@ impl Registry {
 
     /// The ports nothing implements yet, by name.
     pub fn missing(&self) -> Vec<&'static str> {
-        let provided = self.0.read().unwrap_or_else(PoisonError::into_inner);
-        every_port().into_iter().filter(|(port, _)| !provided.contains_key(port)).map(|(_, name)| name).collect()
+        let mut missing: Vec<&'static str> = {
+            let provided = self.0.read().unwrap_or_else(PoisonError::into_inner);
+            every_port().into_iter().filter(|(port, _)| !provided.contains_key(port)).map(|(_, name)| name).collect()
+        };
+        if let Some(providers) = self.port::<AgentProviders>() {
+            missing.extend(providers.missing().into_iter().map(|provider| match provider {
+                alondra_core::accounts::Provider::Claude => "AgentProviders: Claude",
+                alondra_core::accounts::Provider::Codex => "AgentProviders: Codex",
+                alondra_core::accounts::Provider::Antigravity => "AgentProviders: Antigravity",
+            }));
+        }
+        missing
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 16] {
+fn every_port() -> [(TypeId, &'static str); 17] {
     [
         (TypeId::of::<dyn Accounts>(), "Accounts"),
+        (TypeId::of::<AgentProviders>(), "AgentProviders"),
         (TypeId::of::<dyn AgentHost>(), "AgentHost"),
         (TypeId::of::<dyn AdmissionEngine>(), "AdmissionEngine"),
         (TypeId::of::<dyn AdmissionGate>(), "AdmissionGate"),
@@ -139,7 +151,7 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "Plugins", "Processes", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "Worktrees"]);
+        assert_eq!(registry.missing(), ["Accounts", "AgentProviders", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "Plugins", "Processes", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "Worktrees"]);
         struct Greeter;
         impl Greets for Greeter {
             fn greet(&self) -> &'static str {
@@ -147,6 +159,6 @@ mod tests {
             }
         }
         registry.provide::<dyn Greets>(Arc::new(Greeter));
-        assert_eq!(registry.missing().len(), 16, "a port outside the required ones never counts");
+        assert_eq!(registry.missing().len(), 17, "a port outside the required ones never counts");
     }
 }

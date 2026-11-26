@@ -81,6 +81,9 @@ fn engine_alone(home: &Path, database: &Path, files: &dyn JournalFiles) -> Resul
     runtime.ports().provide::<dyn alondra_engine_ports::admission::AdmissionGate>(Arc::new(alondra_engine_doubles::gate::OpenGate::default()));
     runtime.ports().provide::<dyn crate::hosts::SdkHosts>(Arc::new(alondra_engine_doubles::hosts::NoHosts));
     alondra_agent_runtime::wire(runtime.ports(), Default::default());
+    alondra_provider_claude::wire(runtime.ports());
+    alondra_provider_codex::wire(runtime.ports());
+    alondra_provider_antigravity::wire(runtime.ports());
     Ok(runtime)
 }
 

@@ -6,8 +6,9 @@ use alondra_agent_protocol::{
     Action, Body, Command, ControlResult, Decision as WireDecision, DecisionKind as WireKind, FramedReader,
     Observation as WireObservation, PermissionMode as WireMode, SDK_VERSION, SdkEventKind,
 };
-use alondra_engine_ports::agent_host::{AdoptedHost, EndedHost, HostLaunch, HostStop, LaunchIdentity, OwnedHost, Retained as RetainedHost, VerifiedArtifact};
+use alondra_engine_ports::agent_host::{AdoptedHost, EndedHost, HostLaunch, HostStop, LaunchIdentity, OwnedHost, Retained as RetainedHost};
 use crate::ended::EndedJournal;
+use alondra_engine_ports::agent_workers::WorkerConfiguration;
 use alondra_foundation::{CommandId, ExecutionStamp, MessageUuid, RequestId};
 use alondra_provider_contract::{
     Adapter, AdapterError, Handoff, Invocation, Operation, OrderedObservation, Placement,
@@ -18,46 +19,7 @@ use alondra_store::{
     Decision, DecisionKind, DecisionRequest, DispatchAttempt, OwnerGrant, PermissionMode,
 };
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-/// Configuration carries no dispatch or process-launch authority.
-pub struct ClaudeConfiguration {
-    pub artifact: VerifiedArtifact,
-    pub state_directory: PathBuf,
-    pub host_environment: BTreeMap<String, String>,
-    pub native_executable: PathBuf,
-    pub native_directory: PathBuf,
-    pub native_environment: BTreeMap<String, String>,
-    pub profile_id: String,
-    pub account_id: String,
-    pub host_release: String,
-    pub io_timeout: Duration,
-    /// A Seatbelt profile the whole host runs under, the native process included.
-    pub confinement: Option<PathBuf>,
-    /// Starts, adopts and reclaims the host process; a scenario swaps it.
-    pub hosts: std::sync::Arc<dyn alondra_engine_ports::agent_host::AgentHost>,
-    /// What a task's native Claude loads besides the user's own settings, skills, plugins and MCP.
-    pub worker: Option<WorkerProfile>,
-}
-
-/// Alondra's plugin directories and launch settings for a task's native Claude, which loads them
-/// on top of every setting source of the user's default profile.
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct WorkerProfile {
-    pub plugins: Vec<PathBuf>,
-    pub settings: serde_json::Map<String, serde_json::Value>,
-    /// The model, effort and denied tools the task was launched with, as `claude --bg` gets them
-    /// in its flags; absent, Claude's own defaults apply.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub disallowed_tools: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub handoff_context: Option<String>,
-}
 
 /// What Claude reads when a newer plan of its own replaced the one it asked to leave plan mode with.
 const SUPERSEDED_PLAN: &str = "A newer plan replaces this request; wait for its review";
@@ -271,7 +233,7 @@ impl PreparedDispatch {
 impl ClaudeWorker {
     pub fn configured(
         binding: ProviderBinding,
-        configuration: ClaudeConfiguration,
+        configuration: WorkerConfiguration,
     ) -> Result<Self, AdapterError> {
         Ok(Self {
             adapter: ClaudeAdapter::new(binding, configuration)?,
@@ -618,7 +580,7 @@ impl Host {
 
 struct ClaudeAdapter {
     binding: ProviderBinding,
-    configuration: ClaudeConfiguration,
+    configuration: WorkerConfiguration,
     control: ControlIdentity,
     host: Option<Host>,
     connection: Option<Connection>,
@@ -629,37 +591,35 @@ struct ClaudeAdapter {
     /// The existing native session the conversation this worker stages continues.
     continuing: Option<MessageUuid>,
 }
-impl ClaudeConfiguration {
-    /// Checks the configuration and makes the private control material of one host.
-    pub(super) fn control(&self) -> Result<ControlIdentity, AdapterError> {
-        if self.io_timeout.is_zero()
-            || self.io_timeout > Duration::from_secs(300)
-            || !self.native_executable.is_absolute()
-            || !self.native_directory.is_absolute()
-            || self.profile_id.trim().is_empty()
-            || self.account_id.trim().is_empty()
-            || self.host_release.trim().is_empty()
-        {
-            return Err(AdapterError::InvalidObservation);
-        }
-        let mut secret = [0; 32];
-        getrandom::fill(&mut secret).map_err(|_| AdapterError::Disconnected)?;
-        Ok(ControlIdentity {
-            profile_id: self.profile_id.clone(),
-            account_id: self.account_id.clone(),
-            host_instance_id: random_uuid()?.as_str().into(),
-            secret,
-            host_release: self.host_release.clone(),
-        })
+/// Checks the configuration and makes the private control material of one host.
+pub(super) fn control_of(configuration: &WorkerConfiguration) -> Result<ControlIdentity, AdapterError> {
+    if configuration.io_timeout.is_zero()
+        || configuration.io_timeout > Duration::from_secs(300)
+        || !configuration.native_executable.is_absolute()
+        || !configuration.native_directory.is_absolute()
+        || configuration.profile_id.trim().is_empty()
+        || configuration.account_id.trim().is_empty()
+        || configuration.host_release.trim().is_empty()
+    {
+        return Err(AdapterError::InvalidObservation);
     }
+    let mut secret = [0; 32];
+    getrandom::fill(&mut secret).map_err(|_| AdapterError::Disconnected)?;
+    Ok(ControlIdentity {
+        profile_id: configuration.profile_id.clone(),
+        account_id: configuration.account_id.clone(),
+        host_instance_id: random_uuid()?.as_str().into(),
+        secret,
+        host_release: configuration.host_release.clone(),
+    })
 }
 
 impl ClaudeAdapter {
     fn new(
         binding: ProviderBinding,
-        configuration: ClaudeConfiguration,
+        configuration: WorkerConfiguration,
     ) -> Result<Self, AdapterError> {
-        let control = configuration.control()?;
+        let control = control_of(&configuration)?;
         Ok(Self {
             binding,
             configuration,
@@ -1079,7 +1039,7 @@ pub(super) fn bootstrap(
     owner: &impl crate::wire::HostOwner,
     identity: &LaunchIdentity,
     control: &ControlIdentity,
-    configuration: &ClaudeConfiguration,
+    configuration: &WorkerConfiguration,
     session: &SessionRecord,
     orchestrator: Option<&crate::batch::OrchestratorProfile>,
     continued: Option<Continued>,

@@ -69,6 +69,9 @@ TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + 
     "//crates/engine-sdk:engine_sdk",
     "//crates/agent-application:agent_application",
     "//crates/process-group:process_group",
+    "//crates/provider-antigravity:provider_antigravity",
+    "//crates/provider-claude:provider_claude",
+    "//crates/provider-codex:provider_codex",
     "//crates/provider-contract:provider_contract",
     "//crates/store:store",
 ]

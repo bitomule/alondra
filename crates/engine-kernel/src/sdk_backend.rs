@@ -8,6 +8,7 @@
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
 use alondra_core::accounts::AccountId;
+use alondra_engine_ports::agent_host::{AgentHost, ProbeRun};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -202,8 +203,9 @@ impl SdkBackend {
 
     /// The backend one host starts with. The user's Claude Code is found on the PATH it runs with
     /// and taken as it is now, by its SHA256, and refused unless it is a release the SDK runs; a
-    /// configuration file's native Claude is pinned and was checked when it was read.
-    pub fn for_start(&self) -> Result<SdkBackend> {
+    /// configuration file's native Claude is pinned and was checked when it was read. `hosts` asks
+    /// the native its version.
+    pub fn for_start(&self, hosts: &dyn AgentHost) -> Result<SdkBackend> {
         if !self.installed_native {
             return Ok(self.clone());
         }
@@ -214,8 +216,8 @@ impl SdkBackend {
         backend.native = on_path(backend.native_environment.get("PATH").map(String::as_str).unwrap_or_default(), name).context(missing)?;
         backend.native_sha256 = digest(&backend.native)?;
         match backend.provider {
-            alondra_core::accounts::Provider::Claude => { compatible(&backend.native, &backend.native_sha256)?; }
-            alondra_core::accounts::Provider::Codex => { compatible_codex(&backend.native, &backend.native_sha256)?; }
+            alondra_core::accounts::Provider::Claude => { compatible(hosts, &backend.native, &backend.native_sha256)?; }
+            alondra_core::accounts::Provider::Codex => { compatible_codex(hosts, &backend.native, &backend.native_sha256)?; }
             // The host reads agy's version from its `initialize` and refuses one too old: no second agy starts for it.
             alondra_core::accounts::Provider::Antigravity => {}
         }
@@ -255,11 +257,11 @@ fn installed_digest(host: &Path) -> Result<String> {
 
 /// The release `claude --version` names, once per binary: a Claude Code older than the one the
 /// pinned SDK needs is refused with what to do.
-fn compatible(native: &Path, sha256: &str) -> Result<String> {
+fn compatible(hosts: &dyn AgentHost, native: &Path, sha256: &str) -> Result<String> {
     if let Some(version) = CHECKED.lock_or_recover("the checked SDK releases").as_ref().and_then(|known| known.get(sha256).cloned()) {
         return Ok(version);
     }
-    let text = version_of(native)?;
+    let text = version_of(hosts, native)?;
     if !alondra_host::claude_code::compatible(&text) {
         bail!("Claude Code {} is older than {}, the release Alondra needs: update it with `claude update`",
             text.trim(), alondra_host::claude_code::MIN_TEXT);
@@ -268,26 +270,17 @@ fn compatible(native: &Path, sha256: &str) -> Result<String> {
     Ok(text)
 }
 
-fn version_of(native: &Path) -> Result<String> {
-    use std::io::Read;
-    let mut child = std::process::Command::new(native).arg("--version")
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
-        .spawn().with_context(|| format!("running {} --version", native.display()))?;
-    let mut stdout = child.stdout.take().expect("piped stdout");
-    let (sender, receiver) = alondra_core::clock::channel();
-    alondra_core::clock::spawn_thread(move || {
-        let mut text = String::new();
-        let _ = stdout.read_to_string(&mut text);
-        let _ = sender.send(text);
-    });
-    let Ok(text) = alondra_core::clock::recv_timeout(&receiver, VERSION_TIMEOUT) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        bail!("Claude Code (`{} --version`) did not answer within {} s", native.display(), VERSION_TIMEOUT.as_secs());
+fn version_of(hosts: &dyn AgentHost, native: &Path) -> Result<String> {
+    let mut command = std::process::Command::new(native);
+    command.arg("--version");
+    let output = match hosts.run(ProbeRun { command, input: Vec::new(), timeout: Some(VERSION_TIMEOUT) }) {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut =>
+            bail!("Claude Code (`{} --version`) did not answer within {} s", native.display(), VERSION_TIMEOUT.as_secs()),
+        Err(error) => return Err(error).with_context(|| format!("running {} --version", native.display())),
     };
-    let status = child.wait()?;
-    ensure!(status.success(), "Claude Code (`{} --version`) failed", native.display());
-    Ok(text)
+    ensure!(output.success, "Claude Code (`{} --version`) failed", native.display());
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 pub fn digest(file: &Path) -> Result<String> {
@@ -439,6 +432,37 @@ mod tests {
         (keg.join("bin/alondrad"), tools)
     }
 
+    /// Hosts whose command lines run for real, as the release's do.
+    fn running() -> std::sync::Arc<alondra_engine_doubles::agent_host::InProcessHosts> {
+        let hosts = std::sync::Arc::new(alondra_engine_doubles::agent_host::InProcessHosts::default());
+        hosts.set_probe(|run| {
+            let output = std::process::Command::new(run.command.get_program()).args(run.command.get_args()).output()?;
+            Ok(alondra_engine_ports::agent_host::ProbeOutput { success: output.status.success(), stdout: output.stdout, stderr: output.stderr })
+        });
+        hosts
+    }
+
+    #[test]
+    fn the_version_of_claude_code_is_asked_through_the_hosts_of_agents() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::test_support::Directory::new();
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let (daemon, tools) = release(&root, "2.1.321");
+        let claude = tools.join("claude");
+        std::fs::write(&claude, "#!/bin/sh\n# asked through the hosts\necho '2.1.321 (Claude Code)'\n").unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let environment = BTreeMap::from([("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display()))]);
+        let backend = resolve(&home, false, &root.join("user"), &daemon, &environment).unwrap();
+        let hosts = alondra_engine_doubles::agent_host::InProcessHosts::default();
+        hosts.set_probe(|_| Ok(alondra_engine_ports::agent_host::ProbeOutput { success: true, stdout: b"2.1.200 (Claude Code)\n".to_vec(), stderr: Vec::new() }));
+        let refused = backend.for_start(&hosts).unwrap_err().to_string();
+        assert!(refused.contains("2.1.200"), "the hosts answer the version, not a process the kernel starts: {refused}");
+        let probed = hosts.probed();
+        assert_eq!(probed.len(), 1, "{probed:?}");
+        assert_eq!((probed[0].program.as_os_str(), probed[0].arguments.as_slice()), (claude.as_os_str(), [std::ffi::OsString::from("--version")].as_slice()));
+    }
+
     fn claude_code(tools: &Path, version: &str) {
         use std::os::unix::fs::PermissionsExt;
         let claude = tools.join("claude");
@@ -467,7 +491,7 @@ mod tests {
         assert_eq!(backend.state_root, home.join("sdk"));
         assert!(backend.confinement.is_none());
         assert!(backend.host_sha256.is_empty(), "the daemon starts without reading the host");
-        let started = backend.for_start().expect("Claude Code 2.1.321 runs the SDK");
+        let started = backend.for_start(&*running()).expect("Claude Code 2.1.321 runs the SDK");
         assert_eq!((&started.node_sha256, &started.host_sha256), (&digest(&host).unwrap(), &digest(&host).unwrap()), "a host start reads it");
         assert_eq!(started.native, tools.join("claude"), "the user's own Claude Code, found on the daemon's PATH");
         assert_eq!(started.native_sha256, digest(&tools.join("claude")).unwrap());
@@ -481,7 +505,7 @@ mod tests {
         }
         assert!(!serde_json::to_string(&started.native_environment).unwrap().contains("secret-"), "no secret reaches what the host stores");
         claude_code(&tools, "2.1.322");
-        let updated = backend.for_start().unwrap();
+        let updated = backend.for_start(&*running()).unwrap();
         assert_ne!(updated.native_sha256, started.native_sha256, "Claude Code updated itself: the next host takes the new one");
         assert_ne!(updated.configuration_digest(), started.configuration_digest(), "and binds its executions to it");
     }
@@ -502,12 +526,12 @@ mod tests {
             BTreeMap::from([path.clone(), ("CLAUDE_CONFIG_DIR".to_owned(), work.clone())]),
             BTreeMap::from([path.clone(), ("CLAUDE_HOME".to_owned(), work.clone())]),
         ] {
-            let started = resolve(&home, false, &user, &daemon, &set_up).unwrap().for_start().unwrap();
+            let started = resolve(&home, false, &user, &daemon, &set_up).unwrap().for_start(&*running()).unwrap();
             for key in DEFAULT_PROFILE {
                 assert_eq!(started.native_environment.get(key), Some(&work), "{key} with {set_up:?}");
             }
         }
-        let default = resolve(&home, false, &user, &daemon, &BTreeMap::from([path])).unwrap().for_start().unwrap();
+        let default = resolve(&home, false, &user, &daemon, &BTreeMap::from([path])).unwrap().for_start(&*running()).unwrap();
         for key in DEFAULT_PROFILE {
             assert!(!default.native_environment.contains_key(key), "no profile set up: Claude's default one, without {key}");
         }
@@ -548,13 +572,13 @@ mod tests {
         let (daemon, tools) = release(&root, "2.1.200");
         let environment = BTreeMap::from([("PATH".to_owned(), format!("{}:/usr/bin:/bin", tools.display()))]);
         let backend = resolve(&home, false, &root.join("user"), &daemon, &environment).expect("the daemon still starts");
-        let old = backend.for_start().unwrap_err().to_string();
+        let old = backend.for_start(&*running()).unwrap_err().to_string();
         assert!(old.contains("2.1.200") && old.contains("claude update"), "{old}");
         let missing = BTreeMap::from([("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
-        let none = resolve(&home, false, &root.join("user"), &daemon, &missing).unwrap().for_start().unwrap_err().to_string();
+        let none = resolve(&home, false, &root.join("user"), &daemon, &missing).unwrap().for_start(&*running()).unwrap_err().to_string();
         assert!(none.contains("not on this daemon's PATH"), "{none}");
         claude_code(&tools, "2.1.321");
-        assert!(backend.for_start().is_ok(), "once updated, the next start runs");
+        assert!(backend.for_start(&*running()).is_ok(), "once updated, the next start runs");
     }
 
     #[test]
@@ -568,7 +592,7 @@ mod tests {
         let pinned = resolve(&home, false, &home, &daemon, &BTreeMap::new()).unwrap();
         assert_eq!(pinned.host, home.join("artifact"));
         assert!(!pinned.installed_native);
-        assert_eq!(pinned.for_start().unwrap().native, home.join("artifact"), "a pinned native Claude stays as it was checked");
+        assert_eq!(pinned.for_start(&*running()).unwrap().native, home.join("artifact"), "a pinned native Claude stays as it was checked");
         std::fs::remove_dir_all(root.join("Cellar")).unwrap();
         std::fs::remove_file(home.join(FILE)).unwrap();
         let missing = resolve(&home, false, &home, &daemon, &BTreeMap::new()).unwrap_err().to_string();
@@ -662,7 +686,6 @@ impl SdkBackend {
         let (executable, missing) = native_of(provider);
         let native = on_path(native_environment.get("PATH").map(String::as_str).unwrap_or_default(), executable).context(missing)?;
         let native_sha256 = digest(&native)?;
-        if provider == Provider::Codex { compatible_codex(&native, &native_sha256)?; }
         let state_root = home.join(provider.as_str());
         ensure!(state_root.as_os_str().len() + EXECUTION_FOLDER <= SOCKET_PATH_LIMIT, "the {name} state root is too long for its Unix socket");
         Ok(Self {
@@ -708,10 +731,10 @@ pub fn managed_account_folder(home: &Path, provider: alondra_core::accounts::Pro
 }
 
 fn is_claude(provider: &alondra_core::accounts::Provider) -> bool { *provider == alondra_core::accounts::Provider::Claude }
-fn compatible_codex(native: &Path, sha256: &str) -> Result<String> {
+fn compatible_codex(hosts: &dyn AgentHost, native: &Path, sha256: &str) -> Result<String> {
     let key = format!("codex:{sha256}");
     if let Some(known) = CHECKED.lock_or_recover("the checked SDK releases").as_ref().and_then(|known| known.get(&key).cloned()) { return Ok(known); }
-    let release = version_of(native)?;
+    let release = version_of(hosts, native)?;
     ensure!(alondra_core::codex_account::supported_cli_version(&release), "Codex {} is not supported by this Alondra release; Codex 0.163.0 is required", release.trim());
     CHECKED.lock_or_recover("the checked SDK releases").get_or_insert_default().insert(key, release.clone());
     Ok(release)

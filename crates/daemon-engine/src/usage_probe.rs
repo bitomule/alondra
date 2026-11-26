@@ -142,7 +142,7 @@ pub(crate) fn models(hosts: &dyn AgentHost, backend: &SdkBackend, home: &Path, k
 }
 
 fn run_probe(hosts: &dyn AgentHost, backend: &SdkBackend, folder: Option<&Path>, flag: &str) -> Result<serde_json::Value, String> {
-    let started = backend.for_start().map_err(|error| format!("{error:#}"))?;
+    let started = backend.for_start(hosts).map_err(|error| format!("{error:#}"))?;
     let artifact = VerifiedArtifact::verify(&started.node, &started.host, &started.node_sha256, &started.host_sha256)
         .map_err(|error| format!("verifying the SDK host: {error}"))?;
     std::fs::create_dir_all(&started.state_root).map_err(|error| format!("creating the SDK state root: {error}"))?;

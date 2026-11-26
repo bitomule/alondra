@@ -116,8 +116,12 @@ marker, …) to `engine-ports`, which `daemon-support` re-exports for the engine
 behind the `AgentHost` port of `engine-ports`: no provider or piece of the engine depends on it,
 only the roots and the tests that start real hosts.
 
-`engine-sdk` reaches `provider-antigravity` the way it reaches the Claude and Codex providers, for
-its `Worker::Antigravity`: the one entry Antigravity nodes added, with the ceiling raised from 53 to
-54. Nothing else of the engine names the Antigravity crates: `engine-sdk` reads the host's frames
-and passes agy's messages to the live view through `SdkEngine::feed_antigravity`, so `engine-live`
-and `daemon-engine` read plain JSON.
+Phase 5f put the providers behind the `AgentProvider` port of `engine-ports`: `engine-sdk` asks the
+registry for the provider a task's binding names and runs its `AgentWorker`, so it depends on none
+of `provider-claude`, `provider-codex` and `provider-antigravity` (three entries gone, the ceiling
+down from 52 to 49). The adapter of the SDK's hosts is `agent-runtime`, behind `AgentHost`: no
+`sdk-host` crate was needed. Nothing else of the engine names the Antigravity crates: `engine-sdk`
+passes agy's messages to the live view through `SdkEngine::feed_antigravity`, so `engine-live` and
+`daemon-engine` read plain JSON. The Claude and Codex providers are still reached directly by
+`daemon-engine`, `daemon-support`, `engine-live`, `engine-mcp`, `engine-orchestrator` and
+`store-sqlite`.

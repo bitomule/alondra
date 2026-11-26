@@ -1,7 +1,8 @@
 //! One orchestrator batch through the Agent SDK host: one prompt, one turn, and every SDK message
 //! the turn produced, in order, until its native process exits. The batch's own claim owns the
 //! host. What the batch achieved is decided by the caller from these messages, never here.
-use crate::adapter::{ClaudeConfiguration, bootstrap, random_uuid};
+use crate::adapter::{bootstrap, random_uuid};
+use alondra_engine_ports::agent_workers::WorkerConfiguration;
 use crate::records::SessionRecord;
 use crate::wire::{Connection, ControlIdentity, HostOwner, execution, fence};
 use alondra_agent_protocol::{Action, Body, Command, FailureSurface, Observation, SdkEventKind, SdkFailure};
@@ -105,13 +106,13 @@ impl<O: HostOwner> BatchHost<O> {
     /// returns the prompt was offered to the SDK; any failure before it means Claude never saw it.
     pub fn start(
         owner: O,
-        configuration: &ClaudeConfiguration,
+        configuration: &WorkerConfiguration,
         session: &str,
         resume: bool,
         profile: &OrchestratorProfile,
         prompt: &str,
     ) -> Result<Self, AdapterError> {
-        let control = configuration.control()?;
+        let control = crate::adapter::control_of(configuration)?;
         let session = SessionRecord {
             session_id: MessageUuid::new(session).map_err(|_| AdapterError::InvalidObservation)?,
             continued: resume,

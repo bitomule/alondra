@@ -7,6 +7,7 @@
 pub mod accounts;
 pub mod admission;
 pub mod agent_host;
+pub mod agent_workers;
 pub mod api;
 pub mod approval_lease;
 pub mod claude_history;

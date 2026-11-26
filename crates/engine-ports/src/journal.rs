@@ -377,11 +377,11 @@ pub trait OwnerJournal {
 }
 
 impl dyn OwnerJournal + '_ {
-    pub fn stage_observation(&mut self, binding: &alondra_provider_contract::ProviderBinding, owner_generation: u64, batch: &alondra_provider_contract::OrderedObservation, normalizer: &impl alondra_agent_application::ObservationNormalizer, home: &Path, probe: bool) -> std::result::Result<alondra_store::ObservationAcceptance, StoreError> {
+    pub fn stage_observation(&mut self, binding: &alondra_provider_contract::ProviderBinding, owner_generation: u64, batch: &alondra_provider_contract::OrderedObservation, normalizer: &dyn alondra_agent_application::ObservationNormalizer, home: &Path, probe: bool) -> std::result::Result<alondra_store::ObservationAcceptance, StoreError> {
         self.stage_observation_with_identity(binding, owner_generation, batch, normalizer, home, probe, None)
     }
 
-    pub fn discard_observation(&mut self, binding: &alondra_provider_contract::ProviderBinding, owner_generation: u64, batch: &alondra_provider_contract::OrderedObservation, normalizer: &impl alondra_agent_application::ObservationNormalizer, reason: owner::DiscardReason) -> std::result::Result<alondra_store::ObservationAcceptance, StoreError> {
+    pub fn discard_observation(&mut self, binding: &alondra_provider_contract::ProviderBinding, owner_generation: u64, batch: &alondra_provider_contract::OrderedObservation, normalizer: &dyn alondra_agent_application::ObservationNormalizer, reason: owner::DiscardReason) -> std::result::Result<alondra_store::ObservationAcceptance, StoreError> {
         self.discard_observation_by(binding, owner_generation, batch, normalizer, reason)
     }
 

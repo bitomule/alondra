@@ -26,11 +26,19 @@ use anyhow::{Context, Result, anyhow};
 /// daemon's seams already gave another, and the screens, which it hands to the server.
 pub fn wire(registry: &alondra_engine_ports::Registry) {
     wire_machine(registry);
+    wire_providers(registry);
     if registry.port::<dyn alondra_engine_ports::agent_host::AgentHost>().is_none() {
         alondra_agent_runtime::wire(registry, Default::default());
     }
     alondra_views::wire(registry);
     alondra_daemon_server::screens::install(registry);
+}
+
+/// Gives the registry the providers the engine runs agents on.
+pub fn wire_providers(registry: &alondra_engine_ports::Registry) {
+    alondra_provider_claude::wire(registry);
+    alondra_provider_codex::wire(registry);
+    alondra_provider_antigravity::wire(registry);
 }
 
 /// Gives the registry the Mac's git and disks: the server asks for them as it is put together, so

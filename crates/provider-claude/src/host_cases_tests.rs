@@ -19,7 +19,9 @@ use fixture_controller::WorkerController;
 use super::*;
 use alondra_agent_application::Error as ControllerError;
 use alondra_agent_protocol::{FramedReader, Observation};
-use alondra_engine_ports::agent_host::AgentHost;
+use alondra_engine_ports::agent_host::{AgentHost, VerifiedArtifact};
+use alondra_engine_ports::agent_workers::WorkerProfile;
+use std::path::PathBuf;
 use alondra_foundation::{ConversationId, HostId, InputId, InstanceId};
 use alondra_store::{AuthorityScope, InputPayload};
 use serde_json::Value;
@@ -160,7 +162,7 @@ fn launch(prompt: &str, worker: Option<WorkerProfile>) -> Launched {
     connection.execute_batch(include_str!("../../domain-store-schema/schema.sql")).unwrap();
     connection.execute_batch("CREATE TABLE task_worktrees(task_id TEXT PRIMARY KEY,dir TEXT NOT NULL,at INTEGER NOT NULL); INSERT INTO domain_meta VALUES(1,'case-epoch',0,0); INSERT INTO requests(id,body,closed) VALUES('case-request','Work',0); INSERT INTO agents(id,name) VALUES('case-node','Worker'); INSERT INTO tasks(id,request_id,title,state,revision,started,review_prs,archived) VALUES('case-task','case-request','Case task','not_started',0,0,0,0)").unwrap();
     connection.execute("INSERT INTO task_worktrees VALUES('case-task',?1,0)", [cwd.to_str().unwrap()]).unwrap();
-    let configuration = ClaudeConfiguration {
+    let configuration = WorkerConfiguration {
         artifact: VerifiedArtifact::verify(&under.node, &under.bundle, &hash(&under.node), &hash(&under.bundle)).unwrap(),
         state_directory: state.clone(),
         host_environment: test_support::fixture_environment(&home),

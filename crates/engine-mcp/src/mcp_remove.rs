@@ -7,6 +7,7 @@
 use alondra_core::clock;
 use crate::mcp_probe::McpProbes;
 use crate::sdk_backend::SdkBackend;
+use alondra_engine_ports::agent_host::AgentHost;
 use alondra_domain_model::{McpNodeReading, McpServerKey, McpServerState};
 use alondra_core::options::ProjectEntry;
 use alondra_view_model::mcp::project_target;
@@ -114,8 +115,8 @@ pub fn resolve(
 /// Runs the provider's deletion in `directory` with the native agent the nodes run, within
 /// `DEADLINE`. When Claude fails, the server counts as deleted only if its settings, read again,
 /// no longer have it.
-pub fn run(backend: &SdkBackend, removal: &Removal, directory: &Path) -> Result<(), String> {
-    let backend = backend.for_start().map_err(|error| error.to_string())?;
+pub fn run(hosts: &dyn AgentHost, backend: &SdkBackend, removal: &Removal, directory: &Path) -> Result<(), String> {
+    let backend = backend.for_start(hosts).map_err(|error| error.to_string())?;
     let mut command = match &backend.confinement {
         Some(profile) => {
             let mut command = Command::new("/usr/bin/sandbox-exec");
@@ -171,6 +172,7 @@ pub fn remove(
     nodes: &[McpNodeReading],
     probes: &McpProbes,
     projects: &[ProjectEntry],
+    hosts: &dyn AgentHost,
     backend: &SdkBackend,
     subject: &str,
 ) -> Result<String, (Option<String>, Refused)> {
@@ -179,7 +181,7 @@ pub fn remove(
         Some(project) => project.path.clone(),
         None => backend.native_environment.get("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/")),
     };
-    run(backend, &removal, &directory).map_err(|why| (Some(name.clone()), Refused::Failed(why)))?;
+    run(hosts, backend, &removal, &directory).map_err(|why| (Some(name.clone()), Refused::Failed(why)))?;
     log!("deleted the MCP server {name} from the agent's settings");
     probes.removed(LiveMcpRemoval { key: removal.key, loaded: removal.loaded }, removal.project.as_ref().map(|project| project.name.as_str()));
     Ok(name)

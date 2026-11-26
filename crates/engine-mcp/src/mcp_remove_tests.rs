@@ -74,10 +74,10 @@ fn a_server_in_the_user_s_own_settings_is_deleted_through_claude_code() {
     let probes = McpProbes::default();
     probes.finish("lumo", LiveMcpProbe::Checked { at: "2026-10-24T09:00:00".into(), servers: vec![server("linear", "user", Some(LINEAR))] });
 
-    assert_eq!(remove(&nodes, &probes, &fixture.projects, &fixture.backend, &target("linear", Some(LINEAR))), Ok("linear".into()));
+    assert_eq!(remove(&nodes, &probes, &fixture.projects, &alondra_engine_doubles::agent_host::InProcessHosts::default(), &fixture.backend, &target("linear", Some(LINEAR))), Ok("linear".into()));
     let quill = fixture.projects[0].path.display().to_string();
     let subject = format!("{}.{}", target("db", None), project_target("quill"));
-    assert_eq!(remove(&nodes, &probes, &fixture.projects, &fixture.backend, &subject), Ok("db".into()));
+    assert_eq!(remove(&nodes, &probes, &fixture.projects, &alondra_engine_doubles::agent_host::InProcessHosts::default(), &fixture.backend, &subject), Ok("db".into()));
     assert_eq!(fixture.calls(), [
         format!("{}|mcp remove --scope user -- linear", fixture.home.display()),
         format!("{quill}|mcp remove --scope local -- db"),
@@ -101,25 +101,25 @@ fn a_failed_deletion_counts_as_done_only_when_the_settings_no_longer_have_the_se
 
     let probes = McpProbes::default();
     fixture.fails("No MCP server named \"linear\" in user scope", serde_json::json!({"mcpServers": {"linear": {"type": "http"}}}));
-    assert_eq!(remove(&nodes, &probes, &fixture.projects, &fixture.backend, &linear).unwrap_err(),
+    assert_eq!(remove(&nodes, &probes, &fixture.projects, &alondra_engine_doubles::agent_host::InProcessHosts::default(), &fixture.backend, &linear).unwrap_err(),
         (Some("linear".into()), Refused::Failed("No MCP server named \"linear\" in user scope".into())),
         "still in the user's settings, whatever Claude wrote");
     assert!(probes.removals().is_empty(), "a server Claude could not delete stays on the screen");
 
     fixture.fails("Server linear not found", serde_json::json!({"mcpServers": {}, "projects": {quill.clone(): {"mcpServers": {"linear": {}}}}}));
-    assert_eq!(remove(&nodes, &probes, &fixture.projects, &fixture.backend, &linear), Ok("linear".into()),
+    assert_eq!(remove(&nodes, &probes, &fixture.projects, &alondra_engine_doubles::agent_host::InProcessHosts::default(), &fixture.backend, &linear), Ok("linear".into()),
         "deleted elsewhere since: it is gone, which is what the user asked");
 
     fixture.fails("Server db not found", serde_json::json!({"mcpServers": {"db": {}}, "projects": {quill.clone(): {"mcpServers": {"db": {}}}}}));
-    assert_eq!(remove(&nodes, &probes, &fixture.projects, &fixture.backend, &db).unwrap_err().1, Refused::Failed("Server db not found".into()),
+    assert_eq!(remove(&nodes, &probes, &fixture.projects, &alondra_engine_doubles::agent_host::InProcessHosts::default(), &fixture.backend, &db).unwrap_err().1, Refused::Failed("Server db not found".into()),
         "still in the project's private settings");
     fixture.fails("Server db not found", serde_json::json!({"mcpServers": {"db": {}}, "projects": {quill.clone(): {"mcpServers": {}}}}));
-    assert_eq!(remove(&nodes, &probes, &fixture.projects, &fixture.backend, &db), Ok("db".into()), "only the project's own settings count");
+    assert_eq!(remove(&nodes, &probes, &fixture.projects, &alondra_engine_doubles::agent_host::InProcessHosts::default(), &fixture.backend, &db), Ok("db".into()), "only the project's own settings count");
     assert_eq!(probes.removals().len(), 2);
 
     fixture.fails("Error: could not write the settings", serde_json::json!({}));
     std::fs::write(fixture.home.join(".claude.json"), "{not json").unwrap();
-    let refused = remove(&nodes, &McpProbes::default(), &fixture.projects, &fixture.backend, &linear).unwrap_err();
+    let refused = remove(&nodes, &McpProbes::default(), &fixture.projects, &alondra_engine_doubles::agent_host::InProcessHosts::default(), &fixture.backend, &linear).unwrap_err();
     assert_eq!(refused, (Some("linear".into()), Refused::Failed("Error: could not write the settings".into())), "settings it cannot read are no proof");
     assert_eq!(refused.1.message("linear", Lang::Es), "Claude Code no pudo borrar linear: Error: could not write the settings");
 }
@@ -137,7 +137,7 @@ fn a_server_configured_elsewhere_is_refused_with_where_to_delete_it() {
         server("vault", "managed", Some("https://vault.example.com/mcp")),
     ])];
     let probes = McpProbes::default();
-    let refused = |name: &str, url: Option<&str>| remove(&nodes, &probes, &fixture.projects, &fixture.backend, &target(name, url)).unwrap_err();
+    let refused = |name: &str, url: Option<&str>| remove(&nodes, &probes, &fixture.projects, &alondra_engine_doubles::agent_host::InProcessHosts::default(), &fixture.backend, &target(name, url)).unwrap_err();
     assert_eq!(refused("files", None), (Some("files".into()), Refused::Kept(McpOrigin::ProjectSettings)));
     assert_eq!(refused("telegram", None), (Some("telegram".into()), Refused::Kept(McpOrigin::Plugin)));
     assert_eq!(refused("claude.ai Gmail", None).1, Refused::Kept(McpOrigin::Connector));
@@ -154,7 +154,7 @@ fn a_server_or_project_no_longer_listed_is_gone() {
     let fixture = Fixture::new();
     let nodes = [node("zeta", 1, vec![server("db", "local", None)])];
     let probes = McpProbes::default();
-    let gone = |subject: &str| remove(&nodes, &probes, &fixture.projects, &fixture.backend, subject).unwrap_err().1;
+    let gone = |subject: &str| remove(&nodes, &probes, &fixture.projects, &alondra_engine_doubles::agent_host::InProcessHosts::default(), &fixture.backend, subject).unwrap_err().1;
     assert_eq!(gone(&target("linear", Some(LINEAR))), Refused::Gone);
     assert_eq!(gone(&format!("{}.{}", target("db", None), project_target("blurcamera"))), Refused::Gone, "a project no longer listed");
     assert_eq!(gone(&target("db", None)), Refused::Gone, "a project's own server without its project has no folder to run in");

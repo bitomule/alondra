@@ -22,4 +22,5 @@ tokio.workspace = true
 url = "2.5"
 
 [dev-dependencies]
+alondra-engine-doubles.workspace = true
 tempfile.workspace = true

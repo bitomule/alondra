@@ -15,13 +15,12 @@ use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 pub use alondra_engine_kernel::sdk_backend as backend;
-mod worker;
 use alondra_engine_ports::{claude_history, conversation_file};
 mod session_refresh;
 mod node_environment;
 pub use alondra_engine_kernel::untaken;
 pub(crate) use alondra_daemon_engine_model::NativeAccountIdentity;
-use worker::{Worker, Found};
+use alondra_engine_ports::agent_workers::{AgentProvider, AgentWorker, Found, NativeLiveness, Retained, WorkerConfiguration, WorkerProfile};
 use alondra_core::accounts::{AccountKey, Provider};
 pub use backend::SdkBackend;
 pub(crate) use crate::domain_runtime::seals::{self, Seals};
@@ -32,7 +31,6 @@ use alondra_engine_ports::agent_host::{EndedHost, HostStop, VerifiedArtifact};
 use alondra_domain_model::*;
 use alondra_domain::ActivityView;
 use alondra_foundation::InputId;
-use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, Retained, WorkerProfile, answered_by_event, answered_control, context_event, native_exited};
 use alondra_provider_contract::{AdapterError, Capability, Handoff, OrderedObservation, PreparedCommand, ProviderBinding};
 use alondra_store::{AuthorityScope, Committed, ControlPermit, DispatchAttempt, DispatchPermit, DispatchReceipt};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -123,12 +121,45 @@ fn adapter(what: &str) -> impl Fn(AdapterError) -> Failed + '_ {
     move |error| Failed::new(format!("{what}: {error}"))
 }
 
+/// The worker of an execution and the provider that configured it, which reads its host's frames.
+pub struct Worker {
+    agent: Box<dyn AgentWorker>,
+    rules: Arc<dyn AgentProvider>,
+}
+
+impl Worker {
+    /// The worker the provider `binding` names configures, from the providers the root wired.
+    fn configured(domain: &dyn Runtime, binding: ProviderBinding, configuration: WorkerConfiguration) -> Result<Self, Failed> {
+        let rules = alondra_engine_ports::agent_workers::of_binding(domain.ports(), &binding).map_err(|error| Failed::new(format!("configuring the SDK worker: {error}")))?;
+        let agent = rules.configured(binding, configuration).map_err(adapter("configuring the SDK worker"))?;
+        Ok(Self { agent, rules })
+    }
+    pub fn provider(&self) -> Provider { self.rules.provider() }
+    pub fn rules(&self) -> &dyn AgentProvider { &*self.rules }
+    pub fn answered_control(&self, batch: &OrderedObservation) -> Option<alondra_foundation::CommandId> { self.rules.answered_control(batch) }
+    pub fn native_exited(&self, batch: &OrderedObservation) -> bool { self.rules.native_exited(batch) }
+    pub fn background_left(&self, checkpoint: &[u8]) -> Vec<String> { self.rules.background_left(checkpoint) }
+    /// Whether the host's native process is gone, for a host whose provider runs as a process of its own.
+    pub fn native_lost(&mut self) -> Result<bool, AdapterError> {
+        Ok(matches!(self.agent.native_liveness()?, Some(NativeLiveness::Lost)))
+    }
+}
+
+impl std::ops::Deref for Worker {
+    type Target = dyn AgentWorker;
+    fn deref(&self) -> &Self::Target { &*self.agent }
+}
+
+impl std::ops::DerefMut for Worker {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut *self.agent }
+}
+
 impl Preparer for Worker {
     fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> Result<(), AdapterError> {
-        Worker::stage_input(self, metadata)
+        self.agent.stage_input(metadata)
     }
     fn prepare(&mut self, attempt: &DispatchAttempt, metadata: InputMetadata<'_, '_>) -> Result<PreparedCommand, AdapterError> {
-        Worker::prepare(self, attempt, metadata)
+        self.agent.prepare(attempt, metadata)
     }
 }
 
@@ -479,11 +510,8 @@ fn native_recovery_status(domain: &dyn Runtime, backend: &SdkBackend, task: &Tas
     if original_directory.as_deref() != Some(directory) {
         return unavailable("Native session recovery must use the original task worktree".into());
     }
-    let Some(session) = metadata.as_deref().and_then(|metadata| match provider {
-        Provider::Claude => alondra_provider_claude::conversation_session(metadata),
-        Provider::Codex => alondra_provider_codex::conversation_session(metadata),
-        Provider::Antigravity => alondra_provider_antigravity::conversation_session(metadata),
-    }) else { return unavailable(unproven.into()); };
+    let rules = alondra_engine_ports::agent_workers::of(domain.ports(), provider).map_err(|error| Failed::new(format!("Reading the original native session: {error}")))?;
+    let Some(session) = metadata.as_deref().and_then(|metadata| rules.conversation_session(metadata)) else { return unavailable(unproven.into()); };
     let selected = backend.for_provider(provider, domain.home()).map_err(|error| Failed::new(format!("Locating the original native account: {error:#}")))?;
     let selected = on_account_provider(domain, &selected, provider, account)?;
     let identity = match NativeAccountIdentity::recover(&selected.state_root.join(&admission.instance), provider) {
@@ -502,7 +530,7 @@ fn native_recovery_status(domain: &dyn Runtime, backend: &SdkBackend, task: &Tas
             Err(why) => return Ok(NativeRecoveryStatus::Unavailable(why)),
         };
         if require_history {
-            let selected = selected.for_start().map_err(|error| Failed::new(format!("Locating the original Codex executable: {error:#}")))?;
+            let selected = alondra_engine_ports::agent_host::of(domain.ports()).map_err(anyhow::Error::from).and_then(|hosts| selected.for_start(&*hosts)).map_err(|error| Failed::new(format!("Locating the original Codex executable: {error:#}")))?;
             let retained = crate::blocking_work::blocking(|| domain.ports().accounts().retained_codex_thread(
                 &selected.native, &selected.native_environment, &thread, std::path::Path::new(directory)));
             if !retained.unwrap_or(false) {
@@ -572,7 +600,7 @@ pub fn start_bound(domain: Arc<dyn Runtime>, backend: &SdkBackend, launch: Launc
         return Err(Failed::new("The prepared reopening belongs to another node launch".into()));
     }
     let backend = &backend.for_provider(provider, domain.home()).map_err(|error| Failed::new(format!("{error:#}")))?;
-    let backend = &backend.for_start().map_err(|error| Failed::new(format!("{error:#}")))?;
+    let backend = &alondra_engine_ports::agent_host::of(domain.ports()).map_err(anyhow::Error::from).and_then(|hosts| backend.for_start(&*hosts)).map_err(|error| Failed::new(format!("{error:#}")))?;
     let backend = &on_account_provider(&*domain, backend, provider, &launch.account)?;
     let suffix = alondra_foundation::random_hex(8);
     let agent = AgentId(format!("sdk-{suffix}"));
@@ -616,7 +644,7 @@ pub fn start_bound(domain: Arc<dyn Runtime>, backend: &SdkBackend, launch: Launc
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
     let unadmitted = Unadmitted { domain: Some(Arc::clone(&domain)), agent: agent.clone() };
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
-    let mut worker = Worker::configured(binding.clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
+    let mut worker = Worker::configured(&*domain, binding.clone(), configuration)?;
     if let Some(session) = continuation.as_ref().and_then(Continuation::session) {
         worker.continue_session(session).map_err(adapter("continuing the node's session"))?;
     }
@@ -874,7 +902,7 @@ pub(crate) fn launch_admitted(domain: Arc<dyn Runtime>, backend: &SdkBackend, ta
     crate::account_move::require_started_destination(&*domain,&task).map_err(Failed::new)?;
     let state = domain.state();
     let provider = state.tasks.get(&task).map(|task| task.provider).ok_or_else(|| Failed::new("the task is missing".into()))?;
-    let backend = &backend.for_provider(provider, domain.home()).and_then(|selected| selected.for_start()).map_err(|error| Failed::new(format!("{error:#}")))?;
+    let backend = &alondra_engine_ports::agent_host::of(domain.ports()).map_err(anyhow::Error::from).and_then(|hosts| backend.for_provider(provider, domain.home())?.for_start(&*hosts)).map_err(|error| Failed::new(format!("{error:#}")))?;
     let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed::new("the task has no node".into()))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed::new(format!("{error:?}")))?;
     let (adoption, _) = domain
@@ -895,7 +923,7 @@ pub(crate) fn launch_admitted(domain: Arc<dyn Runtime>, backend: &SdkBackend, ta
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
     let unadmitted = Unadmitted { domain: Some(Arc::clone(&domain)), agent: agent.clone() };
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
-    let mut worker = Worker::configured(grant.binding().clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
+    let mut worker = Worker::configured(&*domain, grant.binding().clone(), configuration)?;
     let identity=NativeAccountIdentity::load(worker.state_directory())?;
     domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref().map(|identity| identity as &dyn crate::domain_store::KnownIdentity))).map_err(failed("Alondra cannot resume this session"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
@@ -968,7 +996,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
     let base_backend = backend;
     let state = domain.state();
     let provider = state.tasks.get(&task).map(|task| task.provider).ok_or_else(|| Failed::new("the task is missing".into()))?;
-    let backend = &backend.for_provider(provider, domain.home()).and_then(|selected| selected.for_start()).map_err(|error| Failed::new(format!("{error:#}")))?;
+    let backend = &alondra_engine_ports::agent_host::of(domain.ports()).map_err(anyhow::Error::from).and_then(|hosts| backend.for_provider(provider, domain.home())?.for_start(&*hosts)).map_err(|error| Failed::new(format!("{error:#}")))?;
     let agent = state.tasks.get(&task).and_then(|t| t.agent_id.clone()).ok_or_else(|| Failed::new("the task has no node to adopt".into()))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed::new(format!("{error:?}")))?;
     let (adoption, _) = domain
@@ -992,8 +1020,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
     }
     let profile = plugin.map(|plugin| worker_profile(plugin, &options, &adoption.directory)).transpose()?;
     let on_account = &on_account_provider(&*domain, backend, Provider::from_driver(grant.binding().driver()).ok_or_else(|| Failed::new("unknown execution provider".into()))?, &account_of(grant.binding()))?;
-    let mut worker = Worker::configured(grant.binding().clone(), configuration(&*domain, on_account, grant.binding(), &adoption.directory, stamp.instance().as_str(), false, profile)?)
-        .map_err(adapter("configuring the SDK worker"))?;
+    let mut worker = Worker::configured(&*domain, grant.binding().clone(), configuration(&*domain, on_account, grant.binding(), &adoption.directory, stamp.instance().as_str(), false, profile)?)?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.take_seals(&task, &agent);
     let commands: Vec<&[u8]> = adoption.receipt_candidates.iter().map(|candidate| candidate.command.as_slice()).collect();
@@ -1076,7 +1103,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
             let handoff = driver.worker.reconcile(&control.command).map_err(adapter("reconciling a control"))?;
             driver.domain.own(driver.scope.clone(), |owner| owner.resolve_control(&stamp, control.id, owner_generation, receipt(handoff))).map_err(failed("resolving a control"))?;
             if handoff == Handoff::Offered {
-                driver.results.extend(answered_by_event(&control.command));
+                driver.results.extend(driver.worker.rules().answered_by_event(&control.command));
             }
         }
         driver.sealed();
@@ -1103,7 +1130,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
         commit_observation(&*domain, &scope, &binding, owner_generation, &batch, normalizer, home,identity.as_ref())
             .map_err(failed(&format!("committing what the ended host observed at cursor {}", batch.cursor)))?;
         domain.forget_sealed_observations(&task);
-        feed(worker.provider(), &*domain, &agent, &batch);
+        feed(worker.rules(), &*domain, &agent, &batch);
     }
     let retained = |command: &[u8]| -> Result<DispatchReceipt, Failed> {
         Ok(match journal.retained(command).map_err(adapter("reading the ended host's receipt"))? {
@@ -1164,9 +1191,9 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
     .map_err(failed("recording the end of the host"))?;
     if !relaunch{*claimed=worker.take_ended();return Ok(None)}
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
-    let provider = worker.provider();
-    let refused=adapter_state.checkpoint().and_then(|checkpoint|blocked_policy(provider, checkpoint.bytes()))
-        .or_else(||journal.events().iter().find_map(|event|account_refusal(provider, &OrderedObservation{owner_generation,execution:stamp.clone(),cursor:event.cursor,evidence:event.payload.clone()})).map(str::to_owned));
+    let rules = worker.rules();
+    let refused=adapter_state.checkpoint().and_then(|checkpoint|rules.blocked_policy(checkpoint.bytes()))
+        .or_else(||journal.events().iter().find_map(|event|rules.account_refusal(&OrderedObservation{owner_generation,execution:stamp.clone(),cursor:event.cursor,evidence:event.payload.clone()})).map(str::to_owned));
     if !explicit_account_retry && let Some(reason)=refused{return Err(Failed::new(reason))}
     let base = adapter_state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0);
     let resume = domain.read().state().lifecycle_of(&task).ok()
@@ -1727,7 +1754,7 @@ pub fn take_all(domain: &Arc<dyn Runtime>, backend: &SdkBackend) -> Vec<(TaskId,
 
 /// The host's folder is `state_root/<instance>`, so the execution's own identity names it and a
 /// daemon that comes back finds it without searching. A launch creates it; an adoption reuses it.
-fn configuration(domain: &dyn Runtime, backend: &SdkBackend, binding: &ProviderBinding, directory: &str, instance: &str, create: bool, worker: Option<WorkerProfile>) -> Result<ClaudeConfiguration, Failed> {
+fn configuration(domain: &dyn Runtime, backend: &SdkBackend, binding: &ProviderBinding, directory: &str, instance: &str, create: bool, worker: Option<WorkerProfile>) -> Result<WorkerConfiguration, Failed> {
     let state_directory = backend.state_root.join(instance);
     if create {
         std::fs::create_dir_all(&backend.state_root).map_err(|error| Failed::written(format!("creating the SDK state root: {error}"), &error))?;
@@ -1754,7 +1781,7 @@ fn configuration(domain: &dyn Runtime, backend: &SdkBackend, binding: &ProviderB
     if Provider::from_driver(binding.driver()) == Some(Provider::Antigravity) && let Some(profile) = worker.as_mut() {
         antigravity_account(domain.home(), &account_of(binding), profile)?;
     }
-    Ok(ClaudeConfiguration {
+    Ok(WorkerConfiguration {
         artifact: VerifiedArtifact::verify(&backend.node, &backend.host, &backend.node_sha256, &backend.host_sha256)
             .map_err(|error| Failed::new(format!("verifying the SDK host: {error}")))?,
         state_directory,
@@ -1994,7 +2021,7 @@ impl Driver {
             .map_err(failed("recording the control"))?;
         let control = self.sealed().control_commands.pop().ok_or_else(|| Failed::new("the control left no seal".into()))?;
         let handoff = self.worker.submit_control(&control).unwrap_or(Handoff::Uncertain);
-        let awaited = (handoff == Handoff::Offered).then(|| answered_by_event(control.bytes())).flatten();
+        let awaited = (handoff == Handoff::Offered).then(|| self.worker.rules().answered_by_event(control.bytes())).flatten();
         let accepted = match (handoff, control.attempt().operation()) {
             (Handoff::Offered, alondra_store::ControlOperation::Control(alondra_domain::Control::Interrupt { turn: Some(turn) })) => {
                 Some((control.attempt().execution().clone(), control.attempt().control().clone(), turn.clone()))
@@ -2259,8 +2286,8 @@ impl Driver {
         if let Some(start) = self.domain.engine().context_observed(&self.task, self.worker.provider(), &batch, alondra_core::now_millis()) {
             self.record_start(&start);
         }
-        feed(self.worker.provider(), &*self.domain, &self.agent, &batch);
-        if let Some(line) = alondra_provider_claude::sdk_message(&batch).and_then(|message| claude_said(&message, &mut self.claude_session)) {
+        feed(self.worker.rules(), &*self.domain, &self.agent, &batch);
+        if let Some(line) = self.worker.rules().sdk_message(&batch).and_then(|message| claude_said(&message, &mut self.claude_session)) {
             log!("{line} ({}, task {})", self.agent, self.task);
         }
         for observation in self.sealed().observations {
@@ -2268,12 +2295,12 @@ impl Driver {
             self.worker.acknowledge(&observation).map_err(adapter("acknowledging the observation"))?;
         }
         let provider = self.worker.provider();
-        if let Some(failure) = session_failure(provider, &batch) {
+        if let Some(failure) = self.worker.rules().session_failure(&batch) {
             log!("the {} session of {} ended on its own: {failure}", provider.display_name(), self.task);
             self.native_failure=Some(failure);
         }
-        if let Some(reason)=account_refusal(provider, &batch){
-            self.native_signed_out = provider == Provider::Antigravity && alondra_provider_antigravity::signed_out(&batch);
+        if let Some(reason)=self.worker.rules().account_refusal(&batch){
+            self.native_signed_out = self.worker.rules().signed_out(&batch);
             self.native_account_refusal=Some(reason.into());
             return Err(Failed::new(reason.into()))
         }
@@ -2707,39 +2734,13 @@ impl Drop for Driver {
     }
 }
 
-fn feed(provider: Provider, domain: &dyn Runtime, agent: &AgentId, batch: &OrderedObservation) {
-    match provider {
+fn feed(rules: &dyn AgentProvider, domain: &dyn Runtime, agent: &AgentId, batch: &OrderedObservation) {
+    match rules.provider() {
         // The live view reads agy's own messages; only this crate reads the host's frames.
-        Provider::Antigravity => if let Some(message) = alondra_provider_antigravity::native_message(batch) {
+        Provider::Antigravity => if let Some(message) = rules.native_message(batch) {
             domain.engine().feed_antigravity(agent, &message);
         },
-        Provider::Claude | Provider::Codex => domain.engine().feed(provider, agent, batch),
-    }
-}
-
-/// Why a provider's session ended without being asked to, as its host said it.
-fn session_failure(provider: Provider, batch: &OrderedObservation) -> Option<String> {
-    match provider {
-        Provider::Claude => None,
-        Provider::Codex => alondra_provider_codex::session_failure(batch).map(|failure| failure.to_string()),
-        Provider::Antigravity => alondra_provider_antigravity::session_failure(batch).map(|failure| failure.to_string()),
-    }
-}
-
-/// A refusal of the account before the provider took the input: the reason the task holds.
-fn account_refusal(provider: Provider, batch: &OrderedObservation) -> Option<&'static str> {
-    match provider {
-        Provider::Claude => None,
-        Provider::Codex => alondra_provider_codex::account_refusal(batch),
-        Provider::Antigravity => alondra_provider_antigravity::account_refusal(batch),
-    }
-}
-
-fn blocked_policy(provider: Provider, checkpoint: &[u8]) -> Option<String> {
-    match provider {
-        Provider::Claude => None,
-        Provider::Codex => alondra_provider_codex::blocked_policy(checkpoint),
-        Provider::Antigravity => alondra_provider_antigravity::blocked_policy(checkpoint),
+        provider @ (Provider::Claude | Provider::Codex) => domain.engine().feed(provider, agent, batch),
     }
 }
 
@@ -2775,8 +2776,8 @@ fn remove_stop_mark(mark: &std::path::Path) {
 /// Commits what the host observed. What the domain refuses never stops the node: the observation
 /// commits again without it, and the second value says what of the task's lifecycle it left out.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn commit_observation<N: alondra_agent_application::ObservationNormalizer>(domain: &dyn Runtime, scope: &AuthorityScope, binding: &ProviderBinding,
-    generation: u64, batch: &OrderedObservation, normalizer: &N, home: &std::path::Path,identity:Option<&NativeAccountIdentity>) -> Result<(alondra_store::ObservationAcceptance, Vec<String>), StoreError> {
+pub(crate) fn commit_observation(domain: &dyn Runtime, scope: &AuthorityScope, binding: &ProviderBinding,
+    generation: u64, batch: &OrderedObservation, normalizer: &dyn alondra_agent_application::ObservationNormalizer, home: &std::path::Path,identity:Option<&NativeAccountIdentity>) -> Result<(alondra_store::ObservationAcceptance, Vec<String>), StoreError> {
     let stage = |probe: bool| domain
         .own(scope.clone(), |owner| {
             let acceptance = owner.stage_observation_with_identity(binding, generation, batch, normalizer, home, probe,identity.map(|identity| identity as &dyn crate::domain_store::KnownIdentity))?;

@@ -124,7 +124,7 @@ impl Batches {
         private_directory(&state);
         private_directory(&cwd);
         let under = &self.under;
-        let configuration = ClaudeConfiguration {
+        let configuration = WorkerConfiguration {
             artifact: VerifiedArtifact::verify(&under.node, &under.bundle, &hash(&under.node), &hash(&under.bundle)).unwrap(),
             state_directory: state,
             host_environment: test_support::fixture_environment(&self.directory.join("home")),

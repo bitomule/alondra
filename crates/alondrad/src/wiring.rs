@@ -16,6 +16,7 @@ pub fn open_at(home: &Path, database: &Path, files: &dyn JournalFiles) -> Result
     alondra_daemon_engine::wiring::wire(runtime.ports());
     alondra_engine_sdk::wiring::wire(runtime.ports());
     alondra_engine_admission::wire(runtime.ports());
+    crate::wire_providers(runtime.ports());
     Ok(runtime)
 }
 
