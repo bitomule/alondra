@@ -1021,10 +1021,11 @@ truth = ["sqlite:task_stages"]
 |---|---|---|
 | no runs | `RecordTaskStages` [system, before the first node starts, a selection for every role iff staged] | `staged`, `reason`, `selections` set |
 | any | `AdmitExecution` | a run with `next_role()` (the handover's role, else the current one, else `Author` for a staged task); a handover to that role ends |
-| role `Author`, no handover | the user approves a plan (`AnswerQuestion` with `approve` on a `Hold::Plan` card) | approval recorded; `handover = Implementer`; the author's decision is `HandedOver` (Claude is denied with `HANDED_OVER_PLAN`, Codex settles without a new turn) |
+| role `Author`, no handover | the user approves a plan (`AnswerQuestion` with `approve` on a `Hold::Plan` card) | approval recorded; `handover = Implementer`; the input the implementer starts from is queued (`Told`), so the author's turn ends on it; the author's decision is `HandedOver` (Claude is denied with `HANDED_OVER_PLAN`, Codex settles without a new turn) |
 | any other role, or no stages | the same approval | approval recorded only; the decision is `Allow` |
-| handover due (`transition = None`, not `refused`) | `BeginStageHandover` [system, stamp matches, no pending selection, the role's selection allows the target] | `selection` = the role's, `pending_selection` = target, a `Told` input queued, `transition` set |
-| handover with `transition` | `StageHandoverFailed` | `transition = None`, `attempts + 1`; `refused` once `attempts = 3` |
+| handover due (`transition = None`, not `refused`) | `BeginStageHandover` [system, stamp matches, no pending selection, the role's selection allows the target] | `selection` = the role's, `pending_selection` = target, `transition` set |
+| handover with `transition` | `StageHandoverFailed` naming it | `transition = None`, `attempts + 1`; `refused` once `attempts = 3`, or at once when the start is refused for good (`REFUSED_STARTS`) |
+| handover due, the task has no execution, no deferred or refused move and no open start problem | `StageHandoverFailed` with no `transition` and `refused`, with its `StageStartRefused` start problem | `attempts + 1`, `refused` |
 | handover `refused` | the user answers `retry` on its `StageStartRefused` start problem | `attempts = 0`, `refused = false` |
 
 - **Engine**: `provider_transition::pass` starts every due handover (`request_stage`: account and
@@ -1728,8 +1729,8 @@ variants = ["Requested", "Draining", "SourceFenced", "ContextReady", "TargetAdmi
   only then ends it; its context is the packet `launches::stage_packet` writes for the role, never
   the conversation; at `ContextReady` it starts its target only once the gate gives the task's
   next turn a slot (`may_take_turn`: slots and memory), else it waits there and looks again on the
-  next pass. Its abort records `StageHandoverFailed` and, after the third,
-  raises `StageStartRefused` for the user.
+  next pass. Its abort records `StageHandoverFailed` and, after the third or at once when the
+  start is refused for good (`REFUSED_STARTS`), raises `StageStartRefused` for the user.
 - **Concurrency**: the `advancing` mutex serializes its own steps. It does **not** exclude retakes that were
   already running (F-ENGINE-12).
 

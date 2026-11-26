@@ -102,10 +102,10 @@ impl DomainState {
         Ok(())
     }
 
-    pub(super) fn stage_handover_failed(&mut self, actor: &Actor, task_id: &TaskId, transition: &str, refused: bool) -> Result<()> {
+    pub(super) fn stage_handover_failed(&mut self, actor: &Actor, task_id: &TaskId, transition: Option<&str>, refused: bool) -> Result<()> {
         system(actor)?;
         let task = self.tasks.get_mut(task_id).ok_or_else(|| DomainError::new("not_found", "Task does not exist"))?;
-        let Some(handover) = task.stages.handover.as_mut().filter(|handover| handover.transition.as_deref() == Some(transition)) else {
+        let Some(handover) = task.stages.handover.as_mut().filter(|handover| !handover.refused && handover.transition.as_deref() == transition) else {
             return Ok(());
         };
         handover.transition = None;
