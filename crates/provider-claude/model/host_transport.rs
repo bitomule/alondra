@@ -423,11 +423,17 @@ impl<P> Host<P> {
         state.wire.outbox = None;
         let connections = std::mem::take(&mut state.wire.connections);
         drop(state);
-        self.clock.frames_dropped(&self.bootstrap.host_instance_id);
+        self.clock.host_gone(&self.bootstrap.host_instance_id);
         self.process.end(closed);
         for connection in connections {
             let _ = connection.shutdown(std::net::Shutdown::Both);
         }
+    }
+
+    /// The host's process exited, killed by the daemon or ended by the host: what the daemon wrote to
+    /// it that it had not passed on yet is lost with it, and nothing written from now on is read.
+    pub fn exited(&self) {
+        self.clock.host_gone(&self.bootstrap.host_instance_id);
     }
 
     /// Keeps the host's end of a connection, closed when the host ends; false once it ended.

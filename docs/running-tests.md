@@ -422,7 +422,9 @@ a Mac. The world decides what the provider answers:
   threads already has): nothing works, the runtime is asleep, every host is attached with all it
   said acknowledged, and no takeover of a host is under way. "Works" counts the threads the clock or a notification woke, the jobs of the daemon's blocking
   pool (`clock::spawn_blocking`), each frame the daemon wrote to a host until the host has read it
-  and answered (`clock::frame_sent`/`frame_handled`), and an owner of a host whose input arrived
+  and answered (`clock::frame_sent`/`frame_handled`) or its process exited (`clock::host_gone`: the
+  daemon may kill a host with a frame still unread in its relay, and the scenario edge watches each
+  relay's exit with kqueue), and an owner of a host whose input arrived
   (`Seals::put` and `Seals::wake` ring its bell). "Asleep" is the runtime's own thread parked with
   no task woken for it from another thread, so the daemon's async tasks count too. No poll decides
   it; its 20 s patience only names a hang, with what kept moving (each running blocking job by

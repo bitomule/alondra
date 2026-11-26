@@ -12,6 +12,7 @@ pub use alondra_claude_host_model::{ApiError, ClaudeModel, Host, MODEL, Trouble,
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, ProbeOutput, ProbeRun};
 use serde::Deserialize;
 use std::io::Read;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
@@ -128,6 +129,50 @@ fn running(pid: i32) -> bool {
     read == size && unsafe { info.assume_init() }.pbi_status != ZOMBIE
 }
 
+/// Tells `host` once its process `pid` exits, whoever ends it: the daemon kills a host's group with
+/// frames it wrote still unread in the relay, which go with it. The exit is registered with the
+/// kernel before this returns, while the process cannot have been reaped and its number reused.
+fn tell_exit(pid: u32, host: Arc<Host>) -> std::io::Result<()> {
+    // SAFETY: kqueue takes nothing and returns a new descriptor, or -1.
+    let queue = unsafe { libc::kqueue() };
+    if queue < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor is new and nothing else owns it.
+    let queue = unsafe { OwnedFd::from_raw_fd(queue) };
+    let exit = libc::kevent {
+        ident: pid as libc::uintptr_t,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD | libc::EV_ONESHOT,
+        fflags: libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    // SAFETY: one change read from `exit`, no event written.
+    if unsafe { libc::kevent(queue.as_raw_fd(), &exit, 1, std::ptr::null_mut(), 0, std::ptr::null()) } < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error);
+        }
+        host.exited();
+        return Ok(());
+    }
+    std::thread::Builder::new().name(format!("exit-of-{pid}")).spawn(move || {
+        let mut event = std::mem::MaybeUninit::<libc::kevent>::zeroed();
+        loop {
+            // SAFETY: no change read, at most one event written into `event`.
+            let seen = unsafe { libc::kevent(queue.as_raw_fd(), std::ptr::null(), 0, event.as_mut_ptr(), 1, std::ptr::null()) };
+            match seen {
+                1.. => return host.exited(),
+                0 => continue,
+                _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => continue,
+                _ => return,
+            }
+        }
+    })?;
+    Ok(())
+}
+
 /// The relay a host's process runs, which Bazel builds beside the scenarios.
 fn relay() -> Result<PathBuf, String> {
     let path = std::env::var_os("SCENARIO_HOST_RELAY").ok_or("SCENARIO_HOST_RELAY names no relay: run the scenarios through Bazel")?;
@@ -164,7 +209,7 @@ impl HostLauncher for ClaudeEdge {
         if let Some(by) = slowness.start {
             relay.env(SLOW_START, by.as_millis().to_string());
         }
-        let child = relay
+        let mut child = relay
             .arg(&bootstrap.socket_path)
             .arg(&back)
             .arg(&interrupts)
@@ -174,6 +219,11 @@ impl HostLauncher for ClaudeEdge {
             .process_group(0)
             .spawn()?;
         let host = self.0.start(text.as_bytes(), child.id(), Box::new(Relay { group: child.id() as i32, back }))?;
+        if let Err(error) = tell_exit(child.id(), host.clone()) {
+            host.end(false);
+            let _ = child.wait();
+            return Err(error);
+        }
         let model = self.0.clone();
         let (interrupting, stopped) = (self.0.clone(), host.clone());
         self.0.spawn(move || {

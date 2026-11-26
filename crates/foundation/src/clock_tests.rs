@@ -579,6 +579,25 @@ fn a_frame_works_from_its_writing_until_its_host_handled_it() {
     });
 }
 
+/// A host whose process is gone reads nothing more: what is unread stops counting, and so does a
+/// frame its writer counts after it went, which the write into a dying process's socket can be.
+#[test]
+fn a_frame_to_a_host_that_is_gone_never_works() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        frame_sent("host-a");
+        frame_sent("host-b");
+        host_gone("host-a");
+        assert_eq!((working(), frames_in_transit()), (1, 1));
+        frame_sent("host-a");
+        assert_eq!((working(), frames_in_transit()), (1, 1), "a frame written after it went never counts");
+        frame_handled("host-a");
+        assert_eq!((working(), frames_in_transit()), (1, 1), "nor does its late read take another host's count");
+        frame_handled("host-b");
+        assert_eq!((working(), frames_in_transit()), (0, 0));
+    });
+}
+
 #[test]
 fn frames_count_nothing_on_the_system_clock() {
     frame_sent("host");

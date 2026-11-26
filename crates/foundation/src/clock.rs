@@ -21,7 +21,7 @@
 
 use std::cell::Cell;
 use std::future::Future;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -49,12 +49,20 @@ pub struct Work {
     count: AtomicUsize,
     held: std::sync::Mutex<Hold>,
     idle: std::sync::Condvar,
-    /// The frames written to each host, by its id, that it has not read and acted on yet.
-    transit: std::sync::Mutex<BTreeMap<String, usize>>,
+    /// The frames written to each host that it has not read and acted on yet, and the hosts gone.
+    transit: std::sync::Mutex<Transit>,
     /// The jobs of the blocking pool still running, by where they were submitted.
     jobs: std::sync::Mutex<BTreeMap<&'static std::panic::Location<'static>, usize>>,
     /// The runtime's own thread has no task to run and sleeps.
     runtime_parked: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Debug, Default)]
+struct Transit {
+    /// The frames written to each host, by its id, that it has not read and acted on yet.
+    frames: BTreeMap<String, usize>,
+    /// The hosts that read nothing more, ever: a frame written to one of them never counts.
+    gone: BTreeSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -154,7 +162,7 @@ impl Work {
         }
     }
 
-    fn transit(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, usize>> {
+    fn transit(&self) -> std::sync::MutexGuard<'_, Transit> {
         self.transit.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
@@ -331,6 +339,13 @@ pub fn frames_dropped(host: &str) {
     Clock::current().frames_dropped(host);
 }
 
+/// The host `host` is gone for good, its process exited or ended: what was written to it and is
+/// still unread is never handled, and neither is anything written to it from now on, whenever the
+/// writer counted it.
+pub fn host_gone(host: &str) {
+    Clock::current().host_gone(host);
+}
+
 /// Whether the current virtual runtime's own thread sleeps with no task woken for it; true under the
 /// system clock.
 pub fn runtime_idle() -> bool {
@@ -349,17 +364,22 @@ impl Clock {
     /// [`frame_sent`] on this clock, from a thread that may not have entered it.
     pub fn frame_sent(self, host: &str) {
         let Clock::Virtual { work, .. } = self else { return };
-        *work.transit().entry(host.to_owned()).or_default() += 1;
+        let mut transit = work.transit();
+        if transit.gone.contains(host) {
+            return;
+        }
+        *transit.frames.entry(host.to_owned()).or_default() += 1;
+        drop(transit);
         work.add();
     }
 
     pub fn frame_handled(self, host: &str) {
         let Clock::Virtual { work, .. } = self else { return };
         let mut transit = work.transit();
-        let Some(frames) = transit.get_mut(host) else { return };
+        let Some(frames) = transit.frames.get_mut(host) else { return };
         *frames -= 1;
         if *frames == 0 {
-            transit.remove(host);
+            transit.frames.remove(host);
         }
         drop(transit);
         work.remove();
@@ -367,7 +387,19 @@ impl Clock {
 
     pub fn frames_dropped(self, host: &str) {
         let Clock::Virtual { work, .. } = self else { return };
-        let frames = work.transit().remove(host).unwrap_or(0);
+        let frames = work.transit().frames.remove(host).unwrap_or(0);
+        for _ in 0..frames {
+            work.remove();
+        }
+    }
+
+    pub fn host_gone(self, host: &str) {
+        let Clock::Virtual { work, .. } = self else { return };
+        let frames = {
+            let mut transit = work.transit();
+            transit.gone.insert(host.to_owned());
+            transit.frames.remove(host).unwrap_or(0)
+        };
         for _ in 0..frames {
             work.remove();
         }
@@ -375,7 +407,7 @@ impl Clock {
 
     pub fn frames_in_transit(self) -> usize {
         match self {
-            Clock::Virtual { work, .. } => work.transit().values().sum(),
+            Clock::Virtual { work, .. } => work.transit().frames.values().sum(),
             Clock::System => 0,
         }
     }
