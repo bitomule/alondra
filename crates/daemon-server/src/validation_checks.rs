@@ -2,7 +2,7 @@
 //! validated when the implementer says the work is ready, the fingerprint of each thing the
 //! validator records, and the gate a delivery passes before it reaches the user. Everything is read
 //! from git's objects of a commit, never from what an agent says; the rules are the domain's.
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_model::specs::{self, engine, Files, SpecMode};
 use alondra_domain_model::{
     Command, DeclaringTest, DeliveredScenario, DeliveredSection, DeliveredSpec, DeliveredSuite, DeliveredValidation, DeliveredVerdict, DomainError, DomainState,
@@ -127,11 +127,11 @@ fn ledger_dir(project: &engine::Project) -> String {
 
 /// Fills in a validation command what Alondra reads of the task's worktree, in place of whatever
 /// its sender put there.
-pub(crate) fn stamp(domain: &DomainRuntime, command: &mut Command) -> Result<(), DomainError> {
+pub(crate) fn stamp(domain: &dyn Runtime, command: &mut Command) -> Result<(), DomainError> {
     if !matches!(command, Command::ReadyForValidation { .. } | Command::RecordValidation { .. }) {
         return Ok(());
     }
-    let state = domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state could not be read"))?;
+    let state = domain.state();
     let Some(port) = domain.ports().spec_worktrees() else { return Ok(()) };
     stamp_with(&*port, &state, command)
 }
@@ -193,7 +193,7 @@ pub(crate) fn stamp_with(port: &dyn SpecWorktrees, state: &DomainState, command:
 
 /// What a final delivery of `task` must hold for its validation, and, when it passes, what its
 /// card shows of its specs. Only tasks in stages in a project with specs are gated.
-pub(crate) fn gate(domain: &DomainRuntime, state: &DomainState, task_id: &TaskId, delivery: &InteractionId) -> Result<Option<DeliveredValidation>, GateRefusal> {
+pub(crate) fn gate(domain: &dyn Runtime, state: &DomainState, task_id: &TaskId, delivery: &InteractionId) -> Result<Option<DeliveredValidation>, GateRefusal> {
     let Some(port) = domain.ports().spec_worktrees() else { return Ok(None) };
     gate_with(&*port, state, task_id, delivery)
 }
@@ -329,8 +329,8 @@ fn snapshot(project: &engine::Project, report: &engine::Report, task: &Task, del
 
 /// Keeps what the validator's delivery showed of its specs for its card. A card without it says
 /// its evidence is not available, so a failure here never stops the delivery.
-pub(crate) fn record_delivered(domain: &DomainRuntime, task_id: &TaskId, delivery: &InteractionId, validation: DeliveredValidation) {
-    let Ok(state) = domain.state() else { return };
+pub(crate) fn record_delivered(domain: &dyn Runtime, task_id: &TaskId, delivery: &InteractionId, validation: DeliveredValidation) {
+    let state = domain.state();
     let envelope = alondra_domain_model::CommandEnvelope {
         protocol_version: alondra_domain_model::PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
@@ -338,7 +338,7 @@ pub(crate) fn record_delivered(domain: &DomainRuntime, task_id: &TaskId, deliver
         expected_revision: state.revision,
         command: Command::RecordDeliveredValidation { task_id: task_id.clone(), validation },
     };
-    if let Err(error) = domain.execute(&alondra_domain_model::Actor::System, &envelope, None, || Ok(())) {
+    if let Err(error) = domain.execute_as_system(envelope) {
         log!("{delivery}: its validation could not be kept for its card: {error}");
     }
 }

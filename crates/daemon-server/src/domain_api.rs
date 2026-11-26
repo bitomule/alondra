@@ -1027,11 +1027,11 @@ async fn checked_producer_command<H: DomainHost>(
     }
     let mut delivered = None;
     if let (Principal::Agent { .. }, Command::PresentResult { task_id, interaction_id, is_final: true, .. }) = (&principal, &envelope.command)
-        && host.domain().state().is_ok_and(|state| !state.interactions.contains_key(interaction_id))
+        && !host.domain().state().interactions.contains_key(interaction_id)
     {
         let (checking, task, delivery) = (host.clone(), task_id.clone(), interaction_id.clone());
         let gate = alondra_core::clock::spawn_blocking(move || {
-            let state = checking.domain().state().map_err(|_| crate::validation_checks::GateRefusal::Unreadable("the domain state could not be read".into()))?;
+            let state = checking.domain().state();
             crate::validation_checks::gate(checking.domain(), &state, &task, &delivery)
         });
         let gated = steps.step("checking the task's validation", alondra_core::clock::timeout(git_within, gate)).await;
