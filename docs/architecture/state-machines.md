@@ -1661,6 +1661,13 @@ truth = ["memory", "sqlite:provider_execution_owners"]
   - `unowned()` (`:1520-1529`), which only the retake paths consult (`to_take`, `retake_waiting_for_space`,
     `wake_released`);
   - `TakeoverTurn`, in only two paths;
+  - the takeover `take_working_unowned` asks for (`Retaking::FoundWorking`) judged the task on a state read before
+    it, while the owner may have recorded the host-lost card and let go meanwhile. Under the `TakeoverTurn`,
+    `take_again` checks again with `still_working_unowned`: `in_hand` first, then `reads_as_working` on the current
+    state. An owner leaves `in_hand` (drops its `Driver`) only after `lost_on` committed the card, so a task let go
+    of already reads as held for the user and is not taken over. Without it the takeover adopted the ended host
+    and recorded `HostEnded` after the card's pause, so the crash report named `session-ended` instead of
+    `not-resumed`, and a Claude task was resumed with its card answered as «Try again»;
   - the store's CAS generation, which is the only universal barrier.
 - **Copies and derivatives**: `add_sdk_owner` (`:2925-2934`) keeps **every** unfinished `Owner` of the same agent.
   It does not prevent duplicates.
