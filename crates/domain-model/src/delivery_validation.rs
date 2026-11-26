@@ -59,6 +59,10 @@ pub struct CommitReading {
     /// Files other than the ledger that changed since `since`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changed: Vec<String>,
+    /// The commit's base Alondra compared it with; only a reading that says why the commit could
+    /// not be read has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     /// Spec files the commit changed from its base without the user's approval, turning specs off
     /// included, read on the commit whatever it says of specs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -201,6 +205,10 @@ impl DomainState {
             return DeliveryCheck::Unread(unread);
         }
         let read: Vec<&CommitReading> = commits.iter().filter_map(|commit| task.validation.reading(commit)).collect();
+        let uncompared: Vec<String> = read.iter().filter(|reading| reading.base.is_none() && reading.problems.is_empty()).map(|reading| reading.commit.clone()).collect();
+        if !uncompared.is_empty() {
+            return DeliveryCheck::Unread(uncompared);
+        }
         let (unapproved, other): (Vec<&SpecFileChange>, Vec<&SpecFileChange>) = read.iter().flat_map(|reading| &reading.spec_changes).partition(|change| !change.approved);
         if !unapproved.is_empty() || !other.is_empty() {
             let paths = |changes: Vec<&SpecFileChange>| changes.into_iter().map(|change| change.path.clone()).collect();

@@ -36,7 +36,7 @@ pub fn ledger_dir(project: &engine::Project) -> String {
 }
 
 fn empty(commit: &str, worktree: bool) -> CommitReading {
-    CommitReading { commit: commit.to_owned(), worktree, specs: true, owed: vec![], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], spec_changes: vec![] }
+    CommitReading { commit: commit.to_owned(), worktree, specs: true, owed: vec![], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], base: None, spec_changes: vec![] }
 }
 
 /// A reading that says why Alondra could not read `commit`: a fact like any other, which never
@@ -46,21 +46,17 @@ pub fn unreadable(commit: &str, why: &str) -> CommitReading {
 }
 
 /// What Alondra reads of `commit` in the repository at `root` for `task`, whose branch may hold
-/// `allowed` otherwise than its base.
+/// `allowed` otherwise than its base. A commit whose base cannot be read is not read: what it says
+/// of specs is never taken without comparing it with its base.
 pub fn read_commit(port: &dyn SpecWorktrees, root: &Path, task: &Task, commit: &str, worktree: bool, allowed: &SpecFiles) -> Result<CommitReading, String> {
     let mut reading = empty(commit, worktree);
     let files = port.commit(root, commit)?;
-    let off = matches!(specs::mode(&*files), Ok((SpecMode::Off, _)));
-    let base = match port.base_commit(root, commit).and_then(|base| port.commit(root, &base).map(|files| (base, files))) {
-        Ok(base) => Some(base),
-        Err(_) if off && allowed.is_empty() => None,
-        Err(error) => return Err(error),
-    };
-    if let Some((_, base)) = &base {
-        match specs::drift(&*files, &**base, allowed) {
-            Ok(found) => reading.spec_changes = found.into_iter().take(MAX_SCOPE_FILES).map(|drift| SpecFileChange { path: drift.path, approved: drift.approved }).collect(),
-            Err(problem) => reading.problems.push(format!("alondra.toml cannot be read: {}", problem.located())),
-        }
+    let base_commit = port.base_commit(root, commit)?;
+    let base = port.commit(root, &base_commit)?;
+    reading.base = Some(base_commit.clone());
+    match specs::drift(&*files, &*base, allowed) {
+        Ok(found) => reading.spec_changes = found.into_iter().take(MAX_SCOPE_FILES).map(|drift| SpecFileChange { path: drift.path, approved: drift.approved }).collect(),
+        Err(problem) => reading.problems.push(format!("alondra.toml cannot be read: {}", problem.located())),
     }
     let project = match load(&*files) {
         Ok(Some(project)) => project,
@@ -71,7 +67,6 @@ pub fn read_commit(port: &dyn SpecWorktrees, root: &Path, task: &Task, commit: &
             return Ok(reading);
         }
     };
-    let Some((base_commit, base)) = base else { return Err("the base of the commit cannot be read".into()) };
     let report = project.report(None);
     reading.owed = owed_items(&project, &report).into_iter().take(MAX_ROUND_ITEMS).collect();
     reading.problems.extend(report.problems.iter().map(|p| format!("{}:{}: {}", p.path, p.line, p.message)));
@@ -116,7 +111,10 @@ pub fn read_delivery(port: &dyn SpecWorktrees, state: &DomainState, task_id: &Ta
     let allowed = state.allowed_specs(task);
     let mut readings = vec![];
     for pr in state.open_prs(task) {
-        readings.push(read_commit(port, &root, task, &pr.head, false, &allowed).map_err(|why| format!("the commit of pull request {}#{} ({}): {why}", pr.repository, pr.number, pr.head))?);
+        readings.push(read_commit(port, &root, task, &pr.head, false, &allowed).map_err(|why| format!(
+            "the commit {} of pull request {}#{} cannot be read in the task's worktree ({why}). A task in stages delivers pull requests of its own repository only, \
+             because Alondra reads every delivered commit with the spec engine: close a pull request of another repository, or do that work in a task of its own",
+            pr.head, pr.repository, pr.number))?);
     }
     readings.push(read_commit(port, &root, task, &port.head_commit(&root)?, true, &allowed)?);
     Ok(readings)

@@ -247,7 +247,7 @@ fn delivered_then_moved() -> DomainState {
     must(&mut s, node("c"), record("billing.partial/part", ValidationKind::Adequate, ValidationVerdict::Met));
     let ledger = items().into_iter().map(|item| crate::LedgerEntry { subject: item.subject, kind: item.kind, inputs: item.inputs, verdict: ValidationVerdict::Met }).collect();
     must(&mut s, Actor::System, Command::RecordCommitReading { task_id: "t".into(), reading: crate::CommitReading {
-        commit: HEAD1.into(), worktree: false, specs: true, owed: vec![], problems: vec![], ledger, stray: vec![], since: Some(HEAD.into()), changed: vec![], spec_changes: vec![] } });
+        commit: HEAD1.into(), worktree: false, specs: true, owed: vec![], problems: vec![], ledger, stray: vec![], since: Some(HEAD.into()), changed: vec![], base: Some(HEAD.into()), spec_changes: vec![] } });
     let mut delivery = present_command("r1");
     if let Command::PresentResult { targets, .. } = &mut delivery { *targets = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD1.into() }]; }
     must(&mut s, node("c"), delivery);

@@ -1156,13 +1156,17 @@ transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrup
   fingerprint, verdict), ledger files no entry explains, the files other than the ledger changed
   since the round's `implemented`, and the spec files (specs, boundaries, decisions, `alondra.toml`)
   it holds otherwise than its base or the user approved them, read on that commit whatever it says
-  of specs, so a branch that turns specs off reads as such. Facts only, recorded by the system command `RecordCommitReading`
+  of specs, so a branch that turns specs off reads as such. Every reading names the base it was
+  compared with: a commit whose base cannot be read is not read at all, and only a reading that
+  says why a commit could not be read has no base (`RecordCommitReading` refuses any other). Facts only, recorded by the system command `RecordCommitReading`
   (full commit shas, bounded; the latest reading of a commit wins, at most 16 kept). The daemon reads
   the commit of every open pull request of the task and its worktree's HEAD before each final
   `PresentResult` (`daemon-server/src/validation_checks.rs::read_delivery`, within the delivery
   review's git limit, `worktree_unreadable` otherwise); the GitHub loop reads the commits of a held
   delivery (`engine-github/src/domain_github.rs::read_held`). Every open pull request of the task is
-  read; a commit Alondra cannot read refuses a node's delivery (`worktree_unreadable`), and for a
+  read; a commit Alondra cannot read in the task's worktree, a pull request of another repository
+  included, refuses a node's delivery (`worktree_unreadable`, saying that a task in stages delivers
+  pull requests of its own repository only), and for a
   held delivery is recorded as a reading whose problem says why, a task without a worktree left
   included. No remote the agent can change decides what is read.
 - **Delivery guard**: the lifecycle records a delivery of a task in stages (`Presented`, M-LIFE-1)

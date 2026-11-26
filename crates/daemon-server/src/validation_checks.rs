@@ -273,10 +273,11 @@ mod tests {
         head: Mutex<String>,
         dirty: Mutex<Vec<String>>,
         gone: Mutex<bool>,
+        no_base: Mutex<bool>,
     }
     impl Repo {
         fn new(base: Tree) -> Repo {
-            Repo { commits: Mutex::new(BTreeMap::from([(sha('0'), base)])), head: Mutex::new(sha('0')), dirty: Mutex::new(vec![]), gone: Mutex::new(false) }
+            Repo { commits: Mutex::new(BTreeMap::from([(sha('0'), base)])), head: Mutex::new(sha('0')), dirty: Mutex::new(vec![]), gone: Mutex::new(false), no_base: Mutex::new(false) }
         }
         fn commit(&self, name: char, tree: Tree) -> String {
             self.commits.lock().unwrap().insert(sha(name), tree);
@@ -302,7 +303,9 @@ mod tests {
         fn commit(&self, _: &Path, commit: &str) -> Result<SpecSource, String> {
             self.commits.lock().unwrap().get(commit).cloned().map(|tree| Box::new(tree) as SpecSource).ok_or_else(|| format!("no commit {commit}"))
         }
-        fn base_commit(&self, _: &Path, _: &str) -> Result<String, String> { Ok(sha('0')) }
+        fn base_commit(&self, _: &Path, _: &str) -> Result<String, String> {
+            if *self.no_base.lock().unwrap() { Err("the repository has no default branch to compare with".into()) } else { Ok(sha('0')) }
+        }
         fn changed(&self, _: &Path, from: &str, to: &str) -> Result<Vec<String>, String> {
             let (from, to) = (self.tree(from).0, self.tree(to).0);
             let paths: BTreeSet<&String> = from.keys().chain(to.keys()).collect();
@@ -539,6 +542,18 @@ mod tests {
         let refused = check(&repo, state).unwrap();
         assert_eq!(refused, DeliveryCheck::SpecsDiffer { unapproved: vec!["alondra.toml".into()], other: vec![] });
         assert_eq!(refused.refusal(Some(ExecutionRole::Implementer)).unwrap().code, "specs_differ");
+    }
+
+    #[test]
+    fn a_commit_that_turns_specs_off_is_never_taken_without_comparing_it_with_its_base() {
+        let repo = Repo::new(base());
+        let off = repo.tree(&sha('0')).with("alondra.toml", "format = 1\n\n[specs]\nenabled = false\n")
+            .with("crates/billing/src/lib.rs", "pub fn refund(paid: u32, _: u32) -> u32 { paid }\n");
+        let head = repo.commit('1', off);
+        *repo.no_base.lock().unwrap() = true;
+        let state = with_pr(state_with(task(ExecutionRole::Implementer)), "ana/app", 1, &head);
+        let refused = check(&repo, state).unwrap_err();
+        assert!(refused.contains("ana/app#1") && refused.contains("own repository only"), "{refused}");
     }
 
     #[test]
