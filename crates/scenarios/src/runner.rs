@@ -12,7 +12,7 @@ use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, Launcher};
 use crate::claude_host::{ApiError, ClaudeEdge};
 use alondra_domain_rules::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION, Recipient, Scope,
-    StackDependency,
+    StackDependency, StageChoice,
 };
 use alondra_views::action_id::ActionId;
 use alondra_daemon_engine::github_world::GithubWorld;
@@ -31,6 +31,8 @@ const QUIET: u64 = 30;
 /// Where the pushes of the scenario's phone go: the push binding the app registers, 32 bytes.
 const PUSH_DESTINATION: &str = "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ";
 const REPOSITORY_HOST: &str = "github.com";
+/// Why the orchestrator chose stages for a task a scenario starts in stages.
+const STAGED: &str = "A large change: one agent plans it and another builds the approved plan";
 
 pub struct Outcome {
     /// Every checkpoint passed, in order, with the files it read.
@@ -759,7 +761,7 @@ impl Context<'_> {
                 self.send_action(index, &view, &action, "reply", typed_input(Some(text)), client, lang).await?;
                 self.settle().await?;
             }
-            Step::Node { task, account, model } => self.start_claude_node(index, task, account, model.as_deref()).await?,
+            Step::Node { task, account, model, stages } => self.start_claude_node(index, task, account, model.as_deref(), *stages).await?,
             Step::Conversation { task, tokens } => self.edge(index)?.set_conversation(task, *tokens),
             Step::Worktree { task, from: Some(other), .. } => {
                 let path = self.worktrees.get(other).cloned().ok_or_else(|| Self::failed(index, format!("task {other} has no worktree")))?;
@@ -773,6 +775,10 @@ impl Context<'_> {
                 let top = self.worktrees.get(task).ok_or_else(|| Self::failed(index, format!("task {task} has no worktree")))?;
                 let cwd = cwd.as_deref().map_or_else(|| top.clone(), |cwd| top.join(cwd));
                 self.edge(index)?.ask_permission(task, request, command, &cwd.display().to_string()).map_err(|why| Self::failed(index, why))?;
+                self.settle().await?;
+            }
+            Step::Plan { task, request, plan } => {
+                self.edge(index)?.ask_plan(task, request, plan).map_err(|why| Self::failed(index, why))?;
                 self.settle().await?;
             }
             Step::TurnEnd { task } => {
@@ -997,7 +1003,7 @@ impl Context<'_> {
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack,
-            launch: Some(LaunchPlan::new("node", "/work")),
+            launch: Some(LaunchPlan { stages: self.staged(task).then(|| StageChoice { staged: true, reason: STAGED.into() }), ..LaunchPlan::new("node", "/work") }),
             plan_items: None,
             continues: None,
         })
@@ -1095,7 +1101,7 @@ impl Context<'_> {
     /// The task's node starts on Claude as a launch in production starts it, on `account`: the
     /// daemon picks the model, writes the mission and starts the host it supervises, after the
     /// accounts were checked through the same edge.
-    async fn start_claude_node(&mut self, index: usize, task: &str, account: &str, model: Option<&str>) -> Result<(), ScenarioError> {
+    async fn start_claude_node(&mut self, index: usize, task: &str, account: &str, model: Option<&str>, staged: bool) -> Result<(), ScenarioError> {
         use alondra_core::accounts::{AccountId, Provider};
         for _ in 0..30 {
             if alondra_daemon_engine::accounts::require_initial_check(&*self.daemon().domain).is_ok() {
@@ -1117,7 +1123,7 @@ impl Context<'_> {
             let key = alondra_core::accounts::AccountKey::new(Provider::Claude, account.clone());
             let catalog = state.model_catalogs.iter().find(|catalog| catalog.account == key).ok_or_else(|| Self::failed(index, format!("{account} has no model catalog")))?;
             let effective = catalog.resolve(&ModelCandidate { model: model.to_owned(), reasoning_effort: Some("high".into()) }).map_err(|why| Self::failed(index, why))?;
-            let mut selection = TaskSelection::automatic(ModelProfile::General);
+            let mut selection = TaskSelection::automatic(if staged { ModelProfile::Design } else { ModelProfile::General });
             selection.request_model(Some(effective.model.clone()));
             selection.account = Some(key);
             selection.native_tool_denials = Some(vec![]);
@@ -1125,8 +1131,16 @@ impl Context<'_> {
             selection.effective = Some(effective);
             options.selection = Some(selection);
         }
+        let mut prompt = title;
+        if staged {
+            use alondra_core::model_selection::{ModelProfile, TaskSelection};
+            let chosen = state.tasks.get(&task.to_owned().into()).and_then(|task| task.selection.clone()).or_else(|| options.selection.clone())
+                .unwrap_or_else(|| TaskSelection::automatic(ModelProfile::Implementation));
+            self.record_stages(index, task, &chosen)?;
+            prompt = format!("{prompt}\n\n{}", alondra_engine_kernel::launches::AUTHOR_MISSION);
+        }
         alondra_engine_sdk::sdk_owner::launch(&*self.daemon().domain, alondra_engine_sdk::sdk_owner::Launch {
-            task: task.to_owned().into(), name: task.to_owned(), directory: directory.display().to_string(), prompt: title, plugin, options,
+            task: task.to_owned().into(), name: task.to_owned(), directory: directory.display().to_string(), prompt, plugin, options,
             model: None, account,
         })
         .await
@@ -1174,6 +1188,22 @@ impl Context<'_> {
         let daemon = assemble::start_over(&self.config, domain, seams).await.map_err(|e| Self::failed(index, format!("{e:#}")))?;
         self.daemon = Some(daemon);
         self.pass(Duration::from_secs(1), index).await
+    }
+
+    /// The stages the task's stored launch plan chose, recorded as a launch in production records
+    /// them before the task's first node starts, from what the user chose for the task.
+    fn record_stages(&self, index: usize, task: &str, chosen: &alondra_core::model_selection::TaskSelection) -> Result<(), ScenarioError> {
+        use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
+        let task_id = alondra_domain_rules::TaskId::from(task.to_owned());
+        let plan = self.daemon().domain.stored_launch_plan(&task_id).map_err(|e| Self::failed(index, format!("{e:#}")))?;
+        let choice = plan.and_then(|plan| plan.stages).ok_or_else(|| Self::failed(index, format!("the launch plan of {task} chose no stages")))?;
+        alondra_daemon_engine::domain_orchestrator_tools::record_stages(&*self.daemon().domain, &task_id, &choice, chosen)
+            .map_err(|error| Self::failed(index, format!("the stages of {task} were not recorded: {}", error.message)))
+    }
+
+    /// Whether the scenario starts the node of the task in stages.
+    fn staged(&self, task: &str) -> bool {
+        self.scenario.steps.iter().any(|step| matches!(step, Step::Node { task: named, stages: true, .. } if named == task))
     }
 
     /// Whether the scenario starts a node of the task on the provider, which then admits it.

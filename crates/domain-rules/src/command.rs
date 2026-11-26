@@ -859,6 +859,32 @@ pub enum Command {
         task_id: TaskId,
         account: alondra_core::accounts::AccountKey,
     },
+    /// The orchestrator's choice of stages for the task, recorded as its first node starts: with
+    /// stages, the selection each role starts with, apart from the task's own.
+    RecordTaskStages {
+        task_id: TaskId,
+        staged: bool,
+        reason: String,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        selections: std::collections::BTreeMap<crate::ExecutionRole, alondra_core::model_selection::TaskSelection>,
+    },
+    /// Alondra starts, as `transition`, the change of role the staged task owes: its selection
+    /// becomes the next role's, and `pending` names the account and model the new execution
+    /// starts on.
+    BeginStageHandover {
+        task_id: TaskId,
+        expected_selection: String,
+        transition: String,
+        pending: alondra_core::model_selection::PendingTaskSelection,
+    },
+    /// The change of role `transition` could not start the next execution: `refused` when the
+    /// same start is refused however often it is tried, which waits for the user.
+    StageHandoverFailed {
+        task_id: TaskId,
+        transition: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        refused: bool,
+    },
     /// A selection change could not finish: `selection` is the one the task had before it, nothing
     /// is pending, and a move says why on the task.
     AbortTaskSelection {

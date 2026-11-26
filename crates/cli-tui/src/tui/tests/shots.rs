@@ -184,6 +184,8 @@ fn tui_shots() {
         std::fs::write(out.join(format!("14-merge-waits-for-identity-{name}.html")), html).unwrap();
         let html = page(&mut task_on_another_model(lang));
         std::fs::write(out.join(format!("9-task-model-{name}.html")), html).unwrap();
+        let html = page(&mut task_in_stages(lang));
+        std::fs::write(out.join(format!("15-task-stages-{name}.html")), html).unwrap();
         let unknown = alondra_views::unknown_outcome(alondra_views::action_outcome::UnknownReason::Interrupted, view_lang);
         let html = page(&mut answered(lang, unknown));
         std::fs::write(out.join(format!("8-outcome-unknown-{name}.html")), html).unwrap();
@@ -215,6 +217,15 @@ fn task_on_another_model(lang: crate::i18n::Lang) -> App {
     let key = "task:t-651c38484cd2f34e74d5107ba05f7f15";
     app.view_navigation.push(key.into());
     let fixture = if lang == crate::i18n::Lang::Es { "task-model-es-tui.json" } else { "task-model-tui.json" };
+    app.on_msg(Msg::ViewCard { key: key.into(), result: Ok(serde_json::from_value(view_fixture(fixture)).unwrap()) });
+    app
+}
+
+fn task_in_stages(lang: crate::i18n::Lang) -> App {
+    let mut app = tasks(lang);
+    let key = "task:t-651c38484cd2f34e74d5107ba05f7f15";
+    app.view_navigation.push(key.into());
+    let fixture = if lang == crate::i18n::Lang::Es { "task-stages-es-tui.json" } else { "task-stages-tui.json" };
     app.on_msg(Msg::ViewCard { key: key.into(), result: Ok(serde_json::from_value(view_fixture(fixture)).unwrap()) });
     app
 }

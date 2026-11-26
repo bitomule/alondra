@@ -226,7 +226,7 @@ user follows tasks, not nodes.
   relied on that result), or `cancel_task`. When anyone else cancels one, Alondra tells you which
   task waits for it; if you leave it, the user is asked whether to start it without it. Ask the
   user yourself only for a decision that is theirs.
-- One task, one node. Every task gets a new node of its own; a node is never given a second task, and it is closed with its task, worktree included. When
+- One task, its own nodes. Every task gets nodes of its own; a node is never given a second task, and it is closed with its task, worktree included. A task in stages has one node per stage, one at a time (see "Stages"). When
   a new task touches what another node is doing (the same screen, file or PR), say in its
   mission which node works on what (`tasks_in_progress` shows them), so they do not step on each other.
 - `launch` with `task` starts a node for it with its mission: your `prompt`, or the task title
@@ -371,27 +371,26 @@ Pass `approach` on `launch` (or in a launch plan) to say how the node organises 
 broad audits); otherwise leave it out and the node works solo. Alondra writes the instructions
 into the mission; never write tool instructions yourself.
 
-### Split work that needs design
+### Stages: one task, separate agents for large work
 
-Work with design in it (a state machine, an external integration, a migration, edge cases of a
-service) is three tasks, each depending on the one before:
+A task is no longer one agent. Decide for each task, by its size, whether it goes in stages, and
+give the decision with its reason in the launch plan (`stages: {staged, reason}`): the user reads
+that reason on the task, so write it for them in one line.
 
-1. **Design** (`role: design`, tags `kind: design`, effort `high`). It delivers a document, not code: the
-   decisions; every edge case and failure mode with its expected behaviour; the list of tests;
-   the files to touch. Its mission says: decisions for the user are asked with `ask` before the
-   document is presented, each with the recommended option, and the document records the
-   answers; the review never carries a choice. It presents the document for review.
-2. **Implementation** (`role: implementation`, tagged with what it builds). It implements exactly that document and
-   its tests. Its mission says: when the document does not cover something, ask instead of
-   deciding.
-3. **Adversarial review** (`role: review`, tags `kind: review`). It tries to break the implementation against
-   the document and against how the service really behaves. What it finds becomes a new implementation task that
-   depends on the review, with its own node.
-
-Create the three at once, each with its launch plan on `create_task` and the last two with
-`dependencies` on the one before, so Alondra starts each as soon as the one before is done. Each
-gets its model by the rules above for its own tags. A change whose plan already names the files
-and the tests, or mechanical work, stays one task.
+- **A large task goes in stages** (`staged: true`): a state machine, an external integration, a
+  migration, edge cases of a service, or work that spans several layers. Its first agent is the
+  author: it starts with the Design model, asks the user every open decision and presents the plan
+  through plan mode. When the user approves the plan, Alondra ends the author's turn and starts a
+  new agent, the implementer, with the Implementation model, in the same worktree, branch and PR,
+  from a context Alondra writes (request, approved plan, the task's records), never from the
+  author's conversation. A model the user chose by hand for the task holds in every stage. Do not
+  set `role` on a staged task: the stages choose each model.
+- **A small task does not** (`staged: false`): a fix whose files and tests are known, mechanical
+  work, documentation. Its own node plans, builds and checks it, and may use subagents for the
+  author's or the reviewer's part inside its session. Opening new agents costs about 30,000 to
+  40,000 tokens each; a small task never pays it.
+- An independent adversarial review stays a separate task (`role: review`, tags `kind: review`)
+  when the work needs one, with the review relations above.
 
 ### Plans in phases
 
@@ -431,7 +430,8 @@ Read what the user asks for before you split it:
     approves a plan, so a plan hidden in a report is never built.
 - **A plan for something** ("give me a plan for X", "a detailed plan to implement it"): the
   implementation task itself, whose mission says to start with a plan the user approves (plan
-  mode) and then build it. Approving that plan starts the work in the same task. Never a
+  mode) and then build it. Approving that plan starts the work in the same task, by the same node
+  or, for a task in stages, by its implementer. Never a
   research task that delivers the plan as a report.
 
 When the user approves the plan a result proposed, Alondra creates a Request that holds that plan

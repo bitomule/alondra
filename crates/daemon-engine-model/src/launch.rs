@@ -58,6 +58,9 @@ pub struct LaunchBody {
     /// Orchestrators written when going over pace needed the user's word still send it.
     #[serde(default, rename = "over_pace_ok")]
     pub _over_pace_ok: bool,
+    /// Whether the task goes in stages, and why; its stored launch plan says it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stages: Option<alondra_domain_rules::StageChoice>,
 }
 
 impl LaunchBody {
@@ -83,7 +86,17 @@ impl LaunchBody {
             relaunch_model: None,
             replace: false,
             _over_pace_ok: false,
+            stages: plan.stages.clone(),
+        }.staged_profile()
+    }
+
+    /// The author of a staged task plans it: it starts with the Design profile unless its plan
+    /// names another role.
+    fn staged_profile(mut self) -> Self {
+        if self.stages.as_ref().is_some_and(|choice| choice.staged) && self.profile.is_none() {
+            self.profile = Some(alondra_core::model_selection::ModelProfile::Design);
         }
+        self
     }
 
     pub fn task_id(&self) -> &TaskId {
@@ -114,12 +127,13 @@ impl LaunchBody {
             alondra_domain_rules::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
             alondra_domain_rules::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
         }));
+        self.stages = self.stages.or_else(|| plan.stages.clone());
         if self.relaunch_model.is_none() {
             self.model = self.model.or_else(|| plan.model.clone());
             self.effort = self.effort.or_else(|| plan.effort.clone());
             self.reason = self.reason.or_else(|| plan.reason.clone());
         }
-        self
+        self.staged_profile()
     }
 }
 

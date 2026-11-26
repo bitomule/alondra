@@ -1378,6 +1378,16 @@
         }
       }
     },
+    "Stages": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Etapas"
+          }
+        }
+      }
+    },
     "Done": {
       "localizations": {
         "es": {

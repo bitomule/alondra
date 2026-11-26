@@ -1963,7 +1963,7 @@ fn task_closings_keep_their_wait_failures_and_card_across_a_restart() {
 fn plan() -> alondra_daemon_engine_model::LaunchPlan {
     alondra_daemon_engine_model::LaunchPlan {
         name: "app/next".into(), cwd: "/synthetic/App".into(), mission: None, model: Some("sonnet".into()), effort: None,
-        approach: None, reason: Some("clear".into()), role: Some(alondra_domain_rules::TaskRole::Implementation), tags: None, project: None,
+        approach: None, reason: Some("clear".into()), role: Some(alondra_domain_rules::TaskRole::Implementation), tags: None, project: None, stages: None,
     }
 }
 
@@ -2901,4 +2901,26 @@ fn a_migrated_table_with_a_broken_reference_is_refused_when_it_opens() {
     drop(store);
     let refused = DomainStore::open(&fixture.path()).err().expect("a dangling merge authorization is refused");
     assert!(format!("{refused:#}").contains("foreign key check of merge_authorizations"), "{refused:#}");
+}
+
+#[test]
+fn a_tasks_stages_survive_a_reopen_and_a_task_stored_without_them_reads_as_a_single_execution() {
+    use alondra_core::model_selection::{ModelProfile, TaskSelection};
+    use alondra_domain_rules::{ExecutionRole, TaskStages};
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        task_id: "task-2".into(), request_id: "request-1".into(), title: "Staged".into(), agent_id: None, review_prs: true,
+        dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
+    let selections = TaskStages::role_selections(&TaskSelection::automatic(ModelProfile::Implementation));
+    execute(&mut store, &Actor::System, "stages", Command::RecordTaskStages { task_id: "task-2".into(), staged: true, reason: "It is large".into(), selections: selections.clone() });
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let state = store.load().unwrap();
+    let stages = &state.tasks[&TaskId::from("task-2")].stages;
+    assert_eq!((stages.staged, stages.reason.as_deref(), &stages.selections), (true, Some("It is large"), &selections));
+    assert_eq!(stages.next_role(), Some(ExecutionRole::Author));
+    assert!(state.tasks[&TaskId::from("task-1")].stages.is_default(), "a task with no row of stages ran as before");
 }

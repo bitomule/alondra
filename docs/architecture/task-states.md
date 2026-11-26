@@ -53,6 +53,18 @@ A step of Alondra's own (starting a session, handing an input or an answer, waki
 slot of the gate and is not work: the header says how many tasks work, the queue says how many
 slots are taken, and both numbers come from the same computation.
 
+## A task in stages
+
+A task is no longer one agent. A large task goes in stages: an author plans it, and once you approve
+the plan a new agent, the implementer, builds it with the model of its role, in the same worktree
+and pull request. Only one of its agents lives at a time. The change from one to the next is not a
+visible state of its own: while the author finishes its turn the task is Working, and while the
+implementer waits for a slot, memory or disk it is Waiting, with the same reasons as any start.
+The change waits only for the author to rest with nothing pending, and for the gate; if the
+implementer cannot start after three tries, the task Needs you, on a card that offers to try again
+or cancel it. The task's detail lists the role, model and cost of each of its agents
+(`docs/architecture/state-machines.md`, M-LIFE-15).
+
 ## Who owes the next step
 
 `TaskLifecycle::obligation()` names, for every live task, exactly one party and what it owes.

@@ -492,6 +492,9 @@ fn launch_plan_schema() -> Value {
             "approach":{"type":"string","enum":["solo","subagents","workflow"]},
             "reason":{"type":"string","description":"Required when the request's effort is auto"},
             "role":{"type":"string","enum":["design","implementation","review"],"description":"For work split into design, implementation and review"},
+            "stages":{"type":"object","additionalProperties":false,"required":["staged","reason"],
+                "description":"Whether the task goes in stages, by its size, and why: staged, an author plans it with the Design model and a new agent implements the approved plan with the Implementation model; not staged, its own node does it all, with subagents if it needs them",
+                "properties":{"staged":{"type":"boolean"},"reason":{"type":"string","description":"One line the user reads on the task: why stages fit its size, or why one node is enough"}}},
             "tags":tags_schema()}})
 }
 

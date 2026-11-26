@@ -979,6 +979,10 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if !readings.is_empty() {
         view.sections.push(common::section("readings", None, vec![Item::Facts(Facts { items: readings })]));
     }
+    let stages = stage_facts(task, context);
+    if !stages.is_empty() {
+        view.sections.push(common::section("stages", Some(t!(context.lang, "Stages", "Etapas").into()), vec![Item::Facts(Facts { items: stages })]));
+    }
     if let Some(mark) = common::elapsed_mark(task, true, context) {
         let title = match mark.elapsed.as_ref().and_then(|elapsed| elapsed.until.as_ref()) {
             Some(_) => t!(context.lang, "Took", "Duró"),
@@ -1468,3 +1472,69 @@ fn task_model_presentation(task: &TaskId, context: &RenderContext<'_>) -> Option
         reason,
     })
 }
+
+fn role_label(role: Option<alondra_domain_rules::ExecutionRole>, lang: super::Lang) -> &'static str {
+    use alondra_domain_rules::ExecutionRole;
+    match role {
+        Some(ExecutionRole::Author) => t!(lang, "Author", "Autor"),
+        Some(ExecutionRole::Implementer) => t!(lang, "Implementer", "Implementador"),
+        Some(ExecutionRole::Validator) => t!(lang, "Validator", "Validador"),
+        None => t!(lang, "Agent", "Agente"),
+    }
+}
+
+/// How the task goes in stages and what each of its executions did: the orchestrator's choice and
+/// why, the change of role it owes, and the role, model and cost of every execution. Nothing for a
+/// task the orchestrator made no such choice for.
+fn stage_facts(task: &Task, context: &RenderContext<'_>) -> Vec<Fact> {
+    let stages = &task.stages;
+    let lang = context.lang;
+    if !stages.staged && stages.reason.is_none() {
+        return vec![];
+    }
+    let fact = |label: String, value: String, tone: Option<Tone>| Fact { kind: None, label, value, tone, link: None };
+    let mut facts = vec![];
+    if let Some(reason) = &stages.reason {
+        let choice = if stages.staged {
+            t!(lang, "One agent per stage", "Un agente por etapa")
+        } else {
+            t!(lang, "One agent", "Un solo agente")
+        };
+        facts.push(fact(t!(lang, "Chosen", "Elegido").into(), format!("{choice} · {reason}"), None));
+    }
+    if let Some(handover) = &stages.handover {
+        let who = role_label(Some(handover.to), lang);
+        let (value, tone) = if handover.refused {
+            (tf!(lang, "{who} · did not start: waits for you", "{who} · no arrancó: te espera", who = who), Some(Tone::Warning))
+        } else if handover.transition.is_some() {
+            (tf!(lang, "{who} · starting once the current agent rests", "{who} · arranca en cuanto el agente actual quede en reposo", who = who), None)
+        } else {
+            (tf!(lang, "{who} · about to start", "{who} · a punto de arrancar", who = who), None)
+        };
+        facts.push(fact(t!(lang, "Next", "Siguiente").into(), value, tone));
+    }
+    let costs = context.live.run_costs.get(&task.id.0);
+    let first = stages.runs.len().saturating_sub(MAX_SHOWN_RUNS);
+    for (n, run) in stages.runs.iter().enumerate().skip(first) {
+        let mut parts = vec![];
+        if let Some(model) = &run.model {
+            parts.push(alondra_core::model_label::launched_model_label(&model.model));
+        }
+        if let Some(account) = &run.account {
+            parts.push(format!("{} · {}", super::accounts::provider_name(run.provider), account.as_str()));
+        } else if !run.provider.is_claude() {
+            parts.push(super::accounts::provider_name(run.provider).to_owned());
+        }
+        if let Some(&cents) = costs.and_then(|costs| costs.get(&run.agent.0)) {
+            parts.push(super::task_node::cost(cents, lang));
+        }
+        if parts.is_empty() {
+            parts.push(t!(lang, "Model not recorded", "Modelo sin registrar").into());
+        }
+        facts.push(fact(format!("{}. {}", n + 1, role_label(run.role, lang)), parts.join(" · "), None));
+    }
+    facts
+}
+
+/// The most executions a task's detail lists: the latest ones.
+const MAX_SHOWN_RUNS: usize = 12;

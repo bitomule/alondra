@@ -452,7 +452,12 @@ pub enum Decision {
     Decline,
     /// A newer plan of the same execution replaced this plan before anyone answered it.
     Superseded,
+    /// The user approved the plan and a new execution implements it: this one ends its turn.
+    HandedOver,
 }
+
+/// What the session whose plan the user approved is told when a new execution implements it.
+pub const HANDED_OVER_PLAN: &str = "The user approved this plan, and a new Alondra agent implements it. End your turn now without changing anything else.";
 
 fn valid_decision(decision: &Decision) -> Result<(), Refusal> {
     match decision {
@@ -466,7 +471,7 @@ fn valid_decision(decision: &Decision) -> Result<(), Refusal> {
 /// or denied; a question or an MCP server's request is answered, accepted, declined or denied.
 fn decides(reason: WaitReason, decision: &Decision) -> bool {
     match decision {
-        Decision::Allow | Decision::Superseded => reason == WaitReason::Permission,
+        Decision::Allow | Decision::Superseded | Decision::HandedOver => reason == WaitReason::Permission,
         Decision::Answers { .. } | Decision::Accept { .. } | Decision::Decline => reason == WaitReason::Question,
         Decision::Deny { .. } => matches!(reason, WaitReason::Permission | WaitReason::Question),
     }

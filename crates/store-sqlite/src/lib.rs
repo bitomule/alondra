@@ -205,6 +205,11 @@ const TASK_OPEN_PRS: &str = "CREATE TABLE IF NOT EXISTS task_open_prs(\
 const TASK_RELEASED_NODES: &str = "CREATE TABLE IF NOT EXISTS task_released_nodes(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
  node TEXT NOT NULL CHECK(json_valid(node)));";
+/// Each task's stages, the plans the user approved and the executions it had, with the role of
+/// each; a task without a row ran before stages existed and reads as a single execution.
+const TASK_STAGES: &str = "CREATE TABLE IF NOT EXISTS task_stages(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ stages TEXT NOT NULL CHECK(json_valid(stages)));";
 /// Each task's scope, the points of the last plan the user approved, and the points each final
 /// delivery marked done; created on every open like task_relations.
 const TASK_CHECKLISTS: &str = "CREATE TABLE IF NOT EXISTS task_checklists(\
@@ -714,6 +719,7 @@ impl DomainStore {
         tx.execute_batch(TASK_STALLS)?;
         tx.execute_batch(TASK_OPEN_PRS)?;
         tx.execute_batch(TASK_RELEASED_NODES)?;
+        tx.execute_batch(TASK_STAGES)?;
         tx.execute_batch(TASK_CHECKLISTS)?;
         tx.execute_batch(REQUEST_PLANS)?;
         tx.execute_batch(PLAN_REVIEWS)?;

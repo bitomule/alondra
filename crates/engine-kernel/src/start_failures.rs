@@ -34,7 +34,7 @@ pub fn failed(domain: &dyn Runtime, task: &TaskId, problem: StartProblem, now: i
                 let (reason, detail) = match &problem {
                     StartProblem::Untrusted { folder, .. } => (AutoLaunchReason::WorkspaceUntrusted, Some(folder.as_str())),
                     StartProblem::LaunchFailed { error } | StartProblem::PlanRefused { error } => (AutoLaunchReason::LaunchFailed, Some(error.as_str())),
-                    StartProblem::NodeClosed | StartProblem::DependencyCancelled { .. } | StartProblem::ApiFailed { .. } | StartProblem::MoveStartRefused { .. } => (AutoLaunchReason::LaunchFailed, None),
+                    StartProblem::NodeClosed | StartProblem::DependencyCancelled { .. } | StartProblem::ApiFailed { .. } | StartProblem::MoveStartRefused { .. } | StartProblem::StageStartRefused { .. } => (AutoLaunchReason::LaunchFailed, None),
                 };
                 store.set_auto_launch(task, AutoLaunchState::Blocked, Some(reason), detail, now)?;
             }

@@ -61,7 +61,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
+            waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -7010,6 +7010,59 @@ const MODEL_CASES: [(&str, Client, Lang); 6] = [
     ("task-model-mac.json", Client::Mac, Lang::En),
     ("task-model-es-mac.json", Client::Mac, Lang::Es),
 ];
+
+const STAGES_CASES: [(&str, Client, Lang); 6] = [
+    ("task-stages-tui.json", Client::Tui, Lang::En),
+    ("task-stages-es-tui.json", Client::Tui, Lang::Es),
+    ("task-stages-ios.json", Client::Ios, Lang::En),
+    ("task-stages-ios-es.json", Client::Ios, Lang::Es),
+    ("task-stages-mac.json", Client::Mac, Lang::En),
+    ("task-stages-es-mac.json", Client::Mac, Lang::Es),
+];
+
+/// The demo task went in stages: its author planned it on one model and, once the plan was
+/// approved, its implementer took it over on another and is working, with what each spent.
+fn stages_state() -> (DomainState, LiveSnapshot) {
+    use alondra_domain_rules::{ExecutionRole, TaskRun, TaskStages};
+    let mut state = golden_fixture();
+    let model = |name: &str| Some(TaskModel { model: name.into(), chosen_by: ModelChooser::Orchestrator });
+    let run = |generation: u64, agent: &str, role, name: &str| TaskRun { generation, agent: agent.into(), role: Some(role), provider: Default::default(), account: None, model: model(name) };
+    state.tasks.get_mut(&ALLOWED_TASK.into()).unwrap().stages = TaskStages {
+        staged: true,
+        reason: Some("It changes the task state machine and its stored data".into()),
+        runs: vec![run(1, "author-agent", ExecutionRole::Author, "opus"), run(2, "implementer-agent", ExecutionRole::Implementer, "sonnet")],
+        ..TaskStages::default()
+    };
+    let mut live = golden_live();
+    live.run_costs.insert(ALLOWED_TASK.into(), [("author-agent".to_owned(), 312), ("implementer-agent".to_owned(), 95)].into());
+    (state, live)
+}
+
+#[test]
+fn a_task_in_stages_shows_the_role_model_and_cost_of_each_agent_and_matches_goldens() {
+    let (state, live) = stages_state();
+    let stages = |view: &View| view.sections.iter().find(|section| section.id == "stages").map(|section| serde_json::to_string(section).unwrap());
+    let english = render(&state, &live, Client::Tui, Lang::En, &format!("task:{ALLOWED_TASK}"), "2026-09-30T10:00:00Z");
+    let shown = stages(&english).expect("the task shows its stages");
+    for text in ["1. Author", "2. Implementer", "$3.12", "$0.95", "It changes the task state machine"] {
+        assert!(shown.contains(text), "{text} in {shown}");
+    }
+    let mut plain = golden_fixture();
+    plain.tasks.get_mut(&ALLOWED_TASK.into()).unwrap().stages = alondra_domain_rules::TaskStages::default();
+    assert!(stages(&render(&plain, &golden_live(), Client::Tui, Lang::En, &format!("task:{ALLOWED_TASK}"), "2026-09-30T10:00:00Z")).is_none(),
+        "a task that ran once without stages shows no stages");
+    for ((filename, client, lang), expected) in STAGES_CASES.into_iter().zip([
+        include_str!("../../../fixtures/views/cards/task-stages-tui.json"),
+        include_str!("../../../fixtures/views/cards/task-stages-es-tui.json"),
+        include_str!("../../../fixtures/views/cards/task-stages-ios.json"),
+        include_str!("../../../fixtures/views/cards/task-stages-ios-es.json"),
+        include_str!("../../../fixtures/views/cards/task-stages-mac.json"),
+        include_str!("../../../fixtures/views/cards/task-stages-es-mac.json"),
+    ]) {
+        let actual = render(&state, &live, client, lang, &format!("task:{ALLOWED_TASK}"), "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
 
 /// The demo task asked for a Codex model, Codex has no quota, and it runs on Claude.
 fn model_fallback_state() -> DomainState {

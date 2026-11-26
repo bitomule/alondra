@@ -36,6 +36,7 @@ public struct TaskDetailView: View {
                         pullRequests(detail)
                         dependencies(detail)
                         documents(detail)
+                        stages(detail)
                         options(detail)
                         allowed(detail)
                         actions(detail)
@@ -363,6 +364,28 @@ public struct TaskDetailView: View {
                             .contentShape(.rect)
                         }
                         .buttonStyle(PressStyle())
+                        .overlay(alignment: .top) { if index > 0 { Hairline() } }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func stages(_ detail: TaskDetail) -> some View {
+        if !detail.stages.elements.isEmpty {
+            DetailSection(title: detail.stages.title ?? String(localized: "Stages"), symbol: "person.3.sequence") {
+                VStack(spacing: 0) {
+                    ForEach(detail.stages.elements.enumerated(), id: \.offset) { index, fact in
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(verbatim: fact.label)
+                            Spacer(minLength: 12)
+                            Text(verbatim: fact.value)
+                                .foregroundStyle(fact.tone == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(TaskStyle.tint(tone: fact.tone)))
+                                .multilineTextAlignment(.trailing)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 13)
                         .overlay(alignment: .top) { if index > 0 { Hairline() } }
                     }
                 }

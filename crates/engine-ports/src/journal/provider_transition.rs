@@ -25,10 +25,12 @@ pub struct Source {
 /// What a selection change does: change the model of the running session, move the task to
 /// another account, where a new node takes it over from its record, or start a new session with
 /// the same model and account that carries on from that record and the conversation before it,
-/// once resuming the conversation would write it whole to the prompt cache again.
+/// once resuming the conversation would write it whole to the prompt cache again. A stage hands a
+/// staged task to a new execution of its next role, on the account and model of that role, from
+/// what Alondra writes for it instead of the conversation, once the one it leaves rests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="snake_case")]
-pub enum Kind { #[default] Model, Move, Refresh }
+pub enum Kind { #[default] Model, Move, Refresh, Stage }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Plan {
@@ -46,6 +48,9 @@ pub struct Plan {
     /// reads only when it needs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_file: Option<std::path::PathBuf>,
+    /// The role a stage's new execution takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<alondra_domain_rules::ExecutionRole>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

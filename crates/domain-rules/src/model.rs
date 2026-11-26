@@ -1,4 +1,4 @@
-use super::{obligation_policy::Millis, PrIdentity, PrMissing, PrTracking, SystemCard, Checklist, ChecklistMark, Journals, LifecycleCache, Landed, NodeMcp, ScheduleState, TaskEnding};
+use super::{obligation_policy::Millis, PrIdentity, PrMissing, PrTracking, SystemCard, Checklist, ChecklistMark, Journals, LifecycleCache, Landed, NodeMcp, ScheduleState, TaskEnding, TaskStages};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -249,6 +249,9 @@ pub struct Task {
     /// the task or it ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub released: Option<ClosedNode>,
+    /// Its stages, the plans the user approved and every execution it had.
+    #[serde(default, skip_serializing_if = "TaskStages::is_default")]
+    pub stages: TaskStages,
 }
 /// What a relaunch needs of the node that closed while it worked on a task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

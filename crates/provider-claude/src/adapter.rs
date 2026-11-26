@@ -168,6 +168,7 @@ fn respond_action(epoch: u64, request: &DecisionRequest, decision: &Decision) ->
         },
         (Decision::Decline, DecisionKind::Elicitation) => WireDecision::Decline {},
         (Decision::Superseded, DecisionKind::Plan) => WireDecision::Deny { message: SUPERSEDED_PLAN.into() },
+        (Decision::HandedOver, DecisionKind::Plan) => WireDecision::Deny { message: alondra_store::HANDED_OVER_PLAN.into() },
         _ => return Err(AdapterError::InvalidObservation),
     };
     Ok(Action::Respond {

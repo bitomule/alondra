@@ -67,6 +67,13 @@ pub fn card(title: &str, problem: &StartProblem, dependency: Option<&str>, lang:
                     "Se movió a {account} y allí se rechaza su arranque. Alondra no lo reintenta sola: el mismo arranque recibe el mismo rechazo.")))
                 .content(ContentKind::Diagnosis, error.trim())
         }
+        StartProblem::StageStartRefused { role, error } => {
+            let who = role_name(*role, lang);
+            CardSpec::new(CardKind::Problem, need(tf!(lang, "The {who} of “{title}” does not start", "El {who} de «{title}» no arranca")))
+                .why(why(tf!(lang, "Its plan is approved and a new agent should take it over as its {who}, but that agent does not start. Alondra does not try again by itself.",
+                    "Su plan está aprobado y un agente nuevo debería seguir con ella como {who}, pero ese agente no arranca. Alondra no lo reintenta sola.")))
+                .content(ContentKind::Diagnosis, error.trim())
+        }
         StartProblem::DependencyCancelled { .. } => {
             let other = dependency.unwrap_or(t!(lang, "A task it depends on", "Una tarea de la que depende"));
             CardSpec::new(CardKind::Problem, need(tf!(lang, "“{other}” was cancelled: start “{title}” without it?", "«{other}» se canceló: ¿arrancar «{title}» sin ella?")))
@@ -110,6 +117,12 @@ pub fn options(problem: &StartProblem, lang: Lang) -> Vec<QuestionOption> {
                     "Alondra intenta arrancarla allí una vez más; si se rechaza otra vez, vuelve esta tarjeta")),
             option(START_CANCEL, t!(lang, "Cancel the task", "Cancelar la tarea"), t!(lang, "The task is cancelled and does not start", "La tarea se cancela y no arranca")),
         ],
+        StartProblem::StageStartRefused { role, .. } => vec![
+            option(START_RETRY, t!(lang, "Try again", "Reintentar"),
+                &tf!(lang, "Alondra starts the {who} once more; if it does not start again, this card comes back",
+                    "Alondra arranca el {who} una vez más; si vuelve a no arrancar, vuelve esta tarjeta", who = role_name(*role, lang))),
+            option(START_CANCEL, t!(lang, "Cancel the task", "Cancelar la tarea"), t!(lang, "The task is cancelled and its work stays in its worktree until it closes", "La tarea se cancela y su trabajo queda en su worktree hasta que se cierre")),
+        ],
         StartProblem::DependencyCancelled { .. } => vec![
             option(START_WITHOUT, t!(lang, "Start without it", "Arrancar sin ella"), t!(lang, "It no longer waits for that task and starts when there is room", "Deja de esperar a esa tarea y arranca cuando haya hueco")),
             option(START_CANCEL, t!(lang, "Cancel this task", "Cancelar esta tarea"), t!(lang, "It closes without starting", "Se cierra sin arrancar")),
@@ -130,5 +143,14 @@ fn needs_user_cause(error: &str, lang: Lang) -> &'static str {
             "The model this node uses does not exist or is not available to the account.",
             "El modelo que usa este nodo no existe o la cuenta no tiene acceso a él."),
         _ => t!(lang, "The Claude API refused what this node sent.", "La API de Claude rechazó lo que envió este nodo."),
+    }
+}
+
+/// How a card names an execution's role.
+pub fn role_name(role: crate::ExecutionRole, lang: Lang) -> &'static str {
+    match role {
+        crate::ExecutionRole::Author => t!(lang, "author", "autor"),
+        crate::ExecutionRole::Implementer => t!(lang, "implementer", "implementador"),
+        crate::ExecutionRole::Validator => t!(lang, "validator", "validador"),
     }
 }

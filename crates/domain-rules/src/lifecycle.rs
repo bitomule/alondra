@@ -141,6 +141,8 @@ pub enum DecisionRecord {
     Decline,
     /// A newer plan of the same execution replaced this plan before anyone answered it.
     Superseded,
+    /// The user approved the plan of a staged task's author: a new execution implements it.
+    HandedOver,
 }
 impl From<&DecisionRecord> for Decision {
     fn from(record: &DecisionRecord) -> Self {
@@ -151,6 +153,7 @@ impl From<&DecisionRecord> for Decision {
             DecisionRecord::Accept { text, content } => Self::Accept { text: text.clone(), content: content.clone() },
             DecisionRecord::Decline => Self::Decline,
             DecisionRecord::Superseded => Self::Superseded,
+            DecisionRecord::HandedOver => Self::HandedOver,
         }
     }
 }
@@ -163,6 +166,7 @@ impl From<&Decision> for DecisionRecord {
             Decision::Accept { text, content } => Self::Accept { text: text.clone(), content: content.clone() },
             Decision::Decline => Self::Decline,
             Decision::Superseded => Self::Superseded,
+            Decision::HandedOver => Self::HandedOver,
         }
     }
 }

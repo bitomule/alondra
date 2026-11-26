@@ -61,6 +61,10 @@ pub struct LiveSnapshot {
     /// one running now.
     #[serde(default)]
     pub task_costs: BTreeMap<String, u64>,
+    /// What each execution of a shown task spent, in cents, by task id and then by the agent that
+    /// ran it.
+    #[serde(default)]
+    pub run_costs: BTreeMap<String, BTreeMap<String, u64>>,
     /// Why each cancelled task was cancelled, when someone said so.
     #[serde(default)]
     pub cancel_reasons: BTreeMap<String, String>,

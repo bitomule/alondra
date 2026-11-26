@@ -74,7 +74,7 @@ pub fn world_using_sdk(enable: fn(&Arc<DomainRuntime>, &Path) -> SdkLaunches) ->
 pub fn plan(f: &Fixture, name: &str) -> LaunchPlan {
     LaunchPlan {
         name: name.into(), cwd: f.project.to_str().unwrap().into(), mission: None, model: Some("sonnet".into()), effort: None,
-        approach: None, reason: Some("A clear, mechanical change".into()), role: None, tags: None, project: None,
+        approach: None, reason: Some("A clear, mechanical change".into()), role: None, tags: None, project: None, stages: None,
     }
 }
 

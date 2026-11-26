@@ -632,6 +632,15 @@ async fn gather_inner(
         let (_, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
         (task.id.0.clone(), alondra_view_model::live::LiveTaskOptions { effort })
     }).collect();
+    let run_costs = if clock_only { BTreeMap::new() } else {
+        read.task_spend.iter().filter_map(|(id, (sessions, _))| {
+            let task = state.tasks.get(&TaskId(id.clone()))?;
+            let live = task.agent_id.as_ref().and_then(|agent| nodes.get(agent.0.as_str()))
+                .and_then(|node| Some((node.agent_id.as_str(), node.cost_cents?)));
+            let costs = run_cost_cents(task, sessions, live);
+            (!costs.is_empty()).then(|| (id.clone(), costs))
+        }).collect()
+    };
     let task_costs = if clock_only { BTreeMap::new() } else {
         read.task_spend.into_iter().filter_map(|(id, (sessions, folded))| {
             let task = state.tasks.get(&TaskId(id.clone()))?;
@@ -667,6 +676,7 @@ async fn gather_inner(
         task_started,
         cancel_reasons,
         task_costs,
+        run_costs,
         search_matches: keyed.search_matches,
         usage_exhausted: exhausted.map(|exhausted| alondra_view_model::LiveUsageExhausted {
             since: timestamp(exhausted.since),
@@ -833,6 +843,17 @@ pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_dom
         disconnected: agent.phase == NodePhase::Closed && open_task,
         waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
     })
+}
+
+/// What each execution of the task spent, in cents, by the agent that ran it: its session's last
+/// report, or the running one's own reading when it is ahead of it.
+fn run_cost_cents(task: &alondra_domain_rules::Task, sessions: &BTreeMap<String, i64>, live: Option<(&str, u64)>) -> BTreeMap<String, u64> {
+    task.stages.runs.iter().filter_map(|run| {
+        let stored = sessions.get(&run.agent.0).map(|micros| ((*micros).max(0) as u64 + 5_000) / 10_000);
+        let running = live.filter(|(agent, _)| *agent == run.agent.0).map(|(_, cents)| cents);
+        let cents = match (stored, running) { (Some(a), Some(b)) => Some(a.max(b)), (a, b) => a.or(b) }?;
+        Some((run.agent.0.clone(), cents))
+    }).collect()
 }
 
 /// What a task's sessions spent in all, in cents: each session's last report, the running one's
@@ -1355,13 +1376,13 @@ mod cache_tests {
             assert_eq!(one.join().unwrap(), two.join().unwrap());
         });
         let cold = observation.totals();
-        assert_eq!(cold.metrics[Metric::DigestSerializations as usize], 29, "the empty node tree needs no JSON serialization");
-        assert_eq!(cold.metrics[Metric::HashOperations as usize], 30);
+        assert_eq!(cold.metrics[Metric::DigestSerializations as usize], 30, "the empty node tree needs no JSON serialization");
+        assert_eq!(cold.metrics[Metric::HashOperations as usize], 31);
         let changed = first.clone().with_clock(Some(60_000));
         changed.digest();
         first.digest();
-        assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], 30);
-        assert_eq!(observation.totals().metrics[Metric::HashOperations as usize], 32);
+        assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], 31);
+        assert_eq!(observation.totals().metrics[Metric::HashOperations as usize], 33);
         assert_eq!(observation.totals().metrics[Metric::Materializations as usize], 0);
     }
 

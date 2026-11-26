@@ -131,8 +131,13 @@ pub enum Step {
     Press { presentation: String, action: String, #[serde(default)] text: Option<String>, #[serde(default)] screen: Option<String> },
     /// The node of `task` starts on Claude, on `account`, as a launch in production starts it: the
     /// daemon starts its SDK host, which takes the task's first input as a turn. With `model`, the
-    /// task runs that model of the account's catalog, as a launch that resolved its selection.
-    Node { task: String, #[serde(default = "Step::default_account")] account: String, #[serde(default)] model: Option<String> },
+    /// task runs that model of the account's catalog, as a launch that resolved its selection. With
+    /// `stages`, the orchestrator chose stages for the task in its launch plan: the node starts as
+    /// its author, which plans it, and a new node implements the plan the user approves.
+    Node {
+        task: String, #[serde(default = "Step::default_account")] account: String, #[serde(default)] model: Option<String>,
+        #[serde(default)] stages: bool,
+    },
     /// The conversation of the node of `task` holds `tokens` from now on, and its hosts' answers say
     /// what each request read from the prompt cache and wrote to it.
     Conversation { task: String, tokens: u64 },
@@ -206,6 +211,9 @@ pub enum Step {
     /// The node of `task` asks permission to run `command` in Bash from `cwd`, a folder of the
     /// task's worktree (its top when absent), as Claude Code asks; `request` names the request.
     Permission { task: String, request: String, command: String, #[serde(default)] cwd: Option<String> },
+    /// The node of `task` asks to leave plan mode with `plan`, as Claude Code's `ExitPlanMode` asks;
+    /// `request` names the request. Its turn goes on until a `turn_end`.
+    Plan { task: String, request: String, plan: String },
     /// Virtual time passes.
     Advance { by: String },
     /// The daemon runs until nothing changes for a while.
@@ -395,6 +403,30 @@ do = "update"
         assert!(matches!(&scenario.steps[2], Step::LoginExpired { account } if account == "default"));
         assert!(matches!(&scenario.steps[4], Step::Restart { lose } if lose == &["t1"]));
         assert!(matches!(scenario.steps[5], Step::Update));
+    }
+
+    #[test]
+    fn a_staged_node_and_its_plan_are_read() {
+        let scenario = Scenario::parse(
+            r#"
+name = "demo"
+max_virtual = "1h"
+
+[[step]]
+do = "node"
+task = "t1"
+stages = true
+
+[[step]]
+do = "plan"
+task = "t1"
+request = "author-plan"
+plan = "- [ ] Do it"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(&scenario.steps[0], Step::Node { stages: true, model: None, .. }));
+        assert!(matches!(&scenario.steps[1], Step::Plan { request, plan, .. } if request == "author-plan" && plan == "- [ ] Do it"));
     }
 
     #[test]

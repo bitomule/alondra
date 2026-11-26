@@ -202,6 +202,7 @@ components! {
     task_usage_until: BTreeMap<String, String> => entries, present;
     task_started: BTreeMap<String, LiveTaskStart> => entries, present;
     task_costs: BTreeMap<String, u64> => entries, present;
+    run_costs: BTreeMap<String, BTreeMap<String, u64>> => entries, present;
     cancel_reasons: BTreeMap<String, String> => entries, present;
     search_matches: Option<Vec<String>> => scalar, present;
     usage_exhausted: Option<LiveUsageExhausted> => scalar, present;

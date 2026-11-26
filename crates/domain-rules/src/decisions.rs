@@ -111,7 +111,9 @@ impl DomainState {
         }
         let waiting = (hold == Hold::Plan).then(|| self.plan_while_waiting(task)).flatten()
             .map(|message| DecisionRecord::Deny { message });
-        if let Some(decision) = decision_policy(hold, tool, input, mcp_server, plan).or(waiting) {
+        let role = (hold == Hold::Plan).then(|| self.role_plan_denial(task)).flatten()
+            .map(|message| DecisionRecord::Deny { message });
+        if let Some(decision) = decision_policy(hold, tool, input, mcp_server, plan).or(waiting).or(role) {
             return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision });
         }
         if hold == Hold::Permission {
@@ -329,6 +331,7 @@ impl DomainState {
             open.allowed.insert(asked.clone(), TaskGrant { allows, uses: 0 });
         }
         let decision = match (hold, answer.option_id.as_str()) {
+            (Hold::Plan, Hold::APPROVE) if self.hands_over(&task_id, card) => DecisionRecord::HandedOver,
             (Hold::Permission, Hold::ALLOW | Hold::ALWAYS | Hold::FOR_TASK) | (Hold::Plan, Hold::APPROVE) => DecisionRecord::Allow,
             (Hold::Permission, Hold::DENY) => DecisionRecord::Deny {
                 message: note.map_or_else(|| USER_DENIED.to_owned(), |note| format!("{USER_DENIED}: {note}")),

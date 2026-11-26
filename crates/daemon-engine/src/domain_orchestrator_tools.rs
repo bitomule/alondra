@@ -420,6 +420,9 @@ pub async fn launch_guarded(domain: &dyn Runtime, home: &Path, body: LaunchBody,
     let conflict = |message: String| DomainError::new("conflict", message);
     let current = state(domain)?;
     let task = current.tasks.get(&body.task).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
+    if let Some(handover) = task.stages.handover.as_ref().filter(|handover| task.stages.role() != Some(handover.to)) {
+        return Err(DomainError::new("stage_handover", format!("{} passes to a new agent as its {}: Alondra starts that agent itself", task.id, handover.to.as_str())));
+    }
     if domain.hosts().moving(&task.id) {
         return Err(DomainError::new("task_moving", format!("{} is moving to another account: Alondra starts its next node there itself", task.id)));
     }
@@ -625,6 +628,8 @@ pub async fn launch_guarded(domain: &dyn Runtime, home: &Path, body: LaunchBody,
         return Err(DomainError::new("unavailable", "Alondra's plugin was not found: run `alondra doctor --fix`"));
     };
     let request = current.requests.get(&task.request_id);
+    let chosen = task.selection.clone().or_else(|| requested.selection.clone())
+        .unwrap_or_else(|| alondra_core::model_selection::TaskSelection::automatic(alondra_core::model_selection::ModelProfile::Implementation));
     let auto = requested.effort == alondra_core::options::AUTO;
     let model = body.model.as_deref().or(body.relaunch_model.as_deref().filter(|_| auto));
     let resolved = match &native {
@@ -668,6 +673,9 @@ pub async fn launch_guarded(domain: &dyn Runtime, home: &Path, body: LaunchBody,
         (Workplace::Reused(_), _) | (_, Some(_)) => format!("{mission}\n\n{}", continuing_in(domain, Path::new(&cwd)).await),
         (Workplace::Given(_), None) => mission,
     };
+    let first_run = !prior_native && reopening.is_none() && task.stages.runs.is_empty();
+    let staged = body.stages.as_ref().is_some_and(|choice| choice.staged) && first_run;
+    let mission = if staged { format!("{mission}\n\n{}", alondra_engine_kernel::launches::AUTHOR_MISSION) } else { mission };
     let prompt = crate::domain_orchestrator_tools::producer_prompt(&mission, crate::domain_orchestrator_tools::MissionAuthor::Orchestrator, &resolved, &task.id, body.approach.unwrap_or_default());
     if domain.sdk().is_none() {
         return Err(DomainError::new("unavailable", crate::sdk_backend::NO_HOST));
@@ -704,6 +712,9 @@ pub async fn launch_guarded(domain: &dyn Runtime, home: &Path, body: LaunchBody,
             effort: selected.and_then(|selection| selection.reasoning_effort.clone()).or_else(|| resolved.flags.effort.clone()),
             disallowed_tools: domain.schedule_request_tools(&task.request_id).ok().flatten().unwrap_or_default(),
         };
+        if first_run && let Some(choice) = &body.stages {
+            record_stages(domain, &task.id, choice, &chosen)?;
+        }
         let name = body.title.clone().unwrap_or(name);
         let launched = domain.hosts().launch(crate::hosts::Launch { task: task.id.clone(), name, directory: cwd.clone(), prompt, plugin, options,
             model: resolved.launch_model(), account }, reopening)
@@ -731,6 +742,18 @@ pub async fn launch_guarded(domain: &dyn Runtime, home: &Path, body: LaunchBody,
         crate::usage_pause::raise_over_pace_card(domain, alondra_core::now_millis());
         Ok(launched)
     }
+}
+
+/// Records, before the first node of `task` starts, whether it goes in stages: each role of a
+/// staged task starts from what the user chose for it, `chosen`, with the profile of its role.
+pub fn record_stages(domain: &dyn Runtime, task: &TaskId, choice: &alondra_domain_rules::StageChoice, chosen: &alondra_core::model_selection::TaskSelection) -> Result<(), DomainError> {
+    let selections = if choice.staged { alondra_domain_rules::TaskStages::role_selections(chosen) } else { Default::default() };
+    crate::domain_github::execute_system(domain, alondra_domain_rules::Command::RecordTaskStages {
+        task_id: task.clone(), staged: choice.staged, reason: choice.reason.clone(), selections,
+    }).map_err(|error| match error {
+        crate::domain_store::StoreError::Domain(error) => error,
+        error => DomainError::new("storage_unavailable", error.to_string()),
+    })
 }
 
 /// The node took over the worktree Alondra chose for the task, or the one of the node it replaced.

@@ -83,6 +83,8 @@ public struct TaskDetail: Equatable, Sendable {
     public let dependencies: Section<Row>
     public let documents: Section<Row>
     public let options: Section<Fact>
+    /// How the task goes in stages and the role, model and cost of each of its executions.
+    public let stages: Section<Fact>
     public let allowed: Section<Grant>
     public let actions: [WireAction]
 
@@ -166,6 +168,7 @@ public extension TaskDetail {
             dependencies: rows("dependencies"),
             documents: rows("documents"),
             options: Section(title: section("options")?.title, elements: factsOf("options")),
+            stages: Section(title: section("stages")?.title, elements: factsOf("stages")),
             allowed: Section(title: section("allowed_in_task")?.title, elements: rowsOf("allowed_in_task").map { row in
                 Grant(id: row.id, command: row.title, detail: row.subtitle, revoke: row.actions.first { $0.command == "revoke_grant" && $0.enabled })
             }),
