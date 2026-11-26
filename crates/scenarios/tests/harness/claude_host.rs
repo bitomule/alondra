@@ -4,6 +4,7 @@
 use alondra_agent_runtime::owned_host::{HostLauncher, ProbeRun};
 use alondra_scenarios::claude_host::{ClaudeEdge, assistant_errors};
 use serde_json::{Value, json};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command as Process;
 use std::sync::{Arc, Mutex};
@@ -79,8 +80,7 @@ fn a_frame_lost_with_a_host_s_process_stops_counting_once_the_process_exits() {
             "manifest": {"host_release": "0.0.0", "host_sha256": "a".repeat(64), "executable_sha256": "b".repeat(64), "sdk_version": "sdk"},
             "native": {"session_id": "session"},
         });
-        let host = edge.start(&serde_json::to_vec(&bootstrap).unwrap(), pid, Box::new(Relay { group: pid as i32, back: home.path().join("b") })).unwrap();
-        tell_exit(pid, host.clone()).unwrap();
+        let _host = edge.start_host(&serde_json::to_vec(&bootstrap).unwrap(), pid, home.path().join("b")).unwrap();
         alondra_core::clock::frame_sent("host-1");
         process.0.kill().unwrap();
         process.0.wait().unwrap();

@@ -93,6 +93,17 @@ impl ClaudeEdge {
     pub fn trouble(&self) -> Option<Trouble> {
         self.0.trouble()
     }
+
+    /// The host the relay process `pid` plays, from its `bootstrap`, told when that process exits
+    /// however it goes; `back` is where the relay reaches the host.
+    pub fn start_host(&self, bootstrap: &[u8], pid: u32, back: PathBuf) -> std::io::Result<Arc<Host>> {
+        let host = self.0.start(bootstrap, pid, Box::new(Relay { group: pid as i32, back }))?;
+        if let Err(error) = tell_exit(pid, host.clone()) {
+            host.end(false);
+            return Err(error);
+        }
+        Ok(host)
+    }
 }
 
 /// The part of a host's bootstrap the edge reads: where its socket is and which task it runs.
@@ -218,12 +229,14 @@ impl HostLauncher for ClaudeEdge {
             .stderr(Stdio::piped())
             .process_group(0)
             .spawn()?;
-        let host = self.0.start(text.as_bytes(), child.id(), Box::new(Relay { group: child.id() as i32, back }))?;
-        if let Err(error) = tell_exit(child.id(), host.clone()) {
-            host.end(false);
-            let _ = child.wait();
-            return Err(error);
-        }
+        let host = match self.start_host(text.as_bytes(), child.id(), back) {
+            Ok(host) => host,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
         let model = self.0.clone();
         let (interrupting, stopped) = (self.0.clone(), host.clone());
         self.0.spawn(move || {
