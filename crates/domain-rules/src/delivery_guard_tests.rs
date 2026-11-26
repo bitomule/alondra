@@ -27,7 +27,7 @@ enum Step {
     /// The node ends the round.
     End,
     /// Alondra records what it read of a commit.
-    Read { head: usize, worktree: bool, specs: bool, owed: bool, ledger: Vec<(usize, bool, bool)>, stray: bool, implemented: bool, changed: bool, drift: Option<bool>, based: bool },
+    Read { head: usize, worktree: bool, specs: bool, owed: bool, ledger: Vec<(usize, bool, bool)>, stray: bool, implemented: bool, changed: bool, drift: Option<bool>, based: Option<bool>, tipped: bool },
     /// The pull request receives a commit.
     Move { head: usize },
     /// The node delivers its pull request, or a text.
@@ -49,8 +49,8 @@ fn step() -> impl Strategy<Value = Step> {
         2 => Just(Step::Start),
         4 => (0..ITEMS.len(), any::<bool>(), any::<bool>()).prop_map(|(item, met, current)| Step::Record { item, met, current }),
         1 => Just(Step::End),
-        5 => (0..HEADS.len(), any::<bool>(), any::<bool>(), any::<bool>(), prop::collection::vec((0..ITEMS.len(), any::<bool>(), any::<bool>()), 0..3), any::<bool>(), any::<bool>(), any::<bool>(), prop::option::weighted(0.2, any::<bool>()), prop::bool::weighted(0.85))
-            .prop_map(|(head, worktree, specs, owed, ledger, stray, implemented, changed, drift, based)| Step::Read { head, worktree, specs, owed, ledger, stray, implemented, changed, drift, based }),
+        5 => (0..HEADS.len(), any::<bool>(), any::<bool>(), any::<bool>(), prop::collection::vec((0..ITEMS.len(), any::<bool>(), any::<bool>()), 0..3), any::<bool>(), any::<bool>(), any::<bool>(), prop::option::weighted(0.2, any::<bool>()), prop::option::weighted(0.9, prop::bool::weighted(0.85)), prop::bool::weighted(0.85))
+            .prop_map(|(head, worktree, specs, owed, ledger, stray, implemented, changed, drift, based, tipped)| Step::Read { head, worktree, specs, owed, ledger, stray, implemented, changed, drift, based, tipped }),
         2 => (0..HEADS.len()).prop_map(|head| Step::Move { head }),
         3 => Just(Step::PresentPr),
         2 => Just(Step::PresentText),
@@ -124,7 +124,7 @@ fn run(s: &mut DomainState, step: &Step, n: usize) {
             let actor = agent(s);
             let _ = exec(s, actor, Command::EndValidation { task_id: "t".into(), findings: "A refund of zero is accepted".into() });
         }
-        Step::Read { head, worktree, specs, owed, ledger, stray, implemented, changed, drift, based } => {
+        Step::Read { head, worktree, specs, owed, ledger, stray, implemented, changed, drift, based, tipped } => {
             let since = task(s).validation.current().map(|round| if *implemented { round.implemented.clone() } else { HEADS[2].to_owned() });
             let reading = CommitReading {
                 commit: HEADS[*head].into(), worktree: *worktree, specs: *specs,
@@ -136,7 +136,8 @@ fn run(s: &mut DomainState, step: &Step, n: usize) {
                 }).collect(),
                 stray: if *stray { vec!["specs/ledger/notes.toml".into()] } else { vec![] },
                 since, changed: if *changed { vec!["crates/billing/src/lib.rs".into()] } else { vec![] },
-                base: based.then(|| BASE.into()),
+                base: based.map(|apart| if apart { BASE.into() } else { HEADS[*head].into() }),
+                tip: tipped.then(|| BASE.into()),
                 spec_changes: drift.iter().map(|approved| crate::SpecFileChange { path: "alondra.toml".into(), approved: *approved }).collect(),
             };
             let _ = exec(s, Actor::System, Command::RecordCommitReading { task_id: "t".into(), reading });
@@ -179,9 +180,13 @@ fn uncovered(s: &DomainState, delivery: &InteractionId, validator: bool) -> Opti
     }
     let mut gated = false;
     for commit in &commits {
-        let Some(reading) = t.validation.readings.iter().rev().find(|reading| reading.commit == *commit) else { return Some(format!("{commit} was never read")) };
-        if reading.base.is_none() && reading.problems.is_empty() {
-            return Some(format!("{commit} was never compared with its base"));
+        let of_pr = targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { head, .. } if head == commit));
+        let Some(reading) = t.validation.readings.iter().rev().find(|reading| reading.commit == *commit && reading.worktree != of_pr) else { return Some(format!("{commit} was never read")) };
+        if reading.problems.is_empty() && (reading.base.is_none() || (of_pr && reading.tip.is_none())) {
+            return Some(format!("{commit} was never compared with its base as GitHub reports it"));
+        }
+        if of_pr && reading.problems.is_empty() && reading.base.as_deref() == Some(commit.as_str()) {
+            return Some(format!("{commit} was compared with itself"));
         }
         if !reading.spec_changes.is_empty() {
             return Some(format!("{commit} holds spec files the user did not approve, specs turned off included"));
@@ -240,7 +245,7 @@ fn a_hand_written_ledger_never_passes_however_the_task_is_delivered() {
     let mut s = with_pr();
     let reading = CommitReading { commit: HEADS[0].into(), worktree: false, specs: true, owed: vec![], problems: vec![],
         ledger: vec![LedgerEntry { subject: "billing/unit".into(), kind: ValidationKind::Suite, inputs: "sha256:unit".into(), verdict: ValidationVerdict::Met }],
-        stray: vec![], since: None, changed: vec![], base: Some(BASE.into()), spec_changes: vec![] };
+        stray: vec![], since: None, changed: vec![], base: Some(BASE.into()), tip: Some(BASE.into()), spec_changes: vec![] };
     must(&mut s, Actor::System, Command::RecordCommitReading { task_id: "t".into(), reading });
     present(&mut s, "r1", vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEADS[0].into() }]);
     assert!(task(&s).final_presentation.is_none(), "the implementer's delivery is refused");
@@ -257,7 +262,7 @@ fn an_unread_pull_request_is_held_and_delivered_once_alondra_read_it_covered() {
     must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "t".into(), reason: None });
     assert!(matches!(task(&s).open_pr, Some(OpenPrPending::Deliver { .. })), "held until Alondra reads the commit");
     assert!(task(&s).final_presentation.is_none());
-    let reading = CommitReading { commit: HEADS[0].into(), worktree: false, specs: true, owed: vec![], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], base: Some(BASE.into()), spec_changes: vec![] };
+    let reading = CommitReading { commit: HEADS[0].into(), worktree: false, specs: true, owed: vec![], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], base: Some(BASE.into()), tip: Some(BASE.into()), spec_changes: vec![] };
     must(&mut s, Actor::System, Command::RecordCommitReading { task_id: "t".into(), reading });
     let status = OpenPrStatus { state: PrState::Open, head: HEADS[0].into(), base: "main".into(), mergeable: PrMergeable::Computing, checks: PrChecks::None };
     must(&mut s, Actor::System, Command::SettleOpenPr { task_id: "t".into(), status });
@@ -274,7 +279,7 @@ fn the_lifecycle_records_no_delivery_the_guard_refuses_whatever_path_asks_for_it
         card: CardSpec::delivery("Read this update", &[], false),
     };
     must(&mut s, node("b"), progress);
-    let reading = CommitReading { commit: HEADS[0].into(), worktree: true, specs: true, owed: vec![item(0, true)], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], base: Some(BASE.into()), spec_changes: vec![] };
+    let reading = CommitReading { commit: HEADS[0].into(), worktree: true, specs: true, owed: vec![item(0, true)], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], base: Some(BASE.into()), tip: Some(BASE.into()), spec_changes: vec![] };
     must(&mut s, Actor::System, Command::RecordCommitReading { task_id: "t".into(), reading });
     let refused = s.decide(&mut Lifecycles::new(), &"t".into(), LifecycleRecord::Presented { delivery: "progress".into() }).unwrap_err();
     assert_eq!(refused.code, "validation_required");
@@ -284,7 +289,7 @@ fn the_lifecycle_records_no_delivery_the_guard_refuses_whatever_path_asks_for_it
 #[test]
 fn a_branch_that_turns_specs_off_is_never_delivered_by_the_node_nor_for_it() {
     let mut s = with_pr();
-    let reading = CommitReading { commit: HEADS[0].into(), worktree: false, specs: false, owed: vec![], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], base: Some(BASE.into()),
+    let reading = CommitReading { commit: HEADS[0].into(), worktree: false, specs: false, owed: vec![], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], base: Some(BASE.into()), tip: Some(BASE.into()),
         spec_changes: vec![crate::SpecFileChange { path: "alondra.toml".into(), approved: false }] };
     must(&mut s, Actor::System, Command::RecordCommitReading { task_id: "t".into(), reading });
     present(&mut s, "r1", vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEADS[0].into() }]);
@@ -301,7 +306,7 @@ fn a_held_commit_alondra_cannot_read_goes_back_to_the_implementer_instead_of_wai
     assert!(matches!(task(&s).open_pr, Some(OpenPrPending::Deliver { .. })), "held until Alondra reads the commit");
     let reading = CommitReading { commit: HEADS[0].into(), worktree: false, specs: true, owed: vec![],
         problems: vec![format!("Alondra could not read commit {}: the task has no worktree left to read it in", HEADS[0])],
-        ledger: vec![], stray: vec![], since: None, changed: vec![], base: None, spec_changes: vec![] };
+        ledger: vec![], stray: vec![], since: None, changed: vec![], base: None, tip: None, spec_changes: vec![] };
     must(&mut s, Actor::System, Command::RecordCommitReading { task_id: "t".into(), reading });
     let status = OpenPrStatus { state: PrState::Open, head: HEADS[0].into(), base: "main".into(), mergeable: PrMergeable::Computing, checks: PrChecks::None };
     must(&mut s, Actor::System, Command::SettleOpenPr { task_id: "t".into(), status });

@@ -9,7 +9,7 @@ use std::time::Duration;
 /// How long a delivery waits for GitHub to name one branch's open PR.
 const BRANCH_PR_LIMIT: Duration = Duration::from_secs(3);
 
-const OBSERVED_FIELDS: &str = "state,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup,fullDatabaseId,id,url,headRefName";
+const OBSERVED_FIELDS: &str = "state,headRefOid,baseRefName,baseRefOid,mergeable,mergeStateStatus,statusCheckRollup,fullDatabaseId,id,url,headRefName";
 
 /// The fields of a PR that say which one it is, asked for in every read that already reads it.
 pub const IDENTITY_FIELDS: &str = "fullDatabaseId,id,url,headRefName";

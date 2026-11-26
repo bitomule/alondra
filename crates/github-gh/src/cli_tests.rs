@@ -78,7 +78,7 @@ async fn gh_output_is_parsed_from_a_fake_binary_and_failures_are_reported() {
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
     let gh = GhCli::at(program);
     let merged = gh.observe("github.com", "owner/repo", 7).await.unwrap();
-    assert_eq!(merged, PrFacts { head: HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(HEAD.into()), allowed_methods: vec![],
+    assert_eq!(merged, PrFacts { head: HEAD.into(), base: "main".into(), base_head: None, state: PrState::Merged, merged_head: Some(HEAD.into()), allowed_methods: vec![],
         mergeable: PrMergeable::Computing, checks: PrChecks::None, identity: None });
     assert_eq!(gh.observe("github.com", "owner/repo", 8).await.unwrap_err().to_string(), "gh reported no PR head");
     assert!(gh.observe("github.com", "owner/repo", 9).await.unwrap_err().to_string().contains("no pull requests found"));

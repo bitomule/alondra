@@ -4,7 +4,8 @@ use crate::spec_worktrees::SpecWorktrees;
 use alondra_domain_model::delivery_validation::{CommitReading, LedgerEntry, SpecFileChange, MAX_READING_PROBLEMS};
 use alondra_domain_model::specs::{self, engine, Files, SpecFiles, SpecMode};
 use alondra_domain_model::validation::{MAX_ROUND_ITEMS, MAX_SCOPE_FILES};
-use alondra_domain_model::{DomainState, Task, TaskId, ValidationItem, ValidationKind, ValidationVerdict};
+use alondra_domain_model::{DomainState, PrId, Task, TaskId, ValidationItem, ValidationKind, ValidationVerdict};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The project the spec engine reads in `files`: `None` when it does not use specs.
@@ -36,7 +37,7 @@ pub fn ledger_dir(project: &engine::Project) -> String {
 }
 
 fn empty(commit: &str, worktree: bool) -> CommitReading {
-    CommitReading { commit: commit.to_owned(), worktree, specs: true, owed: vec![], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], base: None, spec_changes: vec![] }
+    CommitReading { commit: commit.to_owned(), worktree, specs: true, owed: vec![], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], base: None, tip: None, spec_changes: vec![] }
 }
 
 /// A reading that says why Alondra could not read `commit`: a fact like any other, which never
@@ -47,11 +48,21 @@ pub fn unreadable(commit: &str, why: &str) -> CommitReading {
 
 /// What Alondra reads of `commit` in the repository at `root` for `task`, whose branch may hold
 /// `allowed` otherwise than its base. A commit whose base cannot be read is not read: what it says
-/// of specs is never taken without comparing it with its base.
-pub fn read_commit(port: &dyn SpecWorktrees, root: &Path, task: &Task, commit: &str, worktree: bool, allowed: &SpecFiles) -> Result<CommitReading, String> {
-    let mut reading = empty(commit, worktree);
+/// of specs is never taken without comparing it with its base. A pull request's commit is compared
+/// with where it leaves `tip`, the commit GitHub reports its base branch at, never with what the
+/// repository's own references say; the worktree's, read for a delivery without a pull request,
+/// with the repository's default branch.
+pub fn read_commit(port: &dyn SpecWorktrees, root: &Path, task: &Task, commit: &str, tip: Option<&str>, allowed: &SpecFiles) -> Result<CommitReading, String> {
+    let mut reading = empty(commit, tip.is_none());
     let files = port.commit(root, commit)?;
-    let base_commit = port.base_commit(root, commit)?;
+    let base_commit = match tip {
+        Some(tip) => {
+            port.commit(root, tip)?;
+            reading.tip = Some(tip.to_owned());
+            port.merge_base(root, commit, tip)?
+        }
+        None => port.base_commit(root, commit)?,
+    };
     let base = port.commit(root, &base_commit)?;
     reading.base = Some(base_commit.clone());
     match specs::drift(&*files, &*base, allowed) {
@@ -100,10 +111,11 @@ pub fn read_commit(port: &dyn SpecWorktrees, root: &Path, task: &Task, commit: &
 }
 
 /// What Alondra reads before a delivery of `task_id` in stages: the commit each of its open pull
-/// requests is at, and the commit its worktree is at for a delivery without one. A commit it
-/// cannot read, a pull request of another repository included, refuses the delivery: what is read
-/// never depends on a remote the agent can change.
-pub fn read_delivery(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId) -> Result<Vec<CommitReading>, String> {
+/// requests is at, against the commit GitHub reports its base branch at (`tips`, by pull request),
+/// and the commit its worktree is at for a delivery without one. A commit it cannot read, a pull
+/// request of another repository included, refuses the delivery: what is read never depends on a
+/// remote or a reference the agent can change.
+pub fn read_delivery(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, tips: &BTreeMap<PrId, String>) -> Result<Vec<CommitReading>, String> {
     let Some(task) = state.tasks.get(task_id).filter(|task| task.stages.staged) else { return Ok(vec![]) };
     let Some(root) = port.own(state, task_id) else {
         return if state.open_prs(task).next().is_none() { Ok(vec![]) } else { Err("the task's worktree is gone, so its pull request cannot be read".into()) };
@@ -111,24 +123,25 @@ pub fn read_delivery(port: &dyn SpecWorktrees, state: &DomainState, task_id: &Ta
     let allowed = state.allowed_specs(task);
     let mut readings = vec![];
     for pr in state.open_prs(task) {
-        readings.push(read_commit(port, &root, task, &pr.head, false, &allowed).map_err(|why| format!(
+        let tip = tips.get(&pr.id).ok_or_else(|| format!("GitHub did not report the base branch of pull request {}#{}, so its commit cannot be compared with it", pr.repository, pr.number))?;
+        readings.push(read_commit(port, &root, task, &pr.head, Some(tip), &allowed).map_err(|why| format!(
             "the commit {} of pull request {}#{} cannot be read in the task's worktree ({why}). A task in stages delivers pull requests of its own repository only, \
              because Alondra reads every delivered commit with the spec engine: close a pull request of another repository, or do that work in a task of its own",
             pr.head, pr.repository, pr.number))?);
     }
-    readings.push(read_commit(port, &root, task, &port.head_commit(&root)?, true, &allowed)?);
+    readings.push(read_commit(port, &root, task, &port.head_commit(&root)?, None, &allowed)?);
     Ok(readings)
 }
 
 /// What Alondra reads for a delivery it holds for `task_id`: each commit of its open pull requests
-/// it has not read yet, or why it cannot read it.
-pub fn read_held(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId) -> Vec<CommitReading> {
+/// it has not read yet, against the commit GitHub reports its base branch at, or why it cannot.
+pub fn read_held(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, tips: &BTreeMap<PrId, String>) -> Vec<CommitReading> {
     let Some(task) = state.tasks.get(task_id).filter(|task| task.stages.staged) else { return vec![] };
-    let heads: Vec<String> = state.open_prs(task).map(|pr| pr.head.clone()).filter(|head| task.validation.reading(head).is_none()).collect();
     let root = port.own(state, task_id);
     let allowed = state.allowed_specs(task);
-    heads.iter().map(|head| match &root {
-        Some(root) => read_commit(port, root, task, head, false, &allowed).unwrap_or_else(|why| unreadable(head, &why)),
-        None => unreadable(head, "the task has no worktree left to read it in"),
+    state.open_prs(task).filter(|pr| task.validation.reading_of(&pr.head, false).is_none()).map(|pr| {
+        let Some(root) = &root else { return unreadable(&pr.head, "the task has no worktree left to read it in") };
+        let Some(tip) = tips.get(&pr.id) else { return unreadable(&pr.head, "GitHub did not report the base branch of its pull request") };
+        read_commit(port, root, task, &pr.head, Some(tip), &allowed).unwrap_or_else(|why| unreadable(&pr.head, &why))
     }).collect()
 }

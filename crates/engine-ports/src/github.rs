@@ -39,6 +39,8 @@ impl GitHub {
 pub struct PrFacts {
     pub head: String,
     pub base: String,
+    /// The commit the base branch is at, as GitHub reports it.
+    pub base_head: Option<String>,
     pub state: PrState,
     pub merged_head: Option<String>,
     pub allowed_methods: Vec<MergeMethod>,

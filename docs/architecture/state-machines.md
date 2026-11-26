@@ -1158,7 +1158,11 @@ transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrup
   it holds otherwise than its base or the user approved them, read on that commit whatever it says
   of specs, so a branch that turns specs off reads as such. Every reading names the base it was
   compared with: a commit whose base cannot be read is not read at all, and only a reading that
-  says why a commit could not be read has no base (`RecordCommitReading` refuses any other). Facts only, recorded by the system command `RecordCommitReading`
+  says why a commit could not be read has no base (`RecordCommitReading` refuses any other). A pull
+  request's commit is compared with where it leaves `tip`, the commit GitHub reports the pull
+  request's base branch at (`baseRefOid`), which the reading names too; never with the
+  repository's own references, which the agent can move. Git reads them with replacement
+  objects, grafts and the cached commit graph ignored. Facts only, recorded by the system command `RecordCommitReading`
   (full commit shas, bounded; the latest reading of a commit wins, at most 16 kept). The daemon reads
   the commit of every open pull request of the task and its worktree's HEAD before each final
   `PresentResult` (`daemon-server/src/validation_checks.rs::read_delivery`, within the delivery
@@ -1173,8 +1177,10 @@ transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrup
   only through `DomainState::decide`, which asks `delivery_check` first: the one guard, whoever
   delivers. The commits it checks are the heads of the delivery's pull requests, or, without one,
   the worktree's last reading. In order: `validation_unread` (a commit without a reading);
-  `specs_differ` (a delivered commit holds spec files otherwise than its base or the user approved
-  them, turning specs off included); then for each commit of a project with specs, `validation_required` (implementer) or `validation_pending`
+  `validation_unread` also for a pull request's reading without `tip`; `commit_on_base` (a pull
+  request's commit is its own base: already on the base branch); `specs_differ` (a delivered
+  commit holds spec files otherwise than its base or the user approved them, turning specs off
+  included); then for each commit of a project with specs, `validation_required` (implementer) or `validation_pending`
   (validator) when the engine lists anything there, `spec_change_open` (a change of the specs
   waits), `ledger_unrecorded` for a ledger entry no validator recorded with that fingerprint and
   verdict, and, for a validator, `changed_after_validation` when anything but the ledger changed
@@ -1186,8 +1192,8 @@ transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrup
   (`close_task`, `settle_open_pr`, `AdoptOpenPr`) never delivers what the guard refuses
   (`hold_unvalidated_delivery`): an unread commit holds the delivery (`OpenPrPending::Deliver`) until
   the GitHub loop reads it and settles it again; what no validator checked opens a round for a
-  validator; code after `implemented`, spec files changed without approval and a commit Alondra
-  could not read go back to the implementer; an open round goes to a new validator; an open change of the specs already waits for its author or the user. No timer
+  validator; code after `implemented`, spec files changed without approval, a commit already on
+  its base and a commit Alondra could not read go back to the implementer; an open round goes to a new validator; an open change of the specs already waits for its author or the user. No timer
   decides any of it. `specs_differ` comes first, from M-LIFE-16.
 - **Persistence and restart**: the whole record is one JSON row of `task_validations`, written by
   the commit that changes it; a task without a row was never validated. A restart keeps every round,

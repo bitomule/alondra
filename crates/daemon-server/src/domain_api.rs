@@ -1029,10 +1029,14 @@ async fn checked_producer_command<H: DomainHost>(
     if let (Principal::Agent { .. }, Command::PresentResult { task_id, interaction_id, is_final: true, .. }) = (&principal, &envelope.command)
         && !host.domain().state().interactions.contains_key(interaction_id)
     {
+        let tips = match host.new_work_client() {
+            Some(client) => steps.step("reading the base branches of the task's pull requests on GitHub", async { Ok::<_, DomainError>(client.base_heads(task_id).await) }).await?,
+            None => Default::default(),
+        };
         let (checking, task, delivery) = (host.clone(), task_id.clone(), interaction_id.clone());
         let read = alondra_core::clock::spawn_blocking(move || {
             let state = checking.domain().state();
-            crate::validation_checks::read_delivery(checking.domain(), &state, &task)
+            crate::validation_checks::read_delivery(checking.domain(), &state, &task, &tips)
                 .map(|readings| (readings, crate::validation_checks::delivered(checking.domain(), &state, &task, &delivery)))
         });
         let readings = match steps.step("reading the task's delivered commits", alondra_core::clock::timeout(git_within, read)).await {

@@ -295,7 +295,7 @@ pub(crate) fn settle_validation_card(domain: &mut DomainState, actor: &Actor, ca
 pub(crate) fn record_commit_reading(domain: &mut DomainState, actor: &Actor, task_id: &TaskId, reading: &alondra_domain_model::CommitReading) -> Result<()> {
     system(actor)?;
     domain.task(task_id)?;
-    if !is_commit_sha(&reading.commit) || [&reading.since, &reading.base].into_iter().flatten().any(|commit| !is_commit_sha(commit)) {
+    if !is_commit_sha(&reading.commit) || [&reading.since, &reading.base, &reading.tip].into_iter().flatten().any(|commit| !is_commit_sha(commit)) {
         return refuse("invalid_input", "reading", "A reading names full commit shas");
     }
     if reading.base.is_none() && reading.problems.is_empty() {

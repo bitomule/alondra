@@ -22,8 +22,12 @@ pub trait SpecWorktrees: Send + Sync {
     /// The files of `commit`, a full sha, in the repository at `root`, read from git's objects;
     /// fetched from `origin` first when the repository does not have it.
     fn commit(&self, root: &Path, commit: &str) -> Result<SpecSource, String>;
-    /// The full sha of the commit where `commit` leaves the base branch of the repository at `root`.
+    /// The full sha of the commit where `commit` leaves the base branch of the repository at `root`,
+    /// as the repository's own references say: only for what nothing is delivered from.
     fn base_commit(&self, root: &Path, commit: &str) -> Result<String, String>;
+    /// The full sha of the best common ancestor of the commits `a` and `b`, read from git's objects
+    /// alone: no reference and no replacement object of the repository changes it.
+    fn merge_base(&self, root: &Path, a: &str, b: &str) -> Result<String, String>;
     /// The paths that differ between the commits `from` and `to`, in path order.
     fn changed(&self, root: &Path, from: &str, to: &str) -> Result<Vec<String>, String>;
     /// The paths of the worktree at `root` a commit of the whole tree would change: modified,

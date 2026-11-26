@@ -20,13 +20,17 @@ fn worktrees(state: &DomainState, task: &TaskId) -> Vec<PathBuf> {
     open.into_iter().filter_map(|(path, _)| PathBuf::from(path).canonicalize().ok()).collect()
 }
 
-/// Runs git at `dir`, killed when it has not finished within the check's time limit.
+/// Runs git at `dir`, killed when it has not finished within the check's time limit, with the
+/// repository's replacement objects, grafts and cached commit graph ignored: what is read comes
+/// from git's objects, never from something the agent can write beside them.
 fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     git_within(dir, args, CHECK_LIMIT)
 }
 
 fn git_within(dir: &Path, args: &[&str], limit: Duration) -> Result<Vec<u8>, String> {
-    let mut child = Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+    let mut child = Command::new("git").arg("-C").arg(dir).args(["-c", "core.commitGraph=false"]).args(args)
+        .env("GIT_NO_REPLACE_OBJECTS", "1").env("GIT_GRAFT_FILE", "/dev/null")
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
         .map_err(|error| format!("git could not run: {error}"))?;
     let drain = |pipe: Option<Box<dyn Read + Send>>| std::thread::spawn(move || {
         let mut bytes = vec![];
@@ -219,6 +223,12 @@ impl SpecWorktrees for GitSpecWorktrees {
         fork_point(root, commit)
     }
 
+    fn merge_base(&self, root: &Path, a: &str, b: &str) -> Result<String, String> {
+        let (a, b) = (resolved(root, a)?, resolved(root, b)?);
+        let found = git(root, &["merge-base", &a, &b])?;
+        Ok(String::from_utf8_lossy(&found).trim().to_owned())
+    }
+
     fn changed(&self, root: &Path, from: &str, to: &str) -> Result<Vec<String>, String> {
         let (from, to) = (resolved(root, from)?, resolved(root, to)?);
         Ok(names(git(root, &["diff", "--name-only", "-z", "--no-renames", &from, &to])?))
@@ -353,6 +363,30 @@ mod tests {
         for path in ["../escape.feature", "/etc/escape", "specs/./a.feature"] {
             assert!(write_into(&root, &changes(&[(path, Some("x"))])).is_err(), "{path} is refused");
         }
+    }
+
+    #[test]
+    fn a_replacement_object_the_agent_writes_changes_nothing_alondra_reads() {
+        let dir = Directory::new();
+        std::fs::create_dir_all(&*dir).unwrap();
+        let root = dir.canonicalize().unwrap();
+        let run = |args: &[&str]| -> String {
+            let out = Command::new("git").current_dir(&root).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(["-c", "user.name=Ana", "-c", "user.email=ana@example.com"]).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        run(&["init", "--quiet"]);
+        std::fs::write(root.join("alondra.toml"), "enabled = true\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "--quiet", "-m", "On"]);
+        let on = run(&["rev-parse", "HEAD"]);
+        std::fs::write(root.join("alondra.toml"), "enabled = false\n").unwrap();
+        run(&["commit", "--quiet", "-am", "Off"]);
+        let off = run(&["rev-parse", "HEAD"]);
+        run(&["replace", &off, &on]);
+        assert_eq!(GitSpecWorktrees.commit(&root, &off).unwrap().read("alondra.toml").unwrap(), b"enabled = false\n");
+        assert_eq!(GitSpecWorktrees.merge_base(&root, &off, &on).unwrap(), on);
     }
 
     #[test]

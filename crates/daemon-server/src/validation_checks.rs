@@ -124,9 +124,9 @@ pub(crate) fn stamp_with(port: &dyn SpecWorktrees, state: &DomainState, command:
 
 /// What Alondra reads before a final delivery of `task_id`: the commits it carries, for the
 /// domain's guard to decide on.
-pub(crate) fn read_delivery(domain: &dyn Runtime, state: &DomainState, task_id: &TaskId) -> Result<Vec<CommitReading>, String> {
+pub(crate) fn read_delivery(domain: &dyn Runtime, state: &DomainState, task_id: &TaskId, tips: &std::collections::BTreeMap<alondra_domain_model::PrId, String>) -> Result<Vec<CommitReading>, String> {
     let Some(port) = domain.ports().spec_worktrees() else { return Ok(vec![]) };
-    spec_reading::read_delivery(&*port, state, task_id)
+    spec_reading::read_delivery(&*port, state, task_id, tips)
 }
 
 /// What a validator's delivery of `task_id` shows of its specs, read from the commit it delivers.
@@ -274,10 +274,11 @@ mod tests {
         dirty: Mutex<Vec<String>>,
         gone: Mutex<bool>,
         no_base: Mutex<bool>,
+        own_base: Mutex<bool>,
     }
     impl Repo {
         fn new(base: Tree) -> Repo {
-            Repo { commits: Mutex::new(BTreeMap::from([(sha('0'), base)])), head: Mutex::new(sha('0')), dirty: Mutex::new(vec![]), gone: Mutex::new(false), no_base: Mutex::new(false) }
+            Repo { commits: Mutex::new(BTreeMap::from([(sha('0'), base)])), head: Mutex::new(sha('0')), dirty: Mutex::new(vec![]), gone: Mutex::new(false), no_base: Mutex::new(false), own_base: Mutex::new(false) }
         }
         fn commit(&self, name: char, tree: Tree) -> String {
             self.commits.lock().unwrap().insert(sha(name), tree);
@@ -303,8 +304,12 @@ mod tests {
         fn commit(&self, _: &Path, commit: &str) -> Result<SpecSource, String> {
             self.commits.lock().unwrap().get(commit).cloned().map(|tree| Box::new(tree) as SpecSource).ok_or_else(|| format!("no commit {commit}"))
         }
-        fn base_commit(&self, _: &Path, _: &str) -> Result<String, String> {
-            if *self.no_base.lock().unwrap() { Err("the repository has no default branch to compare with".into()) } else { Ok(sha('0')) }
+        fn base_commit(&self, _: &Path, commit: &str) -> Result<String, String> {
+            if *self.no_base.lock().unwrap() { return Err("the repository has no default branch to compare with".into()) }
+            Ok(if *self.own_base.lock().unwrap() { commit.to_owned() } else { sha('0') })
+        }
+        fn merge_base(&self, _: &Path, _: &str, tip: &str) -> Result<String, String> {
+            if tip == sha('0') { Ok(sha('0')) } else { Err(format!("no common history with {tip}")) }
         }
         fn changed(&self, _: &Path, from: &str, to: &str) -> Result<Vec<String>, String> {
             let (from, to) = (self.tree(from).0, self.tree(to).0);
@@ -415,7 +420,8 @@ mod tests {
     /// daemon does: the commit of each open pull request and the worktree's.
     fn check(repo: &Repo, mut state: DomainState) -> Result<DeliveryCheck, String> {
         let task_id = TaskId::from("t");
-        let readings = spec_reading::read_delivery(repo, &state, &task_id)?;
+        let tips = state.open_prs(&state.tasks[&task_id]).map(|pr| (pr.id.clone(), sha('0'))).collect();
+        let readings = spec_reading::read_delivery(repo, &state, &task_id, &tips)?;
         let task = state.tasks.get_mut(&task_id).unwrap();
         for reading in readings {
             task.validation.push_reading(reading);
@@ -545,15 +551,30 @@ mod tests {
     }
 
     #[test]
+    fn a_pull_requests_commit_is_compared_with_the_base_github_reports_never_with_the_repositorys_references() {
+        let repo = Repo::new(base());
+        let off = repo.tree(&sha('0')).with("alondra.toml", "format = 1\n\n[specs]\nenabled = false\n")
+            .with("crates/billing/src/lib.rs", "pub fn refund(paid: u32, _: u32) -> u32 { paid }\n");
+        let head = repo.commit('1', off);
+        *repo.own_base.lock().unwrap() = true;
+        let state = with_pr(state_with(task(ExecutionRole::Implementer)), "ana/app", 1, &head);
+        assert_eq!(check(&repo, state).unwrap(), DeliveryCheck::SpecsDiffer { unapproved: vec!["alondra.toml".into()], other: vec![] },
+            "the local default branch pointed at the commit itself changes nothing");
+    }
+
+    #[test]
     fn a_commit_that_turns_specs_off_is_never_taken_without_comparing_it_with_its_base() {
         let repo = Repo::new(base());
         let off = repo.tree(&sha('0')).with("alondra.toml", "format = 1\n\n[specs]\nenabled = false\n")
             .with("crates/billing/src/lib.rs", "pub fn refund(paid: u32, _: u32) -> u32 { paid }\n");
         let head = repo.commit('1', off);
-        *repo.no_base.lock().unwrap() = true;
         let state = with_pr(state_with(task(ExecutionRole::Implementer)), "ana/app", 1, &head);
-        let refused = check(&repo, state).unwrap_err();
+        let tips = state.open_prs(&state.tasks[&TaskId::from("t")]).map(|pr| (pr.id.clone(), sha('8'))).collect();
+        let refused = spec_reading::read_delivery(&repo, &state, &"t".into(), &tips).unwrap_err();
         assert!(refused.contains("ana/app#1") && refused.contains("own repository only"), "{refused}");
+        assert!(spec_reading::read_delivery(&repo, &state, &"t".into(), &Default::default()).unwrap_err().contains("did not report the base branch"));
+        *repo.no_base.lock().unwrap() = true;
+        assert!(spec_reading::read_delivery(&repo, &state_with(task(ExecutionRole::Implementer)), &"t".into(), &Default::default()).is_err(), "a worktree commit whose base cannot be read is not read");
     }
 
     #[test]

@@ -1110,6 +1110,8 @@ impl Context<'_> {
             git(&place, &["add", "-A"])?;
         }
         git(&place, &["commit", "-q", "--allow-empty", "-m", "Start"])?;
+        let start = std::process::Command::new("git").current_dir(&place).args(["rev-parse", "HEAD"]).output().map_err(|e| failed(&e))?;
+        self.github.set_branch("main", String::from_utf8_lossy(&start.stdout).trim());
         git(&place, &["worktree", "add", "-q", "-b", &branch, &top.display().to_string()])?;
         for file in files {
             let path = top.join(file);
