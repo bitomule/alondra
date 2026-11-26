@@ -148,7 +148,7 @@ impl Work {
         self.runtime_parked.load(Ordering::SeqCst) && runtime.is_some_and(|runtime| runtime.metrics().global_queue_depth() == 0)
     }
 
-    fn until_idle(&self, patience: Duration, settled: impl Fn() -> bool) -> bool {
+    fn until_calm(&self, patience: Duration, settled: impl Fn() -> bool, moving: impl Fn() -> bool) -> bool {
         let mut patience = Patience::new(patience, std::time::Instant::now(), self.moves.load(Ordering::SeqCst));
         loop {
             let rests = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).rests;
@@ -157,10 +157,18 @@ impl Work {
             }
             let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             while held.rests == rests {
-                let now = std::time::Instant::now();
-                let left = patience.left(now);
-                if held.runtime.is_none() || left.is_zero() && !patience.extend(now, self.moves.load(Ordering::SeqCst)) {
+                if held.runtime.is_none() {
                     return false;
+                }
+                let now = std::time::Instant::now();
+                if patience.left(now).is_zero() {
+                    // `moving` looks outside the clock, and what it sees may move work on it.
+                    drop(held);
+                    if !patience.extend(now, self.moves.load(Ordering::SeqCst), &moving) {
+                        return false;
+                    }
+                    held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    continue;
                 }
                 held = self.idle.wait_timeout(held, patience.left(now).max(Duration::from_millis(1))).unwrap_or_else(std::sync::PoisonError::into_inner).0;
             }
@@ -194,7 +202,8 @@ impl Work {
 
 /// How long a wait for calm lasts: `patience` of real time with nothing moving. While units of work
 /// keep starting and ending the daemon is slow, not stuck, as on a Mac whose threads wait long for a
-/// core; a wait that no unit moved for `patience` is a hang.
+/// core; so it is while what the clock does not count, such as another process, still waits for a
+/// core. A wait that nothing moved for `patience` is a hang.
 #[derive(Debug)]
 struct Patience {
     patience: Duration,
@@ -211,10 +220,10 @@ impl Patience {
         self.limit.saturating_duration_since(now)
     }
 
-    /// The limit came: it moves `patience` on from `now` when work moved since the last look, and
-    /// the wait is over when none did.
-    fn extend(&mut self, now: std::time::Instant, moves: u64) -> bool {
-        if moves == self.moves {
+    /// The limit came: it moves `patience` on from `now` when work moved since the last look, or
+    /// when `moving` says something still moves now, and the wait is over when neither did.
+    fn extend(&mut self, now: std::time::Instant, moves: u64, moving: impl FnOnce() -> bool) -> bool {
+        if moves == self.moves && !moving() {
             return false;
         }
         self.moves = moves;
@@ -380,8 +389,14 @@ pub fn working() -> usize {
 /// must be done by work these see. False once `patience` of real time passes with no unit of work
 /// starting or ending (a daemon that moves, however slowly, is not stuck), or the runtime ended. Under the system clock it is `settled`.
 pub fn until_idle(patience: Duration, settled: impl Fn() -> bool) -> bool {
+    until_calm(patience, settled, || false)
+}
+
+/// [`until_idle`], whose patience also moves on when, at its limit, `moving` says that something
+/// the clock does not count still moves: a process that waits for a core is slow, not stuck.
+pub fn until_calm(patience: Duration, settled: impl Fn() -> bool, moving: impl Fn() -> bool) -> bool {
     match Clock::current() {
-        Clock::Virtual { work, .. } => work.until_idle(patience, settled),
+        Clock::Virtual { work, .. } => work.until_calm(patience, settled, moving),
         Clock::System => settled(),
     }
 }

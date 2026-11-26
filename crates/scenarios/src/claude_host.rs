@@ -22,7 +22,22 @@ use std::sync::{Arc, Mutex};
 
 /// The edge itself, shared by the daemon (as its launcher) and the runner.
 #[derive(Clone)]
-pub struct ClaudeEdge(ClaudeModel, Arc<Mutex<Slowness>>);
+pub struct ClaudeEdge(ClaudeModel, Arc<Mutex<Slowness>>, Arc<Cores>);
+
+/// The hosts the edge started, each played by a relay process of its own, and how it reads how many
+/// threads of a process run or wait for a core.
+struct Cores {
+    hosts: Mutex<Vec<Arc<Host>>>,
+    runnable: Mutex<Runnable>,
+}
+
+type Runnable = Arc<dyn Fn(u32) -> usize + Send + Sync>;
+
+impl Default for Cores {
+    fn default() -> Self {
+        Self { hosts: Mutex::default(), runnable: Mutex::new(Arc::new(crate::cores::runnable_threads)) }
+    }
+}
 
 /// How slow the hosts started from now on are, in real time: what a loaded Mac does to them.
 #[derive(Clone, Copy, Default)]
@@ -52,7 +67,35 @@ impl std::ops::Deref for ClaudeEdge {
 
 impl ClaudeEdge {
     pub fn new(home: &Path, leaks: Arc<Mutex<Vec<String>>>) -> Self {
-        Self(ClaudeModel::new(home, leaks), Arc::default())
+        Self(ClaudeModel::new(home, leaks), Arc::default(), Arc::default())
+    }
+
+    /// Reads how many threads of a process run or wait for a core with `runnable` instead of asking
+    /// the kernel: how a test plays a process that a loaded Mac does not run.
+    pub fn read_cores_with(&self, runnable: impl Fn(u32) -> usize + Send + Sync + 'static) {
+        *self.2.runnable.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(runnable);
+    }
+
+    /// Whether something the virtual clock does not count still waits for a core: the relay of a
+    /// host that runs, which passes frames both ways and starts the host, or a thread of this
+    /// process, the daemon's, other than the one that asks.
+    pub fn waiting_for_cores(&self) -> bool {
+        let runnable = self.2.runnable.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if runnable(std::process::id()) > 1 {
+            return true;
+        }
+        let hosts = {
+            let mut hosts = self.2.hosts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            hosts.retain(|host| host.alive());
+            hosts.clone()
+        };
+        hosts.iter().any(|host| runnable(host.process_id) > 0)
+    }
+
+    /// Waits for calm (`clock::until_calm`) until `settled` holds, with `patience` of real time in
+    /// which nothing of the daemon moved and nothing it waits for waits for a core.
+    pub fn until_calm(&self, patience: std::time::Duration, settled: impl Fn() -> bool) -> bool {
+        alondra_core::clock::until_calm(patience, settled, || self.waiting_for_cores())
     }
 
     /// Every host started from now on takes `by` to exit once the daemon tells it to stop, as a
@@ -102,6 +145,7 @@ impl ClaudeEdge {
             host.end(false);
             return Err(error);
         }
+        self.2.hosts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(host.clone());
         Ok(host)
     }
 }

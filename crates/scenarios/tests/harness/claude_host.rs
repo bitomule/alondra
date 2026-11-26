@@ -16,6 +16,29 @@ fn edge() -> (tempfile::TempDir, ClaudeEdge, Arc<Mutex<Vec<String>>>) {
     (home, edge, leaks)
 }
 
+/// The bootstrap of the host `host-1`, which runs task `t1`.
+fn bootstrap() -> Vec<u8> {
+    let bootstrap = json!({
+        "host_instance_id": "host-1",
+        "control_secret": "01".repeat(32),
+        "fence": {"profile_id": "default", "account_id": "default", "data_epoch": "epoch", "host_id": "host"},
+        "execution": {"task_id": "t1", "agent_id": "sdk-t1", "conversation_id": "conversation", "process_instance_id": "process", "generation": 1},
+        "manifest": {"host_release": "0.0.0", "host_sha256": "a".repeat(64), "executable_sha256": "b".repeat(64), "sdk_version": "sdk"},
+        "native": {"session_id": "session"},
+    });
+    serde_json::to_vec(&bootstrap).unwrap()
+}
+
+/// A process the test started, killed and reaped when the test ends however it ends.
+struct Owned(std::process::Child);
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn status(edge: &ClaudeEdge, folder: Option<&Path>) -> Value {
     let mut command = Process::new("/usr/local/bin/claude");
     command.args(["auth", "status", "--json"]);
@@ -60,27 +83,12 @@ fn the_errors_a_scenario_names_are_the_sdks_own() {
 /// exited, and the wait for calm does not wait for it to its patience.
 #[test]
 fn a_frame_lost_with_a_host_s_process_stops_counting_once_the_process_exits() {
-    struct Owned(std::process::Child);
-    impl Drop for Owned {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
     let runtime = alondra_core::clock::VirtualRuntime::new(1_700_000_000_000).unwrap();
     runtime.block_on(async {
         let (home, edge, _) = edge();
         let mut process = Owned(Process::new("/bin/sleep").arg("600").process_group(0).spawn().unwrap());
         let pid = process.0.id();
-        let bootstrap = json!({
-            "host_instance_id": "host-1",
-            "control_secret": "01".repeat(32),
-            "fence": {"profile_id": "default", "account_id": "default", "data_epoch": "epoch", "host_id": "host"},
-            "execution": {"task_id": "t1", "agent_id": "sdk-t1", "conversation_id": "conversation", "process_instance_id": "process", "generation": 1},
-            "manifest": {"host_release": "0.0.0", "host_sha256": "a".repeat(64), "executable_sha256": "b".repeat(64), "sdk_version": "sdk"},
-            "native": {"session_id": "session"},
-        });
-        let _host = edge.start_host(&serde_json::to_vec(&bootstrap).unwrap(), pid, home.path().join("b")).unwrap();
+        let _host = edge.start_host(&bootstrap(), pid, home.path().join("b")).unwrap();
         alondra_core::clock::frame_sent("host-1");
         process.0.kill().unwrap();
         process.0.wait().unwrap();
@@ -94,27 +102,12 @@ fn a_frame_lost_with_a_host_s_process_stops_counting_once_the_process_exits() {
 /// looked, and the host it finds is settled.
 #[test]
 fn a_wait_for_calm_sees_a_host_settle_when_the_daemon_stops_its_process() {
-    struct Owned(std::process::Child);
-    impl Drop for Owned {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
     let runtime = alondra_core::clock::VirtualRuntime::new(1_700_000_000_000).unwrap();
     runtime.block_on(async {
         let (home, edge, _) = edge();
         let process = Arc::new(Mutex::new(Owned(Process::new("/bin/sleep").arg("600").process_group(0).spawn().unwrap())));
         let pid = process.lock().unwrap().0.id();
-        let bootstrap = json!({
-            "host_instance_id": "host-1",
-            "control_secret": "01".repeat(32),
-            "fence": {"profile_id": "default", "account_id": "default", "data_epoch": "epoch", "host_id": "host"},
-            "execution": {"task_id": "t1", "agent_id": "sdk-t1", "conversation_id": "conversation", "process_instance_id": "process", "generation": 1},
-            "manifest": {"host_release": "0.0.0", "host_sha256": "a".repeat(64), "executable_sha256": "b".repeat(64), "sdk_version": "sdk"},
-            "native": {"session_id": "session"},
-        });
-        let _host = edge.start_host(&serde_json::to_vec(&bootstrap).unwrap(), pid, home.path().join("b")).unwrap();
+        let _host = edge.start_host(&bootstrap(), pid, home.path().join("b")).unwrap();
         let (watching, stopped) = (edge.clone(), process.clone());
         let stopping = std::sync::atomic::AtomicBool::new(true);
         let calm = alondra_core::clock::spawn_blocking_unwatched(move || {
@@ -129,4 +122,107 @@ fn a_wait_for_calm_sees_a_host_settle_when_the_daemon_stops_its_process() {
         .unwrap();
         assert!(calm, "the wait for calm looked again once the host's process exited, and found it settled");
     });
+}
+
+/// How long a wait for calm of these tests waits with nothing moving: what it waits for is played by
+/// the test, so the wait ends only on what the test says.
+const PATIENCE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The daemon wrote a frame to a host whose relay a loaded Mac does not run: nothing the clock
+/// counts moves until the relay gets a core and the host handles the frame, and the wait for calm
+/// waits for it instead of giving up after its patience.
+#[test]
+fn a_wait_for_calm_waits_for_a_host_whose_process_waits_for_a_core() {
+    let runtime = alondra_core::clock::VirtualRuntime::new(1_700_000_000_000).unwrap();
+    runtime.block_on(async {
+        let (home, edge, _) = edge();
+        let process = Owned(Process::new("/bin/sleep").arg("600").process_group(0).spawn().unwrap());
+        let relay = process.0.id();
+        let _host = edge.start_host(&bootstrap(), relay, home.path().join("b")).unwrap();
+        let (asked, looks) = std::sync::mpsc::channel();
+        let asked = Mutex::new(asked);
+        edge.read_cores_with(move |pid| match pid == relay {
+            true => {
+                let _ = asked.lock().unwrap().send(());
+                1
+            }
+            false => 1,
+        });
+        alondra_core::clock::frame_sent("host-1");
+        let clock = alondra_core::clock::Clock::current();
+        let mac = std::thread::spawn(move || {
+            for _ in 0..3 {
+                looks.recv().unwrap();
+            }
+            clock.frame_handled("host-1");
+        });
+        let waiting = edge.clone();
+        let calm = alondra_core::clock::spawn_blocking_unwatched(move || waiting.until_calm(PATIENCE, || true)).await.unwrap();
+        assert!(calm, "the wait for calm gave up on a frame its host's process was still waiting for a core to handle");
+        mac.join().unwrap();
+    });
+}
+
+/// A host whose relay is still starting, unattached, is waited for while its process waits for a
+/// core; once it waits for nothing and starts no further, the wait gives up as it does for a host
+/// that is stuck from the start.
+#[test]
+fn a_host_that_starts_no_further_and_waits_for_no_core_is_stuck() {
+    let runtime = alondra_core::clock::VirtualRuntime::new(1_700_000_000_000).unwrap();
+    runtime.block_on(async {
+        let (home, edge, _) = edge();
+        let process = Owned(Process::new("/bin/sleep").arg("600").process_group(0).spawn().unwrap());
+        let relay = process.0.id();
+        let _host = edge.start_host(&bootstrap(), relay, home.path().join("b")).unwrap();
+        for starved in [3, 0] {
+            let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let looked = asked.clone();
+            edge.read_cores_with(move |pid| match pid == relay {
+                true => usize::from(looked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < starved),
+                false => 1,
+            });
+            let waiting = edge.clone();
+            let calm = alondra_core::clock::spawn_blocking_unwatched(move || waiting.until_calm(PATIENCE, || waiting.committed())).await.unwrap();
+            assert!(!calm, "a host no daemon attached to is never calm");
+            assert_eq!(
+                asked.load(std::sync::atomic::Ordering::SeqCst),
+                starved + 1,
+                "the wait lasted while the host's process waited for a core, {starved} limits, and ended at the first it did not"
+            );
+        }
+    });
+}
+
+/// A thread of the daemon, besides the one that waits, that waits for a core is the daemon still
+/// moving, and the process of a host that is gone counts no more.
+#[test]
+fn a_thread_of_the_daemon_that_waits_for_a_core_moves_the_daemon() {
+    let (home, edge, _) = edge();
+    let mut process = Owned(Process::new("/bin/sleep").arg("600").process_group(0).spawn().unwrap());
+    let relay = process.0.id();
+    let _host = edge.start_host(&bootstrap(), relay, home.path().join("b")).unwrap();
+    let daemon = Arc::new(std::sync::atomic::AtomicUsize::new(1));
+    let threads = daemon.clone();
+    edge.read_cores_with(move |pid| match pid == relay {
+        true => 1,
+        false => threads.load(std::sync::atomic::Ordering::SeqCst),
+    });
+    assert!(edge.waiting_for_cores(), "the host's process waits for a core");
+    process.0.kill().unwrap();
+    process.0.wait().unwrap();
+    assert!(!edge.waiting_for_cores(), "only the thread that asks runs, and the host is gone");
+    daemon.store(2, std::sync::atomic::Ordering::SeqCst);
+    assert!(edge.waiting_for_cores(), "another thread of the daemon waits for a core");
+}
+
+/// The kernel says how many threads of a process run or wait for a core: at least the one that
+/// asks about its own process, and none of a process that is gone.
+#[test]
+fn the_threads_that_wait_for_a_core_are_read_from_the_kernel() {
+    assert!(alondra_scenarios::cores::runnable_threads(std::process::id()) >= 1, "the thread that asks runs");
+    let mut process = Process::new("/bin/sleep").arg("600").spawn().unwrap();
+    let gone = process.id();
+    process.kill().unwrap();
+    process.wait().unwrap();
+    assert_eq!(alondra_scenarios::cores::runnable_threads(gone), 0, "a process that is gone runs nothing");
 }
