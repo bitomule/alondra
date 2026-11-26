@@ -2152,6 +2152,24 @@ async fn a_takeover_that_works_without_the_user_closes_the_host_lost_card_and_th
 }
 
 #[cfg(not(feature = "real-hosts"))]
+// 26 November (edit_bench, Mac loaded): the owner of a node the user kept, whose task was cancelled
+// and reopened, failed late. It put a host that resumes the session in its place by adopting the
+// task's node, which by then was the reopened task's new one: two owners fought for it and the task
+// read «host lost». An owner whose node is not the one its task runs on takes nothing and ends.
+#[test]
+fn an_owner_whose_node_the_task_no_longer_runs_on_takes_nothing() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    assert!(!driver.superseded(), "the node the task runs on is not superseded");
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
+    slice.run(&system(), "kept", Command::RecordNodeEnd { task_id: TASK.into(), end: NodeEnd::KeptByUser, agent_id: Some(driver.agent().clone()) });
+    slice.run(&user(), "reopen", Command::ReopenTask { task_id: TASK.into() });
+    assert!(driver.superseded(), "the reopened task has no node of this execution");
+    driver.stop().unwrap();
+}
+
+#[cfg(not(feature = "real-hosts"))]
 // 20 November (release check of the Codex test fix, Mac loaded): while a test stopped its owners, a
 // turn of its task was resumed with no owner left and a takeover started after the stop had joined
 // the ones under way. Its host outlived the test. A takeover asked for while every owner stops

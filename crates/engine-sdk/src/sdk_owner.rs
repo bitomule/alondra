@@ -2651,6 +2651,12 @@ impl Driver {
         self.worker.provider() == Provider::Claude && self.claude_session.is_none() && self.silent_hosts >= SILENT_HOSTS && !self.unopened().unwrap_or(false)
     }
 
+    /// Whether the task runs on another node by now, or on none: this owner's host belongs to an
+    /// execution that ended, and adopting or losing the task's host would take another node's.
+    fn superseded(&self) -> bool {
+        self.domain.state().tasks.get(&self.task).is_none_or(|task| task.agent_id.as_ref() != Some(&self.agent))
+    }
+
     /// Whether the owner should put a host that resumes the session in place of its own: its host
     /// closed or its connection to it failed, which a host that is dying shows before its exit, or
     /// a step of the owner itself failed. A replacement positively observed dead, or one that
@@ -2925,6 +2931,10 @@ impl Owner {
                             driver.host_closed = true;
                         }
                     }
+                }
+                if driver.superseded() {
+                    log!("the SDK owner of {} ended: its node {} is no longer the one the task runs on", driver.task, driver.agent);
+                    break;
                 }
                 let backend = driver.domain.sdk().map(|(backend, _)| backend.clone());
                 let Some(backend) = backend.filter(|_| driver.host_to_replace()) else {

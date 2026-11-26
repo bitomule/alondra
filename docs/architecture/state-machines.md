@@ -1621,6 +1621,11 @@ truth = ["memory", "sqlite:provider_execution_owners"]
   now shares one `Handoffs` gate with the driver of every host it runs (`Handoffs`, `:300-354`; field `:294`, copied
   into the `Owner` at `:2618`, carried to the next driver by `replace_ended_host`, `:2438-2442`). The gate is per
   `Owner`, not per agent: two live `Owner`s of the same agent (F-ENGINE-12, branch 2) have two gates.
+- **Superseded owner** (26 November, edit_bench under load): an `Owner` whose node is no longer the one its task runs
+  on (the task was cancelled, kept by the user and reopened, so the task has none or a new one) ends instead of
+  replacing its host or recording a loss (`Driver::superseded`, checked in the `Owner` loop before
+  `host_to_replace`). `adopt` and `RecordHostLost` act on the task's current node, so a late old owner used to
+  adopt the new execution's node and revoke its owner (`StaleOwner`), leaving a «host lost» card on the new execution.
 
 ### M-ENGINE-5 · `Owner` thread loop (explicit in code)
 
