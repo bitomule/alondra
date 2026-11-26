@@ -31,7 +31,7 @@ pub(crate) use new_work::Github;
 pub(crate) use alondra_daemon_engine::live::Relaunch;
 #[cfg(test)]
 pub(crate) use alondra_daemon_engine::live::Live;
-pub(crate) use alondra_daemon_engine::reply::Reply;
+pub(crate) use crate::reply::Reply;
 pub use pr_details::PrView;
 pub use pr_details::ViaGh;
 pub(crate) use pr_details::{hand_back_conflicts, Merge};

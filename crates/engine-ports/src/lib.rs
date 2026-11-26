@@ -33,6 +33,7 @@ pub mod sign_in_returns;
 pub mod plugins;
 pub mod processes;
 pub mod reports;
+pub mod schedule_clock;
 pub mod schedule_routes;
 pub mod sdk;
 pub mod spec_worktrees;

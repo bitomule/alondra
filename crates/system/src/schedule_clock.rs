@@ -1,4 +1,6 @@
-//! Wall-clock scheduling primitives for the Mac daemon.
+//! The Mac's wall clock as the schedule runner waits on it: a dispatch timer on the wall clock, which
+//! fires also after a sleep, and Foundation's notifications of a new system clock or time zone.
+use alondra_engine_ports::schedule_clock::{ClockChange, ScheduleClock, Watch};
 use dispatch2::{
     _dispatch_source_type_timer, DispatchObject, DispatchQueue, DispatchQueueAttr, DispatchSource,
     DispatchTime,
@@ -12,19 +14,21 @@ use std::ffi::c_void;
 use std::ptr::NonNull;
 use tokio::sync::watch;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClockChange {
-    SystemClock,
-    TimeZone,
+pub struct MacClock;
+
+impl ScheduleClock for MacClock {
+    fn changes(&self) -> Watch<ClockChange> {
+        let (receiver, observer) = observe_clock();
+        Watch::new(receiver, observer)
+    }
+
+    fn timer_at(&self, unix_millis: i64) -> Watch<bool> {
+        let (timer, fired) = WallTimer::at(unix_millis);
+        Watch::new(fired, timer)
+    }
 }
 
-pub struct ClockChanges {
-    receiver: watch::Receiver<ClockChange>,
-    _observer: SystemClockObserver,
-}
-
-impl ClockChanges {
-    pub fn new() -> Self {
+fn observe_clock() -> (watch::Receiver<ClockChange>, SystemClockObserver) {
         let (sender, receiver) = watch::channel(ClockChange::SystemClock);
         let center = NSNotificationCenter::defaultCenter();
         let clock_sender = sender.clone();
@@ -55,18 +59,7 @@ impl ClockChanges {
                 &zone_block,
             )
         };
-        Self {
-            receiver,
-            _observer: SystemClockObserver {
-                center,
-                tokens: vec![clock_token, zone_token],
-            },
-        }
-    }
-
-    pub fn receiver(&mut self) -> &mut watch::Receiver<ClockChange> {
-        &mut self.receiver
-    }
+        (receiver, SystemClockObserver { center, tokens: vec![clock_token, zone_token] })
 }
 
 struct SystemClockObserver {
@@ -90,10 +83,10 @@ impl Drop for SystemClockObserver {
     }
 }
 
-pub struct WallTimer(Option<dispatch2::DispatchRetained<DispatchSource>>);
+struct WallTimer(Option<dispatch2::DispatchRetained<DispatchSource>>);
 
 impl WallTimer {
-    pub fn at(unix_millis: i64) -> (Self, watch::Receiver<bool>) {
+    fn at(unix_millis: i64) -> (Self, watch::Receiver<bool>) {
         let (sender, receiver) = watch::channel(false);
         let seconds = unix_millis.div_euclid(1_000);
         let nanos = unix_millis.rem_euclid(1_000) * 1_000_000;
@@ -146,7 +139,7 @@ mod tests {
 
     #[test]
     fn system_clock_and_time_zone_notifications_wake_the_clock_receiver() {
-        let mut changes = ClockChanges::new();
+        let mut changes = MacClock.changes();
         let center = NSNotificationCenter::defaultCenter();
         unsafe { center.postNotificationName_object(NSSystemTimeZoneDidChangeNotification, None) };
         assert!(changes.receiver.has_changed().unwrap());
@@ -154,9 +147,13 @@ mod tests {
 
         unsafe { center.postNotificationName_object(NSSystemClockDidChangeNotification, None) };
         assert!(changes.receiver.has_changed().unwrap());
-        assert_eq!(
-            *changes.receiver.borrow_and_update(),
-            ClockChange::SystemClock
-        );
+        assert_eq!(*changes.receiver.borrow_and_update(), ClockChange::SystemClock);
+    }
+
+    #[tokio::test]
+    async fn a_wall_timer_fires_once_the_wall_clock_reaches_its_instant() {
+        let mut timer = MacClock.timer_at(alondra_core::now_millis() + 50);
+        assert!(!*timer.receiver.borrow());
+        tokio::time::timeout(std::time::Duration::from_secs(30), timer.receiver.wait_for(|fired| *fired)).await.unwrap().unwrap();
     }
 }

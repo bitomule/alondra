@@ -53,9 +53,12 @@ CRATE_LAYERS = {
     "crates/client-port": PORTS,
     "crates/store": PORTS,
     "crates/agent-application": PORTS,
+    # The launch data, options and replies the engine and its adapters share.
+    "crates/daemon-engine-model": PORTS,
+    # The domain's authority, content files, hook texts and schedules the engine and its adapters share.
+    "crates/daemon-support": PORTS,
     "crates/engine-kernel": APPLICATION,
     "crates/daemon-engine": APPLICATION,
-    "crates/daemon-engine-model": APPLICATION,
     "crates/daemon-engine-machine": APPLICATION,
     "crates/engine-admission": APPLICATION,
     "crates/engine-orchestrator": APPLICATION,
@@ -64,8 +67,6 @@ CRATE_LAYERS = {
     "crates/engine-live": APPLICATION,
     "crates/engine-mcp": APPLICATION,
     "crates/engine-worktrees": APPLICATION,
-    # Mixed: most of it is git, disk and process code that moves to the `system` adapter.
-    "crates/daemon-support": APPLICATION,
     "crates/views": APPLICATION,
     "crates/github-gh": ADAPTER_OUT,
     "crates/cli": ADAPTER_IN,
@@ -102,8 +103,6 @@ PRIVATE_TO = {
 LAYER_EXCEPTIONS = {
     "crates/daemon-engine": [
         "crates/daemon-engine-machine",
-        "crates/daemon-engine-model",
-        "crates/daemon-support",
         "crates/engine-github",
         "crates/engine-kernel",
         "crates/engine-live",
@@ -112,67 +111,42 @@ LAYER_EXCEPTIONS = {
         "crates/provider-claude",
         "crates/provider-codex",
     ],
-    "crates/daemon-engine-machine": [
-        "crates/daemon-engine-model",
-        "crates/daemon-support",
-    ],
-    "crates/daemon-engine-model": [
-        "crates/daemon-support",
-    ],
     "crates/store-sqlite": [
-        "crates/daemon-engine-model",
-        "crates/daemon-support",
         "crates/provider-codex",
     ],
     # The server reaches the rest of the engine through `DomainApi` once phase 7 moves it there.
     "crates/daemon-server": [
         "crates/daemon-engine",
     ],
-    "crates/daemon-support": [
-        "crates/provider-claude",
-    ],
     "crates/engine-admission": [
         "crates/daemon-engine-machine",
-        "crates/daemon-engine-model",
-        "crates/daemon-support",
     ],
     "crates/engine-github": [
-        "crates/daemon-engine-model",
-        "crates/daemon-support",
         "crates/engine-kernel",
     ],
     "crates/engine-kernel": [
         "crates/daemon-engine-machine",
-        "crates/daemon-engine-model",
-        "crates/daemon-support",
     ],
     "crates/engine-live": [
-        "crates/daemon-support",
         "crates/engine-kernel",
         "crates/provider-claude",
         "crates/provider-codex",
     ],
     "crates/engine-mcp": [
-        "crates/daemon-support",
         "crates/engine-kernel",
         "crates/provider-claude",
     ],
     "crates/engine-orchestrator": [
-        "crates/daemon-engine-model",
-        "crates/daemon-support",
         "crates/engine-kernel",
         "crates/provider-claude",
         "crates/provider-codex",
     ],
     "crates/engine-sdk": [
         "crates/daemon-engine-machine",
-        "crates/daemon-engine-model",
-        "crates/daemon-support",
         "crates/engine-github",
         "crates/engine-kernel",
     ],
     "crates/engine-worktrees": [
-        "crates/daemon-support",
         "crates/engine-kernel",
     ],
 }

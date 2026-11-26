@@ -604,8 +604,8 @@ async fn execute_external(
             if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let body = json!({"text":text,"attachments":attachments,"kind":"message","task_id":task,
                 "from_claude":flag(&request.input, "from_claude")});
-            let reply = crate::domain_messages::relayed_to_task(domain, home, device, &task, Some(&body));
-            Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
+            let reply = crate::reply::Reply::answer(crate::domain_messages::relayed_to_task(domain, home, device, &task, Some(&body)));
+            Ok(to_applied(reply.status.as_u16(), reply.body))
         }
         Verb::Msg if action.subject == "view" || matches!(state.resolve_target(&action.subject), Target::Orchestrator(_)) => {
             let text = request.input.text.as_deref().unwrap_or_default().trim();

@@ -1,5 +1,5 @@
 //! Faults and spawns a test injects for one Alondra home: nothing happens until a test asks for one.
-use alondra_daemon_support::locks::Poisonable as _;
+use alondra_foundation::locks::Poisonable as _;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};

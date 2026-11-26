@@ -22,6 +22,8 @@ pub mod local_network;
 pub mod machine;
 pub mod plugins;
 pub mod rehearsal;
+#[cfg(target_os = "macos")]
+pub mod schedule_clock;
 pub mod secret_files;
 pub mod sign_in_returns;
 pub mod spec_worktree;
@@ -66,6 +68,8 @@ pub fn wire_with(registry: &Registry, claude_home: fn() -> PathBuf, rehearsal: b
     registry.provide::<dyn Processes>(Arc::new(MacProcesses));
     registry.provide::<dyn Plugins>(Arc::new(MacPlugins));
     registry.provide::<dyn SignInReturns>(Arc::new(Listeners));
+    #[cfg(target_os = "macos")]
+    registry.provide::<dyn alondra_engine_ports::schedule_clock::ScheduleClock>(Arc::new(schedule_clock::MacClock));
 }
 
 pub struct Listeners;
@@ -355,6 +359,6 @@ mod tests {
         assert_eq!(worktrees.worktree_of("0123abcd-session"), Some(made.clone()));
         assert_eq!(worktrees.origin("0123abcd-session"), Some(WorktreeOrigin::Made(made)));
         assert_eq!(worktrees.worktree_of("ffffffff-other"), None, "a session without a job has none");
-        assert!(registry.missing().iter().all(|port| !matches!(*port, "Accounts" | "Disk" | "MachineProbe" | "Plugins" | "Processes" | "SignInReturns" | "Worktrees")), "{:?}", registry.missing());
+        assert!(registry.missing().iter().all(|port| !matches!(*port, "Accounts" | "Disk" | "MachineProbe" | "Plugins" | "Processes" | "ScheduleClock" | "SignInReturns" | "Worktrees")), "{:?}", registry.missing());
     }
 }

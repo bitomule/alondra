@@ -3,7 +3,6 @@ mod adapter;
 mod agent;
 mod batch;
 mod context;
-mod elicitation;
 mod ended;
 mod normalizer;
 mod records;

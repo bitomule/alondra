@@ -7,7 +7,6 @@ mod adapter;
 mod agent;
 mod batch;
 mod context;
-mod elicitation;
 mod mcp;
 mod ended;
 mod normalizer;
@@ -20,7 +19,6 @@ pub use adapter::{
 };
 pub use context::{Cached, ContextEvent, context_event, sdk_message};
 pub use mcp::{mcp_traits, remove_arguments, settings_file, still_configured};
-pub use elicitation::{elicitation_content, only_text_field};
 pub use ended::{EndedJournal, Retained};
 pub use agent::{wire, Claude};
 pub use batch::{BatchHost, PendingHostEvent, HostEvent, McpServer, OrchestratorProfile};

@@ -401,7 +401,7 @@ async fn accounts_read(
     };
     let (domain, home) = (state.domain(), state.home.clone());
     match alondra_core::clock::spawn_blocking(move || crate::accounts::read(&*domain, &home, lang)).await {
-        Ok(reply) => crate::accounts::for_client(reply, query.provider_accounts()).into_response(),
+        Ok(reply) => crate::reply::Reply::from(crate::accounts::for_client(reply, query.provider_accounts())).into_response(),
         Err(_) => storage(),
     }
 }
@@ -423,7 +423,7 @@ async fn accounts_write(
     };
     let (domain, home) = (state.domain(), state.home.clone());
     match alondra_core::clock::spawn_blocking(move || crate::accounts::write(&*domain, &home, &body, lang)).await {
-        Ok(reply) => crate::accounts::for_client(reply, query.provider_accounts()).into_response(),
+        Ok(reply) => crate::reply::Reply::from(crate::accounts::for_client(reply, query.provider_accounts())).into_response(),
         Err(_) => storage(),
     }
 }
@@ -444,7 +444,7 @@ async fn accounts_check(
         crate::accounts::check_now(&*domain, &home);
         crate::accounts::read(&*domain, &home, lang)
     }).await {
-        Ok(reply) => crate::accounts::for_client(reply, query.provider_accounts()).into_response(),
+        Ok(reply) => crate::reply::Reply::from(crate::accounts::for_client(reply, query.provider_accounts())).into_response(),
         Err(_) => storage(),
     }
 }
@@ -905,7 +905,7 @@ pub(crate) async fn send_agent_message(
     agent: &alondra_domain_model::AgentId,
     body: Value,
 ) -> Value {
-    crate::domain_messages::relayed(domain, home, sender, agent.clone(), Some(&body)).await
+    crate::reply::Reply::answer(crate::domain_messages::relayed(domain, home, sender, agent.clone(), Some(&body)).await).into_value()
 }
 
 /// Shared adapter used by explicit orchestrator routes and the views action dispatcher.

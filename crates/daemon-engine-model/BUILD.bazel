@@ -1,4 +1,4 @@
-load("//tools/layers:crates.bzl", "application_crate")
+load("//tools/layers:crates.bzl", "port_crate")
 load("//bazel/rules:tree.bzl", "repo_tree")
 load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
@@ -13,12 +13,12 @@ WORKSPACE_DEPS = [
     "//crates/store:store",
 ]
 
-application_crate(
+port_crate(
     name = "daemon_engine_model",
     srcs = production_sources(),
     crate_name = "alondra_daemon_engine_model",
     version = VERSION,
-    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + ["//crates/daemon-support:daemon_support"],
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
     test_visibility = ["//crates/daemon-server:__pkg__"],
 )
 
@@ -31,7 +31,7 @@ low_opt_rust_test(
     edition = "2024",
     env = {"HOME": "."},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/daemon-support:daemon_support"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
 )
 
 # The library compiles only production sources: a test file among its inputs would rebuild every

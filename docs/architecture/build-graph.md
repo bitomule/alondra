@@ -1901,3 +1901,42 @@ three packages finds the same 1,740 tests in the same targets.
 - **Codex:** its cases share the model hosts' fixtures with the rest of the engine's tests
   (`model_fixture/launch_fixture.rs`, `engine_fixtures/model_hosts.rs`). They get a target of their
   own in phase 4 of the plan that empties `LAYER_EXCEPTIONS`, when `daemon-engine` stops linking Codex.
+
+## The engine's shared data in the ports layer (phase 2 of emptying the exceptions, 2026-11-26)
+
+`daemon-support` and `daemon-engine-model` moved to the `ports` layer, and the 21 exceptions of the
+crates that depended on them went with it (the ceiling of `LAYER_EXCEPTIONS` from 46 to 25,
+[layers.md](layers.md)). Before the move each lost what tied it to a layer above:
+
+- `only_text_field` and `elicitation_content` live in `core` (`model::elicitation`), next to the
+  answer options: the hook texts and both providers use that one copy, Codex lost its own, and
+  `daemon-support` no longer depends on `provider-claude`.
+- The schedule runner's wall-clock timers (the dispatch timer and the clock and time zone
+  notifications) are the `system` adapter's (`schedule_clock::MacClock`), behind the
+  `ScheduleClock` port of `engine-ports`. `system::wire` gives it to the registry and the runner asks
+  the registry for it; `engine-doubles` has a clock a test moves by hand.
+- The HTTP side of a reply (`IntoResponse`, `Reply::error` and `status_for`) is `daemon-server`'s
+  (`reply.rs`): the model keeps only the `Reply` value, on the `http` crate's status instead of
+  axum's, and the engine's relayed messages answer with the domain's refusal, which the server
+  turns into the status.
+- `daemon-engine-model` takes `locks` and `save` from `foundation`, so it no longer depends on
+  `daemon-support` at all.
+
+`edit_bench --query-only`, before on main at 2e6e5b1 and after on this change, same Mac (load
+average about 10 to 17):
+
+| Edit | Before: crates / test targets reopened | After |
+|---|---:|---:|
+| `daemon-support/src/hook_text.rs` | 23 / 90 | 22 / 87 |
+| `daemon-support/src/schedule_clock.rs` → `system/src/schedule_clock.rs` | 23 / 90 | 10 / 43 |
+| `daemon-engine-model/src/launch.rs` | 22 / 87 | 22 / 87 |
+| `daemon-engine-model/src/reply.rs` | 22 / 87 | 22 / 87 |
+| `system/src/machine.rs`, for reference | 10 / 43 | - |
+| `engine-ports/src/schedule_clock.rs` (the new port) | - | 36 / 123 |
+
+- **The clock's code** costs what any edit of `system` costs: only the roots link it.
+- **`hook_text.rs`** reopens one crate less: `daemon-engine-model` no longer depends on
+  `daemon-support`. The rest of the reclassified crates' edits cost the same, as the plan expected:
+  a layer is a rule about who may depend on whom, not a change of the graph.
+- **The port** is in `engine-ports`, whose every edit reopens 36 crates; it is a trait of two
+  methods that should rarely change.
