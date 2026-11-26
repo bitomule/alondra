@@ -1,0 +1,138 @@
+name = "a pull request Alondra delivered for a node that kept stopping closes its planned task once merged, when the node's turn after the cleanup request ends at rest, across a restart of the daemon, and the task waiting on it starts"
+max_virtual = "2h"
+
+[[step]]
+do = "request"
+text = "Move the GitHub client behind a port"
+task = "t1"
+title = "Move the GitHub client behind a port"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Use the GitHub port in the engine"
+after = ["t1"]
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "plan"
+task = "t1"
+request = "plan"
+plan = "# Move the GitHub client behind a port\n\n- [ ] Add the GitHub port\n- [ ] Move the client into its adapter"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "plan-asked"
+screens = ["home"]
+
+[[step]]
+do = "press"
+presentation = "decision-t1-1-6"
+action = "accept"
+screen = "home"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "github-port"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "settle_stall"
+task = "t1"
+result = "The GitHub port and its adapter are in pull request #7"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "delivered-for-the-node"
+screens = ["home", "task:t1"]
+
+[[step]]
+do = "press"
+presentation = "open-pr-t1-33"
+action = "merge"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "merged"
+screens = ["task:t1"]
+
+[[step.expect]]
+check = "pr_merged_into"
+pr = 7
+branch = "main"
+
+[[step]]
+do = "restart"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "closed"
+screens = ["tasks"]
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "done"
+
+[[step.expect]]
+check = "view_shows"
+screen = "tasks"
+text = "Starting · since"

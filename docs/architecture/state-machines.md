@@ -827,11 +827,20 @@ transitions = ["ThroughSdk -> Closed"]
 ```toml state-machine
 id = "M-LIFE-10"
 code = ["crates/domain-model/src/model.rs::WrapUp", "crates/domain-model/src/model.rs::NodeEnd", "crates/domain-model/src/rules.rs::node_closing"]
-truth = ["sqlite:task_wrap_ups", "sqlite:node_last_words", "sqlite:task_stalls"]
+truth = ["sqlite:task_wrap_ups", "sqlite:task_cleanup_turns", "sqlite:node_last_words", "sqlite:task_stalls"]
 ```
 
-- **Kind**: implicit. **Defined in**: `Task.wrap_up` (`asked_at`, `cleaned_at`, `node: Option<NodeEnd>`, `post_merge_work`, `close_cancelled`) + `node_closing()` (`rules.rs:2540-2546`: terminal, `wrap_up.node` or confirmed cleanup) + `in_cleanup`, `wraps_up`.
+- **Kind**: implicit. **Defined in**: `Task.wrap_up` (`asked_at`, `cleaned_at`, `node: Option<NodeEnd>`, `post_merge_work`, `close_cancelled`, `cleanup_turn: Option<CleanupTurn>`) + `node_closing()` (`rules.rs:2540-2546`: terminal, `wrap_up.node` or confirmed cleanup) + `in_cleanup`, `wraps_up`.
 - Governs rule 8 of the doc (nothing asks, nobody resumes it). `RecordNodeEnd` drains everything at once if the task ends (`rules.rs:5409-5414`), or releases the execution if not.
+- **Cleanup turn** (`CleanupTurn ∈ {Began, Rested}`, table `task_cleanup_turns`): what the node did with the request
+  to clean up when it never called `cleanup_done`. `wrap_up_step` clears it when it asks and when the delivery stops
+  being settled; a turn that begins while the request is open sets `Began` (`lifecycle.rs::turn_began`), and the end
+  of that turn with the execution resting, no pending input and no card sets `Rested`
+  (`lifecycle.rs::rest_after_cleanup_request`). `Rested` is the fact on which the closer ends an SDK node that never
+  confirmed (M-ENGINE-10); a new turn sets `Began` again. So is a pause of Alondra's own (the gate's or the usage
+  limit's) holding the request from the node (`node_machine.rs::cleanup_held_by_alondra`): nothing reaches it before
+  that pause ends. It replaced the cleanup wait (`close_free_nodes_after`,
+  30 min by default) for SDK nodes: no time decides it.
 - **Re-checked after #505** (at `3fc0370ea`): the domain side is unchanged (`node_closing` `rules.rs:2552-2554`,
   `RecordNodeEnd` `:5376-5432`). What changed is when the engine asks for it: the SDK owner's stop now waits for
   the input or control it is handing to the host to get its receipt before the host is told to end (M-ENGINE-10).
@@ -1240,7 +1249,7 @@ code = ["crates/domain-model/src/checklist.rs::Checklist", "crates/domain-model/
 truth = ["sqlite:task_checklists", "sqlite:delivery_checklists"]
 ```
 
-- **Kind**: implicit. **Defined in**: `checklists: TaskId → Checklist{plan, items}` (tables `task_checklists`, `delivery_checklists`). Origin: approving a plan held by a hook (`AnswerQuestion` with `approve`, `rules.rs:4371-4376`), creating the task of a `request_plans` (`rules.rs:3676-3684`), `plan_items` (`take_plan_items`, `:1838-1863`) or `continues` (`:3664-3672`). Marks per final delivery (`checklist_marks_cover_the_plan`, `:600-662`); proof required to complete, confirm cleanup and finish post-merge work (`require_checklist_proof`, `:668`). `DeclarePostMergeWork` lets a PR be delivered with partial marks (`docs/architecture/cards.md`, "A PR review before publication").
+- **Kind**: implicit. **Defined in**: `checklists: TaskId → Checklist{plan, items}` (tables `task_checklists`, `delivery_checklists`). Origin: approving a plan held by a hook (`AnswerQuestion` with `approve`, `rules.rs:4371-4376`), creating the task of a `request_plans` (`rules.rs:3676-3684`), `plan_items` (`take_plan_items`, `:1838-1863`) or `continues` (`:3664-3672`). Marks per final delivery (`checklist_marks_cover_the_plan`, `:600-662`); proof required to complete, confirm cleanup and finish post-merge work (`require_checklist_proof`), and for dependents to see the task landed (`landed`). The points that hold are `checklist_owed`: the unproved ones, except when the final delivery is the one Alondra made for a stopped node (`SystemCard::OpenPrDelivery`, which carries no checklist and never deferred a point), a PR of the task merged, none is open and no work is owed after the merge: the user's merge settles them. `DeclarePostMergeWork` lets a PR be delivered with partial marks (`docs/architecture/cards.md`, "A PR review before publication").
 - **Invariants**: enforced (`validate`, `rules.rs:6226-6245`): each checklist belongs to a plan of its request; each item has a single task. Assumed: items moved with `plan_items` to a task that is later cancelled only come back through `continues` (no rule returns them). No confirmed finding.
 
 ### M-CARDS-9 · Documents and revisions
@@ -1838,8 +1847,11 @@ truth = ["sqlite:task_closings"]
 
 - **Kind**: implicit. **Defined in**: the `TaskClosing` row (`attempts`, `next_attempt`, `rm_started_at`,
   `attempted_cleaned_at`, `since`) plus `due()` (`task_closer.rs:113-123`) and `close_sdk_node` (`:458-530`).
-- **Deadlines outside the policy**: `Timing.wait` (cleanup wait), `RETRY` = 5 min and `MAX_FAILURES` = 3, which
-  ends in a card.
+- **Deadlines outside the policy**: `Timing.wait` (cleanup wait, only for nodes of `claude --bg`), `RETRY` = 5 min
+  and `MAX_FAILURES` = 3, which ends in a card. An SDK node asked to clean up closes when it confirms, when the user
+  ends its work after the merge, when its folder is gone, or when the turn the request started ends at rest
+  (`wrap_up.cleanup_turn == Rested`, M-LIFE-10), or while a pause of Alondra's own holds the request from it
+  (`cleanup_held_by_alondra`): a fact, never the wait.
 - **Re-checked after #505** (at `3fc0370ea`; `due()` `task_closer.rs:117`, `close_sdk_node` `:462-533`, `RETRY`
   `:32`, `MAX_FAILURES` `:34`): the states and the row are unchanged. The step "stop the host" (`close_sdk_host`,
   `:526`, through `Owner::close` → `Owner::end`) now waits for the input or control the owner is handing to the host
@@ -1864,7 +1876,7 @@ policy holds the deadlines on what a task owes and lists every timer of this tab
 | idle_release 2 min | `idle_release.rs` | Closes the host of an idle node (documented in admission.md) |
 | `UNKNOWN_RESET_WAIT_MS` 30 min | `usage_pause.rs:31,485` | An exhausted window with no reset time stops blocking |
 | `TERMINATE_AFTER`/`KILL_AFTER` | `pauses.rs:20-21` | Signals to processes of paused `--bg` nodes |
-| `Timing.wait`, `RETRY` | `task_closer.rs:30-55` | Forced close after the cleanup wait |
+| `Timing.wait`, `RETRY` | `task_closer.rs:30-55` | Forced close of a `claude --bg` node after the cleanup wait; an SDK node closes on the rest of its turn after the request instead (M-LIFE-10) |
 | `INTERRUPT_GRACE` 10 s | `sdk_owner.rs` (`settle_interrupt`) | How long the owner waits for a host asked to interrupt its turn and stop to close, reading its interrupted result, before killing it |
 | `io_timeout` of one handoff (since #505) | `sdk_owner.rs:340-349`, `:2812` at `3fc0370ea`; `provider-claude/src/adapter.rs:672-676` | How long a stop of an SDK owner waits for the input or control it is handing to the host before asking the host to end |
 
@@ -4937,7 +4949,7 @@ code = ["crates/domain-model/src/model.rs::WrapUp", "crates/domain-model/src/mod
 truth = ["sqlite:task_wrap_ups", "sqlite:task_closings"]
 ```
 
-- **Domain** (`task_wrap_ups`): `asked_at`, `cleaned_at`, `close_cancelled`, `node_end: Closed|Gone|KeptByUser|UsersOwn`
+- **Domain** (`task_wrap_ups`, `task_cleanup_turns`): `asked_at`, `cleaned_at`, `close_cancelled`, `node_end: Closed|Gone|KeptByUser|UsersOwn`, `cleanup_turn: Began|Rested` (M-LIFE-10)
   (`model.rs:425-458`). `wrap_up_step` asks for cleanup when the delivery settles (`rules.rs:2549-2575`); `ConfirmCleanup`
   (`rules.rs:5317-5344`); `RecordNodeEnd` (`rules.rs:5364-5420`, requires that no worktrees are left open for Closed/Gone).
 - **Closer** (`task_closings`, not domain state): `since`, `failures`, `last_error`, `next_attempt`,

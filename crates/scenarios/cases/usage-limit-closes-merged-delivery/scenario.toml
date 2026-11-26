@@ -1,4 +1,4 @@
-name = "a delivery whose pull request merged closes when its node ends, though the usage limit holds the task"
+name = "a delivery whose pull request merged closes at once, though the usage limit holds its node and keeps the request to clean up from it"
 fixes = "#227"
 max_virtual = "2h"
 
@@ -44,24 +44,6 @@ status = 429
 do = "press"
 presentation = "d1"
 action = "merge"
-
-[[step]]
-do = "rest"
-max = "10m"
-
-[[step]]
-do = "checkpoint"
-name = "held-by-the-limit"
-screens = ["home", "task:t1"]
-
-[[step.expect]]
-check = "view_shows"
-screen = "task:t1"
-text = "Claude limit"
-
-[[step]]
-do = "advance"
-by = "40m"
 
 [[step]]
 do = "rest"

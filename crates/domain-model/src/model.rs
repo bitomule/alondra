@@ -472,6 +472,19 @@ pub struct WrapUp {
     /// What became of the node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<NodeEnd>,
+    /// The node's turns since Alondra asked it to clean up, while it has not confirmed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_turn: Option<CleanupTurn>,
+}
+/// What the node did after Alondra asked it to clean up, when it never called `cleanup_done`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupTurn {
+    /// A turn of the node began after the request.
+    Began,
+    /// That turn ended with nothing of the node's running, nothing waiting to reach it and no
+    /// card holding it: the node is done, so Alondra closes it.
+    Rested,
 }
 impl WrapUp {
     pub fn is_default(&self) -> bool {

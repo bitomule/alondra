@@ -591,7 +591,8 @@ fn a_close_kills_a_host_that_never_reacts_to_the_interrupt() {
 }
 
 // The node delivers, its host dies with nothing left in its worktrees, and the user accepts the
-// result: the task closes without the session, which is gone, with its node's end as the fact.
+// result: a host resumes the session to take the request to clean up, and once that turn rests the
+// task closes, with its node's end as the fact.
 #[cfg(not(feature = "real-hosts"))]
 #[tokio::test]
 async fn accepting_a_task_whose_host_died_closes_it() {
@@ -611,6 +612,16 @@ async fn accepting_a_task_whose_host_died_closes_it() {
     crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
     assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Resting, "the end of the host its journal kept is committed: nothing runs");
     assert!(slice.domain.owns_sdk_host(&agent), "a host that resumes the session took the execution");
+    crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
+    assert!(!slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].over(), "no turn read the request to clean up yet");
+    let title = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].title.clone();
+    slice.run(&Actor::System, "cleanup-request", Command::TellNode {
+        task_id: TASK.into(), text: alondra_domain_model::cleanup_request(&title, &TASK.into(), &[]), from_user: false, answers: None,
+    });
+    let mut changed = slice.domain.subscribe();
+    while slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].wrap_up.cleanup_turn != Some(alondra_domain_model::CleanupTurn::Rested) {
+        changed.changed().await.unwrap();
+    }
     crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
     let state = slice.domain.state().unwrap();
     let task = &state.tasks[&TaskId::from(TASK)];

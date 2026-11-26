@@ -322,8 +322,8 @@ Pick the tool by what you need:
   instructions say (for example a build cache kept for this worktree outside it). Never delete files or
   links inside your worktree with `rm`: Alondra deletes the whole worktree right after. If the
   project left nothing outside the worktree, call `cleanup_done` without deleting anything. Change
-  nothing else. Alondra then closes this session and its worktree; if you do not answer, it
-  closes it after a while anyway. If it tells you something stops it from closing the session,
+  nothing else. Alondra then closes this session and its worktree; if you end the turn that
+  request started without calling it, Alondra closes them anyway. If it tells you something stops it from closing the session,
   fix it and call `cleanup_done` again.
 - `post_merge_work`: something you started for the task still runs after its PR merged (a deploy,
   a Homebrew publish, a release script), above all in the background, where you look idle. Call
