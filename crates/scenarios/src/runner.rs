@@ -751,10 +751,13 @@ impl Context<'_> {
                 })?;
                 self.worktrees.insert(task.clone(), path);
             }
-            Step::Worktree { task, files, outside_link, from: None, base } => self.worktree(index, task, files, outside_link.as_deref(), base)?,
+            Step::Worktree { task, files, outside_link, from: None, base, images } => {
+                self.worktree(index, task, files, outside_link.as_deref(), base)?;
+                self.write_files(index, task, images)?;
+            }
             Step::ProposeSpecs { task, level, files, refused } => {
                 let level = alondra_domain_model::SpecLevel::parse(level).ok_or_else(|| Self::failed(index, format!("{level} is not a level")))?;
-                let files = files.iter().map(|file| alondra_domain_model::SpecFile { path: file.path.clone(), text: file.text.clone() }).collect();
+                let files = files.iter().map(|file| alondra_domain_model::SpecFile { path: file.path.clone(), text: file.text.clone(), source: file.source.clone(), mockup: None }).collect();
                 self.node_command(index, task, &format!("/tasks/{task}/specs"), refused.as_deref(), Command::ProposeSpecs {
                     task_id: task.clone().into(), level, files, check: Default::default(),
                 }).await?;
@@ -770,7 +773,7 @@ impl Context<'_> {
                 }).await?;
                 self.settle().await?;
             }
-            Step::RecordValidation { task, subject, check, verdict, refused } => {
+            Step::RecordValidation { task, subject, check, verdict, evidence, refused } => {
                 let kind = alondra_domain_model::ValidationKind::parse(check).ok_or_else(|| Self::failed(index, format!("{check} is not a check")))?;
                 let verdict = alondra_domain_model::ValidationVerdict::parse(verdict).ok_or_else(|| Self::failed(index, format!("{verdict} is not a verdict")))?;
                 let judged = kind.judgment() || verdict == alondra_domain_model::ValidationVerdict::Incomplete;
@@ -779,7 +782,7 @@ impl Context<'_> {
                     reasoning: judged.then(|| "Read the scenario and the tests that declare it".to_owned()),
                     nearest_wrong: (kind == alondra_domain_model::ValidationKind::Adequate).then(|| "Refunding the whole order".to_owned()),
                     output: (kind == alondra_domain_model::ValidationKind::Suite).then(|| "test result: ok".to_owned()),
-                    evidence: vec![], inputs: String::new(), listed: None,
+                    evidence: evidence.clone(), inputs: String::new(), listed: None,
                 }).await?;
                 self.settle().await?;
             }
@@ -1143,9 +1146,9 @@ impl Context<'_> {
             let entry = match item.kind {
                 engine::Kind::Suite => project.suite_passed(&item.component, item.subject.rsplit('/').next().unwrap_or_default()),
                 engine::Kind::Passes => continue,
-                kind => project.verdict(&item.subject, kind, engine::Verdict::Met, &[]),
+                kind => project.verdict(&item.subject, kind, engine::Verdict::Met, &evidence_of(&project, &tree, &item.subject, kind)),
             }.map_err(|problem| failed(&problem.message))?;
-            files.push(crate::format::ProposedFile { path: entry.path, text: Some(String::from_utf8_lossy(&entry.bytes).into_owned()) });
+            files.push(crate::format::ProposedFile { path: entry.path, text: Some(String::from_utf8_lossy(&entry.bytes).into_owned()), source: None, png: None });
         }
         self.commit(index, task, &files, message)
     }
@@ -1161,17 +1164,28 @@ impl Context<'_> {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    /// The node of `task` writes `files` in its worktree.
+    fn write_files(&mut self, index: usize, task: &str, files: &[crate::format::ProposedFile]) -> Result<(), ScenarioError> {
+        let failed = |why: &dyn std::fmt::Display| Self::failed(index, why);
+        if files.is_empty() {
+            return Ok(());
+        }
+        let top = self.worktrees.get(task).cloned().ok_or_else(|| failed(&format!("task {task} has no worktree")))?;
+        for file in files {
+            let path = top.join(&file.path);
+            match file.bytes() {
+                Some(bytes) => std::fs::create_dir_all(path.parent().unwrap_or(&top)).and_then(|()| std::fs::write(&path, bytes)).map_err(|e| failed(&e))?,
+                None => std::fs::remove_file(&path).map_err(|e| failed(&e))?,
+            }
+        }
+        Ok(())
+    }
+
     /// The node of `task` writes `files` in its worktree and commits them.
     fn commit(&mut self, index: usize, task: &str, files: &[crate::format::ProposedFile], message: &str) -> Result<(), ScenarioError> {
         let failed = |why: &dyn std::fmt::Display| Self::failed(index, why);
         let top = self.worktrees.get(task).cloned().ok_or_else(|| failed(&format!("task {task} has no worktree")))?;
-        for file in files {
-            let path = top.join(&file.path);
-            match &file.text {
-                Some(text) => std::fs::create_dir_all(path.parent().unwrap_or(&top)).and_then(|()| std::fs::write(&path, text)).map_err(|e| failed(&e))?,
-                None => std::fs::remove_file(&path).map_err(|e| failed(&e))?,
-            }
-        }
+        self.write_files(index, task, files)?;
         for args in [&["add", "-A"][..], &["commit", "-q", "--allow-empty", "-m", message][..]] {
             let output = std::process::Command::new("git").current_dir(&top).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
                 .args(["-c", "user.name=Ana", "-c", "user.email=ana@example.com"]).args(args).output().map_err(|e| failed(&e))?;
@@ -1762,8 +1776,15 @@ impl Context<'_> {
                         written.map_or_else(|| "it answered nothing that says".to_owned(), |written| format!("it wrote {written}")))),
                 }
             }
-            Expect::WorktreeFile { task, path, text } => {
+            Expect::WorktreeFile { task, path, text, png } => {
                 let top = self.worktrees.get(task).ok_or_else(|| ScenarioError::Invalid(format!("task {task} has no worktree")))?;
+                if let Some(size) = png {
+                    let actual = std::fs::read(top.join(path)).ok();
+                    if actual.as_deref() != Some(&crate::format::synthetic_png(*size)[..]) {
+                        return Err(failed(format!("{path} of {task}: the PNG of {size:?}"), format!("{:?} bytes", actual.map(|bytes| bytes.len()))));
+                    }
+                    return Ok(());
+                }
                 let actual = std::fs::read_to_string(top.join(path)).ok();
                 if actual != *text {
                     return Err(failed(format!("{path} of {task}: {text:?}"), format!("{actual:?}")));
@@ -1931,4 +1952,16 @@ impl alondra_domain_model::specs::Files for WorkingTree {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
         self.0.get(path).cloned()
     }
+}
+
+/// The committed captures a capture judgment's `@evidence` names, as `alondra spec record` takes
+/// them.
+fn evidence_of(project: &alondra_domain_model::specs::engine::Project, tree: &dyn alondra_domain_model::specs::Files, subject: &str, kind: alondra_domain_model::specs::engine::Kind) -> Vec<alondra_domain_model::specs::engine::Evidence> {
+    use alondra_domain_model::specs::engine;
+    let pattern = project.specs().iter().flat_map(|loaded| loaded.spec.scenarios.iter().map(move |scenario| (format!("{}/{}", loaded.spec.id, scenario.id), scenario)))
+        .find(|(id, _)| id == subject && kind == engine::Kind::Judged)
+        .and_then(|(_, scenario)| scenario.judgment.as_ref()?.pattern.clone());
+    pattern.into_iter().flat_map(|pattern| tree.paths().into_iter().filter(move |path| engine::matches(&pattern, path)))
+        .filter_map(|path| tree.read(&path).map(|bytes| engine::Evidence { name: path, bytes }))
+        .collect()
 }

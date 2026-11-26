@@ -143,7 +143,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
             }
         }
     }
-    if let Some(specs) = super::specs::plan_section(found, context) {
+    if let Some(specs) = super::specs::plan_section(found, context).or_else(|| super::specs::change_section(found, context)) {
         sections.push(specs);
     }
     if let Some(destination) = &found.card.secret_destination {
@@ -2200,7 +2200,12 @@ fn main_content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item
         return out;
     }
     if let Some(content) = spec_change_card(interaction, domain, lang).and_then(|card| card.content) {
-        out.push(markdown(content.body));
+        match super::specs::change_card(interaction) {
+            Some(alondra_domain_model::spec_card::SpecCard::Amendment { task, id }) => out.extend(domain.tasks.get(&alondra_domain_model::TaskId(task)).and_then(|task| task.specs.amendment(&id))
+                .map(|amendment| markdown(tf!(lang, "**Why the implementer asks for it:** {reason}", "**Por qué lo pide el implementador:** {reason}", reason = amendment.reason.trim())))),
+            Some(alondra_domain_model::spec_card::SpecCard::Decision { .. }) => {}
+            _ => out.push(markdown(content.body)),
+        }
         return out;
     }
     if interaction.author == Author::System

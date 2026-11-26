@@ -376,33 +376,57 @@ and files under the specs folder (never its ledger), the decisions folder and th
 A decision the proposal adds reads as accepted, as approving the plan makes it, so a spec may cite
 it.
 
+A diagram is a file of the proposal like any other, sent as its text. A mockup is sent with
+`source`, a PNG or JPEG of the author's worktree: Alondra reads it (never through a link, at most
+the engine's 2 MiB), keeps a copy by its digest in its images folder and records in the task its
+fingerprint, size and dimensions. What an agent says about a mockup is never taken as it is.
+
+### Sheets
+
+Every client draws a spec as a sheet and a decision as a sheet (the view items `spec_sheet` and
+`decision_sheet`), never as raw Gherkin. A spec's sheet holds its title, identifier and change
+mark (new, changed, removed or unchanged, compared with what the project has), its explanation,
+the decisions it rests on, its diagrams and mockups, and each scenario with its kind (test, or a
+judgment and its evidence), its steps in the lanes Given, When and Then (`And` and `But` join the
+lane before them), tables, examples and its own parts. The scenarios a change leaves as they are
+fold into one line; with more than 8 changed, each starts closed. A boundary is shown as data: what
+it owns, what is regenerated and its suites. A comment can be anchored to a spec, a scenario, a
+diagram, a mockup or a decision. Every state is told by an icon and words, never by color alone.
+A client that does not know these items draws the row asking to update; one that does not know
+the field kinds for steps and Mermaid gets them as multiline text.
+
 ### On the plan's card
 
-The plan's card has a section «Specs»: each spec as its explanation and then its scenarios, each a
-block the user can comment on, never the raw Gherkin; then the boundaries, decisions and reference
-prose it changes. «Edit the specs» opens screens where the user changes the level and adds, edits
-or removes a spec, a scenario (title, steps, judged or not) or a decision. Every edit is made on
-the proposal and read by the engine at once; a problem comes back next to its field and the
-proposal stays as it was. Taking a decision out of the proposal records it as rejected.
+The plan's card has a section «Specs»: the sheets of the specs and decisions it changes, then the
+other files. «Edit the specs» opens screens where the user changes the level and adds, edits or
+removes a spec, a scenario (title, steps, judged or not), a diagram (its Mermaid text), a mockup
+(an attached PNG or JPEG) or a decision. Every edit is made on the proposal and read by the engine
+at once; a problem comes back next to its field and the proposal stays as it was. Removing the
+last citation of a diagram or mockup removes its file with it: from the proposal when the proposal
+added it, and from the project with the change when the project had it, unless another spec cites
+it. Taking a decision out of the proposal records it as rejected. A change to approved specs draws
+the same sheets, marked against what each file held.
 
 Approving the plan approves that exact set, with its decisions accepted and the user's words kept
 in Alondra. The plan cannot be approved while the proposal or the worktree's settings cannot be
 read: the button says why.
 
 In the terminal, «2» on the plan's card opens the editor, «f» picks what to edit and «e» edits its
-fields; a comment on a scenario's block quotes its identifier:
+fields. A mockup is attached by pasting or dropping the path of its image. In the reader, a comment
+quotes the identifier of the part it is on, «z» folds and unfolds a scenario, Mermaid diagrams are
+drawn, and a mockup or capture is a framed line that «o» opens in the Mac's image viewer:
 
-| The plan's card | A comment on a scenario |
+| The plan's card in the reader | The editor |
 |---|---|
-| ![The specs of a plan on its card](../images/specs-in-plan/plan-card-en-dark.png) | ![A comment anchored to a scenario](../images/specs-in-plan/reader-comment-en-dark.png) |
+| ![The specs of a plan as sheets](../images/spec-sheets/plan-en-dark.png) | ![The spec editor](../images/spec-sheets/editor-en-dark.png) |
 
-| Choosing what to edit | A step the engine cannot read |
+| A diagram's form, drawn under its code | A change to the approved specs |
 |---|---|
-| ![The spec editor](../images/specs-in-plan/editor-choose-en-dark.png) | ![The problem next to its field](../images/specs-in-plan/scenario-error-en-dark.png) |
+| ![Editing a diagram](../images/spec-sheets/editor-diagram-en-dark.png) | ![A change drawn as marked sheets](../images/spec-sheets/amendment-en-dark.png) |
 
 ### Written while no agent works
 
-Alondra writes the approved files into the task's worktree itself, and only while no agent of the
+Alondra writes the approved files, mockups byte for byte, into the task's worktree itself, and only while no agent of the
 task works: between the author's last turn and the implementer's first, or when the implementer
 rests. A change of role waits for them. The implementer commits them as they are; its context says
 which they are and that specs win over any other text.
@@ -422,7 +446,7 @@ writes it and marks every decision it supersedes as superseded by it.
 
 A final delivery is refused with `specs_differ` when the branch holds a spec file changed from
 where it leaves its base branch without the user's approval, or an approved one otherwise than
-approved; reference prose is reviewed with the delivery and the ledger is the validation's. It is
+approved (every file is compared by its bytes, so a mockup counts like a spec); reference prose is reviewed with the delivery and the ledger is the validation's. It is
 refused with `spec_settings_unreadable` when the settings cannot be read: a broken `alondra.toml`
 never turns specs off.
 
@@ -491,12 +515,16 @@ fingerprint changes, so the delivery is `validation_pending` until a validator j
 ### What the delivery shows
 
 The card of a validated delivery has a section «Specs», read from the delivered commit when it
-passed the gate: each scenario of the task's components with the engine's state of each check, the
-tests that declare it (file and line) and the suites that hold them with their result, and what the
-validator judged, always labelled a judgment; the suites; the files changed outside the task's
+passed the gate: the sheet of each spec of the task's components, each scenario with its state
+(validated, not validated, validating now or evidence not available), the engine's state of each
+check, the tests that declare it (file and line) and the suites that hold them with their result,
+and what the validator judged, always labelled a judgment. Alondra keeps a copy of each PNG and
+JPEG capture the judgments rest on, as the delivered commit holds them (the paths the validator
+named, or else those `@evidence` matches), so they can be opened from the card; a capture the
+commit does not hold, a video, or a delivery recorded before Alondra kept them reads as evidence
+not available. the suites; the files changed outside the task's
 components; and the reference prose the branch changed. A point of the approved plan may cite a
 scenario as `scenario` evidence (`billing.partial/part`); the card shows how it was validated.
 
-| The specs of a validated delivery | The rest of its evidence |
-|---|---|
-| ![Each scenario with its test, suite and judgment](../images/spec-validation/delivery-specs-en-dark.png) | ![Suites, files outside the components and scenarios as evidence of the plan](../images/spec-validation/delivery-evidence-en-dark.png) |
+![A validated delivery: each scenario with its test, suite, judgment and capture](../images/spec-sheets/delivery-en-dark.png)
+

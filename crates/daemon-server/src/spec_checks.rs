@@ -3,7 +3,8 @@
 //! user's approval. Both read what the branch committed, from git's objects, never a file put on
 //! the disk. The rules are the domain's; this only hands it the files.
 use alondra_engine_ports::Runtime;
-use alondra_domain_model::specs::{self, Overlay, SpecCheck, SpecFiles, SpecLevel, SpecMode};
+use alondra_domain_model::specs::{self, KeptImages as _, Overlay, SpecCheck, SpecFile, SpecFiles, SpecLevel, SpecMode, MAX_MOCKUP_BYTES};
+use alondra_engine_ports::kept_images::HomeImages;
 use alondra_domain_model::{Command, DomainError, DomainState, Task, TaskId};
 
 fn unreadable(error: impl std::fmt::Display) -> DomainError {
@@ -18,22 +19,57 @@ pub(crate) fn read(domain: &dyn Runtime, state: &DomainState, task: &TaskId, cha
     let Some(port) = domain.ports().spec_worktrees() else { return Ok(SpecCheck::default()) };
     let Some(root) = port.own(state, task) else { return Ok(SpecCheck::default()) };
     let head = port.head(&root).map_err(unreadable)?;
+    let images = HomeImages::new(domain.home());
     let mut over = state.tasks.get(task).and_then(|task| task.specs.approved.as_ref()).map(|approved| approved.allowed()).unwrap_or_default();
-    over.extend(changes.iter().map(|(path, text)| (path.clone(), text.clone())));
-    let with_approved = Overlay { base: &*head, changes: &over };
-    let mut check = specs::check(&with_approved, changes);
+    over.extend(changes.iter().map(|(path, content)| (path.clone(), content.clone())));
+    let with_approved = Overlay { base: &*head, changes: &over, images: &images };
+    let mut check = specs::check(&with_approved, changes, &images);
     if let Ok(base) = port.base(&root) {
         for (path, before) in check.before.iter_mut() {
-            *before = base.read(path).and_then(|bytes| String::from_utf8(bytes).ok());
+            *before = specs::content_of(&*base, path, &images);
         }
     }
     Ok(check)
+}
+
+/// Keeps the mockup of each file of a change: from the worktree file its `source` names for an
+/// agent's proposal, and as the copy Alondra already keeps for the user's edit. What a sender
+/// says of a mockup is never taken as it is.
+fn keep_mockups(domain: &dyn Runtime, state: &DomainState, task: &TaskId, files: &mut [SpecFile], from_agent: bool) -> Result<(), DomainError> {
+    let images = HomeImages::new(domain.home());
+    let port = domain.ports().spec_worktrees();
+    for (index, file) in files.iter_mut().enumerate() {
+        let refused = |field: &str, message: String| {
+            let mut refused = DomainError::new("invalid_input", message);
+            refused.subject = Some(format!("files[{index}].{field}"));
+            refused
+        };
+        if !from_agent {
+            if let Some(sent) = file.mockup.take() {
+                let kept = images.read(&sent).and_then(|bytes| images.keep(&bytes))
+                    .ok_or_else(|| refused("mockup", format!("Alondra keeps no copy of the mockup of {}", file.path)))?;
+                file.mockup = Some(kept);
+            }
+            continue;
+        }
+        file.mockup = None;
+        let Some(source) = file.source.clone() else { continue };
+        let Some((port, root)) = port.as_ref().and_then(|port| Some((port, port.own(state, task)?))) else { continue };
+        let bytes = port.file(&root, &source, MAX_MOCKUP_BYTES).map_err(|why| refused("source", format!("Alondra could not read the mockup: {why}")))?;
+        file.mockup = Some(images.keep(&bytes).ok_or_else(|| refused("source", format!("{source} is not a PNG or JPEG image Alondra can read")))?);
+    }
+    Ok(())
 }
 
 /// Fills in a spec command what Alondra reads of the worktree, in place of whatever its sender
 /// put there: an agent's proposal as a device's edit.
 pub(crate) fn stamp(domain: &dyn Runtime, command: &mut Command) -> Result<(), DomainError> {
     let state = domain.state();
+    match command {
+        Command::ProposeSpecs { task_id, files, .. } | Command::ProposeAmendment { task_id, files, .. } => keep_mockups(domain, &state, task_id, files, true)?,
+        Command::ReviseSpecs { task_id, files, .. } => keep_mockups(domain, &state, task_id, files, false)?,
+        _ => {}
+    }
     match command {
         Command::ProposeSpecs { task_id, level, files, check } | Command::ReviseSpecs { task_id, level, files, check, .. } => {
             *check = match specs::proposal(*level, files) {

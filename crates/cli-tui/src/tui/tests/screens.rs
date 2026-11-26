@@ -181,7 +181,7 @@ pub(super) fn app_on(screen: Screen, home: views::View) -> App {
     app
 }
 
-fn rendered(app: &mut App, width: u16, height: u16) -> String {
+pub(super) fn rendered(app: &mut App, width: u16, height: u16) -> String {
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|frame| draw::draw(frame, app)).unwrap();
@@ -544,7 +544,7 @@ fn fixture_view(name: &str) -> views::View {
 }
 
 /// The inbox on the daemon's own golden list, with `card` open in the detail pane.
-fn card_screen(card: views::View, lang: crate::i18n::Lang) -> App {
+pub(super) fn card_screen(card: views::View, lang: crate::i18n::Lang) -> App {
     let (tx, _rx) = std::sync::mpsc::sync_channel(64);
     let mut app = App::new(tx);
     app.on_msg(Msg::home(Ok(fixture_view("home-tui.json"))));

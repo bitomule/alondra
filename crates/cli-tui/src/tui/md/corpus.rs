@@ -97,6 +97,7 @@ fn outline(blocks: &[Block]) -> Vec<String> {
                 }
             }
             Kind::Rule => format!("rule {depth} |"),
+            Kind::Frame { .. } | Kind::Head { .. } | Kind::Lane { .. } | Kind::Toned(_) | Kind::Diagram => unreachable!("Markdown never reads as a sheet"),
             Kind::Image { cols, rows } => format!("image:{cols}x{rows} {depth} | {text}"),
         };
         if !matches!(b.kind, Kind::Row { .. }) {

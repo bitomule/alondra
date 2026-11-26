@@ -286,6 +286,19 @@ pub struct DeliveredVerdict {
     pub nearest_wrong: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<String>,
+    /// The evidence as Alondra read it from the delivered commit. A delivery recorded before
+    /// Alondra kept it has none, and its evidence is not available.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub captures: Vec<DeliveredCapture>,
+}
+
+/// One file of a judgment's evidence on the delivered commit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveredCapture {
+    pub path: String,
+    /// The copy Alondra keeps; none when the commit holds no PNG or JPEG there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<crate::StoredImage>,
 }
 
 /// A suite of a component and how it ran on the delivered commit.
@@ -308,6 +321,20 @@ pub struct DeliveredSpec {
     pub path: String,
     pub title: String,
     pub scenarios: Vec<DeliveredScenario>,
+    /// The feature file on the delivered commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The feature file where the branch leaves its base; none for a new spec.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// The diagrams and mockups it cites, on the delivered commit and on its base.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub parts: std::collections::BTreeMap<String, crate::SpecContent>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub base_parts: std::collections::BTreeMap<String, crate::SpecContent>,
+    /// The title of each decision it cites, by identifier.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub decisions: std::collections::BTreeMap<String, String>,
 }
 
 /// One section of reference prose the branch changed.

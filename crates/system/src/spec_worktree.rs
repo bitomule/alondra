@@ -1,5 +1,6 @@
 //! The spec files of a task's own worktree, read and written with git and the disk.
-use alondra_domain_model::specs::{self, Files, SpecFiles};
+use alondra_domain_model::specs::{self, Files};
+use alondra_engine_ports::spec_worktrees::FileBytes;
 use alondra_domain_model::{DomainState, TaskId, WorktreeOrigin};
 use alondra_engine_ports::spec_worktrees::{SpecSource, SpecWorktrees};
 use std::collections::BTreeMap;
@@ -164,21 +165,38 @@ fn safe_target(root: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(at)
 }
 
+/// The bytes of the regular file at `path` under `root`, at most `limit` of them.
+fn read_within(root: &Path, path: &str, limit: usize) -> Result<Vec<u8>, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let target = safe_target(root, path)?;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&target)
+        .map_err(|error| format!("{path} cannot be read: {error}"))?;
+    if !file.metadata().map_err(|error| format!("{path} cannot be read: {error}"))?.is_file() {
+        return Err(format!("{path} is not a file"));
+    }
+    let mut bytes = vec![];
+    file.take(limit as u64 + 1).read_to_end(&mut bytes).map_err(|error| format!("{path} cannot be read: {error}"))?;
+    if bytes.len() > limit {
+        return Err(format!("{path} is larger than {limit} bytes"));
+    }
+    Ok(bytes)
+}
+
 /// Writes each of `files` into `root`, the new text replacing the old one at once; `None` removes
 /// it. Every path is checked before any is written.
-pub fn write_into(root: &Path, files: &SpecFiles) -> Result<BTreeMap<String, String>, String> {
-    let targets: Vec<(PathBuf, &String, &Option<String>)> = files.iter()
-        .map(|(path, text)| safe_target(root, path).map(|target| (target, path, text)))
+pub fn write_into(root: &Path, files: &FileBytes) -> Result<BTreeMap<String, String>, String> {
+    let targets: Vec<(PathBuf, &String, &Option<Vec<u8>>)> = files.iter()
+        .map(|(path, bytes)| safe_target(root, path).map(|target| (target, path, bytes)))
         .collect::<Result<_, _>>()?;
     let mut written = BTreeMap::new();
-    for (target, path, text) in targets {
-        match text {
-            Some(text) => {
+    for (target, path, bytes) in targets {
+        match bytes {
+            Some(bytes) => {
                 if let Some(folder) = target.parent() {
                     std::fs::create_dir_all(folder).map_err(|error| format!("{path}: its folder cannot be made: {error}"))?;
                 }
                 safe_target(root, path)?;
-                alondra_foundation::save::atomic(&target, text.as_bytes()).map_err(|error| format!("{path} cannot be written: {error}"))?;
+                alondra_foundation::save::atomic(&target, bytes).map_err(|error| format!("{path} cannot be written: {error}"))?;
             }
             None => match std::fs::remove_file(&target) {
                 Ok(()) => {}
@@ -186,7 +204,7 @@ pub fn write_into(root: &Path, files: &SpecFiles) -> Result<BTreeMap<String, Str
                 Err(error) => return Err(format!("{path} cannot be removed: {error}")),
             },
         }
-        written.insert(path.clone(), specs::fingerprint(text.as_deref()));
+        written.insert(path.clone(), specs::fingerprint_of(bytes.as_deref()));
     }
     Ok(written)
 }
@@ -252,7 +270,11 @@ impl SpecWorktrees for GitSpecWorktrees {
         }
     }
 
-    fn write(&self, root: &Path, files: &SpecFiles) -> Result<BTreeMap<String, String>, String> {
+    fn file(&self, root: &Path, path: &str, limit: usize) -> Result<Vec<u8>, String> {
+        read_within(root, path, limit)
+    }
+
+    fn write(&self, root: &Path, files: &FileBytes) -> Result<BTreeMap<String, String>, String> {
         write_into(root, files)
     }
 }
@@ -260,10 +282,11 @@ impl SpecWorktrees for GitSpecWorktrees {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alondra_domain_model::specs::SpecFiles;
     use crate::test_support::Directory;
 
-    fn changes(entries: &[(&str, Option<&str>)]) -> SpecFiles {
-        entries.iter().map(|(path, text)| ((*path).to_owned(), text.map(str::to_owned))).collect()
+    fn changes(entries: &[(&str, Option<&str>)]) -> FileBytes {
+        entries.iter().map(|(path, text)| ((*path).to_owned(), text.map(|text| text.as_bytes().to_vec()))).collect()
     }
 
     #[test]
@@ -277,8 +300,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("specs/billing/new.feature")).unwrap(), "new");
         assert!(!root.join("specs/billing/old.feature").exists());
         assert_eq!(std::fs::read_to_string(root.join("docs/decisions/keep.md")).unwrap(), "kept");
-        assert_eq!(written["specs/billing/new.feature"], specs::fingerprint(Some("new")));
-        assert_eq!(written["specs/billing/old.feature"], specs::fingerprint(None));
+        assert_eq!(written["specs/billing/new.feature"], specs::fingerprint_of(Some(b"new")));
+        assert_eq!(written["specs/billing/old.feature"], specs::fingerprint_of(None));
     }
 
     fn run(dir: &Path, args: &[&str]) {
@@ -315,7 +338,7 @@ mod tests {
         assert_eq!(base.read("specs/billing/boundary.toml").as_deref(), Some(BOUNDARY.as_bytes()), "the base is where the branch left main");
         let found = specs::drift(&head, &base, &SpecFiles::new()).unwrap();
         assert_eq!(found, [specs::SpecDrift { path: "specs/billing/boundary.toml".into(), approved: false }]);
-        let approved: SpecFiles = [("specs/billing/boundary.toml".to_owned(), Some(BOUNDARY.replace("billing/**", "billing/src/**")))].into();
+        let approved: SpecFiles = [("specs/billing/boundary.toml".to_owned(), Some(BOUNDARY.replace("billing/**", "billing/src/**").into()))].into();
         assert_eq!(specs::drift(&head, &base, &approved).unwrap(), [], "the change the user approved, as approved");
     }
 

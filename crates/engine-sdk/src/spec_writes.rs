@@ -7,6 +7,9 @@ use crate::domain_store::{Attached, OwnerJournal as _, StoreError};
 use alondra_domain::ActivityView;
 use alondra_domain_model::*;
 use alondra_engine_ports::Runtime;
+use alondra_engine_ports::kept_images::HomeImages;
+use alondra_engine_ports::spec_worktrees::FileBytes;
+use alondra_domain_model::specs::{self, KeptImages, SpecContent};
 use alondra_foundation::log;
 use alondra_store::AuthorityScope;
 
@@ -21,6 +24,18 @@ fn resting(state: &DomainState, task: &Task) -> bool {
         && !matches!(lifecycle.activity(), ActivityView::Working | ActivityView::OwnWork)
         && lifecycle.cards().iter().all(|(card, _)| lifecycle.card_callback(card).is_none())
         && (task.stages.handover.is_some() || lifecycle.pending_inputs().is_empty())
+}
+
+/// The bytes of each file Alondra owes: a mockup's come from the copy it keeps.
+fn bytes_of(due: &specs::SpecFiles, images: &dyn KeptImages) -> Result<FileBytes, String> {
+    due.iter().map(|(path, content)| {
+        let bytes = match content {
+            None => None,
+            Some(SpecContent::Text(text)) => Some(text.clone().into_bytes()),
+            Some(SpecContent::Mockup(image)) => Some(images.read(image).ok_or_else(|| format!("the copy of the mockup {path} is gone from Alondra's files"))?),
+        };
+        Ok((path.clone(), bytes))
+    }).collect()
 }
 
 fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
@@ -39,7 +54,9 @@ pub fn write_due(domain: &dyn Runtime) -> bool {
             let Some(task) = state.tasks.get(&task_id).filter(|task| resting(&state, task)) else { return Ok(None) };
             let due = task.specs.due();
             let Some(root) = port.own(&state, &task_id).filter(|_| !due.is_empty()) else { return Ok(None) };
-            let written = port.write(&root, &due).map_err(|error| StoreError::Domain(DomainError::new("specs_unwritten", error)))?;
+            let unwritten = |error: String| StoreError::Domain(DomainError::new("specs_unwritten", error));
+            let bytes = bytes_of(&due, &HomeImages::new(domain.home())).map_err(unwritten)?;
+            let written = port.write(&root, &bytes).map_err(unwritten)?;
             let id = format!("specs-written-{}-{}", task_id, state.revision);
             owner.stage_command(&Actor::System, &envelope(&state, &id, Command::RecordSpecsWritten { task_id: task_id.clone(), written }), Attached::None)?;
             Ok(Some(due.into_keys().collect::<Vec<_>>()))

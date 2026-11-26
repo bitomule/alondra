@@ -8,7 +8,7 @@ pub struct ClientCapabilities(u8);
 pub struct InvalidCapabilities;
 
 impl ClientCapabilities {
-    pub const SUPPORTED: [&'static str; 3] = ["account_presentation", "model_selection", "provider_accounts"];
+    pub const SUPPORTED: [&'static str; 4] = ["account_presentation", "model_selection", "provider_accounts", "spec_fields"];
 
     pub fn parse(value: &str) -> Result<Self, InvalidCapabilities> {
         if value.len() > 256 { return Err(InvalidCapabilities); }
@@ -98,6 +98,13 @@ impl ClientCapabilities {
             Item::Row(row) => self.adapt_row(row, lang),
             Item::Actions(bar) => for action in &mut bar.actions { self.adapt_action(action, lang); },
             Item::Form(form) => {
+                if !self.contains("spec_fields") {
+                    for field in &mut form.fields {
+                        if let crate::FieldKind::Steps { placeholder } | crate::FieldKind::Mermaid { placeholder } = &mut field.kind {
+                            field.kind = crate::FieldKind::Multiline { placeholder: placeholder.take() };
+                        }
+                    }
+                }
                 if !self.contains("model_selection") {
                     form.fields.retain(|field| !matches!(field.id.as_str(), "model" | "reasoning_effort" | "allow_model_substitution"));
                 }
@@ -120,6 +127,7 @@ impl ClientCapabilities {
                 for action in &mut card.more { self.adapt_action(action.on_client(), lang); }
                 if let Some(action) = &mut card.reply { self.adapt_action(action.on_client(), lang); }
             }
+            Item::SpecSheet(sheet) => for action in &mut sheet.actions { self.adapt_action(action, lang); },
             _ => {}
         }
     }

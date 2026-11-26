@@ -29,7 +29,7 @@ pub fn tool_of(step: &Step) -> Option<(String, Value)> {
     let mcp = |name: &str| Some((format!("mcp__plugin_alondra_alondra__{name}"), json!({})));
     let bash = |command: &str| Some(("Bash".to_owned(), json!({"command": command})));
     match step {
-        Step::Commit { file, .. } => bash(&format!("git add -A && git commit -m 'Add {file}'")),
+        Step::Commit { file, .. } | Step::Capture { file, .. } => bash(&format!("git add -A && git commit -m 'Add {file}'")),
         Step::Dirty { file } => Some(("Write".into(), json!({"file_path": file}))),
         Step::Push => bash("git push -u origin HEAD"),
         Step::Branch { name } => bash(&format!("git checkout -b {name}")),
@@ -67,6 +67,15 @@ pub fn perform(fakes: &Fakes, worker: &Worker, step: &Step) -> Option<Result<mcp
                 fs::create_dir_all(folder)?;
             }
             fs::write(dir.join(file), text)?;
+            git(dir, &["add", "-A"])?;
+            git(dir, &["commit", "-m", &format!("Add {file}")])?;
+            Ok(done(git(dir, &["rev-parse", "HEAD"])?))
+        })(),
+        Step::Capture { file, width, height } => (|| -> Result<mcp::Reply> {
+            if let Some(folder) = dir.join(file).parent() {
+                fs::create_dir_all(folder)?;
+            }
+            fs::write(dir.join(file), crate::journey::png(*width, *height))?;
             git(dir, &["add", "-A"])?;
             git(dir, &["commit", "-m", &format!("Add {file}")])?;
             Ok(done(git(dir, &["rev-parse", "HEAD"])?))

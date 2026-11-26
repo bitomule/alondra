@@ -14,6 +14,7 @@ pub(crate) mod md;
 mod optimistic;
 mod restore;
 mod rules;
+mod sheet;
 mod mcp_servers;
 mod metrics;
 mod tasks;
@@ -37,6 +38,9 @@ mod parity;
 #[cfg(test)]
 #[path = "tui/tests/screens.rs"]
 mod screens;
+#[cfg(test)]
+#[path = "tui/tests/sheets.rs"]
+mod sheet_tests;
 #[cfg(test)]
 #[path = "tui/tests/shots.rs"]
 mod shots;
@@ -315,6 +319,8 @@ pub enum Part {
     Text(String),
     /// `kind` and `size` come with a card's attachment; a document's own content has neither.
     File { name: String, route: String, kind: Option<AttachmentKind>, size: Option<u64> },
+    /// A spec's or a decision's sheet, drawn again as the reader folds and unfolds it.
+    Sheet(Box<alondra_view_model::Item>),
 }
 
 impl Part {
@@ -330,7 +336,7 @@ impl Part {
     /// What the part reads from `App::files`.
     fn key(&self) -> Option<String> {
         match self {
-            Part::Text(_) => None,
+            Part::Text(_) | Part::Sheet(_) => None,
             Part::File { route, .. } => Some(route.clone()),
         }
     }
@@ -357,6 +363,8 @@ pub struct Reader {
     pub picking: bool,
     /// The block the next frame scrolls to the top.
     pub show_from: Option<usize>,
+    /// What the reader folded or unfolded in the sheets, from how the daemon sent them.
+    folds: BTreeSet<String>,
 }
 
 impl Reader {
@@ -3005,6 +3013,7 @@ impl App {
             let title = view.title.clone().unwrap_or_else(|| view.key.clone());
             let mut text = format!("# {title}");
             let mut parts = Vec::new();
+            let mut read = Vec::new();
             for section in &view.sections {
                 for item in &section.items {
                     match item {
@@ -3036,11 +3045,18 @@ impl App {
                             }
                             parts.extend(card.attachments.iter().map(Part::attachment));
                         }
+                        alondra_view_model::Item::Notice(notice) if section.id == "specs" => text.push_str(&format!("\n\n! {}", notice.text)),
+                        item @ (alondra_view_model::Item::SpecSheet(_) | alondra_view_model::Item::DecisionSheet(_)) => {
+                            read.push(Part::Text(std::mem::take(&mut text)));
+                            read.push(Part::Sheet(Box::new(item.clone())));
+                        }
                         _ => {}
                     }
                 }
             }
-            parts.insert(0, Part::Text(text));
+            read.push(Part::Text(text));
+            read.append(&mut parts);
+            let parts = read;
             for part in &parts {
                 if let Part::File { route, kind, .. } = part
                     && files::read_up_front(*kind)
@@ -3091,6 +3107,7 @@ impl App {
                 find: None,
                 picking: false,
                 show_from: None,
+                folds: BTreeSet::new(),
             });
             self.rebuild_reader();
             return;
@@ -3149,6 +3166,7 @@ impl App {
                 find: None,
                 picking: false,
                 show_from: None,
+                folds: BTreeSet::new(),
             });
             self.rebuild_reader();
             return;
@@ -3164,6 +3182,11 @@ impl App {
         for part in &r.parts {
             match part {
                 Part::Text(t) => blocks.extend(md::parse(t)),
+                Part::Sheet(item) => match item.as_ref() {
+                    alondra_view_model::Item::SpecSheet(spec) => blocks.extend(sheet::spec_blocks(spec, &r.folds)),
+                    alondra_view_model::Item::DecisionSheet(decision) => blocks.extend(sheet::decision_blocks(decision)),
+                    _ => {}
+                },
                 Part::File { name, route, kind, size } => {
                     blocks.push(Block::label(&format!("{} {name}", files::glyph(*kind))));
                     let opens = md::Target {
@@ -3262,7 +3285,11 @@ impl App {
                 return;
             }
         }
+        let screens = self.view_navigation.len();
         let _ = self.view_action_key(k);
+        if self.view_navigation.len() > screens {
+            self.reader = None;
+        }
         if has_review
             && let Some(review) = self.reviews.get(&key)
             && let Some(composer) = self.composer.as_mut()
@@ -3271,6 +3298,31 @@ impl App {
             composer.chips.extend(review.chips.clone());
             if let Target::ViewAction { review, .. } = &mut composer.target {
                 *review = Some(key);
+            }
+        }
+    }
+
+    /// Folds or unfolds what the selected block heads; each comment stays on the part it quotes,
+    /// or on the head that now hides it.
+    fn fold_block(&mut self) {
+        let Some(r) = self.reader.as_mut() else { return };
+        let Some(fold) = r.blocks.get(r.cursor).and_then(|block| block.fold.clone()) else { return };
+        if !r.folds.remove(&fold) {
+            r.folds.insert(fold.clone());
+        }
+        let key = r.key.clone();
+        self.rebuild_reader();
+        let Some(r) = self.reader.as_mut() else { return };
+        if let Some(at) = r.blocks.iter().position(|block| block.fold.as_ref() == Some(&fold)) {
+            r.cursor = at;
+        }
+        if let Some(review) = self.reviews.get_mut(&key) {
+            for comment in &mut review.comments {
+                let found = r.blocks.iter().position(|block| block.commentable() && block.quote() == comment.quote)
+                    .or_else(|| r.blocks.iter().position(|block| block.commentable() && comment.quote.starts_with(&block.quote())));
+                if let Some(at) = found {
+                    comment.block = at;
+                }
             }
         }
     }

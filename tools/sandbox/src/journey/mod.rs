@@ -107,3 +107,12 @@ fn cancel_open_tasks(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) -> R
         Ok((working.is_empty().then_some(()), format!("still running: {working:?}")))
     })
 }
+
+/// The signature and header of a PNG of that size: all a mockup or a capture is read by.
+pub fn png(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    bytes.extend(width.to_be_bytes());
+    bytes.extend(height.to_be_bytes());
+    bytes.extend([8, 6, 0, 0, 0]);
+    bytes
+}

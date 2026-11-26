@@ -2933,7 +2933,7 @@ fn a_tasks_validation_survives_a_reopen_and_a_task_stored_without_it_was_never_v
     let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let delivered = DeliveredValidation { delivery: "result-1".into(), head: "a".repeat(40),
-        specs: vec![DeliveredSpec { id: "billing.partial".into(), path: "specs/billing/partial.feature".into(), title: "Partial refunds".into(), scenarios: vec![] }],
+        specs: vec![DeliveredSpec { id: "billing.partial".into(), path: "specs/billing/partial.feature".into(), title: "Partial refunds".into(), scenarios: vec![], source: None, base: None, parts: Default::default(), base_parts: Default::default(), decisions: Default::default() }],
         suites: vec![], outside: vec!["README.md".into()], sections: vec![] };
     execute(&mut store, &Actor::System, "delivered", Command::RecordDeliveredValidation { task_id: "task-1".into(), validation: delivered.clone() });
     drop(store);

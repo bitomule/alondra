@@ -70,6 +70,7 @@ pub(super) enum Act {
     ReaderSend,
     ReaderAnswer,
     ReaderOpen,
+    ReaderFold,
     ReaderPick,
     ReaderPickClose,
     ModalConfirm,
@@ -342,7 +343,18 @@ impl App {
         if let Some(view) = view {
             self.answer_bindings(t, view, true);
         }
-        let mut close = vec![char('o'), char('q'), char('h'), plain(KeyCode::Left)];
+        let block = r.blocks.get(r.cursor);
+        if block.is_some_and(|block| block.fold.is_some()) {
+            t.add(vec![char('z')], "z", tr!("fold or unfold", "plegar o desplegar"), Act::ReaderFold);
+        }
+        let opens_image = block.is_some_and(|block| matches!(block.targets.as_slice(), [target] if target.kind == super::md::TargetKind::Image && target.stored().is_some()));
+        if opens_image {
+            t.add(vec![char('o')], "o", tr!("open the image", "abrir la imagen"), Act::ReaderOpen);
+        }
+        let mut close = vec![char('q'), char('h'), plain(KeyCode::Left)];
+        if !opens_image {
+            close.insert(0, char('o'));
+        }
         if r.find.is_none() {
             close.insert(0, plain(KeyCode::Esc));
         }
@@ -804,6 +816,7 @@ impl App {
             Act::ReaderSend => self.send_review(),
             Act::ReaderAnswer => self.answer_with_comments(key),
             Act::ReaderOpen => self.open_block(),
+            Act::ReaderFold => self.fold_block(),
             Act::ReaderPick => self.pick_target(key),
             Act::ReaderPickClose => {
                 if let Some(reader) = self.reader.as_mut() {
