@@ -488,6 +488,13 @@ pub(super) fn view_key_choice(
         return Some((action, option));
     }
     for action in super::view_render::actions(document) {
+        if let Some(menu) = super::view_render::folded_menu_key(document, &action) {
+            if hint_matches(&menu.to_string(), key) {
+                let option = only_option(&action);
+                return Some((action, option));
+            }
+            continue;
+        }
         if hint_matches(super::view_render::action_hint(&action), key) {
             let option = only_option(&action);
             return Some((action, option));

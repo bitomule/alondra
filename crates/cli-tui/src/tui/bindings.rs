@@ -393,6 +393,12 @@ impl App {
             return;
         }
         for action in view_render::actions(view).into_iter().filter(|action| action.enabled) {
+            if let Some(key) = view_render::folded_menu_key(view, &action) {
+                let option = super::inbox::only_option(&action).map(Box::new);
+                let shown = action.key.clone().unwrap_or_default();
+                t.add(vec![char(key)], &shown, super::md::inline_text(&action.label), Act::Server(Box::new(action.clone()), option));
+                continue;
+            }
             if let Some(key) = hinted(view_render::action_hint(&action)) {
                 let option = super::inbox::only_option(&action).map(Box::new);
                 t.add(vec![key], "", super::md::inline_text(&action.label), Act::Server(Box::new(action.clone()), option));
