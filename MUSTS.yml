@@ -23,7 +23,6 @@ checks:
       - "deploy/brew/local-release.py"
       - "deploy/brew/release.py"
       - "deploy/brew/package-cli.sh"
-      - "deploy/brew/sign-package.sh"
       - "deploy/brew/release.sh"
       - "launchd/**"
       - ".claude-plugin/**"
