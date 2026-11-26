@@ -3285,9 +3285,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordValidation { .. } => 154,
         Command::EndValidation { .. } => 155,
         Command::RecordDeliveredValidation { .. } => 156,
+        Command::RecordCommitReading { .. } => 157,
     }
 }
-const COMMAND_KINDS: usize = 157;
+const COMMAND_KINDS: usize = 158;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3433,9 +3434,11 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::ProposeDecision { task_id: ids.task.into(), decision: Default::default(), files: Default::default(), check: Default::default() }, false),
         (Command::ReadyForValidation { task_id: ids.task.into(), head: "a".repeat(40), items: vec![], scope: vec![] }, false),
         (Command::RecordValidation { task_id: ids.task.into(), subject: "billing/unit".into(), check: crate::ValidationKind::Suite, verdict: crate::ValidationVerdict::Met,
-            reasoning: None, nearest_wrong: None, output: None, evidence: vec![], inputs: "sha256:0".into() }, false),
+            reasoning: None, nearest_wrong: None, output: None, evidence: vec![], inputs: "sha256:0".into(), listed: None }, false),
         (Command::EndValidation { task_id: ids.task.into(), findings: "It fails".into() }, false),
         (Command::RecordDeliveredValidation { task_id: ids.task.into(), validation: Default::default() }, false),
+        (Command::RecordCommitReading { task_id: ids.task.into(), reading: crate::CommitReading { commit: "a".repeat(40), worktree: false, specs: true, owed: vec![], problems: vec![],
+            ledger: vec![], stray: vec![], since: None, changed: vec![] } }, false),
         (Command::BeginStageHandover { task_id: ids.task.into(), expected_selection: "fixture".into(), transition: "stage".into(), pending: alondra_core::model_selection::PendingTaskSelection {
             account: alondra_core::accounts::AccountKey::native(alondra_core::accounts::Provider::Claude),
             model: alondra_core::model_selection::ModelSelection { model: alondra_core::model_selection::ModelKey { provider: alondra_core::accounts::Provider::Claude, model: "fixture".into() }, reasoning_effort: None, catalog_revision: "fixture".into() }, reason: "The implementer takes it over".into(),

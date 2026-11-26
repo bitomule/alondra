@@ -86,3 +86,6 @@ a finding: the specs must say it, so send the work back.
 If the user answers your delivery with changes, or the pull request has conflicts, end your turn:
 an implementer does that work. If the pull request receives a commit after your delivery, Alondra
 tells you: bring it into your worktree and validate again only what `alondra spec validate` lists.
+If that commit changed anything but the ledger, do not deliver it: `end_validation` naming those
+files, and the implementer takes them. Never commit code, tests or specs yourself, before or after
+a delivery: Alondra compares what you deliver with the commit the implementer handed over.

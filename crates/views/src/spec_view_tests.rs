@@ -166,7 +166,7 @@ fn a_validated_delivery_shows_each_scenario_with_its_test_its_suite_and_the_judg
 fn a_delivery_says_when_its_validation_runs_or_its_evidence_is_not_available() {
     use alondra_domain_model::{RoundState, ValidationRound};
     let mut state = fixture();
-    let round = |state| ValidationRound { number: 1, head: "0123456789abcdef0123456789abcdef01234567".into(), items: vec![], scope: vec![], state, generation: Some(2), findings: None, retried: false };
+    let round = |state| ValidationRound { number: 1, head: "0123456789abcdef0123456789abcdef01234567".into(), implemented: "0123456789abcdef0123456789abcdef01234567".into(), items: vec![], scope: vec![], state, generation: Some(2), findings: None, retried: false };
     state.tasks.get_mut(&"t-1".into()).unwrap().validation.rounds.push(round(RoundState::Validating));
     let running = texts(&render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-3", ""), "specs");
     assert!(running.contains("Un validador está comprobando"), "{running}");

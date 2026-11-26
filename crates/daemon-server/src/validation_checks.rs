@@ -1,90 +1,29 @@
 //! What Alondra reads of a task's worktree for its validation: what the spec engine lists as not
 //! validated when the implementer says the work is ready, the fingerprint of each thing the
-//! validator records, and the gate a delivery passes before it reaches the user. Everything is read
-//! from git's objects of a commit, never from what an agent says; the rules are the domain's.
+//! validator records, the reading of each commit a delivery carries, and what the delivery's card
+//! shows of its specs. Everything is read from git's objects of a commit, never from what an agent
+//! says; the decisions are the domain's (`alondra_domain_model::delivery_validation`).
 use alondra_engine_ports::Runtime;
-use alondra_domain_model::specs::{self, engine, Files, SpecMode};
+use alondra_engine_ports::spec_reading::{self, load, owed_items, problems_text};
+use alondra_domain_model::specs::{self, engine};
 use alondra_domain_model::{
-    Command, DeclaringTest, DeliveredScenario, DeliveredSection, DeliveredSpec, DeliveredSuite, DeliveredValidation, DeliveredVerdict, DomainError, DomainState,
-    ExecutionRole, InteractionId, RoundState, Task, TaskId, ValidationItem, ValidationKind, ValidationVerdict,
+    Command, CommitReading, DeclaringTest, DeliveredScenario, DeliveredSection, DeliveredSpec, DeliveredSuite, DeliveredValidation, DeliveredVerdict, DomainError, DomainState,
+    ExecutionRole, InteractionId, RoundState, Task, TaskId, ValidationKind,
 };
 use alondra_engine_ports::spec_worktrees::SpecWorktrees;
 use std::collections::BTreeSet;
-use std::path::Path;
-
-/// Why a delivery does not pass the gate, each with the code the refusal carries.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum GateRefusal {
-    /// The implementer delivers while the engine still lists something to validate.
-    ValidationRequired(Vec<String>),
-    /// The spec engine does not read the delivered commit clean.
-    ValidationPending(Vec<String>),
-    /// A change of the specs still waits for its author or the user.
-    SpecChangeOpen,
-    /// The delivered ledger holds entries no validator recorded.
-    LedgerUnrecorded(Vec<String>),
-    /// Files other than the ledger changed after the commit the validator checked.
-    ChangedAfterValidation(Vec<String>),
-    /// Git could not read the worktree, or not in time.
-    Unreadable(String),
-}
-
-impl GateRefusal {
-    pub(crate) fn code(&self) -> &'static str {
-        match self {
-            Self::ValidationRequired(_) => "validation_required",
-            Self::ValidationPending(_) => "validation_pending",
-            Self::SpecChangeOpen => "spec_change_open",
-            Self::LedgerUnrecorded(_) => "ledger_unrecorded",
-            Self::ChangedAfterValidation(_) => "changed_after_validation",
-            Self::Unreadable(_) => "worktree_unreadable",
-        }
-    }
-
-    pub(crate) fn error(&self) -> DomainError {
-        let listed = |items: &[String]| items.iter().take(20).cloned().collect::<Vec<_>>().join(", ");
-        let message = match self {
-            Self::ValidationRequired(items) => format!(
-                "Nothing was presented: the spec engine lists what is not validated on your commit ({}). In a task in stages a validator checks it: commit your work and call ready_for_validation.",
-                listed(items)),
-            Self::ValidationPending(items) => format!(
-                "Nothing was presented: alondra spec validate is not clean on the delivered commit ({}). Validate each, record it with record_validation, commit only the ledger and deliver again.",
-                listed(items)),
-            Self::SpecChangeOpen => "Nothing was presented: a change of the specs still waits for its author or the user. The work is delivered once it is settled.".to_owned(),
-            Self::LedgerUnrecorded(items) => format!(
-                "Nothing was presented: the ledger holds entries no validator recorded in Alondra ({}). Record each with record_validation, or remove the entry and validate it again.",
-                listed(items)),
-            Self::ChangedAfterValidation(paths) => format!(
-                "Nothing was presented: since the commit the validator checked, files other than the ledger changed ({}). A validator never changes code, tests or specs: take those changes out, or end the round with end_validation so the implementer makes them.",
-                listed(paths)),
-            Self::Unreadable(why) => format!("Nothing was presented: Alondra could not read the task's worktree to check its validation: {why}. Fix what it says and present the result again."),
-        };
-        DomainError::new(self.code(), message)
-    }
-}
 
 fn unreadable(error: impl std::fmt::Display) -> DomainError {
     DomainError::new("worktree_unreadable", format!(
         "Alondra could not read the task's worktree with git to check its specs: {error}. Fix what git says and send the same call again."))
 }
 
-fn load(files: &dyn Files) -> Result<Option<engine::Project>, Vec<engine::Problem>> {
-    match specs::mode(files) {
-        Ok((SpecMode::Off, _)) => Ok(None),
-        Ok(_) => engine::load(files).map(Some),
-        Err(problem) => Err(vec![engine::Problem { path: problem.path, line: problem.line, code: engine::Code::InvalidSettings, message: problem.message }]),
-    }
-}
-
-fn problems_text(problems: &[engine::Problem]) -> String {
-    problems.iter().take(10).map(|p| format!("{}:{}: {}", p.path, p.line, p.message)).collect::<Vec<_>>().join("; ")
-}
-
-/// What the engine lists as not validated: every item that is not valid, by subject and kind.
-fn pending(report: &engine::Report) -> Vec<String> {
-    report.items.iter().filter(|item| item.state != engine::State::Valid)
-        .map(|item| format!("{} {} {}", item.subject, item.kind.as_str(), item.state.as_str()))
-        .collect()
+/// The refusal of a delivery whose commits Alondra could not read.
+pub(crate) fn delivery_unreadable(why: &str) -> DomainError {
+    let mut error = DomainError::new("worktree_unreadable", format!(
+        "Nothing was presented: Alondra could not read the task's worktree to check its validation: {why}. Fix what it says and present the result again."));
+    error.subject = Some("is_final".into());
+    error
 }
 
 /// The components the task's work is about: those its approved specs belong to, and those
@@ -119,10 +58,6 @@ fn outside(project: &engine::Project, task: &Task, changed: &[String]) -> Vec<St
             .any(|c| c.owns.iter().chain(&c.inputs).any(|pattern| engine::matches(pattern, path))))
         .cloned()
         .collect()
-}
-
-fn ledger_dir(project: &engine::Project) -> String {
-    format!("{}/ledger/", project.settings().specs.dir.trim_end_matches('/'))
 }
 
 /// Fills in a validation command what Alondra reads of the task's worktree, in place of whatever
@@ -164,26 +99,22 @@ pub(crate) fn stamp_with(port: &dyn SpecWorktrees, state: &DomainState, command:
                     uncovered.join(", "))));
             }
             *head = commit.clone();
-            *items = report.items.iter()
-                .filter(|item| item.state != engine::State::Valid)
-                .filter_map(|item| {
-                    let kind = ValidationKind::of_engine(item.kind)?;
-                    Some(ValidationItem { subject: item.subject.clone(), kind, inputs: project.fingerprint(&item.subject, item.kind)? })
-                })
-                .collect();
-            if let Ok(base) = port.base_commit(&root)
+            *items = owed_items(&project, &report);
+            if let Ok(base) = port.base_commit(&root, &commit)
                 && let Ok(changed) = port.changed(&root, &base, &commit)
             {
                 *scope = outside(&project, task, &changed);
             }
         }
-        Command::RecordValidation { task_id, subject, check: kind, inputs, .. } => {
+        Command::RecordValidation { task_id, subject, check: kind, inputs, listed, .. } => {
             inputs.clear();
+            *listed = None;
             let Some(round) = state.tasks.get(task_id).and_then(|task| task.validation.current()).filter(|round| round.state == RoundState::Validating) else { return Ok(()) };
             let Some(root) = port.own(state, task_id) else { return Ok(()) };
             let files = port.commit(&root, &round.head).map_err(unreadable)?;
             if let Ok(Some(project)) = load(&*files) {
                 *inputs = project.fingerprint(subject.trim(), kind.engine()).unwrap_or_default();
+                *listed = Some(owed_items(&project, &project.report(None)));
             }
         }
         _ => {}
@@ -191,87 +122,31 @@ pub(crate) fn stamp_with(port: &dyn SpecWorktrees, state: &DomainState, command:
     Ok(())
 }
 
-/// What a final delivery of `task` must hold for its validation, and, when it passes, what its
-/// card shows of its specs. Only tasks in stages in a project with specs are gated.
-pub(crate) fn gate(domain: &dyn Runtime, state: &DomainState, task_id: &TaskId, delivery: &InteractionId) -> Result<Option<DeliveredValidation>, GateRefusal> {
-    let Some(port) = domain.ports().spec_worktrees() else { return Ok(None) };
-    gate_with(&*port, state, task_id, delivery)
+/// What Alondra reads before a final delivery of `task_id`: the commits it carries, for the
+/// domain's guard to decide on.
+pub(crate) fn read_delivery(domain: &dyn Runtime, state: &DomainState, task_id: &TaskId) -> Result<Vec<CommitReading>, String> {
+    let Some(port) = domain.ports().spec_worktrees() else { return Ok(vec![]) };
+    spec_reading::read_delivery(&*port, state, task_id)
 }
 
-pub(crate) fn gate_with(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, delivery: &InteractionId) -> Result<Option<DeliveredValidation>, GateRefusal> {
-    let Some(task) = state.tasks.get(task_id) else { return Ok(None) };
-    let role = task.stages.role();
-    if !matches!(role, Some(ExecutionRole::Implementer | ExecutionRole::Validator)) {
-        return Ok(None);
-    }
-    let Some(root) = port.own(state, task_id) else { return Ok(None) };
-    let read = |error: String| GateRefusal::Unreadable(error);
-    let head = port.head_commit(&root).map_err(read)?;
-    let files = port.commit(&root, &head).map_err(read)?;
-    let project = match load(&*files) {
-        Ok(Some(project)) => project,
-        Ok(None) => return Ok(None),
-        Err(problems) => return Err(GateRefusal::ValidationPending(vec![problems_text(&problems)])),
+/// What a validator's delivery of `task_id` shows of its specs, read from the commit it delivers.
+pub(crate) fn delivered(domain: &dyn Runtime, state: &DomainState, task_id: &TaskId, delivery: &InteractionId) -> Option<DeliveredValidation> {
+    let port = domain.ports().spec_worktrees()?;
+    delivered_with(&*port, state, task_id, delivery)
+}
+
+pub(crate) fn delivered_with(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, delivery: &InteractionId) -> Option<DeliveredValidation> {
+    let task = state.tasks.get(task_id).filter(|task| task.stages.role() == Some(ExecutionRole::Validator))?;
+    let root = port.own(state, task_id)?;
+    let head = match spec_reading::own_prs(port, state, task, &root).ok()?.first() {
+        Some(pr) => pr.head.clone(),
+        None => port.head_commit(&root).ok()?,
     };
+    let project = load(&*port.commit(&root, &head).ok()?).ok()??;
     let report = project.report(None);
-    let left = pending(&report);
-    if role == Some(ExecutionRole::Implementer) {
-        return if left.is_empty() { Ok(None) } else { Err(GateRefusal::ValidationRequired(left)) };
-    }
-    if !left.is_empty() || !report.problems.is_empty() {
-        let mut all = left;
-        all.extend(report.problems.iter().map(|p| format!("{}:{}: {}", p.path, p.line, p.message)));
-        return Err(GateRefusal::ValidationPending(all));
-    }
-    if task.specs.amendments.iter().any(|a| matches!(a.state, alondra_domain_model::AmendmentState::Requested | alondra_domain_model::AmendmentState::Proposed)) {
-        return Err(GateRefusal::SpecChangeOpen);
-    }
-    let base_commit = port.base_commit(&root).map_err(read)?;
-    let base = port.commit(&root, &base_commit).map_err(read)?;
-    let before = load(&*base).ok().flatten();
-    let unrecorded = unrecorded(&project, before.as_ref(), &report, task, port, &root, &base_commit, &head)?;
-    if !unrecorded.is_empty() {
-        return Err(GateRefusal::LedgerUnrecorded(unrecorded));
-    }
-    if let Some(round) = task.validation.current().filter(|round| round.head != head) {
-        let ledger = ledger_dir(&project);
-        let changed: Vec<String> = port.changed(&root, &round.head, &head).map_err(read)?.into_iter().filter(|path| !path.starts_with(&ledger)).collect();
-        if !changed.is_empty() {
-            return Err(GateRefusal::ChangedAfterValidation(changed));
-        }
-    }
-    let changed = port.changed(&root, &base_commit, &head).map_err(read)?;
-    Ok(Some(snapshot(&project, &report, task, delivery, &head, &changed)))
-}
-
-/// Every ledger entry of the delivered commit that differs from where the branch leaves its base
-/// and that no validator recorded in Alondra with the same fingerprint and verdict.
-#[allow(clippy::too_many_arguments)]
-fn unrecorded(project: &engine::Project, before: Option<&engine::Project>, report: &engine::Report, task: &Task,
-    port: &dyn SpecWorktrees, root: &Path, base: &str, head: &str) -> Result<Vec<String>, GateRefusal> {
-    let mut seen = BTreeSet::new();
-    let mut out = vec![];
-    for item in &report.items {
-        let Some(kind) = ValidationKind::of_engine(item.kind) else { continue };
-        if !seen.insert((item.subject.clone(), kind)) {
-            continue;
-        }
-        let Some(now) = project.recorded(&item.subject, item.kind) else { continue };
-        if before.and_then(|before| before.recorded(&item.subject, item.kind)).as_ref() == Some(&now) {
-            continue;
-        }
-        let verdict = match now.verdict {
-            None | Some(engine::Verdict::Met) => ValidationVerdict::Met,
-            Some(engine::Verdict::Unmet) => ValidationVerdict::Unmet,
-        };
-        if task.validation.record(&item.subject, kind, &now.inputs).is_none_or(|record| record.verdict != verdict) {
-            out.push(format!("{} ({})", item.subject, kind.as_str()));
-        }
-    }
-    let ledger = ledger_dir(project);
-    let changed = port.changed(root, base, head).map_err(GateRefusal::Unreadable)?;
-    out.extend(report.leftover.iter().filter(|path| path.starts_with(&ledger) && changed.contains(path)).cloned());
-    Ok(out)
+    let base = port.base_commit(&root, &head).ok()?;
+    let changed = port.changed(&root, &base, &head).ok()?;
+    Some(snapshot(&project, &report, task, delivery, &head, &changed))
 }
 
 /// What the delivery's card shows of its specs: each spec the task's work is about, each scenario
@@ -327,6 +202,19 @@ fn snapshot(project: &engine::Project, report: &engine::Report, task: &Task, del
     DeliveredValidation { delivery: delivery.clone(), head: head.to_owned(), specs, suites, outside: outside(project, task, changed), sections }
 }
 
+/// Keeps what Alondra read of a commit of the task, for the domain's guard of its delivery.
+pub(crate) fn record_reading(domain: &dyn Runtime, task_id: &TaskId, reading: CommitReading) -> Result<(), DomainError> {
+    let state = domain.state();
+    let envelope = alondra_domain_model::CommandEnvelope {
+        protocol_version: alondra_domain_model::PROTOCOL_VERSION,
+        data_epoch: state.data_epoch.clone(),
+        command_id: format!("commit-reading-{}-{}-{}", task_id.0, reading.commit, state.revision).into(),
+        expected_revision: state.revision,
+        command: Command::RecordCommitReading { task_id: task_id.clone(), reading },
+    };
+    domain.execute_as_system(envelope).map(|_| ()).map_err(|error| delivery_unreadable(&error.to_string()))
+}
+
 /// Keeps what the validator's delivery showed of its specs for its card. A card without it says
 /// its evidence is not available, so a failure here never stops the delivery.
 pub(crate) fn record_delivered(domain: &dyn Runtime, task_id: &TaskId, delivery: &InteractionId, validation: DeliveredValidation) {
@@ -347,8 +235,10 @@ pub(crate) fn record_delivered(domain: &dyn Runtime, task_id: &TaskId, delivery:
 mod tests {
     use super::*;
     use alondra_domain_model::validation::RoundItem;
-    use alondra_domain_model::{RoundState, SpecFiles, TaskRun, TaskState, ValidationRecord, ValidationRound, ValidationState};
+    use alondra_domain_model::{DeliveryCheck, DeliveryTarget, PullRequest, SpecFiles, TaskRun, TaskState, ValidationRecord, ValidationRound, ValidationState, ValidationVerdict};
+    use alondra_domain_model::specs::Files;
     use alondra_engine_ports::spec_worktrees::SpecSource;
+    use std::path::Path;
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -382,15 +272,19 @@ mod tests {
         commits: Mutex<BTreeMap<String, Tree>>,
         head: Mutex<String>,
         dirty: Mutex<Vec<String>>,
+        gone: Mutex<bool>,
     }
     impl Repo {
         fn new(base: Tree) -> Repo {
-            Repo { commits: Mutex::new(BTreeMap::from([(sha('0'), base)])), head: Mutex::new(sha('0')), dirty: Mutex::new(vec![]) }
+            Repo { commits: Mutex::new(BTreeMap::from([(sha('0'), base)])), head: Mutex::new(sha('0')), dirty: Mutex::new(vec![]), gone: Mutex::new(false) }
         }
         fn commit(&self, name: char, tree: Tree) -> String {
             self.commits.lock().unwrap().insert(sha(name), tree);
             *self.head.lock().unwrap() = sha(name);
             sha(name)
+        }
+        fn check_out(&self, commit: &str) {
+            *self.head.lock().unwrap() = commit.to_owned();
         }
         fn tree(&self, commit: &str) -> Tree {
             self.commits.lock().unwrap()[commit].clone()
@@ -400,7 +294,7 @@ mod tests {
         name.to_string().repeat(40)
     }
     impl SpecWorktrees for Repo {
-        fn own(&self, _: &DomainState, _: &TaskId) -> Option<PathBuf> { Some(PathBuf::from("/worktree")) }
+        fn own(&self, _: &DomainState, _: &TaskId) -> Option<PathBuf> { (!*self.gone.lock().unwrap()).then(|| PathBuf::from("/worktree")) }
         fn all(&self, _: &DomainState, _: &TaskId) -> Vec<PathBuf> { vec![PathBuf::from("/worktree")] }
         fn head(&self, _: &Path) -> Result<SpecSource, String> { Ok(Box::new(self.tree(&self.head.lock().unwrap().clone()))) }
         fn base(&self, _: &Path) -> Result<SpecSource, String> { Ok(Box::new(self.tree(&sha('0')))) }
@@ -408,7 +302,8 @@ mod tests {
         fn commit(&self, _: &Path, commit: &str) -> Result<SpecSource, String> {
             self.commits.lock().unwrap().get(commit).cloned().map(|tree| Box::new(tree) as SpecSource).ok_or_else(|| format!("no commit {commit}"))
         }
-        fn base_commit(&self, _: &Path) -> Result<String, String> { Ok(sha('0')) }
+        fn base_commit(&self, _: &Path, _: &str) -> Result<String, String> { Ok(sha('0')) }
+        fn repository(&self, _: &Path) -> Result<Option<String>, String> { Ok(Some("ana/app".into())) }
         fn changed(&self, _: &Path, from: &str, to: &str) -> Result<Vec<String>, String> {
             let (from, to) = (self.tree(from).0, self.tree(to).0);
             let paths: BTreeSet<&String> = from.keys().chain(to.keys()).collect();
@@ -474,8 +369,22 @@ mod tests {
                     reasoning: Some("Checked".into()), nearest_wrong: None, output: None, evidence: vec![], revision: 1 });
             }
         }
-        task.validation.rounds.push(ValidationRound { number: 1, head: head.into(), items, scope: vec![], state: RoundState::Validating, generation: Some(3), findings: None, retried: false });
+        task.validation.rounds.push(ValidationRound { number: 1, head: head.into(), implemented: head.into(), items, scope: vec![], state: RoundState::Validating, generation: Some(3), findings: None, retried: false });
         state_with(task)
+    }
+
+    /// The task's pull request in `repository`, open at `head`.
+    fn with_pr(mut state: DomainState, repository: &str, number: u64, head: &str) -> DomainState {
+        let id = alondra_domain_model::PrId(format!("github.com/{repository}#{number}"));
+        let pr = PullRequest {
+            id: id.clone(), task_id: "t".into(), host: "github.com".into(), repository: repository.into(), number, head: head.into(), base: "main".into(),
+            state: alondra_domain_model::PrState::Open, merged_head: None, allowed_methods: vec![], review: None, aliases: Default::default(), address_read_at: 0,
+            identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
+        };
+        let task = state.tasks.get_mut(&TaskId::from("t")).unwrap();
+        if task.pr_id.is_none() { task.pr_id = Some(id.clone()) } else { task.later_prs.push(id.clone()) }
+        state.pull_requests.insert(id, pr);
+        state
     }
 
     fn delivery() -> InteractionId {
@@ -500,13 +409,31 @@ mod tests {
         assert!(items.iter().all(|item| Some(item.inputs.clone()) == project.fingerprint(&item.subject, item.kind.engine())));
     }
 
+    /// What the domain's guard says of a final delivery of the task after Alondra read it as the
+    /// daemon does: the commit of each open pull request and the worktree's.
+    fn check(repo: &Repo, mut state: DomainState) -> Result<DeliveryCheck, String> {
+        let task_id = TaskId::from("t");
+        let readings = spec_reading::read_delivery(repo, &state, &task_id)?;
+        let task = state.tasks.get_mut(&task_id).unwrap();
+        for reading in readings {
+            task.validation.push_reading(reading);
+        }
+        let targets: Vec<DeliveryTarget> = state.open_prs(&state.tasks[&task_id]).map(|pr| DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: pr.head.clone() }).collect();
+        Ok(state.delivery_check(&task_id, &targets))
+    }
+
+    fn named(items: &[alondra_domain_model::ValidationItem]) -> Vec<String> {
+        items.iter().map(|item| format!("{} {}", item.subject, item.kind.as_str())).collect()
+    }
+
     #[test]
     fn a_validators_delivery_passes_when_every_ledger_entry_is_one_it_recorded_and_only_the_ledger_changed() {
         let repo = Repo::new(base());
         let head = implemented(&repo);
         let state = validated(&repo, &head, true);
         repo.commit('2', ledger_for(&repo, &head));
-        let shown = gate_with(&repo, &state, &"t".into(), &delivery()).unwrap().expect("its card shows the specs");
+        assert_eq!(check(&repo, state.clone()), Ok(DeliveryCheck::Validated));
+        let shown = delivered_with(&repo, &state, &"t".into(), &delivery()).expect("its card shows the specs");
         let scenarios: Vec<&str> = shown.specs.iter().flat_map(|spec| &spec.scenarios).map(|scenario| scenario.id.as_str()).collect();
         assert_eq!(scenarios, ["billing.partial/part", "billing.partial/alone"]);
         let part = &shown.specs[0].scenarios[0];
@@ -522,10 +449,8 @@ mod tests {
         let head = implemented(&repo);
         let state = validated(&repo, &head, false);
         repo.commit('2', ledger_for(&repo, &head));
-        let refused = gate_with(&repo, &state, &"t".into(), &delivery()).unwrap_err();
-        assert_eq!(refused.code(), "ledger_unrecorded");
-        let GateRefusal::LedgerUnrecorded(entries) = refused else { unreachable!() };
-        assert_eq!(entries.len(), 3, "the suite and both judgments: {entries:?}");
+        let Ok(DeliveryCheck::Unrecorded { items, .. }) = check(&repo, state) else { panic!("the ledger is not the validator's") };
+        assert_eq!(named(&items), ["billing.partial/alone adequate", "billing.partial/part adequate", "billing/unit suite"]);
     }
 
     #[test]
@@ -535,10 +460,8 @@ mod tests {
         let state = validated(&repo, &head, true);
         let weakened = ledger_for(&repo, &head).with("crates/billing/tests/refunds.rs", &TESTS.replace("assert_eq!(refund(30, 10), 10);", ""));
         repo.commit('2', weakened);
-        let refused = gate_with(&repo, &state, &"t".into(), &delivery()).unwrap_err();
-        assert_eq!(refused.code(), "validation_pending");
-        let GateRefusal::ValidationPending(left) = refused else { unreachable!() };
-        assert!(left.iter().any(|item| item.starts_with("billing.partial/part adequate stale")), "{left:?}");
+        let Ok(DeliveryCheck::Listed { items, .. }) = check(&repo, state) else { panic!("the weakened test owes its judgment again") };
+        assert!(named(&items).contains(&"billing.partial/part adequate".to_owned()), "{items:?}");
     }
 
     #[test]
@@ -547,8 +470,7 @@ mod tests {
         let head = implemented(&repo);
         let state = validated(&repo, &head, true);
         repo.commit('2', ledger_for(&repo, &head).with("README.md", "Refunds\n"));
-        let refused = gate_with(&repo, &state, &"t".into(), &delivery()).unwrap_err();
-        assert_eq!(refused, GateRefusal::ChangedAfterValidation(vec!["README.md".into()]));
+        assert_eq!(check(&repo, state), Ok(DeliveryCheck::ChangedAfterValidation(vec!["README.md".into()])));
     }
 
     #[test]
@@ -556,15 +478,75 @@ mod tests {
         let repo = Repo::new(base());
         implemented(&repo);
         let state = state_with(task(ExecutionRole::Implementer));
-        assert_eq!(gate_with(&repo, &state, &"t".into(), &delivery()).unwrap_err().code(), "validation_required");
+        let owed = check(&repo, state.clone()).unwrap();
+        assert_eq!(owed.refusal(Some(ExecutionRole::Implementer)).unwrap().code, "validation_required");
         let unchanged = Repo::new(ledger_for(&Repo::new(base()), &sha('0')));
-        assert_eq!(gate_with(&unchanged, &state, &"t".into(), &delivery()), Ok(None));
+        assert_eq!(check(&unchanged, state), Ok(DeliveryCheck::Validated));
     }
 
     #[test]
     fn a_project_without_specs_is_never_gated() {
         let repo = Repo::new(Tree(BTreeMap::new()).with("src/lib.rs", "fn main() {}\n"));
-        let state = state_with(task(ExecutionRole::Implementer));
-        assert_eq!(gate_with(&repo, &state, &"t".into(), &delivery()), Ok(None));
+        assert_eq!(check(&repo, state_with(task(ExecutionRole::Implementer))), Ok(DeliveryCheck::NotGated));
+    }
+
+    #[test]
+    fn an_implementer_who_writes_the_ledger_by_hand_over_a_weakened_test_is_refused() {
+        let repo = Repo::new(base());
+        let weakened = repo.tree(&sha('0')).with("crates/billing/src/lib.rs", "pub fn refund(paid: u32, part: u32) -> u32 { paid }\n")
+            .with("crates/billing/tests/refunds.rs", &TESTS.replace("assert_eq!(refund(30, 10), 10);", ""));
+        let head = repo.commit('1', weakened);
+        repo.commit('2', ledger_for(&repo, &head));
+        let refused = check(&repo, state_with(task(ExecutionRole::Implementer))).unwrap();
+        assert_eq!(refused.refusal(Some(ExecutionRole::Implementer)).unwrap().code, "ledger_unrecorded", "{refused:?}");
+    }
+
+    #[test]
+    fn an_implementer_cannot_deliver_while_a_change_of_the_specs_is_open() {
+        let unchanged = Repo::new(ledger_for(&Repo::new(base()), &sha('0')));
+        let mut task = task(ExecutionRole::Implementer);
+        task.specs.amendments.push(alondra_domain_model::SpecAmendment { id: "a1".into(), reason: "Refund in two steps".into(), state: alondra_domain_model::AmendmentState::Requested,
+            files: SpecFiles::new(), before: BTreeMap::new(), card: None, words: None });
+        assert_eq!(check(&unchanged, state_with(task)), Ok(DeliveryCheck::SpecChangeOpen));
+    }
+
+    #[test]
+    fn the_guard_reads_the_commit_of_the_delivered_pull_request_not_the_one_checked_out() {
+        let repo = Repo::new(base());
+        let head = implemented(&repo);
+        let validated_commit = repo.commit('2', ledger_for(&repo, &head));
+        let code = repo.tree(&validated_commit).with("crates/billing/src/lib.rs", "pub fn refund(paid: u32, _: u32) -> u32 { paid }\n");
+        let pushed = repo.commit('3', code);
+        repo.check_out(&validated_commit);
+        let state = with_pr(validated(&repo, &head, true), "ana/app", 1, &pushed);
+        assert!(!check(&repo, state).unwrap().admits(), "the pull request carries code no validator checked");
+        let elsewhere = with_pr(validated(&repo, &head, true), "ana/site", 2, &pushed);
+        assert!(check(&repo, elsewhere).unwrap().admits(), "a pull request of another repository is outside this worktree's specs");
+
+        repo.check_out(&sha('0'));
+        let implementer = with_pr(state_with(task(ExecutionRole::Implementer)), "ana/app", 1, &head);
+        let owed = check(&repo, implementer).unwrap();
+        assert_eq!(owed.refusal(Some(ExecutionRole::Implementer)).unwrap().code, "validation_required", "checking out main does not hide the pull request");
+    }
+
+    #[test]
+    fn a_validator_never_delivers_code_of_its_own_even_after_its_round_moved_to_that_commit() {
+        let repo = Repo::new(base());
+        let handed_over = implemented(&repo);
+        let own_code = repo.commit('3', repo.tree(&handed_over).with("crates/billing/src/lib.rs", "pub fn refund(paid: u32, _: u32) -> u32 { paid }\n"));
+        let mut state = validated(&repo, &own_code, true);
+        state.tasks.get_mut(&TaskId::from("t")).unwrap().validation.rounds[0].implemented = handed_over;
+        repo.commit('4', ledger_for(&repo, &own_code));
+        assert_eq!(check(&repo, state), Ok(DeliveryCheck::ChangedAfterValidation(vec!["crates/billing/src/lib.rs".into()])));
+    }
+
+    #[test]
+    fn a_pull_request_whose_worktree_is_gone_cannot_be_read() {
+        let repo = Repo::new(base());
+        let head = implemented(&repo);
+        *repo.gone.lock().unwrap() = true;
+        let state = with_pr(state_with(task(ExecutionRole::Implementer)), "ana/app", 1, &head);
+        assert!(check(&repo, state).is_err());
+        assert_eq!(check(&repo, state_with(task(ExecutionRole::Implementer))), Ok(DeliveryCheck::NotGated), "no worktree and no pull request deliver no commit");
     }
 }

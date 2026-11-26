@@ -952,7 +952,8 @@ pub enum Command {
         scope: Vec<String>,
     },
     /// The validator records what one validation found. Alondra fills `inputs` with the
-    /// fingerprint it reads of the subject on the commit the round validates.
+    /// fingerprint it reads of the subject on the commit the round validates, and `listed` with
+    /// what the spec engine lists there.
     RecordValidation {
         task_id: TaskId,
         subject: String,
@@ -968,12 +969,20 @@ pub enum Command {
         evidence: Vec<String>,
         #[serde(default)]
         inputs: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        listed: Option<Vec<crate::ValidationItem>>,
     },
     /// The validator ends its round without delivering: what failed goes back to the implementer,
     /// what it could not run to a new validator.
     EndValidation {
         task_id: TaskId,
         findings: String,
+    },
+    /// What Alondra read of one commit of a task with git and the spec engine, for the guard of
+    /// its delivery.
+    RecordCommitReading {
+        task_id: TaskId,
+        reading: crate::CommitReading,
     },
     /// What a validator's delivery shows of its specs, read by Alondra from the delivered commit.
     RecordDeliveredValidation {

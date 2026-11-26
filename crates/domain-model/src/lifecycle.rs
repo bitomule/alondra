@@ -1299,6 +1299,9 @@ impl DomainState {
     /// A lifecycle decision on a task: the aggregate validates it, the journal keeps it and
     /// the task's DTO reads it, in one step. A refusal changes nothing.
     pub fn decide(&mut self, lifecycles: &mut Lifecycles, task: &TaskId, record: LifecycleRecord) -> Result<()> {
+        if let LifecycleRecord::Presented { delivery } = &record {
+            self.delivery_admitted(task, delivery)?;
+        }
         let lifecycle = self.lifecycle(lifecycles, task)?;
         let event = event(task, &record, lifecycle)?;
         let next = Arc::new(lifecycle.advanced(lifecycle.revision(), event).map_err(|refusal| refused(task, &record, lifecycle, refusal))?);

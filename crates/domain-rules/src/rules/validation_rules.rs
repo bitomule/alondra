@@ -15,6 +15,8 @@ pub nearest_wrong: Option<&'a str>,
 pub output: Option<&'a str>,
 pub evidence: &'a [String],
 pub inputs: &'a str,
+/// What the spec engine lists on the round's commit, as Alondra read it.
+pub listed: Option<&'a [ValidationItem]>,
 }
 
 fn handover(to: ExecutionRole, cause: HandoverCause) -> StageHandover {
@@ -70,6 +72,7 @@ pub(crate) fn ready_for_validation(domain: &mut DomainState, actor: &Actor, task
     let round = ValidationRound {
         number,
         head: head.to_owned(),
+        implemented: head.to_owned(),
         items: items.iter().map(|item| RoundItem { subject: item.subject.clone(), kind: item.kind, inputs: item.inputs.clone(), state: ValidationState::Running, reason: None }).collect(),
         scope: scope.iter().take(MAX_SCOPE_FILES).cloned().collect(),
         state: RoundState::Requested,
@@ -119,6 +122,12 @@ pub(crate) fn record_validation(domain: &mut DomainState, actor: &Actor, task_id
         reasoning, nearest_wrong, output, evidence: record.evidence.to_vec(), revision,
     });
     let round = task.validation.current_mut().expect("open above");
+    if let Some(listed) = record.listed.filter(|listed| listed.len() <= MAX_ROUND_ITEMS) {
+        round.items = listed.iter().map(|item| round.items.iter()
+            .find(|known| known.subject == item.subject && known.kind == item.kind && known.inputs == item.inputs).cloned()
+            .unwrap_or_else(|| RoundItem { subject: item.subject.clone(), kind: item.kind, inputs: item.inputs.clone(), state: ValidationState::Running, reason: None }))
+            .collect();
+    }
     if let Some(item) = round.item_mut(record.subject.trim(), record.kind).filter(|item| item.inputs == record.inputs) {
         item.state = match record.verdict {
             ValidationVerdict::Met => ValidationState::Met,
@@ -131,7 +140,8 @@ pub(crate) fn record_validation(domain: &mut DomainState, actor: &Actor, task_id
 }
 
 /// The validator ends its round without delivering. What failed goes back to the implementer,
-/// up to three rounds in a row; what it could not run goes to one new validator, then to the user.
+/// up to three rounds in a row, and so do commits the PR received after the implementer handed it
+/// over; what it could not run goes to one new validator, then to the user.
 pub(crate) fn end_validation(domain: &mut DomainState, actor: &Actor, task_id: &TaskId, findings: &str,
     effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
     role_allows(domain, actor, task_id, RoleTool::EndValidation)?;
@@ -142,7 +152,8 @@ pub(crate) fn end_validation(domain: &mut DomainState, actor: &Actor, task_id: &
     };
     let unmet = round.items.iter().any(|item| item.state == ValidationState::Unmet);
     let owed = round.owed().count() > 0;
-    if !unmet && !owed {
+    let moved = round.head != round.implemented;
+    if !unmet && !owed && !moved {
         return refuse("nothing_failed", "task_id",
             "Every validation of this round is met: commit only the ledger, push, and deliver with present_result");
     }
@@ -150,10 +161,12 @@ pub(crate) fn end_validation(domain: &mut DomainState, actor: &Actor, task_id: &
     let task = domain.tasks.get_mut(task_id).expect("assigned");
     let round = task.validation.current_mut().expect("open above");
     round.findings = Some(findings.clone());
-    if unmet {
+    if unmet || moved {
         round.state = RoundState::Failed;
-        task.validation.failed = task.validation.failed.saturating_add(1);
-        if task.validation.failed >= MAX_VALIDATION_ROUNDS {
+        if unmet {
+            task.validation.failed = task.validation.failed.saturating_add(1);
+        }
+        if unmet && task.validation.failed >= MAX_VALIDATION_ROUNDS {
             let card_id = InteractionId(format!("{VALIDATION_PREFIX}{}-{number}", task_id.0));
             task.validation.exhausted = Some(card_id.clone());
             let specs = task.specs.approved.is_some();
@@ -205,7 +218,8 @@ pub(crate) fn validator_delivered(domain: &mut DomainState, task_id: &TaskId) {
 }
 
 /// The PR of the validator's delivery received a commit after it: the same validator validates
-/// again on that commit, and only what changed fingerprint is owed.
+/// again on that commit, and only what changed fingerprint is owed. Code in that commit is not the
+/// implementer's: the validator never delivers it, it ends the round so the implementer takes it.
 pub(crate) fn validated_head_moved(domain: &mut DomainState, task_id: &TaskId, head: &str) -> Option<String> {
     let task = domain.tasks.get_mut(task_id)?;
     if task.stages.role() != Some(ExecutionRole::Validator) || task.stages.handover.is_some() {
@@ -216,7 +230,8 @@ pub(crate) fn validated_head_moved(domain: &mut DomainState, task_id: &TaskId, h
     round.state = RoundState::Validating;
     Some(format!(
         "Your validated pull request received commit {head} after your delivery, so the delivery was withdrawn. Bring that commit into your worktree, run alondra spec validate, \
-         validate again only what it lists (record each with record_validation), commit only the ledger, push, and deliver again with present_result."))
+         validate again only what it lists (record each with record_validation), commit only the ledger, push, and deliver again with present_result. \
+         If that commit changed anything but the ledger, end the round with end_validation instead, naming those files: the implementer takes them."))
 }
 
 /// The user asked for changes, or the PR has conflicts: an implementer does that work, never the
@@ -276,24 +291,17 @@ pub(crate) fn settle_validation_card(domain: &mut DomainState, actor: &Actor, ca
     domain.decide(lifecycles, &task_id, LifecycleRecord::Told { input, text: Some(stage_input(to)), answers: None })
 }
 
-/// A final delivery of a task whose validation is open: only its validator delivers, once every
-/// validation of its round is met. The gate Alondra runs on the delivered commit comes after.
-pub(crate) fn validation_allows_delivery(domain: &DomainState, task_id: &TaskId) -> Result<()> {
-    let Some(task) = domain.tasks.get(task_id) else { return Ok(()) };
-    let Some(round) = task.validation.open_round() else { return Ok(()) };
-    if task.stages.role() != Some(ExecutionRole::Validator) {
-        return refuse("validation_open", "is_final", "A validator checks this work now: end your turn, it delivers once every check passes");
+/// What Alondra read of a commit of the task, kept for the guard of its delivery.
+pub(crate) fn record_commit_reading(domain: &mut DomainState, actor: &Actor, task_id: &TaskId, reading: &alondra_domain_model::CommitReading) -> Result<()> {
+    system(actor)?;
+    domain.task(task_id)?;
+    if !is_commit_sha(&reading.commit) || reading.since.as_deref().is_some_and(|since| !is_commit_sha(since)) {
+        return refuse("invalid_input", "reading", "A reading names full commit shas");
     }
-    let unmet: Vec<String> = round.items.iter().filter(|item| item.state == ValidationState::Unmet).map(|item| format!("{} ({})", item.subject, item.kind.as_str())).collect();
-    if !unmet.is_empty() {
-        return refuse("validation_unmet", "is_final", &format!(
-            "These validations of the round are not met: {}. Send the work back with end_validation and your findings instead of delivering it", unmet.join(", ")));
+    if !reading.bounded() {
+        return refuse("invalid_input", "reading", "A reading holds more than a task keeps of one commit");
     }
-    let owed: Vec<String> = round.owed().map(|item| format!("{} ({})", item.subject, item.kind.as_str())).collect();
-    if !owed.is_empty() {
-        return refuse("validation_pending", "is_final", &format!(
-            "These validations of the round are not recorded yet: {}. Run each and record it with record_validation before delivering", owed.join(", ")));
-    }
+    domain.tasks.get_mut(task_id).expect("checked above").validation.push_reading(reading.clone());
     Ok(())
 }
 

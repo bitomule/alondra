@@ -3319,6 +3319,11 @@ pub(crate) fn apply(
             if let Some(opened) = task.opened_prs.first() {
                 return refuse("pr_being_read", "targets", &opened_pr_unread(opened));
             }
+            let validation = is_final.then(|| (domain.delivery_check(task_id, targets), task.stages.role()));
+            if let Some((check, role)) = validation.as_ref().filter(|(check, _)| !check.of_round())
+                && let Some(refusal) = check.refusal(*role) {
+                return Err(refusal);
+            }
             if !*is_final && let Some(pr) = domain.open_prs(task).next() {
                 return refuse("pr_needs_final", "is_final", &format!(
                     "PR #{} is open: present it with is_final true so the user can accept it and Alondra merges it. A progress notice cannot be merged. If work follows the merge (publish, deploy), declare it with post_merge_work first", pr.number));
@@ -3336,8 +3341,8 @@ pub(crate) fn apply(
                 return refuse("pr_missing", "targets", &prs_missing_from_delivery(&missing));
             }
             checklist_marks_cover_the_plan(domain, task_id, *is_final, checklist, attachments, targets)?;
-            if *is_final {
-                validation_allows_delivery(domain, task_id)?;
+            if let Some(refusal) = validation.and_then(|(check, role)| check.refusal(role)) {
+                return Err(refusal);
             }
             if let Some(plan) = &card.plan {
                 if !*is_final || *nothing_to_review || targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { .. })) {
@@ -4047,12 +4052,15 @@ pub(crate) fn apply(
         Command::ReadyForValidation { task_id, head, items, scope } => {
             ready_for_validation(domain, actor, task_id, head, items, scope, lifecycles)?;
         }
-        Command::RecordValidation { task_id, subject, check, verdict, reasoning, nearest_wrong, output, evidence, inputs } => {
-            let record = Recorded { subject, kind: *check, verdict: *verdict, reasoning: reasoning.as_deref(), nearest_wrong: nearest_wrong.as_deref(), output: output.as_deref(), evidence, inputs };
+        Command::RecordValidation { task_id, subject, check, verdict, reasoning, nearest_wrong, output, evidence, inputs, listed } => {
+            let record = Recorded { subject, kind: *check, verdict: *verdict, reasoning: reasoning.as_deref(), nearest_wrong: nearest_wrong.as_deref(), output: output.as_deref(), evidence, inputs, listed: listed.as_deref() };
             record_validation(domain, actor, task_id, record)?;
         }
         Command::EndValidation { task_id, findings } => {
             end_validation(domain, actor, task_id, findings, effects, created, lifecycles)?;
+        }
+        Command::RecordCommitReading { task_id, reading } => {
+            record_commit_reading(domain, actor, task_id, reading)?;
         }
         Command::RecordDeliveredValidation { task_id, validation } => {
             record_delivered_validation(domain, actor, task_id, validation)?;

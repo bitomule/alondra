@@ -4,8 +4,11 @@ use alondra_domain_model::{DomainState, TaskId, WorktreeOrigin};
 use alondra_engine_ports::spec_worktrees::{SpecSource, SpecWorktrees};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use alondra_engine_ports::worktrees::CHECK_LIMIT;
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 pub struct GitSpecWorktrees;
 
@@ -17,13 +20,40 @@ fn worktrees(state: &DomainState, task: &TaskId) -> Vec<PathBuf> {
     open.into_iter().filter_map(|(path, _)| PathBuf::from(path).canonicalize().ok()).collect()
 }
 
+/// Runs git at `dir`, killed when it has not finished within the check's time limit.
 fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::null()).stderr(Stdio::piped()).output()
+    git_within(dir, args, CHECK_LIMIT)
+}
+
+fn git_within(dir: &Path, args: &[&str], limit: Duration) -> Result<Vec<u8>, String> {
+    let mut child = Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
         .map_err(|error| format!("git could not run: {error}"))?;
-    if !output.status.success() {
-        return Err(format!("git {} failed: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&output.stderr).trim()));
+    let drain = |pipe: Option<Box<dyn Read + Send>>| std::thread::spawn(move || {
+        let mut bytes = vec![];
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    });
+    let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        match child.try_wait().map_err(|error| format!("git could not run: {error}"))? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("git {} did not finish within {} seconds", args.first().unwrap_or(&""), limit.as_secs()));
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let (stdout, stderr) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
+    if !status.success() {
+        return Err(format!("git {} failed: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&stderr).trim()));
     }
-    Ok(output.stdout)
+    Ok(stdout)
 }
 
 fn names(bytes: Vec<u8>) -> Vec<String> {
@@ -99,16 +129,24 @@ fn resolved(root: &Path, revision: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&found).trim().to_owned())
 }
 
-/// Where the branch of the worktree at `root` leaves the remote's default branch.
-fn fork_point(root: &Path) -> Result<String, String> {
+/// Where `revision` leaves the remote's default branch, in the repository at `root`.
+fn fork_point(root: &Path, revision: &str) -> Result<String, String> {
     let base = git(root, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).ok()
         .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
         .filter(|name| !name.is_empty())
         .or_else(|| ["origin/main", "origin/master", "main", "master"].into_iter()
             .find(|name| git(root, &["rev-parse", "--verify", "--quiet", name]).is_ok()).map(str::to_owned))
         .ok_or("the repository has no default branch to compare with")?;
-    let found = git(root, &["merge-base", "HEAD", &base])?;
+    let found = git(root, &["merge-base", revision, &base])?;
     Ok(String::from_utf8_lossy(&found).trim().to_owned())
+}
+
+/// The `owner/repo` at the end of a remote's address, by ssh or https.
+fn owner_repo(url: &str) -> Option<String> {
+    let path = url.trim_end_matches('/').trim_end_matches(".git");
+    let mut parts = path.rsplit(['/', ':']);
+    let (repo, owner) = (parts.next()?, parts.next()?);
+    (!repo.is_empty() && !owner.is_empty()).then(|| format!("{owner}/{repo}"))
 }
 
 /// Whether `path` stays inside `root` without going through a link: every folder of it that exists
@@ -171,7 +209,7 @@ impl SpecWorktrees for GitSpecWorktrees {
     }
 
     fn base(&self, root: &Path) -> Result<SpecSource, String> {
-        Ok(Box::new(Commit::of(root, &fork_point(root)?)?))
+        Ok(Box::new(Commit::of(root, &fork_point(root, "HEAD")?)?))
     }
 
     fn head_commit(&self, root: &Path) -> Result<String, String> {
@@ -179,11 +217,19 @@ impl SpecWorktrees for GitSpecWorktrees {
     }
 
     fn commit(&self, root: &Path, commit: &str) -> Result<SpecSource, String> {
+        if resolved(root, commit).is_err() && commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+            git(root, &["fetch", "--quiet", "--no-tags", "origin", commit])?;
+        }
         Ok(Box::new(Commit::of(root, commit)?))
     }
 
-    fn base_commit(&self, root: &Path) -> Result<String, String> {
-        fork_point(root)
+    fn base_commit(&self, root: &Path, commit: &str) -> Result<String, String> {
+        fork_point(root, commit)
+    }
+
+    fn repository(&self, root: &Path) -> Result<Option<String>, String> {
+        let Ok(url) = git(root, &["remote", "get-url", "origin"]) else { return Ok(None) };
+        Ok(owner_repo(String::from_utf8_lossy(&url).trim()))
     }
 
     fn changed(&self, root: &Path, from: &str, to: &str) -> Result<Vec<String>, String> {
@@ -268,7 +314,7 @@ mod tests {
         let head = Commit::of(&root, "HEAD").unwrap();
         std::fs::write(root.join("specs/billing/boundary.toml"), BOUNDARY).unwrap();
         assert_ne!(head.read("specs/billing/boundary.toml").as_deref(), Some(BOUNDARY.as_bytes()), "what counts is the commit, never a file put back on disk");
-        let base = Commit::of(&root, &fork_point(&root).unwrap()).unwrap();
+        let base = Commit::of(&root, &fork_point(&root, "HEAD").unwrap()).unwrap();
         assert_eq!(base.read("specs/billing/boundary.toml").as_deref(), Some(BOUNDARY.as_bytes()), "the base is where the branch left main");
         let found = specs::drift(&head, &base, &SpecFiles::new()).unwrap();
         assert_eq!(found, [specs::SpecDrift { path: "specs/billing/boundary.toml".into(), approved: false }]);
@@ -320,5 +366,27 @@ mod tests {
         for path in ["../escape.feature", "/etc/escape", "specs/./a.feature"] {
             assert!(write_into(&root, &changes(&[(path, Some("x"))])).is_err(), "{path} is refused");
         }
+    }
+
+    #[test]
+    fn the_repository_is_read_from_an_ssh_or_https_remote() {
+        assert_eq!(owner_repo("git@github.com:ana/app.git").as_deref(), Some("ana/app"));
+        assert_eq!(owner_repo("https://github.com/ana/app").as_deref(), Some("ana/app"));
+        assert_eq!(owner_repo("https://github.com/ana/app.git/").as_deref(), Some("ana/app"));
+        assert_eq!(owner_repo("app"), None);
+    }
+
+    #[test]
+    fn a_git_that_does_not_finish_in_time_is_killed() {
+        let dir = Directory::new();
+        std::fs::create_dir_all(&*dir).unwrap();
+        let root = dir.canonicalize().unwrap();
+        git(&root, &["init", "--quiet"]).unwrap();
+        let fifo = std::ffi::CString::new(root.join("never-written").into_os_string().into_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0, "a pipe nobody writes to");
+        let started = Instant::now();
+        let refused = git_within(&root, &["hash-object", "never-written"], Duration::from_millis(200)).unwrap_err();
+        assert!(refused.contains("did not finish"), "{refused}");
+        assert!(started.elapsed() < Duration::from_secs(10), "it was stopped, not waited for");
     }
 }

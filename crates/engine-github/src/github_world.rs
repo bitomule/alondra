@@ -246,6 +246,11 @@ impl GithubWorld {
         self.world().unreachable = on;
     }
 
+    /// The PR's branch now points at the commit `head`, one a test already knows.
+    pub fn set_head(&self, number: u64, head: &str) {
+        self.change(number, |pr| head.clone_into(&mut pr.head));
+    }
+
     /// A new commit on the PR's branch; returns the new head.
     pub fn push_commit(&self, number: u64) -> String {
         let head = {

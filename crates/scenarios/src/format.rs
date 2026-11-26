@@ -248,6 +248,11 @@ pub enum Step {
     /// The node of `task` writes `files` in its worktree and commits them, with `message`; a file
     /// without text is removed.
     Commit { task: String, files: Vec<ProposedFile>, message: String },
+    /// The node of `task` pushes the commit its worktree is on to PR `number`: the PR's head on
+    /// GitHub becomes that commit.
+    Push { task: String, number: u64 },
+    /// The worktree of `task` moves to the revision `to` without moving any PR.
+    Checkout { task: String, to: String },
     /// The node of `task` asks permission to run `command` in Bash from `cwd`, a folder of the
     /// task's worktree (its top when absent), as Claude Code asks; `request` names the request.
     Permission { task: String, request: String, command: String, #[serde(default)] cwd: Option<String> },

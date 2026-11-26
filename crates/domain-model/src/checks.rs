@@ -1728,6 +1728,7 @@ impl DomainState {
             | Command::RecordValidation { task_id, .. }
             | Command::EndValidation { task_id, .. }
             | Command::RecordDeliveredValidation { task_id, .. }
+            | Command::RecordCommitReading { task_id, .. }
             | Command::BeginStageHandover { task_id, .. }
             | Command::StageHandoverFailed { task_id, .. }
             | Command::RecordHostReleased { task_id, .. }

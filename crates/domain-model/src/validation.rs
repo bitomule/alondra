@@ -209,8 +209,11 @@ impl RoundState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidationRound {
     pub number: u32,
-    /// The commit it validates; between it and the delivered commit only the ledger may change.
+    /// The commit it validates: the implementer's, or one the PR received after the delivery.
     pub head: String,
+    /// The commit the implementer handed over; between it and the delivered commit only the ledger
+    /// may change, whoever made the commits in between.
+    pub implemented: String,
     pub items: Vec<RoundItem>,
     /// Files the branch changed outside the components of the task's specs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -346,6 +349,9 @@ pub struct TaskValidation {
     pub exhausted: Option<InteractionId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delivered: Vec<DeliveredValidation>,
+    /// What Alondra read of the commits the task delivers or is about to deliver.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub readings: Vec<crate::delivery_validation::CommitReading>,
 }
 
 fn is_zero(value: &u8) -> bool {

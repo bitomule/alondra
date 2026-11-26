@@ -1030,16 +1030,22 @@ async fn checked_producer_command<H: DomainHost>(
         && !host.domain().state().interactions.contains_key(interaction_id)
     {
         let (checking, task, delivery) = (host.clone(), task_id.clone(), interaction_id.clone());
-        let gate = alondra_core::clock::spawn_blocking(move || {
+        let read = alondra_core::clock::spawn_blocking(move || {
             let state = checking.domain().state();
-            crate::validation_checks::gate(checking.domain(), &state, &task, &delivery)
+            crate::validation_checks::read_delivery(checking.domain(), &state, &task)
+                .map(|readings| (readings, crate::validation_checks::delivered(checking.domain(), &state, &task, &delivery)))
         });
-        let gated = steps.step("checking the task's validation", alondra_core::clock::timeout(git_within, gate)).await;
-        match gated {
-            Ok(Ok(Ok(snapshot))) => delivered = snapshot,
-            Ok(Ok(Err(refusal))) => return Err(refusal.error()),
-            Ok(Err(_)) => return Err(crate::validation_checks::GateRefusal::Unreadable("the check stopped before it finished".into()).error()),
-            Err(_) => return Err(crate::validation_checks::GateRefusal::Unreadable(format!("git did not answer within {} seconds", git_within.as_secs())).error()),
+        let readings = match steps.step("reading the task's delivered commits", alondra_core::clock::timeout(git_within, read)).await {
+            Ok(Ok(Ok((readings, shown)))) => {
+                delivered = shown;
+                readings
+            }
+            Ok(Ok(Err(why))) => return Err(crate::validation_checks::delivery_unreadable(&why)),
+            Ok(Err(_)) => return Err(crate::validation_checks::delivery_unreadable("the check stopped before it finished")),
+            Err(_) => return Err(crate::validation_checks::delivery_unreadable(&format!("git did not answer within {} seconds", git_within.as_secs()))),
+        };
+        for reading in readings {
+            crate::validation_checks::record_reading(host.domain(), task_id, reading)?;
         }
     }
     if let (Principal::Agent { session_id, .. }, Command::PresentResult { task_id, interaction_id, targets, is_final: true, .. })

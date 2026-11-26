@@ -779,7 +779,7 @@ impl Context<'_> {
                     reasoning: judged.then(|| "Read the scenario and the tests that declare it".to_owned()),
                     nearest_wrong: (kind == alondra_domain_model::ValidationKind::Adequate).then(|| "Refunding the whole order".to_owned()),
                     output: (kind == alondra_domain_model::ValidationKind::Suite).then(|| "test result: ok".to_owned()),
-                    evidence: vec![], inputs: String::new(),
+                    evidence: vec![], inputs: String::new(), listed: None,
                 }).await?;
                 self.settle().await?;
             }
@@ -789,6 +789,14 @@ impl Context<'_> {
             }
             Step::SpecLedger { task, message } => self.spec_ledger(index, task, message)?,
             Step::Commit { task, files, message } => self.commit(index, task, files, message)?,
+            Step::Push { task, number } => {
+                let head = self.git_output(index, task, &["rev-parse", "HEAD"])?;
+                self.github.set_head(*number, head.trim());
+                self.heads.insert(*number, head.trim().to_owned());
+            }
+            Step::Checkout { task, to } => {
+                self.git_output(index, task, &["checkout", "-q", "--detach", to])?;
+            }
             Step::EditSpec { task, item, fields } => self.edit_spec(index, task, item, fields).await?,
             Step::Permission { task, request, command, cwd } => {
                 let top = self.worktrees.get(task).ok_or_else(|| Self::failed(index, format!("task {task} has no worktree")))?;
@@ -1138,6 +1146,17 @@ impl Context<'_> {
             files.push(crate::format::ProposedFile { path: entry.path, text: Some(String::from_utf8_lossy(&entry.bytes).into_owned()) });
         }
         self.commit(index, task, &files, message)
+    }
+
+    fn git_output(&self, index: usize, task: &str, args: &[&str]) -> Result<String, ScenarioError> {
+        let failed = |why: &dyn std::fmt::Display| Self::failed(index, why);
+        let top = self.worktrees.get(task).cloned().ok_or_else(|| failed(&format!("task {task} has no worktree")))?;
+        let output = std::process::Command::new("git").current_dir(&top).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args).output().map_err(|e| failed(&e))?;
+        if !output.status.success() {
+            return Err(failed(&format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr))));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     /// The node of `task` writes `files` in its worktree and commits them.

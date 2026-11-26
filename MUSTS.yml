@@ -78,6 +78,7 @@ checks:
       - "crates/engine-ports/src/files_retention.rs"
       - "crates/engine-ports/src/job_state.rs"
       - "crates/engine-ports/src/local_network.rs"
+      - "crates/engine-ports/src/spec_reading.rs"
       - "crates/engine-ports/src/reports.rs"
       - "crates/engine-ports/src/stored_files.rs"
       - "crates/engine-ports/src/uploads.rs"

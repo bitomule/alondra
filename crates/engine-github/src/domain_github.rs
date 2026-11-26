@@ -156,6 +156,7 @@ pub async fn catch_up_task_using(domain: &dyn alondra_engine_ports::Runtime, git
 pub async fn reconcile(
     domain: &DomainRuntime, observer: &impl PrObserver, failures: &mut ObservationFailures,
 ) -> Result<()> {
+    read_held(domain)?;
     deliver_held(domain, observer).await?;
     read_opened(domain, observer, None).await?;
     let state = domain.state()?;
@@ -211,6 +212,30 @@ fn pending<'a>(state: &'a DomainState, pr: &PullRequest) -> Option<&'a OpenPrPen
         OpenPrPending::Close { .. } => task.pr_ids().any(|id| *id == pr.id),
         OpenPrPending::Deliver { .. } => state.open_pr_of(&task.id).is_some_and(|open| open.id == pr.id),
     })
+}
+
+/// A delivery Alondra holds for a task in stages waits until Alondra has read the commits of its
+/// pull requests with the spec engine: they are read here, and the delivery goes out once the
+/// domain's guard of its validation admits it.
+fn read_held(domain: &DomainRuntime) -> Result<()> {
+    let Some(port) = domain.ports().spec_worktrees() else { return Ok(()) };
+    let state = domain.state()?;
+    for task in state.tasks.values().filter(|task| matches!(task.open_pr, Some(OpenPrPending::Deliver { .. }))) {
+        let Some((root, heads)) = alondra_engine_ports::spec_reading::unread_held(&*port, &state, &task.id) else { continue };
+        for head in heads {
+            let reading = match alondra_engine_ports::spec_reading::read_commit(&*port, &root, task, &head, false) {
+                Ok(reading) => reading,
+                Err(why) => {
+                    log!("the held delivery of {} waits: its commit {head} could not be read: {why}", task.id);
+                    continue;
+                }
+            };
+            if let Err(error) = execute_system(domain, Command::RecordCommitReading { task_id: task.id.clone(), reading }) {
+                log!("the reading of {head} for {} was not kept: {error}", task.id);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A close an older build left waiting for GitHub reaches the user now: as GitHub reports the PR

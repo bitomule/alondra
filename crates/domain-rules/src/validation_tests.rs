@@ -8,6 +8,8 @@ use crate::spec_card::{SpecCard, CANCEL, CHANGE_SPECS, STRONGER, VALIDATE_AGAIN}
 use crate::validation::MAX_VALIDATION_ROUNDS;
 
 const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+const HEAD1: &str = "1111111111111111111111111111111111111111";
+const HEAD2: &str = "2222222222222222222222222222222222222222";
 
 fn item(subject: &str, kind: ValidationKind) -> ValidationItem {
     ValidationItem { subject: subject.into(), kind, inputs: format!("sha256:{subject}-{}", kind.as_str()) }
@@ -25,7 +27,7 @@ fn record(subject: &str, kind: ValidationKind, verdict: ValidationVerdict) -> Co
         reasoning: judged.then(|| "The test asserts the refunded amount".into()),
         nearest_wrong: (kind == ValidationKind::Adequate).then(|| "Refunding 10 EUR twice".into()),
         output: (kind == ValidationKind::Suite).then(|| "test result: ok. 12 passed".into()),
-        evidence: vec![], inputs: format!("sha256:{subject}-{}", kind.as_str()),
+        evidence: vec![], inputs: format!("sha256:{subject}-{}", kind.as_str()), listed: None,
     }
 }
 fn validation(s: &DomainState) -> &TaskValidation {
@@ -232,27 +234,68 @@ fn a_validation_survives_a_round_trip_through_its_stored_form() {
     assert!(old.validation.is_default(), "a task stored before validation existed reads as never validated");
 }
 
-#[test]
-fn a_commit_after_the_validated_delivery_withdraws_it_and_the_same_validator_validates_that_commit() {
+/// A validator delivered round 1 in pull request `pr`, and the pull request then received `head2`.
+fn delivered_then_moved() -> DomainState {
     let mut s = implementing();
     must(&mut s, node("b"), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
-        number: 1, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
+        number: 1, head: HEAD1.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
     must(&mut s, node("b"), ready(items()));
     hand_over(&mut s, "c", 3);
     let input = crate::replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap().pending_inputs()[0].as_str().to_owned();
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 3, facts: vec![RuntimeObservation::TurnStarted { turn: "turn-v".into(), input }] });
     must(&mut s, node("c"), record("billing/unit", ValidationKind::Suite, ValidationVerdict::Met));
     must(&mut s, node("c"), record("billing.partial/part", ValidationKind::Adequate, ValidationVerdict::Met));
+    let ledger = items().into_iter().map(|item| crate::LedgerEntry { subject: item.subject, kind: item.kind, inputs: item.inputs, verdict: ValidationVerdict::Met }).collect();
+    must(&mut s, Actor::System, Command::RecordCommitReading { task_id: "t".into(), reading: crate::CommitReading {
+        commit: HEAD1.into(), worktree: false, specs: true, owed: vec![], problems: vec![], ledger, stray: vec![], since: Some(HEAD.into()), changed: vec![] } });
     let mut delivery = present_command("r1");
-    if let Command::PresentResult { targets, .. } = &mut delivery { *targets = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }]; }
+    if let Command::PresentResult { targets, .. } = &mut delivery { *targets = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD1.into() }]; }
     must(&mut s, node("c"), delivery);
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 3, turn: "turn-v".into(), failure: None, failed: None });
     assert_eq!(validation(&s).current().unwrap().state, RoundState::Delivered);
-    must(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head2".into(), base: "main".into(), state: PrState::Open, merged_head: None });
+    must(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: HEAD2.into(), base: "main".into(), state: PrState::Open, merged_head: None });
+    s
+}
+
+#[test]
+fn a_commit_after_the_validated_delivery_withdraws_it_and_the_same_validator_validates_that_commit() {
+    let s = delivered_then_moved();
     let round = validation(&s).current().unwrap();
-    assert_eq!((round.state, round.head.as_str()), (RoundState::Validating, "head2"), "the round validates the commit the pull request received");
+    assert_eq!((round.state, round.head.as_str()), (RoundState::Validating, HEAD2), "the round validates the commit the pull request received");
+    assert_eq!(round.implemented, HEAD, "the implementer's commit stays the one the delivery is compared with");
     assert!(s.interactions[&InteractionId::from("r1")].withdrawn, "the validated delivery is withdrawn");
     assert_eq!(role(&s), Some(ExecutionRole::Validator));
     assert!(handover(&s).is_none(), "the same validator carries on");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn after_a_commit_the_round_owes_what_the_engine_lists_there_and_a_failure_goes_to_the_implementer() {
+    let mut s = delivered_then_moved();
+    let changed = ValidationItem { inputs: "sha256:part-after-head2".into(), ..item("billing.partial/part", ValidationKind::Adequate) };
+    let mut unmet = record("billing.partial/part", ValidationKind::Adequate, ValidationVerdict::Unmet);
+    if let Command::RecordValidation { inputs, listed, .. } = &mut unmet {
+        *inputs = changed.inputs.clone();
+        *listed = Some(vec![changed.clone()]);
+    }
+    must(&mut s, node("c"), unmet);
+    let round = validation(&s).current().unwrap();
+    let items: Vec<(&str, &str, ValidationState)> = round.items.iter().map(|item| (item.subject.as_str(), item.inputs.as_str(), item.state)).collect();
+    assert_eq!(items, [("billing.partial/part", "sha256:part-after-head2", ValidationState::Unmet)], "only what the engine lists on the new commit is owed, at its new fingerprint");
+    must(&mut s, node("c"), Command::EndValidation { task_id: "t".into(), findings: "A refund of zero is accepted again".into() });
+    assert_eq!(handover(&s).map(|h| h.to), Some(ExecutionRole::Implementer));
+    assert_eq!(validation(&s).failed, 1);
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn code_a_commit_brought_after_the_delivery_goes_to_the_implementer_even_with_every_check_met() {
+    let mut s = delivered_then_moved();
+    let mut nothing = record("billing/unit", ValidationKind::Suite, ValidationVerdict::Met);
+    if let Command::RecordValidation { listed, .. } = &mut nothing { *listed = Some(vec![]); }
+    must(&mut s, node("c"), nothing);
+    must(&mut s, node("c"), Command::EndValidation { task_id: "t".into(), findings: "head2 changed crates/billing/src/lib.rs".into() });
+    assert_eq!(handover(&s).map(|h| h.to), Some(ExecutionRole::Implementer));
+    assert_eq!(validation(&s).failed, 0, "a commit someone else made is not a failed round");
     assert_aggregate_rules(&s);
 }
