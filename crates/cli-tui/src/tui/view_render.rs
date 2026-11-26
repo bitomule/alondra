@@ -1177,6 +1177,17 @@ pub fn action_hint(action: &Action) -> &str {
     })
 }
 
+/// The key of a menu on the specs screen, which draws the menu folded instead of listing its options.
+pub fn folded_menu_key(view: &View, action: &Action) -> Option<char> {
+    if view.view != "task_specs" || action.presentation != alondra_view_model::Presentation::Menu || action.options.is_empty() {
+        return None;
+    }
+    let hint = action.key.as_deref()?;
+    let hint = hint.strip_prefix("Shift+").unwrap_or(hint);
+    let mut chars = hint.chars();
+    chars.next().filter(|_| chars.next().is_none())
+}
+
 pub fn icon(icon: Icon) -> &'static str {
     match icon {
         Icon::Question => "?",
