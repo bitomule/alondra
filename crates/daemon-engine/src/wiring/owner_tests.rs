@@ -805,7 +805,7 @@ fn a_returned_sign_in_has_the_node_connect_the_server_again(watcher_starts_after
     let port = 49_201;
     let opening = tokio.spawn({
         let (runtime, card) = (runtime.clone(), card.clone());
-        async move { connect(&runtime, &card).await }
+        async move { connect(&*runtime, &card).await }
     });
     while controls("StartMcpSignIn") == 0 {
         assert!(!opening.is_finished(), "Connect asked for no sign-in: {:?}", tokio.block_on(opening));
@@ -816,16 +816,16 @@ fn a_returned_sign_in_has_the_node_connect_the_server_again(watcher_starts_after
     } }]);
     let page = Opened::Browser { server: "linear".into(), url: "https://linear.app/oauth/authorize?state=s1".into(), port: Some(port) };
     assert_eq!(tokio.block_on(opening).unwrap(), Ok(page.clone()));
-    assert_eq!(tokio.block_on(connect(&runtime, &card)), Ok(page), "another device gets the same page while Claude waits for it");
+    assert_eq!(tokio.block_on(connect(&*runtime, &card)), Ok(page), "another device gets the same page while Claude waits for it");
     assert_eq!(controls("StartMcpSignIn"), 1, "one sign-in for every device");
 
     let address = format!("http://localhost:{port}/callback?code={CODE}&state=s1");
-    let refused = tokio.block_on(give_back(&runtime, &card, "https://evil.example.com/callback?code=c&state=s1".into()));
+    let refused = tokio.block_on(give_back(runtime.clone(), &card, "https://evil.example.com/callback?code=c&state=s1".into()));
     assert_eq!(refused.unwrap_err().code, "invalid_input");
     let watcher = || tokio.spawn(crate::mcp_waits::run(runtime.clone()));
     let early = (!watcher_starts_after_the_return).then(watcher);
     let mut changes = runtime.subscribe();
-    tokio.block_on(give_back(&runtime, &card, address.clone())).unwrap();
+    tokio.block_on(give_back(runtime.clone(), &card, address.clone())).unwrap();
     assert_eq!(alondra_engine_doubles::sign_in_returns::of(runtime.ports()).handed(), [(port, format!("/callback?code={CODE}&state=s1"))]);
     let watching = early.unwrap_or_else(watcher);
     // Claude connects the server only after it answered the browser: the node must connect it again.
@@ -840,7 +840,7 @@ fn a_returned_sign_in_has_the_node_connect_the_server_again(watcher_starts_after
     assert!(runtime.read().state().mcp_waiting().is_empty(), "its own node reported it connected");
     assert!(matches!(runtime.read().state().lifecycle_journal[&task()].last(),
         Some(LifecycleRecord::Resumed { text: Some(text), .. }) if text.starts_with("linear is connected")));
-    assert_eq!(reconnect(&runtime, &card).unwrap_err().code, "conflict", "nothing waits any more");
+    assert_eq!(reconnect(&*runtime, &card).unwrap_err().code, "conflict", "nothing waits any more");
     drop(tokio);
     drop(runtime);
     for kept in [CODE, address.as_str(), "callback?code"] {
@@ -872,15 +872,15 @@ fn the_servers_screen_signs_in_to_and_out_of_a_server_no_task_waits_for() {
     };
     let tokio = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let unknown = Target::of("mcp-server-0000000000000000").unwrap();
-    assert_eq!(tokio.block_on(connect(&runtime, &unknown)).unwrap_err().code, "not_found", "a server no node reported");
+    assert_eq!(tokio.block_on(connect(&*runtime, &unknown)).unwrap_err().code, "not_found", "a server no node reported");
     observe(vec![Observation::Available, mcp_report("needs-auth")]);
     assert!(runtime.read().state().mcp_waiting().is_empty(), "no task waits for it");
     let server = Target::of(&runtime.read().state().mcp_nodes()[0].servers.iter().map(McpServerKey::of).next().unwrap().target()).unwrap();
-    assert_eq!(sign_out(&runtime, &server).unwrap_err().code, "conflict", "no sign-in to forget while it needs one");
+    assert_eq!(sign_out(&*runtime, &server).unwrap_err().code, "conflict", "no sign-in to forget while it needs one");
 
     let opening = tokio.spawn({
         let (runtime, server) = (runtime.clone(), server.clone());
-        async move { connect(&runtime, &server).await }
+        async move { connect(&*runtime, &server).await }
     });
     while controls("StartMcpSignIn") == 0 {
         assert!(!opening.is_finished(), "Connect asked for no sign-in: {:?}", tokio.block_on(opening));
@@ -891,10 +891,10 @@ fn the_servers_screen_signs_in_to_and_out_of_a_server_no_task_waits_for() {
     } }]);
     assert_eq!(tokio.block_on(opening).unwrap(), Ok(Opened::Browser { server: "linear".into(), url: "https://linear.app/oauth/authorize?state=s1".into(), port: None }));
     observe(vec![mcp_report("connected")]);
-    assert_eq!(tokio.block_on(connect(&runtime, &server)), Ok(Opened::Connected { server: "linear".into() }), "nothing to open once it is connected");
-    assert_eq!(reconnect(&runtime, &server), Ok(1));
+    assert_eq!(tokio.block_on(connect(&*runtime, &server)), Ok(Opened::Connected { server: "linear".into() }), "nothing to open once it is connected");
+    assert_eq!(reconnect(&*runtime, &server), Ok(1));
 
-    assert_eq!(sign_out(&runtime, &server), Ok("linear".into()));
+    assert_eq!(sign_out(&*runtime, &server), Ok("linear".into()));
     assert!(matches!(runtime.read().state().lifecycle_journal[&task()].last(),
         Some(LifecycleRecord::ControlRequested { operation: alondra_domain_model::ControlRecord::ClearMcpSignIn { server }, .. }) if server == "linear"));
 }

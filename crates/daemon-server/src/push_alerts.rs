@@ -3,7 +3,7 @@
 
 /// Pushes to the user's devices, in each device's language.
 pub struct PushAlerts {
-    pub domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>,
+    pub domain: std::sync::Arc<dyn alondra_engine_ports::Runtime>,
     pub push: std::sync::Arc<crate::push::Push>,
     pub service: Option<std::sync::Arc<crate::service::Service>>,
     pub client: std::sync::Arc<crate::client_routes::Client>,
@@ -11,7 +11,7 @@ pub struct PushAlerts {
 
 impl crate::usage_pause::Alerts for PushAlerts {
     async fn tell(&self, text: impl Fn(bool) -> String + Send + Sync, passive: bool) {
-        let epoch = self.domain.state().map(|state| state.data_epoch.clone()).ok();
+        let epoch = Some(self.domain.state().data_epoch.clone());
         let payload = |spanish: bool| serde_json::json!({
             "aps": {
                 "alert": {"title": "Alondra", "body": text(spanish)},

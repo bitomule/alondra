@@ -55,7 +55,7 @@ impl Phone {
 
 struct Fixture {
     service: Arc<Service>,
-    domain: Arc<crate::domain_runtime::DomainRuntime>,
+    domain: Arc<dyn alondra_engine_ports::Runtime>,
     mac: EndpointAddr,
     phone: Phone,
     other: Phone,
@@ -153,7 +153,7 @@ impl Fixture {
     }
 
     fn action(&self, phone: &Phone, request_id: &str, limit: &str, command_id: &str) -> Envelope {
-        let state = self.domain.state().unwrap();
+        let state = self.domain.state();
         let action = ActionId::new(Verb::SetLimit, "limit", state.revision, Some(limit.into())).unwrap();
         phone.work(&self.service, request_id, "POST", "/actions", Some(json!({"protocol": 1,
             "command_id": command_id, "data_epoch": state.data_epoch, "client": "ios", "lang": "en",
@@ -398,7 +398,7 @@ fn the_endpoint_id_is_the_ed25519_public_key_of_the_stored_seed() {
 async fn iroh_process_fixture_server() {
     use std::io::BufRead;
     let f = Fixture::new().await;
-    let state = f.domain.state().unwrap();
+    let state = f.domain.state();
     let action = ActionId::new(Verb::SetLimit, "limit", state.revision, Some("4".into())).unwrap();
     let ready = json!({
         "event": "ready",

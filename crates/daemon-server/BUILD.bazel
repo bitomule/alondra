@@ -30,9 +30,6 @@ adapter_in_crate(
     version = VERSION,
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine:daemon_engine",
-        "//crates/engine-admission:engine_admission",
-        "//crates/engine-orchestrator:engine_orchestrator",
-        "//crates/engine-sdk:engine_sdk",
     ],
 )
 

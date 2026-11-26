@@ -26,7 +26,7 @@ application_crate(
     srcs = production_sources(),
     crate_name = "alondra_engine_orchestrator",
     version = VERSION,
-    test_visibility = ["//crates/machine-model:__pkg__"],
+    test_visibility = ["//crates/daemon-server:__pkg__", "//crates/machine-model:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",

@@ -4,9 +4,6 @@ use crate::domain_store::{StoreError, TransportIdentity};
 use alondra_domain_model as d;
 use alondra_core::options::{self, Choice, OptionsFile};
 use alondra_core::now_millis;
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -57,12 +54,6 @@ fn error(code: &str, message: &str) -> Value {
     json!({"status":status,"body":d::DomainError::new(code, message)})
 }
 
-pub fn response(value: Value) -> Response {
-    let status = value["status"].as_u64().and_then(|status| StatusCode::from_u16(status as u16).ok())
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (status, Json(value["body"].clone())).into_response()
-}
-
 fn store_error(error_value: StoreError) -> Value {
     match error_value {
         StoreError::Domain(value) => error(&value.code, &value.message),
@@ -70,30 +61,8 @@ fn store_error(error_value: StoreError) -> Value {
     }
 }
 
-fn id(path: &str) -> Option<&str> {
-    (!path.is_empty() && path.len() <= 256 && path.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')).then_some(path)
-}
-
-fn schedule_path(path: &str) -> Option<(&str, Option<&str>)> {
-    let suffix = path.strip_prefix("/schedules/")?;
-    if let Some(schedule_id) = suffix.strip_suffix("/runs") {
-        return Some((id(schedule_id)?, Some("run")));
-    }
-    Some((id(suffix)?, None))
-}
-
-pub fn approved_read_path(path: &str) -> bool {
-    path == "/schedules" || schedule_path(path).is_some_and(|(_, action)| action.is_none())
-}
-
-pub fn approved_mutation_path(method: &str, path: &str, body: bool) -> bool {
-    match (method, path, body) {
-        ("POST", "/schedules", true) => true,
-        ("PUT", _, true) | ("DELETE", _, false) => schedule_path(path).is_some_and(|(_, action)| action.is_none()),
-        ("POST", _, false) => schedule_path(path).is_some_and(|(_, action)| action == Some("run")),
-        _ => false,
-    }
-}
+pub use alondra_engine_ports::schedule_routes::{approved_mutation_path, approved_read_path};
+use alondra_engine_ports::schedule_routes::schedule_path;
 
 fn visible(state: &d::DomainState, schedule: &d::Schedule) -> Value {
     let latest = state.schedule.runs.values()

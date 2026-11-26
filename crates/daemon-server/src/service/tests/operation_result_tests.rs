@@ -4,7 +4,7 @@ use alondra_view_model::action_id::{ActionId, Verb};
 
 struct Fixture {
     service: Service,
-    domain: Arc<crate::domain_runtime::DomainRuntime>,
+    domain: Arc<dyn alondra_engine_ports::Runtime>,
     phone: SecretKey,
     clock: Arc<AtomicU64>,
     home: crate::test_support::Directory,
@@ -33,7 +33,7 @@ impl Fixture {
     }
 
     fn action(&self) -> Envelope {
-        let state = self.domain.state().unwrap();
+        let state = self.domain.state();
         let action = ActionId::new(Verb::SetLimit, "limit", state.revision, Some("4".into())).unwrap();
         self.work("historical-action", "POST", "/actions", Some(json!({"protocol":1,
             "command_id":"5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", "data_epoch":state.data_epoch,
@@ -43,7 +43,7 @@ impl Fixture {
     fn path(&self, original: &Envelope) -> String {
         let digest = operation_results::digest(original).unwrap();
         format!("/operation-results/{}?digest={}&data_epoch={}", original.request_id,
-            digest.iter().map(|b| format!("{b:02x}")).collect::<String>(), self.domain.state().unwrap().data_epoch.0)
+            digest.iter().map(|b| format!("{b:02x}")).collect::<String>(), self.domain.state().data_epoch.0)
     }
 
     fn opened(&self, bytes: &[u8]) -> Value {
@@ -213,7 +213,7 @@ async fn a_receipt_does_not_cross_a_domain_reset_even_when_the_journal_survives(
     let mut f = Fixture::new();
     let original = f.action();
     f.direct(original.clone()).await;
-    let old_epoch = f.domain.state().unwrap().data_epoch.0.clone();
+    let old_epoch = f.domain.state().data_epoch.0.clone();
     let new_domain = Arc::new(crate::engine_tests::open(&other_home).unwrap());
     assert_ne!(new_domain.state().unwrap().data_epoch.0, old_epoch);
     f.domain = new_domain.clone();
@@ -288,7 +288,7 @@ async fn a_large_valid_expired_receipt_is_recovered_in_bounded_fresh_chunks_with
 
 #[tokio::test]
 async fn authenticated_control_ack_removes_modern_receipts_without_reopening_a_retired_effect() {
-    let f=Fixture::new();let epoch=f.domain.state().unwrap().data_epoch.0.clone();
+    let f=Fixture::new();let epoch=f.domain.state().data_epoch.0.clone();
     let descriptor=f.opened(&f.direct(f.work("journal-control-read","GET",&format!("/operation-journal?data_epoch={epoch}"),None)).await);
     let generation=descriptor["body"]["generation"].as_u64().unwrap();
     let id=format!("op_{}_{generation}_1_5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10",alondra_core::operation_id::epoch_tag(&epoch));
@@ -345,7 +345,7 @@ async fn a_full_legacy_proof_budget_refuses_legacy_before_effect_but_keeps_moder
         INSERT INTO service_receipts(sender,request_id,digest,state) SELECT 'phone-1','legacy-budget-'||n,?2,'retired' FROM ids",
         params![crate::operation_journal::MAX_LEGACY as i64,&[7u8;32]]).unwrap();
     let options=alondra_core::options::path_in(&f.home);let before=std::fs::read(&options).ok();
-    let epoch=f.domain.state().unwrap().data_epoch.0.clone();
+    let epoch=f.domain.state().data_epoch.0.clone();
     let descriptor=f.opened(&f.direct(f.work("full-legacy-descriptor","GET",&format!("/operation-journal?data_epoch={epoch}"),None)).await);
     let rejected=f.opened(&f.direct(f.action()).await);
     assert_eq!(rejected["status"],429);assert_eq!(rejected["body"]["error"],"operation_capacity");assert_eq!(std::fs::read(&options).ok(),before);
@@ -370,7 +370,7 @@ async fn preupgrade_unclassified_reads_do_not_block_an_old_client_until_explicit
 
 impl Fixture {
     async fn generation(&self) -> u64 {
-        let epoch = self.domain.state().unwrap().data_epoch.0.clone();
+        let epoch = self.domain.state().data_epoch.0.clone();
         let descriptor = self.opened(&self.direct(
             self.work("journal-descriptor", "GET", &format!("/operation-journal?data_epoch={epoch}"), None)).await);
         descriptor["body"]["generation"].as_u64().unwrap()
@@ -378,7 +378,7 @@ impl Fixture {
 
     /// A journaled action setting the node limit to `limit`, as operation `sequence`.
     fn operation(&self, generation: u64, sequence: u64, limit: &str) -> (String, Envelope) {
-        let state = self.domain.state().unwrap();
+        let state = self.domain.state();
         let id = format!("op_{}_{generation}_{sequence}_5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a1{sequence}",
             alondra_core::operation_id::epoch_tag(&state.data_epoch.0));
         let action = ActionId::new(Verb::SetLimit, "limit", state.revision, Some(limit.into())).unwrap();
@@ -441,7 +441,7 @@ impl Fixture {
     }
 
     fn ack(&self, id: &str, generation: u64, ranges: Value) -> Envelope {
-        let epoch = self.domain.state().unwrap().data_epoch.0.clone();
+        let epoch = self.domain.state().data_epoch.0.clone();
         self.work(id, "POST", "/operation-journal/ack", Some(json!({"data_epoch":epoch,"generation":generation,"ranges":ranges})))
     }
 }

@@ -57,7 +57,7 @@ impl Client {
         if step == Step::Return {
             let Ok(back) = serde_json::from_value::<Return>(body.clone()) else { return Ok(invalid()) };
             authorize()?;
-            return Ok(match crate::mcp_waits::give_back(&self.domain, &target, back.address).await {
+            return Ok(match crate::mcp_waits::give_back(self.domain.clone(), &target, back.address).await {
                 Ok(()) => Reply::ok(json!({"ok": true})),
                 Err(error) => Reply::error(error),
             });
@@ -67,14 +67,14 @@ impl Client {
         }
         authorize()?;
         Ok(match step {
-            Step::Connect => match crate::mcp_waits::connect(&self.domain, &target).await {
+            Step::Connect => match crate::mcp_waits::connect(&*self.domain, &target).await {
                 Ok(Opened::Browser { server, url, port }) => {
                     Reply::ok(json!({"server": server, "url": url, "returns_to_claude": port.is_some(), "port": port}))
                 }
                 Ok(Opened::Connected { server }) => Reply::ok(json!({"server": server, "connected": true})),
                 Err(error) => Reply::error(error),
             },
-            Step::Reconnect => match crate::mcp_waits::reconnect(&self.domain, &target) {
+            Step::Reconnect => match crate::mcp_waits::reconnect(&*self.domain, &target) {
                 Ok(reconnecting) => Reply::ok(json!({"reconnecting": reconnecting})),
                 Err(error) => Reply::error(error),
             },
@@ -84,7 +84,7 @@ impl Client {
     }
 
     fn go_on_without(&self, user_id: &str, card: &InteractionId, authorize: &(dyn Fn() -> anyhow::Result<()> + Sync)) -> anyhow::Result<Reply> {
-        let state = self.domain.state()?;
+        let state = self.domain.state();
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),

@@ -3,7 +3,7 @@ use super::actions::{ActionRequest, execute};
 use alondra_view_model::action_outcome::{UnknownReason, in_progress_body, unknown_body};
 use alondra_daemon_engine::local_actions::RunningAction;
 use crate::auth::Signed;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use anyhow::{Context, Result};
 use axum::{
     Extension, Json,
@@ -152,7 +152,7 @@ fn open(home: &Path) -> Result<Connection> {
 }
 
 async fn journal<T: Send + 'static>(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     home: PathBuf,
     signed: Signed,
     operation: impl FnOnce(&mut Connection, &str) -> Result<T> + Send + 'static,
@@ -196,7 +196,7 @@ enum Admission {
 }
 
 pub(super) async fn execute_recorded(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     client: &crate::client_routes::Client,
     home: &Path,
     signed: &Signed,
@@ -208,9 +208,7 @@ pub(super) async fn execute_recorded(
         return unknown(StatusCode::UNPROCESSABLE_ENTITY, UnknownReason::Invalid);
     }
     let epoch = request.data_epoch.clone();
-    if !domain
-        .state()
-        .is_ok_and(|state| state.data_epoch.0 == epoch)
+    if domain.state().data_epoch.0 != epoch
     {
         return unknown(StatusCode::CONFLICT, UnknownReason::DataReset);
     }
@@ -260,9 +258,7 @@ pub(super) async fn execute_recorded(
         Ok(Admission::Completed(bytes)) => {
             if authorize().is_err()
                 || actor(home, signed).ok().as_ref() != Some(&original_actor)
-                || !domain
-                    .state()
-                    .is_ok_and(|state| state.data_epoch.0 == epoch)
+                || domain.state().data_epoch.0 != epoch
             {
                 return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
             }
@@ -287,9 +283,7 @@ pub(super) async fn execute_recorded(
     };
     if authorize().is_err()
         || actor(home, signed).ok().as_ref() != Some(&original_actor)
-        || !domain
-            .state()
-            .is_ok_and(|state| state.data_epoch.0 == epoch)
+        || domain.state().data_epoch.0 != epoch
     {
         return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     }
@@ -336,9 +330,7 @@ pub(super) async fn execute_recorded(
     if result.is_err()
         || authorize().is_err()
         || actor(home, signed).ok().as_ref() != Some(&original_actor)
-        || !domain
-            .state()
-            .is_ok_and(|state| state.data_epoch.0 == expected_epoch)
+        || domain.state().data_epoch.0 != expected_epoch
     {
         return unknown(StatusCode::SERVICE_UNAVAILABLE, UnknownReason::Unrecorded);
     }
@@ -399,15 +391,13 @@ pub(super) async fn read(
     let Ok(original_actor) = actor(&home, &device) else {
         return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     };
-    if !domain
-        .state()
-        .is_ok_and(|current| current.data_epoch.0 == lookup.data_epoch)
+    if domain.state().data_epoch.0 != lookup.data_epoch
     {
         return unknown(StatusCode::CONFLICT, UnknownReason::DataReset);
     }
     let (id, epoch, digest) = (lookup.id.clone(), lookup.data_epoch.clone(), lookup.digest);
     let running = domain.local_actions().running.clone();
-    let result = journal(&domain,home.clone(),device.clone(),move |c,actor| {
+    let result = journal(&*domain,home.clone(),device.clone(),move |c,actor| {
         let row: Option<(String,Option<Vec<u8>>)> = c.query_row("SELECT state,response FROM action_results WHERE actor=?1 AND command_id=?2 AND data_epoch=?3 AND digest=?4",
             params![actor,id,epoch,digest.as_slice()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
         Ok(match row {
@@ -422,9 +412,7 @@ pub(super) async fn read(
     {
         return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     }
-    if !domain
-        .state()
-        .is_ok_and(|current| current.data_epoch.0 == lookup.data_epoch)
+    if domain.state().data_epoch.0 != lookup.data_epoch
     {
         return unknown(StatusCode::CONFLICT, UnknownReason::DataReset);
     }
@@ -577,7 +565,7 @@ mod tests {
         )
     }
     fn action(state: &crate::domain_bootstrap::DomainDaemon) -> (String, Vec<u8>, String) {
-        let current = state.domain().state().unwrap();
+        let current = state.domain().state();
         let id = "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".to_owned();
         let body = serde_json::to_vec(&json!({"protocol":1,"command_id":id,"data_epoch":current.data_epoch,
             "client":"mac","lang":"en","action_id":ActionId::new(Verb::SetLimit,"limit",current.revision,Some("4".into())).unwrap().to_string(),
@@ -725,7 +713,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        let epoch = state.domain().state().unwrap().data_epoch.0.clone();
+        let epoch = state.domain().state().data_epoch.0.clone();
         c.execute("WITH RECURSIVE ids(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM ids WHERE n<?1)
             INSERT INTO action_results(actor,command_id,data_epoch,digest,state) SELECT ?2,'old-local-'||n,?3,?4,'retired' FROM ids",
             params![crate::operation_journal::MAX_LEGACY as i64+1,actor,epoch,&[7u8;32]]).unwrap();
@@ -798,7 +786,7 @@ mod tests {
         std::fs::create_dir_all(&**home).unwrap();
         let peer = Peer::new(&home);
         let (state, base, server) = serve(home.clone()).await;
-        let epoch = state.domain().state().unwrap().data_epoch.0.clone();
+        let epoch = state.domain().state().data_epoch.0.clone();
         let (status, descriptor) = peer
             .request(
                 &base,
@@ -1023,9 +1011,7 @@ async fn control(
         return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     };
     let domain = state.domain();
-    if !domain
-        .state()
-        .is_ok_and(|state| state.data_epoch.0 == epoch)
+    if domain.state().data_epoch.0 != epoch
     {
         return unknown(StatusCode::CONFLICT, UnknownReason::DataReset);
     }
@@ -1035,7 +1021,7 @@ async fn control(
     };
     let operation_device = device.clone();
     let operation_epoch = epoch.clone();
-    let result = journal(&domain, home.clone(), device.clone(), move |c, binding| {
+    let result = journal(&*domain, home.clone(), device.clone(), move |c, binding| {
         let scope = journal_scope(&operation_device, binding, &operation_epoch);
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let result = match ack {
@@ -1062,9 +1048,7 @@ async fn control(
     {
         return unknown(StatusCode::FORBIDDEN, UnknownReason::ApprovalChanged);
     }
-    if !domain
-        .state()
-        .is_ok_and(|state| state.data_epoch.0 == epoch)
+    if domain.state().data_epoch.0 != epoch
     {
         return unknown(StatusCode::CONFLICT, UnknownReason::DataReset);
     }

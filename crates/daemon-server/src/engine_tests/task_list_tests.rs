@@ -60,7 +60,7 @@ impl Turn {
         let slice = Slice::new();
         slice.domain.enable_sdk(slice.backend.clone());
         let driver = slice.launch_working();
-        let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
+        let client = crate::client_routes::Client::open(slice.domain.clone(), &slice._home, Default::default());
         Self { slice, driver, client, runtime: tokio::runtime::Runtime::new().unwrap(), sampled: Default::default() }
     }
 

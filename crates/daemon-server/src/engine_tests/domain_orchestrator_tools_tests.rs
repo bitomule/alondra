@@ -1,4 +1,5 @@
 //! The orchestrator's tools over the daemon's own routes.
+use crate::engine_tests::Kernel as _;
 use crate::domain_store::model_metrics::Decision;
 use crate::domain_store::model_metrics::DecisionKind;
 use crate::engine_tests::engine_fixtures::orchestrator_tools::*;
@@ -20,19 +21,19 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
     drop(crate::engine_tests::open(&home).unwrap());
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     let domain = daemon.domain();
-    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
-    command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
-    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
+    command(domain.kernel(), user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
+    command(domain.kernel(), user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
+    command(domain.kernel(), Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
-    command(&domain, Actor::System, Command::RegisterAgent { agent_id: "reviewer".into(), name: "Reviewer".into(), at: 0 });
-    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "review".into(), request_id: "r".into(), title: "Review the editor colours".into(),
+    command(domain.kernel(), Actor::System, Command::RegisterAgent { agent_id: "reviewer".into(), name: "Reviewer".into(), at: 0 });
+    command(domain.kernel(), Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "review".into(), request_id: "r".into(), title: "Review the editor colours".into(),
         agent_id: Some("reviewer".into()), review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
-    command(&domain, user(), Command::SetRelations { task_id: "review".into(), delivered_dependencies: ["t".into()].into(), blocks: ["t".into()].into() });
+    command(domain.kernel(), user(), Command::SetRelations { task_id: "review".into(), delivered_dependencies: ["t".into()].into(), blocks: ["t".into()].into() });
 
-    command(&domain, Actor::System, Command::RegisterAgent { agent_id: "worker".into(), name: "editor".into(), at: 0 });
-    command(&domain, Actor::Orchestrator { generation: 0 }, Command::AssignTask { task_id: "t".into(), agent_id: "worker".into(), model: None });
+    command(domain.kernel(), Actor::System, Command::RegisterAgent { agent_id: "worker".into(), name: "editor".into(), at: 0 });
+    command(domain.kernel(), Actor::Orchestrator { generation: 0 }, Command::AssignTask { task_id: "t".into(), agent_id: "worker".into(), model: None });
     record(&*domain, Decision { task_id: "t".into(), request_id: "r".into(), agent_id: Some("worker".into()), at: alondra_core::now_millis(),
         kind: DecisionKind::Launch, model: Some("sonnet".into()), effort: Some("medium".into()), approach: None,
         chosen_by: ModelChooser::Orchestrator, reason: Some("Colour tokens in one file: sonnet".into()), title: "Editor colours".into(),
@@ -47,7 +48,7 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
         axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
     });
     let client = reqwest::Client::new();
-    let epoch = domain.state().unwrap().data_epoch.0.clone();
+    let epoch = domain.state().data_epoch.0.clone();
     let mut sent = 0;
     let mut call = async |bearer: &str, path: String, mut body: Value| {
         sent += 1;
@@ -77,9 +78,9 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
         call(&reviewer, "/tasks/review/verdict".into(), json!({"task_id": "review", "presentation_id": format!("review-{round}"), "verdict": verdict})).await;
     }
 
-    command(&domain, user(), Command::AcceptDelivery { presentation_id: "delivery-2".into(),
+    command(domain.kernel(), user(), Command::AcceptDelivery { presentation_id: "delivery-2".into(),
         targets: vec![alondra_domain_model::DeliveryTarget::Text { text: "The result".into() }] });
-    command(&domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_domain_model::NodeEnd::Closed, agent_id: None });
+    command(domain.kernel(), Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_domain_model::NodeEnd::Closed, agent_id: None });
 
     let report: Value = client.get(format!("{base}/metrics?period=all&compare=none")).send().await.unwrap().json().await.unwrap();
     println!("GET /metrics (what alondra metrics --json prints):\n{}", serde_json::to_string_pretty(&report).unwrap());
@@ -87,7 +88,7 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
     assert_eq!((&sonnet["name"], &sonnet["effort"], &sonnet["figures"]["sums"]["tasks"]), (&json!("sonnet"), &json!("medium"), &json!(1)));
     let sums = &sonnet["figures"]["sums"];
     assert_eq!((&sums["change_rounds"], &sums["reviewer_rounds"], &sums["clean"]), (&json!(2), &json!(2), &json!(0)));
-    let mut inputs = domain.metrics_inputs(0).unwrap();
+    let mut inputs = domain.kernel().metrics_inputs(0).unwrap();
     let task = inputs.tasks.iter().find(|task| task.model.as_deref() == Some("sonnet")).expect("the fold kept the completed sonnet task");
     assert_eq!((task.effort.as_deref(), task.change_rounds, task.reviewer_rounds, task.clean), (Some("medium"), 2, 2, false));
     inputs.now = task.finished_at;

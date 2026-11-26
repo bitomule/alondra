@@ -157,7 +157,7 @@ fn a_committed_launch_project_invalidates_rows_without_a_domain_revision_change(
     let revision = fixture.client.domain.read().state().revision;
     // Insert the previously absent launch in a real SQLite commit. This table is immutable;
     // the test neither drops its triggers nor pretends a setter announces affected nodes.
-    fixture.client.domain.store.lock().unwrap().sqlite_mut().conn.execute(
+    fixture.client.domain.store().lock().unwrap().sqlite_mut().conn.execute(
         "INSERT INTO request_launch(request_id,project,options,attachments) VALUES(?1,?2,'{}','[]')",
         ["row-request", "Project Cedar"],
     ).unwrap();

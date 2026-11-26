@@ -14,8 +14,8 @@ use std::{
     sync::atomic::{AtomicI64, Ordering},
 };
 
-fn execute(domain: &crate::domain_runtime::DomainRuntime, actor: Actor, id: &str, command: Command) {
-    let state = domain.state().unwrap();
+fn execute(domain: &dyn alondra_engine_ports::Runtime, actor: Actor, id: &str, command: Command) {
+    let state = domain.state();
     domain
         .execute(
             &actor,
@@ -128,7 +128,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     let domain = daemon.domain();
     execute(
-        &domain,
+        &*domain,
         Actor::System,
         "agent",
         Command::RegisterAgent {
@@ -140,7 +140,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
         user_id: "fixture".into(),
     };
     execute(
-        &domain,
+        &*domain,
         user.clone(),
         "request",
         Command::CreateRequest {
@@ -149,7 +149,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
         },
     );
     execute(
-        &domain,
+        &*domain,
         Actor::Orchestrator { generation: 0 },
         "task",
         Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
@@ -168,7 +168,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     std::fs::write(home.join("files/clip.mp4"), &video).unwrap();
     let video_digest = Sha256::digest(&video).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     execute(
-        &domain,
+        &*domain,
         Actor::System,
         "info",
         Command::PublishInformation {
@@ -185,7 +185,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
         },
     );
     execute(
-        &domain,
+        &*domain,
         Actor::Agent {
             agent_id: "agent-parity".into(),
         },
@@ -217,7 +217,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     execute(
-        &domain,
+        &*domain,
         Actor::Agent {
             agent_id: "agent-parity".into(),
         },
@@ -236,7 +236,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     std::fs::write(home.join("outside-files"), b"private fixture").unwrap();
     std::os::unix::fs::symlink(home.join("outside-files"), home.join("files/escape")).unwrap();
     for (index, reference) in [home.join("outside-files"), home.join("files/escape")].iter().enumerate() {
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let refused = domain.execute(&Actor::System, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: format!("unsafe-{index}").into(), expected_revision: state.revision,
@@ -254,7 +254,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
         }, None, || Ok(()));
         let error = refused.err().expect("a file outside Alondra's folders is refused when the card is presented");
         assert!(error.to_string().contains("private.txt"), "{error}");
-        assert!(!domain.state().unwrap().interactions.contains_key(&format!("unsafe-{index}").into()));
+        assert!(!domain.state().interactions.contains_key(&format!("unsafe-{index}").into()));
     }
 
     let phone_key = SigningKey::from_slice(&[31; 32]).unwrap();
@@ -306,8 +306,8 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     service.journal.activate_enrollment(device_id).unwrap();
     let client = Client::new();
 
-    let initial_revision = domain.state().unwrap().revision;
-    let epoch = domain.state().unwrap().data_epoch.0.clone();
+    let initial_revision = domain.state().revision;
+    let epoch = domain.state().data_epoch.0.clone();
     let paths = [
         "/capabilities".to_owned(),
         "/interactions/info-parity/attachments/clip%3A%20%C3%B1%201/content?offset=0".to_owned(),
@@ -393,7 +393,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     assert_eq!(remote_schedule["status"], 200);
     assert_eq!(remote_schedule, local_schedule);
 
-    let state = domain.state().unwrap();
+    let state = domain.state();
     let command = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
@@ -462,15 +462,15 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
         .unwrap();
     let outcome: Value = serde_json::from_slice(&opened).unwrap();
     assert_eq!(outcome["status"], 200);
-    assert_eq!(domain.state().unwrap().revision, initial_revision + 1);
+    assert_eq!(domain.state().revision, initial_revision + 1);
     let pending_after_read = domain
-        .store
+        .store()
         .lock()
         .unwrap()
         .pending_messages()
         .unwrap()
         .len();
-    let question_revision = domain.state().unwrap().revision;
+    let question_revision = domain.state().revision;
     let barrier = Arc::new(Barrier::new(3));
     let decisions = ["alpha", "beta"]
         .into_iter()
@@ -479,7 +479,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
             let barrier = barrier.clone();
             let envelope = CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
-                data_epoch: domain.state().unwrap().data_epoch.clone(),
+                data_epoch: domain.state().data_epoch.clone(),
                 command_id: format!("answer-{option}").into(),
                 expected_revision: question_revision,
                 command: Command::AnswerQuestion {
@@ -493,7 +493,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
                 let body = serde_json::to_value(&envelope).unwrap();
                 barrier.wait();
                 let result = crate::domain_api::encrypted_command_runtime(
-                    &domain,
+                    &*domain,
                     "phone-parity",
                     Some(&body),
                     ("phone-parity", option, &[option.len() as u8; 32]),
@@ -529,15 +529,15 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     );
     assert_eq!(losers[0].2["body"]["code"], "stale_revision");
     let winner = winners[0];
-    let answered_state = domain.state().unwrap();
+    let answered_state = domain.state();
     let answer = &answered_state.interactions[&"question-parity".into()].payload;
     assert!(
         matches!(answer, InteractionPayload::Question { answer: Some(a), .. } if a.option_id == winner.0)
     );
-    assert_eq!(domain.state().unwrap().revision, question_revision + 1);
+    assert_eq!(domain.state().revision, question_revision + 1);
     assert_eq!(
         domain
-            .store
+            .store()
             .lock()
             .unwrap()
             .pending_messages()
@@ -547,7 +547,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     );
     assert!(
         domain
-            .store
+            .store()
             .lock()
             .unwrap()
             .delivery_evidence()
@@ -557,7 +557,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     let winner_body = serde_json::to_value(&winner.1).unwrap();
     assert_eq!(
         crate::domain_api::encrypted_command_runtime(
-            &domain,
+            &*domain,
             "phone-parity",
             Some(&winner_body),
             ("phone-parity", winner.0, &[winner.0.len() as u8; 32]),
@@ -569,7 +569,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     );
     assert_eq!(
         domain
-            .store
+            .store()
             .lock()
             .unwrap()
             .pending_messages()
@@ -578,7 +578,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
         pending_after_read + 1
     );
     let other_sender = crate::domain_api::encrypted_command_runtime(
-        &domain,
+        &*domain,
         "phone-other",
         Some(&winner_body),
         ("phone-other", winner.0, &[winner.0.len() as u8; 32]),
@@ -592,7 +592,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     );
     assert_eq!(
         domain
-            .store
+            .store()
             .lock()
             .unwrap()
             .pending_messages()
@@ -615,7 +615,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
         .await
     );
 
-    let revision_before_old_clients = domain.state().unwrap().revision;
+    let revision_before_old_clients = domain.state().revision;
     let stale = encrypted(&service, &phone_key, &phone_agreement, &responses,
         "stale-epoch", json!({"method":"PUT","path":"/interactions/info-parity/read-state",
             "body":{"data_epoch":"wrong-epoch","command_id":"stale-read",
@@ -629,7 +629,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     assert_eq!(old_protocol["status"], 422);
     assert_eq!(old_protocol["body"]["code"], "invalid_input");
     assert_eq!(
-        domain.state().unwrap().revision,
+        domain.state().revision,
         revision_before_old_clients
     );
     auth.revoke(device_id).unwrap();

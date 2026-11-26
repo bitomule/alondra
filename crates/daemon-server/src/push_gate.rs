@@ -39,7 +39,7 @@ pub(crate) async fn check(
             Merge::Clean => {}
             Merge::Conflicts => {
                 crate::client_routes::hand_back_conflicts(
-                    &client.domain,
+                    &*client.domain,
                     &client.details,
                     &crate::domain_messages::user_name(),
                 );
@@ -80,7 +80,7 @@ fn same_kind(earlier: &InteractionPayload, card: &InteractionPayload) -> bool {
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::{Gate, UNKNOWN_MERGE_PATIENCE, check};
-    use crate::domain_runtime::DomainRuntime;
+    use alondra_engine_ports::Runtime;
     use crate::client_routes::{Client, FakePrView};
     use alondra_domain_model::{
         Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, Instruction, InteractionPayload, MergeMethod,
@@ -93,7 +93,7 @@ mod tests {
 
     struct Fixture {
         home: crate::test_support::Directory,
-        domain: Arc<DomainRuntime>,
+        domain: Arc<dyn Runtime>,
         client: Arc<Client>,
         github: Arc<FakePrView>,
     }
@@ -131,7 +131,7 @@ mod tests {
         }
 
         fn run(&self, actor: Actor, id: &str, command: Command) {
-            let state = self.domain.state().unwrap();
+            let state = self.domain.state();
             self.domain.execute(&actor, &CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(),
                 command_id: id.into(), expected_revision: state.revision, command }, None, || Ok(())).unwrap();
         }
@@ -146,7 +146,7 @@ mod tests {
         }
 
         fn handed_back(&self) -> bool {
-            matches!(&self.domain.state().unwrap().interactions[&"result".into()].payload,
+            matches!(&self.domain.state().interactions[&"result".into()].payload,
                 InteractionPayload::Delivery { feedback, .. } if feedback.iter().any(|f| f.instruction == Instruction::Conflicts))
         }
     }

@@ -1,6 +1,6 @@
 use super::notices;
 use crate::domain_delivery::deliver_from_runtime;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::push::Push;
 use alondra_domain_model::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, QuestionOption, Recipient, Scope,
@@ -16,7 +16,7 @@ const FIXTURE: &str = "fixtures/views/local-notices.json";
 
 struct Fixture {
     home: crate::test_support::Directory,
-    domain: Arc<DomainRuntime>,
+    domain: Arc<dyn Runtime>,
 }
 
 impl Drop for Fixture {
@@ -42,7 +42,7 @@ impl Fixture {
     }
 
     fn command(&self, actor: Actor, id: &str, command: Command) {
-        let state = self.domain.state().unwrap();
+        let state = self.domain.state();
         self.domain.execute(&actor, &CommandEnvelope {
             protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: id.into(),
             expected_revision: state.revision, command,
@@ -60,18 +60,18 @@ impl Fixture {
 
     async fn deliver(&self, card: &str) -> String {
         let client = crate::client_routes::Client::open(self.domain.clone(), &self.home, Default::default());
-        let message = self.domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        let message = self.domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some(card) && message.recipient_kind == "user")
             .unwrap();
-        deliver_from_runtime(&self.domain, &self.home, &Push::open(&self.home).unwrap(), None, &client, message.clone(), Duration::ZERO)
+        deliver_from_runtime(&*self.domain, &self.home, &Push::open(&self.home).unwrap(), None, &client, message.clone(), Duration::ZERO)
             .await.unwrap();
-        self.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap()
+        self.domain.store().lock().unwrap().delivery_evidence_page(0).unwrap()
             .into_iter().find(|item| item.message_id == message.id).unwrap().state
     }
 
     fn notices(&self) -> Value {
-        let mut body = notices(&self.domain, Lang::En).unwrap();
-        assert_eq!(body["data_epoch"], json!(self.domain.state().unwrap().data_epoch));
+        let mut body = notices(&*self.domain, Lang::En).unwrap();
+        assert_eq!(body["data_epoch"], json!(self.domain.state().data_epoch));
         body["data_epoch"] = json!("fixture-epoch");
         body
     }

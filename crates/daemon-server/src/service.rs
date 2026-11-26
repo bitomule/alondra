@@ -326,7 +326,8 @@ pub struct Service {
     home: PathBuf,
     transfers: Arc<crate::service_files::Transfers>,
     inflight: InFlight,
-    domain: Option<Arc<crate::domain_runtime::DomainRuntime>>,
+    domain: Option<Arc<dyn alondra_engine_ports::Runtime>>,
+    api: Option<alondra_engine_ports::domain_api::DomainApi>,
     routes: Option<Arc<crate::client_routes::Client>>,
     direct: DirectConfig,
     iroh: crate::iroh_endpoint::IrohConfig,
@@ -535,7 +536,8 @@ impl Service {
         self
     }
 
-    pub fn with_domain(mut self, domain: Arc<crate::domain_runtime::DomainRuntime>) -> Self {
+    pub fn with_domain(mut self, domain: Arc<dyn alondra_engine_ports::Runtime>) -> Self {
+        self.api = Some(alondra_engine_ports::domain_api::DomainApi::of(domain.ports()));
         self.domain = Some(domain);
         self
     }
@@ -564,7 +566,7 @@ impl Service {
         match self.domain.as_deref() {
             Some(domain) => Ok(format!(
                 "{binding}:domain-v2:{}",
-                domain.state()?.data_epoch
+                domain.state().data_epoch
             )),
             None => Ok(binding),
         }
@@ -583,10 +585,10 @@ impl Service {
                         || request.path == ACTIVITY_KEY_ROUTE
                         || crate::client_routes::atomic_write_path(&request.path)
                         || agent_message(&request.path).is_some()
-                        || crate::domain_orchestrator::decision_route(&request.path).is_some()
+                        || alondra_engine_ports::orchestrator::decision_route(&request.path).is_some()
                         || crate::domain_api::resolve_delivery_attempt_id(&request.path)
                             .is_some())
-                || crate::domain_schedule_api::approved_mutation_path(
+                || alondra_engine_ports::schedule_routes::approved_mutation_path(
                     &request.method,
                     &request.path,
                     request.body.is_some(),
@@ -698,17 +700,18 @@ impl Service {
             }).await;
         }
         approved_method(request)?;
-        if let Some(domain) = &self.domain {
+        if let (Some(domain), Some(api)) = (&self.domain, &self.api) {
             let external = request.path == "/requests" || request.path == "/orchestrator/messages"
                 || agent_message(&request.path).is_some()
                 || request.path == "/actions" && request.body.as_ref().is_some_and(crate::views::actions::external_request);
             let result = {
-                let (domain, routes, home, auth, journal, device, sender, request_id, request, digest) = (
-                    domain.clone(), self.routes.clone(), self.home.clone(), self.auth.clone(),
+                let (domain, api, routes, home, auth, journal, device, sender, request_id, request, digest) = (
+                    domain.clone(), api.clone(), self.routes.clone(), self.home.clone(), self.auth.clone(),
                     self.journal.clone(), device.clone(), envelope.sender.clone(),
                     envelope.request_id.clone(), request.clone(), *digest,
                 );
-                let work = if external { domain.external_work.clone() } else { domain.command_work.clone() };
+                let lane = if external { alondra_engine_ports::domain_api::Lane::External } else { alondra_engine_ports::domain_api::Lane::Command };
+                let work = api.runtime.work(&*domain, lane).clone();
                 let runtime = tokio::runtime::Handle::current();
                 let physical_receipt = receipt.clone();
                 work.run(move || {
@@ -716,7 +719,7 @@ impl Service {
                     let approval_home = home.clone();
                     let approval_sender = sender.clone();
                     runtime.block_on(Self::execute_domain_request(
-                        domain, routes, home, sender, request_id, request, digest,
+                        domain, api, routes, home, sender, request_id, request, digest,
                         move || Self::require_approval(&auth, &approval_home, &journal, &approval_sender, &device, transport),
                     ))
                 }).await??
@@ -729,8 +732,10 @@ impl Service {
         bail!("atomic local executor unavailable")
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_domain_request(
-        domain: Arc<crate::domain_runtime::DomainRuntime>,
+        domain: Arc<dyn alondra_engine_ports::Runtime>,
+        api: alondra_engine_ports::domain_api::DomainApi,
         routes: Option<Arc<crate::client_routes::Client>>,
         home: PathBuf,
         sender: String,
@@ -755,7 +760,7 @@ impl Service {
             .await?
         } else if crate::domain_api::is_resource_mutation_path(&request.method, &request.path) {
             crate::domain_api::encrypted_resource_command_runtime(
-                &domain,
+                &*domain,
                 routes.as_deref(),
                 &sender,
                 &request.method,
@@ -769,7 +774,7 @@ impl Service {
             crate::domain_api::resolve_delivery_attempt_id(&request.path)
         {
             crate::domain_api::encrypted_resolve_delivery_runtime(
-                &domain,
+                &*domain,
                 &home,
                 &sender,
                 attempt_id,
@@ -786,13 +791,9 @@ impl Service {
                 request.body.as_ref(),
             )
             .await
-        } else if let Some(decision) = crate::domain_orchestrator::decision_route(&request.path)
+        } else if let Some(decision) = alondra_engine_ports::orchestrator::decision_route(&request.path)
         {
-            crate::domain_orchestrator::decide(
-                &crate::domain_orchestrator::executor(domain.clone(), &home),
-                decision,
-                request.body.as_ref(),
-            )
+            api.orchestrator.decide(domain.clone(), &home, decision, request.body.as_ref())
         } else if let Some(route) = crate::client_routes::parse_write(&request.path)
             .filter(|_| crate::client_routes::atomic_write_path(&request.path))
         {
@@ -813,12 +814,12 @@ impl Service {
                 )
                 .await?
                 .into_value()
-        } else if crate::domain_schedule_api::approved_mutation_path(
+        } else if alondra_engine_ports::schedule_routes::approved_mutation_path(
             &request.method,
             &request.path,
             request.body.is_some(),
         ) {
-            crate::domain_schedule_api::encrypted_mutation(
+            api.sdk.schedule_encrypted_mutation(
                 &*domain,
                 &home,
                 &sender,
@@ -902,6 +903,7 @@ impl Service {
             transfers: Arc::default(),
             inflight: Arc::default(),
             domain: None,
+            api: None,
             routes: None,
             direct: config.direct,
             iroh: config.iroh,
@@ -1129,8 +1131,8 @@ impl Service {
                         &request.path
                     )
                     || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some()
-                    || crate::domain_schedule_api::approved_read_path(&request.path)
-                    || crate::domain_schedule_api::approved_mutation_path(
+                    || alondra_engine_ports::schedule_routes::approved_read_path(&request.path)
+                    || alondra_engine_ports::schedule_routes::approved_mutation_path(
                         &request.method,
                         &request.path,
                         request.body.is_some()
@@ -1140,7 +1142,7 @@ impl Service {
                     || crate::client_routes::upload_step(&request.path).is_some()
                     || crate::client_routes::parse_put(&request.path).is_some()
                     || agent_message(&request.path).is_some()
-                    || crate::domain_orchestrator::decision_route(&request.path).is_some()
+                    || alondra_engine_ports::orchestrator::decision_route(&request.path).is_some()
                     || request.path == PUSH_BINDING_ROUTE
                     || request.path == PUSH_BINDING_REMOVE_ROUTE
                     || request.path == ACTIVITY_KEY_ROUTE
@@ -1243,7 +1245,7 @@ impl Service {
         let receipt = self.journal.reserve_receipt(guard.clone())?;
         let recovery_scope = self.operation_scope(e, &request, &device, transport)?;
         let legacy_scope = self.domain.as_ref().map(|domain| {
-            self.operation_journal_scope(&e.sender, &device, transport, &domain.state()?.data_epoch.0)
+            self.operation_journal_scope(&e.sender, &device, transport, &domain.state().data_epoch.0)
         }).transpose()?;
         let disposition = match self.journal.accept_admitted(&e.sender, &e.request_id, &digest, recovery_scope,request.method=="GET" && request.body.is_none(), legacy_scope, receipt.clone()).await {
             Ok(disposition)=>disposition,
@@ -1572,7 +1574,7 @@ impl Service {
 
     async fn dispatch_domain(
         &self,
-        domain: &Arc<crate::domain_runtime::DomainRuntime>,
+        domain: &Arc<dyn alondra_engine_ports::Runtime>,
         sender: &str,
         request: &LocalRequest,
         transport: Transport,
@@ -1596,7 +1598,7 @@ impl Service {
             if crate::domain_api::is_resource_mutation_path(&request.method, &request.path) {
                 let body = request.body.as_ref().context("resource body required")?;
                 let result = crate::domain_api::resource_command_runtime(
-                    domain,
+                    &**domain,
                     self.routes.as_deref(),
                     sender,
                     &request.method,
@@ -1609,19 +1611,19 @@ impl Service {
                 approved.recheck()?;
                 return Ok(result);
             }
-            if crate::domain_schedule_api::approved_mutation_path(
+            if alondra_engine_ports::schedule_routes::approved_mutation_path(
                 &request.method,
                 &request.path,
                 request.body.is_some(),
             ) {
-                let result = crate::domain_schedule_api::mutation(
+                let result = self.api.as_ref().context("atomic local executor unavailable")?.sdk.schedule_mutation(
                     &**domain,
                     &self.home,
                     &request.method,
                     &request.path,
                     request.body.as_ref(),
                     None,
-                    || approved.recheck(),
+                    &|| approved.recheck(),
                 );
                 approved.recheck()?;
                 return Ok(result);
@@ -1683,7 +1685,8 @@ impl Service {
             }
             None => {
                 crate::domain_api::encrypted_read_runtime(
-                    domain,
+                    &**domain,
+                    self.api.as_ref().context("atomic local executor unavailable")?,
                     &self.home,
                     &approved,
                     &request.path,
@@ -2286,7 +2289,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
     {
         return Ok(Method::GET);
     }
-    if crate::domain_schedule_api::approved_mutation_path(
+    if alondra_engine_ports::schedule_routes::approved_mutation_path(
         &request.method,
         &request.path,
         request.body.is_some(),
@@ -2322,7 +2325,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
             || request.path == ACTIVITY_KEY_ROUTE
             || crate::client_routes::upload_step(&request.path).is_some()
             || agent_message(&request.path).is_some()
-            || crate::domain_orchestrator::decision_route(&request.path).is_some()
+            || alondra_engine_ports::orchestrator::decision_route(&request.path).is_some()
             || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some())
     {
         return Ok(Method::POST);
@@ -5477,6 +5480,7 @@ agreement_key = "{}"
             transfers: Arc::default(),
             inflight: Arc::default(),
             domain: None,
+            api: None,
             routes: None,
             revoked: crate::revoked_devices::RevokedDevices::empty(),
             auth: Arc::new(Auth::open(&home).unwrap()),
@@ -5613,6 +5617,7 @@ agreement_key = "{}"
                     transfers: Arc::default(),
                     inflight: Arc::default(),
                     domain: None,
+                    api: None,
                     routes: None,
                     revoked: crate::revoked_devices::RevokedDevices::empty(),
                     auth: Arc::new(Auth::open(&scenario_home).unwrap()),
@@ -5756,6 +5761,7 @@ agreement_key = "{}"
             transfers: Arc::default(),
             inflight: Arc::default(),
             domain: None,
+            api: None,
             routes: None,
             revoked: crate::revoked_devices::RevokedDevices::empty(),
             auth: Arc::new(Auth::open(&home).unwrap()),
@@ -5892,6 +5898,7 @@ agreement_key = "{}"
             transfers: Arc::default(),
             inflight: Arc::default(),
             domain: None,
+            api: None,
             routes: None,
             revoked: crate::revoked_devices::RevokedDevices::empty(),
             auth: auth.clone(),
@@ -5935,6 +5942,7 @@ agreement_key = "{}"
             transfers: Arc::default(),
             inflight: Arc::default(),
             domain: None,
+            api: None,
             routes: None,
             revoked: crate::revoked_devices::RevokedDevices::empty(),
             auth: Arc::new(Auth::open(&home).unwrap()),
@@ -6126,6 +6134,7 @@ agreement_key = "{}"
             transfers: Arc::default(),
             inflight: Arc::default(),
             domain: None,
+            api: None,
             routes: None,
             revoked: crate::revoked_devices::RevokedDevices::empty(),
             auth: Arc::new(Auth::open(&home).unwrap()),
@@ -6890,7 +6899,7 @@ agreement_key = "{}"
 impl Service {
     pub(crate) async fn process_fixture_service(
         directory: Arc<crate::test_support::Directory>,
-        domain: Arc<crate::domain_runtime::DomainRuntime>,
+        domain: Arc<dyn alondra_engine_ports::Runtime>,
         relay_url: &str,
     ) -> Arc<Self> {
         let home: &Path = &directory;

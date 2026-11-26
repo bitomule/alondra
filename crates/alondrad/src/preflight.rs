@@ -28,12 +28,11 @@ const STATE_FILES: [&str; 6] = [
     "admission.json",
 ];
 
-/// How the root opens the engine at a home, on the journal it is kept in: it puts the engine
-/// together, which this crate does not see.
-pub type Opener = fn(&Path, &dyn JournalFiles) -> Result<crate::domain_runtime::DomainRuntime>;
+/// How the root opens the engine at a home, on the journal it is kept in.
+pub type Opener = fn(&Path, &dyn JournalFiles) -> Result<alondra_engine_sdk::domain_runtime::DomainRuntime>;
 
 /// `open` opens the engine as the root does, and `wire` gives the domain the root's output
-/// adapters, which this crate does not see.
+/// adapters.
 pub fn run(config: &Config, files: &dyn JournalFiles, open: Opener, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
     run_for(config, &crate::options::user_home(), files, open, wire)
 }
@@ -57,10 +56,10 @@ fn run_for(config: &Config, user_home: &Path, files: &dyn JournalFiles, open: Op
 
 /// The same canonical bootstrap `run` performs, on a HOME it may freely write.
 fn start(config: &Config, files: &dyn JournalFiles, open: Opener, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
-    crate::home_renames::apply(&config.home, crate::domain_orchestrator::RECORDS, files)?;
+    crate::home_renames::apply(&config.home, alondra_engine_orchestrator::domain_orchestrator::RECORDS, files)?;
     let (_, _source_fence) = files.migrate_and_fence(&config.home)?;
-    crate::retire_empty_older_sidecar(&config.home)?;
-    crate::ensure_domain_protocol(&config.home)?;
+    crate::sidecar::retire_empty_older_sidecar(&config.home)?;
+    crate::sidecar::ensure_domain_protocol(&config.home)?;
     let domain = open(&config.home, files)?;
     wire(domain.ports());
     crate::domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
@@ -249,7 +248,7 @@ mod tests {
             .unwrap();
         let lock = alondra_core::home_lock::HomeLock::recovery(&home).unwrap();
         let before = contents(&home);
-        let refused = run(&config, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles).unwrap_err();
+        let refused = run(&config, &alondra_store_sqlite::Sqlite, crate::engine::open_on, machine_doubles).unwrap_err();
         drop(lock);
         assert!(
             format!("{refused:#}").contains("still holds legacy data"),
@@ -301,11 +300,11 @@ mod tests {
         });
         std::fs::write(home.join(alondra_daemon_engine::sdk_backend::FILE), backend.to_string()).unwrap();
         let before = contents(&home);
-        let admitted = run_for(&config, &user, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles).unwrap();
+        let admitted = run_for(&config, &user, &alondra_store_sqlite::Sqlite, crate::engine::open_on, machine_doubles).unwrap();
         assert!(admitted.contains("SDK backend configuration") && admitted.contains("admitted"), "{admitted}");
         assert_eq!(contents(&home), before, "preflight must not write to the HOME it checks");
         std::fs::write(&artifact, b"another artifact").unwrap();
-        let refused = format!("{:#}", run_for(&config, &user, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles).unwrap_err());
+        let refused = format!("{:#}", run_for(&config, &user, &alondra_store_sqlite::Sqlite, crate::engine::open_on, machine_doubles).unwrap_err());
         assert!(refused.contains("does not have the SHA256"), "{refused}");
     }
 
@@ -313,11 +312,11 @@ mod tests {
     fn preflight_refuses_a_state_file_the_real_startup_cannot_read() {
         for name in ["domain-capabilities.json", "devices.json"] {
             let (home, config) = committed_domain_home("state-file");
-            assert!(run(&config, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles).is_ok());
+            assert!(run(&config, &alondra_store_sqlite::Sqlite, crate::engine::open_on, machine_doubles).is_ok());
             std::fs::write(home.join(name), b"{\"format\": 2").unwrap();
             std::fs::set_permissions(home.join(name), std::fs::Permissions::from_mode(0o600)).unwrap();
             let before = contents(&home);
-            let refused = run(&config, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles);
+            let refused = run(&config, &alondra_store_sqlite::Sqlite, crate::engine::open_on, machine_doubles);
             assert!(refused.is_err(), "{name}: a binary that cannot start on this HOME passed preflight");
             assert_eq!(contents(&home), before, "preflight must not write to the HOME it checks");
             std::fs::remove_dir_all(home).unwrap();
@@ -329,7 +328,7 @@ mod tests {
         let (home, config) = committed_domain_home("migration-markerless");
         let before = contents(&home);
         assert!(
-            run(&config, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles)
+            run(&config, &alondra_store_sqlite::Sqlite, crate::engine::open_on, machine_doubles)
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -344,7 +343,7 @@ mod tests {
         crate::domain_database_migration::prepare_test_migration(&home);
         let before = contents(&home);
         assert!(
-            run(&config, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles)
+            run(&config, &alondra_store_sqlite::Sqlite, crate::engine::open_on, machine_doubles)
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -359,7 +358,7 @@ mod tests {
         assert!(crate::domain_database_migration::migrate(&home).unwrap());
         let before = contents(&home);
         assert!(
-            run(&config, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles)
+            run(&config, &alondra_store_sqlite::Sqlite, crate::engine::open_on, machine_doubles)
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -376,7 +375,7 @@ mod tests {
             .execute("UPDATE domain_meta SET revision=revision+1", [])
             .unwrap();
         let before = contents(&home);
-        assert!(run(&config, &alondra_store_sqlite::Sqlite, crate::engine_tests::open_on, machine_doubles).is_err());
+        assert!(run(&config, &alondra_store_sqlite::Sqlite, crate::engine::open_on, machine_doubles).is_err());
         assert_eq!(contents(&home), before);
         std::fs::remove_dir_all(home).unwrap();
     }

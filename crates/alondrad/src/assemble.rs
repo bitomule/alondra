@@ -203,7 +203,7 @@ pub async fn assemble(config: &Config, state: Arc<domain_bootstrap::DomainDaemon
     if actions > 0 {
         log!("the previous daemon stopped in the middle of {actions} local action(s); they are marked interrupted");
     }
-    let domain = state.domain();
+    let domain = domain_runtime::DomainRuntime::shared(state.domain());
     if real {
         // Before any SDK execution is taken over: a host that replaces one that ended loads this plugin.
         match alondra_system::plugins::node_source(&watcher::claude_home()).zip(alondra_host::brew::own_cli()) {

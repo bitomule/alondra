@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::auth::Signed;
 use crate::domain_bootstrap::DomainDaemon;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 
 pub(crate) fn router() -> Router<Arc<DomainDaemon>> {
     Router::new().route("/notices", get(local))
@@ -45,7 +45,7 @@ async fn local(
     }
     let lang = if params.lang.as_deref() == Some("es") { Lang::Es } else { Lang::En };
     let domain = state.domain();
-    match alondra_core::clock::spawn_blocking(move || notices(&domain, lang)).await {
+    match alondra_core::clock::spawn_blocking(move || notices(&*domain, lang)).await {
         Ok(Ok(body)) => Json(body).into_response(),
         _ => crate::domain_api::domain_error(alondra_domain_model::DomainError::new(
             "storage_unavailable",
@@ -56,11 +56,11 @@ async fn local(
 
 /// The cards that wait for the user, each with the notice a phone got for it. A card no phone
 /// was told about (the gate dropped it, or it repeats one already told) has no notice.
-pub(crate) fn notices(domain: &DomainRuntime, lang: Lang) -> anyhow::Result<Value> {
+pub(crate) fn notices(domain: &dyn Runtime, lang: Lang) -> anyhow::Result<Value> {
     let read = domain.read();
     let open = crate::screens::get().waiting_cards(read.index());
     let ids: Vec<InteractionId> = open.iter().map(|id| InteractionId::from(id.as_str())).collect();
-    let handed = domain.store.lock_or_exit("the domain store").handed_user_notices(&ids)?;
+    let handed = domain.store().lock_or_exit("the domain store").handed_user_notices(&ids)?;
     let notices: Vec<Value> = handed
         .into_iter()
         .map(|(message, card)| {
