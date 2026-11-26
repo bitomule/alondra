@@ -121,8 +121,16 @@ bazelisk test <target> --noremote_accept_cached --disk_cache= --noremote_upload_
   --run_under=//tools:test_tmpdir
 ```
 
-Bazel runs again an action whose output file changed or was cut short, so no new output base is
-needed. Never start Bazel with an `--output_base` of your own anywhere else (`~/.cache`, `/tmp`,
+Bazel runs again an action whose output file changed or was cut short after the action ended. When
+the action itself wrote the broken file and succeeded, Bazel holds it as up to date: delete that one
+output file first. No new output base is needed.
+
+One cause of such a file is closed. With `-Cstrip` other than `none`, rustc ran `rust-objcopy` over
+what it had linked and only warned when it failed. With no space left, `rust-objcopy` leaves only the
+last `size % 4096` bytes of the binary in its place; rustc exited 0 and Bazel kept the file. The
+toolchain in `MODULE.bazel` now has the linker leave the debug information out (`ld -S`, in every
+compilation mode, so `-c dbg` binaries carry none either), and a full disk fails the link.
+`//crates/scenarios:runner_link_test` holds that. Never start Bazel with an `--output_base` of your own anywhere else (`~/.cache`, `/tmp`,
 another volume): that skips the shared output base and the build queue, an output base is about
 20 GB, and nothing removes it when you stop. `tools/output_base_guard.py` fails on it.
 
