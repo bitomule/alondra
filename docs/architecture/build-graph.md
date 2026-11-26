@@ -1940,3 +1940,51 @@ average about 10 to 17):
   a layer is a rule about who may depend on whom, not a change of the graph.
 - **The port** is in `engine-ports`, whose every edit reopens 36 crates; it is a trait of two
   methods that should rarely change.
+
+## The server without the engine (phase 7d, 2026-11-26)
+
+`daemon-server` still depended on `daemon-engine`, for about 140 of its items: the live view (the
+nodes the hooks deduced, what each node's mod reported, the contexts, the waits), the accounts, the
+messages to nodes, the orchestrator's tools, the pull requests and the MCP servers. An edit of any
+piece under `daemon-engine` recompiled the server library and everything after it.
+
+What changed:
+
+- **Six more parts of `DomainApi`** (`engine-ports/src/domain_api.rs`): `LiveApi`, `AccountsApi`,
+  `MessagesApi`, `ToolsApi`, `PullRequestsApi` and `McpApi`, plus four operations of `RuntimeApi`
+  (closing a session, cleanup, the rules «allow always», a system command). `daemon-engine`
+  implements them in `server_api.rs` and gives them to the registry in its `wire`; the registry's
+  list of required ports names them, so a wiring that leaves one out fails at start.
+- **The values they speak in moved to `engine-ports`**, re-exported where they were so the engine
+  reads them unchanged: `live_view` (a node's report as the screens read it, the waits, the runs and
+  steps, `/runtime`'s nodes), `mcp` (the checks and removals, the targets of a sign-in), `pr_images`,
+  `options`, `issues`, `settings_file`, `local_actions`, the machine's gauges and `IntoDomainError`.
+- The server keeps its own route `Reply`; the HTTP status of a domain refusal has one table,
+  `domain_api::status_code`.
+- `daemon-server` has no layer exception left (`EXCEPTION_CEILING` 25 → 24, after the 21 the ports
+  layer took away). Its two test crates
+  still link the engine, as tests.
+
+`edit_bench --profile --edit crates/engine-live/src/node_reports.rs` on the shared Mac, before on
+main at 3264efd4d (load average 15) and after on this change (load average 6 to 14):
+
+| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Build: critical path | Edit + build | Longest test target | Critical path | Edit + build or test |
+|---|---:|---:|---|---:|---:|---|---:|---:|
+| `engine-live/src/node_reports.rs`, before | 12 | 59 | 155 (19 / 10 / 124) | 26 s | 35 s | `engine_sdk_engine_test` 35 s | 72 s | 107 s |
+| `engine-live/src/node_reports.rs`, after | 11 | 57 | 151 (18 / 10 / 121) | 31 s | 41 s | `engine_sdk_engine_test` 31 s | 70 s | 100 s |
+
+- The edit no longer recompiles the server library: one crate and two test targets fewer.
+- The seconds barely move, as the plan expected for a local build with incremental libraries: the
+  critical path of both runs is `engine_live` → `daemon_engine` → `engine_sdk_engine_test`, a test
+  crate compiled from scratch (21.9 s before, 27.2 s after, the shared queue's noise). The gain is
+  the server library's compile in a release or CI build from scratch, and the last of its
+  exceptions.
+
+**Guards**, each broken by hand and put back:
+
+- `//tools/layers:crate_layers_test` and `//crates/daemon-server:daemon_server_layer_test` fail in
+  analysis when the server depends on `daemon-engine` again (`//crates/daemon-server:daemon_server
+  depends on //crates/daemon-engine:daemon_engine: a crate of layer adapter-in may depend only on
+  layers foundation, domain, ports`).
+- `alondrad`'s `the_daemons_wiring_alone_implements_every_port` fails when `daemon-engine` leaves a
+  part out of its `wire` (`left: ["LiveApi"]`).
