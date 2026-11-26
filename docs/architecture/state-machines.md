@@ -1695,8 +1695,16 @@ truth = ["memory", "sqlite:provider_execution_owners"]
 - **Superseded owner** (26 November, edit_bench under load): an `Owner` whose node is no longer the one its task runs
   on (the task was cancelled, kept by the user and reopened, so the task has none or a new one) ends instead of
   replacing its host or recording a loss (`Driver::superseded`, checked in the `Owner` loop before
-  `host_to_replace`). `adopt` and `RecordHostLost` act on the task's current node, so a late old owner used to
-  adopt the new execution's node and revoke its owner (`StaleOwner`), leaving a «host lost» card on the new execution.
+  `host_to_replace`). That look alone left a window: the owner's step fails once its task is cancelled, while the task
+  still reads its node, and the task may be reopened and run on a new one before the replacement takes anything.
+  `adopt` took the task's current execution, so the late owner revoked the new node's owner (`StaleOwner`), leaving a
+  «host lost» card on the new execution. So an owner takes again, or records as lost, only its own node, judged where
+  it writes: the reservation of `take_host_into` refuses inside its transaction when the task no longer runs on that
+  node (`replace_ended_host` and `end_dead_host_claims` name it), `give_up` leaves everything of the task alone then,
+  and `RecordHostLost` carries the node, which the domain refuses once the task runs on another one or on none.
+  Retakes by task (`take_again`, `take_all`) name no node: they take whatever the task runs. Test:
+  `auto_launch::tests::the_owner_of_a_kept_node_never_takes_over_the_node_the_reopened_task_runs_on` (a hook,
+  `before_replacement`, holds the old owner between its look and its replacement).
 
 ### M-ENGINE-5 · `Owner` thread loop (explicit in code)
 

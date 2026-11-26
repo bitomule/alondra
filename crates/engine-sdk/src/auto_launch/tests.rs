@@ -746,6 +746,51 @@ async fn a_task_reopened_with_its_node_kept_by_the_user_gets_a_new_execution_tha
     assert!(resumed, "the new execution resumes the saved session: {:?}", f.sdk.starts());
 }
 
+/// The host of a node the user kept ends after its task was cancelled, and its owner starts to
+/// replace it while the task still reads that node. The task is reopened and its new node starts
+/// before the replacement takes anything: it used to take the new node's execution, since it asked
+/// for the task's, and the reopened task ended on a lost host nothing had lost.
+#[tokio::test]
+async fn the_owner_of_a_kept_node_never_takes_over_the_node_the_reopened_task_runs_on() {
+    let f = world_using_sdk(SdkLaunches::enable);
+    f.domain.admission().ignore_mac();
+    create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
+    pass(&*f.domain, &f.home).await.unwrap();
+    f.sdk.until_answered("f1").await;
+    let kept = agent_of(&f, "f1").expect("its first node");
+    let kept_host = f.sdk.hosts.live().into_iter().find(|folder| folder.ends_with(&kept.0)).expect("the kept node's host runs");
+
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "f1".into(), reason: None });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "f1".into(), end: NodeEnd::KeptByUser, agent_id: Some(kept.clone()) });
+    let (replacing, replacement) = std::sync::mpsc::channel();
+    let (go_on, held) = std::sync::mpsc::channel::<()>();
+    f.domain.before_replacement(move || {
+        replacing.send(()).unwrap();
+        let _ = held.recv();
+    });
+    f.sdk.hosts.served(&kept_host).unwrap().end(alondra_engine_doubles::agent_host::Stop::Kill.status());
+    replacement.recv_timeout(std::time::Duration::from_secs(60)).expect("the kept node's owner replaces its ended host");
+
+    f.sdk.model.set_turns(alondra_claude_host_model::Turns::Ignored);
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::ReopenTask { task_id: "f1".into() });
+    for _ in 0..2 {
+        pass(&*f.domain, &f.home).await.unwrap();
+        crate::admission::pass_at(&*f.domain, &f.home, alondra_core::now_millis()).await.unwrap();
+    }
+    let node = agent_of(&f, "f1").expect("the reopened task runs on a node");
+    assert_ne!(node, kept);
+    let host = f.sdk.hosts.live().into_iter().find(|folder| folder.ends_with(&node.0)).expect("the new node's host runs");
+    let connections = f.sdk.hosts.connections(&host);
+
+    go_on.send(()).unwrap();
+    f.domain.stop_sdk_host(&kept).unwrap();
+
+    assert_eq!(f.sdk.hosts.connections(&host), connections, "the kept node's owner never connects to the new node's host");
+    assert!(f.sdk.hosts.served(&host).is_some() && f.domain.owns_sdk_host(&node), "the new node keeps its host and its owner");
+    let cards = told(&f);
+    assert!(cards.iter().all(|card| !card.starts_with(alondra_domain_model::HOST_LOST_PREFIX)), "no host was lost: {cards:?}");
+}
+
 #[tokio::test]
 async fn while_the_disk_is_nearly_full_a_ready_task_waits_and_starts_once_there_is_space() {
     let f = world();

@@ -10829,7 +10829,7 @@ fn host_recovery_cards_use_plain_localized_content_in_the_list_and_detail() {
             });
         }
         execute(&mut state, Actor::System, Command::RecordHostLost {
-            task_id: "t".into(), reason: "StaleOwner: the provider rejected the execution token".into(), quiet: false, signed_out: false,
+            task_id: "t".into(), reason: "StaleOwner: the provider rejected the execution token".into(), quiet: false, signed_out: false, node: None,
         });
         let id = state.interactions.values().find(|i| alondra_domain_model::retakes(i)).unwrap().id.clone();
         assert_eq!(state.interactions[&id].system_card, Some(if legacy { SystemCard::SessionEnded } else { SystemCard::HostLost { signed_out: false } }));

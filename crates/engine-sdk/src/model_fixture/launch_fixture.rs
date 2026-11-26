@@ -113,9 +113,13 @@ impl SdkLaunches {
     fn where_it_stopped(&self, task: &str) -> String {
         let state = self.domain.state().unwrap();
         let id = alondra_foundation::TaskId::from(task);
-        let cards: Vec<&str> = state.interactions.iter()
+        let cards: Vec<String> = state.interactions.iter()
             .filter(|(_, card)| matches!(&card.scope, alondra_domain_model::Scope::Task { task_id } if task_id == &id))
-            .map(|(card, _)| card.0.as_str()).collect();
+            // A problem's text says why the task stopped, such as why its host was lost.
+            .map(|(id, card)| match card.card.kind {
+                alondra_domain_model::CardKind::Problem => format!("{id}: {}", card.card.content.as_ref().map_or("", |content| content.body.as_str())),
+                _ => id.0.clone(),
+            }).collect();
         format!("task {:?}, lifecycle {:?}, cards {cards:?}, native starts {:?}", state.tasks.get(&id), state.lifecycle_of(&id), self.starts())
     }
 
