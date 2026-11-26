@@ -329,6 +329,8 @@ pub enum Item {
     Form(Form),
     Notice(Notice),
     Actions(ActionBar),
+    SpecSheet(Box<crate::SpecSheet>),
+    DecisionSheet(Box<crate::DecisionSheet>),
     /// A kind of item added by a newer daemon: an older client draws a row asking to update
     /// instead of failing the whole view. Never sent.
     #[serde(other)]
@@ -870,6 +872,11 @@ pub enum FieldKind {
     Time,
     Stepper { min: i64, max: i64 },
     Lines { placeholder: Option<String> },
+    /// The steps of a scenario, one per line as Gherkin writes them: a client may edit them as
+    /// rows of lane, text and table.
+    Steps { placeholder: Option<String> },
+    /// The Mermaid text of a diagram: a client may show it drawn as it is typed.
+    Mermaid { placeholder: Option<String> },
     /// A kind from a newer daemon that this client does not know. Only decoded, never sent.
     #[serde(other, skip_serializing)]
     Unsupported,

@@ -9,6 +9,7 @@ pub mod model_controls;
 pub mod resolves;
 pub mod review_export;
 pub mod screens;
+pub mod spec_sheet;
 pub mod action_id;
 pub mod command_line;
 pub mod components;
@@ -20,6 +21,7 @@ pub mod refusal;
 pub mod text;
 
 pub use components::*;
+pub use spec_sheet::*;
 pub use live::*;
 pub use text::Lang;
 pub use screens::*;

@@ -250,3 +250,4 @@ crates/core/src/usage.rs	name.strip_prefix(crate::antigravity_account::WINDOW_PR
 crates/cli-tui/src/tui/bindings.rs	let label = if menu.title.is_empty() { tr!("documents", "documentos").to_owned() } else { menu.title.to_lowercase() };	display	The key hint shows the title of the section of links, lowercased like the other hints
 crates/domain-model/src/specs.rs	let close = if header.is_empty() && !text.starts_with("+++") { 0 } else { header.len() + 2 };	format	Reads the +++ header of a decision file, the format docs/architecture/specs.md documents
 crates/domain-model/src/specs.rs	match line.trim_end().strip_prefix("## ") {	format	Reads the ## sections of a decision file, the format docs/architecture/specs.md documents
+crates/daemon-server/src/views/spec_actions.rs	uploaded.to_lowercase().replace(char::is_whitespace, "-")	format	Normalizes the name of an uploaded image into a file name a spec tag can cite; nothing is decided from it.

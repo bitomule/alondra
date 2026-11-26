@@ -5,7 +5,9 @@
 //! says; the decisions are the domain's (`alondra_domain_model::delivery_validation`).
 use alondra_engine_ports::Runtime;
 use alondra_engine_ports::spec_reading::{self, load, owed_items, problems_text};
-use alondra_domain_model::specs::{self, engine};
+use alondra_domain_model::specs::{self, engine, Files, KeptImages};
+use alondra_domain_model::DeliveredCapture;
+use alondra_engine_ports::kept_images::HomeImages;
 use alondra_domain_model::{
     Command, CommitReading, DeclaringTest, DeliveredScenario, DeliveredSection, DeliveredSpec, DeliveredSuite, DeliveredValidation, DeliveredVerdict, DomainError, DomainState,
     ExecutionRole, InteractionId, RoundState, Task, TaskId, ValidationKind,
@@ -132,21 +134,72 @@ pub(crate) fn read_delivery(domain: &dyn Runtime, state: &DomainState, task_id: 
 /// What a validator's delivery of `task_id` shows of its specs, read from the commit it delivers.
 pub(crate) fn delivered(domain: &dyn Runtime, state: &DomainState, task_id: &TaskId, delivery: &InteractionId) -> Option<DeliveredValidation> {
     let port = domain.ports().spec_worktrees()?;
-    delivered_with(&*port, state, task_id, delivery)
+    delivered_with(&*port, &HomeImages::new(domain.home()), state, task_id, delivery)
 }
 
-pub(crate) fn delivered_with(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, delivery: &InteractionId) -> Option<DeliveredValidation> {
+pub(crate) fn delivered_with(port: &dyn SpecWorktrees, images: &dyn KeptImages, state: &DomainState, task_id: &TaskId, delivery: &InteractionId) -> Option<DeliveredValidation> {
     let task = state.tasks.get(task_id).filter(|task| task.stages.role() == Some(ExecutionRole::Validator))?;
     let root = port.own(state, task_id)?;
     let head = match state.open_prs(task).next() {
         Some(pr) => pr.head.clone(),
         None => port.head_commit(&root).ok()?,
     };
-    let project = load(&*port.commit(&root, &head).ok()?).ok()??;
+    let files = port.commit(&root, &head).ok()?;
+    let project = load(&*files).ok()??;
     let report = project.report(None);
     let base = port.base_commit(&root, &head).ok()?;
     let changed = port.changed(&root, &base, &head).ok()?;
-    Some(snapshot(&project, &report, task, delivery, &head, &changed))
+    let base_files = port.commit(&root, &base).ok()?;
+    let mut shown = snapshot(&project, &report, task, delivery, &head, &changed);
+    keep_shown(&mut shown, &*files, &*base_files, images);
+    let titles: std::collections::BTreeMap<&str, &str> = project.decisions().iter().map(|decision| (decision.id.as_str(), decision.title.as_str())).collect();
+    for spec in &mut shown.specs {
+        let cited = project.specs().iter().find(|loaded| loaded.path == spec.path).into_iter().flat_map(|loaded| &loaded.spec.decisions);
+        spec.decisions = cited.filter_map(|id| Some((id.clone(), titles.get(id.as_str())?.to_string()))).collect();
+    }
+    Some(shown)
+}
+
+/// The most bytes of evidence one delivery keeps.
+const MAX_KEPT_CAPTURES: usize = 128;
+
+/// Adds what the card draws of the delivered commit: each spec's file and parts, on it and on its
+/// base, and a copy of each capture a judgment rests on.
+fn keep_shown(shown: &mut DeliveredValidation, head: &dyn Files, base: &dyn Files, images: &dyn KeptImages) {
+    let text = |files: &dyn Files, path: &str| files.read(path).and_then(|bytes| String::from_utf8(bytes).ok());
+    let parts = |files: &dyn Files, path: &str, source: Option<&str>| {
+        let spec = source.and_then(|source| engine::read_spec(path, source.as_bytes()).ok());
+        spec.map(|spec| specs::citations(path, &spec)).unwrap_or_default().into_iter()
+            .filter_map(|part| specs::content_of(files, &part, images).map(|content| (part, content)))
+            .collect()
+    };
+    let paths = head.paths();
+    let mut kept = 0;
+    for spec in &mut shown.specs {
+        spec.source = text(head, &spec.path);
+        spec.base = text(base, &spec.path);
+        spec.parts = parts(head, &spec.path, spec.source.as_deref());
+        spec.base_parts = parts(base, &spec.path, spec.base.as_deref());
+        let read = spec.source.as_deref().and_then(|source| engine::read_spec(&spec.path, source.as_bytes()).ok());
+        for scenario in &mut spec.scenarios {
+            let pattern = read.as_ref().and_then(|read| read.scenarios.iter().find(|known| scenario.id.rsplit('/').next() == Some(known.id.as_str())))
+                .and_then(|known| known.judgment.as_ref()?.pattern.clone());
+            for verdict in scenario.verdicts.iter_mut().filter(|verdict| verdict.kind == ValidationKind::Judged) {
+                let looked: Vec<String> = match (&verdict.evidence[..], &pattern) {
+                    ([], Some(pattern)) => paths.iter().filter(|path| engine::matches(pattern, path)).take(MAX_KEPT_CAPTURES).cloned().collect(),
+                    (evidence, _) => evidence.to_vec(),
+                };
+                for path in looked {
+                    if kept == MAX_KEPT_CAPTURES {
+                        break;
+                    }
+                    kept += 1;
+                    let image = head.read(&path).and_then(|bytes| images.keep(&bytes));
+                    verdict.captures.push(DeliveredCapture { path, image });
+                }
+            }
+        }
+    }
 }
 
 /// What the delivery's card shows of its specs: each spec the task's work is about, each scenario
@@ -179,7 +232,7 @@ fn snapshot(project: &engine::Project, report: &engine::Report, task: &Task, del
             let verdicts = [ValidationKind::Adequate, ValidationKind::Judged].into_iter().filter_map(|kind| {
                 let inputs = project.fingerprint(&id, kind.engine())?;
                 let record = task.validation.record(&id, kind, &inputs)?;
-                Some(DeliveredVerdict { kind, verdict: record.verdict, reasoning: record.reasoning.clone(), nearest_wrong: record.nearest_wrong.clone(), evidence: record.evidence.clone() })
+                Some(DeliveredVerdict { kind, verdict: record.verdict, reasoning: record.reasoning.clone(), nearest_wrong: record.nearest_wrong.clone(), evidence: record.evidence.clone(), captures: vec![] })
             }).collect();
             DeliveredScenario {
                 title: scenario.title.clone(),
@@ -194,7 +247,7 @@ fn snapshot(project: &engine::Project, report: &engine::Report, task: &Task, del
                 id,
             }
         }).collect();
-        DeliveredSpec { id: loaded.spec.id.clone(), path: loaded.path.clone(), title: loaded.spec.title.clone(), scenarios }
+        DeliveredSpec { id: loaded.spec.id.clone(), path: loaded.path.clone(), title: loaded.spec.title.clone(), scenarios, source: None, base: None, parts: Default::default(), base_parts: Default::default(), decisions: Default::default() }
     }).collect();
     let sections = project.sections().iter().filter(|section| changed.contains(&section.path))
         .map(|section| DeliveredSection { id: section.id.clone(), path: section.path.clone(), text: section.text.clone() })
@@ -236,7 +289,9 @@ mod tests {
     use super::*;
     use alondra_domain_model::validation::RoundItem;
     use alondra_domain_model::{DeliveryCheck, DeliveryTarget, PullRequest, SpecFiles, TaskRun, TaskState, ValidationRecord, ValidationRound, ValidationState, ValidationVerdict};
-    use alondra_domain_model::specs::Files;
+    use alondra_domain_model::specs::{Files, NoImages};
+    use alondra_domain_model::{DeliveredScenario, DeliveredSpec, DeliveredVerdict};
+    use alondra_engine_ports::spec_worktrees::FileBytes;
     use alondra_engine_ports::spec_worktrees::SpecSource;
     use std::path::Path;
     use std::collections::{BTreeMap, BTreeSet};
@@ -318,7 +373,37 @@ mod tests {
         }
         fn uncommitted(&self, _: &Path) -> Result<Vec<String>, String> { Ok(self.dirty.lock().unwrap().clone()) }
         fn settings(&self, _: &Path) -> Result<Option<Vec<u8>>, String> { Ok(None) }
-        fn write(&self, _: &Path, _: &SpecFiles) -> Result<BTreeMap<String, String>, String> { Ok(BTreeMap::new()) }
+        fn file(&self, _: &Path, path: &str, _: usize) -> Result<Vec<u8>, String> { Err(format!("{path} is not read here")) }
+        fn write(&self, _: &Path, _: &FileBytes) -> Result<BTreeMap<String, String>, String> { Ok(BTreeMap::new()) }
+    }
+
+    #[test]
+    fn a_delivery_keeps_what_its_card_draws_and_a_copy_of_each_capture_a_judgment_rests_on() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(home.join("files")).unwrap();
+        let images = HomeImages::new(&home);
+        let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..], &390u32.to_be_bytes(), &844u32.to_be_bytes(), &[8, 6, 0, 0, 0]].concat();
+        let feature = "@spec:billing.partial\n@diagram:flow.mmd\nFeature: Partial refunds\n\n  @id:shown @judged:capture @evidence:captures/*.png\n  Scenario: The sheet shows what is left\n    Then it shows 20 EUR\n";
+        let head = base().with("specs/billing/shown.feature", feature).with("specs/billing/flow.mmd", "flowchart LR\n  A --> B\n")
+            .with_bytes("captures/sheet.png", png).with("captures/notes.png", "not an image");
+        let verdict = |evidence: Vec<String>| DeliveredVerdict { kind: ValidationKind::Judged, verdict: ValidationVerdict::Met, reasoning: None, nearest_wrong: None, evidence, captures: vec![] };
+        let scenario = |evidence: Vec<String>| DeliveredScenario { id: "billing.partial/shown".into(), title: "The sheet shows what is left".into(), steps: vec![], states: vec![], tests: vec![], judged: Some("capture".into()), verdicts: vec![verdict(evidence)] };
+        let shown = |evidence: Vec<String>| {
+            let mut shown = DeliveredValidation { specs: vec![DeliveredSpec { id: "billing.partial".into(), path: "specs/billing/shown.feature".into(), title: "Partial refunds".into(),
+                scenarios: vec![scenario(evidence)], source: None, base: None, parts: Default::default(), base_parts: Default::default(), decisions: Default::default() }], ..DeliveredValidation::default() };
+            keep_shown(&mut shown, &head, &base(), &images);
+            shown.specs.remove(0)
+        };
+        let spec = shown(vec!["captures/sheet.png".into(), "captures/notes.png".into(), "captures/gone.png".into()]);
+        assert_eq!((spec.source.as_deref(), spec.base), (Some(feature), None), "a new spec has no base");
+        assert!(spec.parts["specs/billing/flow.mmd"].text().is_some_and(|text| text.starts_with("flowchart")));
+        let captures = &spec.scenarios[0].verdicts[0].captures;
+        assert_eq!(captures.iter().map(|capture| (capture.path.as_str(), capture.image.as_ref().map(|image| (image.width, image.height)))).collect::<Vec<_>>(),
+            [("captures/sheet.png", Some((390, 844))), ("captures/notes.png", None), ("captures/gone.png", None)]);
+        let kept = captures[0].image.clone().unwrap();
+        assert!(home.join(&kept.file).is_file() && images.read(&kept).is_some(), "the copy is downloadable from Alondra's files");
+        let unnamed = shown(vec![]);
+        assert_eq!(unnamed.scenarios[0].verdicts[0].captures.len(), 2, "with no path named, the captures are the ones @evidence matches");
     }
 
     fn base() -> Tree {
@@ -445,7 +530,7 @@ mod tests {
         let state = validated(&repo, &head, true);
         repo.commit('2', ledger_for(&repo, &head));
         assert_eq!(check(&repo, state.clone()), Ok(DeliveryCheck::Validated));
-        let shown = delivered_with(&repo, &state, &"t".into(), &delivery()).expect("its card shows the specs");
+        let shown = delivered_with(&repo, &NoImages, &state, &"t".into(), &delivery()).expect("its card shows the specs");
         let scenarios: Vec<&str> = shown.specs.iter().flat_map(|spec| &spec.scenarios).map(|scenario| scenario.id.as_str()).collect();
         assert_eq!(scenarios, ["billing.partial/part", "billing.partial/alone"]);
         let part = &shown.specs[0].scenarios[0];
@@ -518,7 +603,7 @@ mod tests {
         let unchanged = Repo::new(ledger_for(&Repo::new(base()), &sha('0')));
         let mut task = task(ExecutionRole::Implementer);
         task.specs.amendments.push(alondra_domain_model::SpecAmendment { id: "a1".into(), reason: "Refund in two steps".into(), state: alondra_domain_model::AmendmentState::Requested,
-            files: SpecFiles::new(), before: BTreeMap::new(), card: None, words: None });
+            files: SpecFiles::new(), before: BTreeMap::new(), check: None, card: None, words: None });
         assert_eq!(check(&unchanged, state_with(task)), Ok(DeliveryCheck::SpecChangeOpen));
     }
 

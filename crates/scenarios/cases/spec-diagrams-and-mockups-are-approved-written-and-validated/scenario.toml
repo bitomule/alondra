@@ -1,0 +1,237 @@
+name = "specs with a diagram and a mockup are drawn on the plan's card, the user edits the diagram and approves them, Alondra writes both into the worktree, a delivery that holds another mockup is refused, and the validated delivery shows the capture the validator judged"
+max_virtual = "3h"
+
+[[step]]
+do = "request"
+text = "Let customers get part of an order refunded"
+task = "t1"
+title = "Refund part of an order"
+
+[[step]]
+do = "node"
+task = "t1"
+model = "demo-model"
+stages = true
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "worktree"
+task = "t1"
+
+[[step.base]]
+path = "alondra.toml"
+text = "format = 1\n\n[specs]\nenabled = true\n"
+
+[[step.base]]
+path = "specs/billing/boundary.toml"
+text = "id = \"billing\"\nowns = [\"crates/billing/**\"]\n\n[[suite]]\nid = \"unit\"\nrun = [\"true\"]\ntests = [\"crates/billing/tests/*.rs\"]\n"
+
+[[step.base]]
+path = "specs/billing/refunds.feature"
+text = "@spec:billing.refunds\nFeature: Refunds return the money\n\n  @id:alone @boundary:dependencies\n  Scenario: Billing uses no other component\n    Given the billing crate\n    When its dependencies are listed\n    Then none is another component\n"
+
+[[step.base]]
+path = "crates/billing/tests/refunds.rs"
+text = "// spec: billing.refunds/alone\n#[test]\nfn alone() { assert!(dependencies().is_empty()); }\n"
+
+[[step.images]]
+path = "shots/sheet.png"
+png = [390, 844]
+
+[[step]]
+do = "propose_specs"
+task = "t1"
+level = "light"
+
+[[step.files]]
+path = "specs/billing/partial.feature"
+text = "@spec:billing.partial\n@diagram:refund-flow.mmd\nFeature: Partial refunds\n  Any amount up to what is left of the order comes back.\n\n  @id:part @mockup:refund-sheet.png\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n\n  @id:shown @judged:capture @evidence:crates/billing/captures/*.png\n  Scenario: The sheet shows what is left\n    When the refund sheet is open\n    Then it shows 20 EUR left\n"
+
+[[step.files]]
+path = "specs/billing/refund-flow.mmd"
+text = "flowchart LR\n  Order --> Refund\n"
+
+[[step.files]]
+path = "specs/billing/refund-sheet.png"
+source = "shots/sheet.png"
+
+[[step]]
+do = "plan"
+task = "t1"
+request = "author-plan"
+plan = "# Refund part of an order\n\n- [ ] Refund any amount up to what is left (billing.partial/part)"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "diagram-and-mockup-on-the-plan"
+
+[[step.expect]]
+check = "view_shows"
+screen = "card:decision-t1-1-6"
+text = "Refund sheet"
+
+[[step]]
+do = "edit_spec"
+task = "t1"
+item = "refund-flow.mmd · Partial refunds"
+
+[step.fields]
+code = "flowchart LR\n  Order --> Refund\n  Refund --> Receipt"
+
+[[step]]
+do = "press"
+presentation = "decision-t1-1-6"
+action = "accept"
+screen = "home"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "both-written-before-the-implementer"
+
+[[step.expect]]
+check = "worktree_file"
+task = "t1"
+path = "specs/billing/refund-flow.mmd"
+text = "flowchart LR\n  Order --> Refund\n  Refund --> Receipt\n"
+
+[[step.expect]]
+check = "worktree_file"
+task = "t1"
+path = "specs/billing/refund-sheet.png"
+png = [390, 844]
+
+[[step]]
+do = "commit"
+task = "t1"
+message = "Refund part of an order with another mockup"
+
+[[step.files]]
+path = "crates/billing/tests/refunds.rs"
+text = "// spec: billing.refunds/alone\n#[test]\nfn alone() { assert!(dependencies().is_empty()); }\n\n// spec: billing.partial/part\n#[test]\nfn part() { assert_eq!(refund(30, 10), 10); }\n"
+
+[[step.files]]
+path = "crates/billing/captures/sheet.png"
+png = [390, 700]
+
+[[step.files]]
+path = "specs/billing/refund-sheet.png"
+png = [390, 845]
+
+[[step]]
+do = "present"
+task = "t1"
+id = "result-mockup"
+text = "Partial refunds"
+body = "Partial refunds work."
+refused = "specs_differ"
+
+[[step]]
+do = "commit"
+task = "t1"
+message = "Put the approved mockup back"
+
+[[step.files]]
+path = "specs/billing/refund-sheet.png"
+png = [390, 844]
+
+[[step]]
+do = "ready_for_validation"
+task = "t1"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "record_validation"
+task = "t1"
+subject = "billing/unit"
+check = "suite"
+verdict = "met"
+
+[[step]]
+do = "record_validation"
+task = "t1"
+subject = "billing.partial/part"
+check = "adequate"
+verdict = "met"
+
+[[step]]
+do = "record_validation"
+task = "t1"
+subject = "billing.refunds/alone"
+check = "adequate"
+verdict = "met"
+
+[[step]]
+do = "record_validation"
+task = "t1"
+subject = "billing.partial/shown"
+check = "judged"
+verdict = "met"
+evidence = ["crates/billing/captures/sheet.png"]
+
+[[step]]
+do = "spec_ledger"
+task = "t1"
+message = "Record the validation"
+
+[[step]]
+do = "present"
+task = "t1"
+id = "result-1"
+text = "Partial refunds"
+body = "Partial refunds work."
+scenarios = ["billing.partial/part"]
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "validated-delivery-with-its-capture"
+
+[[step.expect]]
+check = "view_shows"
+screen = "card:result-1"
+text = "3 of 3 scenarios validated"
+
+[[step.expect]]
+check = "view_shows"
+screen = "card:result-1"
+text = "crates/billing/captures/sheet.png"
+
+[[step.expect]]
+check = "view_shows"
+screen = "card:result-1"
+text = "files/images/"
+
+[[step.expect]]
+check = "view_shows"
+screen = "card:result-1"
+text = "Evidence not available"
+present = false

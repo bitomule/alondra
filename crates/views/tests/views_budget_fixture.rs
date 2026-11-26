@@ -332,7 +332,7 @@ fn model_controls_fixture(state: &mut DomainState) {
     selection.effective = Some(ModelSelection { model, reasoning_effort: Some("high".into()), catalog_revision: state.model_catalogs.iter().find(|catalog| catalog.account == account).expect("the active account catalog").revision.clone() });
     task.selection = Some(selection);
     let feature = "@spec:billing.partial\nFeature: Partial refunds\n  Any amount up to what is left comes back.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n";
-    let files = [("specs/billing/partial.feature".to_owned(), Some(feature.to_owned()))].into();
+    let files = [("specs/billing/partial.feature".to_owned(), Some(feature.into()))].into();
     let check = alondra_domain_model::SpecCheck { mode: alondra_domain_model::SpecMode::Committed, ..Default::default() };
     task.specs.draft = Some(alondra_domain_model::SpecDraft { level: alondra_domain_model::SpecLevel::Light, files, check, revision: 1, edited: false });
 }

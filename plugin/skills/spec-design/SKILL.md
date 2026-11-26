@@ -83,6 +83,19 @@ After the last round, turn the prose into files:
 Size it to the level: a light change is a few scenarios in an existing spec, never a new
 component.
 
+### Diagrams and mockups
+
+When a picture says it better than prose, put it next to the feature file and cite it with
+`@diagram:<file>` or `@mockup:<file>` on the feature or on the scenario it illustrates. The
+user sees it drawn on the plan's card, edits it there and approves it with the specs, and a
+delivery that holds another is refused.
+
+- A diagram is a `.mmd` file (a flowchart, sequence, state or class diagram): send its Mermaid
+  text in `text`, like any other file.
+- A mockup is a PNG or JPEG of at most 2 MB: send it with `source`, the path in your worktree of
+  the image you made. Alondra keeps a copy and writes it at the mockup's path once approved, so
+  neither file needs to be committed.
+
 ### The files, exactly
 
 A feature file, `specs/<component>/<name>.feature`:
@@ -129,8 +142,8 @@ The prose you explained the spec with.
 
 ## 4. Send them with the plan
 
-1. `propose_specs` with `task_id`, `level` and `files` (each the whole new text of a file, or a
-   path without text to remove it). Alondra reads them with the spec engine over your worktree
+1. `propose_specs` with `task_id`, `level` and `files` (each the whole new text of a file, a
+   mockup with its `source`, or a path alone to remove it). Alondra reads them with the spec engine over your worktree
    and refuses the call with every problem by file and line: fix them all and send the whole set
    again.
 2. Then present the plan through plan mode. Its checklist names the scenarios each point makes

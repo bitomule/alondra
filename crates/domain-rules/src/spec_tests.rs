@@ -37,10 +37,10 @@ fn running(stages: bool) -> DomainState {
     s
 }
 fn files(entries: &[(&str, Option<&str>)]) -> Vec<SpecFile> {
-    entries.iter().map(|(path, text)| SpecFile { path: (*path).into(), text: text.map(str::to_owned) }).collect()
+    entries.iter().map(|(path, text)| SpecFile::of((*path).into(), text.map(Into::into))).collect()
 }
 fn proposal(entries: &[(&str, Option<&str>)]) -> Command {
-    let check = specs::check(&Mem::project(), &changes(entries));
+    let check = specs::check(&Mem::project(), &changes(entries), &specs::NoImages);
     Command::ProposeSpecs { task_id: "t".into(), level: SpecLevel::Light, files: files(entries), check }
 }
 fn plan_card() -> Command {
@@ -70,7 +70,7 @@ pub(super) fn begin(s: &mut DomainState, transition: &str) -> Result<CommandOutc
 }
 fn written(s: &DomainState) -> Command {
     let due = specs_of(s).due();
-    Command::RecordSpecsWritten { task_id: "t".into(), written: due.iter().map(|(path, text)| (path.clone(), specs::fingerprint(text.as_deref()))).collect() }
+    Command::RecordSpecsWritten { task_id: "t".into(), written: due.iter().map(|(path, text)| (path.clone(), specs::fingerprint(text.as_ref()))).collect() }
 }
 pub(super) fn told(s: &DomainState) -> Vec<String> {
     s.lifecycle_journal[&TaskId::from("t")].iter().filter_map(|record| match record {
@@ -103,7 +103,7 @@ fn the_author_proposes_the_plans_specs_and_the_plan_card_waits_for_them() {
     let mut s = running(true);
     must(&mut s, node("a"), proposal(&[(PARTIAL_PATH, Some(PARTIAL))]));
     let draft = specs_of(&s).draft.clone().expect("the proposal waits for the plan");
-    assert_eq!(draft.files[PARTIAL_PATH].as_deref(), Some(PARTIAL));
+    assert_eq!(crate::specs_tests::text(&draft.files, PARTIAL_PATH), Some(PARTIAL));
     assert!(draft.check.clean());
     must(&mut s, Actor::System, plan_card());
     let refused = exec(&mut s, node("a"), proposal(&[(PARTIAL_PATH, Some(PARTIAL))])).unwrap_err();
@@ -136,8 +136,8 @@ fn approving_the_plan_approves_that_exact_set_and_accepts_its_decisions_in_the_u
     assert_eq!(specs.draft, None);
     let approved = specs.approved.as_ref().expect("approved with the plan");
     assert_eq!(approved.card, plan_id());
-    assert_eq!(approved.files[PARTIAL_PATH].as_deref(), Some(PARTIAL));
-    assert_eq!(specs::frontmatter(approved.files["docs/decisions/keep-refunds.md"].as_deref().unwrap(), "status").as_deref(), Some("accepted"));
+    assert_eq!(crate::specs_tests::text(&approved.files, PARTIAL_PATH), Some(PARTIAL));
+    assert_eq!(specs::frontmatter(crate::specs_tests::text(&approved.files, "docs/decisions/keep-refunds.md").unwrap(), "status").as_deref(), Some("accepted"));
     let answer = &specs.decisions[0];
     assert_eq!((answer.id.as_str(), answer.verdict, answer.words.as_deref()), ("keep-refunds", DecisionVerdict::Accepted, Some("Fine, keep refunds simple")));
     assert_eq!(specs.due().len(), 2, "both files are owed to the worktree");
@@ -150,7 +150,7 @@ fn the_implementer_starts_only_after_alondra_wrote_the_approved_files() {
     must(&mut s, Actor::System, Command::RecordDecisionSettled { task_id: "t".into(), generation: 1, epoch: 7 });
     assert!(s.specs_due(&"t".into()));
     assert_eq!(begin(&mut s, "stage-1").unwrap_err().code, "specs_unwritten");
-    let stale = Command::RecordSpecsWritten { task_id: "t".into(), written: BTreeMap::from([(PARTIAL_PATH.to_owned(), specs::fingerprint(Some("another text")))]) };
+    let stale = Command::RecordSpecsWritten { task_id: "t".into(), written: BTreeMap::from([(PARTIAL_PATH.to_owned(), specs::fingerprint(Some(&"another text".into())))]) };
     must(&mut s, Actor::System, stale);
     assert!(s.specs_due(&"t".into()), "writing other text than the approved one clears nothing");
     let record = written(&s);
@@ -180,8 +180,8 @@ fn the_user_edits_the_proposal_on_the_card_and_a_removed_decision_is_rejected() 
     let draft = specs_of(&s).draft.clone().unwrap();
     let edit = SpecEdit::RemoveDecision { path: "docs/decisions/keep-refunds.md".into() };
     let (level, edited) = specs::edited(&draft, &edit).unwrap();
-    let revise = |expected| Command::ReviseSpecs { task_id: "t".into(), expected, level, files: edited.iter().map(|(path, text)| SpecFile { path: path.clone(), text: text.clone() }).collect(),
-        check: specs::check(&Mem::project(), &edited) };
+    let revise = |expected| Command::ReviseSpecs { task_id: "t".into(), expected, level, files: edited.iter().map(|(path, text)| SpecFile::of(path.clone(), text.clone())).collect(),
+        check: specs::check(&Mem::project(), &edited, &specs::NoImages) };
     assert_eq!(exec(&mut s, user(), revise(draft.revision)).unwrap_err().code, "plan_not_open", "edits happen on the plan's card");
     must(&mut s, Actor::System, plan_card());
     assert_eq!(exec(&mut s, user(), revise(draft.revision - 1)).unwrap_err().code, "stale_specs");
@@ -201,7 +201,7 @@ fn specs_kept_in_alondra_are_approved_but_never_written_into_the_worktree() {
     let elsewhere = Mem::default().with(specs::SETTINGS_PATH, "format = 1\n\n[specs]\nenabled = true\ncommitted = false\n")
         .with("specs/billing/boundary.toml", super::specs_tests::BOUNDARY).with(super::specs_tests::REFUNDS_PATH, super::specs_tests::REFUNDS);
     let changed = changes(&[(PARTIAL_PATH, Some(PARTIAL))]);
-    let check = specs::check(&elsewhere, &changed);
+    let check = specs::check(&elsewhere, &changed, &specs::NoImages);
     assert_eq!(check.mode, SpecMode::Uncommitted);
     must(&mut s, node("a"), Command::ProposeSpecs { task_id: "t".into(), level: SpecLevel::Light, files: files(&[(PARTIAL_PATH, Some(PARTIAL))]), check });
     must(&mut s, Actor::System, plan_card());
@@ -229,7 +229,7 @@ fn drafted() -> (DomainState, InteractionId, String) {
     assert_eq!(s.tasks[&TaskId::from("t")].stages.role(), Some(ExecutionRole::Author));
     let zero = PARTIAL.replace("    Then the customer receives 10 EUR\n", "    Then the customer receives 10 EUR\n\n  @id:zero\n  Scenario: Nothing to refund\n    Given a paid order of 30 EUR\n    When 0 EUR are refunded\n    Then the refund is refused\n");
     let base = Mem::project().with(PARTIAL_PATH, PARTIAL);
-    let check = specs::check(&base, &changes(&[(PARTIAL_PATH, Some(&zero))]));
+    let check = specs::check(&base, &changes(&[(PARTIAL_PATH, Some(&zero))]), &specs::NoImages);
     assert!(check.clean(), "{}", check.summary());
     must(&mut s, node("c"), Command::ProposeAmendment { task_id: "t".into(), amendment_id: "a1".into(), files: files(&[(PARTIAL_PATH, Some(&zero))]), check });
     let card = specs_of(&s).amendment("a1").and_then(|a| a.card.clone()).unwrap();
@@ -241,7 +241,7 @@ fn the_implementer_asks_for_a_change_the_author_drafts_it_and_the_user_approves_
     let (mut s, card, zero) = drafted();
     let amendment = specs_of(&s).amendment("a1").cloned().unwrap();
     assert_eq!(amendment.state, AmendmentState::Proposed);
-    assert_eq!(amendment.before[PARTIAL_PATH].as_deref(), Some(PARTIAL), "before is the approved text");
+    assert_eq!(crate::specs_tests::text(&amendment.before, PARTIAL_PATH), Some(PARTIAL), "before is the approved text");
     let raised = &s.interactions[&card];
     assert_eq!((raised.system_card.clone(), raised.author.clone(), raised.recipient.clone()), (Some(SystemCard::SpecChange), Author::System, Recipient::User));
     assert_eq!(SpecCard::from_body(&raised.body), Some(SpecCard::Amendment { task: "t".into(), id: "a1".into() }));
@@ -253,7 +253,7 @@ fn the_implementer_asks_for_a_change_the_author_drafts_it_and_the_user_approves_
     assert_eq!(again.code, "spec_change_pending", "one change of the specs at a time, so none undoes another");
     answer(&mut s, card, APPROVE, Some("Yes, refuse zero")).unwrap();
     let specs = specs_of(&s);
-    assert_eq!(specs.approved.as_ref().unwrap().files[PARTIAL_PATH].as_deref(), Some(zero.as_str()));
+    assert_eq!(crate::specs_tests::text(&specs.approved.as_ref().unwrap().files, PARTIAL_PATH), Some(zero.as_str()));
     assert_eq!(specs.amendment("a1").unwrap().words.as_deref(), Some("Yes, refuse zero"));
     assert!(specs.due().contains_key(PARTIAL_PATH), "the approved change is owed to the worktree");
     assert!(!told(&s).iter().any(|text| text.contains("refuse zero")), "the agent hears of it once the file is written, not before");
@@ -269,7 +269,7 @@ fn a_rejected_change_leaves_the_approved_specs_and_the_agent_hears_the_users_wor
     answer(&mut s, card, REJECT, Some("Zero never happens")).unwrap();
     let specs = specs_of(&s);
     assert_eq!(specs.amendment("a1").unwrap().state, AmendmentState::Rejected);
-    assert_eq!(specs.approved.as_ref().unwrap().files[PARTIAL_PATH].as_deref(), Some(PARTIAL), "the spec stays the approved one");
+    assert_eq!(crate::specs_tests::text(&specs.approved.as_ref().unwrap().files, PARTIAL_PATH), Some(PARTIAL), "the spec stays the approved one");
     assert!(specs.due().is_empty());
     assert!(told(&s).iter().any(|text| text.contains("Zero never happens")), "the user's words reach the agent");
 }
@@ -279,9 +279,9 @@ fn a_lasting_decision_waits_on_its_own_card_and_is_kept_with_the_users_words() {
     let mut s = running(false);
     let base = Mem::project().with("docs/decisions/old.md", &decision("old", "accepted"));
     let fields = DecisionFields { id: "new".into(), title: "A new rule".into(), context: "c".into(), decision: "d".into(), consequences: "e".into(), confirmation: "f".into(), supersedes: vec!["old".into()] };
-    let dirs = specs::check(&base, &SpecFiles::new()).dirs;
+    let dirs = specs::check(&base, &SpecFiles::new(), &specs::NoImages).dirs;
     let files = specs::decision_files(&fields, "2026-11-26", &dirs, &base).unwrap();
-    let check = specs::check(&base, &files);
+    let check = specs::check(&base, &files, &specs::NoImages);
     must(&mut s, node("a"), Command::ProposeDecision { task_id: "t".into(), decision: fields.clone(), files: files.clone(), check: check.clone() });
     let card = specs_of(&s).proposed_decisions[0].card.clone();
     assert_eq!(exec(&mut s, node("a"), Command::ProposeDecision { task_id: "t".into(), decision: fields, files, check }).unwrap_err().code, "decision_pending");
@@ -289,8 +289,8 @@ fn a_lasting_decision_waits_on_its_own_card_and_is_kept_with_the_users_words() {
     let specs = specs_of(&s);
     assert!(specs.proposed_decisions.is_empty());
     let approved = specs.approved.as_ref().expect("an accepted decision is approved specs of the task");
-    assert_eq!(specs::frontmatter(approved.files["docs/decisions/new.md"].as_deref().unwrap(), "status").as_deref(), Some("accepted"));
-    assert_eq!(specs::frontmatter(approved.files["docs/decisions/old.md"].as_deref().unwrap(), "status").as_deref(), Some("superseded"));
+    assert_eq!(specs::frontmatter(crate::specs_tests::text(&approved.files, "docs/decisions/new.md").unwrap(), "status").as_deref(), Some("accepted"));
+    assert_eq!(specs::frontmatter(crate::specs_tests::text(&approved.files, "docs/decisions/old.md").unwrap(), "status").as_deref(), Some("superseded"));
     assert_eq!(specs.decisions[0].words.as_deref(), Some("Yes, for every new project"));
     assert_eq!(specs.due().len(), 2);
 }
@@ -300,9 +300,9 @@ fn a_rejected_lasting_decision_writes_nothing() {
     let mut s = running(false);
     let base = Mem::project();
     let fields = DecisionFields { id: "rule".into(), title: "A rule".into(), context: "c".into(), decision: "d".into(), consequences: "e".into(), confirmation: "f".into(), supersedes: vec![] };
-    let dirs = specs::check(&base, &SpecFiles::new()).dirs;
+    let dirs = specs::check(&base, &SpecFiles::new(), &specs::NoImages).dirs;
     let files = specs::decision_files(&fields, "2026-11-26", &dirs, &base).unwrap();
-    let check = specs::check(&base, &files);
+    let check = specs::check(&base, &files, &specs::NoImages);
     must(&mut s, node("a"), Command::ProposeDecision { task_id: "t".into(), decision: fields, files, check });
     let card = specs_of(&s).proposed_decisions[0].card.clone();
     answer(&mut s, card, REJECT, None).unwrap();

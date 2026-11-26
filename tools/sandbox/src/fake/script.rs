@@ -61,6 +61,8 @@ fn yes() -> bool {
 pub enum Step {
     /// Writes `file` in the worktree and commits everything.
     Commit { file: String, text: String },
+    /// Writes a synthetic PNG of that size at `file` and commits everything.
+    Capture { file: String, width: u32, height: u32 },
     /// Writes `file` without committing it.
     Dirty { file: String },
     Push,

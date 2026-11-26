@@ -56,6 +56,28 @@ pub struct ProposedFile {
     pub path: String,
     #[serde(default)]
     pub text: Option<String>,
+    /// A mockup: a file of the task's worktree Alondra reads and keeps.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Instead of text, a synthetic PNG of this width and height.
+    #[serde(default)]
+    pub png: Option<[u32; 2]>,
+}
+
+impl ProposedFile {
+    /// What the file holds: its text, or its synthetic PNG.
+    pub fn bytes(&self) -> Option<Vec<u8>> {
+        self.png.map(synthetic_png).or_else(|| self.text.as_ref().map(|text| text.clone().into_bytes()))
+    }
+}
+
+/// The signature and header of a PNG of that size: all a mockup or a capture is read by.
+pub fn synthetic_png([width, height]: [u32; 2]) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    bytes.extend(width.to_be_bytes());
+    bytes.extend(height.to_be_bytes());
+    bytes.extend([8, 6, 0, 0, 0]);
+    bytes
 }
 
 impl Step {
@@ -225,7 +247,10 @@ pub enum Step {
     /// With `base`, those files are committed on the repository's `main` before the worktree
     /// branches from it.
     Worktree { task: String, #[serde(default)] files: Vec<String>, #[serde(default)] outside_link: Option<String>, #[serde(default)] from: Option<String>,
-        #[serde(default)] base: Vec<HomeFile> },
+        #[serde(default)] base: Vec<HomeFile>,
+        /// Files written into the worktree that no commit holds, such as the image a mockup is
+        /// proposed from.
+        #[serde(default)] images: Vec<ProposedFile> },
     /// The node of `task` proposes the specs of its plan, as `propose_specs` does. With `refused`,
     /// the daemon must turn it down with that code.
     ProposeSpecs { task: String, level: String, files: Vec<ProposedFile>, #[serde(default)] refused: Option<String> },
@@ -238,7 +263,7 @@ pub enum Step {
     /// does; with `refused` the daemon must turn it down with that code.
     ReadyForValidation { task: String, #[serde(default)] refused: Option<String> },
     /// The validator of `task` records what one check found, as `record_validation` does.
-    RecordValidation { task: String, subject: String, check: String, verdict: String, #[serde(default)] refused: Option<String> },
+    RecordValidation { task: String, subject: String, check: String, verdict: String, #[serde(default)] evidence: Vec<String>, refused: Option<String> },
     /// The validator of `task` ends its round without delivering, as `end_validation` does.
     EndValidation { task: String, findings: String },
     /// The node of `task` writes, for everything the spec engine lists as not validated in its
@@ -342,7 +367,7 @@ pub enum Expect {
     /// or `none` while it waits on the user's card.
     Answered { task: String, request: String, answer: String },
     /// The file `path` of the worktree of `task` holds `text`, or, without `text`, does not exist.
-    WorktreeFile { task: String, path: String, #[serde(default)] text: Option<String> },
+    WorktreeFile { task: String, path: String, #[serde(default)] text: Option<String>, #[serde(default)] png: Option<[u32; 2]> },
     /// How many SDK hosts the daemon started for `task`, how many of them run now, and how many
     /// Claude sessions they held between them.
     Hosts { task: String, started: usize, running: usize, sessions: usize },

@@ -18,8 +18,11 @@ pub const MAX_SPEC_REASON: usize = 4000;
 /// The project's settings file, at the root of its repository.
 pub const SETTINGS_PATH: &str = "alondra.toml";
 
-/// Files a change writes, by path relative to the repository: the new text, or `None` to remove it.
-pub type SpecFiles = BTreeMap<String, Option<String>>;
+/// Files a change writes, by path relative to the repository: what each holds, or `None` to remove
+/// it.
+pub type SpecFiles = BTreeMap<String, Option<SpecContent>>;
+
+pub use crate::spec_parts::{citations, content_of, decision_titles, KeptImages, NoImages, SpecContent, StoredImage, MAX_MOCKUP_BYTES};
 
 /// How much design a change of behaviour gets: no new specs, a light round, or the full one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -194,9 +197,19 @@ pub struct SpecCheck {
     pub problems: Vec<SpecProblem>,
     /// What each changed file holds in the worktree now: `None` when it does not exist.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub before: BTreeMap<String, Option<String>>,
+    pub before: SpecFiles,
     #[serde(default)]
     pub dirs: SpecDirs,
+    /// Every diagram and mockup the changed specs cite, as the worktree holds it with the change
+    /// over it, by path from the root.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parts: BTreeMap<String, SpecContent>,
+    /// The cited parts a spec the change does not touch cites too: an edit never removes them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub shared: BTreeSet<String>,
+    /// The title of each decision the changed specs cite, by identifier.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub decisions: BTreeMap<String, String>,
 }
 
 impl SpecCheck {
@@ -219,9 +232,31 @@ impl SpecCheck {
 #[serde(deny_unknown_fields)]
 pub struct SpecFile {
     pub path: String,
-    /// The whole new text; absent to remove the file.
+    /// The whole new text; absent, with no `source`, to remove the file.
     #[serde(default)]
     pub text: Option<String>,
+    /// For a mockup: a PNG or JPEG file of the task's worktree Alondra reads and keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The mockup Alondra keeps. Alondra fills it from `source`; what an agent sends is replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mockup: Option<StoredImage>,
+}
+
+impl SpecFile {
+    pub fn content(&self) -> Option<SpecContent> {
+        self.mockup.clone().map(SpecContent::Mockup).or_else(|| self.text.clone().map(SpecContent::Text))
+    }
+
+    /// The file of a change as a command carries it.
+    pub fn of(path: String, content: Option<SpecContent>) -> Self {
+        let (text, mockup) = match content {
+            Some(SpecContent::Text(text)) => (Some(text), None),
+            Some(SpecContent::Mockup(image)) => (None, Some(image)),
+            None => (None, None),
+        };
+        Self { path, text, source: None, mockup }
+    }
 }
 
 /// The author's proposal for the plan, as the user edits it on the plan's card.
@@ -247,9 +282,12 @@ pub struct ApprovedSpecs {
     pub files: SpecFiles,
     /// What each approved file held in the worktree before.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub before: BTreeMap<String, Option<String>>,
+    pub before: SpecFiles,
     #[serde(default)]
     pub dirs: SpecDirs,
+    /// The cited diagrams and mockups of the approved specs, as approved.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parts: BTreeMap<String, SpecContent>,
     /// The approved files Alondra has still to write into the worktree.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub unwritten: BTreeSet<String>,
@@ -271,7 +309,9 @@ impl ApprovedSpecs {
             .map(|(path, text)| (path.clone(), text.clone())).collect()
     }
 
-    pub fn merge(&mut self, files: &SpecFiles, before: &BTreeMap<String, Option<String>>) {
+    pub fn merge(&mut self, files: &SpecFiles, check: &SpecCheck) {
+        self.parts.extend(check.parts.iter().map(|(path, part)| (path.clone(), part.clone())));
+        let before = &check.before;
         for (path, text) in files {
             self.before.entry(path.clone()).or_insert_with(|| before.get(path).cloned().flatten());
             self.files.insert(path.clone(), text.clone());
@@ -300,9 +340,12 @@ pub struct SpecAmendment {
     pub state: AmendmentState,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: SpecFiles,
-    /// What each file it changes held before: the approved text, else the worktree's.
+    /// What each file it changes held before: the approved content, else the worktree's.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub before: BTreeMap<String, Option<String>>,
+    pub before: SpecFiles,
+    /// What Alondra read of the change: its parts and directories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<Box<SpecCheck>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card: Option<InteractionId>,
     /// What the user wrote when deciding, word for word.
@@ -319,7 +362,7 @@ pub struct ProposedDecision {
     /// The decision's file and the ones of the decisions it supersedes, as written once accepted.
     pub files: SpecFiles,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub before: BTreeMap<String, Option<String>>,
+    pub before: SpecFiles,
     #[serde(default)]
     pub dirs: SpecDirs,
     pub mode: SpecMode,
@@ -384,12 +427,11 @@ impl TaskSpecs {
         self.approved.as_ref().map(ApprovedSpecs::due).unwrap_or_default()
     }
 
-    pub fn approve(&mut self, card: &InteractionId, revision: Revision, level: SpecLevel, mode: SpecMode, dirs: &SpecDirs,
-        files: &SpecFiles, before: &BTreeMap<String, Option<String>>) {
+    pub fn approve(&mut self, card: &InteractionId, revision: Revision, level: SpecLevel, files: &SpecFiles, check: &SpecCheck) {
         let approved = self.approved.get_or_insert_with(|| ApprovedSpecs {
-            card: card.clone(), revision, level, mode, files: SpecFiles::new(), before: BTreeMap::new(), dirs: dirs.clone(), unwritten: BTreeSet::new(),
+            card: card.clone(), revision, level, mode: check.mode, files: SpecFiles::new(), before: BTreeMap::new(), dirs: check.dirs.clone(), parts: BTreeMap::new(), unwritten: BTreeSet::new(),
         });
-        approved.merge(files, before);
+        approved.merge(files, check);
     }
 
     pub fn answered(&mut self, answer: DecisionAnswer) {
@@ -412,7 +454,7 @@ impl TaskSpecs {
     pub fn written(&mut self, written: &BTreeMap<String, String>) -> Vec<String> {
         let Some(approved) = self.approved.as_mut() else { return vec![] };
         let done: Vec<String> = approved.unwritten.iter()
-            .filter(|path| written.get(*path).is_some_and(|print| approved.files.get(*path).is_some_and(|text| *print == fingerprint(text.as_deref()))))
+            .filter(|path| written.get(*path).is_some_and(|print| approved.files.get(*path).is_some_and(|content| *print == fingerprint(content.as_ref()))))
             .cloned().collect();
         for path in &done {
             approved.unwritten.remove(path);
@@ -421,10 +463,19 @@ impl TaskSpecs {
     }
 }
 
-/// `sha256:` and the hexadecimal SHA-256 of a file's text; the same for any absent file.
-pub fn fingerprint(text: Option<&str>) -> String {
-    match text {
-        Some(text) => format!("sha256:{:x}", Sha256::digest(text.as_bytes())),
+/// The fingerprint of what a file holds; the same for any absent file.
+pub fn fingerprint(content: Option<&SpecContent>) -> String {
+    match content {
+        Some(SpecContent::Text(text)) => fingerprint_of(Some(text.as_bytes())),
+        Some(SpecContent::Mockup(image)) => image.fingerprint.clone(),
+        None => fingerprint_of(None),
+    }
+}
+
+/// `sha256:` and the hexadecimal SHA-256 of a file's bytes; the same for any absent file.
+pub fn fingerprint_of(bytes: Option<&[u8]>) -> String {
+    match bytes {
+        Some(bytes) => format!("sha256:{:x}", Sha256::digest(bytes)),
         None => "absent".into(),
     }
 }
@@ -459,7 +510,13 @@ pub fn proposal(level: SpecLevel, files: &[SpecFile]) -> Result<SpecFiles, (Stri
         if file.text.as_ref().is_some_and(|text| text.len() > MAX_SPEC_FILE_BYTES) {
             return Err((format!("files[{index}].text"), format!("{} is larger than {MAX_SPEC_FILE_BYTES} bytes", file.path)));
         }
-        if out.insert(file.path.clone(), file.text.clone()).is_some() {
+        if file.source.is_some() && file.text.is_some() {
+            return Err((format!("files[{index}].source"), format!("{} has both text and source: send one", file.path)));
+        }
+        if file.source.is_some() && file.mockup.is_none() {
+            return Err((format!("files[{index}].source"), format!("Alondra could not read the mockup of {}", file.path)));
+        }
+        if out.insert(file.path.clone(), file.content()).is_some() {
             return Err((format!("files[{index}].path"), format!("{} appears twice", file.path)));
         }
     }
@@ -469,22 +526,27 @@ pub fn proposal(level: SpecLevel, files: &[SpecFile]) -> Result<SpecFiles, (Stri
     Ok(out)
 }
 
-/// The repository's files with a set of changes over them.
+/// The repository's files with a set of changes over them; the bytes of a mockup come from the
+/// copies Alondra keeps.
 pub struct Overlay<'a> {
     pub base: &'a dyn Files,
     pub changes: &'a SpecFiles,
+    pub images: &'a dyn KeptImages,
 }
 
 impl Files for Overlay<'_> {
     fn paths(&self) -> Vec<String> {
         let mut paths: BTreeSet<String> = self.base.paths().into_iter().filter(|path| !matches!(self.changes.get(path), Some(None))).collect();
-        paths.extend(self.changes.iter().filter(|(_, text)| text.is_some()).map(|(path, _)| path.clone()));
+        paths.extend(self.changes.iter().filter(|(_, content)| content.is_some()).map(|(path, _)| path.clone()));
         paths.into_iter().collect()
     }
 
     fn read(&self, path: &str) -> Option<Vec<u8>> {
         match self.changes.get(path) {
-            Some(text) => text.as_ref().map(|text| text.clone().into_bytes()),
+            Some(content) => match content.as_ref()? {
+                SpecContent::Text(text) => Some(text.clone().into_bytes()),
+                SpecContent::Mockup(image) => self.images.read(image),
+            },
             None => self.base.read(path),
         }
     }
@@ -505,28 +567,28 @@ fn settings_of(files: &dyn Files) -> Result<engine::Settings, Vec<SpecProblem>> 
 
 /// The decisions a set of changes proposes, as they are once the user accepts them.
 pub fn accepted(files: &SpecFiles, dirs: &SpecDirs) -> SpecFiles {
-    files.iter().map(|(path, text)| {
-        let text = match (dirs.kind(path), text) {
-            (Some(SpecFileKind::Decision), Some(text)) if frontmatter(text, "status").as_deref() == Some("proposed") =>
-                Some(set_frontmatter(text, "status", "accepted")),
-            _ => text.clone(),
+    files.iter().map(|(path, content)| {
+        let content = match (dirs.kind(path), content) {
+            (Some(SpecFileKind::Decision), Some(SpecContent::Text(text))) if frontmatter(text, "status").as_deref() == Some("proposed") =>
+                Some(SpecContent::Text(set_frontmatter(text, "status", "accepted"))),
+            _ => content.clone(),
         };
-        (path.clone(), text)
+        (path.clone(), content)
     }).collect()
 }
 
 /// What the engine reads of the worktree `base` with `changes` over it. Proposed decisions are
 /// read as accepted, as they are once approved, so a spec may cite one of its own proposal.
-pub fn check(base: &dyn Files, changes: &SpecFiles) -> SpecCheck {
-    let before: BTreeMap<String, Option<String>> = changes.keys().map(|path| (path.clone(), text_of(base, path))).collect();
-    let overlay = Overlay { base, changes };
+pub fn check(base: &dyn Files, changes: &SpecFiles, images: &dyn KeptImages) -> SpecCheck {
+    let before: SpecFiles = changes.keys().map(|path| (path.clone(), content_of(base, path, images))).collect();
+    let overlay = Overlay { base, changes, images };
     let settings = match settings_of(&overlay) {
         Ok(settings) => settings,
-        Err(problems) => return SpecCheck { mode: SpecMode::Unreadable, problems, before, dirs: SpecDirs::default() },
+        Err(problems) => return SpecCheck { mode: SpecMode::Unreadable, problems, before, ..SpecCheck::default() },
     };
     let dirs = SpecDirs::of(&settings);
     if !settings.specs.enabled {
-        return SpecCheck { mode: SpecMode::Off, problems: vec![], before, dirs };
+        return SpecCheck { mode: SpecMode::Off, before, dirs, ..SpecCheck::default() };
     }
     let mode = if settings.specs.committed { SpecMode::Committed } else { SpecMode::Uncommitted };
     let mut problems: Vec<SpecProblem> = changes.keys().filter_map(|path| {
@@ -543,13 +605,15 @@ pub fn check(base: &dyn Files, changes: &SpecFiles) -> SpecCheck {
         }
     }).collect();
     let promoted = accepted(changes, &dirs);
-    let read = Overlay { base, changes: &promoted };
+    let read = Overlay { base, changes: &promoted, images };
     if let Err(found) = engine::load(&read) {
         problems.extend(found.iter().map(SpecProblem::from_engine));
     }
     problems.sort_by(|a, b| (&a.path, a.line, &a.code).cmp(&(&b.path, b.line, &b.code)));
     problems.dedup();
-    SpecCheck { mode, problems, before, dirs }
+    let (parts, shared) = crate::spec_parts::cited_parts(&read, base, changes, &dirs, images);
+    let decisions = crate::spec_parts::decision_titles(&read, changes.keys().filter(|path| dirs.kind(path) == Some(SpecFileKind::Spec)).map(String::as_str), &dirs);
+    SpecCheck { mode, problems, before, dirs, parts, shared, decisions }
 }
 
 /// Why the settings file `bytes` (`None` when there is none) cannot be read, if it cannot.
@@ -596,15 +660,15 @@ pub fn drift(head: &dyn Files, base: &dyn Files, allowed: &SpecFiles) -> Result<
     paths.extend(allowed.keys().cloned());
     let mut found = vec![];
     for path in paths {
-        let now = text_of(head, &path);
+        let now = head.read(&path);
         match allowed.get(&path) {
             Some(approved) => {
-                if now != *approved {
+                if fingerprint_of(now.as_deref()) != fingerprint(approved.as_ref()) {
                     found.push(SpecDrift { path, approved: true });
                 }
             }
             None => {
-                if now != text_of(base, &path) {
+                if now != base.read(&path) {
                     found.push(SpecDrift { path, approved: false });
                 }
             }
@@ -738,14 +802,14 @@ pub fn decision_files(fields: &DecisionFields, date: &str, dirs: &SpecDirs, base
         return Err(("decision.id".into(), problem.into()));
     }
     let mut files = SpecFiles::new();
-    files.insert(path, Some(decision_text(fields, "proposed", date)));
+    files.insert(path, Some(SpecContent::Text(decision_text(fields, "proposed", date))));
     for old in &fields.supersedes {
         let Some(old_path) = dirs.decision_path(old) else { continue };
         let Some(text) = text_of(base, &old_path) else {
             return Err(("decision.supersedes".into(), format!("There is no decision {old} at {old_path} to supersede")));
         };
         let text = set_frontmatter(&set_frontmatter(&text, "status", "superseded"), "superseded_by", &fields.id);
-        files.insert(old_path, Some(text));
+        files.insert(old_path, Some(SpecContent::Text(text)));
     }
     Ok(files)
 }
@@ -768,6 +832,12 @@ pub enum SpecEdit {
     /// A new scenario when `scenario` is `None`; else the scenario of that identifier.
     PutScenario { path: String, scenario: Option<String>, id: String, title: String, steps: String, judged: bool },
     RemoveScenario { path: String, scenario: String },
+    /// A diagram of the spec at `path`, or of one of its scenarios: a new one when `part` is
+    /// `None`, else the one that file name cites.
+    PutDiagram { path: String, scenario: Option<String>, part: Option<String>, name: String, code: String },
+    /// A mockup, added or put in place of the one `part` names.
+    PutMockup { path: String, scenario: Option<String>, part: Option<String>, name: String, image: StoredImage },
+    RemovePart { path: String, scenario: Option<String>, kind: engine::PartKind, part: String },
     PutDecision { path: Option<String>, fields: DecisionFields, date: String },
     RemoveDecision { path: String },
 }
@@ -785,7 +855,7 @@ fn edit_error(field: &str, message: impl Into<String>) -> SpecEditError {
 
 fn draft_text<'a>(draft: &'a SpecDraft, path: &str) -> Result<&'a str, SpecEditError> {
     match draft.files.get(path) {
-        Some(Some(text)) => Ok(text),
+        Some(Some(SpecContent::Text(text))) => Ok(text),
         _ => Err(edit_error("path", format!("{path} is not a file of this proposal"))),
     }
 }
@@ -803,6 +873,34 @@ pub fn scenario_body(scenario: &engine::Scenario) -> String {
     let mut lines = text.lines().skip_while(|line| !line.trim_start().starts_with("Scenario")).skip(1);
     let body: Vec<String> = lines.by_ref().map(|line| line.strip_prefix("    ").unwrap_or(line.trim_start()).to_owned()).collect();
     body.join("\n").trim_end().to_owned()
+}
+
+/// What a `boundary.toml` says, as data: its lists and its suites, in the order they are read.
+pub fn boundary_facts(text: &str) -> Vec<(&'static str, Vec<String>)> {
+    let Ok(table) = toml::from_str::<toml::Table>(text) else { return vec![] };
+    let list = |key: &str| table.get(key).and_then(toml::Value::as_array)
+        .map(|values| values.iter().filter_map(toml::Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
+    let mut facts: Vec<(&'static str, Vec<String>)> = ["owns", "regenerates", "inputs", "depends_on", "data"].into_iter()
+        .map(|key| (key, list(key))).collect();
+    facts.push(("surface", table.get("surface").and_then(toml::Value::as_str).map(str::to_owned).into_iter().collect()));
+    let suites = table.get("suite").and_then(toml::Value::as_array).map(|suites| suites.iter().filter_map(|suite| {
+        let id = suite.get("id")?.as_str()?;
+        let run = suite.get("run")?.as_array()?.iter().filter_map(toml::Value::as_str).collect::<Vec<_>>().join(" ");
+        Some(format!("{id}: {run}"))
+    }).collect()).unwrap_or_default();
+    facts.push(("suites", suites));
+    facts.retain(|(_, values)| !values.is_empty());
+    facts
+}
+
+/// The steps every scenario of a spec starts with, as text.
+pub fn background_body(spec: &engine::Spec) -> String {
+    spec.background.iter().map(|step| {
+        let mut lines = vec![format!("{} {}", step.keyword.as_str(), step.text)];
+        lines.extend(step.table.iter().map(|row| row.join(" | ")));
+        lines.extend(step.doc.clone());
+        lines.join("\n")
+    }).collect::<Vec<_>>().join("\n")
 }
 
 fn parse_scenario(id: &str, title: &str, steps: &str) -> Result<engine::Scenario, SpecEditError> {
@@ -839,6 +937,9 @@ pub fn edited(draft: &SpecDraft, edit: &SpecEdit) -> Result<(SpecLevel, SpecFile
     let removes = |files: &mut SpecFiles, path: &str| {
         files.remove(path);
     };
+    let put = |files: &mut SpecFiles, path: &str, text: String| {
+        files.insert(path.to_owned(), Some(SpecContent::Text(text)));
+    };
     match edit {
         SpecEdit::Level(new) => level = *new,
         SpecEdit::PutSpec { path, component, id, title, explanation } => {
@@ -870,11 +971,12 @@ pub fn edited(draft: &SpecDraft, edit: &SpecEdit) -> Result<(SpecLevel, SpecFile
             };
             let text = engine::write_spec(&spec);
             engine::read_spec(&path, text.as_bytes()).map_err(|problems| edit_error("explanation", problems.first().map_or_else(String::new, |p| p.message.clone())))?;
-            files.insert(path, Some(text));
+            put(&mut files, &path, text);
         }
         SpecEdit::RemoveSpec { path } => {
-            draft_text(draft, path)?;
+            let spec = read_draft_spec(draft, path)?;
             removes(&mut files, path);
+            crate::spec_parts::withdraw(&mut files, draft, path, &spec);
         }
         SpecEdit::PutScenario { path, scenario, id, title, steps, judged } => {
             if let Some(problem) = identifier_problem(id) {
@@ -910,16 +1012,46 @@ pub fn edited(draft: &SpecDraft, edit: &SpecEdit) -> Result<(SpecLevel, SpecFile
             }
             let text = engine::write_spec(&spec);
             engine::read_spec(path, text.as_bytes()).map_err(|problems| edit_error("steps", problems.first().map_or_else(String::new, |p| p.message.clone())))?;
-            files.insert(path.clone(), Some(text));
+            put(&mut files, path, text);
         }
         SpecEdit::RemoveScenario { path, scenario } => {
             let mut spec = read_draft_spec(draft, path)?;
-            let before = spec.scenarios.len();
+            let was = spec.clone();
             spec.scenarios.retain(|known| known.id != *scenario);
-            if spec.scenarios.len() == before {
+            if spec.scenarios.len() == was.scenarios.len() {
                 return Err(edit_error("scenario", format!("The spec has no scenario {scenario}")));
             }
-            files.insert(path.clone(), Some(engine::write_spec(&spec)));
+            put(&mut files, path, engine::write_spec(&spec));
+            crate::spec_parts::drop_uncited(&mut files, draft, path, &was, &spec);
+        }
+        SpecEdit::PutDiagram { path, scenario, part, name, code } => {
+            let was = read_draft_spec(draft, path)?;
+            let name = crate::spec_parts::file_name(name, engine::PartKind::Diagram, None).map_err(|why| edit_error("name", why))?;
+            let mut text = code.replace("\r\n", "\n");
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+            let full = engine::part_path(path, &name);
+            engine::read_part(&full, engine::PartKind::Diagram, text.as_bytes()).map_err(|problem| edit_error("code", problem.message))?;
+            crate::spec_parts::put(&mut files, draft, path, &was, crate::spec_parts::Put {
+                scenario: scenario.as_deref(), replaces: part.as_deref(), kind: engine::PartKind::Diagram, name: &name, content: SpecContent::Text(text),
+            })?;
+        }
+        SpecEdit::PutMockup { path, scenario, part, name, image } => {
+            let was = read_draft_spec(draft, path)?;
+            let name = crate::spec_parts::file_name(name, engine::PartKind::Mockup, Some(image)).map_err(|why| edit_error("name", why))?;
+            crate::spec_parts::put(&mut files, draft, path, &was, crate::spec_parts::Put {
+                scenario: scenario.as_deref(), replaces: part.as_deref(), kind: engine::PartKind::Mockup, name: &name, content: SpecContent::Mockup(image.clone()),
+            })?;
+        }
+        SpecEdit::RemovePart { path, scenario, kind, part } => {
+            let was = read_draft_spec(draft, path)?;
+            let mut spec = was.clone();
+            if !crate::spec_parts::uncite(&mut spec, scenario.as_deref(), *kind, part) {
+                return Err(edit_error("name", format!("The spec no longer cites {part}")));
+            }
+            put(&mut files, path, engine::write_spec(&spec));
+            crate::spec_parts::drop_uncited(&mut files, draft, path, &was, &spec);
         }
         SpecEdit::PutDecision { path, fields, date } => {
             if let Some(problem) = identifier_problem(&fields.id) {
@@ -944,7 +1076,7 @@ pub fn edited(draft: &SpecDraft, edit: &SpecEdit) -> Result<(SpecLevel, SpecFile
                     }
                 }
             }
-            files.insert(target, Some(decision_text(fields, "proposed", date)));
+            put(&mut files, &target, decision_text(fields, "proposed", date));
         }
         SpecEdit::RemoveDecision { path } => {
             draft_text(draft, path)?;
@@ -960,7 +1092,7 @@ pub fn edited(draft: &SpecDraft, edit: &SpecEdit) -> Result<(SpecLevel, SpecFile
 /// The decisions a proposal holds, by identifier, read from their files.
 pub fn draft_decisions(files: &SpecFiles, dirs: &SpecDirs) -> Vec<(String, DecisionFields)> {
     files.iter().filter(|(path, _)| dirs.kind(path) == Some(SpecFileKind::Decision))
-        .filter_map(|(path, text)| text.as_ref().map(|text| (path.clone(), decision_fields(text))))
+        .filter_map(|(path, content)| content.as_ref()?.text().map(|text| (path.clone(), decision_fields(text))))
         .collect()
 }
 
@@ -991,7 +1123,7 @@ pub fn date_of(millis: i64) -> String {
 
 /// The short name an edit screen gives a file or a scenario of a proposal.
 pub fn handle(text: &str) -> String {
-    fingerprint(Some(text)).chars().skip("sha256:".len()).take(12).collect()
+    fingerprint_of(Some(text.as_bytes())).chars().skip("sha256:".len()).take(12).collect()
 }
 
 pub fn scenario_handle(path: &str, id: &str) -> String {
@@ -1003,9 +1135,32 @@ pub fn file_of<'a>(draft: &'a SpecDraft, h: &str) -> Option<&'a str> {
     draft.files.keys().find(|path| handle(path) == h).map(String::as_str)
 }
 
+/// What the proposal holds at `path`, or what the project does for a part it does not change.
+pub fn part_content<'a>(draft: &'a SpecDraft, path: &str) -> Option<&'a SpecContent> {
+    match draft.files.get(path) {
+        Some(content) => content.as_ref(),
+        None => draft.check.parts.get(path),
+    }
+}
+
+/// The file name of the part with handle `h` that a spec, or one of its scenarios, cites.
+pub fn part_of(draft: &SpecDraft, path: &str, scenario: Option<&str>, kind: engine::PartKind, h: &str) -> Option<String> {
+    let text = draft.files.get(path)?.as_ref()?.text()?;
+    let spec = engine::read_spec(path, text.as_bytes()).ok()?;
+    let (diagrams, mockups) = match scenario {
+        None => (spec.diagrams, spec.mockups),
+        Some(id) => spec.scenarios.into_iter().find(|known| known.id == id).map(|known| (known.diagrams, known.mockups))?,
+    };
+    let cited = match kind {
+        engine::PartKind::Diagram => diagrams,
+        engine::PartKind::Mockup => mockups,
+    };
+    cited.into_iter().find(|file| handle(file) == h)
+}
+
 /// The path and identifier of the scenario of `draft` with handle `h`.
 pub fn scenario_of(draft: &SpecDraft, h: &str) -> Option<(String, String)> {
-    draft.files.iter().filter_map(|(path, text)| Some((path, text.as_ref()?)))
+    draft.files.iter().filter_map(|(path, content)| Some((path, content.as_ref()?.text()?)))
         .filter_map(|(path, text)| engine::read_spec(path, text.as_bytes()).ok().map(|spec| (path, spec)))
         .find_map(|(path, spec)| spec.scenarios.iter().find(|scenario| scenario_handle(path, &scenario.id) == h).map(|scenario| (path.clone(), scenario.id.clone())))
 }

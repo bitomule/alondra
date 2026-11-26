@@ -214,14 +214,30 @@ struct References {
 impl References {
     fn of(state: &DomainState) -> Self {
         let mut cards: BTreeMap<String, Vec<InteractionId>> = BTreeMap::new();
+        let mut open_task_specs = BTreeSet::new();
         for (id, card) in &state.interactions {
             let Ok(text) = serde_json::to_string(card) else { continue };
             for key in mentioned(&text) {
                 cards.entry(key).or_default().push(id.clone());
             }
         }
+        for task in state.tasks.values().filter(|task| !task.specs.is_default() || !task.validation.is_default()) {
+            let Ok(text) = serde_json::to_string(&(&task.specs, &task.validation)) else { continue };
+            let held: Vec<InteractionId> = task.specs.approved.iter().map(|approved| approved.card.clone())
+                .chain(task.specs.amendments.iter().filter_map(|amendment| amendment.card.clone()))
+                .chain(task.specs.proposed_decisions.iter().map(|proposed| proposed.card.clone()))
+                .chain(task.validation.delivered.iter().map(|delivered| delivered.delivery.clone()))
+                .collect();
+            for key in mentioned(&text) {
+                if !task.state.terminal() {
+                    open_task_specs.insert(key);
+                } else {
+                    cards.entry(key).or_default().extend(held.iter().cloned());
+                }
+            }
+        }
         let documents = serde_json::to_string(&state.document_revisions).map(|text| mentioned(&text)).unwrap_or_default();
-        let mut open_work = BTreeSet::new();
+        let mut open_work = open_task_specs;
         for (task, journal) in state.tasks.values().filter(|task| !task.state.terminal()).filter_map(|task| Some((task, state.lifecycle_journal.get(&task.id)?))) {
             let Ok(text) = serde_json::to_string(&(journal, &task.pending_user_inputs)) else { continue };
             open_work.extend(mentioned(&text));
@@ -298,6 +314,32 @@ mod tests {
         assert!(!entry.remove, "{entry:?}");
         state.tasks.get_mut(&task).unwrap().state = alondra_domain_model::TaskState::Done;
         assert!(sweep(&home, &state, now).entries.iter().any(|entry| entry.path == "uploads/u-1" && entry.remove), "it goes once its task ends");
+    }
+
+    #[test]
+    fn a_mockup_the_specs_of_an_open_task_record_stays_after_thirty_days() {
+        let home = Directory::new();
+        std::fs::create_dir_all(home.join("files/images")).unwrap();
+        let name = format!("{}.png", "a".repeat(64));
+        let copy = home.join("files/images").join(&name);
+        std::fs::write(&copy, "png").unwrap();
+        let now = SystemTime::now();
+        aged(&copy, 31, now);
+        let mut state = DomainState::new("epoch");
+        let task = alondra_domain_model::TaskId::from("t");
+        let mut open: alondra_domain_model::Task = serde_json::from_value(serde_json::json!({
+            "id":"t","request_id":"r","agent_id":null,"title":"T","state":"running","revision":1,"started":true,"review_prs":false,
+            "final_presentation":null,"pr_id":null,"later_prs":[],"dependencies":[],"documents":{},"archived":false,
+        })).unwrap();
+        let mockup = alondra_domain_model::StoredImage { file: format!("files/images/{name}"), fingerprint: format!("sha256:{}", "a".repeat(64)), bytes: 3, width: 1, height: 1 };
+        open.specs.draft = Some(alondra_domain_model::SpecDraft { level: alondra_domain_model::SpecLevel::Light,
+            files: [("specs/billing/sheet.png".to_owned(), Some(alondra_domain_model::SpecContent::Mockup(mockup)))].into(),
+            check: Default::default(), revision: 1, edited: false });
+        state.tasks.insert(task.clone(), open);
+        let key = format!("images/{name}");
+        assert!(sweep(&home, &state, now).entries.iter().any(|entry| entry.path == key && !entry.remove), "the plan still needs it");
+        state.tasks.get_mut(&task).unwrap().state = alondra_domain_model::TaskState::Done;
+        assert!(sweep(&home, &state, now).entries.iter().any(|entry| entry.path == key && entry.remove), "it goes once its task ends");
     }
 
     #[test]

@@ -2,14 +2,13 @@
 //! proposed on its own. Their body names what they are about, so every client words them in its
 //! own language from the task's record.
 
-use crate::specs::{self, SpecDirs, SpecFileKind, SpecFiles};
+use crate::specs::{self, SpecContent, SpecDirs, SpecFileKind, SpecFiles};
 use crate::validation::{TaskValidation, ValidationState};
 use crate::{CardKind, CardSpec, ContentKind, QuestionOption, Task, TaskSpecs, clip};
 use alondra_core::text::Lang;
 use alondra_core::text::{t, tf};
 use crate::specs::engine;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 pub const AMENDMENT_PREFIX: &str = "spec-amendment-";
 pub const DECISION_PREFIX: &str = "spec-decision-";
@@ -171,7 +170,7 @@ pub fn kind_name(kind: crate::validation::ValidationKind, lang: Lang) -> &'stati
 
 /// Each change of `files` in plain words, with what it held before: a spec as its title,
 /// explanation and scenarios, never its raw syntax.
-pub fn changes(files: &SpecFiles, before: &BTreeMap<String, Option<String>>, dirs: &SpecDirs, lang: Lang) -> String {
+pub fn changes(files: &SpecFiles, before: &SpecFiles, dirs: &SpecDirs, lang: Lang) -> String {
     let mut out = vec![];
     for (path, after) in files {
         let old = before.get(path).cloned().flatten();
@@ -181,9 +180,15 @@ pub fn changes(files: &SpecFiles, before: &BTreeMap<String, Option<String>>, dir
             _ => t!(lang, "changed", "cambiado"),
         };
         out.push(format!("### `{path}` ({what})"));
-        let shown = |text: &str| describe(path, text, dirs, lang);
+        let shown = |content: &SpecContent| match content {
+            SpecContent::Text(text) => describe(path, text, dirs, lang),
+            SpecContent::Mockup(image) => tf!(lang, "Mockup {width}×{height}, {bytes} bytes", "Mockup {width}×{height}, {bytes} bytes", width = image.width, height = image.height, bytes = image.bytes),
+        };
         let same_words = matches!((&old, after), (Some(old), Some(after)) if shown(old) == shown(after));
-        let show = |text: &str| if same_words { fenced(text) } else { shown(text) };
+        let show = |content: &SpecContent| match content.text() {
+            Some(text) if same_words => fenced(text),
+            _ => shown(content),
+        };
         if let Some(old) = &old {
             out.push(format!("**{}**\n\n{}", t!(lang, "Before", "Antes"), show(old)));
         }

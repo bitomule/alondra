@@ -1075,8 +1075,8 @@ transitions = ["Requested -> Proposed", "Proposed -> Approved", "Proposed -> Rej
   this record.
 - **Components**: `draft: Option<SpecDraft{level, files, check, revision, edited}>` (the author's
   proposal, as the user edits it on the plan's card) × `approved: Option<ApprovedSpecs{card,
-  revision, level, mode, files, before, dirs, unwritten}>` × `amendments` (each with its
-  `AmendmentState`) × `proposed_decisions` (lasting decisions waiting on their own card) ×
+  revision, level, mode, files, before, dirs, parts, unwritten}>` × `amendments` (each with its
+  `AmendmentState` and Alondra's reading of it, `check`) × `proposed_decisions` (lasting decisions waiting on their own card) ×
   `decisions` (the user's answer on each decision, with their words) × `settings: Option<SpecProblem>`
   (why the worktree's `alondra.toml` cannot be read, when Alondra last found it could not).
 - **Moves**:
@@ -1087,7 +1087,7 @@ transitions = ["Requested -> Proposed", "Proposed -> Approved", "Proposed -> Rej
 | `draft`, plan card open | `ReviseSpecs` [the user, `expected` is the draft's revision, the reading is clean] | `draft` replaced, `edited`; a decision taken out is answered `Rejected` |
 | any | `RecordSpecSettings` [system] | `settings` set or cleared |
 | `draft` | the user approves the plan [`settings` none, the draft reads clean] | `approved` = the draft with its decisions accepted, `unwritten` = its paths in a committed project; each decision answered `Accepted` with the user's words; `draft` none |
-| `unwritten` not empty | `RecordSpecsWritten` [system] | each path whose written fingerprint is the approved text's leaves `unwritten`; the working execution is told to commit them unless a change of role is owed |
+| `unwritten` not empty | `RecordSpecsWritten` [system] | each path whose written fingerprint is that of the approved content leaves `unwritten`; the working execution is told to commit them unless a change of role is owed |
 | `approved`, role `Implementer`, no amendment `Requested`, no handover | `RequestSpecChange` | amendment `Requested`; handover to `Author` (`SpecChangeRequested`) |
 | amendment `Requested`, role `Author` | `ProposeAmendment` [clean reading] | `Proposed`, its `system:spec_change` card raised; handover to `Implementer` (`AmendmentProposed`) |
 | amendment `Proposed` | the user answers its card `approve` / `reject` | `Approved` (merged into `approved`, its paths `unwritten`) / `Rejected` (the working execution told, with the user's words) |
@@ -1099,6 +1099,12 @@ transitions = ["Requested -> Proposed", "Proposed -> Approved", "Proposed -> Rej
   no agent works in (`spec_writes::write_due`: no execution, or one with no turn, no own work and
   no decision it waits on). A change of role never starts while files are owed
   (`specs_unwritten`), so a new implementer always starts from the approved files.
+- **Mockups**: a file of a proposal holds text or a kept mockup (`SpecContent`). Alondra keeps the
+  bytes in `files/images/<sha256>` before the command that records them (`spec_checks::keep_mockups`,
+  from a worktree file for an agent, from an upload for the user's edit) and what an agent says of a
+  mockup is cleared. The record is the truth of which bytes are meant and the copy is read only
+  while it matches that fingerprint; retention keeps every copy the specs or validation of an open
+  task name (M-GH-13). A copy removed by hand leaves its file in `unwritten` with the error logged.
 - **Delivery**: a final delivery is refused (`specs_differ`) when the branch holds a spec file
   changed from where it leaves its base without the user's approval, or an approved one otherwise
   than approved; `spec_settings_unreadable` when the settings cannot be read
@@ -5132,7 +5138,10 @@ truth = ["derived"]
   `results/<id>` (14 days after close if its card is not in the inbox), `uploads|images|domain-v2|documents/<x>` (30 days
   from last modification if no open card, card of an open task, or document names them), and **any other top-level
   entry** ("without owner", 30 days). Hourly pass in `engine-kernel/src/retention.rs`.
-- **Source of ownership**: `References::of` scans only `state.interactions` and `document_revisions`
+- **Specs and validations**: `References::of` also reads `Task.specs` and `Task.validation`, which
+  name the copies of mockups and evidence captures: while the task is open they stay, and afterwards
+  they stay as long as its spec and delivery cards keep other card files.
+- **Source of ownership** (as audited; see F-GH-6): `References::of` scanned only `state.interactions` and `document_revisions`
   (`files_retention.rs:205-220`). It does not look at requests, task entries or the PR image cache. See F-GH-6.
 - There is no lock with whoever writes in those folders; it decides from a state snapshot and mtime.
 

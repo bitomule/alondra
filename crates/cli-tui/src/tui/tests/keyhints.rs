@@ -203,6 +203,7 @@ fn reader_on(parts: Vec<Part>, block_with: usize) -> App {
         find: None,
         picking: false,
         show_from: None,
+        folds: Default::default(),
     });
     app.rebuild_reader();
     let reader = app.reader.as_mut().unwrap();

@@ -274,7 +274,7 @@ pub(crate) fn settle_validation_card(domain: &mut DomainState, actor: &Actor, ca
             let next = task.specs.amendments.iter().filter_map(|a| a.id.strip_prefix('a')?.parse::<u64>().ok()).max().unwrap_or(0) + 1;
             let id = format!("a{next}");
             let reason = clip(&format!("A validator sent the work back three times; the user chose to change the specs these checks rest on.{said}\n\n{failing}"), alondra_domain_model::specs::MAX_SPEC_REASON);
-            task.specs.amended(SpecAmendment { id: id.clone(), reason, state: AmendmentState::Requested, files: SpecFiles::new(), before: BTreeMap::new(), card: None, words: words.map(str::to_owned) });
+            task.specs.amended(SpecAmendment { id: id.clone(), reason, state: AmendmentState::Requested, files: SpecFiles::new(), before: BTreeMap::new(), check: None, card: None, words: words.map(str::to_owned) });
             handover(ExecutionRole::Author, HandoverCause::SpecChangeRequested { amendment: id })
         }
         spec_card::VALIDATE_AGAIN => {
@@ -314,7 +314,7 @@ pub(crate) fn task_scenario(domain: &DomainState, task_id: &TaskId, id: &str) ->
     let Some((spec, scenario)) = id.split_once('/') else { return false };
     let approved = task.specs.approved.iter().flat_map(|approved| approved.files.iter().map(move |(path, text)| (path, text, &approved.dirs)))
         .filter(|(path, _, dirs)| dirs.kind(path) == Some(alondra_domain_model::SpecFileKind::Spec))
-        .filter_map(|(path, text, _)| alondra_domain_model::specs::engine::read_spec(path, text.as_deref()?.as_bytes()).ok())
+        .filter_map(|(path, text, _)| alondra_domain_model::specs::engine::read_spec(path, text.as_ref()?.text()?.as_bytes()).ok())
         .any(|read| read.id == spec && read.scenarios.iter().any(|s| s.id == scenario));
     approved || task.validation.rounds.iter().flat_map(|round| &round.items).any(|item| item.kind != ValidationKind::Suite && item.subject == id)
         || task.validation.delivered.iter().flat_map(|delivered| &delivered.specs).flat_map(|spec| &spec.scenarios).any(|s| s.id == id)

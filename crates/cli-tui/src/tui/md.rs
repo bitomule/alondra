@@ -31,6 +31,25 @@ pub enum Kind {
         cols: u16,
         rows: u16,
     },
+    /// The top edge of a sheet, its title in it and what it is on the right, or its bottom edge.
+    Frame {
+        right: Option<String>,
+    },
+    /// The line that heads a scenario or folds some: its mark, its title, and on the right what
+    /// it is.
+    Head {
+        glyph: &'static str,
+        right: String,
+    },
+    /// A step in its lane: the lane's name in a column of `width`, the text beside it.
+    Lane {
+        label: String,
+        width: u16,
+    },
+    /// A line of a sheet in one color.
+    Toned(Color),
+    /// Mermaid text, drawn.
+    Diagram,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -104,6 +123,12 @@ pub struct Block {
     pub depth: usize,
     pub lines: Vec<Text>,
     pub targets: Vec<Target>,
+    /// What a comment on it quotes, when that is not its own text.
+    pub says: Option<String>,
+    /// It takes no comment: a heading inside a sheet.
+    pub silent: bool,
+    /// What the reader folds or unfolds from this block.
+    pub fold: Option<String>,
 }
 
 impl Block {
@@ -118,6 +143,9 @@ impl Block {
             depth,
             lines,
             targets: vec![],
+            says: None,
+            silent: false,
+            fold: None,
         }
     }
 
@@ -130,7 +158,29 @@ impl Block {
                 fmt: Fmt::default(),
             }]],
             targets: vec![],
+            says: None,
+            silent: false,
+            fold: None,
         }
+    }
+
+    /// A block of a sheet, one line of text per line of `text`.
+    pub fn of_sheet(kind: Kind, depth: usize, text: &str) -> Self {
+        let lines = text.split('\n').map(|line| vec![Run { text: line.to_string(), fmt: Fmt::default() }]).collect();
+        Block { kind, depth, lines, targets: vec![], says: None, silent: true, fold: None }
+    }
+
+    /// A comment on it quotes `quote`.
+    pub fn saying(mut self, quote: &str) -> Self {
+        self.says = Some(quote.to_string());
+        self.silent = false;
+        self
+    }
+
+    /// The cells of a table row.
+    pub fn row(header: bool, cells: &[String], depth: usize) -> Self {
+        let lines = cells.iter().map(|cell| vec![Run { text: cell.clone(), fmt: Fmt::default() }]).collect();
+        Block { kind: Kind::Row { header, aligns: vec![Alignment::None; cells.len()] }, depth, lines, targets: vec![], says: None, silent: true, fold: None }
     }
 
     pub fn opening(mut self, target: Target) -> Self {
@@ -169,16 +219,19 @@ impl Block {
     }
 
     pub fn quote(&self) -> String {
-        clip(&one_line(&self.plain()), QUOTE_MAX)
+        match &self.says {
+            Some(says) => clip(&one_line(says), QUOTE_MAX),
+            None => clip(&one_line(&self.plain()), QUOTE_MAX),
+        }
     }
 
     pub fn commentable(&self) -> bool {
-        !matches!(self.kind, Kind::Rule | Kind::Label)
+        !self.silent && !matches!(self.kind, Kind::Rule | Kind::Label)
     }
 
-    /// Where the reader's cursor stops: what takes a comment.
+    /// Where the reader's cursor stops: what takes a comment, folds or opens something.
     pub fn selectable(&self) -> bool {
-        self.commentable()
+        self.commentable() || self.fold.is_some() || !self.targets.is_empty()
     }
 }
 
@@ -931,6 +984,11 @@ pub struct Rendered {
 }
 
 fn joins_previous(prev: &Kind, cur: &Kind) -> bool {
+    let sheet = |kind: &Kind| matches!(kind, Kind::Frame { .. } | Kind::Head { .. } | Kind::Lane { .. } | Kind::Toned(_) | Kind::Diagram);
+    let inside = |kind: &Kind| sheet(kind) || matches!(kind, Kind::Row { .. } | Kind::Code(_) | Kind::Para | Kind::Quote);
+    if (sheet(prev) && inside(cur)) || (sheet(cur) && inside(prev)) {
+        return true;
+    }
     matches!(
         (prev, cur),
         (Kind::Item(_), Kind::Item(_)) | (Kind::Row { .. }, Kind::Row { .. })
@@ -1335,6 +1393,47 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
             }
             out
         }
+        // The pane's scroll bar draws over the last column, so nothing is aligned against it.
+        Kind::Frame { right } => vec![frame_line(&b.plain(), right.as_deref(), width.saturating_sub(1))],
+        Kind::Head { glyph, right } => {
+            let width = width.saturating_sub(1);
+            let first = vec![Span::styled(format!("{glyph} "), Style::new().fg(ACCENT))];
+            let rest = vec![Span::raw("  ")];
+            let title = b.plain();
+            let used = str_width(glyph) + 1 + str_width(&title);
+            let mut out = wrap_text(b, Style::new().add_modifier(Modifier::BOLD), width, first, rest);
+            let side = str_width(right);
+            match out.last_mut() {
+                Some(line) if out_fits(used, side, width) => {
+                    line.spans.push(Span::raw(" ".repeat(width - used - side)));
+                    line.spans.push(Span::styled(right.clone(), Style::new().fg(DIM)));
+                }
+                _ if !right.is_empty() => out.extend(wrap(vec![Span::styled(right.clone(), Style::new().fg(DIM))], width, vec![Span::raw("  ")], vec![Span::raw("  ")])),
+                _ => {}
+            }
+            out
+        }
+        Kind::Lane { label, width: column } => {
+            let column = usize::from(*column);
+            let pad = " ".repeat(column.saturating_sub(str_width(label)) + 2);
+            let first = vec![Span::styled(format!("{label}{pad}"), Style::new().fg(Color::Cyan))];
+            let rest = vec![Span::raw(" ".repeat(column + 2))];
+            wrap_text(b, Style::new(), width, first, rest)
+        }
+        Kind::Toned(color) => wrap_text(b, Style::new().fg(*color), width, vec![], vec![]),
+        Kind::Diagram => {
+            let source = b.lines.iter().map(|l| plain(l)).collect::<Vec<_>>();
+            let prefix = Span::styled("│ ", Style::new().fg(DIM));
+            let mut out = vec![];
+            match mermaid::draw(&source.join("\n"), width.saturating_sub(2)) {
+                Ok(diagram) => out.extend(diagram.into_iter().map(|l| Line::from(vec![prefix.clone(), Span::styled(l, Style::new().fg(CODE))]))),
+                Err(refusal) => {
+                    out.extend(wrap(vec![Span::styled(refusal.notice(), Style::new().fg(DIM).add_modifier(Modifier::ITALIC))], width, vec![], vec![]));
+                    out.extend(source.iter().flat_map(|l| hard_wrap(l, width, prefix.clone(), Style::new().fg(CODE))));
+                }
+            }
+            out
+        }
         Kind::Rule => vec![Line::styled("─".repeat(width), Style::new().fg(DIM))],
         Kind::Image { cols, rows } => {
             let mut out = wrap_text(b, Style::new().fg(DIM), width, vec![], vec![]);
@@ -1351,6 +1450,29 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
             )]
         }
     }
+}
+
+fn out_fits(used: usize, side: usize, width: usize) -> bool {
+    side > 0 && used + side + 2 <= width
+}
+
+/// `┌ Title ──── right ┐`, or `└────┘` without a right side.
+fn frame_line(title: &str, right: Option<&str>, width: usize) -> Line<'static> {
+    let edge = Style::new().fg(DIM);
+    let Some(right) = right else {
+        return Line::styled(format!("└{}┘", "─".repeat(width.saturating_sub(2))), edge);
+    };
+    let right = truncate(right, width.saturating_sub(12));
+    let room = width.saturating_sub(str_width(&right) + 7).max(4);
+    let title = truncate(title, room);
+    let fill = width.saturating_sub(str_width(&title) + str_width(&right) + 6);
+    Line::from(vec![
+        Span::styled("┌ ", edge),
+        Span::styled(title, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {} ", "─".repeat(fill)), edge),
+        Span::styled(right, edge),
+        Span::styled(" ┐", edge),
+    ])
 }
 
 pub fn feedback(comments: &[(String, String)], general: &str, author: &str) -> String {
