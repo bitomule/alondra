@@ -309,6 +309,8 @@ pub struct Driver {
     pub(crate) host_wait: Duration,
     /// How long `settle_interrupt` waits for a host that says nothing (`INTERRUPT_GRACE`).
     pub(crate) interrupt_grace: Duration,
+    /// Runs once, in the step that goes on to wait for the host, just before it does.
+    pub(crate) before_host_wait: Option<Box<dyn FnOnce() + Send>>,
     /// Runs once a dispatch has recorded its command, just before the command goes to the host.
     pub(crate) before_handoff: Option<Box<dyn FnOnce(&Handoffs) + Send>>,
     /// Runs once the owner reads as ended after it closed the host of a resting node, just before its driver is dropped.
@@ -1896,7 +1898,7 @@ impl Driver {
                 None
             }
         };
-        Self { bell, host_wait: WAKE, interrupt_grace: INTERRUPT_GRACE, pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_signed_out: false, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, declines_next_release: false, panic_next_step: false, handoffs: Arc::default(), before_handoff: None, before_release_ends: None }
+        Self { bell, host_wait: WAKE, interrupt_grace: INTERRUPT_GRACE, pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_signed_out: false, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout: OPENING_TIMEOUT, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, declines_next_release: false, panic_next_step: false, handoffs: Arc::default(), before_host_wait: None, before_handoff: None, before_release_ends: None }
     }
 
     /// The runtime of the daemon that owns this host.
@@ -2481,6 +2483,9 @@ impl Driver {
             return self.dispatch(permit);
         }
         if self.expects_host()? {
+            if let Some(hook) = self.before_host_wait.take() {
+                hook();
+            }
             let readable = match &self.bell {
                 Some(bell) => self.worker.readable_unless_rung(self.host_wait, bell),
                 None => self.worker.readable(self.host_wait),

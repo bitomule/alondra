@@ -570,7 +570,12 @@ trait TimeoutReader {
 }
 impl TimeoutReader for UnixStream {
     fn timeout(&self, duration: std::time::Duration) -> std::io::Result<()> {
-        self.set_read_timeout(Some(duration))
+        match self.set_read_timeout(Some(duration)) {
+            // macOS answers EINVAL once the host closed its end: no read can block any more, and
+            // what the host wrote before is still there to read.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput && error.raw_os_error().is_some() => Ok(()),
+            set => set,
+        }
     }
 }
 fn read_bounded<R: Read + TimeoutReader>(
@@ -750,6 +755,18 @@ mod tests {
         assert!(expect(&hello, &orchestrator).is_ok());
         hello.capabilities.push("exact_decisions".into());
         assert!(expect(&hello, &task).is_ok());
+    }
+    // A host that ends right after its last frames, such as the interrupted result of a close, leaves
+    // them in the socket for a daemon that reads them later.
+    #[test]
+    fn what_a_host_wrote_before_it_closed_its_end_is_still_read() {
+        let (mut daemon, mut host) = UnixStream::pair().unwrap();
+        std::io::Write::write_all(&mut host, b"result").unwrap();
+        drop(host);
+        let mut bytes = [0; 16];
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        assert_eq!(read_bounded(&mut daemon, &mut bytes, deadline, Instant::now).unwrap(), 6);
+        assert_eq!(read_bounded(&mut daemon, &mut bytes, deadline, Instant::now).unwrap(), 0, "then the end of the host");
     }
     #[test]
     fn fragmented_frame_progress_cannot_reset_absolute_deadline() {
