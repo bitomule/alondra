@@ -68,6 +68,12 @@ pub struct CommitReading {
     /// references say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tip: Option<String>,
+    /// The base branch GitHub reported for the pull request when Alondra read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_base: Option<String>,
+    /// The repository's default branch, as GitHub reported it then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
     /// Spec files the commit changed from its base without the user's approval, turning specs off
     /// included, read on the commit whatever it says of specs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -91,6 +97,9 @@ pub enum DeliveryCheck {
     Validated,
     /// Alondra has no current reading of these commits.
     Unread(Vec<String>),
+    /// A pull request targets a base branch other than the one a task in stages delivers to: the
+    /// repository's default branch, or the branch of the task it is stacked on.
+    UnexpectedBase { number: u64, base: String, expected: Vec<String> },
     /// A delivered commit is already on its pull request's base branch: nothing in it is the
     /// task's work, and nothing in it was compared with anything.
     OnBase(Vec<String>),
@@ -137,6 +146,9 @@ impl DeliveryCheck {
             Self::NotGated | Self::Validated => return None,
             Self::Unread(commits) => ("validation_unread", format!(
                 "Nothing was presented: Alondra has not read the delivered commit ({}) with the spec engine yet. Present the result again: Alondra reads it first.", listed(commits))),
+            Self::UnexpectedBase { number, base, expected } => ("pr_base_unexpected", format!(
+                "Nothing was presented: pull request #{number} targets {base}, and a task in stages delivers to {}. Point the pull request at that branch and present it again.",
+                if expected.is_empty() { "the repository's default branch".to_owned() } else { expected.join(" or ") })),
             Self::OnBase(commits) => ("commit_on_base", format!(
                 "Nothing was presented: the delivered commit ({}) is already on its pull request's base branch as GitHub reports it, so nothing in it is the task's work. Push the task's commits to its pull request and present it again.",
                 listed(commits))),
@@ -194,15 +206,15 @@ impl DeliveryCheck {
 /// The commits a delivery carries: the head of each pull request it presents, or, without one,
 /// the last commit Alondra read at the task's worktree, which it reads before every final delivery.
 /// A task without a worktree delivers no commit.
-fn delivered_commits(task: &Task, targets: &[DeliveryTarget]) -> Vec<(String, bool)> {
-    let heads: Vec<(String, bool)> = targets.iter().filter_map(|target| match target {
-        DeliveryTarget::PullRequest { head, .. } => Some((head.clone(), false)),
+fn delivered_commits(task: &Task, targets: &[DeliveryTarget]) -> Vec<(String, Option<crate::PrId>)> {
+    let heads: Vec<(String, Option<crate::PrId>)> = targets.iter().filter_map(|target| match target {
+        DeliveryTarget::PullRequest { pr_id, head } => Some((head.clone(), Some(pr_id.clone()))),
         _ => None,
     }).collect();
     if !heads.is_empty() {
         return heads;
     }
-    task.validation.readings.iter().rev().find(|reading| reading.worktree).map(|reading| (reading.commit.clone(), true)).into_iter().collect()
+    task.validation.readings.iter().rev().find(|reading| reading.worktree).map(|reading| (reading.commit.clone(), None)).into_iter().collect()
 }
 
 impl DomainState {
@@ -211,11 +223,24 @@ impl DomainState {
         let Some(task) = self.tasks.get(task_id).filter(|task| task.stages.staged) else { return DeliveryCheck::NotGated };
         let role = task.stages.role();
         let commits = delivered_commits(task, targets);
-        let unread: Vec<String> = commits.iter().filter(|(commit, worktree)| task.validation.reading_of(commit, *worktree).is_none()).map(|(commit, _)| commit.clone()).collect();
+        let unread: Vec<String> = commits.iter().filter(|(commit, pr)| task.validation.reading_of(commit, pr.is_none()).is_none()).map(|(commit, _)| commit.clone()).collect();
         if !unread.is_empty() {
             return DeliveryCheck::Unread(unread);
         }
-        let read: Vec<&CommitReading> = commits.iter().filter_map(|(commit, worktree)| task.validation.reading_of(commit, *worktree)).collect();
+        for (commit, pr) in &commits {
+            let (Some(pr), Some(reading)) = (pr.as_ref().and_then(|id| self.pull_requests.get(id)), task.validation.reading_of(commit, false)) else { continue };
+            if !reading.problems.is_empty() {
+                continue;
+            }
+            if reading.pr_base.as_deref() != Some(pr.base.as_str()) {
+                return DeliveryCheck::Unread(vec![commit.clone()]);
+            }
+            let expected = self.expected_bases(task);
+            if !expected.contains(&pr.base) {
+                return DeliveryCheck::UnexpectedBase { number: pr.number, base: pr.base.clone(), expected };
+            }
+        }
+        let read: Vec<&CommitReading> = commits.iter().filter_map(|(commit, pr)| task.validation.reading_of(commit, pr.is_none())).collect();
         let compared = |reading: &CommitReading| reading.base.is_some() && (reading.worktree || reading.tip.is_some());
         let uncompared: Vec<String> = read.iter().filter(|reading| reading.problems.is_empty() && !compared(reading)).map(|reading| reading.commit.clone()).collect();
         if !uncompared.is_empty() {
@@ -315,7 +340,7 @@ impl DomainState {
                 let round = task.validation.current().map_or(0, |round| round.number);
                 handover(ExecutionRole::Validator, HandoverCause::ValidatorRetry { round })
             }
-            DeliveryCheck::ChangedAfterValidation(_) | DeliveryCheck::SpecsDiffer { .. } | DeliveryCheck::OnBase(_) => handover(ExecutionRole::Implementer, HandoverCause::DeliveryReturned),
+            DeliveryCheck::ChangedAfterValidation(_) | DeliveryCheck::SpecsDiffer { .. } | DeliveryCheck::OnBase(_) | DeliveryCheck::UnexpectedBase { .. } => handover(ExecutionRole::Implementer, HandoverCause::DeliveryReturned),
             DeliveryCheck::Listed { items, .. } if items.is_empty() => handover(ExecutionRole::Implementer, HandoverCause::DeliveryReturned),
             DeliveryCheck::Listed { .. } | DeliveryCheck::Unrecorded { .. } => {
                 let (commit, items) = check.to_validate().expect("listed or unrecorded");
@@ -339,6 +364,19 @@ impl DomainState {
 }
 
 impl DomainState {
+    /// The branches a pull request of `task`, in stages, may target: the repository's default
+    /// branch as GitHub last reported it in a reading of the task, and, stacked, the branch of the
+    /// task it is stacked on. Empty while Alondra has read neither.
+    pub fn expected_bases(&self, task: &Task) -> Vec<String> {
+        let mut expected: Vec<String> = task.validation.readings.iter().rev().find_map(|reading| reading.default_branch.clone()).into_iter().collect();
+        if let Some(upstream) = task.stack.as_ref().and_then(|stack| self.tasks.get(&stack.upstream_task)) {
+            expected.extend(upstream.worktrees.values().filter_map(|worktree| worktree.branch.clone()));
+        }
+        expected.sort();
+        expected.dedup();
+        expected
+    }
+
     /// The spec files the user approved for `task`, and for the task it is stacked on: what its
     /// branch may hold otherwise than its base.
     pub fn allowed_specs(&self, task: &Task) -> crate::SpecFiles {

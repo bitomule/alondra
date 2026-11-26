@@ -1055,9 +1055,10 @@ pub(crate) fn withdraw_deliveries_behind_their_targets(domain: &mut DomainState,
                 return None;
             }
             targets.iter().find_map(|target| match target {
-                DeliveryTarget::PullRequest { pr_id, head } => domain.pull_requests.get(pr_id)
-                    .filter(|pr| pr.state != PrState::Closed && pr.head != *head)
-                    .map(|pr| delivery_withdrawn_behind_pr(pr.number)),
+                DeliveryTarget::PullRequest { pr_id, head } => domain.pull_requests.get(pr_id).filter(|pr| pr.state != PrState::Closed).and_then(|pr| {
+                    let rebased = t.stages.staged && t.validation.reading_of(head, false).is_some_and(|reading| reading.pr_base.as_deref() != Some(pr.base.as_str()));
+                    if pr.head != *head { Some(delivery_withdrawn_behind_pr(pr.number)) } else { rebased.then(|| delivery_withdrawn_base_moved(pr.number, &pr.base)) }
+                }),
                 DeliveryTarget::DocumentRevision { document_id, revision_id } => domain.documents.get(document_id)
                     .filter(|d| d.current_revision != *revision_id)
                     .map(|d| delivery_withdrawn_behind_document(&d.title)),
@@ -3084,6 +3085,13 @@ pub(crate) fn apply(
                 );
             }
             id(&pr_id.0)?;
+            if let Some(task) = domain.tasks.get(task_id).filter(|task| task.stages.staged) {
+                let expected = domain.expected_bases(task);
+                if !expected.is_empty() && !expected.contains(base) {
+                    return refuse("pr_base_unexpected", "base", &format!(
+                        "A task in stages delivers to {}: open the pull request against it", expected.join(" or ")));
+                }
+            }
             if !alondra_core::id::valid(&pr_id.0) {
                 return refuse(
                     "invalid_input",
@@ -3559,6 +3567,11 @@ pub(crate) fn apply(
                 return fail("stack_not_ready", "Remote base must be verified");
             };
             domain.stack_ready_for_merge(&a.pr_id)?;
+            if let Some(InteractionPayload::Delivery { targets, .. }) = domain.interactions.get(&a.presentation_id).map(|i| &i.payload)
+                && let Some(refusal) = domain.delivery_check(&a.task_id, targets).refusal(None)
+            {
+                return Err(refusal);
+            }
             let a = domain.merge_authorizations.get_mut(authorization_id).unwrap();
             a.attempt = MergeAttemptState::Claimed;
             a.claimed_by = None;
@@ -3618,7 +3631,8 @@ pub(crate) fn apply(
             let newly_merged = p.state != PrState::Merged && *state == PrState::Merged;
             let newly_closed = p.state == PrState::Open && *state == PrState::Closed;
             let number = p.number;
-            if p.head != *sha {
+            let staged = domain.tasks.get(&task).is_some_and(|task| task.stages.staged);
+            if p.head != *sha || (staged && p.base != *base) {
                 domain.invalidate(&task);
             }
             let p = domain.pull_requests.get_mut(pr_id).unwrap();

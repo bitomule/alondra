@@ -491,6 +491,11 @@ impl PrMerger for GithubWorld {
 }
 
 impl PrObserver for GithubWorld {
+    fn default_branch_of<'a>(&'a self, _host: &'a str, _repository: &'a str) -> Pending<'a, String> {
+        let base = self.world().default_branch.clone();
+        Box::pin(async move { Ok(base) })
+    }
+
     fn observe<'a>(&'a self, _host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         let mut world = self.world();
         world.observations.push((repository.to_owned(), number));

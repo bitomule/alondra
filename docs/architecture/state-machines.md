@@ -1161,7 +1161,8 @@ transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrup
   says why a commit could not be read has no base (`RecordCommitReading` refuses any other). A pull
   request's commit is compared with where it leaves `tip`, the commit GitHub reports the pull
   request's base branch at (`baseRefOid`), which the reading names too; never with the
-  repository's own references, which the agent can move. Git reads them with replacement
+  repository's own references, which the agent can move. It also names the base branch GitHub
+  reported for the pull request and the repository's default branch. Git reads them with replacement
   objects, grafts and the cached commit graph ignored. Facts only, recorded by the system command `RecordCommitReading`
   (full commit shas, bounded; the latest reading of a commit wins, at most 16 kept). The daemon reads
   the commit of every open pull request of the task and its worktree's HEAD before each final
@@ -1177,7 +1178,12 @@ transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrup
   only through `DomainState::decide`, which asks `delivery_check` first: the one guard, whoever
   delivers. The commits it checks are the heads of the delivery's pull requests, or, without one,
   the worktree's last reading. In order: `validation_unread` (a commit without a reading);
-  `validation_unread` also for a pull request's reading without `tip`; `commit_on_base` (a pull
+  `validation_unread` also for a pull request's reading without `tip` or read for a base branch
+  other than the pull request's current one; `pr_base_unexpected` (a pull request of a task in
+  stages targets neither the default branch nor the branch of the task it is stacked on, also
+  refused by `RegisterPr` once the default branch is known); a pull request whose base changes
+  withdraws the delivery and invalidates its merge authorization like a new head, and
+  `ClaimMergeAuthorization` asks the same guard again before a merge; `commit_on_base` (a pull
   request's commit is its own base: already on the base branch); `specs_differ` (a delivered
   commit holds spec files otherwise than its base or the user approved them, turning specs off
   included); then for each commit of a project with specs, `validation_required` (implementer) or `validation_pending`

@@ -37,7 +37,7 @@ pub fn ledger_dir(project: &engine::Project) -> String {
 }
 
 fn empty(commit: &str, worktree: bool) -> CommitReading {
-    CommitReading { commit: commit.to_owned(), worktree, specs: true, owed: vec![], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], base: None, tip: None, spec_changes: vec![] }
+    CommitReading { commit: commit.to_owned(), worktree, specs: true, owed: vec![], problems: vec![], ledger: vec![], stray: vec![], since: None, changed: vec![], base: None, tip: None, pr_base: None, default_branch: None, spec_changes: vec![] }
 }
 
 /// A reading that says why Alondra could not read `commit`: a fact like any other, which never
@@ -52,14 +52,16 @@ pub fn unreadable(commit: &str, why: &str) -> CommitReading {
 /// with where it leaves `tip`, the commit GitHub reports its base branch at, never with what the
 /// repository's own references say; the worktree's, read for a delivery without a pull request,
 /// with the repository's default branch.
-pub fn read_commit(port: &dyn SpecWorktrees, root: &Path, task: &Task, commit: &str, tip: Option<&str>, allowed: &SpecFiles) -> Result<CommitReading, String> {
-    let mut reading = empty(commit, tip.is_none());
+pub fn read_commit(port: &dyn SpecWorktrees, root: &Path, task: &Task, commit: &str, github: Option<&GitHubBase>, allowed: &SpecFiles) -> Result<CommitReading, String> {
+    let mut reading = empty(commit, github.is_none());
     let files = port.commit(root, commit)?;
-    let base_commit = match tip {
-        Some(tip) => {
-            port.commit(root, tip)?;
-            reading.tip = Some(tip.to_owned());
-            port.merge_base(root, commit, tip)?
+    let base_commit = match github {
+        Some(github) => {
+            port.commit(root, &github.tip)?;
+            reading.tip = Some(github.tip.clone());
+            reading.pr_base = Some(github.branch.clone());
+            reading.default_branch = Some(github.default_branch.clone());
+            port.merge_base(root, commit, &github.tip)?
         }
         None => port.base_commit(root, commit)?,
     };
@@ -115,7 +117,16 @@ pub fn read_commit(port: &dyn SpecWorktrees, root: &Path, task: &Task, commit: &
 /// and the commit its worktree is at for a delivery without one. A commit it cannot read, a pull
 /// request of another repository included, refuses the delivery: what is read never depends on a
 /// remote or a reference the agent can change.
-pub fn read_delivery(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, tips: &BTreeMap<PrId, String>) -> Result<Vec<CommitReading>, String> {
+/// What GitHub reports of a pull request's base: the branch it targets, the commit that branch is
+/// at, and the repository's default branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubBase {
+    pub branch: String,
+    pub tip: String,
+    pub default_branch: String,
+}
+
+pub fn read_delivery(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, tips: &BTreeMap<PrId, GitHubBase>) -> Result<Vec<CommitReading>, String> {
     let Some(task) = state.tasks.get(task_id).filter(|task| task.stages.staged) else { return Ok(vec![]) };
     let Some(root) = port.own(state, task_id) else {
         return if state.open_prs(task).next().is_none() { Ok(vec![]) } else { Err("the task's worktree is gone, so its pull request cannot be read".into()) };
@@ -135,7 +146,7 @@ pub fn read_delivery(port: &dyn SpecWorktrees, state: &DomainState, task_id: &Ta
 
 /// What Alondra reads for a delivery it holds for `task_id`: each commit of its open pull requests
 /// it has not read yet, against the commit GitHub reports its base branch at, or why it cannot.
-pub fn read_held(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, tips: &BTreeMap<PrId, String>) -> Vec<CommitReading> {
+pub fn read_held(port: &dyn SpecWorktrees, state: &DomainState, task_id: &TaskId, tips: &BTreeMap<PrId, GitHubBase>) -> Vec<CommitReading> {
     let Some(task) = state.tasks.get(task_id).filter(|task| task.stages.staged) else { return vec![] };
     let root = port.own(state, task_id);
     let allowed = state.allowed_specs(task);

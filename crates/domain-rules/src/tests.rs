@@ -3438,7 +3438,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::EndValidation { task_id: ids.task.into(), findings: "It fails".into() }, false),
         (Command::RecordDeliveredValidation { task_id: ids.task.into(), validation: Default::default() }, false),
         (Command::RecordCommitReading { task_id: ids.task.into(), reading: crate::CommitReading { commit: "a".repeat(40), worktree: false, specs: true, owed: vec![], problems: vec![],
-            ledger: vec![], stray: vec![], since: None, changed: vec![], base: Some("b".repeat(40)), tip: Some("b".repeat(40)), spec_changes: vec![] } }, false),
+            ledger: vec![], stray: vec![], since: None, changed: vec![], base: Some("b".repeat(40)), tip: Some("b".repeat(40)), pr_base: Some("main".into()), default_branch: Some("main".into()), spec_changes: vec![] } }, false),
         (Command::BeginStageHandover { task_id: ids.task.into(), expected_selection: "fixture".into(), transition: "stage".into(), pending: alondra_core::model_selection::PendingTaskSelection {
             account: alondra_core::accounts::AccountKey::native(alondra_core::accounts::Provider::Claude),
             model: alondra_core::model_selection::ModelSelection { model: alondra_core::model_selection::ModelKey { provider: alondra_core::accounts::Provider::Claude, model: "fixture".into() }, reasoning_effort: None, catalog_revision: "fixture".into() }, reason: "The implementer takes it over".into(),

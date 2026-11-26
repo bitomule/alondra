@@ -124,7 +124,7 @@ pub(crate) fn stamp_with(port: &dyn SpecWorktrees, state: &DomainState, command:
 
 /// What Alondra reads before a final delivery of `task_id`: the commits it carries, for the
 /// domain's guard to decide on.
-pub(crate) fn read_delivery(domain: &dyn Runtime, state: &DomainState, task_id: &TaskId, tips: &std::collections::BTreeMap<alondra_domain_model::PrId, String>) -> Result<Vec<CommitReading>, String> {
+pub(crate) fn read_delivery(domain: &dyn Runtime, state: &DomainState, task_id: &TaskId, tips: &std::collections::BTreeMap<alondra_domain_model::PrId, spec_reading::GitHubBase>) -> Result<Vec<CommitReading>, String> {
     let Some(port) = domain.ports().spec_worktrees() else { return Ok(vec![]) };
     spec_reading::read_delivery(&*port, state, task_id, tips)
 }
@@ -394,6 +394,10 @@ mod tests {
         state
     }
 
+    fn github_base(branch: &str, tip: String) -> spec_reading::GitHubBase {
+        spec_reading::GitHubBase { branch: branch.into(), tip, default_branch: "main".into() }
+    }
+
     fn delivery() -> InteractionId {
         InteractionId("result-1".into())
     }
@@ -420,7 +424,7 @@ mod tests {
     /// daemon does: the commit of each open pull request and the worktree's.
     fn check(repo: &Repo, mut state: DomainState) -> Result<DeliveryCheck, String> {
         let task_id = TaskId::from("t");
-        let tips = state.open_prs(&state.tasks[&task_id]).map(|pr| (pr.id.clone(), sha('0'))).collect();
+        let tips = state.open_prs(&state.tasks[&task_id]).map(|pr| (pr.id.clone(), github_base(&pr.base, sha('0')))).collect();
         let readings = spec_reading::read_delivery(repo, &state, &task_id, &tips)?;
         let task = state.tasks.get_mut(&task_id).unwrap();
         for reading in readings {
@@ -569,7 +573,7 @@ mod tests {
             .with("crates/billing/src/lib.rs", "pub fn refund(paid: u32, _: u32) -> u32 { paid }\n");
         let head = repo.commit('1', off);
         let state = with_pr(state_with(task(ExecutionRole::Implementer)), "ana/app", 1, &head);
-        let tips = state.open_prs(&state.tasks[&TaskId::from("t")]).map(|pr| (pr.id.clone(), sha('8'))).collect();
+        let tips = state.open_prs(&state.tasks[&TaskId::from("t")]).map(|pr| (pr.id.clone(), github_base(&pr.base, sha('8')))).collect();
         let refused = spec_reading::read_delivery(&repo, &state, &"t".into(), &tips).unwrap_err();
         assert!(refused.contains("ana/app#1") && refused.contains("own repository only"), "{refused}");
         assert!(spec_reading::read_delivery(&repo, &state, &"t".into(), &Default::default()).unwrap_err().contains("did not report the base branch"));

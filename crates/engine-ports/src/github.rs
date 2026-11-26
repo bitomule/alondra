@@ -85,6 +85,10 @@ pub trait PrObserver: Send + Sync + 'static {
     fn relocate<'a>(&'a self, _host: &'a str, _locator: &'a ProviderLocator) -> Located<'a> {
         Box::pin(async { Err(GhFailure::Unreadable("this observer cannot find pull requests by their locator".to_owned())) })
     }
+    /// The repository's default branch, as GitHub reports it.
+    fn default_branch_of<'a>(&'a self, _host: &'a str, _repository: &'a str) -> Pending<'a, String> {
+        Box::pin(async { Err(GhFailure::Unreadable("this observer cannot read a repository's default branch".to_owned())) })
+    }
     /// Which pull request answers at this address, read without anything else.
     fn read_identity<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Located<'a> {
         Box::pin(async move {
@@ -119,6 +123,9 @@ impl PrObserver for Arc<dyn PrObserver> {
     }
     fn read_identity<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Located<'a> {
         (**self).read_identity(host, repository, number)
+    }
+    fn default_branch_of<'a>(&'a self, host: &'a str, repository: &'a str) -> Pending<'a, String> {
+        (**self).default_branch_of(host, repository)
     }
 }
 

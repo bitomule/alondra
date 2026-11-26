@@ -223,9 +223,9 @@ async fn read_held(domain: &DomainRuntime, observer: &impl PrObserver) -> Result
     for task in state.tasks.values().filter(|task| task.stages.staged && matches!(task.open_pr, Some(OpenPrPending::Deliver { .. }))) {
         let mut tips = std::collections::BTreeMap::new();
         for pr in state.open_prs(task).filter(|pr| task.validation.reading_of(&pr.head, false).is_none()) {
-            if let Ok(Some(base)) = observer.observe(&pr.host, &pr.repository, pr.number).await.map(|facts| facts.base_head) {
-                tips.insert(pr.id.clone(), base);
-            }
+            let Ok(facts) = observer.observe(&pr.host, &pr.repository, pr.number).await else { continue };
+            let (Some(tip), Ok(default_branch)) = (facts.base_head, observer.default_branch_of(&pr.host, &pr.repository).await) else { continue };
+            tips.insert(pr.id.clone(), alondra_engine_ports::spec_reading::GitHubBase { branch: facts.base, tip, default_branch });
         }
         for reading in alondra_engine_ports::spec_reading::read_held(&*port, &state, &task.id, &tips) {
             let head = reading.commit.clone();
