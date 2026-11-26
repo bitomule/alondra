@@ -97,6 +97,35 @@ fn a_reserved_scenario_never_reaches_the_packet() {
     }
 }
 
+// spec: spec-engine.packet/carries-the-parts
+#[test]
+fn carries_the_text_of_each_diagram_and_the_path_of_each_mockup() {
+    let mut tree = billing();
+    assert!(!packet(&tree).contains("diagrams and mockups"));
+    tree.edit(REFUNDS_PATH, "Feature:", "@diagram:flow.mmd\nFeature:");
+    tree.edit(REFUNDS_PATH, "@id:full", "@id:full @mockup:sheet.png");
+    tree.edit(REFUNDS_PATH, "@id:partial", "@id:partial @mockup:sheet.png");
+    tree.edit(REFUNDS_PATH, "@id:stands-alone", "@id:stands-alone @reserved @mockup:secret.png");
+    tree.put("specs/billing/flow.mmd", "graph TD\n  a --> b\n%% ``` fenced\n");
+    let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+    png.extend([0, 0, 0, 10, 0, 0, 0, 20]);
+    tree.put_bytes("specs/billing/sheet.png", &png);
+    tree.put_bytes("specs/billing/secret.png", &png);
+
+    let text = packet(&tree);
+
+    let specs = section(&text, "Specs");
+    let diagram = "Diagram specs/billing/flow.mmd:\n\n````mermaid\ngraph TD\n  a --> b\n%% ``` fenced\n````";
+    let mockup = "Mockup specs/billing/sheet.png (10×20 pixels)";
+    assert_eq!(specs.matches(diagram).count(), 1, "{specs}");
+    assert_eq!(specs.matches(mockup).count(), 1, "{specs}");
+    for part in [diagram, mockup] {
+        assert!(specs.find("@spec:billing.refunds").unwrap() < specs.find(part).unwrap());
+    }
+    assert!(!text.contains("secret.png"), "{text}");
+    assert!(section(&text, "What you must not change").contains("*.feature and the diagrams and mockups they cite"));
+}
+
 // spec: spec-engine.packet/carries-the-boundary
 #[test]
 fn the_boundary_section_lists_every_value_and_each_suite_with_its_command() {

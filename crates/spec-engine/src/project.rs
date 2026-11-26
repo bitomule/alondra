@@ -5,9 +5,11 @@ use crate::ledger::{self, LedgerFile};
 use crate::pattern::matches;
 use crate::problem::{finish, key_line, problem, unreadable};
 use crate::{
-    Code, Component, Decision, Files, LoadedSpec, Marker, Problem, Project, Promise, Scenario, Section, Settings, Status,
-    boundary, decision, feature, fingerprint, markers, reference, settings,
+    Code, Component, Decision, Files, LoadedSpec, Marker, Part, Problem, Project, Promise, Scenario, Section, Settings, Status,
+    boundary, decision, feature, fingerprint, markers, part, reference, settings,
 };
+use crate::feature::ReadSpec;
+use crate::part::Citation;
 
 const BOUNDARY_FILE: &str = "boundary.toml";
 const FEATURE_EXTENSION: &str = ".feature";
@@ -80,6 +82,7 @@ impl Project {
             decisions: Vec::new(),
             sections: Vec::new(),
             markers: Vec::new(),
+            parts: BTreeMap::new(),
             listed: Vec::new(),
             hashes: BTreeMap::new(),
             component_fingerprints: BTreeMap::new(),
@@ -134,7 +137,7 @@ pub(crate) fn load(files: &dyn Files) -> Result<Project, Vec<Problem>> {
             problems.push(spec_without_component(path));
         }
     }
-    let (specs, decision_tags, failed_folders) = read_specs(&mut source, &layout, &boundary_folders, &mut problems);
+    let (specs, decision_tags, citations, failed_folders) = read_specs(&mut source, &layout, &boundary_folders, &mut problems);
     let any_spec_failed = !failed_folders.is_empty();
     let specs_kept_elsewhere =
         !settings.specs.committed && layout.features.is_empty() && layout.stray_features.is_empty();
@@ -157,6 +160,11 @@ pub(crate) fn load(files: &dyn Files) -> Result<Project, Vec<Problem>> {
     let skip_orphans = any_spec_failed || specs_kept_elsewhere;
     let found_markers = read_markers(&mut source, &components, &specs, &listed, skip_orphans, &mut problems);
 
+    let (parts, refused) = read_parts(&mut source, &citations, &listed, &mut problems);
+    if !specs_kept_elsewhere {
+        let read_in_full: BTreeSet<String> = boundary_folders.difference(&failed_folders).cloned().collect();
+        problems.extend(part::uncited(&settings.specs.dir, &read_in_full, &specs, &parts, &refused, &listed));
+    }
     read_evidence(&mut source, &specs, &listed);
     read_component_files(&mut source, &components, &listed);
 
@@ -167,6 +175,7 @@ pub(crate) fn load(files: &dyn Files) -> Result<Project, Vec<Problem>> {
         decisions,
         sections,
         markers: found_markers,
+        parts,
         listed,
         hashes: source.hashes(),
         component_fingerprints: BTreeMap::new(),
@@ -274,9 +283,10 @@ fn read_specs(
     layout: &Layout,
     boundary_folders: &BTreeSet<String>,
     problems: &mut Vec<Problem>,
-) -> (Vec<LoadedSpec>, Vec<DecisionTag>, BTreeSet<String>) {
+) -> (Vec<LoadedSpec>, Vec<DecisionTag>, Vec<(String, Citation)>, BTreeSet<String>) {
     let mut specs: Vec<LoadedSpec> = Vec::new();
     let mut tags = Vec::new();
+    let mut citations = Vec::new();
     let mut failed = BTreeSet::new();
     let mut ids = BTreeSet::new();
     let mut features: Vec<&(String, String)> =
@@ -289,20 +299,21 @@ fn read_specs(
             continue;
         };
         match feature::read(path, &bytes) {
-            Ok(read) => {
-                if !ids.insert(read.spec.id.clone()) {
+            Ok(ReadSpec { spec, decision_lines, citations: cited }) => {
+                citations.extend(cited.into_iter().map(|citation| (path.clone(), citation)));
+                if !ids.insert(spec.id.clone()) {
                     problems.push(problem(
                         Code::DuplicateSpecId,
                         path,
                         0,
-                        format!("another feature file already is the spec {}", read.spec.id),
+                        format!("another feature file already is the spec {}", spec.id),
                     ));
                     continue;
                 }
-                for (id, line) in read.spec.decisions.iter().zip(read.decision_lines.iter()) {
+                for (id, line) in spec.decisions.iter().zip(decision_lines.iter()) {
                     tags.push((path.clone(), id.clone(), *line));
                 }
-                specs.push(LoadedSpec { path: path.clone(), component: folder.clone(), spec: read.spec });
+                specs.push(LoadedSpec { path: path.clone(), component: folder.clone(), spec });
             }
             Err(found) => {
                 problems.extend(found);
@@ -310,7 +321,42 @@ fn read_specs(
             }
         }
     }
-    (specs, tags, failed)
+    (specs, tags, citations, failed)
+}
+
+/// The parts the tags cite, and the paths of the cited files that are not a part. A problem of a
+/// part is reported at the line of each tag that cites it.
+fn read_parts(
+    source: &mut Source<'_>,
+    citations: &[(String, Citation)],
+    listed: &[String],
+    problems: &mut Vec<Problem>,
+) -> (BTreeMap<String, Part>, BTreeSet<String>) {
+    let mut parts = BTreeMap::new();
+    let mut refused = BTreeSet::new();
+    for (feature, citation) in citations {
+        let path = part::path_of(feature, &citation.file);
+        let at_the_tag = |code: Code, why: &str| problem(code, feature, citation.line, format!("{path}: {why}"));
+        if listed.binary_search(&path).is_err() {
+            problems.push(at_the_tag(Code::MissingPart, "there is no such file"));
+            continue;
+        }
+        let Some(bytes) = source.read(&path) else {
+            problems.push(unreadable(&path));
+            refused.insert(path);
+            continue;
+        };
+        match part::read(&path, citation.kind, &bytes) {
+            Ok(found) => {
+                parts.insert(path, found);
+            }
+            Err(found) => {
+                problems.push(at_the_tag(found.code, &found.message));
+                refused.insert(path);
+            }
+        }
+    }
+    (parts, refused)
 }
 
 fn check_promises(

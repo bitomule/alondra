@@ -8,14 +8,14 @@ class Alondra < Formula
   depends_on arch: :arm64
 
   # Signed bytes must survive Homebrew cleaning unchanged.
-  skip_clean "bin/alondra", "bin/alondrad", "bin/alondrad-launcher", "libexec/alondra/sdk/alondra-host", "libexec/alondra/codex/alondra-codex-host",
+  skip_clean "bin/alondra", "bin/alondrad", "bin/alondrad-launcher", "bin/alondra-spec", "libexec/alondra/sdk/alondra-host", "libexec/alondra/codex/alondra-codex-host",
             "libexec/alondra/antigravity/alondra-antigravity-host"
 
   url "https://github.com/bitomule/homebrew-tap/releases/download/alondra-v#{version}/alondra-#{version}-aarch64-apple-darwin.tar.gz"
   sha256 "@ARM_SHA256@"
 
   def install
-    bin.install "alondra", "alondrad", "alondrad-launcher"
+    bin.install "alondra", "alondrad", "alondrad-launcher", "alondra-spec"
     prefix.install "LICENSE.md", "THIRD_PARTY_NOTICES.md"
     (libexec/"alondra").install ".claude-plugin", "plugin", "plugin-orchestrator", "sdk", "codex", "antigravity"
   end
@@ -28,5 +28,6 @@ class Alondra < Formula
 
   test do
     assert_match "Alondra", shell_output("#{bin}/alondra --help")
+    assert_match "alondra-spec", shell_output("#{bin}/alondra-spec --help")
   end
 end

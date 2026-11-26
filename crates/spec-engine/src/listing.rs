@@ -1,6 +1,7 @@
 use serde::Serialize;
 
-use crate::{Component, Decision, LoadedSpec, Marker, Project, Scenario, Section, Settings};
+use crate::part::{self, of_scenario, of_spec};
+use crate::{Component, Decision, LoadedSpec, Marker, PartContent, PartKind, Project, Scenario, Section, Settings};
 
 const FORMAT: u32 = 1;
 
@@ -65,6 +66,7 @@ struct SpecView<'a> {
     component: &'a str,
     title: &'a str,
     decisions: &'a [String],
+    parts: Vec<PartView<'a>>,
     scenarios: Vec<ScenarioView<'a>>,
 }
 
@@ -78,6 +80,17 @@ struct ScenarioView<'a> {
     evidence: Option<&'a str>,
     boundary: Option<&'static str>,
     reserved: bool,
+    parts: Vec<PartView<'a>>,
+}
+
+#[derive(Serialize)]
+struct PartView<'a> {
+    path: &'a str,
+    kind: &'static str,
+    fingerprint: &'a str,
+    bytes: usize,
+    width: Option<u32>,
+    height: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -141,7 +154,20 @@ fn component_view(component: &Component) -> ComponentView<'_> {
     }
 }
 
-fn scenario_view(scenario: &Scenario) -> ScenarioView<'_> {
+fn part_views<'a, 'f>(project: &'a Project, loaded: &LoadedSpec, cited: impl Iterator<Item = (PartKind, &'f str)>) -> Vec<PartView<'a>> {
+    cited
+        .filter_map(|(_, file)| project.part(&part::path_of(&loaded.path, file)))
+        .map(|found| {
+            let (width, height) = match found.content {
+                PartContent::Mockup { width, height } => (Some(width), Some(height)),
+                PartContent::Diagram { .. } => (None, None),
+            };
+            PartView { path: &found.path, kind: found.kind().as_str(), fingerprint: &found.fingerprint, bytes: found.bytes, width, height }
+        })
+        .collect()
+}
+
+fn scenario_view<'a>(project: &'a Project, loaded: &LoadedSpec, scenario: &'a Scenario) -> ScenarioView<'a> {
     ScenarioView {
         id: &scenario.id,
         title: &scenario.title,
@@ -151,17 +177,19 @@ fn scenario_view(scenario: &Scenario) -> ScenarioView<'_> {
         evidence: scenario.judgment.as_ref().and_then(|judgment| judgment.pattern.as_deref()),
         boundary: scenario.promise.map(|promise| promise.as_str()),
         reserved: scenario.reserved,
+        parts: part_views(project, loaded, of_scenario(scenario)),
     }
 }
 
-fn spec_view(loaded: &LoadedSpec) -> SpecView<'_> {
+fn spec_view<'a>(project: &'a Project, loaded: &'a LoadedSpec) -> SpecView<'a> {
     SpecView {
         id: &loaded.spec.id,
         path: &loaded.path,
         component: &loaded.component,
         title: &loaded.spec.title,
         decisions: &loaded.spec.decisions,
-        scenarios: loaded.spec.scenarios.iter().map(scenario_view).collect(),
+        parts: part_views(project, loaded, of_spec(&loaded.spec)),
+        scenarios: loaded.spec.scenarios.iter().map(|scenario| scenario_view(project, loaded, scenario)).collect(),
     }
 }
 
@@ -196,7 +224,7 @@ pub(crate) fn build(project: &Project) -> String {
         format: FORMAT,
         settings: settings_view(&project.settings),
         components: project.components.iter().map(component_view).collect(),
-        specs: project.specs.iter().map(spec_view).collect(),
+        specs: project.specs.iter().map(|loaded| spec_view(project, loaded)).collect(),
         decisions: project.decisions.iter().map(decision_view).collect(),
         sections: project.sections.iter().map(section_view).collect(),
         markers: project.markers.iter().map(marker_view).collect(),

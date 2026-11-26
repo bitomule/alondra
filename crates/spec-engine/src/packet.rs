@@ -2,8 +2,9 @@ use std::collections::BTreeSet;
 
 use crate::feature::write;
 use crate::ledger::ledger_dir;
+use crate::part;
 use crate::problem::problem;
-use crate::{Code, Component, Decision, LoadedSpec, Problem, Project, Section, Spec, Status};
+use crate::{Code, Component, Decision, LoadedSpec, PartContent, Problem, Project, Section, Spec, Status};
 
 const RULE: &str = "Specs are the only source of truth. Where any other text disagrees with a spec, the spec wins.";
 const NONE: &str = "None.";
@@ -28,7 +29,7 @@ pub(crate) fn build(project: &Project, component: &str) -> Result<String, Proble
     blocks.push(section("What you must not change", &must_not_change(project, found)));
     blocks.push(section("Boundary", &boundary(found)));
     blocks.push(section("Decisions", &decisions_text(&decisions)));
-    blocks.push(section("Specs", &specs_text(&specs)));
+    blocks.push(section("Specs", &specs_text(project, &specs)));
     if !sections.is_empty() {
         let texts: Vec<&str> = sections.iter().map(|section| section.text.as_str()).collect();
         blocks.push(section("Reference (context, not a requirement)", &texts.join("\n\n")));
@@ -54,8 +55,14 @@ fn may_write(component: &Component) -> String {
 fn must_not_change(project: &Project, component: &Component) -> String {
     let specs_dir = &project.settings.specs.dir;
     let tests: Vec<String> = component.suites.iter().flat_map(|suite| suite.tests.iter().cloned()).collect();
+    let cites_parts = project.specs.iter().any(|loaded| {
+        let spec = &loaded.spec;
+        loaded.component == component.id
+            && (part::of_spec(spec).next().is_some() || spec.scenarios.iter().any(|scenario| part::of_scenario(scenario).next().is_some()))
+    });
+    let parts = if cites_parts { " and the diagrams and mockups they cite" } else { "" };
     [
-        format!("- the specs: {specs_dir}/{}/*.feature", component.id),
+        format!("- the specs: {specs_dir}/{}/*.feature{parts}", component.id),
         format!("- the tests: {}", list(&tests)),
         format!("- the boundary: {}", component.path),
         format!("- the fixtures: {}", list(&component.fixtures)),
@@ -95,12 +102,40 @@ fn without_reserved(spec: &Spec) -> Spec {
     kept
 }
 
-fn specs_text(specs: &[&LoadedSpec]) -> String {
+fn specs_text(project: &Project, specs: &[&LoadedSpec]) -> String {
     specs
         .iter()
-        .map(|loaded| format!("```gherkin\n{}```", write(&without_reserved(&loaded.spec))))
+        .map(|loaded| {
+            let spec = without_reserved(&loaded.spec);
+            let mut blocks = vec![format!("```gherkin\n{}```", write(&spec))];
+            blocks.extend(parts_text(project, loaded, &spec));
+            blocks.join("\n\n")
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Each part the spec of a packet cites, once: the text of a diagram and the path of a mockup.
+fn parts_text(project: &Project, loaded: &LoadedSpec, spec: &Spec) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    part::of_spec(spec)
+        .chain(spec.scenarios.iter().flat_map(part::of_scenario))
+        .filter_map(|(_, file)| project.part(&part::path_of(&loaded.path, file)))
+        .filter(|found| seen.insert(found.path.as_str()))
+        .map(|found| match &found.content {
+            PartContent::Diagram { text } => {
+                let fence = fence_around(text);
+                format!("Diagram {}:\n\n{fence}mermaid\n{}\n{fence}", found.path, text.trim_end())
+            }
+            PartContent::Mockup { width, height } => format!("Mockup {} ({width}×{height} pixels)", found.path),
+        })
+        .collect()
+}
+
+/// A fence longer than any run of backticks in the text, so the text cannot close it.
+fn fence_around(text: &str) -> String {
+    let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    "`".repeat(longest.max(2) + 1)
 }
 
 fn explaining<'a>(

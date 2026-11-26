@@ -2,8 +2,8 @@
 # Package the signed CLI, TUI, daemon, Agent SDK host and Claude assets for the public Homebrew formula.
 set -euo pipefail
 
-if [[ $# -ne 12 ]]; then
-  echo 'usage: package-cli.sh VERSION TARGET ALONDRA_CLI ALONDRAD LAUNCHER HOST HOST_MANIFEST CODEX_HOST CODEX_MANIFEST ANTIGRAVITY_HOST ANTIGRAVITY_MANIFEST OUTPUT_DIR' >&2
+if [[ $# -ne 13 ]]; then
+  echo 'usage: package-cli.sh VERSION TARGET ALONDRA_CLI ALONDRAD LAUNCHER SPEC_CLI HOST HOST_MANIFEST CODEX_HOST CODEX_MANIFEST ANTIGRAVITY_HOST ANTIGRAVITY_MANIFEST OUTPUT_DIR' >&2
   exit 2
 fi
 version=$1
@@ -11,13 +11,14 @@ target=$2
 cli=$3
 daemon=$4
 launcher=$5
-host=$6
-host_manifest=$7
-codex_host=$8
-codex_manifest=$9
-antigravity_host=${10}
-antigravity_manifest=${11}
-output_dir=${12}
+spec_cli=$6
+host=$7
+host_manifest=$8
+codex_host=$9
+codex_manifest=${10}
+antigravity_host=${11}
+antigravity_manifest=${12}
+output_dir=${13}
 if [[ ! $version =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
   echo 'version must be numeric, e.g. 0.1' >&2
   exit 2
@@ -27,7 +28,7 @@ if [[ $target != aarch64-apple-darwin ]]; then
   exit 2
 fi
 repo_root=$(cd "$(dirname "$0")/../.." && pwd -P)
-for path in "$cli" "$daemon" "$launcher" "$host" "$codex_host" "$antigravity_host"; do
+for path in "$cli" "$daemon" "$launcher" "$spec_cli" "$host" "$codex_host" "$antigravity_host"; do
   [[ -f $path && -x $path ]] || { echo "missing executable: $path" >&2; exit 2; }
   codesign --verify --strict "$path"
   signature=$(codesign --display --verbose=4 "$path" 2>&1)
@@ -48,10 +49,11 @@ trap 'rm -rf "$stage"' EXIT
 ditto "$cli" "$stage/alondra"
 ditto "$daemon" "$stage/alondrad"
 ditto "$launcher" "$stage/alondrad-launcher"
+ditto "$spec_cli" "$stage/alondra-spec"
 python3 "$repo_root/deploy/brew/release.py" stage-assets "$version" "$stage"
 python3 "$repo_root/deploy/brew/release.py" stage-host "$version" "$stage" --host "$host" --host-manifest "$host_manifest"
 python3 "$repo_root/deploy/brew/release.py" stage-codex-host "$version" "$stage" --host "$codex_host" --host-manifest "$codex_manifest"
 python3 "$repo_root/deploy/brew/release.py" stage-antigravity-host "$version" "$stage" --host "$antigravity_host" --host-manifest "$antigravity_manifest"
-COPYFILE_DISABLE=1 tar -C "$stage" -czf "$archive" alondra alondrad alondrad-launcher sdk codex antigravity .claude-plugin plugin plugin-orchestrator LICENSE.md THIRD_PARTY_NOTICES.md
+COPYFILE_DISABLE=1 tar -C "$stage" -czf "$archive" alondra alondrad alondrad-launcher alondra-spec sdk codex antigravity .claude-plugin plugin plugin-orchestrator LICENSE.md THIRD_PARTY_NOTICES.md
 shasum -a 256 "$archive"
 python3 "$repo_root/deploy/brew/release.py" validate "$version" "$archive"

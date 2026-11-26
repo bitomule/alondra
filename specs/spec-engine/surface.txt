@@ -1,7 +1,9 @@
-enum Code { BoundaryWithoutScenario, ComponentIdMismatch, DecisionIdMismatch, DecisionNotAccepted, DependencyCycle, DuplicateScenarioId, DuplicateSectionId, DuplicateSpecId, DuplicateSuiteId, EvidenceRequired, EvidenceWithoutCapture, InvalidBoundary, InvalidDecision, InvalidIdentifier, InvalidLedger, InvalidMarker, InvalidResults, InvalidSettings, InvalidUtf8, LedgerInsideComponent, MarkerOutsideComponent, MissingScenarioId, MissingSection, MissingSpecTag, NotJudged, OrphanMarker, PathOutsideRepository, RegeneratesOutsideOwns, SectionExplainsNothing, SpecWithoutComponent, SupersessionMismatch, TooLarge, TooManyScenarios, UnknownComponent, UnknownDecision, UnknownReferenceTarget, UnknownSubject, UnknownSuite, UnknownTag, UnreadableFile, UnsupportedFormat, UnsupportedSyntax }
+enum Code { BoundaryWithoutScenario, ComponentIdMismatch, DecisionIdMismatch, DecisionNotAccepted, DependencyCycle, DuplicateScenarioId, DuplicateSectionId, DuplicateSpecId, DuplicateSuiteId, EvidenceRequired, EvidenceWithoutCapture, InvalidBoundary, InvalidDecision, InvalidIdentifier, InvalidLedger, InvalidMarker, InvalidPart, InvalidResults, InvalidSettings, InvalidUtf8, LedgerInsideComponent, MarkerOutsideComponent, MissingPart, MissingScenarioId, MissingSection, MissingSpecTag, NotJudged, OrphanMarker, PartOutsideComponent, PathOutsideRepository, RegeneratesOutsideOwns, SectionExplainsNothing, SpecWithoutComponent, SupersessionMismatch, TooLarge, TooManyParts, TooManyScenarios, UncitedPart, UnknownComponent, UnknownDecision, UnknownReferenceTarget, UnknownSubject, UnknownSuite, UnknownTag, UnreadableFile, UnsupportedFormat, UnsupportedSyntax }
 enum EvidenceKind { None, Capture, Video }
 enum Keyword { Given, When, Then, And, But }
 enum Kind { Suite, Passes, Adequate, Judged, Reference }
+enum PartContent { Diagram, Mockup }
+enum PartKind { Diagram, Mockup }
 enum Promise { Surface, Data, Dependencies }
 enum ReportStatus { Clean, Pending, Unreadable }
 enum State { Valid, Missing, Stale, Unmet, Failed, Uncovered }
@@ -10,6 +12,8 @@ enum Verdict { Met, Unmet }
 fn evidence_kind(&str) -> EvidenceKind
 fn load(&dyn Files) -> Result<Project, Vec<Problem>>
 fn matches(&str, &str) -> bool
+fn part_path(&str, &str) -> String
+fn read_part(&str, PartKind, &[u8]) -> Result<Part, Problem>
 fn read_results(&[u8]) -> Result<TestResults, Problem>
 fn read_settings(Option<&[u8]>) -> Result<Settings, Vec<Problem>>
 fn read_spec(&str, &[u8]) -> Result<Spec, Vec<Problem>>
@@ -18,12 +22,15 @@ impl Code: fn as_str(self) -> &'static str
 impl EvidenceKind: fn as_str(self) -> &'static str
 impl Keyword: fn as_str(self) -> &'static str
 impl Kind: fn as_str(self) -> &'static str
+impl Part: fn kind(&self) -> PartKind
+impl PartKind: fn as_str(self) -> &'static str
 impl Project: fn components(&self) -> &[Component]
 impl Project: fn decisions(&self) -> &[Decision]
 impl Project: fn fingerprint(&self, &str, Kind) -> Option<String>
 impl Project: fn listing(&self) -> String
 impl Project: fn markers(&self) -> &[Marker]
 impl Project: fn packet(&self, &str) -> Result<String, Problem>
+impl Project: fn part(&self, &str) -> Option<&Part>
 impl Project: fn plan(&self, &str, Option<&str>) -> Result<Vec<Run>, Problem>
 impl Project: fn recorded(&self, &str, Kind) -> Option<Recorded>
 impl Project: fn report(&self, Option<&TestResults>) -> Report
@@ -49,15 +56,16 @@ struct Item { subject: String, component: String, kind: Kind, state: State }
 struct Judgment { evidence: EvidenceKind, pattern: Option<String> }
 struct LoadedSpec { path: String, component: String, spec: Spec }
 struct Marker { path: String, line: usize, scenario: String, test: Option<String> }
+struct Part { path: String, fingerprint: String, bytes: usize, content: PartContent }
 struct Problem { code: Code, path: String, line: usize, message: String }
 struct Project { }
 struct Recorded { inputs: String, verdict: Option<Verdict>, evidence: Vec<String> }
 struct Report { status: ReportStatus, items: Vec<Item>, leftover: Vec<String>, problems: Vec<Problem> }
 struct Run { component: String, suite: String, arguments: Vec<String>, timeout_minutes: u32 }
-struct Scenario { id: String, title: String, line: usize, outline: bool, judgment: Option<Judgment>, promise: Option<Promise>, reserved: bool, steps: Vec<Step>, examples: Vec<Vec<String>> }
+struct Scenario { id: String, title: String, line: usize, outline: bool, judgment: Option<Judgment>, promise: Option<Promise>, reserved: bool, diagrams: Vec<String>, mockups: Vec<String>, steps: Vec<Step>, examples: Vec<Vec<String>> }
 struct Section { id: String, path: String, line: usize, heading: String, text: String, explains: Vec<String> }
 struct Settings { specs: SpecsSettings, decisions: FolderSettings, reference: FolderSettings }
-struct Spec { id: String, decisions: Vec<String>, title: String, description: Vec<String>, background: Vec<Step>, scenarios: Vec<Scenario> }
+struct Spec { id: String, decisions: Vec<String>, title: String, description: Vec<String>, background: Vec<Step>, diagrams: Vec<String>, mockups: Vec<String>, scenarios: Vec<Scenario> }
 struct SpecsSettings { enabled: bool, committed: bool, dir: String }
 struct Step { keyword: Keyword, text: String, doc: Option<String>, table: Vec<Vec<String>> }
 struct Suite { id: String, run: Vec<String>, tests: Vec<String>, results: Option<String>, timeout_minutes: u32 }

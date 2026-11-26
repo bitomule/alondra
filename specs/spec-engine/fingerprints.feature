@@ -94,6 +94,26 @@ Feature: A fingerprint says exactly what a validation looked at
       | @judged:capture |
       | @judged:video   |
 
+  @id:scenario-part-changes-its-validations
+  Scenario: Changing a part of a scenario
+    Given a spec with a judged scenario that cites a mockup, among scenarios declared by tests
+    When the bytes of the mockup change
+    Then the adequacy and judgment fingerprints of the scenario that cites it change
+    And the fingerprints of the other scenarios and of the suite stay the same
+
+  @id:feature-part-changes-every-adequacy
+  Scenario: Changing a part of a feature
+    Given a feature that cites a diagram, with a judged scenario among its scenarios
+    When the bytes of the diagram change
+    Then the adequacy fingerprint of every scenario of the spec changes
+    And the judgment fingerprint and the fingerprint of the suite stay the same
+
+  @id:a-part-changes-only-what-cites-it
+  Scenario: Any part changes what it illustrates and nothing else
+    Given any spec whose feature and scenarios cite any parts
+    When the bytes of one part change
+    Then exactly these fingerprints change: the adequacy of the scenarios that cite it, or of every scenario when the feature cites it, and the judgment of the judged scenarios that cite it
+
   @id:unlisted-file-never-counts
   Scenario: A file the caller does not list
     Given a component that owns "crates/billing/**"

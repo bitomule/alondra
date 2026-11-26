@@ -2,7 +2,8 @@
 
 How a project keeps its specs, what the spec engine checks and what it can and cannot guarantee.
 The behaviour is specified in `specs/spec-engine/`; this page is the map and the exact formats.
-Where it disagrees with a spec, the spec wins.
+Where it disagrees with a spec, the spec wins. To turn specs on in a project of your own, follow
+[the guide](../enable-specs.md).
 
 ## What is guaranteed
 
@@ -34,6 +35,7 @@ behaviour, a performance budget, a concurrency rule.
 alondra.toml                       settings
 specs/<component>/boundary.toml    the boundary of a component
 specs/<component>/*.feature        its specs
+specs/<component>/**               the diagrams and mockups its specs cite
 specs/ledger/...                   what was validated
 docs/decisions/<id>.md             lasting decisions
 docs/reference/*.md                reference prose
@@ -71,10 +73,12 @@ file, before it is parsed.
 |---|---|
 | `alondra.toml`, `boundary.toml`, a ledger file | 65536 |
 | A feature file, a decision, a reference document | 262144 |
+| A diagram | 65536 |
+| A mockup | 2097152 |
 | JUnit results handed to `read_results` | 16777216 |
 
 A listed file the engine needs (the settings, a boundary, a feature file, a decision, a reference
-document, a ledger file or a test file of a suite) that the caller cannot read is refused with
+document, a ledger file, a test file of a suite or a cited diagram or mockup) that the caller cannot read is refused with
 `unreadable_file` naming it. An owned file, an input or a piece of evidence that cannot be read
 counts as absent in its fingerprint.
 
@@ -87,6 +91,8 @@ scenario, one or several per line.
 |---|---|---|
 | Feature | `@spec:<id>` | The identifier of the spec. Exactly one |
 | Feature | `@decision:<id>` | A decision the spec rests on |
+| Feature or scenario | `@diagram:<file>` | A diagram that illustrates it |
+| Feature or scenario | `@mockup:<file>` | A mockup that illustrates it |
 | Scenario | `@id:<id>` | The identifier of the scenario. Exactly one |
 | Scenario | `@judged`, `@judged:capture`, `@judged:video` | A judgment, and the evidence it needs |
 | Scenario | `@evidence:<pattern>` | Committed captures the judgment looks at. Only with `@judged:capture` |
@@ -117,9 +123,46 @@ Escapes, so that every spec is written and read back unchanged:
   such a line and keeps every other line as written.
 
 Canonical form: feature tags one per line, `Feature:` at column 0, description indented 2, a blank
-line between blocks, scenario tags on one line indented 2 in the order id, judged, evidence,
-boundary, reserved; steps indented 4; tables and doc strings indented 6 with cells padded to the
+line between blocks, feature tags in the order spec, decision, diagram, mockup, scenario tags on
+one line indented 2 in the order id, judged, evidence, boundary, reserved, diagram, mockup; steps indented 4; tables and doc strings indented 6 with cells padded to the
 width of their column; `Examples:` indented 4 after a blank line, its table indented 6.
+
+### Diagrams and mockups
+
+A spec may keep pictures next to its feature file:
+
+```gherkin
+@spec:billing.partial
+@diagram:refund-flow.mmd
+Feature: Partial refunds
+
+  @id:refund-sheet @mockup:refund-sheet.png
+  Scenario: The refund sheet shows what is left
+```
+
+`<file>` is a path from the folder of the feature file, with `/` between segments. It may name a
+subfolder; an absolute path, a backslash, or an empty, `.` or `..` segment is
+`part_outside_component`. A tag has no spaces, so neither has a file name.
+
+| Part | Extensions | What the file holds | Limit in bytes |
+|---|---|---|---|
+| Diagram | `.mmd` | UTF-8 Mermaid text. Its first word, after blank lines and lines that start with `%%`, is `flowchart`, `graph`, `sequenceDiagram`, `stateDiagram`, `stateDiagram-v2` or `classDiagram`: the kinds every Alondra client draws | 65536 |
+| Mockup | `.png`, `.jpg`, `.jpeg` | A PNG or a JPEG, told by its bytes. The engine reads its width and height from its header | 2097152 |
+
+The engine checks the first word of a diagram and the header of an image, not the rest: a diagram
+with a mistake further down is shown by a client as its source.
+
+| Problem | When | Names |
+|---|---|---|
+| `part_outside_component` | the path of a tag leaves the folder | the feature file and the tag's line |
+| `invalid_part` | the extension is not the kind's, the same tag cites a file twice, a diagram is of no admitted kind or not UTF-8, a mockup is no PNG or JPEG or its size cannot be read | the feature file and the tag's line |
+| `too_many_parts` | a spec holds more than 16 `@diagram:` and `@mockup:` tags, feature and scenarios together | the feature file and the line of the seventeenth |
+| `missing_part` | the cited file is not listed | the feature file and the tag's line |
+| `too_large` | the cited file is over its limit | the feature file and the tag's line |
+| `uncited_part` | a `.mmd`, `.png`, `.jpg` or `.jpeg` file under `specs/<component>/` is cited by no tag and matched by no `@evidence:` pattern. Not reported while a feature file of that folder cannot be read | that file |
+
+`alondra spec list` gives each spec and each scenario its `parts`: `path` from the root, `kind`
+(`diagram` or `mockup`), `fingerprint`, `bytes`, and `width` and `height` (`null` for a diagram).
 
 ### Markers
 
@@ -228,8 +271,8 @@ that nothing but the inputs below can change it:
 |---|---|
 | Component | The path and the content hash of every listed file that matches `owns` or `inputs`, in path order, then the fingerprint of every component in `depends_on`, in id order |
 | Suite | The component, the suite id, its arguments, each of its `tests` patterns, and the path and content hash of every listed file that matches one of them, in path order |
-| Adequate | The canonical text of the scenario, the title, description and background of its spec, and the path and content hash of every test file that declares it |
-| Judged | The canonical text of the scenario and, with `@evidence`, the path and content hash of every listed file that matches it; without it, the component |
+| Adequate | The canonical text of the scenario, the title, description and background of its spec, the path and content hash of every diagram and mockup of the feature and of the scenario, and the path and content hash of every test file that declares it |
+| Judged | The canonical text of the scenario, the path and content hash of every diagram and mockup of the scenario and, with `@evidence`, the path and content hash of every listed file that matches it; without it, the component |
 | Reference | The text of the section and, for everything it explains, the canonical text of the spec or the content hash of the boundary or decision file |
 
 ## States
@@ -292,7 +335,9 @@ Specs are the only source of truth. Where any other text disagrees with a spec, 
 ## Reference (context, not a requirement)
 ```
 
-Scenarios tagged `@reserved` are left out of the specs in a packet.
+Scenarios tagged `@reserved` are left out of the specs in a packet. After each spec come the
+parts it cites, each once: the text of a diagram in a `mermaid` block and the path and size of a
+mockup. A part cited only by a reserved scenario is left out.
 
 ## Regeneration pilot
 
