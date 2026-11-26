@@ -120,11 +120,7 @@ public struct MachineSetting: Equatable, Identifiable, Sendable {
             switch action {
             case .task:
                 return .run { [viewsClient] send in
-                    do {
-                        for try await fetch in viewsClient.observe(.machine) {
-                            if case .document(let document) = fetch { await send(.loaded(document)) }
-                        }
-                    } catch {}
+                    await viewsClient.keepObserving(.machine) { await send(.loaded($0)) }
                 }
                 .cancellable(id: CancelID.observe, cancelInFlight: true)
             case .stop:
