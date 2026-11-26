@@ -230,7 +230,7 @@ fn settling_the_case_of_a_stopped_node_tells_the_task_how_to_go_on_in_one_commit
     let held: i64 = store.conn.query_row("SELECT count(*) FROM lifecycle_cards", [], |r| r.get(0)).unwrap();
     assert_eq!(held, 0, "the lifecycle no longer requires it");
     drop(store);
-    let mut reopened = alondra_store_sqlite::DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = alondra_store_sqlite::DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let (pending, _, cards) = journal_after(&mut reopened);
     assert_eq!((pending.len(), cards), (1, 0), "the task waits to be told, with no card left");
 }

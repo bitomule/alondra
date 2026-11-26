@@ -72,7 +72,7 @@ impl Fixture {
                 &STANDARD.encode(key.verifying_key().to_sec1_bytes()),
             )
             .unwrap();
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let domain = DomainRuntime::shared(state.domain());
         let pr_view = Arc::new(crate::client_routes::FakePrView::default());
         pr_view.answer(Some(github_at(REGISTERED)));

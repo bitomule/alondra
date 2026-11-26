@@ -53,7 +53,7 @@ fn end_node(store: &mut DomainStore, task: &str, node: &str) {
 /// node, waiting, running, delivered, done, and cancelled with and without a node.
 fn every_shape() -> (Fixture, DomainState) {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     run(&mut store, &Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request-1".into(), title: "Shapes".into() });
     create(&mut store, "new", None, &[]);
@@ -130,7 +130,7 @@ fn tables(path: &Path) -> Vec<String> {
 fn a_previous_schema_moves_every_task_into_the_journal_and_every_task_reads_as_before() {
     let (fixture, before) = every_shape();
     as_previous_schema(&fixture.path(), &BTreeMap::new());
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let after = store.load().unwrap();
     assert_eq!(after.tasks, before.tasks, "every task keeps its state, node, start and delivery");
     assert_eq!(after.lifecycle_journal.keys().collect::<Vec<_>>(), after.tasks.keys().collect::<Vec<_>>(), "every task has a journal");
@@ -162,7 +162,7 @@ fn a_shape_the_migration_cannot_translate_changes_nothing_and_names_the_task() {
             .collect::<rusqlite::Result<_>>().unwrap()
     };
     let (kept_rows, kept_tables) = (rows(), tables(&fixture.path()));
-    let error = DomainStore::open(&fixture.path()).map(|_| ()).unwrap_err();
+    let error = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).map(|_| ()).unwrap_err();
     let message = format!("{error:#}");
     assert!(message.contains("moving its tasks into the lifecycle journal failed") && message.contains("task running"), "{message}");
     assert_eq!(rows(), kept_rows, "no task changes");
@@ -186,7 +186,7 @@ fn a_journal_the_domain_kept_in_its_own_table_moves_as_it_is() {
         kept.insert(id, records);
     }
     as_previous_schema(&fixture.path(), &kept);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let after = store.load().unwrap();
     for task in ["cancelled-node", "running", "review"] {
         let id = TaskId::from(task);
@@ -201,7 +201,7 @@ fn a_current_schema_without_the_store_journal_is_refused_not_migrated() {
     as_previous_schema(&fixture.path(), &BTreeMap::new());
     Connection::open(fixture.path()).unwrap().pragma_update(None, "user_version", SCHEMA_VERSION).unwrap();
     let kept = tables(&fixture.path());
-    let error = match DomainStore::open(&fixture.path()) {
+    let error = match DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules) {
         Ok(mut store) => store.load().map(|_| ()).unwrap_err(),
         Err(error) => error,
     };
@@ -230,7 +230,7 @@ fn rehearse_the_migration_on_a_copy_of_a_real_database() {
             .collect::<rusqlite::Result<_>>().unwrap()
     };
     let before = columns();
-    let mut store = DomainStore::open(&fixture.path()).unwrap_or_else(|error| panic!("{error:#}"));
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap_or_else(|error| panic!("{error:#}"));
     let state = store.load().unwrap();
     assert_eq!(columns(), before, "no task column changes");
     assert_eq!(state.lifecycle_journal.len(), state.tasks.len(), "every task has a journal");
@@ -265,7 +265,7 @@ fn with_one_pr_per_task(path: &Path) {
 #[test]
 fn a_database_with_one_pr_per_task_keeps_its_prs_and_takes_more() {
     let (fixture, _) = every_shape();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     run(&mut store, &node("node-running"), "first-pr", Command::RegisterPr {
         task_id: "running".into(), pr_id: "github.com/me/app#1".into(), host: "github.com".into(), repository: "me/app".into(), number: 1,
         head: "0123456789abcdef".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
@@ -274,7 +274,7 @@ fn a_database_with_one_pr_per_task_keeps_its_prs_and_takes_more() {
     drop(store);
     with_one_pr_per_task(&fixture.path());
 
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let after = store.load().unwrap();
     assert_eq!(after.pull_requests, before.pull_requests);
     assert_eq!(after.tasks, before.tasks);
@@ -290,7 +290,7 @@ fn a_database_with_one_pr_per_task_keeps_its_prs_and_takes_more() {
         head: "fedcba9876543210".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     });
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let state = store.load().unwrap();
     assert_eq!(state.task_prs(&state.tasks[&"running".into()]).count(), 2);
 }

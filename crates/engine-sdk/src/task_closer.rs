@@ -618,7 +618,8 @@ fn refused_end(domain: &dyn Runtime, task: &Task, agent: &AgentId, end: NodeEnd)
         expected_revision: probe.revision,
         command: Command::RecordNodeEnd { task_id: task.id.clone(), end, agent_id: Some(agent.clone()) },
     };
-    probe.execute(&Actor::System, &envelope).err().map(|error| format!("the domain refuses to end its node: {}", error.message))
+    let rules = domain.store().lock_or_exit("the domain store").rules();
+    rules.anticipate(&probe, &Actor::System, &envelope).err().map(|error| format!("the domain refuses to end its node: {}", error.message))
 }
 
 /// A check an earlier daemon kept on the work after the merge, with the card it may have raised:

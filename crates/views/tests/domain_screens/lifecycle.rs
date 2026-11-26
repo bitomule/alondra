@@ -5,6 +5,7 @@ use alondra_domain_model::*;
 use alondra_views as views;
 use crate::inbox_items;
 use std::collections::{BTreeMap, BTreeSet};
+use alondra_domain_rules::Apply as _;
 
 /// The screen of task `id` in `lang`.
 fn turn_end_shown(s: &DomainState, id: &str, lang: alondra_core::text::Lang) -> String {

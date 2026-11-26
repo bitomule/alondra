@@ -52,7 +52,7 @@ fn test_items_are_left_out_and_the_rest_is_kept() {
 fn the_domain_and_the_screens_never_name_what_hooks_deduced() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = vec![];
-    for dir in ["domain-model/src", "view-model/src", "views/src"] {
+    for dir in ["domain-model/src", "domain-rules/src", "view-model/src", "views/src"] {
         sources(&root.join(dir), &mut files);
     }
     assert!(files.len() > 20, "the sources are in the runfiles: {files:?}");

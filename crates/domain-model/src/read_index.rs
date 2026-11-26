@@ -8,8 +8,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 mod node_changes;
-pub use node_changes::{LiveNodeReading, NodeChangeCursor, NodeChanges};
-use node_changes::NodeHistory;
+pub use node_changes::{LiveNodeReading, NodeChangeCursor, NodeChanges, NodeHistory, RETAINED_NODE_IDS};
 
 /// What a task shows, from the domain alone: the client's language and the live data of its node
 /// (what it is doing, a pause the machine imposed) are the screen's to add.
@@ -445,7 +444,8 @@ impl Holds for ReadIndex {
 pub struct ReadSnapshot {
     state: Arc<DomainState>,
     index: Arc<ReadIndex>,
-    node_history: NodeHistory,
+    #[doc(hidden)]
+    pub node_history: NodeHistory,
 }
 
 impl ReadSnapshot {
@@ -897,8 +897,8 @@ impl<'a> Builder<'a> {
 }
 
 /// The inbox as the index lists it, each card with its buttons.
-#[cfg(test)]
-pub(crate) fn inbox_items(state: &DomainState) -> Vec<InboxItem> {
+#[doc(hidden)]
+pub fn inbox_items(state: &DomainState) -> Vec<InboxItem> {
     ReadIndex::build(state).queued(state).map(Cow::into_owned).collect()
 }
 
@@ -924,8 +924,8 @@ fn sdk_stopping(state: &DomainState, task: &TaskId) -> (bool, Option<alondra_dom
 
 /// A state read both ways: the index must say what the state answers on demand, card by card and
 /// task by task. `read_index_tests` checks it after every command of arbitrary histories.
-#[cfg(test)]
-pub(super) fn assert_index_matches(state: &DomainState) {
+#[doc(hidden)]
+pub fn assert_index_matches(state: &DomainState) {
     for card in state.interactions.values().filter(|card| card.author == super::Author::System || card.system_card == Some(super::SystemCard::Unheard)) {
         if !matches!(card.system_card, Some(super::SystemCard::RefusedCards { .. })) {
             // An outage card also keeps what Claude Code said and whether Alondra retried, and a

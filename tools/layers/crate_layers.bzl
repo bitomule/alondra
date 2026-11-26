@@ -8,6 +8,7 @@ its layer, the visibility of each crate lets only the layers above it in, and ev
 
 FOUNDATION = "foundation"
 DOMAIN = "domain"
+RULES = "domain-rules"
 PORTS = "ports"
 APPLICATION = "application"
 ADAPTER_IN = "adapter-in"
@@ -15,7 +16,7 @@ ADAPTER_OUT = "adapter-out"
 ADAPTER_PRIVATE = "adapter-private"
 ROOT = "root"
 
-LAYERS = [FOUNDATION, DOMAIN, PORTS, APPLICATION, ADAPTER_IN, ADAPTER_OUT, ADAPTER_PRIVATE, ROOT]
+LAYERS = [FOUNDATION, DOMAIN, RULES, PORTS, APPLICATION, ADAPTER_IN, ADAPTER_OUT, ADAPTER_PRIVATE, ROOT]
 
 _CORE = [FOUNDATION, DOMAIN, PORTS]
 
@@ -24,12 +25,14 @@ _CORE = [FOUNDATION, DOMAIN, PORTS]
 ALLOWED_DEPENDENCIES = {
     FOUNDATION: [FOUNDATION],
     DOMAIN: [FOUNDATION, DOMAIN],
+    # The domain's rules, behind the model's `DomainRules` port: only a root hands them to the store.
+    RULES: [FOUNDATION, DOMAIN],
     PORTS: _CORE,
     APPLICATION: _CORE,
     ADAPTER_IN: _CORE,
     ADAPTER_OUT: _CORE,
     ADAPTER_PRIVATE: _CORE,
-    ROOT: _CORE + [APPLICATION, ADAPTER_IN, ADAPTER_OUT],
+    ROOT: _CORE + [RULES, APPLICATION, ADAPTER_IN, ADAPTER_OUT],
 }
 
 CRATE_LAYERS = {
@@ -41,6 +44,7 @@ CRATE_LAYERS = {
     "crates/spec-engine": FOUNDATION,
     "crates/domain": DOMAIN,
     "crates/domain-model": DOMAIN,
+    "crates/domain-rules": RULES,
     # Mixed: its config, options and home lock still read and write Alondra's home.
     "crates/core": DOMAIN,
     "crates/provider-contract": PORTS,

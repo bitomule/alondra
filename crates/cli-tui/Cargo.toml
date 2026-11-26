@@ -24,6 +24,7 @@ serde_json.workspace = true
 url = "2.5.7"
 
 [dev-dependencies]
+alondra-domain-rules.workspace = true
 alondra-client-transport.workspace = true
 alondra-views.workspace = true
 proptest.workspace = true

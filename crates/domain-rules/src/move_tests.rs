@@ -1,0 +1,393 @@
+//! Moving a task to another account: the task stays itself, only the rule's accounts are offered,
+//! and the end of the execution it leaves hands over to the next node without asking anyone.
+use super::lifecycle_tests::{deliver, exec, last, must, task, user, world};
+use super::*;
+use alondra_core::accounts::{AccountBilling, AccountId, AccountKey, AccountState, AccountStatus, Provider};
+use alondra_core::model_selection::*;
+use alondra_domain::{Capacity, LiveState};
+use std::collections::{BTreeMap, BTreeSet};
+
+fn account(provider: Provider, id: &str, state: AccountState) -> AccountStatus {
+    AccountStatus { antigravity: None, provider, id: AccountId::parse(id).unwrap(), name: format!("{id} name"), state, native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None }
+}
+fn catalog(provider: Provider, id: &str, model: &str) -> AccountModelCatalog {
+    AccountModelCatalog { account: AccountKey::new(provider, AccountId::parse(id).unwrap()), revision: format!("{id}-{model}"), measured_at: 1, native_default: Some(model.into()), models: vec![CatalogModel {
+        model: model.into(), display_name: model.into(), reasoning_efforts: vec!["high".into()], default_reasoning_effort: Some("high".into()), context_window: Some(100_000), input_modalities: vec!["text".into()], is_default: true, hidden: false,
+    }] }
+}
+pub(super) fn claude() -> AccountKey { AccountKey::native(Provider::Claude) }
+fn codex() -> AccountKey { AccountKey::native(Provider::Codex) }
+
+/// Task `t`, its turn running on Codex, with Claude signed in and a Claude account turned off.
+pub(super) fn on_codex() -> DomainState {
+    let mut s = world();
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
+        account(Provider::Claude, "default", AccountState::SignedIn), account(Provider::Codex, "default", AccountState::SignedIn), account(Provider::Claude, "off", AccountState::Disabled),
+    ], reserve: alondra_core::usage::default_reserve() });
+    for (provider, id, model) in [(Provider::Claude, "default", "opus"), (Provider::Codex, "default", "gpt"), (Provider::Claude, "off", "opus")] {
+        must(&mut s, Actor::System, Command::RecordModelCatalog { catalog: catalog(provider, id, model) });
+    }
+    task(&mut s, "t", None);
+    task(&mut s, "later", None);
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::SetDependencies { task_id: "later".into(), dependencies: BTreeSet::from(["t".into()]), stack: None, reason: None });
+    must(&mut s, user(), Command::SetPriority { task_id: "t".into(), priority: TaskPriority::High });
+    must(&mut s, Actor::System, Command::AdmitExecution { provider: Provider::Codex, task_id: "t".into(), agent_id: "a".into(), conversation: "conversation".into(),
+        instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
+    let mut selection = TaskSelection::automatic(ModelProfile::Implementation);
+    selection.native_tool_denials = Some(vec![]);
+    selection.effective = Some(ModelSelection { model: ModelKey { provider: Provider::Codex, model: "gpt".into() }, reasoning_effort: Some("high".into()), catalog_revision: "default-gpt".into() });
+    must(&mut s, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection, pending: None });
+    let LifecycleRecord::Planned { input } = s.lifecycle_journal[&TaskId::from("t")][0].clone() else { panic!("planned first") };
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn".into(), input },
+    ] });
+    s
+}
+fn move_to(s: &mut DomainState, account: AccountKey) -> Result<CommandOutcome, DomainError> {
+    let stamp = s.task_selection_stamp(&"t".into()).unwrap();
+    exec(s, user(), Command::MoveTask { task_id: "t".into(), expected_selection: stamp, account })
+}
+/// What makes the task itself: what a move must leave as it was.
+fn identity(s: &DomainState) -> (String, RequestId, TaskPriority, BTreeSet<TaskId>, BTreeSet<TaskId>, Option<Checklist>) {
+    let t = &s.tasks[&TaskId::from("t")];
+    (t.title.clone(), t.request_id.clone(), t.priority, t.dependencies.clone(), s.tasks[&TaskId::from("later")].dependencies.clone(), s.checklists.get(&TaskId::from("t")).cloned())
+}
+
+#[test]
+fn a_move_keeps_the_task_itself_and_is_offered_only_where_its_rule_accepts_it() {
+    let mut s = on_codex();
+    assert!(s.move_task_action(&"t".into(), claude()).enabled);
+    assert_eq!(s.move_task_action(&"t".into(), codex()).disabled_reason.as_deref(), Some("same_account"));
+    assert_eq!(s.move_task_action(&"t".into(), AccountKey::new(Provider::Claude, AccountId::parse("off").unwrap())).disabled_reason.as_deref(), Some("account_unavailable"));
+    let before = identity(&s);
+    let tasks = s.tasks.len();
+    move_to(&mut s, claude()).unwrap();
+    assert_eq!(identity(&s), before, "id, title, request, priority, dependencies and checklist stay the task's own");
+    assert_eq!(s.tasks.len(), tasks, "a move creates no task and cancels none");
+    let t = &s.tasks[&TaskId::from("t")];
+    assert_eq!(t.state, TaskState::Running);
+    assert_eq!(t.agent_id, Some("a".into()), "the node it leaves runs until its execution ends");
+    assert_eq!(t.account_key(), codex());
+    assert_eq!(t.selection.as_ref().unwrap().account, Some(claude()));
+    assert_eq!(t.selection.as_ref().unwrap().effective, None, "a Codex model does not bind the Claude node");
+    let pending = t.pending_selection.clone().unwrap();
+    assert_eq!((pending.account, pending.model.model), (claude(), ModelKey { provider: Provider::Claude, model: "opus".into() }));
+    assert_eq!(s.moving_to(&"t".into()), Some(&claude()));
+    assert_eq!(move_to(&mut s, AccountKey::new(Provider::Claude, AccountId::parse("off").unwrap())).unwrap_err().code, "selection_pending");
+}
+
+#[test]
+fn the_host_a_task_moves_from_ends_into_the_move_without_asking_anyone() {
+    let mut s = on_codex();
+    move_to(&mut s, claude()).unwrap();
+    let cards = s.interactions.len();
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, by_alondra: false, ended_work: vec![] });
+    let LifecycleRecord::HostEnded { resume: Some(_), text: Some(text), .. } = last(&s, "t") else { panic!("the move goes on by itself: {:?}", last(&s, "t")) };
+    assert!(text.starts_with("The user moved this task to claude/default"), "{text}");
+    assert_eq!(s.interactions.len(), cards, "no card asks how the task goes on");
+    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+    assert_eq!(lifecycle.pending_inputs().len(), 1, "the next node starts with the move");
+    let admit = |account: Option<&str>| Command::AdmitExecution { provider: Provider::Claude, task_id: "t".into(), agent_id: "b".into(), conversation: "next".into(),
+        instance: "next".into(), host: "sdk-host".into(), model: None, account: account.map(|account| AccountId::parse(account).unwrap()), leaves_limit: None };
+    assert_eq!(exec(&mut s.clone(), Actor::System, admit(Some("off"))).unwrap_err().code, "active_account_immutable", "only the account the move names takes the task");
+    must(&mut s, Actor::System, admit(None));
+    assert_eq!(s.tasks[&TaskId::from("t")].account_key(), claude());
+    assert_eq!(s.moving_to(&"t".into()), None);
+}
+
+#[test]
+fn a_question_open_when_the_task_moves_stays_open_and_its_answer_reaches_the_next_node() {
+    let mut s = on_codex();
+    let options = vec![QuestionOption { id: "o0".into(), label: "Keep the parser".into(), description: None }, QuestionOption { id: "o1".into(), label: "Rewrite it".into(), description: None }];
+    must(&mut s, Actor::System, Command::RecordDecisionRequest { task_id: "t".into(), generation: 1, epoch: 1, hold: Hold::Question, tool: Some("AskUserQuestion".into()),
+        input: serde_json::json!({}), mcp_server: None, prompt: DecisionPrompt::Card { body: "Which parser?".into(), options, card: CardSpec::new(CardKind::Decide, "Which parser?") } });
+    let card = decision_card_id(&"t".into(), 1, 1);
+    move_to(&mut s, claude()).unwrap();
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, by_alondra: false, ended_work: vec![] });
+    assert!(s.open(&s.interactions[&card]), "the question is still the user's to answer");
+    assert!(s.lifecycle_journal[&TaskId::from("t")].iter().any(|record| matches!(record, LifecycleRecord::QuestionKept { card: kept } if *kept == card)));
+    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+    assert!(lifecycle.pending_inputs().is_empty(), "the next node waits for the answer it needs");
+    assert!(lifecycle.cards().iter().any(|(held, _)| **held == card));
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with("session-ended-")), "no card asks how the task goes on");
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.clone(), option_id: "o1".into(), inputs: BTreeMap::new() });
+    let LifecycleRecord::Answered { card: answered, text: Some(text), .. } = last(&s, "t") else { panic!("the answer is told: {:?}", last(&s, "t")) };
+    assert_eq!(answered, card);
+    assert!(text.contains("«Which parser?»: Rewrite it"), "{text}");
+    assert_eq!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().len(), 1);
+}
+
+#[test]
+fn a_task_that_never_ran_just_starts_on_the_account_it_moved_to() {
+    let mut s = on_codex();
+    task(&mut s, "queued", None);
+    let mut picked = TaskSelection::automatic(ModelProfile::Implementation);
+    picked.request_model(Some(ModelKey { provider: Provider::Codex, model: "gpt".into() }));
+    s.tasks.get_mut(&TaskId::from("queued")).unwrap().selection = Some(picked);
+    let stamp = s.task_selection_stamp(&"queued".into()).unwrap();
+    must(&mut s, user(), Command::MoveTask { task_id: "queued".into(), expected_selection: stamp, account: claude() });
+    let queued = &s.tasks[&TaskId::from("queued")];
+    assert_eq!(queued.pending_selection, None, "nothing runs that has to end first");
+    let selection = queued.selection.clone().unwrap();
+    assert_eq!((selection.account, selection.requested, selection.allow_model_substitution), (Some(claude()), None, true));
+}
+
+#[test]
+fn a_move_within_a_provider_keeps_the_model_the_task_ran_on_when_the_account_has_it() {
+    let mut s = on_codex();
+    let mut accounts = s.accounts.clone();
+    accounts.push(account(Provider::Codex, "work", AccountState::SignedIn));
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts, reserve: alondra_core::usage::default_reserve() });
+    let mut work = catalog(Provider::Codex, "work", "gpt");
+    work.native_default = None;
+    work.models[0].is_default = false;
+    must(&mut s, Actor::System, Command::RecordModelCatalog { catalog: work });
+    let destination = AccountKey::new(Provider::Codex, AccountId::parse("work").unwrap());
+    move_to(&mut s, destination.clone()).unwrap();
+    let t = &s.tasks[&TaskId::from("t")];
+    assert_eq!(t.pending_selection.as_ref().map(|pending| (&pending.account, &pending.model.model.model)), Some((&destination, &"gpt".to_owned())));
+    assert_eq!(t.selection.as_ref().unwrap().requested, None, "keeping the model is not a choice the user made");
+}
+
+fn situation(s: &DomainState) -> Situation {
+    alondra_domain_model::ReadIndex::build(s).task(&"t".into()).expect("a reading").situation
+}
+/// The source's host ends into the move and the move is deferred: nothing has to start yet.
+pub(super) fn moved_and_deferred(s: &mut DomainState) {
+    move_to(s, claude()).unwrap();
+    must(s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, by_alondra: true, ended_work: vec![] });
+    must(s, Actor::System, Command::DeferTaskMove { task_id: "t".into(), account: claude() });
+}
+
+#[test]
+fn feedback_after_an_accepted_delivery_question_and_deferred_move_is_accepted() {
+    let mut s = on_codex();
+    deliver(&mut s, "t", "a", "result");
+    let targets = vec![DeliveryTarget::Text { text: "Done".into() }];
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "result".into(), targets: targets.clone() });
+    let options = vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }];
+    must(&mut s, Actor::Agent { agent_id: "a".into() }, Command::AskQuestion {
+        attachments: vec![], interaction_id: "follow-up".into(), scope: Scope::Task { task_id: "t".into() },
+        recipient: Recipient::User, body: "Which way?".into(), blocking: true,
+        card: CardSpec::question("Choose the way", &options), options,
+    });
+    moved_and_deferred(&mut s);
+    assert!(s.tasks[&TaskId::from("t")].agent_id.is_none());
+    assert!(s.lifecycle_of(&"t".into()).unwrap().execution().is_none());
+    let feedback = exec(&mut s, user(), Command::SubmitFeedback {
+        merge_failure: None, attachments: vec![], presentation_id: "result".into(), targets,
+        body: "Change the wording".into(), instruction: Instruction::Changes,
+    });
+    assert!(feedback.is_ok(), "feedback must be accepted: {feedback:?}");
+    assert_eq!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().len(), 1);
+    assert!(matches!(last(&s, "t"), LifecycleRecord::HandedBack { text: Some(text), .. } if text == Instruction::Changes.message("Change the wording")));
+}
+
+// Found by the whole-machine model: the user moved a delivery under review to the other account.
+// The notice of the move stayed pending with no execution to take it, so the task read as starting
+// for ever while it waited for the user's review, and once the user sent it back nothing started it.
+#[test]
+fn a_delivery_moved_while_the_user_reviews_it_waits_for_the_review_and_goes_on_once_sent_back() {
+    let mut s = on_codex();
+    deliver(&mut s, "t", "a", "result");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn".into(), failure: None, failed: None });
+    moved_and_deferred(&mut s);
+    assert_eq!(situation(&s), Situation::Delivered(Delivery::ForReview));
+    assert!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().is_empty(), "nothing goes on until the user says");
+
+    must(&mut s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "result".into(),
+        targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Name the states".into(), instruction: Instruction::Changes });
+    assert!(matches!(last(&s, "t"), LifecycleRecord::Told { text: Some(text), .. } if text == Instruction::Changes.message("Name the states")), "the feedback alone is durable");
+    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+    assert_eq!(lifecycle.pending_inputs().len(), 1, "what the user sent back waits for the next node");
+    assert_eq!(lifecycle.obligation().map(|owed| (owed.party, owed.owed)), Some((alondra_domain::Party::Alondra, alondra_domain::Owed::Start)));
+    assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Step(AlondraStep::Starting)));
+    must(&mut s, Actor::System, Command::AdmitExecution { provider: Provider::Claude, task_id: "t".into(), agent_id: "b".into(), conversation: "next".into(),
+        instance: "next".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
+    assert_eq!(s.tasks[&TaskId::from("t")].account_key(), claude(), "it goes on on the account it moved to");
+}
+
+// Found by the whole-machine model: a task paused for the disk moved to the other account. Its
+// pause outlived the node it paused, so no gate pass ended it and the task read as waiting for the
+// disk for ever.
+#[test]
+fn a_disk_pause_ends_with_the_move_of_the_task_it_paused() {
+    let mut s = on_codex();
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause: Pause {
+        reason: PauseReason::Disk, since: 5, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false } } });
+    assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Disk));
+    moved_and_deferred(&mut s);
+    assert_eq!(s.node_pause(&"a".into()), None, "the pause ended with the node it paused");
+    assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Slot), "it goes on on the account it moved to");
+    assert_eq!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().len(), 1);
+}
+
+fn usage_limit() -> SdkApiFailure {
+    SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None, ..Default::default() }
+}
+fn usage_holds(s: &DomainState) -> Vec<ClaudeHeld> {
+    s.claude_held().into_iter().filter(|held| held.task == TaskId::from("t") && held.hold == ClaudeHold::Usage).collect()
+}
+/// Task `t` on Codex, its turn ended by Codex's usage limit: the task waits for the reset.
+fn held_by_the_codex_limit(s: &mut DomainState, turn: &str) -> InteractionId {
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: turn.into(), failure: Some(usage_limit()), failed: None });
+    let held = usage_holds(s);
+    assert_eq!(held.iter().map(|held| (held.provider, &held.account)).collect::<Vec<_>>(), [(Provider::Codex, &codex().account)]);
+    held[0].card.clone()
+}
+fn left_the_limit_for_the_account_it_moved_to(s: &DomainState, card: &InteractionId) {
+    assert!(usage_holds(s).is_empty(), "Codex's limit holds a task that left Codex: {:?}", usage_holds(s));
+    assert!(s.interactions[card].withdrawn, "the card of a limit the task left stays in the inbox");
+    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+    assert_eq!(lifecycle.pending_inputs().len(), 1, "the next node has something to start with");
+    assert!(lifecycle.cards().iter().all(|(id, _)| **id != *card), "the task no longer waits on the card");
+}
+
+// 2026-11-15: Codex ran out until Wednesday and its limit
+// held the task. The user moved it to a Claude account with margin and the move finished, but the
+// task kept waiting for Codex's reset and no node started on the account it moved to.
+#[test]
+fn a_move_to_another_account_ends_the_usage_limit_of_the_account_the_task_left() {
+    let mut s = on_codex();
+    let card = held_by_the_codex_limit(&mut s, "turn");
+    assert_eq!(s.live_state(&"t".into()), Some(LiveState::WaitingCapacity(Capacity::Usage)));
+    moved_and_deferred(&mut s);
+    left_the_limit_for_the_account_it_moved_to(&s, &card);
+    assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Slot), "it starts on the account it moved to");
+    must(&mut s, Actor::System, Command::AdmitExecution { provider: Provider::Claude, task_id: "t".into(), agent_id: "b".into(), conversation: "next".into(),
+        instance: "next".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
+    assert_eq!(s.tasks[&TaskId::from("t")].account_key(), claude());
+}
+
+// The same task, as it really was: its pull request merged and its node owed the release when
+// Codex's limit held it.
+#[test]
+fn a_task_owing_work_after_its_merge_starts_on_the_account_it_moved_to_off_a_usage_limit() {
+    let mut s = on_codex();
+    let targets = || vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }];
+    must(&mut s, Actor::Agent { agent_id: "a".into() }, Command::RegisterPr {
+        task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
+        head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    must(&mut s, Actor::Agent { agent_id: "a".into() }, Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("publish the release".into()), waits_for: vec![] });
+    must(&mut s, Actor::Agent { agent_id: "a".into() }, Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
+    });
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: targets() });
+    must(&mut s, Actor::System, Command::ObservePrState {
+        pr_id: "pr".into(), head: "head1".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()),
+    });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn".into(), failure: None, failed: None });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Your PR merged: publish the release.".into(), from_user: false, answers: None });
+    let input = s.lifecycle_of(&"t".into()).unwrap().pending_inputs().first().map(|input| input.as_str().to_owned()).expect("the merge notice");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::TurnStarted { turn: "release".into(), input }] });
+    let card = held_by_the_codex_limit(&mut s, "release");
+    moved_and_deferred(&mut s);
+    left_the_limit_for_the_account_it_moved_to(&s, &card);
+    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+    let goes_on = match lifecycle.phase() {
+        alondra_domain::TaskPhase::InProgress => matches!(lifecycle.live(), Some(LiveState::Working(_) | LiveState::WaitingCapacity(Capacity::Gate))),
+        alondra_domain::TaskPhase::Delivered => lifecycle.obligation().is_some_and(|owed| owed.owed == alondra_domain::Owed::Start),
+        _ => false,
+    };
+    assert!(goes_on, "the release it owes starts on the account it moved to: {:?} {:?}", lifecycle.phase(), lifecycle.live());
+}
+
+#[test]
+fn a_usage_limit_stays_when_the_account_the_task_moves_to_cannot_take_it() {
+    let mut s = on_codex();
+    let card = held_by_the_codex_limit(&mut s, "turn");
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
+        account(Provider::Claude, "default", AccountState::SignedIn), account(Provider::Codex, "default", AccountState::SignedIn), account(Provider::Claude, "off", AccountState::Disabled),
+    ], reserve: alondra_core::usage::default_reserve() });
+    move_to(&mut s, claude()).unwrap();
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, by_alondra: true, ended_work: vec![] });
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
+        account(Provider::Claude, "default", AccountState::SignedOut), account(Provider::Codex, "default", AccountState::SignedIn),
+    ], reserve: alondra_core::usage::default_reserve() });
+    must(&mut s, Actor::System, Command::DeferTaskMove { task_id: "t".into(), account: claude() });
+    assert_eq!(usage_holds(&s).len(), 1, "a signed-out account takes no work off a limit");
+    assert!(!s.interactions[&card].withdrawn);
+}
+
+// 2026-11-16: the same task, moved again once ending the limit on a move shipped. Its first move
+// had ended before any node started on the account it moved to, so the second only changed the
+// account the task starts on, and Codex's limit kept holding it.
+#[test]
+fn a_task_resting_after_a_move_leaves_the_usage_limit_when_it_moves_again() {
+    let mut s = on_codex();
+    let card = held_by_the_codex_limit(&mut s, "turn");
+    move_to(&mut s, claude()).unwrap();
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, by_alondra: true, ended_work: vec![] });
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
+        account(Provider::Claude, "default", AccountState::SignedOut), account(Provider::Codex, "default", AccountState::SignedIn),
+    ], reserve: alondra_core::usage::default_reserve() });
+    must(&mut s, Actor::System, Command::DeferTaskMove { task_id: "t".into(), account: claude() });
+    assert_eq!(usage_holds(&s).len(), 1, "the task rests after its move, still held by Codex's limit");
+    assert!(s.lifecycle_of(&"t".into()).unwrap().execution().is_none());
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
+        account(Provider::Claude, "default", AccountState::SignedIn), account(Provider::Codex, "default", AccountState::SignedIn), account(Provider::Claude, "second", AccountState::SignedIn),
+    ], reserve: alondra_core::usage::default_reserve() });
+    must(&mut s, Actor::System, Command::RecordModelCatalog { catalog: catalog(Provider::Claude, "second", "opus") });
+    let second = AccountKey::new(Provider::Claude, AccountId::parse("second").unwrap());
+    move_to(&mut s, second.clone()).unwrap();
+    left_the_limit_for_the_account_it_moved_to(&s, &card);
+    assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Slot), "it starts on the account it moved to");
+}
+
+/// A turn the usage limit holds may never end, so its task still reads as at work: the account it
+/// runs on having used up its session is what says that moving it is how it goes on, until the
+/// session resets.
+#[test]
+fn a_task_whose_account_used_up_its_session_is_out_of_quota_while_its_turn_still_runs() {
+    let mut s = on_codex();
+    let t = TaskId::from("t");
+    assert!(!s.out_of_quota(&t, 1_000), "no reading, no limit");
+    let session = |used| alondra_core::usage::UsageReading { windows: vec![alondra_core::usage::WindowReading {
+        kind: alondra_core::usage::WindowKind::Session, used, resets_at: Some(5_000), exhausted: false }], plan: None, complete: false };
+    must(&mut s, Actor::System, Command::RecordAccountUsage { provider: Provider::Codex, account: AccountId::default_account(), reading: session(alondra_core::usage::Share::of(0.98)), at: 800, day: "2026-11-19".into() });
+    assert!(!s.out_of_quota(&t, 1_000), "a session not yet used up leaves the task where it is");
+    must(&mut s, Actor::System, Command::RecordAccountUsage { provider: Provider::Codex, account: AccountId::default_account(), reading: session(alondra_core::usage::Share::FULL), at: 900, day: "2026-11-19".into() });
+    assert!(matches!(s.live_state(&t), Some(LiveState::Working(_))), "the turn the limit holds never ended");
+    assert!(s.out_of_quota(&t, 1_000));
+    assert!(!s.out_of_quota(&TaskId::from("later"), 1_000), "a task that never started runs on no account yet");
+    assert!(!s.out_of_quota(&t, 5_000), "the session reset");
+    move_to(&mut s, claude()).unwrap();
+    assert_eq!(s.moving_to(&t), Some(&claude()), "the open turn does not hold the move back");
+}
+
+/// Antigravity accounts run nodes: a task moves to one whose catalog offers a model.
+#[test]
+fn a_task_moves_to_an_antigravity_account() {
+    let mut s = on_codex();
+    let mut statuses = s.accounts.clone();
+    let mut antigravity = account(Provider::Antigravity, "default", AccountState::SignedIn);
+    antigravity.antigravity = Some(alondra_core::accounts::AntigravityStatus::of(&Default::default(), false));
+    statuses.push(antigravity);
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: statuses, reserve: alondra_core::usage::default_reserve() });
+    must(&mut s, Actor::System, Command::RecordModelCatalog { catalog: catalog(Provider::Antigravity, "default", "gemini") });
+    let target = AccountKey::native(Provider::Antigravity);
+    assert!(s.move_task_action(&"t".into(), target.clone()).enabled);
+    move_to(&mut s, target.clone()).unwrap();
+    assert_eq!(s.moving_to(&"t".into()), Some(&target));
+}
+
+/// The key of a named Antigravity account changes while other commits land: its record is judged
+/// on the domain as it stands, so it never fails as stale after the key was already written.
+#[test]
+fn a_credential_change_is_recorded_whatever_committed_since_it_was_read() {
+    let mut s = on_codex();
+    let mut statuses = s.accounts.clone();
+    let mut studio = account(Provider::Antigravity, "studio", AccountState::SignedIn);
+    studio.antigravity = Some(alondra_core::accounts::AntigravityStatus::of(&alondra_core::antigravity_account::Settings::of(alondra_core::antigravity_account::Access::ApiKey), false));
+    statuses.push(studio);
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: statuses, reserve: alondra_core::usage::default_reserve() });
+    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "credential".into(), expected_revision: 0,
+        command: Command::RecordAccountCredential { account: AccountKey::new(Provider::Antigravity, AccountId::parse("studio").unwrap()), set: true } };
+    must(&mut s, user(), Command::SetPriority { task_id: "t".into(), priority: TaskPriority::Low });
+    s.execute(&user(), &envelope).unwrap();
+    let recorded = s.accounts.iter().find(|status| status.id.as_str() == "studio").unwrap();
+    assert!(recorded.antigravity.as_ref().unwrap().key_set);
+    assert_eq!(recorded.sign_ins, 1);
+}

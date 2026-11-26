@@ -17,8 +17,8 @@ pub fn long(head: &str) -> String {
     format!("{head}\n\n{}", "What the node measured, line after line of it. ".repeat(300))
 }
 
-pub fn ended_task(fixture: &Fixture) -> DomainStore {
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+pub fn ended_task(fixture: &Fixture, rules: &'static dyn DomainRules) -> DomainStore {
+    let mut store = DomainStore::open(&fixture.path(), rules).unwrap();
     seeded(&mut store);
     let user = Actor::User { user_id: "user-1".into() };
     let ask = Command::AskQuestion {

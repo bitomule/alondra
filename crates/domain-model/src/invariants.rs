@@ -17,6 +17,11 @@ pub fn check_after_every_command() {
     CHECKED.store(true, Ordering::Relaxed);
 }
 
+/// Whether the invariants are checked after every command.
+pub fn checked() -> bool {
+    CHECKED.load(Ordering::Relaxed)
+}
+
 /// The invariants `state` breaks, each with what breaks it.
 pub fn violations(state: &DomainState) -> Vec<String> {
     let mut found = vec![];
@@ -70,36 +75,4 @@ fn has_a_card_for_the_user(state: &DomainState, task: &Task) -> bool {
         i.recipient == Recipient::User && !i.withdrawn && matches!(&i.scope, Scope::Task { task_id } if *task_id == task.id)
             && matches!(i.payload, InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. })
     })
-}
-
-/// A command whose acceptance applies a decision: applied again, it must change nothing.
-fn decides(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::AnswerQuestion { .. }
-            | Command::AcceptDelivery { .. }
-            | Command::DecideProposedPlan { .. }
-            | Command::DecideDocumentReview { .. }
-            | Command::SettleSuggestion { .. }
-            | Command::SettleStall { .. }
-            | Command::SettlePlanReview { .. }
-            | Command::AuthorizeMerge { .. }
-            | Command::RecordVerdict { .. }
-    )
-}
-
-/// Panics, when the check is on, if `next`, the state `envelope` left from `before`, breaks an
-/// invariant, or if the decision it applied would change `next` again.
-pub(super) fn assert_hold(before: &DomainState, actor: &Actor, envelope: &CommandEnvelope, next: &DomainState) {
-    if !CHECKED.load(Ordering::Relaxed) {
-        return;
-    }
-    let earlier = violations(before);
-    let broken: Vec<String> = violations(next).into_iter().filter(|why| !earlier.contains(why)).collect();
-    assert!(broken.is_empty(), "{:?} left the domain broken:\n{}", envelope.command, broken.join("\n"));
-    if decides(&envelope.command)
-        && let Ok((again, _)) = next.prepare_transition(actor, envelope)
-    {
-        assert!(again == *next, "{:?}, applied a second time, changed the state again", envelope.command);
-    }
 }

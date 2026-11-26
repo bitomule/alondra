@@ -5,6 +5,7 @@ use alondra_views as views;
 use std::collections::{BTreeMap, BTreeSet};
 use alondra_views::{Client, Lang, LiveSnapshot, RenderContext, Transport};
 use proptest::prelude::*;
+use alondra_domain_rules::Apply as _;
 
 fn context<'a>(state: &'a DomainState, index: &'a ReadIndex, live: &'a LiveSnapshot) -> RenderContext<'a> {
     RenderContext {

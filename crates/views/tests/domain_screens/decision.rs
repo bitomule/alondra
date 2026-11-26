@@ -4,6 +4,7 @@ use alondra_domain_model::*;
 use alondra_views as views;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
+use alondra_domain_rules::Apply as _;
 
 #[test]
 fn a_request_aborted_after_its_turn_ended_asks_how_the_task_goes_on() {

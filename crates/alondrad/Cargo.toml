@@ -15,6 +15,7 @@ alondra-store-sqlite.workspace = true
 alondra-process-group.workspace = true
 alondra-core.workspace = true
 alondra-domain-model.workspace = true
+alondra-domain-rules.workspace = true
 alondra-views.workspace = true
 alondra-daemon-server.workspace = true
 alondra-daemon-support.workspace = true

@@ -30,6 +30,7 @@ CATALOG_FRAGMENTS = [
     ("core", "//crates/core:report_sources", "--log --words"),
     ("host", "//crates/host:report_sources", "--log --words"),
     ("domain_model", "//crates/domain-model:report_sources", "--log --words"),
+    ("domain_rules", "//crates/domain-rules:report_sources", "--log --words"),
     ("view_model", "//crates/view-model:report_sources", "--log --words"),
     ("views", "//crates/views:report_sources", "--log --words"),
     ("provider_claude", "//crates/provider-claude:report_sources", "--log --words"),

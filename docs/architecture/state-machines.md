@@ -351,7 +351,8 @@ changed and which test proved it; every new test was seen failing with its fix r
   auto-launch can wake. A task that waits for other tasks shows «waiting for tasks», never «queued»,
   because the aggregate records the dependency wait (default decision). «Clear completed» takes only what the list shows as completed: never a closed request one of whose tasks is still ending (F-CARDS-7). After a merge, a turn that
   ends idle without declaring post-merge work again ends that work (documented rule).
-- **Files**: `crates/domain-model/src/rules.rs` (request closing, dependencies, post-merge),
+- **Files**: `crates/domain-rules/src/rules.rs` (request closing, dependencies, post-merge) and its
+  guards in `crates/domain-model/src/checks.rs`,
   `crates/domain-model/src/situation.rs`, `crates/domain/src/lifecycle.rs`, the orchestrator inbox
   (`orchestrator_inbox` steps/settle), `crates/engine-sdk/src/auto_launch.rs`.
 - **Tests**: domain tests for each rule (a request with all tasks ended and two unanswered reminders
@@ -376,8 +377,8 @@ which fail without the fix and pass with it (ablation in the pull request).
   document (`withdraw_deliveries_behind_their_targets`, the PR sweep extended to documents). A card
   that replaces the current final delivery hands it back as `Withdraw` does
   (`hand_back_replaced_deliveries`, default decision), and `presentation()` refuses a withdrawn delivery.
-- **Files**: `crates/domain-model/src/rules.rs` (interactions, `replaces`, plan reviews, document
-  revisions), `card_contract.rs`, `decisions.rs`.
+- **Files**: `crates/domain-rules/src/rules.rs` (interactions, `replaces`, plan reviews, document
+  revisions) with its guards in `crates/domain-model/src/checks.rs`, `card_contract.rs`, `decisions.rs`.
 - **Tests**: domain tests, one per rule, each with the exact sequence of its finding.
 
 ### G7 · GitHub: no closing, merging or reading against a stale picture
@@ -763,7 +764,7 @@ truth = ["derived", "sqlite:api_failures"]
 
 ```toml state-machine
 id = "M-LIFE-6"
-code = ["crates/domain-model/src/model.rs::TaskState", "crates/domain-model/src/rules.rs::derive_states", "crates/core/src/tasks.rs::TaskState"]
+code = ["crates/domain-model/src/model.rs::TaskState", "crates/domain-model/src/checks.rs::derive_states", "crates/core/src/tasks.rs::TaskState"]
 truth = ["sqlite:tasks", "sqlite:task_cancel_reason", "sqlite:task_history", "sqlite:task_projects"]
 states = "crates/domain-model/src/model.rs::TaskState"
 variants = ["NotStarted", "Running", "NeedsYou", "AwaitingBlocker", "ForYourReview", "WaitingDependency", "Closing", "Done", "Cancelled"]
@@ -826,7 +827,7 @@ transitions = ["ThroughSdk -> Closed"]
 
 ```toml state-machine
 id = "M-LIFE-10"
-code = ["crates/domain-model/src/model.rs::WrapUp", "crates/domain-model/src/model.rs::NodeEnd", "crates/domain-model/src/rules.rs::node_closing"]
+code = ["crates/domain-model/src/model.rs::WrapUp", "crates/domain-model/src/model.rs::NodeEnd", "crates/domain-model/src/checks.rs::node_closing"]
 truth = ["sqlite:task_wrap_ups", "sqlite:task_cleanup_turns", "sqlite:node_last_words", "sqlite:task_stalls"]
 ```
 
@@ -1009,7 +1010,7 @@ Differences between `docs/architecture/task-states.md` and the code:
 
 ```toml state-machine
 id = "M-LIFE-15"
-code = ["crates/domain-model/src/stages.rs::TaskStages", "crates/domain-model/src/stage_rules.rs::begin_stage_handover", "crates/domain-model/src/stage_rules.rs::record_plan_approval", "crates/engine-sdk/src/provider_transition.rs::request_stage"]
+code = ["crates/domain-model/src/stages.rs::TaskStages", "crates/domain-rules/src/stage_rules.rs::begin_stage_handover", "crates/domain-rules/src/stage_rules.rs::record_plan_approval", "crates/engine-sdk/src/provider_transition.rs::request_stage"]
 truth = ["sqlite:task_stages"]
 ```
 
@@ -1055,7 +1056,7 @@ truth = ["sqlite:task_stages"]
 
 ```toml state-machine
 id = "M-LIFE-16"
-code = ["crates/domain-model/src/specs.rs::TaskSpecs", "crates/domain-model/src/rules/spec_rules.rs::propose_specs", "crates/domain-model/src/rules/spec_rules.rs::approve_plan_specs", "crates/domain-model/src/rules/spec_rules.rs::record_specs_written", "crates/domain-model/src/rules/spec_rules.rs::request_spec_change", "crates/domain-model/src/rules/spec_rules.rs::propose_amendment", "crates/domain-model/src/rules/spec_rules.rs::settle_spec_card", "crates/engine-sdk/src/spec_writes.rs::write_due"]
+code = ["crates/domain-model/src/specs.rs::TaskSpecs", "crates/domain-rules/src/rules/spec_rules.rs::propose_specs", "crates/domain-rules/src/rules/spec_rules.rs::approve_plan_specs", "crates/domain-rules/src/rules/spec_rules.rs::record_specs_written", "crates/domain-rules/src/rules/spec_rules.rs::request_spec_change", "crates/domain-rules/src/rules/spec_rules.rs::propose_amendment", "crates/domain-rules/src/rules/spec_rules.rs::settle_spec_card", "crates/engine-sdk/src/spec_writes.rs::write_due"]
 truth = ["sqlite:task_specs"]
 states = "crates/domain-model/src/specs.rs::AmendmentState"
 variants = ["Requested", "Proposed", "Approved", "Rejected"]
@@ -1119,7 +1120,7 @@ Execution model common to all machines in this area (stated once):
 
 ```toml state-machine
 id = "M-CARDS-1"
-code = ["crates/domain-model/src/model.rs::Interaction", "crates/domain-model/src/rules.rs::open", "crates/domain-model/src/rules.rs::invalidate", "crates/domain-model/src/rules.rs::retire"]
+code = ["crates/domain-model/src/model.rs::Interaction", "crates/domain-model/src/checks.rs::open", "crates/domain-model/src/checks.rs::invalidate", "crates/domain-model/src/checks.rs::retire"]
 truth = ["sqlite:interactions", "sqlite:interaction_attachments", "sqlite:interaction_holds", "sqlite:interaction_reads", "sqlite:interaction_subjects"]
 ```
 
@@ -1186,7 +1187,7 @@ truth = ["sqlite:merge_authorizations", "sqlite:stack_readiness", "sqlite:delive
 
 ```toml state-machine
 id = "M-CARDS-3"
-code = ["crates/domain-model/src/model.rs::QuestionGroup", "crates/domain-model/src/rules.rs::group_complete", "crates/core/src/model.rs::QuestionStatus"]
+code = ["crates/domain-model/src/model.rs::QuestionGroup", "crates/domain-model/src/checks.rs::group_complete", "crates/core/src/model.rs::QuestionStatus"]
 truth = ["sqlite:interactions"]
 ```
 
@@ -1198,7 +1199,7 @@ truth = ["sqlite:interactions"]
 
 ```toml state-machine
 id = "M-CARDS-4"
-code = ["crates/domain-model/src/rules/snooze.rs::snooze_guard", "crates/domain-model/src/rules/snooze.rs::resurface_card", "crates/domain-model/src/rules/snooze.rs::reconcile_snoozed_cards"]
+code = ["crates/domain-model/src/checks/snooze.rs::snooze_guard", "crates/domain-rules/src/rules/snooze.rs::resurface_card", "crates/domain-rules/src/rules/snooze.rs::reconcile_snoozed_cards"]
 truth = ["sqlite:interactions"]
 ```
 
@@ -1233,7 +1234,7 @@ variants = ["Plan", "FinalResult", "Problem"]
 
 ```toml state-machine
 id = "M-CARDS-7"
-code = ["crates/domain-model/src/model.rs::PlanReview", "crates/domain-model/src/rules/plan_review.rs::plan_review_pending"]
+code = ["crates/domain-model/src/model.rs::PlanReview", "crates/domain-model/src/checks/plan_review.rs::plan_review_pending"]
 truth = ["sqlite:plan_reviews"]
 ```
 
@@ -1245,7 +1246,7 @@ truth = ["sqlite:plan_reviews"]
 
 ```toml state-machine
 id = "M-CARDS-8"
-code = ["crates/domain-model/src/checklist.rs::Checklist", "crates/domain-model/src/checklist.rs::ChecklistMark", "crates/domain-model/src/rules.rs::take_plan_items"]
+code = ["crates/domain-model/src/checklist.rs::Checklist", "crates/domain-model/src/checklist.rs::ChecklistMark", "crates/domain-rules/src/rules.rs::take_plan_items"]
 truth = ["sqlite:task_checklists", "sqlite:delivery_checklists"]
 ```
 
@@ -1307,7 +1308,7 @@ truth = ["sqlite:requests", "sqlite:cleared_requests", "sqlite:maintenance_reque
 
 ```toml state-machine
 id = "M-CARDS-11"
-code = ["crates/domain-model/src/rules.rs::dependency_graph", "crates/domain-model/src/rules.rs::blocks_graph"]
+code = ["crates/domain-model/src/checks.rs::dependency_graph", "crates/domain-model/src/checks.rs::blocks_graph"]
 truth = ["sqlite:task_dependencies", "sqlite:task_waits", "sqlite:lifecycle_dependencies", "sqlite:task_continuations", "sqlite:task_creations", "sqlite:task_launch_plans", "sqlite:task_relations"]
 ```
 
@@ -1320,7 +1321,7 @@ truth = ["sqlite:task_dependencies", "sqlite:task_waits", "sqlite:lifecycle_depe
 
 ```toml state-machine
 id = "M-CARDS-12"
-code = ["crates/domain-model/src/model.rs::StackDependency", "crates/domain-model/src/model.rs::StackReadiness", "crates/domain-model/src/rules.rs::stack_ready"]
+code = ["crates/domain-model/src/model.rs::StackDependency", "crates/domain-model/src/model.rs::StackReadiness", "crates/domain-model/src/checks.rs::stack_ready"]
 truth = ["sqlite:stack_readiness", "sqlite:task_stacks"]
 ```
 
@@ -1894,7 +1895,7 @@ that fix the design), `crates/engine-admission/src/disk_peaks.rs`, `crates/engin
 `engine-admission/src/admission.rs` (`admit`, `snapshot_locked`, `working_tasks`, `reserving_tasks`,
 `hold_for_disk`), `engine-ports/src/disk.rs`, `system/src/disk.rs`, `daemon-engine-machine/src/{machine,swap_disk}.rs`,
 `engine-sdk/src/bg_handover.rs`, `store-sqlite/src/handover.rs`, `engine-ports/src/journal/handover.rs`,
-`engine-sdk/src/sdk_owner.rs` (`start_bound`), `domain-model/src/rules.rs` (`AdmitExecution`, `RecordTaskWorktree`),
+`engine-sdk/src/sdk_owner.rs` (`start_bound`), `domain-rules/src/rules.rs` (`AdmitExecution`, `RecordTaskWorktree`),
 `engine-kernel/src/domain_runtime.rs` (`set_task_worktree`, `changed`), `engine-worktrees/src/cancelled_worktrees.rs`,
 `daemon-server/src/domain_bootstrap.rs` (`agent_waiting_machine`), `alondrad/src/{lib,assemble}.rs`. Not audited:
 `machine_state.rs` (`MacState`, memory and swap) beyond its use. The `git log` of the four main files shows only crate
@@ -4799,7 +4800,7 @@ truth = ["memory", "sqlite:branch_update"]
 
 ```toml state-machine
 id = "M-GH-4"
-code = ["crates/domain-model/src/model.rs::OpenPrPending", "crates/domain-model/src/rules/open_pr.rs", "crates/engine-github/src/domain_github.rs::reconcile"]
+code = ["crates/domain-model/src/model.rs::OpenPrPending", "crates/domain-model/src/checks/open_pr.rs", "crates/engine-github/src/domain_github.rs::reconcile"]
 truth = ["sqlite:task_open_prs"]
 states = "crates/domain-model/src/model.rs::OpenPrPending"
 variants = ["Deliver", "Close"]

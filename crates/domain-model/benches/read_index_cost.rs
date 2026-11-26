@@ -1,4 +1,5 @@
 use alondra_domain_model::*;
+use alondra_domain_rules::Apply;
 use std::{alloc::{GlobalAlloc, Layout, System}, collections::BTreeSet, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, time::Instant};
 mod inbox_graphs;
 mod read_index;

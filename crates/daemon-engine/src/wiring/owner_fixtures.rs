@@ -204,7 +204,7 @@ pub fn running_with(binding: &ProviderBinding) -> (Fixture, DomainStore, Executi
 }
 pub fn installed() -> (Fixture, DomainStore) {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let state = store.load().unwrap();
     store

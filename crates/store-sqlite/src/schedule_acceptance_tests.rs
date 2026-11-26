@@ -22,7 +22,7 @@ impl Fixture {
         Self { directory, path }
     }
     fn open(&self) -> DomainStore {
-        DomainStore::open(&self.path).unwrap()
+        DomainStore::open(&self.path, &alondra_domain_rules::Rules).unwrap()
     }
 }
 impl Drop for Fixture {

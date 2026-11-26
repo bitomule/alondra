@@ -1,4 +1,5 @@
 use alondra_domain_model::*;
+use alondra_domain_rules::Apply as _;
 #[allow(unused_imports)]
 use alondra_views as views;
 #[allow(unused_imports)]

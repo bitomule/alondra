@@ -42,7 +42,7 @@ pub enum Attention {
 /// What holds a task or its delivery back: the one part of the attention and of the buttons'
 /// guards that reads the whole domain. The state finds it by scanning; a `ReadIndex` reads it from
 /// what it found once for every card.
-pub(super) trait Holds {
+pub trait Holds {
     /// The first open task that holds `task` back.
     fn first_blocker(&self, task: &TaskId) -> Option<TaskId>;
     /// The oldest open card in front of `delivery`.
@@ -62,14 +62,14 @@ impl Holds for DomainState {
 /// found in one pass over the interactions: a rule that reads the cards of every task reads them
 /// here, instead of scanning every interaction once per task. Every card `blockers`, `unanswered`
 /// and `asked_aside` count is an unanswered question or request of that task.
-pub(super) struct TaskCards<'a> {
+pub struct TaskCards<'a> {
     state: &'a DomainState,
     of_task: HashMap<&'a TaskId, Vec<&'a Interaction>>,
     holding: Vec<&'a Interaction>,
 }
 
 impl<'a> TaskCards<'a> {
-    pub(super) fn new(state: &'a DomainState) -> Self {
+    pub fn new(state: &'a DomainState) -> Self {
         let mut of_task: HashMap<&TaskId, Vec<&Interaction>> = HashMap::new();
         let mut holding = vec![];
         for i in state.interactions.values() {
@@ -90,15 +90,15 @@ impl<'a> TaskCards<'a> {
         self.of_task.get(t).into_iter().flatten().copied()
     }
     /// `DomainState::blockers`.
-    pub(super) fn blockers(&self, t: &TaskId) -> bool {
+    pub fn blockers(&self, t: &TaskId) -> bool {
         self.of(t).any(|i| self.state.blocker_card(i, t))
     }
     /// `DomainState::unanswered`.
-    pub(super) fn unanswered(&self, t: &TaskId) -> bool {
+    pub fn unanswered(&self, t: &TaskId) -> bool {
         self.of(t).any(|i| self.state.unanswered_card(i, t))
     }
     /// Whether the task has a card `DomainState::asked_aside` holds no final delivery next to.
-    pub(super) fn asked_aside(&self, t: &TaskId) -> bool {
+    pub fn asked_aside(&self, t: &TaskId) -> bool {
         self.of(t).any(|i| self.state.asked_aside(i, t))
     }
 }

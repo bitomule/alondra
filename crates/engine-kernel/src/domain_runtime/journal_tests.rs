@@ -14,26 +14,26 @@ struct Counted {
 impl JournalFiles for Counted {
     fn open(&self, database: &Path, decisions: Option<Arc<dyn SdkDecisions>>) -> Result<Box<dyn Journal>> {
         self.writers.fetch_add(1, Ordering::SeqCst);
-        alondra_store_sqlite::Sqlite.open(database, decisions)
+        alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules).open(database, decisions)
     }
     fn open_readonly(&self, database: &Path) -> Result<Box<dyn Journal>> {
         self.readers.fetch_add(1, Ordering::SeqCst);
-        alondra_store_sqlite::Sqlite.open_readonly(database)
+        alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules).open_readonly(database)
     }
     fn migrate_and_fence(&self, home: &Path) -> Result<(bool, Option<Box<dyn std::any::Any + Send>>)> {
-        alondra_store_sqlite::Sqlite.migrate_and_fence(home)
+        alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules).migrate_and_fence(home)
     }
     fn validate_preflight_source(&self, home: &Path) -> Result<()> {
-        alondra_store_sqlite::Sqlite.validate_preflight_source(home)
+        alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules).validate_preflight_source(home)
     }
     fn preflight_staging_files(&self, home: &Path) -> Result<Vec<PathBuf>> {
-        alondra_store_sqlite::Sqlite.preflight_staging_files(home)
+        alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules).preflight_staging_files(home)
     }
     fn migration_marker(&self) -> &'static str {
-        alondra_store_sqlite::Sqlite.migration_marker()
+        alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules).migration_marker()
     }
     fn remove_recovery_copies(&self, home: &Path, now: std::time::SystemTime) -> Result<()> {
-        alondra_store_sqlite::Sqlite.remove_recovery_copies(home, now)
+        alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules).remove_recovery_copies(home, now)
     }
 }
 

@@ -24,7 +24,7 @@ pub const NODE_PAUSE_PREFIX: &str = "node-pause-";
 pub const NODE_PAUSE_RESUME: &str = "resume";
 
 /// The card behind a pause of the gate of the node of `task`, which nobody sees.
-fn node_pause_interaction(id: InteractionId, task: &TaskId, title: &str, system: SystemCard, revision: u64) -> Interaction {
+pub fn node_pause_interaction(id: InteractionId, task: &TaskId, title: &str, system: SystemCard, revision: u64) -> Interaction {
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("Resume “{title}”"));
     Interaction {
         attachments: vec![],
@@ -49,7 +49,7 @@ fn node_pause_interaction(id: InteractionId, task: &TaskId, title: &str, system:
 
 /// The card a pause of the gate takes in the lifecycle of a node of the Agent SDK, and who it
 /// waits for. An API error of such a node is its lifecycle's own hold, never the gate's.
-fn node_pause_card(task: &TaskId, pause: &Pause) -> Option<(InteractionId, alondra_domain::Owner, SystemCard)> {
+pub fn node_pause_card(task: &TaskId, pause: &Pause) -> Option<(InteractionId, alondra_domain::Owner, SystemCard)> {
     use alondra_domain::{Capacity, Owner};
     let (kind, owner, pause_kind) = match pause.reason {
         PauseReason::ByUser => ("user", Owner::User, NodePauseKind::User),
@@ -82,7 +82,7 @@ fn go_on_text(kind: NodePauseKind) -> &'static str {
 }
 
 /// The pause a card of `node_pause_card` stands for.
-fn pause_of_card(card: &Interaction) -> Option<Pause> {
+pub fn pause_of_card(card: &Interaction) -> Option<Pause> {
     let Some(SystemCard::NodePause { pause, since }) = &card.system_card else { return None };
     let reason = match pause {
         NodePauseKind::User => PauseReason::ByUser,
@@ -99,7 +99,7 @@ pub fn is_node_pause(card: &Interaction) -> bool {
 }
 
 /// The longest last words a node's card carries.
-pub(super) const LAST_WORDS_MAX: usize = 20_000;
+pub const LAST_WORDS_MAX: usize = 20_000;
 
 /// A node runs through the Agent SDK until its session ends: what it does is its task's lifecycle
 /// (`DomainState::live_state`), and no event moves its phase but the end of its session. A phase an
@@ -358,7 +358,7 @@ impl DomainState {
 
     /// A delivery the user replied to comes back to them, the same one, once its node is done
     /// with the reply: it ended its turn without presenting again, or it cannot act on it.
-    pub(super) fn return_replied_delivery(&mut self, agent: &AgentId) {
+    pub fn return_replied_delivery(&mut self, agent: &AgentId) {
         let delivery = self.tasks.values()
             .filter(|t| !t.state.terminal() && t.agent_id.as_ref() == Some(agent))
             .filter_map(|t| t.final_presentation.as_ref().and_then(|p| self.interactions.get(p)))
@@ -381,15 +381,11 @@ impl DomainState {
             && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot())
     }
 
-    #[cfg(test)]
-    pub(crate) fn slots(&self) -> Vec<AgentId> {
+    #[doc(hidden)]
+    pub fn slots(&self) -> Vec<AgentId> {
         super::ReadIndex::build(self).slots().iter().cloned().collect()
     }
 
-    #[cfg(test)]
-    pub(crate) fn task_holds_slot(&self, task: &TaskId) -> bool {
-        self.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| self.slots().contains(agent))
-    }
 
     /// What `task`'s node goes on with passes the gate first. A node that closes does not: cleaning
     /// up frees what the others wait for. Nor one a pause holds, which comes back through the gate.
@@ -465,7 +461,7 @@ impl DomainState {
         self.node_pause_of(agent, self.node_task(agent))
     }
 
-    pub(super) fn node_pause_of(&self, agent: &AgentId, current: Option<&Task>) -> Option<Pause> {
+    pub fn node_pause_of(&self, agent: &AgentId, current: Option<&Task>) -> Option<Pause> {
         if self.node_phase(agent) != Some(&NodePhase::ThroughSdk) {
             return None;
         }
@@ -474,7 +470,7 @@ impl DomainState {
     }
 
     /// The card of the gate's pause the lifecycle of `task` holds.
-    fn held_pause(&self, task: &TaskId) -> Option<InteractionId> {
+    pub fn held_pause(&self, task: &TaskId) -> Option<InteractionId> {
         let lifecycle = self.lifecycle_of(task).ok()?;
         lifecycle.cards().into_iter()
             .find(|(card, reason)| *reason == alondra_domain::WaitReason::Pause && self.node_pause_card(card))
@@ -493,91 +489,14 @@ impl DomainState {
         paused
     }
 
-    /// What the gate's events do to a node: a pause becomes a pause of its task's lifecycle and a
-    /// resume ends it, and nothing moves its phase but the end of its session.
-    pub(super) fn move_node(&mut self, agent: &AgentId, event: &NodeEvent, lifecycles: &mut Lifecycles) -> Result<()> {
-        if !self.agents.contains_key(agent) {
-            return refuse("not_found", "Agent missing");
-        }
-        if !self.through_sdk(agent) && self.node_phase(agent) != Some(&NodePhase::ThroughSdk) {
-            return match event {
-                NodeEvent::SessionClosed => Ok(()),
-                _ => refuse("node_closed", "The node's session is closed"),
-            };
-        }
-        let task = self.node_task(agent).filter(|t| !t.over()).map(|t| t.id.clone());
-        match event {
-            NodeEvent::Paused { pause } => {
-                let task = task.ok_or_else(|| DomainError::new("not_found", "The node has no open task"))?;
-                let by_user = pause.reason == PauseReason::ByUser;
-                let held_by_alondra = self.node_pause(agent).is_some_and(|held| held.reason != PauseReason::ByUser);
-                if self.held_pause(&task).is_some() && !(by_user && held_by_alondra) {
-                    return refuse("already_paused", "The node is already paused");
-                }
-                if by_user {
-                    self.end_pauses_of_alondra(&task, lifecycles)?;
-                }
-                let (card, owner, system) = node_pause_card(&task, pause)
-                    .ok_or_else(|| DomainError::new("invalid_input", "A Claude API error of a node of the Agent SDK is held by its task's lifecycle"))?;
-                self.hold_node_pause(&task, card, owner, system, lifecycles)
-            }
-            NodeEvent::Resumed => {
-                let task = task.as_ref();
-                let card = task.and_then(|task| self.held_pause(task)).ok_or_else(|| DomainError::new("not_paused", "The node is not paused"))?;
-                let task = task.expect("held above");
-                let record = self.end_of_pause(task, &card, lifecycles)?;
-                self.decide(lifecycles, task, record)?;
-                self.retire(&card);
-                Ok(())
-            }
-            NodeEvent::PauseCleanup { .. } | NodeEvent::PauseReleased => Ok(()),
-            NodeEvent::SessionClosed => {
-                self.agents.get_mut(agent).expect("checked above").phase = NodePhase::Closed;
-                Ok(())
-            }
-        }
-    }
 
-    /// The user pauses a node a pause of Alondra's own holds (the gate's, a usage limit): theirs
-    /// takes its place, so that nothing but the user's resume can put the node back to work.
-    fn end_pauses_of_alondra(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
-        let cards: Vec<InteractionId> = {
-            let lifecycle = self.lifecycle(lifecycles, task)?;
-            lifecycle.cards().into_iter()
-                .filter(|(card, reason)| *reason == alondra_domain::WaitReason::Pause && lifecycle.card_owner(card) != Some(alondra_domain::Owner::User))
-                .map(|(card, _)| card.clone()).collect()
-        };
-        for card in cards {
-            if let Some(held) = self.claude_held().into_iter().find(|held| held.card == card) {
-                self.withdraw_hold(&card);
-                self.resume_held(&held, None, lifecycles)?;
-            } else {
-                let record = self.end_of_pause(task, &card, lifecycles)?;
-                self.decide(lifecycles, task, record)?;
-                self.retire(&card);
-            }
-        }
-        Ok(())
-    }
 
-    /// The gate's pause of the node `task` leaves ends with it: the gate sees pauses through
-    /// nodes, so nothing else would end it. The user's own pause stays until the user resumes it.
-    pub(super) fn end_gate_pause(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
-        let Some(card) = self.held_pause(task) else { return Ok(()) };
-        if self.interactions.get(&card).and_then(pause_of_card).is_none_or(|pause| pause.reason == PauseReason::ByUser) {
-            return Ok(());
-        }
-        let record = self.end_of_pause(task, &card, lifecycles)?;
-        self.decide(lifecycles, task, record)?;
-        self.retire(&card);
-        Ok(())
-    }
 
     /// How the gate's pause `card` of `task` ends: with nothing new when what the task goes on with
     /// already waits for its node, or, when its node rested through the pause with nothing left to
     /// do (its turn ended, or its host did), told to carry on in the same session. A delivery takes
     /// the end of a pause with nothing to go on with, so one its node still owes work on is told too.
-    pub(super) fn end_of_pause(&self, task: &TaskId, card: &InteractionId, lifecycles: &mut Lifecycles) -> Result<super::LifecycleRecord> {
+    pub fn end_of_pause(&self, task: &TaskId, card: &InteractionId, lifecycles: &mut Lifecycles) -> Result<super::LifecycleRecord> {
         let lifecycle = self.lifecycle(lifecycles, task)?;
         if lifecycle.advanced(lifecycle.revision(), alondra_domain::Event::EndPause { card: card.clone() }).is_ok_and(|ended| !self.stranded(task, &ended)) {
             return Ok(super::LifecycleRecord::PauseEnded { card: card.clone() });
@@ -591,7 +510,7 @@ impl DomainState {
 
     /// The task ends while a pause of Alondra's own that nobody answers holds it (the gate's, or
     /// the wait for a usage limit): nothing is left to resume.
-    pub(super) fn end_unseen_pauses(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn end_unseen_pauses(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
         let unseen: Vec<InteractionId> = self.lifecycle(lifecycles, task)?.cards().into_iter()
             .filter(|(card, reason)| *reason == alondra_domain::WaitReason::Pause && self.interactions.get(*card).is_some_and(|card| self.out_of_sight(card)))
             .map(|(card, _)| card.clone())
@@ -603,13 +522,6 @@ impl DomainState {
         Ok(())
     }
 
-    /// The lifecycle of `task` holds the gate's pause `card`, with the card behind it.
-    fn hold_node_pause(&mut self, task: &TaskId, card: InteractionId, owner: alondra_domain::Owner, system: SystemCard, lifecycles: &mut Lifecycles) -> Result<()> {
-        self.decide(lifecycles, task, super::LifecycleRecord::Paused { card: card.clone(), owner: Some(owner.into()) })?;
-        let title = self.tasks[task].title.clone();
-        self.insert_system_card(node_pause_interaction(card, task, &title, system, self.revision + 1))?;
-        Ok(())
-    }
 
     /// A card nobody sees: the gate's pause of a node of the Agent SDK, and the wait for a usage
     /// limit, which resumes by itself when it resets and leaves the user nothing to do.

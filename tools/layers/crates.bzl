@@ -22,6 +22,7 @@ load(
     "PORTS",
     "PRIVATE_TO",
     "ROOT",
+    "RULES",
     "ROOT_TEST_CONSUMERS",
     "layer_violation",
 )
@@ -29,6 +30,7 @@ load(
 ROLE_MACROS = [
     "foundation_crate",
     "domain_crate",
+    "rules_crate",
     "port_crate",
     "application_crate",
     "adapter_in_crate",
@@ -177,6 +179,14 @@ def foundation_crate(name, srcs, deps = [], crate_name = None, crate_root = None
 def domain_crate(name, srcs, deps = [], crate_name = None, crate_root = None, compile_data = [], version = None, test_visibility = []):
     """A crate of the domain: it uses foundation and the domain. Arguments as `foundation_crate`."""
     _library(DOMAIN, name, srcs, deps, crate_name, crate_root, compile_data, version, test_visibility)
+
+def rules_crate(name, srcs, deps = [], crate_name = None, crate_root = None, compile_data = [], version = None, test_visibility = []):
+    """The domain's rules: what each command changes in the model's state.
+
+    Only the roots see it, and hand it to the store through the model's `DomainRules` port.
+    Arguments as `foundation_crate`.
+    """
+    _library(RULES, name, srcs, deps, crate_name, crate_root, compile_data, version, test_visibility)
 
 def port_crate(name, srcs, deps = [], crate_name = None, crate_root = None, compile_data = [], version = None, test_visibility = []):
     """A port: the traits and data between the application and the adapters. Arguments as `foundation_crate`."""

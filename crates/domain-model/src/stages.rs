@@ -218,7 +218,7 @@ impl TaskStages {
         self.handover.as_ref().map(|handover| handover.to).or_else(|| self.role()).or(Some(ExecutionRole::Author))
     }
 
-    pub(crate) fn admitted(&mut self, run: TaskRun) {
+    pub fn admitted(&mut self, run: TaskRun) {
         if self.handover.as_ref().is_some_and(|handover| Some(handover.to) == run.role) {
             self.handover = None;
         }
@@ -227,7 +227,7 @@ impl TaskStages {
         self.runs.drain(..over);
     }
 
-    pub(crate) fn approved(&mut self, approval: PlanApproval) {
+    pub fn approved(&mut self, approval: PlanApproval) {
         self.approvals.push(approval);
         let over = self.approvals.len().saturating_sub(MAX_PLAN_APPROVALS);
         self.approvals.drain(..over);

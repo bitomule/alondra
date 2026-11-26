@@ -4,13 +4,13 @@
 # case of the prose-decision audit still to fix. The list only shrinks: the
 # phase that fixes a finding removes its lines, and a line that no longer matches fails the test.
 apple/Data/Feed/Sources/ActionDeliveryError.swift	self = (kind.map { $0 == Self.outcomeUnknown } ?? (detail == Self.outcomeUnknown)) ? .retry : .final	own-grammar	daemons from before kind send only the code outcome_unknown in error
-crates/domain-model/src/rules.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
-crates/domain-model/src/rules.rs	let reason = rest.split_once("): ")?.1;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
+crates/domain-model/src/checks.rs	let rest = body.strip_prefix(MERGE_FAILED)?;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
+crates/domain-model/src/checks.rs	let reason = rest.split_once("): ")?.1;	own-grammar	one-time upgrade of hand-backs stored before merge_failure
 crates/cli-report/src/report/mod.rs	Ok(issues.into_iter().filter(|i| i.open && i.title.starts_with(send::TITLE_PREFIX)).filter_map(|i| send::Public::parse(&i.body).map(|p| (i, p))).collect())	finding:G-16	crash report issues found by their GitHub title, which anyone can edit
 crates/daemon-engine/src/accounts.rs	.filter_map(|account| account.email.as_deref()).map(|email| email.trim().to_lowercase()).filter(|email| !email.is_empty()).collect();	format	emails compare without case
 crates/daemon-engine/src/domain_transport.rs	for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {	own-grammar	push notification ids Alondra assigns
 crates/daemon-engine/src/node_push.rs	for number in ids.iter().filter_map(|id| id.strip_prefix(DIRECT_PREFIX)?.parse::<u64>().ok()) {	own-grammar	push notification ids Alondra assigns
-crates/domain-model/src/rules/stall.rs	let rest = card.0.strip_prefix(TURN_ENDED_PREFIX).or_else(|| card.0.strip_prefix(STALLED_PREFIX)).unwrap_or(&card.0);	own-grammar	an Alondra card id built from another of its ids; decides nothing
+crates/domain-model/src/checks/stall.rs	let rest = card.0.strip_prefix(TURN_ENDED_PREFIX).or_else(|| card.0.strip_prefix(STALLED_PREFIX)).unwrap_or(&card.0);	own-grammar	an Alondra card id built from another of its ids; decides nothing
 crates/core/src/update.rs	.filter_map(|r| r["tag_name"].as_str()?.strip_prefix(TAG_PREFIX))	format	GitHub release tag of a version
 crates/domain/src/lifecycle.rs	if card.0.starts_with(CLAUDE_OUTAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
 crates/domain/src/lifecycle.rs	} else if card.0.starts_with(CLAUDE_USAGE_CARD_PREFIX) {	own-grammar	journal pauses recorded before they named their owner; only Alondra records pauses
@@ -43,8 +43,8 @@ crates/cli/src/update/brew.rs	let stage = if line.starts_with("==> Auto-updating
 crates/cli/src/update/brew.rs	} else if (line.starts_with("==> Upgrading ") && !line.ends_with(':')) || line.starts_with("==> Installing") || line.starts_with("==> Pouring") {	display	brew output read only to show the update's progress
 crates/cli/src/update/brew.rs	let rest = line.strip_prefix("Warning: ")?.strip_suffix(" already installed")?;	display	brew output read only to show the update's progress
 crates/daemon-server/src/views/actions.rs	Verb::Ans if stamp.contains(" · ") => Outcome::done(stamp.to_owned()),	display	outcome text shown as it is
-crates/domain-model/src/rules.rs	if !labels.insert(option.label.trim().to_lowercase()) {	display	two buttons with the same text cannot be told apart: equality, not interpretation (like G-04)
-crates/domain-model/src/rules.rs	return fail("unchanged", &format!("Task {} is already {} priority: nothing changed", task_id.0, format!("{priority:?}").to_lowercase()));	display	priority name inside a refusal message
+crates/domain-model/src/checks.rs	if !labels.insert(option.label.trim().to_lowercase()) {	display	two buttons with the same text cannot be told apart: equality, not interpretation (like G-04)
+crates/domain-rules/src/rules.rs	return fail("unchanged", &format!("Task {} is already {} priority: nothing changed", task_id.0, format!("{priority:?}").to_lowercase()));	display	priority name inside a refusal message
 crates/views/src/card.rs	let extension = extension.to_ascii_lowercase();	display	text picked or cased for display
 crates/views/src/card.rs	markdown.lines().find_map(|line| line.strip_prefix("# ")).map(str::trim).filter(|title| !title.is_empty()).map(str::to_owned)	display	text picked or cased for display
 crates/views/src/card.rs	.filter(|line| !(line.trim_start().to_ascii_lowercase().starts_with("pr:") && line.contains(&marker)))	display	text picked or cased for display
@@ -81,8 +81,8 @@ crates/core/src/artifact.rs	if kind == "claude.ai/artifact/" && text[..i].ends_w
 crates/core/src/config.rs	let flag = |v: String| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");	format	flag or setting value
 crates/domain-model/src/command.rs	let host = host.trim().to_ascii_lowercase();	format	host and repository names are case-insensitive
 crates/domain-model/src/command.rs	repository.trim().to_ascii_lowercase()	format	host and repository names are case-insensitive
-crates/domain-model/src/rules.rs	|| host != host.to_ascii_lowercase()	format	host and repository names are case-insensitive
-crates/domain-model/src/rules.rs	|| repo != repo.to_ascii_lowercase()	format	host and repository names are case-insensitive
+crates/domain-model/src/checks.rs	|| host != host.to_ascii_lowercase()	format	host and repository names are case-insensitive
+crates/domain-model/src/checks.rs	|| repo != repo.to_ascii_lowercase()	format	host and repository names are case-insensitive
 crates/host/src/launcher.rs	text.starts_with(NAME).then_some(text)	format	version string (D-20)
 crates/core/src/markdown/html.rs	let name = src[start..i].to_ascii_lowercase();	format	HTML tag and attribute names
 crates/core/src/markdown/html.rs	let key = src[key_start..i].to_ascii_lowercase();	format	HTML tag and attribute names
@@ -207,7 +207,7 @@ crates/views/src/misc.rs	.filter(|task| task.title.to_ascii_lowercase().contains
 crates/cli-report/src/report/github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
 crates/engine-ports/src/github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
 crates/engine-sdk/src/sdk_owner/node_environment.rs	WITHHELD.contains(&name) || name.starts_with(WITHHELD_PREFIX)	format	Environment variable names are a documented format, not prose.
-crates/domain-model/src/rules.rs	if need.is_empty() || card.need.contains(['\n', '\r']) {	format	a card's request is one line: a field shape check, not an interpretation of what it says
+crates/domain-model/src/checks.rs	if need.is_empty() || card.need.contains(['\n', '\r']) {	format	a card's request is one line: a field shape check, not an interpretation of what it says
 crates/daemon-server/src/public_content.rs	let lower = text.to_lowercase();	security-parse	case-insensitive matching of configured private identifiers before a public PR delivery
 crates/daemon-server/src/public_content.rs	if findings.len() < MAX_FINDINGS && lower.contains(&name.trim().to_lowercase()) {	security-parse	literal configured private identifiers are forbidden content, not interpreted error or model prose
 crates/daemon-server/src/public_content.rs	if let Some(header) = line.strip_prefix("diff --git ") {	format	Git unified diff file header

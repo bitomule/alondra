@@ -19,7 +19,7 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     drop(crate::engine_tests::open(&home).unwrap());
-    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
     let domain = daemon.domain();
     command(domain.kernel(), user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     command(domain.kernel(), user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });

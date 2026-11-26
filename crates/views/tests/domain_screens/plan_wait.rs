@@ -4,6 +4,7 @@ use alondra_domain_model::*;
 use alondra_views as views;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
+use alondra_domain_rules::Apply as _;
 
 /// The case of 20 October: the plan card was open when the task started to wait, and the user
 /// approved it while the task still showed it waited.

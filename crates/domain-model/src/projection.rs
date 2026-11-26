@@ -152,7 +152,6 @@ impl DomainState {
         head: Option<String>,
         holds: &dyn Holds,
     ) -> AvailableAction {
-        let pr_id = match &command { Command::AuthorizeMerge { pr_id, .. } => Some(pr_id.clone()), _ => None };
         let actor = Actor::User { user_id: "projection-user".into() };
         let pr_id = match &command { Command::AuthorizeMerge { pr_id, .. } => Some(pr_id.clone()), _ => None };
         let envelope = CommandEnvelope {
@@ -163,8 +162,9 @@ impl DomainState {
             command,
         };
         let error = self.guard_given(&actor, &envelope, holds).err();
-        #[cfg(test)]
-        assert_guard_matches_execution(self, &actor, &envelope, error.as_ref());
+        if let Some(check) = BUTTON_CHECK.get() {
+            check(self, &actor, &envelope, error.as_ref());
+        }
         AvailableAction {
             kind: kind.into(),
             enabled: error.is_none(),
@@ -370,8 +370,8 @@ impl DomainState {
     }
 
     /// The card decided from the state alone: what the index must agree with.
-    #[cfg(test)]
-    pub(crate) fn item(&self, i: &Interaction) -> InboxItem {
+    #[doc(hidden)]
+    pub fn item(&self, i: &Interaction) -> InboxItem {
         let pending = self.inbox_pending(i, |t| self.attention(t));
         self.item_given(i, pending, self.inbox_blockers(i), self.blocked_deliveries(i), self)
     }
@@ -703,8 +703,8 @@ impl DomainState {
         }
         sequence.into_iter().map(|at| sorted[at].1).collect()
     }
-    #[cfg(test)]
-    fn order_inbox(&self, items: Vec<InboxItem>) -> Vec<InboxItem> {
+    #[doc(hidden)]
+    pub fn order_inbox(&self, items: Vec<InboxItem>) -> Vec<InboxItem> {
         let sequence = {
             let facts: Vec<_> = items.iter().map(|item| {
                 let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
@@ -893,29 +893,14 @@ mod inbox_order_tests {
 
 }
 
-/// Every button any test projects on a valid state is also judged by running its command on a
-/// copy: the guard must refuse exactly what the command refuses, with the same reason. A state
-/// built by hand gets the journal its columns lead to first; one that breaks the domain's
-/// invariants, or that no journal leads to, refuses every command, so it says nothing.
-#[cfg(test)]
-pub(super) fn assert_guard_matches_execution(
-    state: &DomainState,
-    actor: &Actor,
-    envelope: &CommandEnvelope,
-    guarded: Option<&DomainError>,
-) {
-    if state.validate().is_err() {
-        return;
-    }
-    let mut journaled = state.clone();
-    if !journaled.journal_every_task() {
-        return;
-    }
-    let executed = journaled.preview(actor, envelope).err();
-    assert_eq!(
-        guarded,
-        executed.as_ref(),
-        "the guard and the command disagree on {:?}",
-        envelope.command
-    );
+/// A check of a projected button against the command it stands for: the state, the actor, the
+/// command and the guard's refusal, if any.
+pub type ButtonCheck = fn(&DomainState, &Actor, &CommandEnvelope, Option<&DomainError>);
+
+static BUTTON_CHECK: std::sync::OnceLock<ButtonCheck> = std::sync::OnceLock::new();
+
+/// From now on, every button this process projects is also judged by `check`. For the tests of
+/// the rules, which run each button's command; the installed daemon never sets one.
+pub fn check_every_button_with(check: ButtonCheck) {
+    let _ = BUTTON_CHECK.set(check);
 }

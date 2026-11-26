@@ -31,19 +31,19 @@ impl AsSqlite for dyn Journal + '_ {
     }
 }
 
-/// The journal of a HOME kept in SQLite.
-pub struct Sqlite;
+/// The journal of a HOME kept in SQLite, applying commands with the rules the root hands it.
+pub struct Sqlite(pub &'static dyn DomainRules);
 
 impl JournalFiles for Sqlite {
     fn open(&self, database: &Path, decisions: Option<Arc<dyn wording::SdkDecisions>>) -> Result<Box<dyn Journal>> {
-        let store = DomainStore::open(database)?;
+        let store = DomainStore::open(database, self.0)?;
         Ok(Box::new(match decisions {
             Some(decisions) => store.with_decisions(decisions),
             None => store,
         }))
     }
     fn open_readonly(&self, database: &Path) -> Result<Box<dyn Journal>> {
-        Ok(Box::new(DomainStore::open_readonly(database)?))
+        Ok(Box::new(DomainStore::open_readonly(database, self.0)?))
     }
     fn migrate_and_fence(&self, home: &Path) -> Result<(bool, Option<Box<dyn std::any::Any + Send>>)> {
         let (migrated, fence) = domain_database_migration::migrate_and_fence(home)?;
@@ -66,6 +66,7 @@ impl JournalFiles for Sqlite {
 impl Journal for DomainStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn rules(&self) -> &'static dyn DomainRules { DomainStore::rules(self) }
     fn own_with(&mut self, scope: AuthorityScope, stage: &mut dyn FnMut(&mut dyn OwnerJournal) -> std::result::Result<(), StoreError>) -> std::result::Result<OwnerCommit, StoreError> {
         DomainStore::own(self, scope, |owner| stage(owner)).map(|((), commit)| commit)
     }

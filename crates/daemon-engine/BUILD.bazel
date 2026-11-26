@@ -85,7 +85,7 @@ low_opt_rust_test(
         "TEST_EXECS": "$(rootpath //agent-host:alondra-host) /bin/cat /bin/ls /bin/rm /bin/sh /usr/bin/git /usr/bin/id /usr/bin/python3 tmpdir",
     },
     version = VERSION,
-    deps = ENGINE_TEST_DEPS,
+    deps = ["//crates/domain-rules:domain_rules"] + ENGINE_TEST_DEPS,
 )
 
 rust_inputs_test(

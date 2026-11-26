@@ -279,13 +279,13 @@ mod tests {
 
     #[test]
     fn bounded_batch_manifest_recovers_every_run_after_large_handoff_histories_and_restart() {
-        let fixture=Fixture::new();let mut store=DomainStore::open(&fixture.path()).unwrap();seeded(&mut store);
+        let fixture=Fixture::new();let mut store=DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();seeded(&mut store);
         let epoch=store.load().unwrap().data_epoch.clone();
         for index in 0..100 {
             let run=format!("handoff-{index:03}");let command=title(&mut store,&format!("manifest-command-{index}"),&format!("Confirmed result {index}"));
             store.execute_from_batch(&Actor::Orchestrator{generation:0},&command,&run).unwrap();store.finish_batch(&run).unwrap();
         }
-        drop(store);let store=DomainStore::open(&fixture.path()).unwrap();let mut after=String::new();let mut found=std::collections::BTreeSet::new();
+        drop(store);let store=DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();let mut after=String::new();let mut found=std::collections::BTreeSet::new();
         loop {
             let page=store.batch_run_manifest(&epoch,&after,7).unwrap();assert!(page["entries"].as_array().unwrap().len()<=7);
             for entry in page["entries"].as_array().unwrap() {
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn a_batch_effect_and_its_domain_result_commit_and_reopen_together() {
         let fixture = Fixture::new();
-        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         seeded(&mut store);
         let command = title(&mut store, "batch-command", "Confirmed title");
         let result = store.execute_from_batch(&Actor::Orchestrator { generation: 0 }, &command, "batch").unwrap().outcome;
@@ -309,7 +309,7 @@ mod tests {
         assert_eq!(effects[0].revision, result.revision);
         assert_eq!(effects[0].receipt_ref.digest, canonical::digest(&command).unwrap());
         drop(store);
-        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         assert_eq!(store.batch_effects("batch").unwrap(), effects);
         let replay = store.execute_from_batch(&Actor::Orchestrator { generation: 0 }, &command, "batch").unwrap();
         assert!(replay.replayed);
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn a_card_the_orchestrator_puts_in_a_pass_is_announced_only_after_that_pass() {
         let fixture = Fixture::new();
-        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         seeded(&mut store);
         let epoch = store.load().unwrap().data_epoch.clone();
         let envelope = |id: &str, command: Command| CommandEnvelope {
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn failure_to_record_a_batch_effect_rolls_back_the_mutation_and_receipt() {
         let fixture = Fixture::new();
-        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         seeded(&mut store);
         let before = store.load().unwrap();
         store.conn.execute_batch("CREATE TRIGGER refuse_batch_effect BEFORE INSERT ON orchestrator_batch_effects BEGIN SELECT RAISE(ABORT,'injected effect failure'); END;").unwrap();
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn pending_batch_receipts_survive_retention_until_the_batch_is_settled() {
         let fixture = Fixture::new();
-        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         seeded(&mut store);
         let command = title(&mut store, "pinned-command", "Confirmed title");
         store.execute_from_batch(&Actor::Orchestrator { generation: 0 }, &command, "batch").unwrap();
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn batch_reports_reject_gaps_and_conflicting_replays() {
         let fixture = Fixture::new();
-        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         let epoch = store.load().unwrap().data_epoch.clone();
         store.bind_batch_effects("batch", &epoch).unwrap();
         let report = BatchReport { kind: "turn/started".into(), native_turn: Some("turn".into()), ..Default::default() };
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn a_settled_batch_cannot_accept_or_replay_domain_mutations() {
-        let fixture = Fixture::new(); let mut store = DomainStore::open(&fixture.path()).unwrap(); seeded(&mut store);
+        let fixture = Fixture::new(); let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap(); seeded(&mut store);
         let actor = Actor::Orchestrator { generation: 0 };
         let command = title(&mut store, "original-command", "Confirmed title");
         store.execute_from_batch(&actor, &command, "batch").unwrap();
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn multibyte_error_evidence_counts_toward_admission_and_keeps_outcome_reservations() {
-        let fixture = Fixture::new(); let mut store = DomainStore::open(&fixture.path()).unwrap();
+        let fixture = Fixture::new(); let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         fill_operation_errors(&mut store, "budget", 768);
         let before = operation_capacity(&store.conn, "budget").unwrap();
         let request = Value::String("é".repeat(200));
@@ -441,10 +441,10 @@ mod tests {
 
     #[test]
     fn competing_completions_serialize_the_shared_byte_budget_and_preserve_uncertain_results() {
-        let fixture = Fixture::new(); let mut first = DomainStore::open(&fixture.path()).unwrap();
+        let fixture = Fixture::new(); let mut first = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         fill_operation_errors(&mut first, "budget", 4096);
         for call in ["first", "second"] { first.begin_tool_operation("budget", call, "launch", &Value::Null).unwrap(); }
-        let mut second = DomainStore::open(&fixture.path()).unwrap();
+        let mut second = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
         let outcomes = std::thread::scope(|scope| {
             let a = std::sync::Arc::clone(&barrier); let b = std::sync::Arc::clone(&barrier);
@@ -453,7 +453,7 @@ mod tests {
             barrier.wait(); [first.join().unwrap(), second.join().unwrap()]
         });
         assert_eq!(outcomes.into_iter().filter(|ok| *ok).count(), 1, "only one full outcome fits; the other is durably uncertain");
-        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         let (_, bytes, pending) = operation_capacity(&store.conn, "budget").unwrap();
         assert!(bytes <= OPERATION_BYTES); assert_eq!(pending, 0);
         let mut statuses = vec![];
@@ -470,11 +470,11 @@ mod tests {
 
     #[test]
     fn an_oversized_result_becomes_durable_uncertainty_instead_of_a_reexecutable_started_operation() {
-        let fixture = Fixture::new(); let mut store = DomainStore::open(&fixture.path()).unwrap();
+        let fixture = Fixture::new(); let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         let epoch = store.load().unwrap().data_epoch.clone(); store.bind_batch_effects("batch", &epoch).unwrap();
         store.begin_tool_operation("batch", "call", "launch", &Value::Null).unwrap();
         assert!(store.complete_tool_operation("batch", "call", &Ok(Value::String("x".repeat(OUTCOME_BYTES)))).is_err());
-        drop(store); let mut store = DomainStore::open(&fixture.path()).unwrap();
+        drop(store); let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         let previous = store.begin_tool_operation("batch", "call", "launch", &Value::Null).unwrap().unwrap();
         assert_eq!(previous.0, "uncertain"); assert!(previous.1.is_none()); assert!(previous.2.is_some());
         assert_eq!(operation_capacity(&store.conn, "batch").unwrap().0, 1);

@@ -599,7 +599,7 @@ mod tests {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         drop(crate::engine_tests::open(&home).unwrap());
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         (home, state)
     }
 
@@ -798,7 +798,7 @@ mod tests {
         assert_eq!(client.language_for_device("phone-b"), Lang::En);
         drop(client);
         drop(state);
-        let reopened = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let reopened = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let reopened_client = reopened.client();
         assert_eq!(reopened_client.language_for_device("phone-a"), Lang::Es,
             "pushes after a daemon restart use the device's persisted language");
@@ -807,7 +807,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         drop(reopened_client);
         drop(reopened);
-        let reopened = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let reopened = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         assert_eq!(reopened.client().language_for_device("phone-a"), Lang::En,
             "the last language survives a second restart");
         drop(reopened);

@@ -43,7 +43,7 @@ pub use crate::engine_fixtures::owner::SdkLaunches;
 /// crate's observers and ports.
 pub fn wired() {
     alondra_foundation::durability::relax();
-    alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules));
     alondra_daemon_engine::wiring::open_with(open_at);
 }
 

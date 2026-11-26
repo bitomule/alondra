@@ -5,6 +5,7 @@ use super::*;
 use alondra_domain_model::{Agent, DomainState, Request, Task, TaskId, TaskState};
 use alondra_views::{self as views, Client, Lang, LiveNode, LiveSnapshot, RenderContext, Transport};
 use std::collections::{BTreeMap, BTreeSet};
+use alondra_domain_rules::Apply as _;
 
 const NIGHTLY: &str = "Por qué se atascó la tarea nocturna";
 const ODD_STATE: &str = "Estado raro del nodo Parcel";

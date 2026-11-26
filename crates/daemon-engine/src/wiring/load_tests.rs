@@ -96,7 +96,7 @@ fn opening_the_domain_replays_a_long_inbox_once_in_linear_memory() {
 #[ignore = "measures a copy of a real HOME: ALONDRA_DOMAIN_DB=… bazelisk test … --test_arg=--ignored"]
 fn measure_domain_open() {
     let path = std::env::var("ALONDRA_DOMAIN_DB").expect("ALONDRA_DOMAIN_DB");
-    let store = DomainStore::open(std::path::Path::new(&path)).unwrap();
+    let store = DomainStore::open(std::path::Path::new(&path), &alondra_domain_rules::Rules).unwrap();
     let mut samples: Vec<f64> = (0..20)
         .map(|_| {
             let started = std::time::Instant::now();
@@ -146,7 +146,7 @@ fn opening_the_domain_does_not_read_historical_observation_pages() {
     let (fixture, store, execution) = running();
     let expected = alondra_store_sqlite::testing::load(&store.conn).unwrap();
     drop(store);
-    let mut small = DomainStore::open(&fixture.path()).unwrap();
+    let mut small = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(*small.load().unwrap(), expected);
     let small_reads = pages_read(&small.conn);
     let digest: [u8; 32] = sha2::Sha256::digest([1u8]).into();
@@ -167,7 +167,7 @@ fn opening_the_domain_does_not_read_historical_observation_pages() {
     assert_eq!(rows, 500_000);
     drop(small);
 
-    let mut large = DomainStore::open(&fixture.path()).unwrap();
+    let mut large = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(*large.load().unwrap(), expected);
     let large_reads = pages_read(&large.conn);
     eprintln!("opening the same domain: {small_reads} pages without observation history, {large_reads} with {rows} observations");
@@ -177,19 +177,19 @@ fn opening_the_domain_does_not_read_historical_observation_pages() {
     assert!(pages_read(&large.conn) > large_reads + 1_000, "the explicit audit must still examine the historical pages");
     large.conn.execute_batch("DROP VIEW events; DROP TABLE branch_update; DROP TABLE orchestrator_batch_decisions;").unwrap();
     drop(large);
-    let mut extended = DomainStore::open(&fixture.path()).unwrap();
+    let mut extended = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(*extended.load().unwrap(), expected);
     let extended_reads = pages_read(&extended.conn);
     assert!(extended_reads <= small_reads + 64,
         "adding tables and a view read historical evidence: {small_reads} → {extended_reads} pages");
     extended.conn.execute_batch("ALTER TABLE model_decisions DROP COLUMN provider").unwrap();
     drop(extended);
-    let migrated = DomainStore::open(&fixture.path()).unwrap();
+    let migrated = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert!(pages_read(&migrated.conn) <= extended_reads + 64,
         "changing one table read historical evidence: {extended_reads} → {} pages", pages_read(&migrated.conn));
     migrated.conn.execute_batch("CREATE TABLE node_costs(obsolete TEXT)").unwrap();
     drop(migrated);
-    let cleaned = DomainStore::open(&fixture.path()).unwrap();
+    let cleaned = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert!(pages_read(&cleaned.conn) <= extended_reads + 64,
         "removing one table read historical evidence: {extended_reads} → {} pages", pages_read(&cleaned.conn));
 }

@@ -54,7 +54,7 @@ impl Fixture {
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[31u8; 32]).unwrap();
         let device = auth.pair(&auth.new_pairing_code(), "terminal", &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let domain = DomainRuntime::shared(state.domain());
         let client = state.client();
         let app = crate::domain_bootstrap::router(state.clone())

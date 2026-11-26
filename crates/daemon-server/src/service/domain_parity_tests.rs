@@ -125,7 +125,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     ));
     std::fs::create_dir_all(&home).unwrap();
     drop(crate::engine_tests::open(&home).unwrap());
-    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
     let domain = daemon.domain();
     execute(
         &*domain,
