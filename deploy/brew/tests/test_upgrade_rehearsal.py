@@ -848,7 +848,7 @@ class LauncherMigrationTests(Fixture):
     def test_a_keg_holds_the_binaries_and_the_plugins_with_their_cli_wrappers(self):
         keg = self.work / 'Cellar/alondra/0.1.2'
         u.keg_from_archive(self.archive(u.release.PUBLIC_FILES), keg, published=False)
-        self.assertEqual({path.name for path in (keg / 'bin').iterdir()}, {'alondra', 'alondrad', u.LAUNCHER})
+        self.assertEqual({path.name for path in (keg / 'bin').iterdir()}, {'alondra', 'alondrad', 'alondra-spec', u.LAUNCHER})
         for plugin in ('plugin', 'plugin-orchestrator'):
             self.assertTrue((keg / 'libexec/alondra' / plugin / 'bin/alondra').is_file(), plugin)
         self.assertFalse((keg / 'libexec/alondra/alondrad').exists())

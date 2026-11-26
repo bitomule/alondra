@@ -609,7 +609,7 @@ def keg_from_archive(archive, keg, published):
     with tarfile.open(archive) as tar:
         for member in (member for member in tar.getmembers() if member.isfile()):
             name = member.name.removeprefix('./')
-            target = keg / 'bin' / name if name in ('alondra', 'alondrad', LAUNCHER) else keg / 'libexec/alondra' / name
+            target = keg / 'bin' / name if name in release.BINARIES and '/' not in name else keg / 'libexec/alondra' / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(tar.extractfile(member).read())
             target.chmod(member.mode & 0o755)

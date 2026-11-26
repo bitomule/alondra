@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
 use crate::ident::{is_identifier, is_scenario_id};
+use crate::part::{self, Citation};
 use crate::problem::{TEXT_MAX_BYTES, finish, problem, too_large};
-use crate::{Code, EvidenceKind, Judgment, Keyword, Problem, Promise, Scenario, Spec, Step};
+use crate::{Code, EvidenceKind, Judgment, Keyword, PartKind, Problem, Promise, Scenario, Spec, Step};
 
 const MAX_SCENARIOS: usize = 200;
 const DOC_DELIMITER: &str = "\"\"\"";
@@ -11,10 +12,12 @@ const CELL_END: char = '|';
 const STEP_INDENT: &str = "    ";
 const ATTACHED_INDENT: &str = "      ";
 
-/// A spec and the line of each of its `@decision:` tags, in the order of `spec.decisions`.
+/// A spec, the line of each of its `@decision:` tags, in the order of `spec.decisions`, and its
+/// `@diagram:` and `@mockup:` tags with their lines.
 pub(crate) struct ReadSpec {
     pub(crate) spec: Spec,
     pub(crate) decision_lines: Vec<usize>,
+    pub(crate) citations: Vec<Citation>,
 }
 
 pub(crate) fn read(path: &str, bytes: &[u8]) -> Result<ReadSpec, Vec<Problem>> {
@@ -115,6 +118,10 @@ struct Reader<'p> {
     has_spec_tag: bool,
     decisions: Vec<(String, usize)>,
     description: Vec<String>,
+    diagrams: Vec<String>,
+    mockups: Vec<String>,
+    cited: usize,
+    citations: Vec<Citation>,
     background: Vec<Step>,
     has_background: bool,
     drafts: Vec<Draft>,
@@ -134,6 +141,10 @@ impl<'p> Reader<'p> {
             has_spec_tag: false,
             decisions: Vec::new(),
             description: Vec::new(),
+            diagrams: Vec::new(),
+            mockups: Vec::new(),
+            cited: 0,
+            citations: Vec::new(),
             background: Vec::new(),
             has_background: false,
             drafts: Vec::new(),
@@ -288,6 +299,16 @@ impl<'p> Reader<'p> {
         let tags = std::mem::take(&mut self.pending);
         for (token, line) in tags {
             match token.split_once(':') {
+                Some(("@diagram", file)) => {
+                    if let Some(file) = self.part_tag(PartKind::Diagram, file, line, &self.diagrams.clone()) {
+                        self.diagrams.push(file);
+                    }
+                }
+                Some(("@mockup", file)) => {
+                    if let Some(file) = self.part_tag(PartKind::Mockup, file, line, &self.mockups.clone()) {
+                        self.mockups.push(file);
+                    }
+                }
                 Some(("@spec", value)) if !self.has_spec_tag => {
                     self.has_spec_tag = true;
                     if is_identifier(value) {
@@ -306,6 +327,26 @@ impl<'p> Reader<'p> {
                 _ => self.report(Code::UnknownTag, line, format!("{token} is not a tag a feature can carry")),
             }
         }
+    }
+
+    /// The file of a `@diagram:` or `@mockup:` tag, when the tag can cite it. `already` holds
+    /// the files the same feature or scenario cites with that tag.
+    fn part_tag(&mut self, kind: PartKind, file: &str, line: usize, already: &[String]) -> Option<String> {
+        self.cited += 1;
+        if self.cited == part::MAX_PER_SPEC + 1 {
+            let max = part::MAX_PER_SPEC;
+            self.report(Code::TooManyParts, line, format!("a spec cites at most {max} diagrams and mockups"));
+        }
+        if let Some((code, why)) = part::name_problem(kind, file) {
+            self.report(code, line, why);
+            return None;
+        }
+        if already.iter().any(|known| known == file) {
+            self.report(Code::InvalidPart, line, format!("{file} is cited twice"));
+            return None;
+        }
+        self.citations.push(Citation { kind, file: file.to_string(), line });
+        Some(file.to_string())
     }
 
     fn background(&mut self, number: usize) {
@@ -333,6 +374,8 @@ impl<'p> Reader<'p> {
                 judgment: None,
                 promise: None,
                 reserved: false,
+                diagrams: Vec::new(),
+                mockups: Vec::new(),
                 steps: Vec::new(),
                 examples: Vec::new(),
             },
@@ -381,6 +424,16 @@ impl<'p> Reader<'p> {
                     draft.scenario.promise = promise(value);
                 }
                 ("@reserved", None) if !draft.scenario.reserved => draft.scenario.reserved = true,
+                ("@diagram", Some(file)) => {
+                    if let Some(file) = self.part_tag(PartKind::Diagram, file, line, &draft.scenario.diagrams) {
+                        draft.scenario.diagrams.push(file);
+                    }
+                }
+                ("@mockup", Some(file)) => {
+                    if let Some(file) = self.part_tag(PartKind::Mockup, file, line, &draft.scenario.mockups) {
+                        draft.scenario.mockups.push(file);
+                    }
+                }
                 _ => self.report(Code::UnknownTag, line, format!("{token} is not a tag a scenario can carry")),
             }
         }
@@ -467,9 +520,11 @@ impl<'p> Reader<'p> {
             title: self.title,
             description: self.description,
             background: self.background,
+            diagrams: self.diagrams,
+            mockups: self.mockups,
             scenarios,
         };
-        finish(ReadSpec { spec, decision_lines }, self.problems)
+        finish(ReadSpec { spec, decision_lines, citations: self.citations }, self.problems)
     }
 }
 
@@ -564,6 +619,10 @@ pub(crate) fn write(spec: &Spec) -> String {
     for decision in &spec.decisions {
         out.push_str(&format!("@decision:{decision}\n"));
     }
+    for tag in part_tags(part::of_spec(spec)) {
+        out.push_str(&tag);
+        out.push('\n');
+    }
     out.push_str(&keyword_line("Feature", &spec.title));
     out.push('\n');
     for line in &spec.description {
@@ -617,7 +676,12 @@ fn tag_line(scenario: &Scenario) -> String {
     if scenario.reserved {
         tags.push("@reserved".to_string());
     }
+    tags.extend(part_tags(part::of_scenario(scenario)));
     tags.join(" ")
+}
+
+fn part_tags<'a>(parts: impl Iterator<Item = (PartKind, &'a str)>) -> impl Iterator<Item = String> {
+    parts.map(|(kind, file)| format!("@{}:{file}", kind.as_str()))
 }
 
 fn keyword_line(keyword: &str, title: &str) -> String {

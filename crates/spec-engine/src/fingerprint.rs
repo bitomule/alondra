@@ -4,8 +4,9 @@ use std::fmt::Write as _;
 use sha2::{Digest, Sha256};
 
 use crate::feature::{write, write_scenario, write_steps};
+use crate::part;
 use crate::pattern::matches;
-use crate::{Component, Kind, LoadedSpec, Project, Scenario, Section, Suite};
+use crate::{Component, Kind, LoadedSpec, PartKind, Project, Scenario, Section, Suite};
 
 const PREFIX: &str = "sha256:";
 const ABSENT: &str = "absent";
@@ -118,6 +119,13 @@ pub(crate) fn suite(project: &Project, component: &Component, suite: &Suite) -> 
     lines.finish()
 }
 
+fn push_parts<'a>(lines: &mut Lines, label: &str, project: &Project, loaded: &LoadedSpec, parts: impl Iterator<Item = (PartKind, &'a str)>) {
+    for (_, file) in parts {
+        let path = part::path_of(&loaded.path, file);
+        lines.push(&[label, path.as_str(), hash(project, &path)]);
+    }
+}
+
 pub(crate) fn adequate(project: &Project, loaded: &LoadedSpec, scenario: &Scenario) -> String {
     let subject = format!("{}/{}", loaded.spec.id, scenario.id);
     let mut lines = Lines::new("adequate");
@@ -127,6 +135,8 @@ pub(crate) fn adequate(project: &Project, loaded: &LoadedSpec, scenario: &Scenar
         lines.push(&["description", line.as_str()]);
     }
     lines.push(&["background", write_steps(&loaded.spec.background).as_str()]);
+    push_parts(&mut lines, "header-part", project, loaded, part::of_spec(&loaded.spec));
+    push_parts(&mut lines, "part", project, loaded, part::of_scenario(scenario));
     let tests: BTreeSet<&str> =
         project.markers.iter().filter(|marker| marker.scenario == subject).map(|marker| marker.path.as_str()).collect();
     for path in tests {
@@ -147,6 +157,7 @@ pub(crate) fn judged(project: &Project, loaded: &LoadedSpec, scenario: &Scenario
         }
         None => lines.push(&["component", loaded.component.as_str(), component_of(project, &loaded.component)]),
     }
+    push_parts(&mut lines, "part", project, loaded, part::of_scenario(scenario));
     Some(lines.finish())
 }
 

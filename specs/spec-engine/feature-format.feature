@@ -237,7 +237,7 @@ Feature: A spec is one feature file in a strict subset of Gherkin
 
   @id:round-trips-any-spec
   Scenario: Reading what was written gives back the same spec
-    Given any spec the engine can represent, including table cells with pipes, backslashes and spaces inside, doc string lines that are three quotes or their escaped forms, and description lines such as "Note: x"
+    Given any spec the engine can represent, including table cells with pipes, backslashes and spaces inside, doc string lines that are three quotes or their escaped forms, and description lines such as "Note: x", and diagrams and mockups cited by the feature and by its scenarios
     When it is written and the text is read again
     Then the spec read equals the original
 

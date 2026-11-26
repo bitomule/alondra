@@ -355,9 +355,10 @@ class LocalReleaseTests(unittest.TestCase):
                 return f'1) {l.IDENTITY} "local identity"'
             elif args[0] == 'bash':
                 self.assertEqual(args[1], 'deploy/brew/package-cli.sh')
-                arch, payload, manifest = args[3], pathlib.Path(args[4]).parent, pathlib.Path(args[8])
+                arch, payload, manifest = args[3], pathlib.Path(args[4]).parent, pathlib.Path(args[9])
+                self.assertEqual(args[7], payload / 'alondra-spec')
                 self.assertEqual(manifest, built['alondra-host'].with_name('alondra-host.manifest.json'))
-                self.assertEqual(args[9:], (payload / 'alondra-codex-host', built['alondra-codex-host'].with_name('alondra-codex-host.manifest.json'),
+                self.assertEqual(args[10:], (payload / 'alondra-codex-host', built['alondra-codex-host'].with_name('alondra-codex-host.manifest.json'),
                                             payload / 'alondra-antigravity-host', built['alondra-antigravity-host'].with_name('alondra-antigravity-host.manifest.json'),
                                             output))
                 path = output / f'alondra-0.1.2-{arch}.tar.gz'

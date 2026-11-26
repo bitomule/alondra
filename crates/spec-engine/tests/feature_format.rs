@@ -467,6 +467,8 @@ fn writes_a_spec_in_the_canonical_form() {
         title: "Refunds return the money".to_string(),
         description: vec!["A refund returns what the customer paid.".to_string(), "It never exceeds the payment.".to_string()],
         background: vec![step(Keyword::Given, "a paid order of 30 EUR")],
+        diagrams: Vec::new(),
+        mockups: Vec::new(),
         scenarios: vec![
             Scenario {
                 id: "full".to_string(),
@@ -476,6 +478,8 @@ fn writes_a_spec_in_the_canonical_form() {
                 judgment: Some(Judgment { evidence: EvidenceKind::Capture, pattern: Some("shots/**/*.png".to_string()) }),
                 promise: None,
                 reserved: false,
+                diagrams: Vec::new(),
+                mockups: Vec::new(),
                 steps: vec![
                     step(Keyword::When, "the order is refunded"),
                     Step {
@@ -495,6 +499,8 @@ fn writes_a_spec_in_the_canonical_form() {
                 judgment: None,
                 promise: None,
                 reserved: false,
+                diagrams: Vec::new(),
+                mockups: Vec::new(),
                 steps: vec![
                     step(Keyword::When, "<amount> EUR are refunded"),
                     Step {
@@ -573,6 +579,15 @@ fn promise() -> impl Strategy<Value = Option<Promise>> {
     prop::option::of(prop_oneof![Just(Promise::Surface), Just(Promise::Data), Just(Promise::Dependencies)])
 }
 
+fn part_files(extension: &str) -> impl Strategy<Value = Vec<String>> {
+    let file = prop::string::string_regex(&format!("([a-z]{{1,4}}/)?[a-z0-9_-][a-z0-9._-]{{0,5}}\\.{extension}")).unwrap();
+    prop::collection::btree_set(file, 0..2).prop_map(|files| files.into_iter().collect())
+}
+
+fn any_parts() -> impl Strategy<Value = (Vec<String>, Vec<String>)> {
+    (part_files("mmd"), prop_oneof![part_files("png"), part_files("jpe?g")])
+}
+
 fn any_scenario() -> impl Strategy<Value = Scenario> {
     (
         "[a-z][a-z0-9]{0,6}",
@@ -583,8 +598,11 @@ fn any_scenario() -> impl Strategy<Value = Scenario> {
         any::<bool>(),
         prop::collection::vec(any_step(), 1..4),
         table(),
+        any_parts(),
     )
-        .prop_map(|(id, title, outline, judgment, promise, reserved, steps, examples)| Scenario {
+        .prop_map(|(id, title, outline, judgment, promise, reserved, steps, examples, (diagrams, mockups))| Scenario {
+            diagrams,
+            mockups,
             id,
             title,
             line: 0,
@@ -605,12 +623,13 @@ fn any_spec() -> impl Strategy<Value = Spec> {
         prop::collection::vec(description_line(), 0..3),
         prop::collection::vec(any_step(), 0..3),
         prop::collection::vec(any_scenario(), 1..4),
+        any_parts(),
     )
-        .prop_map(|(id, decisions, title, description, background, mut scenarios)| {
+        .prop_map(|(id, decisions, title, description, background, mut scenarios, (diagrams, mockups))| {
             for (index, scenario) in scenarios.iter_mut().enumerate() {
                 scenario.id = format!("{}{index}", scenario.id);
             }
-            Spec { id, decisions, title, description, background, scenarios }
+            Spec { id, decisions, title, description, background, diagrams, mockups, scenarios }
         })
 }
 

@@ -156,13 +156,15 @@ fn a_scenario_added_on_the_card_is_written_in_its_spec_and_read_back() {
 
 #[test]
 fn editing_a_scenario_keeps_its_tags_and_a_step_it_cannot_read_names_the_line() {
-    let base = draft(changes(&[(REFUNDS_PATH, Some(REFUNDS))]));
+    let pictured = REFUNDS.replace("@boundary:dependencies", "@boundary:dependencies @diagram:flow.mmd @mockup:sheet.png");
+    let base = draft(changes(&[(REFUNDS_PATH, Some(&pictured))]));
     let edit = |steps: &str| SpecEdit::PutScenario { path: REFUNDS_PATH.into(), scenario: Some("stands-alone".into()), id: "stands-alone".into(), title: "Billing stands alone".into(), steps: steps.into(), judged: false };
     let (_, files) = edited(&base, &edit("Given the billing crate\nThen none is another component")).unwrap();
     let spec = engine::read_spec("x", files[REFUNDS_PATH].as_ref().unwrap().as_bytes()).unwrap();
     let kept = spec.scenarios.iter().find(|s| s.id == "stands-alone").unwrap();
     assert_eq!(kept.title, "Billing stands alone");
     assert!(kept.promise.is_some(), "its boundary tag stays");
+    assert_eq!((&kept.diagrams[..], &kept.mockups[..]), (&["flow.mmd".to_owned()][..], &["sheet.png".to_owned()][..]), "its pictures stay");
     let refused = edited(&base, &edit("Given the billing crate\nThis is not a step")).unwrap_err();
     assert_eq!(refused.field, "steps");
     assert!(refused.message.starts_with("Line 2"), "{}", refused.message);

@@ -41,6 +41,7 @@ class PublicPayloadTests(unittest.TestCase):
             (stage / 'alondra').write_bytes(b'fake binary')
             (stage / 'alondrad').write_bytes(b'fake daemon')
             (stage / 'alondrad-launcher').write_bytes(b'fake launcher')
+            (stage / 'alondra-spec').write_bytes(b'fake spec commands')
             built = stage / 'built.json'
             built.write_text(json.dumps({'laboratory': False, 'sdk': '0.3.300', 'node': 'v24.19.0', 'bundle_sha256': 'b' * 64}))
             host = pathlib.Path(temp) / 'alondra-host'
@@ -97,7 +98,9 @@ class PublicPayloadTests(unittest.TestCase):
                 self.assertEqual((stage / host / 'NODE_LICENSE').read_bytes(), (r.ROOT / 'deploy/brew/node/LICENSE').read_bytes())
 
     def test_a_published_release_without_the_antigravity_host_passes_only_as_an_older_set(self):
-        self.assertEqual(r.PUBLIC_FILES - r.PRE_ANTIGRAVITY_FILES,
+        self.assertEqual(r.PUBLIC_FILES - r.PRE_SPEC_FILES, {'alondra-spec'})
+        self.assertIn(r.PRE_SPEC_FILES, r.PUBLISHED_FILES)
+        self.assertEqual(r.PRE_SPEC_FILES - r.PRE_ANTIGRAVITY_FILES,
                          {r.ANTIGRAVITY_HOST, r.ANTIGRAVITY_MANIFEST, 'antigravity/NODE_LICENSE'})
         self.assertLessEqual(r.PRE_LICENSE_FILES, r.PRE_ANTIGRAVITY_FILES)
         with tempfile.TemporaryDirectory() as temp:

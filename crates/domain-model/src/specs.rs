@@ -798,7 +798,7 @@ fn read_draft_spec(draft: &SpecDraft, path: &str) -> Result<engine::Spec, SpecEd
 /// The body of a scenario as the form edits it: its steps, tables, doc strings and examples, one
 /// level of indentation less than in its file.
 pub fn scenario_body(scenario: &engine::Scenario) -> String {
-    let spec = engine::Spec { id: "x".into(), decisions: vec![], title: "x".into(), description: vec![], background: vec![], scenarios: vec![engine::Scenario { judgment: None, promise: None, reserved: false, ..scenario.clone() }] };
+    let spec = engine::Spec { id: "x".into(), decisions: vec![], title: "x".into(), description: vec![], background: vec![], diagrams: vec![], mockups: vec![], scenarios: vec![engine::Scenario { judgment: None, promise: None, reserved: false, ..scenario.clone() }] };
     let text = engine::write_spec(&spec);
     let mut lines = text.lines().skip_while(|line| !line.trim_start().starts_with("Scenario")).skip(1);
     let body: Vec<String> = lines.by_ref().map(|line| line.strip_prefix("    ").unwrap_or(line.trim_start()).to_owned()).collect();
@@ -865,7 +865,7 @@ pub fn edited(draft: &SpecDraft, edit: &SpecEdit) -> Result<(SpecLevel, SpecFile
                     if draft.files.get(&path).is_some_and(Option::is_some) || draft.check.before.get(&path).is_some_and(Option::is_some) {
                         return Err(edit_error("id", format!("{path} already exists")));
                     }
-                    (path, engine::Spec { id: id.clone(), decisions: vec![], title: title.trim().to_owned(), description, background: vec![], scenarios: vec![] })
+                    (path, engine::Spec { id: id.clone(), decisions: vec![], title: title.trim().to_owned(), description, background: vec![], diagrams: vec![], mockups: vec![], scenarios: vec![] })
                 }
             };
             let text = engine::write_spec(&spec);
@@ -894,6 +894,8 @@ pub fn edited(draft: &SpecDraft, edit: &SpecEdit) -> Result<(SpecLevel, SpecFile
                     let known = spec.scenarios.iter_mut().find(|known| known.id == *old).ok_or_else(|| edit_error("scenario", format!("The spec has no scenario {old}")))?;
                     made.promise = known.promise;
                     made.reserved = known.reserved;
+                    made.diagrams = std::mem::take(&mut known.diagrams);
+                    made.mockups = std::mem::take(&mut known.mockups);
                     made.judgment = match (*judged, known.judgment.take()) {
                         (false, _) => None,
                         (true, Some(kept)) => Some(kept),

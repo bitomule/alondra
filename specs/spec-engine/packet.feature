@@ -31,6 +31,14 @@ Feature: The packet is everything a fresh implementer receives
     When the packet of its component is built
     Then neither the title nor the steps of that scenario appear in the packet
 
+  @id:carries-the-parts
+  Scenario: The diagrams and mockups of the specs
+    Given specs that cite a diagram and a mockup, the mockup twice, and a reserved scenario with a mockup of its own
+    When the packet of their component is built
+    Then the section "Specs" holds the text of the diagram and the path and size of the mockup, each once, after the spec that cites them
+    And the mockup of the reserved scenario is not there
+    And the section "What you must not change" names the diagrams and mockups the specs cite
+
   @id:carries-the-boundary
   Scenario: The boundary in the packet
     Given a component with inputs, a dependency, data, fixtures, a surface snapshot and two suites

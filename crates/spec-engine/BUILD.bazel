@@ -19,7 +19,7 @@ low_opt_rust_test(
     compile_data = glob(["fixtures/**"]),
     crate_root = "tests/all.rs",
     edition = "2024",
-    deps = [":spec_engine"] + all_crate_deps(normal_dev = True),
+    deps = [":spec_engine"] + all_crate_deps(normal = True, normal_dev = True),
 )
 
 REPOSITORY_FILES = [
