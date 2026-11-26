@@ -82,6 +82,7 @@ fn sample(kind: SystemCardKind) -> SystemCard {
         K::RequestTasks => SystemCard::RequestTasks,
         K::Inbox => SystemCard::Inbox { about: InboxCard::StallNotice, subject: "t".into(), number: 1 },
         K::RefusedCards => SystemCard::RefusedCards { owner: "a".into() },
+        K::SpecChange => SystemCard::SpecChange,
         K::Unknown => SystemCard::Unknown,
     }
 }

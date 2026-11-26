@@ -877,6 +877,63 @@ pub enum Command {
         transition: String,
         pending: alondra_core::model_selection::PendingTaskSelection,
     },
+    /// The author proposes the specs that go with its plan. Alondra fills `check` with what the
+    /// engine reads of the task's worktree with them; whatever the agent sends there is replaced.
+    ProposeSpecs {
+        task_id: TaskId,
+        level: crate::SpecLevel,
+        #[serde(default)]
+        files: Vec<crate::SpecFile>,
+        #[serde(default)]
+        check: crate::SpecCheck,
+    },
+    /// The user edits the proposed specs on the plan's card; `expected` is the proposal's revision.
+    ReviseSpecs {
+        task_id: TaskId,
+        expected: Revision,
+        level: crate::SpecLevel,
+        #[serde(default)]
+        files: Vec<crate::SpecFile>,
+        #[serde(default)]
+        check: crate::SpecCheck,
+    },
+    /// What Alondra last read of the settings of the task's worktree: why they cannot be read, or
+    /// nothing when they can.
+    RecordSpecSettings {
+        task_id: TaskId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<crate::SpecProblem>,
+    },
+    /// Alondra wrote these approved spec files into the task's worktree: path and fingerprint of
+    /// what it wrote.
+    RecordSpecsWritten {
+        task_id: TaskId,
+        written: std::collections::BTreeMap<String, String>,
+    },
+    /// The implementer asks for a change of the approved specs, and why.
+    RequestSpecChange {
+        task_id: TaskId,
+        reason: String,
+    },
+    /// The author drafts the change of specs the implementer asked for; Alondra fills `check`.
+    ProposeAmendment {
+        task_id: TaskId,
+        amendment_id: String,
+        #[serde(default)]
+        files: Vec<crate::SpecFile>,
+        #[serde(default)]
+        check: crate::SpecCheck,
+    },
+    /// The author proposes a lasting decision on a card of its own. Alondra fills `files` (the
+    /// decision and those it supersedes) and `check`.
+    ProposeDecision {
+        task_id: TaskId,
+        decision: crate::DecisionFields,
+        #[serde(default)]
+        files: crate::SpecFiles,
+        #[serde(default)]
+        check: crate::SpecCheck,
+    },
     /// The change of role `transition` could not start the next execution: `refused` when the
     /// same start is refused however often it is tried, which waits for the user. No `transition`
     /// names a change that could not even start.

@@ -484,6 +484,7 @@ dependencies = [
  "alondra-core",
  "alondra-domain",
  "alondra-foundation",
+ "alondra-spec-engine",
  "libc",
  "proptest",
  "rpds",
@@ -491,6 +492,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

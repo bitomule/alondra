@@ -49,6 +49,15 @@ pub struct HomeFile {
     pub text: String,
 }
 
+/// A file of a spec proposal: the whole new text, or none to remove it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposedFile {
+    pub path: String,
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
 impl Step {
     fn server_error() -> String {
         "server_error".into()
@@ -207,7 +216,21 @@ pub enum Step {
     /// The worktree Alondra makes for `task`: a linked worktree of a new repository, in its
     /// `.claude/worktrees`, holding `files`, and `outside_link`, a link to a folder outside it.
     /// With `from`, the node of `task` enters the worktree of that other task instead.
-    Worktree { task: String, #[serde(default)] files: Vec<String>, #[serde(default)] outside_link: Option<String>, #[serde(default)] from: Option<String> },
+    /// With `base`, those files are committed on the repository's `main` before the worktree
+    /// branches from it.
+    Worktree { task: String, #[serde(default)] files: Vec<String>, #[serde(default)] outside_link: Option<String>, #[serde(default)] from: Option<String>,
+        #[serde(default)] base: Vec<HomeFile> },
+    /// The node of `task` proposes the specs of its plan, as `propose_specs` does. With `refused`,
+    /// the daemon must turn it down with that code.
+    ProposeSpecs { task: String, level: String, files: Vec<ProposedFile>, #[serde(default)] refused: Option<String> },
+    /// The user opens the editor of the proposed specs of `task`, picks `item` (the title of a spec,
+    /// scenario or decision it lists to edit) and saves its form with `fields` over what it shows.
+    EditSpec { task: String, item: String, fields: serde_json::Map<String, serde_json::Value> },
+    /// The node of `task` asks for a change of its approved specs, as `request_spec_change` does.
+    RequestSpecChange { task: String, reason: String },
+    /// The node of `task` writes `files` in its worktree and commits them, with `message`; a file
+    /// without text is removed.
+    Commit { task: String, files: Vec<ProposedFile>, message: String },
     /// The node of `task` asks permission to run `command` in Bash from `cwd`, a folder of the
     /// task's worktree (its top when absent), as Claude Code asks; `request` names the request.
     Permission { task: String, request: String, command: String, #[serde(default)] cwd: Option<String> },
@@ -289,6 +312,8 @@ pub enum Expect {
     /// What the daemon answered the permission `request` of the node of `task`: `allow`, `deny`,
     /// or `none` while it waits on the user's card.
     Answered { task: String, request: String, answer: String },
+    /// The file `path` of the worktree of `task` holds `text`, or, without `text`, does not exist.
+    WorktreeFile { task: String, path: String, #[serde(default)] text: Option<String> },
     /// How many SDK hosts the daemon started for `task`, how many of them run now, and how many
     /// Claude sessions they held between them.
     Hosts { task: String, started: usize, running: usize, sessions: usize },

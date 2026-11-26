@@ -66,6 +66,7 @@ fn system_fixture(kind: SystemCardKind) -> DomainState {
         }.to_body()),
         K::Inbox => (SystemCard::Inbox { about: InboxCard::UnsplitProblem, subject: "r-1".into(), number: 1 },
             alondra_domain_rules::orchestrator_cards::UnsplitProblem { request_id: "r-1".into(), title: "Publicar la versión".into() }.to_body()),
+        K::SpecChange => (SystemCard::SpecChange, alondra_domain_rules::spec_card::SpecCard::Decision { task: "t-1".into(), id: "keep".into() }.to_body()),
         K::Stalled | K::RefusedCards | K::Unknown => panic!("{kind:?} is not a client card"),
     };
     interaction.author = Author::System;
@@ -129,6 +130,7 @@ fn fixture_options(kind: SystemCardKind, body: &str) -> Vec<QuestionOption> {
         BatchProblem => vec![option(alondra_domain_rules::orchestrator_batch::BATCH_CONTINUE, alondra_domain_rules::orchestrator_batch::BATCH_CONTINUE_LABEL), option(alondra_domain_rules::orchestrator_batch::BATCH_RETRY, alondra_domain_rules::orchestrator_batch::BATCH_RETRY_LABEL)],
         StuckProblem => vec![option(alondra_domain_rules::orchestrator_cards::STUCK_RETRY, alondra_domain_rules::orchestrator_cards::STUCK_RETRY_LABEL)],
         Inbox => vec![option(alondra_domain_rules::orchestrator_cards::UNSPLIT_RETRY, alondra_domain_rules::orchestrator_cards::UNSPLIT_RETRY_LABEL)],
+        SpecChange => alondra_domain_rules::spec_card::SpecCard::from_body(body).unwrap().options(Lang::En),
         _ => vec![option(alondra_domain_rules::CARRY_ON, alondra_domain_rules::CARRY_ON_LABEL)],
     }
 }
@@ -166,6 +168,7 @@ fn stored_title(kind: SystemCardKind) -> &'static str {
         RequestDone => "Done",
         RequestTasks => "I created the task “Publicar la versión”",
         Inbox => "“Publicar la versión” was not turned into tasks",
+        SpecChange => "Accept the decision “keep”?",
         Stalled | RefusedCards | Unknown => unreachable!("internal cards have no client fixture"),
     }
 }

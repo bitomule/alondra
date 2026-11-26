@@ -733,7 +733,21 @@ impl Context<'_> {
                 })?;
                 self.worktrees.insert(task.clone(), path);
             }
-            Step::Worktree { task, files, outside_link, from: None } => self.worktree(index, task, files, outside_link.as_deref())?,
+            Step::Worktree { task, files, outside_link, from: None, base } => self.worktree(index, task, files, outside_link.as_deref(), base)?,
+            Step::ProposeSpecs { task, level, files, refused } => {
+                let level = alondra_domain_rules::SpecLevel::parse(level).ok_or_else(|| Self::failed(index, format!("{level} is not a level")))?;
+                let files = files.iter().map(|file| alondra_domain_rules::SpecFile { path: file.path.clone(), text: file.text.clone() }).collect();
+                self.node_command(index, task, &format!("/tasks/{task}/specs"), refused.as_deref(), Command::ProposeSpecs {
+                    task_id: task.clone().into(), level, files, check: Default::default(),
+                }).await?;
+                self.settle().await?;
+            }
+            Step::RequestSpecChange { task, reason } => {
+                self.node_command(index, task, &format!("/tasks/{task}/spec-changes"), None, Command::RequestSpecChange { task_id: task.clone().into(), reason: reason.clone() }).await?;
+                self.settle().await?;
+            }
+            Step::Commit { task, files, message } => self.commit(index, task, files, message)?,
+            Step::EditSpec { task, item, fields } => self.edit_spec(index, task, item, fields).await?,
             Step::Permission { task, request, command, cwd } => {
                 let top = self.worktrees.get(task).ok_or_else(|| Self::failed(index, format!("task {task} has no worktree")))?;
                 let cwd = cwd.as_deref().map_or_else(|| top.clone(), |cwd| top.join(cwd));
@@ -1023,7 +1037,7 @@ impl Context<'_> {
 
     /// Makes the worktree of `task` as Alondra does, a linked worktree of a repository of its own,
     /// and records it as the task's.
-    fn worktree(&mut self, index: usize, task: &str, files: &[String], outside_link: Option<&str>) -> Result<(), ScenarioError> {
+    fn worktree(&mut self, index: usize, task: &str, files: &[String], outside_link: Option<&str>, base: &[crate::format::HomeFile]) -> Result<(), ScenarioError> {
         let failed = |why: &dyn std::fmt::Display| Self::failed(index, why);
         let place = self.config.home.parent().ok_or_else(|| failed(&"the home has no folder"))?.join("repos").join(task);
         let top = place.join(".claude").join("worktrees").join(task);
@@ -1038,6 +1052,13 @@ impl Context<'_> {
         };
         std::fs::create_dir_all(&place).map_err(|e| failed(&e))?;
         git(&place, &["init", "-q", "-b", "main"])?;
+        for file in base {
+            let path = place.join(&file.path);
+            std::fs::create_dir_all(path.parent().unwrap_or(&place)).and_then(|()| std::fs::write(&path, &file.text)).map_err(|e| failed(&e))?;
+        }
+        if !base.is_empty() {
+            git(&place, &["add", "-A"])?;
+        }
         git(&place, &["commit", "-q", "--allow-empty", "-m", "Start"])?;
         git(&place, &["worktree", "add", "-q", "-b", &branch, &top.display().to_string()])?;
         for file in files {
@@ -1054,6 +1075,27 @@ impl Context<'_> {
             task_id: task.to_owned().into(), path: top.display().to_string(), origin: alondra_domain_rules::WorktreeOrigin::Task, branch: Some(branch),
         })?;
         self.worktrees.insert(task.to_owned(), top);
+        Ok(())
+    }
+
+    /// The node of `task` writes `files` in its worktree and commits them.
+    fn commit(&mut self, index: usize, task: &str, files: &[crate::format::ProposedFile], message: &str) -> Result<(), ScenarioError> {
+        let failed = |why: &dyn std::fmt::Display| Self::failed(index, why);
+        let top = self.worktrees.get(task).cloned().ok_or_else(|| failed(&format!("task {task} has no worktree")))?;
+        for file in files {
+            let path = top.join(&file.path);
+            match &file.text {
+                Some(text) => std::fs::create_dir_all(path.parent().unwrap_or(&top)).and_then(|()| std::fs::write(&path, text)).map_err(|e| failed(&e))?,
+                None => std::fs::remove_file(&path).map_err(|e| failed(&e))?,
+            }
+        }
+        for args in [&["add", "-A"][..], &["commit", "-q", "--allow-empty", "-m", message][..]] {
+            let output = std::process::Command::new("git").current_dir(&top).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(["-c", "user.name=Ana", "-c", "user.email=ana@example.com"]).args(args).output().map_err(|e| failed(&e))?;
+            if !output.status.success() {
+                return Err(failed(&format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr))));
+            }
+        }
         Ok(())
     }
 
@@ -1252,6 +1294,35 @@ impl Context<'_> {
             return Err(ScenarioError::ActionMissing { presentation: presentation.to_owned(), action: verb.to_owned(), view: checkpoint::render(&view) });
         };
         self.send_action(index, &view, &action, verb, typed_input(typed), client, lang).await.map(drop)
+    }
+
+    /// The user edits one spec, scenario or decision of the task's proposal from its editor.
+    async fn edit_spec(&mut self, index: usize, task: &str, item: &str, fields: &serde_json::Map<String, Value>) -> Result<(), ScenarioError> {
+        let (client, lang) = ("ios", "en");
+        let editor = self.view(&format!("task_specs:{task}"), client, lang).await?;
+        let key = editor["sections"].as_array().into_iter().flatten()
+            .filter(|section| section["id"] == "documents")
+            .flat_map(|section| section["items"].as_array().into_iter().flatten())
+            .flat_map(|item| item["items"].as_array().into_iter().flatten())
+            .find(|fact| fact["value"] == item)
+            .and_then(|fact| fact["link"]["key"].as_str().map(str::to_owned))
+            .ok_or_else(|| ScenarioError::ActionMissing { presentation: format!("task_specs:{task}"), action: item.to_owned(), view: checkpoint::render(&editor) })?;
+        let form_view = self.view(&key, client, lang).await?;
+        let form = form_view["sections"].as_array().into_iter().flatten()
+            .flat_map(|section| section["items"].as_array().into_iter().flatten())
+            .find(|item| item["kind"] == "form" || item.get("form").is_some() || item.get("submit").is_some())
+            .cloned()
+            .ok_or_else(|| ScenarioError::ActionMissing { presentation: key.clone(), action: "form".into(), view: checkpoint::render(&form_view) })?;
+        let form = form.get("form").cloned().unwrap_or(form);
+        let mut values = serde_json::Map::new();
+        for field in form["fields"].as_array().into_iter().flatten() {
+            if let Some(id) = field["id"].as_str() {
+                values.insert(id.to_owned(), field["value"].clone());
+            }
+        }
+        values.extend(fields.clone());
+        self.send_action(index, &form_view, &form["submit"], "spec_edit", json!({"fields": values}), client, lang).await?;
+        self.settle().await
     }
 
     /// The user presses `verb` on the task's screen, whether the action names the task or its node.
@@ -1603,6 +1674,13 @@ impl Context<'_> {
                     Some(written) if written <= *max => {}
                     written => return Err(failed(format!("the first request of the last host of {task} wrote at most {max} tokens to the prompt cache"),
                         written.map_or_else(|| "it answered nothing that says".to_owned(), |written| format!("it wrote {written}")))),
+                }
+            }
+            Expect::WorktreeFile { task, path, text } => {
+                let top = self.worktrees.get(task).ok_or_else(|| ScenarioError::Invalid(format!("task {task} has no worktree")))?;
+                let actual = std::fs::read_to_string(top.join(path)).ok();
+                if actual != *text {
+                    return Err(failed(format!("{path} of {task}: {text:?}"), format!("{actual:?}")));
                 }
             }
             Expect::TaskState { task, state } => {

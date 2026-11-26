@@ -44,6 +44,11 @@ impl Registry {
         self.port::<dyn SessionWorktrees>().expect("the root gives the registry the providers' session worktrees")
     }
 
+    /// The spec files of task worktrees; absent where nothing reads them.
+    pub fn spec_worktrees(&self) -> Option<Arc<dyn crate::spec_worktrees::SpecWorktrees>> {
+        self.port::<dyn crate::spec_worktrees::SpecWorktrees>()
+    }
+
     /// The provider accounts as the Mac keeps them.
     pub fn accounts(&self) -> Arc<dyn Accounts> {
         self.port::<dyn Accounts>().expect("the root gives the registry the Mac's accounts")

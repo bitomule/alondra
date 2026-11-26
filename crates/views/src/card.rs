@@ -140,6 +140,9 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
             }
         }
     }
+    if let Some(specs) = super::specs::plan_section(found, context) {
+        sections.push(specs);
+    }
     if let Some(destination) = &found.card.secret_destination {
         let fact = |label: &str, value: &str| Fact { kind: None, label: label.into(), value: format!("`{value}`"), tone: None, link: None };
         sections.push(super::common::section("secret", Some(t!(context.lang, "Where the secret goes", "Dónde se guarda el secreto").into()), vec![Item::Facts(Facts { items: vec![
@@ -997,6 +1000,17 @@ fn is_machine_card(interaction: &Interaction) -> bool {
     interaction.author == Author::System && matches!(interaction.system_card, Some(SystemCard::Machine))
 }
 
+/// One of Alondra's cards about a task's specs, worded in `lang` from what the task records.
+fn spec_change_card(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<CardSpec> {
+    if interaction.author != Author::System || !matches!(interaction.system_card, Some(SystemCard::SpecChange)) {
+        return None;
+    }
+    let card = alondra_domain_rules::spec_card::SpecCard::from_body(&interaction.body)?;
+    let Scope::Task { task_id } = &interaction.scope else { return None };
+    let task = domain.tasks.get(task_id)?;
+    Some(card.card(&task.title, &task.specs, lang))
+}
+
 fn start_problem_of(interaction: &Interaction) -> Option<alondra_domain_rules::StartProblem> {
     (interaction.author == Author::System && matches!(interaction.system_card, Some(SystemCard::StartProblem)))
         .then(|| alondra_domain_rules::start_problem::from_body(&interaction.body))
@@ -1468,6 +1482,9 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
             t!(lang, "The work was finished before you answered", "El trabajo se terminó antes de que respondieras").into(),
         ));
     }
+    if let Some(card) = spec_change_card(interaction, domain, lang) {
+        return Some((card.effective_title().to_owned(), card.why));
+    }
     if matches!(interaction.system_card, Some(SystemCard::Machine)) {
         return alondra_core::machine_incident::MachineCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
@@ -1535,6 +1552,13 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
 /// The words of an option the system writes itself, keyed by the id and English text it was
 /// built with, in the viewer's language. An option someone worded keeps its own label.
 fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: Lang) -> (String, Option<String>) {
+    if interaction.author == Author::System
+        && matches!(interaction.system_card, Some(SystemCard::SpecChange))
+        && let Some(card) = alondra_domain_rules::spec_card::SpecCard::from_body(&interaction.body)
+        && let Some(own) = card.options(lang).into_iter().find(|own| own.id == option.id)
+    {
+        return (own.label, own.description);
+    }
     if interaction.author == Author::System {
         let own = match (interaction.system_card.as_ref(), option.id.as_str()) {
             (Some(SystemCard::LaunchProblem { .. }), alondra_domain_rules::LAUNCH_RETRY_OPTION) => Some((
@@ -1781,9 +1805,15 @@ fn plan_actions(interaction: &Interaction, available: Option<&AvailableAction>, 
     if let Some(id) = action_id(Verb::Accept, &interaction.id.0, interaction.revision, None) {
         let mut approve = button(id.to_string(), t!(lang, "Approve", "Aprobar"), Role::Advance);
         approve.stamp = Some(t!(lang, "Approved", "Aprobado").into());
-        out.push(with_availability(approve, available, lang));
+        let mut approve = with_availability(approve, available, lang);
+        if let Some(block) = super::specs::plan_block(interaction, context) {
+            approve.enabled = false;
+            approve.disabled_reason = Some(block);
+        }
+        out.push(approve);
     }
     out.extend(request_changes(Verb::Changes, &interaction.id.0, interaction.revision, None, true, available, context));
+    out.extend(super::specs::edit_link(interaction, context));
     out
 }
 
@@ -2164,6 +2194,10 @@ fn main_content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item
     if reviewed_revision(interaction).is_some() {
         out.extend(content.map(|content| markdown(without_included_files(&content.body).to_owned())));
         out.extend(kept_at(interaction, lang));
+        return out;
+    }
+    if let Some(content) = spec_change_card(interaction, domain, lang).and_then(|card| card.content) {
+        out.push(markdown(content.body));
         return out;
     }
     if interaction.author == Author::System

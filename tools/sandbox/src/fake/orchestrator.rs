@@ -105,7 +105,10 @@ fn handle(fakes: &Fakes, args: &[String], prompt: &str) -> Result<Vec<(&'static 
             calls.push(("title_request", json!({"request_id": script.request_id, "title": title})));
         }
         for task in &script.tasks {
-            let launch = json!({"name": format!("sandbox/{}", task.task_id), "cwd": fakes.repo(), "model": task.model.as_deref().unwrap_or("sonnet"), "reason": "A scripted sandbox node"});
+            let mut launch = json!({"name": format!("sandbox/{}", task.task_id), "cwd": fakes.repo(), "model": task.model.as_deref().unwrap_or("sonnet"), "reason": "A scripted sandbox node"});
+            if task.staged {
+                launch["stages"] = json!({"staged": true, "reason": "A scripted change of behaviour in a project with specs"});
+            }
             calls.push(("create_task", json!({
                 "task_id": task.task_id, "request_id": script.request_id, "title": task.title, "agent_id": null,
                 "review_prs": false, "dependencies": task.dependencies, "launch": launch,

@@ -272,6 +272,7 @@ pub(crate) fn request_stage(domain:&Arc<dyn Runtime>,task:&TaskId)->Result<bool,
     let initial=domain.state();
     let Some(held)=initial.tasks.get(task) else{return Ok(false)};
     let Some(handover)=held.stages.handover.clone().filter(StageHandover::due) else{return Ok(false)};
+    if !held.specs.due().is_empty(){return Ok(false)}
     if held.state.terminal() || held.ending.is_some() || held.pending_selection.is_some() || current(&**domain,task)?.is_some(){return Ok(false)}
     let Some(execution)=initial.lifecycle_of(task)?.execution().cloned() else{
         if !starts_elsewhere(&**domain,task){refuse_stage_without_execution(&**domain,task,&handover)?;}
@@ -614,7 +615,9 @@ pub async fn run(domain:Arc<dyn Runtime>){
 /// fails, and a task a move left waiting starts on its new account once it can.
 pub async fn pass(domain:&Arc<dyn Runtime>){
     release_finished_fences(&**domain);
-    let owed:Vec<TaskId>=domain.read().state().tasks.values().filter(|task|task.stages.handover.as_ref().is_some_and(StageHandover::due)).map(|task|task.id.clone()).collect();
+    crate::spec_writes::note_settings(&**domain);
+    crate::spec_writes::write_due(&**domain);
+    let owed:Vec<TaskId>=domain.read().state().tasks.values().filter(|task|task.stages.handover.as_ref().is_some_and(StageHandover::due) && task.specs.due().is_empty()).map(|task|task.id.clone()).collect();
     for task in owed{
         if let Err(error)=request_stage(domain,&task){log!("the change of role of {task} could not start: {}",error.message);}
     }

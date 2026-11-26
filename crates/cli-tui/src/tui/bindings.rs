@@ -571,8 +571,9 @@ impl App {
             if has_form(view).is_some() {
                 t.add(vec![char('e'), plain(KeyCode::Enter)], "e", tr!("edit", "editar"), Act::Form);
             }
-            if view_render::documents_menu(view).is_some() {
-                t.add(vec![char('f')], "f", tr!("documents", "documentos"), Act::Documents);
+            if let Some(menu) = view_render::documents_menu(view) {
+                let label = if menu.title.is_empty() { tr!("documents", "documentos").to_owned() } else { menu.title.to_lowercase() };
+                t.add(vec![char('f')], "f", &label, Act::Documents);
             }
             if view_render::summarized_checks(view) {
                 t.add(vec![char('c')], "c",

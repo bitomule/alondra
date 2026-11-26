@@ -289,7 +289,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot, at: i64) -> Result<(Reque
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), continues: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: None,
+        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), specs: Default::default(), continues: None, worktrees: Default::default(), account: None, allowed: Default::default(), project: None,
     };
     Ok((request, task))
 }

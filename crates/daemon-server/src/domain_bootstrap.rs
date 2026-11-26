@@ -1013,6 +1013,7 @@ async fn read_role_skill(
     let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid skill request")); };
     let (root, name) = match (principal, query.name.as_str()) {
         (crate::domain_authority::Principal::Agent { .. }, "alondra") => (state.domain.ports().plugins().node(&state.home), "alondra"),
+        (crate::domain_authority::Principal::Agent { .. }, "spec-design") => (state.domain.ports().plugins().node(&state.home), "spec-design"),
         (crate::domain_authority::Principal::Orchestrator { .. }, "alondra-orchestrator") => (state.domain.ports().plugins().orchestrator(&state.home), "alondra-orchestrator"),
         _ => return crate::domain_api::domain_error(DomainError::new("forbidden", "Only the current role's installed skill may be read")),
     };

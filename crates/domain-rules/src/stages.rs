@@ -51,6 +51,10 @@ pub enum RoleTool {
     PresentPullRequest,
     PostMergeWork,
     RecordVerdict,
+    ProposeSpecs,
+    ProposeAmendment,
+    ProposeDecision,
+    RequestSpecChange,
 }
 
 impl RoleTool {
@@ -62,20 +66,26 @@ impl RoleTool {
             Self::PresentPullRequest => "present_result",
             Self::PostMergeWork => "post_merge_work",
             Self::RecordVerdict => "record_verdict",
+            Self::ProposeSpecs => "propose_specs",
+            Self::ProposeAmendment => "propose_amendment",
+            Self::ProposeDecision => "propose_decision",
+            Self::RequestSpecChange => "request_spec_change",
         }
     }
 }
 
 impl ExecutionRole {
-    /// Whether an execution of this role may use `tool`. The author plans and never delivers
-    /// code; the implementer builds and delivers; the validator checks and delivers, never plans.
+    /// Whether an execution of this role may use `tool`. The author plans, writes the specs and
+    /// their changes, and never delivers code; the implementer builds and delivers, and asks for a
+    /// change of spec instead of writing one; the validator checks and delivers, never plans.
     pub fn allows(self, tool: RoleTool) -> bool {
         match (self, tool) {
-            (Self::Author, RoleTool::RequestPlanMode | RoleTool::Plan) => true,
+            (Self::Author, RoleTool::RequestPlanMode | RoleTool::Plan | RoleTool::ProposeSpecs | RoleTool::ProposeAmendment | RoleTool::ProposeDecision) => true,
             (Self::Author, _) => false,
-            (Self::Implementer, RoleTool::RecordVerdict) => false,
+            (Self::Implementer, RoleTool::RecordVerdict | RoleTool::ProposeSpecs | RoleTool::ProposeAmendment | RoleTool::ProposeDecision) => false,
             (Self::Implementer, _) => true,
-            (Self::Validator, RoleTool::RequestPlanMode | RoleTool::Plan | RoleTool::RegisterPr | RoleTool::RecordVerdict) => false,
+            (Self::Validator, RoleTool::RequestPlanMode | RoleTool::Plan | RoleTool::RegisterPr | RoleTool::RecordVerdict
+                | RoleTool::ProposeSpecs | RoleTool::ProposeAmendment | RoleTool::ProposeDecision | RoleTool::RequestSpecChange) => false,
             (Self::Validator, _) => true,
         }
     }
@@ -83,9 +93,9 @@ impl ExecutionRole {
     /// What the role does instead, said to the agent whose call it refuses.
     pub fn refusal_fix(self, tool: RoleTool) -> String {
         let instead = match self {
-            Self::Author => "You are the author of this task: you plan it, and once the user approves the plan a new agent implements it. Present the plan through plan mode, or ask the user; never register or deliver a pull request.",
-            Self::Implementer => "You are the implementer of this task: build the approved plan and deliver it. Reviews are other tasks.",
-            Self::Validator => "You are the validator of this task: run its checks and deliver their result. Never plan, open a pull request or review another task.",
+            Self::Author => "You are the author of this task: you plan it and write its specs, and once the user approves the plan a new agent implements it. Present the plan through plan mode, or ask the user; never register or deliver a pull request.",
+            Self::Implementer => "You are the implementer of this task: build the approved plan and deliver it. Never write a spec or a decision: ask for the change with request_spec_change. Reviews are other tasks.",
+            Self::Validator => "You are the validator of this task: run its checks and deliver their result. Never plan, write a spec, open a pull request or review another task.",
         };
         format!("{} is not available to the {} of a task. {instead}", tool.name(), self.as_str())
     }
@@ -97,6 +107,10 @@ impl ExecutionRole {
 pub enum HandoverCause {
     /// The user approved the author's plan on this card.
     PlanApproved { card: InteractionId },
+    /// The implementer asked for this change of the approved specs: the author drafts it.
+    SpecChangeRequested { amendment: String },
+    /// The author drafted this change and it waits for the user: the implementer carries on.
+    AmendmentProposed { amendment: String },
 }
 
 /// A change of role the task owes: its current execution ends once it rests with nothing

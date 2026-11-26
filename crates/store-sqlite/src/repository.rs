@@ -308,7 +308,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
     row.remove("pending_user_inputs");
-    strip(&mut row, &["waiting_for_tasks", "ended_task_waits", "dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "later_prs", "opened_prs", "priority", "paused_in_queue", "ending", "stalls", "stall_closing", "open_pr", "released", "stages", "worktrees", "account", "provider", "selection", "pending_selection", "move_refused", "allowed", "project", "continues", "created_revision"]);
+    strip(&mut row, &["waiting_for_tasks", "ended_task_waits", "dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "later_prs", "opened_prs", "priority", "paused_in_queue", "ending", "stalls", "stall_closing", "open_pr", "released", "stages", "specs", "worktrees", "account", "provider", "selection", "pending_selection", "move_refused", "allowed", "project", "continues", "created_revision"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -942,6 +942,17 @@ pub(super) fn save_changes(
                     c,
                     "INSERT INTO task_stages(task_id,stages) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET stages=excluded.stages",
                     params![x.id.0, serde_json::to_string(&x.stages)?],
+                )?;
+            }
+        }
+        if prior.map_or(!x.specs.is_default(), |p| p.specs != x.specs) {
+            if x.specs.is_default() {
+                exec(c, "DELETE FROM task_specs WHERE task_id=?1", params![x.id.0])?;
+            } else {
+                exec(
+                    c,
+                    "INSERT INTO task_specs(task_id,specs) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET specs=excluded.specs",
+                    params![x.id.0, serde_json::to_string(&x.specs)?],
                 )?;
             }
         }
@@ -1607,6 +1618,14 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         let id: String = row.get(0)?;
         let task = state.tasks.get_mut(&TaskId::from(id)).context("task of its stages missing")?;
         task.stages = serde_json::from_str(&row.get::<_, String>(1)?)?;
+    }
+    drop(stored);
+    let mut specs = c.prepare("SELECT task_id, specs FROM task_specs")?;
+    let mut stored = specs.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let task = state.tasks.get_mut(&TaskId::from(id)).context("task of its specs missing")?;
+        task.specs = serde_json::from_str(&row.get::<_, String>(1)?)?;
     }
     drop(stored);
     let mut waits = c.prepare("SELECT task_id,targets,ended FROM task_waits")?;

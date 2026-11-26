@@ -66,6 +66,8 @@ pub enum SystemCard {
     Inbox { about: InboxCard, subject: String, number: u32 },
     /// Alondra refused the same card of `owner` again and again.
     RefusedCards { owner: String },
+    /// A change of a task's approved specs, or a lasting decision, for the user to decide on.
+    SpecChange,
     /// A kind a newer daemon wrote: it has no effect here.
     #[serde(other)]
     Unknown,
@@ -97,7 +99,9 @@ pub enum InboxCard {
 }
 
 /// The ids Alondra's own cards were named with: a node or the orchestrator may not name a card so.
-pub const RESERVED_PREFIXES: [&str; 39] = [
+pub const RESERVED_PREFIXES: [&str; 41] = [
+    crate::spec_card::AMENDMENT_PREFIX,
+    crate::spec_card::DECISION_PREFIX,
     super::NODE_PAUSE_PREFIX,
     alondra_core::usage::OVER_PACE_PREFIX,
     alondra_core::usage::PACE_RESUME_PREFIX,

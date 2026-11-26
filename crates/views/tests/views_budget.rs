@@ -53,6 +53,7 @@ fn keys() -> Vec<(String, Client)> {
         ("model_profile:codex-orchestrator".to_owned(), Client::Mac),
         ("model_profile:claude-implementation".to_owned(), Client::Ios),
         (format!("task_selection:{}", one("t", Shape::Running)), Client::Tui),
+        (format!("task_specs:{}", one("t", Shape::Running)), Client::Tui),
         ("issue_picker".to_owned(), Client::Ios),
         ("search?q=node".to_owned(), Client::Ios),
         ("machine".to_owned(), Client::Mac),

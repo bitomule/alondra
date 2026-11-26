@@ -304,3 +304,85 @@ that compares it, whether the public surface is the committed one. `BASELINE=1` 
 short description and the surface instead of the packet and the tests. It costs tokens and builds,
 and it replaces files of the checkout while it measures, so it is run by hand on a clean checkout
 (`tools/regeneration_pilot.py`).
+
+## Specs in a task
+
+In a project whose `alondra.toml` turns specs on, the specs of a change go with its plan, the user
+approves them with it, and nothing changes them afterwards without the user's approval. Alondra
+keeps them in the task (`TaskSpecs`, M-LIFE-16 of `docs/architecture/state-machines.md`) and reads
+every set with this engine over the task's worktree: never what an agent says about them.
+
+### Proposed with the plan
+
+A task that changes behaviour in such a project goes in stages. Its author designs the specs with
+the user (the `spec-design` skill) and sends them with `propose_specs` before presenting the plan:
+each file whole (a feature file, a boundary, a decision with status `proposed`, a reference
+section, the settings), and a level:
+
+| Level | When |
+|---|---|
+| `none` | The change alters no behaviour; no file |
+| `light` | Up to 5 scenarios and low risk |
+| `full` | More than 5 scenarios, a new boundary, or a risk of concurrency, security or stored data |
+
+Alondra reads the worktree with the proposal over it and refuses the call with every problem by
+file and line, so a proposal on a plan always reads clean. A proposal only changes `alondra.toml`
+and files under the specs folder (never its ledger), the decisions folder and the reference folder.
+A decision the proposal adds reads as accepted, as approving the plan makes it, so a spec may cite
+it.
+
+### On the plan's card
+
+The plan's card has a section «Specs»: each spec as its explanation and then its scenarios, each a
+block the user can comment on, never the raw Gherkin; then the boundaries, decisions and reference
+prose it changes. «Edit the specs» opens screens where the user changes the level and adds, edits
+or removes a spec, a scenario (title, steps, judged or not) or a decision. Every edit is made on
+the proposal and read by the engine at once; a problem comes back next to its field and the
+proposal stays as it was. Taking a decision out of the proposal records it as rejected.
+
+Approving the plan approves that exact set, with its decisions accepted and the user's words kept
+in Alondra. The plan cannot be approved while the proposal or the worktree's settings cannot be
+read: the button says why.
+
+In the terminal, «2» on the plan's card opens the editor, «f» picks what to edit and «e» edits its
+fields; a comment on a scenario's block quotes its identifier:
+
+| The plan's card | A comment on a scenario |
+|---|---|
+| ![The specs of a plan on its card](../images/specs-in-plan/plan-card-en-dark.png) | ![A comment anchored to a scenario](../images/specs-in-plan/reader-comment-en-dark.png) |
+
+| Choosing what to edit | A step the engine cannot read |
+|---|---|
+| ![The spec editor](../images/specs-in-plan/editor-choose-en-dark.png) | ![The problem next to its field](../images/specs-in-plan/scenario-error-en-dark.png) |
+
+### Written while no agent works
+
+Alondra writes the approved files into the task's worktree itself, and only while no agent of the
+task works: between the author's last turn and the implementer's first, or when the implementer
+rests. A change of role waits for them. The implementer commits them as they are; its context says
+which they are and that specs win over any other text.
+
+### Changes afterwards
+
+The implementer never edits a spec, boundary or decision: it asks with `request_spec_change`. The
+task goes back to an author, who drafts the change with `propose_amendment`; the user gets a card
+with what each file held and what it would hold, and the implementer takes the task back meanwhile.
+An approved change is written like the plan's; a rejected one leaves the approved specs, and the
+implementer hears the user's words.
+
+A lasting decision outside a plan goes on a card of its own (`propose_decision`): accepted, Alondra
+writes it and marks every decision it supersedes as superseded by it.
+
+### At delivery
+
+A final delivery is refused with `specs_differ` when the branch holds a spec file changed from
+where it leaves its base branch without the user's approval, or an approved one otherwise than
+approved; reference prose is reviewed with the delivery and the ledger is the validation's. It is
+refused with `spec_settings_unreadable` when the settings cannot be read: a broken `alondra.toml`
+never turns specs off.
+
+| Project | What happens |
+|---|---|
+| No `alondra.toml`, or specs not enabled | Nothing: `propose_specs` is refused with `specs_disabled` |
+| `alondra.toml` that cannot be read | No plan is approved and no result delivered until it is fixed; the task shows why |
+| `committed = false` | The approved specs live in Alondra and are never written into the worktree nor committed; the card says nothing can be regenerated from them later |

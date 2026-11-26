@@ -119,6 +119,7 @@ pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> 
         Family::Accounts => accounts::list(&context),
         Family::ModelProfile => model_controls::profile(tail(), &context)?,
         Family::TaskSelection => model_controls::task(tail(), &context)?,
+        Family::TaskSpecs => specs::build(tail(), &context)?,
         Family::Metrics => metrics::build(key, &context)?,
     };
     view.version = version(&view);
@@ -234,3 +235,4 @@ fn push_text(input: &Input) -> (bool, Option<String>) {
     }
 }
 pub mod model_controls;
+pub mod specs;

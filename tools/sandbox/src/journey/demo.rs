@@ -23,7 +23,7 @@ const APPEARANCE_TESTS: &str = "import Testing\n\n@Suite struct AppearanceChoice
 fn task(id: &str, title: &str, model: &str, dependencies: &[&str]) -> TaskScript {
     TaskScript {
         task_id: id.into(), title: title.into(), on_start: vec![], on_feedback: vec![], cleans_up: true,
-        dependencies: dependencies.iter().map(|d| (*d).into()).collect(), priority: None, model: Some(model.into()),
+        dependencies: dependencies.iter().map(|d| (*d).into()).collect(), priority: None, model: Some(model.into()), staged: false,
     }
 }
 

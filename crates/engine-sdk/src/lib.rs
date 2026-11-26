@@ -60,6 +60,7 @@ pub mod machine_hooks;
 #[cfg(not(feature = "real-hosts"))]
 pub mod model_fixture;
 pub mod provider_transition;
+pub mod spec_writes;
 pub mod sdk_owner;
 pub mod start_retries;
 pub mod task_closer;

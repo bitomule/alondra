@@ -983,6 +983,14 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if !stages.is_empty() {
         view.sections.push(common::section("stages", Some(t!(context.lang, "Stages", "Etapas").into()), vec![Item::Facts(Facts { items: stages })]));
     }
+    let specs = super::specs::task_facts(task, context);
+    if !specs.is_empty() {
+        let mut items = vec![Item::Facts(Facts { items: specs })];
+        if task.specs.draft.is_some() && context.domain.open_plan_card(&task.id).is_some() {
+            items.push(Item::Actions(super::ActionBar { actions: vec![common::view_link(&format!("{}:{}", super::specs::EDITOR, task.id), t!(context.lang, "Edit the specs", "Editar las specs"))] }));
+        }
+        view.sections.push(common::section("specs", Some("Specs".into()), items));
+    }
     if let Some(mark) = common::elapsed_mark(task, true, context) {
         let title = match mark.elapsed.as_ref().and_then(|elapsed| elapsed.until.as_ref()) {
             Some(_) => t!(context.lang, "Took", "Duró"),

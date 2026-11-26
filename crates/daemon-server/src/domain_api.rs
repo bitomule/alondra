@@ -76,6 +76,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         ("/tasks/{id}/completion", "POST"), ("/tasks/{id}/cancellation", "POST"),
         ("/tasks/{id}/reopening", "POST"), ("/tasks/{id}/plan-review", "POST"), ("/tasks/{id}/stall-settlement", "POST"),
         ("/tasks/{id}/cleanup", "POST"), ("/tasks/{id}/post-merge-work", "PUT"), ("/tasks/{id}/mcp-wait", "PUT"), ("/tasks/{id}/task-wait", "PUT"),
+        ("/tasks/{id}/specs", "POST"), ("/tasks/{id}/spec-changes", "POST"), ("/tasks/{id}/spec-amendments", "POST"), ("/tasks/{id}/decisions", "POST"),
         ("/interactions/{id}/answers", "POST"), ("/interactions/{id}/settlement", "POST"),
         ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/clarification", "POST"),
         ("/interactions/{id}/subject", "PUT"),
@@ -660,6 +661,10 @@ pub(crate) fn resource_envelope(
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/relations") => ("set_relations", Some(("task_id", task?))),
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/priority") => ("set_priority", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/verdict") => ("record_verdict", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/specs") => ("propose_specs", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/spec-changes") => ("request_spec_change", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/spec-amendments") => ("propose_amendment", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/decisions") => ("propose_decision", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/start") => ("start_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/documents") => ("create_document", Some(("task_id", task?))),
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/review") => {
@@ -891,7 +896,11 @@ async fn execute_command<H: DomainHost>(
         return unsigned_read();
     };
     let work = host.domain().command_work.clone();
+    let mut envelope = envelope;
     work.run(move || {
+        if let Err(refusal) = crate::spec_checks::stamp(host.domain(), &mut envelope.command) {
+            return domain_error(refusal);
+        }
         let home = host.home().to_owned();
         let result = host.domain().execute(
             &Actor::User { user_id: format!("device:{}", device.device_id) },
@@ -1004,6 +1013,18 @@ async fn checked_producer_command<H: DomainHost>(
         }
         steps.step("checking the presented pull requests on GitHub", client.verify_presentation(&envelope.command)).await?;
     }
+    if let (Principal::Agent { .. }, Command::PresentResult { task_id, interaction_id, is_final: true, .. }) = (&principal, &envelope.command)
+        && host.domain().state().is_ok_and(|state| !state.interactions.contains_key(interaction_id))
+    {
+        let (checking, task) = (host.clone(), task_id.clone());
+        let refusal = steps.step("checking the task's specs", alondra_core::clock::spawn_blocking(move || {
+            let Ok(state) = checking.domain().state() else { return Some(storage()) };
+            crate::spec_checks::delivery_refusal(checking.domain(), &state, &task)
+        })).await.unwrap_or_else(|_| Some(storage()));
+        if let Some(refusal) = refusal {
+            return Err(refusal);
+        }
+    }
     if let (Principal::Agent { session_id, .. }, Command::PresentResult { task_id, interaction_id, targets, is_final: true, .. })
         = (&principal, &envelope.command)
         && let Ok(state) = host.domain().state()
@@ -1051,6 +1072,7 @@ async fn checked_producer_command<H: DomainHost>(
     steps.step("storing it", work.run(move || {
         check_launch_plan(host.domain(), host.home(), &envelope.command)?;
         crate::launch_plans::stamp_project(host.domain(), host.home(), &mut envelope.command);
+        crate::spec_checks::stamp(host.domain(), &mut envelope.command)?;
         let kept = crate::result_files::keep(host.home(), &mut envelope.command)?;
         let executed = host.domain().execute_bearer_answered(&token, &envelope, |state| {
             reviewed.as_ref().map_or(Ok(()), |reviewed| reviewed.verify(state))
@@ -1097,7 +1119,7 @@ pub(crate) fn encrypted_command_runtime(
     if sender != identity.0 {
         return Ok(json!({"status":422,"body":DomainError::new("invalid_input", "invalid encrypted sender identity")}));
     }
-    let envelope: CommandEnvelope = match body
+    let mut envelope: CommandEnvelope = match body
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
     {
@@ -1108,6 +1130,9 @@ pub(crate) fn encrypted_command_runtime(
             );
         }
     };
+    if let Err(refusal) = crate::spec_checks::stamp(domain, &mut envelope.command) {
+        return Ok(json!({"status":422,"body":refusal}));
+    }
     let result = domain.execute(
         &Actor::User {
             user_id: format!("device:{sender}"),

@@ -253,7 +253,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
 
         let task = |id: &str, title: &str, dependencies: &[&str], priority: Option<&str>| TaskScript {
             task_id: id.into(), title: title.into(), on_start: vec![], on_feedback: vec![], cleans_up: true,
-            dependencies: dependencies.iter().map(|d| (*d).into()).collect(), priority: priority.map(Into::into), model: None,
+            dependencies: dependencies.iter().map(|d| (*d).into()).collect(), priority: priority.map(Into::into), model: None, staged: false,
         };
         let planned = RequestScript {
             request_id: "req-sync".into(),
