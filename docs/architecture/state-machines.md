@@ -4719,10 +4719,12 @@ terminals = ["Merged"]
 | Open | `ObserveMergeVerdict` (system) [same head] | Open; the merge verdict for that head replaces the previous one |
 | Closed/Merged, or Open at another head | `ObserveMergeVerdict` | **rejected** `stale_head` |
 | Merged | `ObservePrState` not Merged, or different head | **rejected** `invalid_input` ("Confirmed merge cannot be undone") |
-| PR of a terminal task | `RegisterPr` from another task | move: new owner, `state=Open` and `merged_head=None` **without looking at the previous state**, `old.open_pr=None` |
+| Closed/Merged PR of a terminal task, another head (neither `head` nor `merged_head`) | `RegisterPr` from another task, or `RecordOpenedPr` | it is another PR at a reused address (`finished_pr_of_another_task`, `rules/pr_identity.rs`): the earlier record keeps its task, id and state and gives up the address (`Unresolvable{AddressReused}`, with `Relocate` when it has a locator); the new PR gets its own record and id. If it was the same PR, the provider key joins both |
+| any other PR of a terminal task | `RegisterPr` from another task | move: new owner, `state=Open` and `merged_head=None` **without looking at the previous state**, `old.open_pr=None` |
 | PR of a live task | `RegisterPr` from another task | **rejected** `pr_owned_by_other_task` |
+| Closed/Merged PR of a terminal task, same head | `RecordOpenedPr` from another task | the note in `opened_prs` is dropped, nothing else changes |
 
-- **Terminals**: Merged is terminal by a guard in `ObservePrState`, but `RegisterPr` from another task rewrites it to Open
+- **Terminals**: Merged is terminal by a guard in `ObservePrState`, but `RegisterPr` from another task at the same head rewrites it to Open
   (`rules.rs:4668-4672`). This overlaps the stable pull request identity work and is not developed here (see H-GH-2).
 - **Invariants**: `state==Merged <=> merged_head.is_some()` (checked in `ObservePrState`); a PR has one live owner
   (checked in `RegisterPr`/`RecordOpenedPr`). **Assumed, not enforced**: that observations arrive in order. There is no
