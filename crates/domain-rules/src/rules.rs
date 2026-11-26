@@ -4050,8 +4050,11 @@ pub(crate) fn apply(
             domain.task(task_id)?;
             domain.reconcile_recovery_cards(task_id, lifecycles)?;
         }
-        Command::RecordHostLost { task_id, reason, quiet, signed_out } => {
+        Command::RecordHostLost { task_id, reason, quiet, signed_out, node } => {
             system(actor)?;
+            if node.is_some() && domain.task(task_id)?.agent_id != *node {
+                return Err(DomainError::new("conflict", format!("Task {task_id} no longer runs on the node whose host was lost")));
+            }
             domain.task(task_id)?;
             nonempty(reason)?;
             domain.record_host_lost(task_id, reason, *quiet, *signed_out, effects, lifecycles)?;

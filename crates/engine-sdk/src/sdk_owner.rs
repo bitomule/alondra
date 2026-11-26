@@ -889,7 +889,13 @@ pub(crate) fn adopt_for_transition(domain: Arc<dyn Runtime>, backend:&SdkBackend
 }
 
 pub fn adopt(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>) -> Result<Driver, Failed> {
-    let mut driver = take(domain, backend, task, plugin, true)?.ok_or_else(|| Failed::new("the ended host was not replaced".into()))?;
+    adopt_of(domain, backend, task, plugin, None)
+}
+
+/// `adopt`, only of the execution the node `of` runs, when it is named.
+fn adopt_of(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, of: Option<&AgentId>) -> Result<Driver, Failed> {
+    let taken = take_host_into(domain, backend, task, plugin, true, true, false, &mut None, of)?;
+    let mut driver = taken.ok_or_else(|| Failed::new("the ended host was not replaced".into()))?;
     driver.plugin = plugin.map(std::path::Path::to_path_buf);
     Ok(driver)
 }
@@ -971,7 +977,7 @@ pub(crate) fn end_unowned_host(domain: Arc<dyn Runtime>, backend: &SdkBackend, t
 /// the proof that nothing of the host writes any more is never released and taken again.
 pub(crate) fn end_and_claim_unowned_host(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId) -> Result<Option<EndedHost>, Failed> {
     let mut claimed = None;
-    take_host_into(domain, backend, task, None, false, true, false, &mut claimed)?;
+    take_host_into(domain, backend, task, None, false, true, false, &mut claimed, None)?;
     Ok(claimed)
 }
 
@@ -984,12 +990,15 @@ fn take(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, plugin: Op
 /// `end_refused`, it is ended by the lock it holds and the execution is taken again, now with a
 /// host that ended. A live host of a release this one can carry on with is adopted as it runs.
 fn take_host(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool, explicit_account_retry:bool) -> Result<Option<Driver>, Failed> {
-    take_host_into(domain, backend, task, plugin, relaunch, end_refused, explicit_account_retry, &mut None)
+    take_host_into(domain, backend, task, plugin, relaunch, end_refused, explicit_account_retry, &mut None, None)
 }
 
 /// `take_host`, which without `relaunch` leaves in `claimed` the ended host's folder it claimed, still locked.
 #[allow(clippy::too_many_arguments)]
-fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool, explicit_account_retry:bool, claimed: &mut Option<EndedHost>) -> Result<Option<Driver>, Failed> {
+///
+/// `of` names the node whose own owner takes the host again: the task's execution is reserved only
+/// while the task still runs on that node, never one a later node runs.
+fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool, explicit_account_retry:bool, claimed: &mut Option<EndedHost>, of: Option<&AgentId>) -> Result<Option<Driver>, Failed> {
     let _in_hand = InHand::new(&domain, &task);
     let taken_at = clock::instant();
     if relaunch { crate::account_move::require_started_destination(&*domain,&task).map_err(Failed::new)?; }
@@ -1001,6 +1010,9 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed::new(format!("{error:?}")))?;
     let (adoption, _) = domain
         .own(scope.clone(), |owner| {
+            if let Some(node) = of && !runs_on(&owner.state(), &task, node) {
+                return Err(DomainError::new("conflict", format!("Task {task} no longer runs on the node {node}")).into());
+            }
             let adoption = owner.adopt(&task)?;
             if relaunch {
                 owner.reissue_permit(&task)?;
@@ -1058,7 +1070,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
             mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
             alondra_engine_ports::agent_host::of(domain.ports()).and_then(|hosts| hosts.end_holders(&backend.state_root.join(stamp.instance().as_str())))
                 .map_err(|error| Failed::new(format!("its host did not stop: {error}")))?;
-            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
+            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed, of);
         }
         let codex_checkpoint=if worker.provider()==Provider::Codex{adapter_state.checkpoint().map(|checkpoint|checkpoint.bytes().to_vec())}else{None};
         if let Err(error) = worker.adopt_owner(grant, adapter_state) {
@@ -1070,12 +1082,12 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
             mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
             alondra_engine_ports::agent_host::of(domain.ports()).and_then(|hosts| hosts.end_holders(&backend.state_root.join(stamp.instance().as_str())))
                 .map_err(|error| Failed::new(format!("its host refused to be taken over and did not stop: {error}")))?;
-            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
+            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed, of);
         }
         if worker.native_lost().map_err(adapter("checking the adopted native process"))? {
             worker.stop().map_err(adapter("stopping the adopted host without its app-server"))?;
             drop(worker);
-            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
+            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed, of);
         }
         if adopted_without_process(worker.stopper()).map_err(|error| Failed::new(format!("checking the adopted host's process: {error}")))? {
             log!("the SDK host of {task} answered its adoption but its process is gone: its end is recorded");
@@ -1083,7 +1095,7 @@ fn take_host_into(domain: Arc<dyn Runtime>, backend: &SdkBackend, task: TaskId, 
             mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
             alondra_engine_ports::agent_host::of(domain.ports()).and_then(|hosts| hosts.end_holders(&backend.state_root.join(stamp.instance().as_str())))
                 .map_err(|error| Failed::new(format!("the leftovers of its host did not stop: {error}")))?;
-            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
+            return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed, of);
         }
         if worker.runs_another_release() {
             log!("the live SDK host of {task} runs the release before: it goes on, and once the node rests a host of this release takes its place");
@@ -1334,10 +1346,19 @@ pub fn lost(domain: &dyn Runtime, task: &TaskId, why: &str) {
 
 /// As `lost`; `signed_out` says the provider refused the account for want of a sign-in or a key.
 pub fn lost_on(domain: &dyn Runtime, task: &TaskId, why: &str, signed_out: bool) {
+    give_up(domain, task, why, signed_out, None)
+}
+
+/// `lost_on`, as the owner of the node `of` says it when it is named: once the task runs on another
+/// node, or on none, that owner's failure is not the task's, and nothing of it is touched.
+fn give_up(domain: &dyn Runtime, task: &TaskId, why: &str, signed_out: bool, of: Option<&AgentId>) {
+    if let Some(node) = of && !runs_on(&domain.state(), task, node) {
+        return log!("the node {node} was not taken over, and {task} no longer runs on it: {why}");
+    }
     log!("the SDK execution of {task} was not taken over: {why}");
-    end_dead_host_claims(domain, task);
+    end_dead_host_claims(domain, task, of);
     let state = domain.state();
-    if let Some(agent) = state.tasks.get(task).and_then(|task| task.agent_id.as_ref())
+    if let Some(agent) = of.or_else(|| state.tasks.get(task).and_then(|task| task.agent_id.as_ref()))
         && !domain.owns_sdk_host(agent) {
         host_ended(domain, agent);
     }
@@ -1351,9 +1372,12 @@ pub fn lost_on(domain: &dyn Runtime, task: &TaskId, why: &str, signed_out: bool)
         data_epoch: state.data_epoch.clone(),
         command_id: format!("host-lost-{task}-{}", alondra_foundation::random_hex(8)).into(),
         expected_revision: 0,
-        command: Command::RecordHostLost { task_id: task.clone(), reason: why.to_owned(), quiet, signed_out },
+        command: Command::RecordHostLost { task_id: task.clone(), reason: why.to_owned(), quiet, signed_out, node: of.cloned() },
     };
     if let Err(error) = domain.execute_as_system(envelope) {
+        if !quiet {
+            domain.sdk_owners().host_losses_told.lock_or_recover("the tasks told of a lost host").remove(task);
+        }
         log!("could not put the card of {task}, whose execution was not taken over: {}", store_text(&error));
     }
 }
@@ -1369,7 +1393,7 @@ pub(crate) fn claims_left(domain: &dyn Runtime, task: &TaskId) -> Result<bool, F
 /// A host given up as lost answers for nothing it claimed: its end is committed from its journal,
 /// so what it never got goes back to the queue and what it may have got is resent or asked about,
 /// and no claim is left holding the task's next execution.
-fn end_dead_host_claims(domain: &dyn Runtime, task: &TaskId) {
+fn end_dead_host_claims(domain: &dyn Runtime, task: &TaskId, of: Option<&AgentId>) {
     let Some((backend, runtime)) = domain.sdk() else { return };
     match claims_left(domain, task) {
         Ok(true) => {}
@@ -1380,10 +1404,14 @@ fn end_dead_host_claims(domain: &dyn Runtime, task: &TaskId) {
         return;
     }
     let backend = backend.clone();
-    match end_unowned_host(runtime, &backend, task.clone()) {
+    match take_host_into(runtime, &backend, task.clone(), None, false, true, false, &mut None, of).map(drop) {
         Ok(()) => log!("the lost host of {task} ended: what it claimed was settled from its journal"),
         Err(failed) => log!("the lost host of {task} left claims that could not be settled: {failed}"),
     }
+}
+
+fn runs_on(state: &DomainState, task: &TaskId, node: &AgentId) -> bool {
+    state.tasks.get(task).is_some_and(|task| task.agent_id.as_ref() == Some(node))
 }
 
 fn node_paused(state: &DomainState, task: &TaskId) -> bool {
@@ -2691,9 +2719,9 @@ impl Driver {
             mark_stopped_by_alondra(self.worker.state_directory());
         }
         self.stop()?;
-        let (domain, task, handoffs) = (Arc::clone(&self.domain), self.task.clone(), Arc::clone(&self.handoffs));
+        let (domain, task, handoffs, node) = (Arc::clone(&self.domain), self.task.clone(), Arc::clone(&self.handoffs), self.agent.clone());
         drop(self);
-        let mut next = adopt(domain, backend, task, plugin)?;
+        let mut next = adopt_of(domain, backend, task, plugin, Some(&node))?;
         next.handoffs = handoffs;
         Ok(next)
     }
@@ -2708,7 +2736,7 @@ impl Driver {
     /// Whether the task runs on another node by now, or on none: this owner's host belongs to an
     /// execution that ended, and adopting or losing the task's host would take another node's.
     fn superseded(&self) -> bool {
-        self.domain.state().tasks.get(&self.task).is_none_or(|task| task.agent_id.as_ref() != Some(&self.agent))
+        !runs_on(&self.domain.state(), &self.task, &self.agent)
     }
 
     /// Whether the owner should put a host that resumes the session in place of its own: its host
@@ -2992,6 +3020,8 @@ impl Owner {
                 let ended = driver.native_failure.take();
                 let waited = relaunch_wait(driver.relaunches);
                 let controls = std::mem::take(&mut driver.controls);
+                let node = driver.agent.clone();
+                driver.domain.replacement_starts();
                 match driver.replace_ended_host(&backend, plugin.as_deref()) {
                     Ok(mut next) => {
                         *current.lock_or_recover("the SDK host stop") = next.worker.stopper();
@@ -3010,7 +3040,7 @@ impl Owner {
                     }
                     Err(Failed { why, .. }) => {
                         ending.store(true, Ordering::SeqCst);
-                        lost(&*domain_of_owner, &task, &why);
+                        give_up(&*domain_of_owner, &task, &why, false, Some(&node));
                         return Ok(());
                     }
                 }
@@ -3036,7 +3066,7 @@ impl Owner {
             }
             if let Some(why) = lost_because {
                 ending.store(true, Ordering::SeqCst);
-                lost_on(&*driver.domain, &driver.task, &why, driver.native_signed_out);
+                give_up(&*driver.domain, &driver.task, &why, driver.native_signed_out, Some(&driver.agent));
             }
             let capability = driver.ended_capability();
             drop(driver);
@@ -3212,6 +3242,7 @@ pub struct Owners {
     /// that resumes the same session in place of its own, and the input waits for a slot.
     pub requeues: Mutex<BTreeSet<TaskId>>,
     after_owner_reserved: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    before_replacement: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     while_owners_stop: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     takeover_waits: Mutex<Option<Box<dyn FnMut() + Send>>>,
     owner_failures: Mutex<Option<Box<dyn Fn(String) + Send>>>,
@@ -3267,6 +3298,11 @@ pub trait SdkOwners {
 
     /// Runs `hook` once, as the next takeover has reserved its owner and not yet looked for the host.
     fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static);
+
+    /// Runs `hook` once, as the next owner has decided to replace its host and not yet begun.
+    fn before_replacement(&self, hook: impl FnOnce() + Send + 'static);
+
+    fn replacement_starts(&self);
 
     /// Runs `hook` once, as the next stop of every owner has joined the takeovers under way and
     /// not yet stopped the owners.
@@ -3395,6 +3431,17 @@ impl<R: alondra_engine_ports::Runtime + ?Sized> SdkOwners for R {
 
     fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static) {
         *self.sdk_owners().after_owner_reserved.lock_or_recover("the owner reserved hook") = Some(Box::new(hook));
+    }
+
+    fn before_replacement(&self, hook: impl FnOnce() + Send + 'static) {
+        *self.sdk_owners().before_replacement.lock_or_recover("the replacement hook") = Some(Box::new(hook));
+    }
+
+    fn replacement_starts(&self) {
+        let hook = self.sdk_owners().before_replacement.lock_or_recover("the replacement hook").take();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 
     fn while_owners_stop(&self, hook: impl FnOnce() + Send + 'static) {

@@ -763,6 +763,10 @@ pub enum Command {
         /// or a key: the account is signed out and the card asks to sign in.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         signed_out: bool,
+        /// The node whose host was lost, when its own owner says so: the loss is refused once the
+        /// Task runs on another node, or on none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<AgentId>,
     },
     /// Claude will never read `input`, told `text`, handed to the Task's SDK host of `generation`:
     /// it leaves what the Task waits on and a card asks the user whether to send it again.
