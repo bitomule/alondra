@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """The edit bench finds a file's label, the frequent edits, and what an execution log really ran."""
+import contextlib
 import gzip
 import importlib.util
+import io
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 path = Path(__file__).resolve().parents[1] / "edit_bench.py"
@@ -138,6 +141,32 @@ class EditBenchTest(unittest.TestCase):
         self.assertEqual(len(runs), bench.KEPT_RUNS)
         self.assertNotIn(kept, runs, "the oldest run goes first")
         self.assertIsNone(bench.keep_failures(self.root, "a.rs", failed[1:]), "nothing to keep, no folder")
+
+    def test_a_sharded_target_keeps_the_logs_of_every_shard(self):
+        logs = self.root / ".bazel-links" / "bazel-testlogs" / "crates" / "scenarios" / "scenarios_test"
+        for shard in ("shard_1_of_2", "shard_2_of_2"):
+            (logs / shard).mkdir(parents=True)
+            (logs / shard / "test.log").write_text(shard)
+        (logs / "shard_2_of_2" / "test.attempts").mkdir()
+        (logs / "shard_2_of_2" / "test.attempts" / "attempt_1.log").write_text("first attempt")
+        kept = bench.keep_failures(self.root, "a.rs", ["//crates/scenarios:scenarios_test"])
+        self.assertIsNotNone(kept, "a sharded target has logs to keep")
+        copied = kept / "crates/scenarios/scenarios_test"
+        self.assertEqual((copied / "shard_1_of_2/test.log").read_text(), "shard_1_of_2")
+        self.assertEqual((copied / "shard_2_of_2/test.log").read_text(), "shard_2_of_2")
+        self.assertEqual((copied / "shard_2_of_2/test.attempts/attempt_1.log").read_text(), "first attempt")
+
+    def test_a_bench_cut_halfway_has_printed_the_rows_it_measured(self):
+        def measure(root, edit, *_):
+            if edit == "b.rs":
+                raise KeyboardInterrupt
+            return {"edit": edit, "crates": 1, "tests": 2}
+
+        output = io.StringIO()
+        with mock.patch.object(bench, "measure", measure), contextlib.redirect_stdout(output):
+            with self.assertRaises(KeyboardInterrupt):
+                bench.main(["--edit", "a.rs", "--edit", "b.rs"])
+        self.assertEqual(output.getvalue().splitlines()[-1], "| `a.rs` | 1 | 2 | - | - | - | - | - | - | - |")
 
     def test_a_row_tells_compiling_from_testing(self):
         row = {

@@ -35,7 +35,9 @@ test target that took longest. `--edit <path>` picks the files; without it, the 
 often in the last two weeks; `--tracked` measures one edit per layer. `--query-only` only counts.
 In Rust the edit is a line in the body of the file's first function, as a real edit is: a static
 added at the end would be incremental compilation's best case. `--profile` keeps Bazel's profiles in
-`.scratch/edit-bench-profiles/` and prints the actions on the build's critical path.
+`.scratch/edit-bench-profiles/` and prints the actions on the build's critical path. Each row of the
+table is printed as soon as its edit is measured, and the logs of the targets that fail, shard by
+shard, are kept in `.scratch/edit-bench-failures/`.
 On a shared Mac, where bazelqueue keeps a `bazel run` in its build slot until the program ends,
 build the script and run it outside Bazel:
 `bazelisk run --script_path=.scratch/edit_bench //tools:edit_bench && .scratch/edit_bench --edit <path>`.

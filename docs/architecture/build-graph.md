@@ -1169,6 +1169,54 @@ query cache (230 MB) of `daemon_server_test` are written twice, and no stable fl
 - `//tools/layers:crate_layers_test` fails when a test with `-Cincremental` lacks `no-cache`, naming
   the fixture and both server test crates.
 
+## Final measurement of the test-time split (phase 4, 2026-11-25, main at 49ac12970)
+
+`edit_bench --tracked --profile` on the shared Mac, one run of each edit, with the read index checked
+in its own property (#655), the scenarios without the GitHub client (#654), the scenarios calm by
+events (#656) and the orchestrator's tests on the host model (#665). "Before" is the final
+measurement of phase 11 above (main at d1bcdec12). #672 (the server's two test crates incremental,
+previous section) merged while this ran and is **not** in these numbers.
+
+| Edit | Layer | Crates / test targets reopened, before → after | Build: critical path | Longest test target, before | Longest test target, after | Edit + test, before → after |
+|---|---|---:|---:|---|---|---:|
+| `views/src/task_state.rs` | adapter | 9 / 50 → 10 / 52 | 71 → 57 s | `scenarios_test` 32 s | `views_test` 18 s | 153 → 115 s |
+| `github-gh/src/cli.rs` | adapter | 10 / 46 → 6 / 36 | 130 → 6 s | `scenarios_test` 31 s | `relaunch_test` 16 s | 162 → 26 s |
+| `engine-admission/src/admission.rs` | engine | 10 / 51 → 11 / 53 | 91 → 52 s | `engine_sdk_engine_test` 69 s | `engine_sdk_engine_test` 35 s | 190 → 133 s |
+| `engine-orchestrator/src/domain_orchestrator.rs` | engine | 10 / 51 → 11 / 53 | 85 → 44 s | `engine_orchestrator_host_test` 40 s | `doctor_service_test` 21 s | 174 → 91 s |
+| `engine-live/src/node_reports.rs` | engine | 11 / 54 → 12 / 56 | 94 → 54 s | `scenarios_test` 30 s | `engine_sdk_engine_test` 30 s | 183 → 110 s |
+| `engine-sdk/src/sdk_owner.rs` | engine | 10 / 51 → 11 / 53 | 95 → 54 s | `scenarios_test` 32 s | `engine_sdk_engine_test` 67 s, failing | 178 → 137 s |
+| `alondrad/src/assemble.rs` | root | 8 / 38 → 9 / 40 | 31 → 15 s | `scenarios_test` 31 s | `doctor_service_test` 18 s | 90 → 53 s |
+| `domain-rules/src/rules.rs` | domain | 42 / 139 → 44 / 143 | 231 → 70 s | `domain_rules_test` 116 s | `domain_rules_test` 71 s (`engine_sdk_engine_test` 70 s, failing) | 436 → 220 s |
+
+- **Not all of the drop is the split's.** Between the two measurements libraries and binaries became
+  incremental (two sections above), and `edit_bench` changed its edit from an appended static to a
+  line in a function. That, more than the split, is what cut compiling. The split's own mark on what
+  reopens is the `gh` client (#654); the other counts grew with crates and targets added since. The runs also had different loads: one run each says which target
+  is longest and roughly how long, not a difference of a few seconds. Against the `--tracked` table of
+  "Incremental libraries and binaries" (94, 25, 103, 112, 94, 92, 67 and 218 s in this table's order)
+  edit + test is lower here only on `domain_orchestrator.rs` and `assemble.rs`.
+- **The split's two targets no longer lead.** `scenarios_test` was the longest test of five of the
+  eight edits and is the longest of none; its longest shard took 10 to 20 s here under the bench's
+  load. `domain_rules_test` went from 116 to 71 s, and still leads an edit of the domain (23 s when
+  its phase measured it alone).
+- **One edit meets the goal**: the `gh` client, 26 s of 30. No other adapter, engine or root edit
+  does. The domain compiles in 70 s (goal 60) and takes 220 s in all (goal 120).
+- **Compiling** is still the larger part of an engine edit's critical path, mostly
+  `daemon_server_test` from scratch (41 to 53 s of the build), which #672 addresses.
+- **Failures.** `engine_sdk_engine_test` failed on the `sdk_owner.rs` and `rules.rs` edits, one test
+  each time (`a_task_reopened_with_its_node_kept_by_the_user_gets_a_new_execution_that_resumes_its_session`,
+  "did not end 2 turns within 60s"), so its 67 and 70 s include that 60 s wait. Alone it passed 3 of
+  3 times (main at c5518b711); it is a flaky test to fix. The first run of the `views` edit also
+  failed (build 57 s, edit + test 153 s, a `scenarios_test` shard of 32 s) and its log was lost; the
+  table has its repetition, which passed.
+- **How the rows were read.** The bench was cut by a two-hour limit with six edits measured and only
+  printed its table at the end. For `github-gh`, `admission`, `domain_orchestrator`, `node_reports`
+  and `rules`, edit + test is bazelqueue's run time of the `bazel test`, as `edit_bench` takes it, and
+  the critical path and longest test come from Bazel's profiles, whose test action runs 1 to 2 s over
+  the time in Bazel's summary. `sdk_owner`, `assemble` and `views` are `edit_bench`'s own rows.
+  `edit_bench` now prints each row as it is measured and keeps the logs of sharded targets, which it
+  silently skipped.
+
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 
 `engine-admission` and `engine-orchestrator` compile and test without `daemon-engine` and without
