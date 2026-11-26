@@ -289,7 +289,7 @@ ships in the Homebrew package as `sdk/NODE_LICENSE`, `codex/NODE_LICENSE` and
 
 ## Rust crates
 
-Linked into `alondra`, `alondrad` and `alondrad-launcher` for macOS (Apple Silicon).
+Linked into `alondra`, `alondrad`, `alondrad-launcher` and `alondra-spec` for macOS (Apple Silicon).
 `attohttpc` (MPL-2.0, through iroh) is used unmodified; its source is at
 https://github.com/sbstp/attohttpc.
 

@@ -4,12 +4,16 @@ What the spec engine is for and how its pieces fit, in plain words. The specs un
 `specs/spec-engine/` are the source of truth; where this page disagrees with one, the spec wins.
 
 ## Specs, and the tests that say which scenario they verify
-<!-- section: spec-engine.specs-and-tests explains: spec-engine.feature-format, spec-engine.scenario-ids, spec-engine.markers, decision:gherkin-syntax-without-a-runner, decision:own-gherkin-reader -->
+<!-- section: spec-engine.specs-and-tests explains: spec-engine.feature-format, spec-engine.parts, spec-engine.scenario-ids, spec-engine.markers, decision:gherkin-syntax-without-a-runner, decision:own-gherkin-reader -->
 
 A spec is one `.feature` file that describes one behaviour as a list of scenarios. Each scenario
 has an identifier of its own, so you can reword its title as often as you like and nothing that
 points at it breaks. The file uses the Given/When/Then syntax only as a way of writing: nothing
 runs the steps.
+
+A spec may keep diagrams and mockups next to its file, cited with a tag by the spec or by one
+scenario. They illustrate the rules, and changing one asks for the validations of what it
+illustrates again.
 
 Tests stay where they are, in the framework each project already uses. A test says which scenario
 it verifies with a comment above it. The spec never lists its tests, so the link is written once,

@@ -24,9 +24,9 @@ CODEX_MANIFEST = 'codex/alondra-codex-host.json'
 ANTIGRAVITY_HOST = 'antigravity/alondra-antigravity-host'
 ANTIGRAVITY_MANIFEST = 'antigravity/alondra-antigravity-host.json'
 HOST_MANIFESTS = {HOST_MANIFEST, CODEX_MANIFEST, ANTIGRAVITY_MANIFEST}
-BINARIES = {'alondra', 'alondrad', 'alondrad-launcher', HOST, CODEX_HOST, ANTIGRAVITY_HOST}
+BINARIES = {'alondra', 'alondrad', 'alondrad-launcher', 'alondra-spec', HOST, CODEX_HOST, ANTIGRAVITY_HOST}
 PUBLIC_FILES = {
-    'alondra', 'alondrad', 'alondrad-launcher', HOST, HOST_MANIFEST, CODEX_HOST, CODEX_MANIFEST,
+    'alondra', 'alondrad', 'alondrad-launcher', 'alondra-spec', HOST, HOST_MANIFEST, CODEX_HOST, CODEX_MANIFEST,
     ANTIGRAVITY_HOST, ANTIGRAVITY_MANIFEST, '.claude-plugin/marketplace.json',
     'plugin/bin/alondra', 'plugin/.mcp.json', 'plugin/hooks/hooks.json',
     'plugin/hooks/register.ts', 'plugin/tests/register.test.ts', 'plugin/tests/holds.test.ts',
@@ -44,12 +44,13 @@ ASSET_SOURCES = {
     'codex/NODE_LICENSE': 'deploy/brew/node/LICENSE',
     'antigravity/NODE_LICENSE': 'deploy/brew/node/LICENSE',
 }
-PRE_ANTIGRAVITY_FILES = PUBLIC_FILES - {ANTIGRAVITY_HOST, ANTIGRAVITY_MANIFEST, 'antigravity/NODE_LICENSE'}
+PRE_SPEC_FILES = PUBLIC_FILES - {'alondra-spec'}
+PRE_ANTIGRAVITY_FILES = PRE_SPEC_FILES - {ANTIGRAVITY_HOST, ANTIGRAVITY_MANIFEST, 'antigravity/NODE_LICENSE'}
 PRE_LICENSE_FILES = PRE_ANTIGRAVITY_FILES - LICENSE_FILES
 PRE_CODEX_FILES = PRE_LICENSE_FILES - {CODEX_HOST, CODEX_MANIFEST}
 PRE_SDK_FILES = PRE_CODEX_FILES - {HOST, HOST_MANIFEST}
 PRE_LAUNCHER_FILES = PRE_SDK_FILES - {'alondrad-launcher'}
-PUBLISHED_FILES = (PUBLIC_FILES, PRE_ANTIGRAVITY_FILES, PRE_LICENSE_FILES, PRE_CODEX_FILES, PRE_SDK_FILES, PRE_LAUNCHER_FILES)
+PUBLISHED_FILES = (PUBLIC_FILES, PRE_SPEC_FILES, PRE_ANTIGRAVITY_FILES, PRE_LICENSE_FILES, PRE_CODEX_FILES, PRE_SDK_FILES, PRE_LAUNCHER_FILES)
 
 
 def version(value):

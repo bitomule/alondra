@@ -11,6 +11,7 @@ mod ledger;
 mod listing;
 mod markers;
 mod packet;
+mod part;
 mod pattern;
 mod problem;
 mod project;
@@ -55,23 +56,28 @@ pub enum Code {
     InvalidIdentifier,
     InvalidLedger,
     InvalidMarker,
+    InvalidPart,
     InvalidResults,
     InvalidSettings,
     InvalidUtf8,
     LedgerInsideComponent,
     MarkerOutsideComponent,
+    MissingPart,
     MissingScenarioId,
     MissingSection,
     MissingSpecTag,
     NotJudged,
     OrphanMarker,
+    PartOutsideComponent,
     PathOutsideRepository,
     RegeneratesOutsideOwns,
     SectionExplainsNothing,
     SpecWithoutComponent,
     SupersessionMismatch,
     TooLarge,
+    TooManyParts,
     TooManyScenarios,
+    UncitedPart,
     UnknownComponent,
     UnknownDecision,
     UnknownReferenceTarget,
@@ -103,23 +109,28 @@ impl Code {
             Code::InvalidIdentifier => "invalid_identifier",
             Code::InvalidLedger => "invalid_ledger",
             Code::InvalidMarker => "invalid_marker",
+            Code::InvalidPart => "invalid_part",
             Code::InvalidResults => "invalid_results",
             Code::InvalidSettings => "invalid_settings",
             Code::InvalidUtf8 => "invalid_utf8",
             Code::LedgerInsideComponent => "ledger_inside_component",
             Code::MarkerOutsideComponent => "marker_outside_component",
+            Code::MissingPart => "missing_part",
             Code::MissingScenarioId => "missing_scenario_id",
             Code::MissingSection => "missing_section",
             Code::MissingSpecTag => "missing_spec_tag",
             Code::NotJudged => "not_judged",
             Code::OrphanMarker => "orphan_marker",
+            Code::PartOutsideComponent => "part_outside_component",
             Code::PathOutsideRepository => "path_outside_repository",
             Code::RegeneratesOutsideOwns => "regenerates_outside_owns",
             Code::SectionExplainsNothing => "section_explains_nothing",
             Code::SpecWithoutComponent => "spec_without_component",
             Code::SupersessionMismatch => "supersession_mismatch",
             Code::TooLarge => "too_large",
+            Code::TooManyParts => "too_many_parts",
             Code::TooManyScenarios => "too_many_scenarios",
+            Code::UncitedPart => "uncited_part",
             Code::UnknownComponent => "unknown_component",
             Code::UnknownDecision => "unknown_decision",
             Code::UnknownReferenceTarget => "unknown_reference_target",
@@ -165,6 +176,10 @@ pub struct Spec {
     pub title: String,
     pub description: Vec<String>,
     pub background: Vec<Step>,
+    /// The files its `@diagram:` tags name, relative to the folder of the feature file.
+    pub diagrams: Vec<String>,
+    /// The files its `@mockup:` tags name, relative to the folder of the feature file.
+    pub mockups: Vec<String>,
     pub scenarios: Vec<Scenario>,
 }
 
@@ -178,6 +193,8 @@ pub struct Scenario {
     pub judgment: Option<Judgment>,
     pub promise: Option<Promise>,
     pub reserved: bool,
+    pub diagrams: Vec<String>,
+    pub mockups: Vec<String>,
     pub steps: Vec<Step>,
     /// The rows of its `Examples:` table, header first; empty when it has none.
     pub examples: Vec<Vec<String>>,
@@ -250,6 +267,58 @@ impl Keyword {
             Keyword::But => "But",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartKind {
+    Diagram,
+    Mockup,
+}
+
+impl PartKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PartKind::Diagram => "diagram",
+            PartKind::Mockup => "mockup",
+        }
+    }
+}
+
+/// A file a spec cites next to its feature file, as read from its bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Part {
+    /// From the root of the repository.
+    pub path: String,
+    pub fingerprint: String,
+    pub bytes: usize,
+    pub content: PartContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PartContent {
+    /// Mermaid text.
+    Diagram { text: String },
+    /// A PNG or JPEG image, in pixels.
+    Mockup { width: u32, height: u32 },
+}
+
+impl Part {
+    pub fn kind(&self) -> PartKind {
+        match self.content {
+            PartContent::Diagram { .. } => PartKind::Diagram,
+            PartContent::Mockup { .. } => PartKind::Mockup,
+        }
+    }
+}
+
+/// A diagram or a mockup from its bytes. The problem names `path`.
+pub fn read_part(path: &str, kind: PartKind, bytes: &[u8]) -> Result<Part, Problem> {
+    part::read(path, kind, bytes)
+}
+
+/// The path from the root of the repository of the file a tag of the feature at `feature` names.
+pub fn part_path(feature: &str, file: &str) -> String {
+    part::path_of(feature, file)
 }
 
 /// A spec from the bytes of a `.feature` file. Two equal specs may differ in the `line` of their
@@ -544,6 +613,7 @@ pub struct Project {
     decisions: Vec<Decision>,
     sections: Vec<Section>,
     markers: Vec<Marker>,
+    parts: BTreeMap<String, Part>,
     listed: Vec<String>,
     hashes: BTreeMap<String, String>,
     component_fingerprints: BTreeMap<String, String>,
@@ -578,6 +648,11 @@ impl Project {
 
     pub fn markers(&self) -> &[Marker] {
         &self.markers
+    }
+
+    /// The part at a path from the root of the repository, when a spec cites it.
+    pub fn part(&self, path: &str) -> Option<&Part> {
+        self.parts.get(path)
     }
 
     /// The current fingerprint of a subject for a kind of validation: `Suite` of

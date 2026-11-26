@@ -7,6 +7,7 @@ mod fingerprints;
 mod ledger;
 mod markers;
 mod packet;
+mod parts;
 mod patterns;
 mod reference;
 mod reserved;

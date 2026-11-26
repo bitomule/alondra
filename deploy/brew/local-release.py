@@ -44,6 +44,7 @@ RELEASE_TARGETS = {
     'alondra': '//crates/alondra:alondra',
     'alondrad': '//crates/alondrad:alondrad',
     'alondrad-launcher': '//crates/alondrad:alondrad-launcher',
+    'alondra-spec': '//crates/alondra:alondra-spec',
     'alondra-host': '//agent-host:release_host',
     'alondra-codex-host': '//agent-host:codex_release_host',
     'alondra-antigravity-host': '//agent-host:antigravity_release_host',
@@ -283,7 +284,8 @@ def host_smoke(host, refusal):
 WITH_INFO_PLIST = {'com.bitomule.alondrad'}
 # The launcher launchd runs carries alondrad's identity: macOS keeps the Local Network permission
 # for that identity at the launcher's fixed path, and the privacy settings keep naming alondrad.
-SIGNED = {'alondra': 'com.bitomule.alondra', 'alondrad': 'com.bitomule.alondrad', 'alondrad-launcher': 'com.bitomule.alondrad'}
+SIGNED = {'alondra': 'com.bitomule.alondra', 'alondrad': 'com.bitomule.alondrad', 'alondrad-launcher': 'com.bitomule.alondrad',
+          'alondra-spec': 'com.bitomule.alondra-spec'}
 
 
 def check_signature(details, identifier):
@@ -342,7 +344,7 @@ def prepare(ver, source, output):
             (payload / 'alondra-antigravity-host').chmod(0o755)
             sign(payload / 'alondra-antigravity-host', 'com.bitomule.alondra-antigravity-host', HOST_ENTITLEMENTS)
             run('bash', 'deploy/brew/package-cli.sh', ver, target, payload / 'alondra', payload / 'alondrad',
-                payload / 'alondrad-launcher', payload / 'alondra-host', built['alondra-host.json'],
+                payload / 'alondrad-launcher', payload / 'alondra-spec', payload / 'alondra-host', built['alondra-host.json'],
                 payload / 'alondra-codex-host', built['alondra-codex-host.json'],
                 payload / 'alondra-antigravity-host', built['alondra-antigravity-host.json'], output)
         smoke(ver, target, output / f'alondra-{ver}-{target}.tar.gz')
