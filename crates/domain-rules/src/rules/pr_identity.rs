@@ -131,13 +131,31 @@ pub(crate) fn one_record_per_address(domain: &mut DomainState, pr_id: &PrId, at:
     here.sort_by_key(|p| (std::cmp::Reverse(p.address_read_at), p.id.clone()));
     let displaced: Vec<PrId> = here.iter().skip(1).map(|p| p.id.clone()).collect();
     for id in displaced {
-        let pr = domain.pull_requests.get_mut(&id).unwrap();
-        if let Some(locator) = pr.identity.locator().cloned() {
-            effects.push(DomainEffect::Relocate { pr_id: id.clone(), locator });
-            pr.relocation_asked_at = Some(at);
-        }
-        pr.identity = PrIdentity::Unresolvable { key: pr.identity.key().cloned(), locator: pr.identity.locator().cloned(), reason: UnresolvableReason::AddressReused, since: at };
+        lose_address(domain, &id, at, effects);
     }
+}
+/// A closed or merged record of another task that ended, standing at another commit, is not the
+/// pull request now at its address: a repository created again under an earlier name starts its
+/// numbers again. Should it be the same one after all, the provider key joins the two records.
+pub(crate) fn finished_pr_of_another_task(domain: &DomainState, pr: &PullRequest, task_id: &TaskId, head: &str) -> bool {
+    pr.task_id != *task_id
+        && pr.state != PrState::Open
+        && pr.head != head
+        && pr.merged_head.as_deref() != Some(head)
+        && domain.tasks.get(&pr.task_id).is_some_and(|task| task.state.terminal())
+}
+/// A new record is taking the address of this one.
+pub(crate) fn give_up_address(domain: &mut DomainState, pr_id: &PrId, effects: &mut Vec<DomainEffect>) {
+    let at = domain.pull_requests[pr_id].address_read_at;
+    lose_address(domain, pr_id, at, effects);
+}
+fn lose_address(domain: &mut DomainState, pr_id: &PrId, at: Millis, effects: &mut Vec<DomainEffect>) {
+    let pr = domain.pull_requests.get_mut(pr_id).unwrap();
+    if let Some(locator) = pr.identity.locator().cloned() {
+        effects.push(DomainEffect::Relocate { pr_id: pr_id.clone(), locator });
+        pr.relocation_asked_at = Some(at);
+    }
+    pr.identity = PrIdentity::Unresolvable { key: pr.identity.key().cloned(), locator: pr.identity.locator().cloned(), reason: UnresolvableReason::AddressReused, since: at };
 }
 /// Every other tracked record of the same key joins this one or takes it in.
 pub(crate) fn join_same_pr(domain: &mut DomainState, pr_id: &PrId, effects: &mut Vec<DomainEffect>) -> Result<()> {

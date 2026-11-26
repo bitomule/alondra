@@ -247,6 +247,27 @@ fn ended_task_in_lumo(store: &mut DomainStore) {
     assert_eq!(store.fold_ended_tasks(10).unwrap(), 1);
 }
 
+#[test]
+fn a_new_pr_at_a_finished_pr_address_is_stored_beside_it_under_its_own_id() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
+    ended_task_in_lumo(&mut store);
+    let earlier = id(OLD, 42);
+    execute(&mut store, &Actor::Agent { agent_id: "agent-2".into() }, "register-again", Command::RegisterPr {
+        task_id: "task-2".into(), pr_id: earlier.clone(), host: "github.com".into(), repository: OLD.into(), number: 42,
+        head: "2222222222222222222222222222222222222222".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    let committed = store.load().unwrap();
+    let own = PrId(format!("{earlier}~2"));
+    assert_eq!(committed.tasks[&TaskId::from("task-2")].pr_ids().collect::<Vec<_>>(), [&own]);
+    assert_eq!(committed.pull_requests[&earlier].task_id, TaskId::from("task-1"));
+    assert!(committed.pull_requests[&earlier].identity.is_unresolvable());
+    drop(store);
+
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
+    assert_eq!(store.load().unwrap(), committed);
+}
+
 fn metrics_project(store: &DomainStore) -> Option<String> {
     store.conn.query_row("SELECT project FROM task_metrics WHERE task_id='task-1'", [], |row| row.get(0)).unwrap()
 }

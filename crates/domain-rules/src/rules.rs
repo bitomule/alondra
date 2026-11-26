@@ -3115,7 +3115,11 @@ pub(crate) fn apply(
             domain.task(task_id)?;
             domain.tasks.get_mut(task_id).unwrap().opened_prs.remove(&opened);
             let by_alias = known_pr(domain, host, repository, *number, true).filter(|p| p.task_id == *task_id && !p.lives_at(host, repository, *number));
-            let known = known_pr(domain, host, repository, *number, false).or(by_alias);
+            let mut known = known_pr(domain, host, repository, *number, false).or(by_alias);
+            if let Some(earlier) = known.filter(|p| finished_pr_of_another_task(domain, p, task_id, sha)).map(|p| p.id.clone()) {
+                give_up_address(domain, &earlier, effects);
+                known = None;
+            }
             if let Some(p) = known {
                 if p.task_id != *task_id {
                     if !domain.task(&p.task_id)?.state.terminal() {
@@ -3189,7 +3193,8 @@ pub(crate) fn apply(
             system(actor)?;
             let (host, repository) = (normalize_pr_host(host), normalize_pr_repository(repository));
             canonical_pr(&host, &repository, *number)?;
-            let known = known_pr(domain, &host, &repository, *number, false).is_some();
+            let known = known_pr(domain, &host, &repository, *number, false)
+                .is_some_and(|pr| pr.task_id == *task_id || pr.state == PrState::Open || !domain.tasks[&pr.task_id].state.terminal());
             if !known && !domain.task(task_id)?.state.terminal() {
                 domain.tasks.get_mut(task_id).unwrap().opened_prs.insert(OpenedPr { host, repository, number: *number });
             }
@@ -3201,8 +3206,18 @@ pub(crate) fn apply(
                 return Ok(());
             }
             domain.tasks.get_mut(task_id).unwrap().opened_prs.remove(&opened);
-            if let Some(pr) = known_pr(domain, host, repository, *number, false) {
-                if pr.task_id != *task_id { return fail("pr_owned_by_other_task", "PR is registered by another task"); }
+            let mut known = known_pr(domain, host, repository, *number, false);
+            if let Some(earlier) = known.filter(|pr| finished_pr_of_another_task(domain, pr, task_id, sha)).map(|pr| pr.id.clone()) {
+                give_up_address(domain, &earlier, effects);
+                known = None;
+            }
+            if let Some(pr) = known {
+                if pr.task_id != *task_id {
+                    if pr.state != PrState::Open && domain.task(&pr.task_id)?.state.terminal() {
+                        return Ok(());
+                    }
+                    return fail("pr_owned_by_other_task", "PR is registered by another task");
+                }
                 let pr_id = pr.id.clone();
                 apply(domain, actor, &Command::ObservePrState { pr_id: pr_id.clone(), head: sha.clone(), base: base.clone(), state: *state, merged_head: merged_head.clone() }, effects, created, lifecycles)?;
                 if !allowed_methods.is_empty() {

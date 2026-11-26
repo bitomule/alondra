@@ -691,7 +691,10 @@ impl Context<'_> {
                 GithubChange::MoveRepository { to } => self.github.move_repository(&self.scenario.world.repository, to),
                 GithubChange::ReuseName { repository, number, head, base } => {
                     self.github.reuse_name(repository);
-                    self.github.open_pr_in(repository, *number, head, base);
+                    let commit = self.github.open_pr_in(repository, *number, head, base);
+                    if *repository == self.scenario.world.repository {
+                        self.heads.insert(*number, commit);
+                    }
                 }
                 GithubChange::RequireReview { number } => self.github.set_verdict(*number,
                     alondra_domain_model::MergeVerdict::Blocked { blockers: vec![alondra_domain_model::MergeBlocker::ReviewRequired] }),

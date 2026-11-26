@@ -259,8 +259,9 @@ pub enum GithubChange {
     /// The repository moves to `to`: its pull requests keep their numbers, and the old name
     /// redirects to the new one.
     MoveRepository { to: String },
-    /// Someone creates the repository `repository`, the old name of a moved one, and opens a pull
-    /// request `number` there: the old name no longer redirects.
+    /// Someone creates the repository `repository` again, under a name that held a moved or deleted
+    /// one, and opens a pull request `number` there: the old name no longer redirects, and the
+    /// numbers start again.
     ReuseName { repository: String, number: u64, head: String, base: String },
     /// The base asks for a review the PR has not got: GitHub blocks its merge.
     RequireReview { number: u64 },

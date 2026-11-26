@@ -132,6 +132,59 @@ fn a_new_pr_at_a_reused_old_name_is_not_the_finished_task_pr_with_that_alias() {
     assert_eq!(mine[0].repository, OLD, "the new task's PR is the one at the address its node named: {:?}", mine[0]);
 }
 
+fn merged_pr_of_a_finished_task(id_it_was_given: &str) -> DomainState {
+    let mut s = at_work();
+    must(&mut s, Actor::Agent { agent_id: AGENT.into() }, Command::RegisterPr {
+        task_id: TASK.into(), pr_id: id_it_was_given.into(), host: "github.com".into(), repository: OLD.into(),
+        number: 5, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    must(&mut s, Actor::System, Command::ObservePrState { pr_id: id_it_was_given.into(), head: HEAD.into(), base: "main".into(),
+        state: PrState::Merged, merged_head: Some(HEAD.into()) });
+    must(&mut s, user(), Command::CancelTask { task_id: TASK.into(), reason: None });
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: TASK.into(), end: NodeEnd::Closed, agent_id: None });
+    must(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Node B".into(), at: 0 });
+    must(&mut s, user(), Command::CreateRequest { request_id: "r2".into(), body: "More work".into(), auto_merge: false, maintenance: false, message: false });
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        task_id: "t2".into(), request_id: "r2".into(), title: "New work".into(), agent_id: Some("b".into()), review_prs: false,
+        dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/synthetic/repository")),
+    });
+    s
+}
+
+fn assert_each_task_has_its_own_pr(s: &DomainState, earlier: &str) {
+    let own = id(OLD, 5);
+    let t2 = &s.tasks[&TaskId::from("t2")];
+    assert_eq!(t2.pr_ids().collect::<Vec<_>>(), [&own], "the new task's cards act on another task's PR id");
+    assert_eq!((s.pull_requests[&own].head.as_str(), s.pull_requests[&own].state), (SITE_HEAD, PrState::Open));
+    let kept = &s.pull_requests[&PrId::from(earlier)];
+    assert_eq!((&kept.task_id, kept.state, kept.head.as_str()), (&TaskId::from(TASK), PrState::Merged, HEAD));
+    assert!(kept.identity.is_unresolvable(), "two records stand at one address: {:?}", kept.identity);
+    assert_eq!(s.tasks[&TaskId::from(TASK)].pr_ids().collect::<Vec<_>>(), [&PrId::from(earlier)], "the finished task lost its PR");
+    s.validate().unwrap();
+}
+
+/// A repository created again under an earlier one's name starts its numbers again: the PR a
+/// node registers there is not the merged one a finished task had at that number.
+#[test]
+fn a_registered_pr_never_takes_the_record_of_a_finished_tasks_merged_pr() {
+    let mut s = merged_pr_of_a_finished_task("old-task-pr");
+    must(&mut s, Actor::Agent { agent_id: "b".into() }, Command::RegisterPr {
+        task_id: "t2".into(), pr_id: id(OLD, 5), host: "github.com".into(), repository: OLD.into(),
+        number: 5, head: SITE_HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    assert_each_task_has_its_own_pr(&s, "old-task-pr");
+}
+
+#[test]
+fn a_pr_alondra_finds_never_stays_with_the_record_of_a_finished_tasks_merged_pr() {
+    let mut s = merged_pr_of_a_finished_task("old-task-pr");
+    must(&mut s, Actor::System, Command::NotePrOpened { task_id: "t2".into(), host: "github.com".into(), repository: OLD.into(), number: 5 });
+    must(&mut s, Actor::System, Command::RecordOpenedPr { task_id: "t2".into(), host: "github.com".into(), repository: OLD.into(),
+        number: 5, head: SITE_HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None, allowed_methods: vec![MergeMethod::Squash] });
+    assert!(s.tasks[&TaskId::from("t2")].opened_prs.is_empty());
+    assert_each_task_has_its_own_pr(&s, "old-task-pr");
+}
+
 /// Design §5.3 and T7: any order of the same reads ends in the same state. A slow read that
 /// started first and confirmed the record, and a later one that found another pull request at
 /// that address.

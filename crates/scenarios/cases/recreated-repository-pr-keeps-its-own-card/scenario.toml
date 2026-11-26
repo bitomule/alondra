@@ -1,0 +1,118 @@
+name = "the pull request a task opens in a repository created again under the same name gets its own card, not the record of the merged pull request a finished task had at that number"
+max_virtual = "2h"
+
+[world]
+repository = "ana/lumo"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "csv-export"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The CSV export is ready"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "press"
+presentation = "d1"
+action = "merge"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "cleanup_done"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "30m"
+
+[[step]]
+do = "checkpoint"
+name = "first-task-done"
+screens = ["home"]
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "done"
+
+[[step]]
+do = "github"
+event = "reuse_name"
+repository = "ana/lumo"
+number = 7
+head = "pdf-export"
+base = "main"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Add the PDF export"
+
+[[step]]
+do = "node"
+task = "t2"
+
+[[step]]
+do = "register_pr"
+task = "t2"
+number = 7
+
+[[step]]
+do = "present"
+task = "t2"
+id = "d2"
+prs = [7]
+body = "The PDF export is ready"
+
+[[step]]
+do = "advance"
+by = "2m"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "second-pr-has-its-own-card"
+screens = ["home", "task:t2", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Remove from Alondra"
+present = false
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "ana/lumo · pdf-export"
