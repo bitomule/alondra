@@ -173,6 +173,7 @@ max = "10m"
 do = "checkpoint"
 name = "accepted-hours-later"
 screens = ["home", "task:t1"]
+settled_accounts = true
 
 [[step.expect]]
 check = "task_state"

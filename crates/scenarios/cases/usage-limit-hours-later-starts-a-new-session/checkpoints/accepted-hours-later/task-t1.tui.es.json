@@ -391,20 +391,19 @@
         "level": "calm",
         "parts": [
           {
-            "detail": "Le queda el 90 % de la semana · Medido hace 3 h",
+            "detail": "Le queda el 90 % de la semana",
             "group": "Claude",
             "label": "Default",
             "level": "calm",
             "lines": [
-              "Le queda el 90 % de la semana",
-              "Medido hace 3 h"
+              "Le queda el 90 % de la semana"
             ],
             "text": "con margen",
             "value": 0.9
           }
         ],
         "text": "con margen",
-        "value": 0.9
+        "value": 0.8
       },
       {
         "id": "memory",

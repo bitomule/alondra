@@ -274,6 +274,12 @@ pub struct Checkpoint {
     /// Whether the pushes sent since the last checkpoint are compared.
     #[serde(default)]
     pub pushes: bool,
+    /// Whether the gauges of the screens read the accounts as the settled daemon holds them. The
+    /// sample of the Mac takes the accounts when it is published, and a usage probe that woke at
+    /// the same instant of the clock commits before or after that, as the threads run: a
+    /// checkpoint that follows a probe sets this to read what the daemon holds, not what won.
+    #[serde(default)]
+    pub settled_accounts: bool,
     #[serde(default)]
     pub expect: Vec<Expect>,
 }

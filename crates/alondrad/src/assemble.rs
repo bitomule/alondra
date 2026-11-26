@@ -123,6 +123,7 @@ type Serving = Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>>;
 /// A daemon that is serving, with the loops the supervisor watches.
 pub struct Assembled {
     client: Arc<client_routes::Client>,
+    gauges: machine::Gauges,
     pub addr: SocketAddr,
     pub domain: Arc<domain_runtime::DomainRuntime>,
     pub auth: Arc<auth::Auth>,
@@ -141,6 +142,14 @@ pub struct Assembled {
 
 impl Assembled {
     pub fn clear_scenario_gauges(&self) {
+        self.client.clear_scenario_gauges();
+    }
+
+    /// The gauges as the daemon holds its accounts now, for a scenario that settled: the latest
+    /// sample takes the accounts again and the gauges the views kept are dropped, so the next view
+    /// builds them from that.
+    pub fn settle_scenario_gauges(&self) {
+        machine::resample(&self.gauges, &*self.domain);
         self.client.clear_scenario_gauges();
     }
     pub async fn shared_tui_feed_work_for_test(&self, secret: &[u8; 32], device: &str, first_timestamp: i64) -> std::result::Result<(u64, usize), String> {
@@ -366,6 +375,7 @@ pub(crate) async fn assemble_with(
         Arc::new(seams.github.observer.clone()),
         pr_poll,
     ));
+    let machine_gauges = gauges.clone();
     tasks.spawn(machine::run(gauges, state_domain.clone(), seams.machine_published.clone()));
     let owners = state_domain.clone();
     client.use_pr_view(seams.github.view.clone());
@@ -390,6 +400,7 @@ pub(crate) async fn assemble_with(
     }
     Ok(Assembled {
         client: observed_client,
+        gauges: machine_gauges,
         addr,
         domain: owners,
         auth: state_auth,
