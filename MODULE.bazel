@@ -36,7 +36,21 @@ use_repo(
 )
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-rust.toolchain(edition = "2024")
+# rustc strips nothing itself: it runs rust-objcopy over the linked file and only warns when that
+# fails, so a full disk left binaries cut to their last bytes as successful outputs
+# (bazel/rules/rust_link_test.bzl). The linker leaves the debug information out, and fails loudly.
+# These come after the `--codegen=strip=` rules_rust passes, and the last one wins; the `strip_level`
+# of this tag never reaches the toolchain in this version of rules_rust.
+LINKER_STRIPS = [
+    "-Cstrip=none",
+    "-Clink-arg=-Wl,-S",
+]
+
+rust.toolchain(
+    edition = "2024",
+    extra_exec_rustc_flags = LINKER_STRIPS,
+    extra_rustc_flags = LINKER_STRIPS,
+)
 use_repo(rust, "rust_toolchains")
 
 register_toolchains("@rust_toolchains//:all")

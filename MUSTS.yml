@@ -3256,6 +3256,7 @@ checks:
         - //crates/scenarios:scenarios_harness_test
         - //crates/scenarios:from_report_bin_test
         - //crates/scenarios:harness_inputs_test
+        - //crates/scenarios:runner_link_test
         - //crates/scenarios-transcript:scenarios_transcript_test
 
   transcript-guard:
