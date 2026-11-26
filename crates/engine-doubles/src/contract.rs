@@ -374,16 +374,21 @@ fn antigravity_keys(accounts: &dyn alondra_engine_ports::accounts::Accounts, hom
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "AIza-contract-key", "a refused key leaves the old one");
 
     let rules: serde_json::Value = serde_json::from_str(RULES).unwrap();
+    let mut written = vec![file.clone()];
     for kind in rules["key_files"].as_array().unwrap() {
         let name = kind["name"].as_str().unwrap();
-        for entry in std::fs::read_dir(&folder).unwrap().flatten() {
-            if entry.file_name().to_string_lossy().starts_with(KEY_FILE) { std::fs::remove_file(entry.path()).unwrap(); }
+        for path in written.drain(1..).chain([file.clone()]) {
+            if let Err(error) = std::fs::remove_file(&path) { assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{name}"); }
         }
         let bytes = kind["hex"].as_str().map_or_else(|| kind["text"].as_str().unwrap().as_bytes().to_vec(),
             |hex| (0..hex.len()).step_by(2).map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap()).collect());
         std::fs::write(&file, bytes).unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(u32::from_str_radix(kind["mode"].as_str().unwrap(), 8).unwrap())).unwrap();
-        for link in 1..kind["links"].as_u64().unwrap_or(1) { std::fs::hard_link(&file, folder.join(format!("{KEY_FILE}.link-{link}"))).unwrap(); }
+        for link in 1..kind["links"].as_u64().unwrap_or(1) {
+            let path = folder.join(format!("{KEY_FILE}.link-{link}"));
+            std::fs::hard_link(&file, &path).unwrap();
+            written.push(path);
+        }
         let read = accounts.antigravity_key(home, &studio);
         match kind["reads"].as_str().unwrap() {
             "key" => assert_eq!(read.unwrap().as_ref().map(Secret::expose), kind["key"].as_str(), "{name}"),
@@ -392,9 +397,7 @@ fn antigravity_keys(accounts: &dyn alondra_engine_ports::accounts::Accounts, hom
         }
         assert_eq!(accounts.antigravity_key_set(home, &studio), kind["reads"] == "key", "{name}: the screens say Key set only for a key it reads");
     }
-    for entry in std::fs::read_dir(&folder).unwrap().flatten() {
-        if entry.file_name().to_string_lossy().starts_with(KEY_FILE) { std::fs::remove_file(entry.path()).unwrap(); }
-    }
+    for path in written { if let Err(error) = std::fs::remove_file(&path) { assert_eq!(error.kind(), std::io::ErrorKind::NotFound); } }
 
     accounts.set_antigravity_key(home, &studio, Some(&Secret::new("AIza-contract-key".into()))).unwrap();
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();

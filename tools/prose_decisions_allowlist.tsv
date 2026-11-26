@@ -107,7 +107,8 @@ agent-host/probe.ts	const message = String((error as { message?: unknown })?.mes
 apple/Data/Account/Sources/Auth/AuthSession.swift	default: String(describing: type(of: error))	log	error type name for diagnostics
 apple/Data/Account/Sources/Connection/ConnectionClassifier.swift	default: String(describing: type(of: error))	log	error type name for diagnostics
 apple/Data/Feed/Sources/ActionIntentQuarantine.swift	log.error("Action intent store unavailable: \(String(describing: error), privacy: .public)")	log	error only logged
-apple/Data/Feed/Sources/ActionIntentQuarantine.swift	log.error("Could not set the unreadable action intent store aside: \(String(describing: error), privacy: .public)")	log	error only logged
+apple/Data/Feed/Sources/ActionIntentQuarantine.swift	log.error("Could not record what the unreadable action intent store showed: \(String(describing: error), privacy: .public)")	log	error only logged
+apple/Data/Feed/Sources/ActionIntentQuarantine.swift	log.error("Could not delete the unreadable action intent store: \(String(describing: error), privacy: .public)")	log	error only logged
 apple/Data/Feed/Sources/ActionIntentQuarantine.swift	log.error("A new action intent store failed to open: \(String(describing: error), privacy: .public)")	log	error only logged
 apple/Data/Feed/Sources/RequestObservation.swift	default: String(describing: type(of: error))	log	error type name for diagnostics
 plugin/hooks/register.ts	if (sent.exitCode !== 0) $.ui.log(`Alondra did not take ${report.event}: ${sent.stderr.trim()}`, { to: 'debug' })	log	stderr only shown in the log or the thrown error
