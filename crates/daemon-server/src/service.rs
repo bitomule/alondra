@@ -6,7 +6,9 @@
 //! one-time durable attempt per device ID so a relay-side revocation survives reconnects and
 //! restarts; the direct transport needs only the local approval.
 #[cfg(test)]
+#[cfg(test)]
 use alondra_daemon_engine::domain_runtime::RuntimeRecords as _;
+#[cfg(test)]
 use alondra_daemon_engine::live::LiveOf as _;
 use crate::locks::{Poisonable as _, PoisonableRw as _};
 use crate::auth::Auth;
@@ -784,7 +786,7 @@ impl Service {
             )?
         } else if let Some(agent) = agent_message(&request.path) {
             crate::reply::Reply::answer(
-                crate::domain_messages::relayed(&*domain, &home, &sender, agent, request.body.as_ref()).await,
+                alondra_engine_ports::domain_api::DomainApi::of(domain.ports()).messages.relayed(&*domain, &home, &sender, agent, request.body.as_ref()).await,
             )
             .into_value()
         } else if let Some(decision) = alondra_engine_ports::orchestrator::decision_route(&request.path)
@@ -1553,7 +1555,7 @@ impl Service {
     async fn settings(&self, sender: &str, request: &LocalRequest) -> Result<Option<crate::client_routes::Reply>> {
         let home = self.home.clone();
         let relay = self.has_relay();
-        let user_home = crate::options::user_home();
+        let user_home = alondra_engine_ports::options::user_home();
         let work: Box<dyn FnOnce() -> crate::client_routes::Reply + Send> = if request.method == "PUT" && request.path == crate::settings::PATH {
             let body = request.body.clone().context("settings body required")?;
             let lang = self.routes.as_ref().map_or(alondra_view_model::Lang::En, |client| client.language_for_device(sender));

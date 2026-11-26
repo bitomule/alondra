@@ -114,10 +114,6 @@ LAYER_EXCEPTIONS = {
     "crates/store-sqlite": [
         "crates/provider-codex",
     ],
-    # The server reaches the rest of the engine through `DomainApi` once phase 7 moves it there.
-    "crates/daemon-server": [
-        "crates/daemon-engine",
-    ],
     "crates/engine-admission": [
         "crates/daemon-engine-machine",
     ],

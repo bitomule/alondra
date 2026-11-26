@@ -1,6 +1,7 @@
 //! The domain database a daemon finds beside its HOME before the cutover to the domain protocol:
 //! started only on a committed cutover, or on a markerless sidecar that holds nothing.
-use alondra_daemon_server::{domain_cutover, domain_store};
+use alondra_daemon_engine::domain_store;
+use alondra_daemon_server::domain_cutover;
 use anyhow::Result;
 use std::path::Path;
 

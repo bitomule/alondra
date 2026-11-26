@@ -41,6 +41,7 @@ pub mod workflow_state;
 pub use alondra_engine_ports::disk;
 #[cfg(test)]
 pub use alondra_store_sqlite::domain_database_migration;
+#[cfg(test)]
 pub use alondra_daemon_engine::{
     accounts,
     antigravity_accounts,
@@ -91,6 +92,7 @@ pub use alondra_engine_orchestrator::domain_orchestrator;
 pub use alondra_daemon_engine::{domain_agent_lifecycle, machine_state};
 
 pub mod operation_journal;
+pub mod reply;
 pub mod direct;
 pub mod claude_check;
 pub mod domain_api;

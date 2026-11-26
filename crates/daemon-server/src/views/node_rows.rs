@@ -1,6 +1,5 @@
 //! A per-language row cache. Every retained boundary is checked again after construction.
 use super::{live::node_row, node_components::Nodes, observation::{Metric, Observation}};
-use alondra_daemon_engine::{live::{LiveChangeKey, LiveOf as _}, contexts::ContextsOf as _};
 use alondra_domain_model::{AgentId, DomainState, NodeChangeCursor, NodeChanges, ReadSnapshot, RequestId, TaskId};
 use alondra_foundation::changes::{Changed, Cursor};
 use alondra_view_model::Lang;
@@ -15,16 +14,16 @@ struct Sources {
     hooks: Cursor,
     contexts: Cursor,
     published: NodeChangeCursor,
-    usage: Option<crate::usage_pause::Exhausted>,
+    usage: Option<alondra_engine_ports::orchestrator::Exhausted>,
 }
 impl Sources {
     fn now(client: &Client) -> Self {
         Self {
-            reports: client.domain.live().mods.change_cursor(),
-            hooks: client.domain.live().change_cursor(),
-            contexts: client.domain.contexts().change_cursor(),
+            reports: client.api.live.reports_cursor(&*client.domain),
+            hooks: client.api.live.hooks_cursor(&*client.domain),
+            contexts: client.api.live.contexts_cursor(&*client.domain),
             published: client.domain.read().node_cursor(),
-            usage: client.domain.live().usage_pause.current().filter(|usage| !usage.no_session),
+            usage: client.api.live.usage(&*client.domain).filter(|usage| !usage.no_session),
         }
     }
 }
@@ -63,26 +62,26 @@ fn owners(task: &TaskId, previous: &DomainState, current: &DomainState, changed:
 fn clock_key(now: i64) -> (i64, String, Option<String>) {
     // clock_text changes at local midnight; timestamps also depend on the local UTC offset.
     let stamp = crate::log::local_iso(now.div_euclid(1000) as libc::time_t, 0);
-    (crate::usage_pause::local_midnight(now), stamp.chars().rev().take(6).collect(), std::env::var("TZ").ok())
+    (alondra_engine_ports::usage::local_midnight(now), stamp.chars().rev().take(6).collect(), std::env::var("TZ").ok())
 }
 
 fn has_external_source(client: &Client, read: &ReadSnapshot, id: &AgentId) -> bool {
     read.index().live_node(id).is_some_and(|reading| reading.reported_wait.as_ref().is_some_and(|(provider, instance)|
-        alondra_daemon_engine::sdk_live::wait_file(&*client.domain, *provider, instance).is_some()))
-        || client.domain.live().mods.session(&id.0).is_some_and(|report|
-            report.work.workflows.iter().any(|workflow| workflow.transcript_dir.is_some()))
+        client.api.live.wait_file(&*client.domain, *provider, instance).is_some()))
+        || client.api.live.session(&*client.domain, &id.0).is_some_and(|report|
+            report.workflows.iter().any(|workflow| workflow.transcript_dir.is_some()))
 }
 
 impl Cache {
     pub(super) fn gather(&self, client: &Client, read: &ReadSnapshot, lang: Lang,
         launches: &Launches, boundary: Option<alondra_engine_ports::journal::ReadCursor>, launches_ok: bool,
-        usage: &Option<crate::usage_pause::Exhausted>, now: i64) -> Nodes {
+        usage: &Option<alondra_engine_ports::orchestrator::Exhausted>, now: i64) -> Nodes {
         self.gather_checked(client, read, lang, launches, boundary, launches_ok, usage, now, || {})
     }
 
     fn gather_checked(&self, client: &Client, read: &ReadSnapshot, lang: Lang,
         launches: &Launches, boundary: Option<alondra_engine_ports::journal::ReadCursor>, launches_ok: bool,
-        usage: &Option<crate::usage_pause::Exhausted>, now: i64, after_build: impl FnOnce()) -> Nodes {
+        usage: &Option<alondra_engine_ports::orchestrator::Exhausted>, now: i64, after_build: impl FnOnce()) -> Nodes {
         let observation = &client.view_observation;
         let mut entries = super::live::cache(&self.0);
         let key = u8::from(lang == Lang::Es);
@@ -96,19 +95,15 @@ impl Cache {
                 NodeChanges::Reset { .. } => full = true,
                 NodeChanges::Changed { nodes, .. } => changed.extend(nodes),
             }
-            match client.domain.live().mods.changes_since(&previous.sources.reports).changed {
+            match client.api.live.reports_since(&*client.domain, &previous.sources.reports).changed {
                 Changed::Reset => full = true,
                 Changed::Keys(ids) => changed.extend(ids.into_iter().map(AgentId)),
             }
-            match client.domain.live().changes_since(&previous.sources.hooks).changed {
+            match client.api.live.hooks_since(&*client.domain, &previous.sources.hooks).changed {
                 Changed::Reset => full = true,
-                Changed::Keys(keys) => for key in keys {
-                    match key {
-                        LiveChangeKey::Node(id) => { changed.insert(AgentId(id)); },
-                    }
-                },
+                Changed::Keys(ids) => changed.extend(ids.into_iter().map(AgentId)),
             }
-            match client.domain.contexts().changes_since(&previous.sources.contexts).changed {
+            match client.api.live.contexts_since(&*client.domain, &previous.sources.contexts).changed {
                 Changed::Reset => full = true,
                 Changed::Keys(tasks) => for task in tasks { owners(&task, &previous.state, read.state(), &mut changed); },
             }

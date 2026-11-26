@@ -3,7 +3,7 @@ use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::io::Read;
 use anyhow::{Context as _, Result, ensure};
-use crate::locks::Poisonable as _;
+use alondra_foundation::locks::Poisonable as _;
 use std::path::{Path, PathBuf};
 
 use alondra_core::options::{self, OptionsFile};

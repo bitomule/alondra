@@ -528,6 +528,26 @@ pub enum StoreError {
     Storage(anyhow::Error),
 }
 
+/// The refusal a producer gets for a command the journal could not commit.
+pub trait IntoDomainError {
+    fn into_domain_error(self, envelope: &alondra_domain_model::CommandEnvelope) -> alondra_domain_model::DomainError;
+}
+
+impl IntoDomainError for StoreError {
+    /// Keeps storage diagnostics in the daemon while the producer receives a stable refusal.
+    fn into_domain_error(self, envelope: &alondra_domain_model::CommandEnvelope) -> alondra_domain_model::DomainError {
+        match self {
+            Self::Domain(error) => error,
+            Self::Storage(error) => {
+                let kind = serde_json::to_value(&envelope.command).ok()
+                    .and_then(|value| value["kind"].as_str().map(str::to_owned)).unwrap_or_else(|| "unknown".into());
+                alondra_foundation::log!("domain storage failure: operation={kind} command_id={} cause={error:#}", envelope.command_id);
+                alondra_domain_model::DomainError::new("storage_unavailable", "domain transaction could not be completed")
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

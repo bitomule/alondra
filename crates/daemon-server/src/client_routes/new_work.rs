@@ -1,11 +1,10 @@
 //! Asking for new work: the options a request can carry, the projects it can be for, the open
 //! issues it can come from, and the request itself, which is created together with what the
 //! user chose for its launch.
-use alondra_daemon_engine::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use super::close::Answer;
 use super::{Client, Reply};
-use crate::domain_store::{RequestLaunch, TransportIdentity};
+use alondra_engine_ports::journal::{RequestLaunch, TransportIdentity};
 use alondra_domain_model::{Actor, AttachmentRef, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
 use alondra_core::options::{Choice, OptionsFile};
 use axum::http::StatusCode;
@@ -23,7 +22,7 @@ pub(crate) trait Github: Send + Sync + 'static {
     /// while the address still has the pull request `expected`: another one there closes nothing
     /// and answers `IdentityMismatch`.
     fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_model::ProviderPrKey, comment: &'a str)
-        -> Answer<'a, Result<(), crate::domain_github::GhFailure>>;
+        -> Answer<'a, Result<(), alondra_engine_ports::github::GhFailure>>;
     /// Whether GitHub has the PR open, closed or merged now.
     fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_model::PrState, String>>;
 }
@@ -41,13 +40,13 @@ impl Github for Ported {
     }
 
     fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_model::ProviderPrKey, comment: &'a str)
-        -> Answer<'a, Result<(), crate::domain_github::GhFailure>> {
+        -> Answer<'a, Result<(), alondra_engine_ports::github::GhFailure>> {
         Box::pin(alondra_engine_ports::github::close_checked(&self.0.observer, host, repository, number, expected, comment))
     }
 
     fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_model::PrState, String>> {
         Box::pin(async move {
-            let url = crate::domain_github::pr_url(host, repository, number);
+            let url = alondra_engine_ports::github::pr_url(host, repository, number);
             let view = self.0.reads.view(&url).await.ok_or("GitHub did not report the pull request")?;
             match view["state"].as_str() {
                 Some("OPEN") => Ok(alondra_domain_model::PrState::Open),
@@ -107,12 +106,12 @@ fn refused(message: impl Into<String>) -> Reply {
 fn issue_of(body: &Body, file: &OptionsFile) -> Result<Option<(String, u64)>, String> {
     if let Some(picked) = body.issue.as_deref().filter(|i| !i.trim().is_empty()) {
         let (repo, n) = alondra_core::issues::parse_ref(picked).ok_or_else(|| format!("{picked} is not an issue: use owner/repo#number or its link"))?;
-        if crate::issues::excluded(file, &repo) {
+        if alondra_engine_ports::issues::excluded(file, &repo) {
             return Err(format!("issues from {repo} are excluded in options.toml"));
         }
         return Ok(Some((repo, n)));
     }
-    Ok(alondra_core::issues::find_in_text(&body.text).filter(|(repo, _)| !crate::issues::excluded(file, repo)))
+    Ok(alondra_core::issues::find_in_text(&body.text).filter(|(repo, _)| !alondra_engine_ports::issues::excluded(file, repo)))
 }
 
 impl Client {
@@ -128,7 +127,7 @@ impl Client {
     }
 
     pub(super) fn options_answer(&self, project: Option<String>) -> Response {
-        let loaded = crate::options::load_in(&self.home, &self.options);
+        let loaded = alondra_engine_ports::options::load_in(&self.home, &self.options);
         let project = project.filter(|p| !p.trim().is_empty());
         let catalog = loaded.file.catalog(project.as_deref());
         Json(json!({"project": project, "options": catalog, "error": loaded.error})).into_response()
@@ -141,10 +140,10 @@ impl Client {
 
     /// The checkouts under the projects folder, most recently used first.
     pub(crate) fn project_list(&self) -> (std::path::PathBuf, Vec<alondra_core::options::ProjectEntry>, Option<String>) {
-        let loaded = crate::options::load_in(&self.home, &self.options);
-        let root = loaded.file.projects_root(&crate::options::user_home());
+        let loaded = alondra_engine_ports::options::load_in(&self.home, &self.options);
+        let root = loaded.file.projects_root(&alondra_engine_ports::options::user_home());
         let mut used: BTreeMap<String, Vec<i64>> = BTreeMap::new();
-        for node in self.domain.live().nodes().iter().filter(|node| !node.is_orchestrator) {
+        for node in self.api.live.nodes(&*self.domain).iter().filter(|node| !node.is_orchestrator) {
             used.entry(node.project()).or_default().push(node.created_at);
         }
         let list = alondra_core::options::ranked(alondra_core::options::projects(&root), &used);
@@ -152,9 +151,9 @@ impl Client {
     }
 
     pub(super) async fn issues_answer(&self, refresh: bool) -> Response {
-        let file = crate::options::load_in(&self.home, &self.options).file;
+        let file = alondra_engine_ports::options::load_in(&self.home, &self.options).file;
         let github = self.github();
-        Json(json!(crate::issues::list_in(&self.issue_cache, &file, refresh, &Issues(&*github)).await)).into_response()
+        Json(json!(alondra_engine_ports::issues::list_in(&self.issue_cache, &file, refresh, &Issues(&*github)).await)).into_response()
     }
 
     /// A user's message to the orchestrator is a new Request with the default options. One sent
@@ -184,9 +183,9 @@ impl Client {
             return Ok(Reply::error(DomainError::new("invalid_input", "invalid message")));
         };
         let text = if message.maintenance || message.from_claude {
-            let user = crate::domain_messages::user_name();
+            let user = alondra_core::config::user_name();
             let author = if message.from_claude { format!("Claude, for {user}") } else { user };
-            crate::node_push::stamped(&author, alondra_core::now_millis(), &message.text)
+            alondra_engine_ports::outbox::stamped(&author, alondra_core::now_millis(), &message.text)
         } else {
             message.text
         };
@@ -210,14 +209,14 @@ impl Client {
         if let Err(error) = AttachmentRef::validate_list(&body.attachments) {
             return Ok(Reply::error(error));
         }
-        let loaded = crate::options::load_in(&self.home, &self.options);
+        let loaded = alondra_engine_ports::options::load_in(&self.home, &self.options);
         let issue = match issue_of(&body, &loaded.file) {
             Ok(issue) => issue,
             Err(error) => return Ok(refused(error)),
         };
         let from_issue = issue.as_ref().and_then(|(repo, _)| {
             let name = repo.split_once('/')?.1;
-            let root = loaded.file.projects_root(&crate::options::user_home());
+            let root = loaded.file.projects_root(&alondra_engine_ports::options::user_home());
             alondra_core::options::projects(&root).into_iter().find(|(project, _)| project.eq_ignore_ascii_case(name)).map(|(project, _)| project)
         });
         let project = body.project.as_deref().filter(|p| !p.trim().is_empty()).or(from_issue.as_deref());
@@ -225,13 +224,13 @@ impl Client {
             Ok(resolved) => resolved,
             Err(error) => return Ok(refused(error)),
         };
-        crate::domain_orchestrator_tools::authorize_user_request_selection(&*self.domain, &mut resolved, body.options.contains_key("account"));
-        if let Err(error) = crate::domain_orchestrator_tools::validate_request_selection(&*self.domain, &resolved) { return Ok(refused(error.message)); }
+        self.api.tools.authorize_user_request_selection(&*self.domain, &mut resolved, body.options.contains_key("account"));
+        if let Err(error) = self.api.tools.validate_request_selection(&*self.domain, &resolved) { return Ok(refused(error.message)); }
         let github = self.github();
         let issue_text = match &issue {
             Some((repo, number)) => {
                 resolved.issue = Some(format!("{repo}#{number}"));
-                Some(crate::issues::for_orchestrator_in(&self.issue_cache, repo, *number, &Issues(&*github)).await)
+                Some(alondra_engine_ports::issues::for_orchestrator_in(&self.issue_cache, repo, *number, &Issues(&*github)).await)
             }
             None => None,
         };
@@ -259,8 +258,8 @@ impl Client {
         });
         match outcome {
             Ok(outcome) => Ok(Reply::ok(json!(outcome))),
-            Err(crate::domain_store::StoreError::Domain(error)) => Ok(Reply::error(error)),
-            Err(crate::domain_store::StoreError::Storage(error)) => Err(error),
+            Err(alondra_engine_ports::journal::StoreError::Domain(error)) => Ok(Reply::error(error)),
+            Err(alondra_engine_ports::journal::StoreError::Storage(error)) => Err(error),
         }
     }
 }

@@ -9,7 +9,7 @@ pub struct PushAlerts {
     pub client: std::sync::Arc<crate::client_routes::Client>,
 }
 
-impl crate::usage_pause::Alerts for PushAlerts {
+impl alondra_engine_ports::usage::Alerts for PushAlerts {
     async fn tell(&self, text: impl Fn(bool) -> String + Send + Sync, passive: bool) {
         let epoch = Some(self.domain.state().data_epoch.clone());
         let payload = |spanish: bool| serde_json::json!({

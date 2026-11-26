@@ -1,6 +1,7 @@
 //! The routes the TUI and the CLI call on a domain daemon beyond the domain itself: the
 //! live runtime of the Mac and its sessions, and what a session is doing. The domain stays
 //! the only authority; nothing here decides an action.
+#[cfg(test)]
 use alondra_daemon_engine::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 mod close;
@@ -26,9 +27,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub(crate) use crate::node_close::Sessions;
+pub(crate) use alondra_engine_ports::node_close::Sessions;
 pub(crate) use new_work::Github;
-pub(crate) use alondra_daemon_engine::live::Relaunch;
+pub(crate) use alondra_engine_ports::sdk::Relaunch;
 #[cfg(test)]
 pub(crate) use alondra_daemon_engine::live::Live;
 pub(crate) use crate::reply::Reply;
@@ -48,15 +49,15 @@ pub struct Client {
     pub(crate) domain: Arc<dyn Runtime>,
     pub(crate) api: alondra_engine_ports::domain_api::DomainApi,
     home: PathBuf,
-    pub(crate) gauges: crate::machine::Gauges,
+    pub(crate) gauges: alondra_engine_ports::machine::Gauges,
     /// A holder that panics leaves it whole, so it is recovered: `views::live` empties it instead.
     pub(crate) views_gauges: std::sync::Mutex<Option<(alondra_core::clock::Instant, Vec<alondra_view_model::Gauge>, Vec<alondra_view_model::Gauge>)>>,
     pub(crate) details: pr_details::PrDetails,
     /// The parts of GitHub given in place of the registered one, each `None` until given. A
     /// holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
     pr_view: std::sync::Mutex<Option<Arc<dyn PrView>>>,
-    pr_images: std::sync::Mutex<Option<Arc<dyn crate::pr_images::GitHubImages>>>,
-    pr_merger: std::sync::Mutex<Option<Arc<dyn alondra_daemon_engine::domain_merges::PrMerger>>>,
+    pr_images: std::sync::Mutex<Option<Arc<dyn alondra_engine_ports::github::GitHubImages>>>,
+    pr_merger: std::sync::Mutex<Option<Arc<dyn alondra_engine_ports::github::PrMerger>>>,
     pub(crate) views: crate::views::cache::Cache,
     pub(crate) feeds: crate::views::feed::Feeds,
     /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
@@ -66,11 +67,11 @@ pub struct Client {
     /// A holder that panics leaves it whole, so it is recovered: one assignment of a file already
     /// parsed.
     options: std::sync::Mutex<Option<alondra_core::options::OptionsFile>>,
-    issue_cache: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
+    issue_cache: tokio::sync::Mutex<Option<alondra_engine_ports::issues::IssueList>>,
     pub(crate) live_reads: crate::views::live::LiveReadCache,
     pub(crate) live_snapshots: crate::views::live::LiveSnapshots,
     pub(crate) view_observation: crate::views::observation::Observation,
-    pub(crate) mcp_probes: Arc<crate::mcp_probe::McpProbes>,
+    pub(crate) mcp_probes: Arc<alondra_engine_ports::mcp::McpProbes>,
     /// A holder that panics leaves it whole, so it is recovered: assigned only after the file is
     /// saved.
     device_languages: std::sync::Mutex<std::collections::HashMap<String, alondra_view_model::Lang>>,
@@ -105,8 +106,8 @@ pub(crate) fn parse_write(path: &str) -> Option<Write> {
     }
     if let Some((card, step)) = path.strip_prefix("/mcp-sign-ins/").and_then(|rest| rest.split_once('/')) {
         let step = mcp::Step::of(step)?;
-        let target = crate::mcp_waits::Target::of(card).filter(|_| plain_id(card))?;
-        if matches!(target, crate::mcp_waits::Target::Server(_)) && step == mcp::Step::Without {
+        let target = alondra_engine_ports::mcp::Target::of(card).filter(|_| plain_id(card))?;
+        if matches!(target, alondra_engine_ports::mcp::Target::Server(_)) && step == mcp::Step::Without {
             return None;
         }
         return Some(Write::McpSignIn { card: card.to_owned(), step });
@@ -265,11 +266,11 @@ impl Client {
             .unwrap_or(alondra_view_model::Lang::En)
     }
 
-    pub(crate) async fn cached_issues(&self) -> Option<crate::issues::IssueList> {
+    pub(crate) async fn cached_issues(&self) -> Option<alondra_engine_ports::issues::IssueList> {
         self.issue_cache.lock().await.clone()
     }
 
-    pub(crate) fn open(domain: Arc<dyn Runtime>, home: &Path, gauges: crate::machine::Gauges) -> Arc<Self> {
+    pub(crate) fn open(domain: Arc<dyn Runtime>, home: &Path, gauges: alondra_engine_ports::machine::Gauges) -> Arc<Self> {
         let seconds = std::env::var("ALONDRA_VIEW_OBSERVE_SECONDS").ok();
         let delay = std::env::var("ALONDRA_VIEW_OBSERVE_DELAY_SECONDS").ok();
         let window = crate::views::observation::window(seconds.as_deref(), delay.as_deref());
@@ -286,7 +287,7 @@ impl Client {
         self.view_observation.start_window(seconds, delay_seconds)
     }
 
-    pub(crate) fn open_observed(domain: Arc<dyn Runtime>, home: &Path, gauges: crate::machine::Gauges,
+    pub(crate) fn open_observed(domain: Arc<dyn Runtime>, home: &Path, gauges: alondra_engine_ports::machine::Gauges,
         view_observation: crate::views::observation::Observation) -> Arc<Self> {
         let device_languages_path = home.join("device-languages.json");
         let device_languages = match std::fs::read(&device_languages_path) {
@@ -305,7 +306,7 @@ impl Client {
         };
         let api = alondra_engine_ports::domain_api::DomainApi::of(domain.ports());
         let read_work = api.runtime.work(&*domain, alondra_engine_ports::domain_api::Lane::Read).clone();
-        let machine = Arc::new(crate::node_close::Machine(domain.ports().worktrees()));
+        let machine = api.runtime.sessions(&*domain);
         let client = Arc::new_cyclic(|shared| Self {
             shared: shared.clone(),
             read_work,
@@ -346,7 +347,7 @@ impl Client {
         user_id: &str,
         route: Write,
         body: &Value,
-        transport: Option<crate::domain_store::TransportIdentity<'_>>,
+        transport: Option<alondra_engine_ports::journal::TransportIdentity<'_>>,
         authorize: &(dyn Fn() -> anyhow::Result<()> + Sync),
     ) -> anyhow::Result<Reply> {
         match route {
@@ -385,7 +386,8 @@ impl Client {
             return Reply::error(DomainError::new("invalid_input", "invalid request"));
         }
         let user = alondra_domain_model::Actor::User { user_id: user_id.to_owned() };
-        match crate::domain_messages::resolve_conflicts(&*self.domain, &self.home, &user, &crate::domain_messages::user_name(), &pr.into()).await {
+        let (name, pr) = (alondra_core::config::user_name(), pr.into());
+        match self.api.messages.resolve_conflicts(&*self.domain, &self.home, &user, &name, &pr).await {
             Ok(answer) => Reply::ok(answer),
             Err(error) => Reply::error(error),
         }
@@ -402,7 +404,7 @@ impl Client {
             let state = self.domain.state();
             self.details.refresh(&state, &*source).await;
             self.bring_pr_images(&state).await;
-            pr_details::hand_back_conflicts(&*self.domain, &self.details, &crate::domain_messages::user_name());
+            pr_details::hand_back_conflicts(&*self.domain, &self.details, &alondra_core::config::user_name());
             alondra_core::clock::sleep(DETAILS_INTERVAL).await;
         }
     }
@@ -442,7 +444,7 @@ impl Client {
     /// A stored copy in verified chunks, for the relay.
     async fn file_chunk(&self, reference: String, offset: u64, version: Option<String>) -> Response {
         let home = self.home.clone();
-        let reads = crate::runtime_api::stored_reads(&*self.domain);
+        let reads = self.api.runtime.stored_reads(&*self.domain);
         let chunk = alondra_core::clock::spawn_blocking(move || reads.stored(&home, &reference, offset, version)).await;
         match chunk {
             Ok(Ok(chunk)) => Json(chunk).into_response(),
@@ -469,7 +471,7 @@ impl Client {
             Some((machine, usage, _)) => (json!(machine), json!(usage)),
             None => (Value::Null, Value::Null),
         };
-        let nodes = alondra_daemon_engine::live::runtime_nodes(self.domain.live().nodes(), &state, |task| state_times.get(task).copied());
+        let nodes = alondra_engine_ports::live_view::runtime_nodes(self.api.live.nodes(&*self.domain), &state, |task| state_times.get(task).copied());
         let tasks: serde_json::Map<String, Value> = state.tasks.iter().map(|(id, task)| {
             let (_, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
             (id.0.clone(), json!({"project": task.project, "state_since": state_times.get(id),
@@ -499,7 +501,7 @@ impl Client {
         if !state.agents.contains_key(&agent) {
             return crate::domain_api::domain_error(DomainError::new("not_found", "agent does not exist"));
         }
-        let mut threads = self.domain.live().threads(id).unwrap_or_default();
+        let mut threads = self.api.live.threads(&*self.domain, id).unwrap_or_default();
         let only_task = single_open_task(&state, &agent);
         for thread in &mut threads {
             let known = thread.task.as_ref().is_some_and(|task| state.tasks.contains_key(&TaskId(task.clone())));
@@ -512,7 +514,7 @@ impl Client {
 
     fn search(&self, query: &str) -> Response {
         let state = self.domain.state();
-        let nodes = self.domain.live().nodes();
+        let nodes = self.api.live.nodes(&*self.domain);
         let candidates: Vec<(String, String)> = state.agents.values().map(|agent| {
             let node = nodes.iter().find(|node| node.session_id == agent.id.0);
             let tasks: Vec<&str> = state.tasks.values()

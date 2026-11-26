@@ -517,3 +517,8 @@ impl<T: Gh> Gh for Arc<T> {
 #[cfg(test)]
 #[path = "github_tests.rs"]
 mod tests;
+
+/// A start time the domain accepts for a read beginning now.
+pub fn read_start() -> alondra_domain_model::Millis {
+    alondra_core::clock::now_millis().max(1)
+}

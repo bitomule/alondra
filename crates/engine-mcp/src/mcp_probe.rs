@@ -1,16 +1,12 @@
 //! Checks the MCP servers of a project no node runs in. The Agent SDK host starts Claude in the
 //! project and only asks it how its servers are: no message reaches Claude, so the model is never
 //! called, and Claude keeps no session of it. Each check is the user's: nothing checks on its own.
-use crate::locks::Poisonable as _;
 use crate::sdk_backend::SdkBackend;
 use alondra_domain_model::{McpServerState, McpStatus};
-use alondra_view_model::{LiveMcpProbe, LiveMcpRemoval};
-use alondra_foundation::McpOrigin;
-use std::collections::BTreeMap;
+use alondra_view_model::LiveMcpProbe;
 use alondra_engine_ports::agent_host::{AgentHost, ProbeRun};
 use std::path::Path;
 use std::process::Command;
-use std::sync::Mutex;
 use std::time::Duration;
 
 /// The host's flag for a check (`agent-host/probe.ts`).
@@ -19,59 +15,7 @@ const FLAG: &str = "--mcp-probe";
 const DEADLINE: Duration = Duration::from_secs(60);
 const MAX_OUTPUT: usize = 512 * 1024;
 
-/// What the MCP servers screen knows beyond the domain while this daemon runs: each check, and the
-/// servers the user deleted (`mcp_remove`).
-#[derive(Default)]
-pub struct McpProbes {
-    /// A holder that panics leaves it whole, so it is recovered: a live view of each project's
-    /// check that the next probe writes again.
-    probes: Mutex<BTreeMap<String, LiveMcpProbe>>,
-    /// A holder that panics leaves it whole, so it is recovered: a retain and a push of removal
-    /// notes for the live screen.
-    removed: Mutex<Vec<LiveMcpRemoval>>,
-}
-
-impl McpProbes {
-    pub fn snapshot(&self) -> BTreeMap<String, LiveMcpProbe> {
-        self.probes.lock_or_recover("the MCP probes").clone()
-    }
-
-    pub fn removals(&self) -> Vec<LiveMcpRemoval> {
-        self.removed.lock_or_recover("the MCP removals").clone()
-    }
-
-    /// Keeps that the user deleted a server: of `project`'s own settings, or of their own for every
-    /// project. The checks that found it there no longer list it.
-    pub fn removed(&self, removal: LiveMcpRemoval, project: Option<&str>) {
-        for (checked, probe) in self.probes.lock_or_recover("the MCP probes").iter_mut() {
-            let origin = match project {
-                None => McpOrigin::UserSettings,
-                Some(project) if project == checked => McpOrigin::LocalSettings,
-                Some(_) => continue,
-            };
-            if let LiveMcpProbe::Checked { servers, .. } = probe {
-                servers.retain(|server| !removal.key.names(server) || server.traits.origin != origin);
-            }
-        }
-        let mut removed = self.removed.lock_or_recover("the MCP removals");
-        removed.retain(|kept| kept.key != removal.key);
-        removed.push(removal);
-    }
-
-    /// Marks the project as being checked, unless it already is.
-    fn begin(&self, project: &str) -> bool {
-        let mut probes = self.probes.lock_or_recover("the MCP probes");
-        if matches!(probes.get(project), Some(LiveMcpProbe::Checking)) {
-            return false;
-        }
-        probes.insert(project.to_owned(), LiveMcpProbe::Checking);
-        true
-    }
-
-    pub fn finish(&self, project: &str, probe: LiveMcpProbe) {
-        self.probes.lock_or_recover("the MCP probes").insert(project.to_owned(), probe);
-    }
-}
+pub use alondra_engine_ports::mcp::McpProbes;
 
 /// What the host wrote: the servers, or why it could not list them.
 fn parse(output: &str) -> Result<Vec<McpServerState>, String> {
