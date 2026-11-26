@@ -6,12 +6,13 @@ use crate::locks::Poisonable as _;
 use crate::auth::{Signed, is_local};
 use crate::principal::Principal;
 use crate::domain_store::{StoreError, TransportIdentity};
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
+use alondra_engine_ports::domain_api::Lane;
 pub(crate) use alondra_daemon_engine::reply::status_for;
 use std::path::Path as FsPath;
 use alondra_domain_model::*;
 use axum::extract::{ConnectInfo, Path, RawQuery, State, rejection::JsonRejection};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use axum::{Extension, Json, Router};
@@ -23,7 +24,8 @@ use std::sync::Arc;
 
 /// What a domain router needs from its daemon.
 pub trait DomainHost: Send + Sync + 'static {
-    fn domain(&self) -> &DomainRuntime;
+    fn domain(&self) -> &dyn Runtime;
+    fn api(&self) -> &alondra_engine_ports::domain_api::DomainApi;
     fn home(&self) -> &FsPath;
     fn new_work_client(&self) -> Option<&crate::client_routes::Client> { None }
     fn delivery_reviews(&self) -> &crate::delivery_review::DeliveryReviews;
@@ -97,12 +99,19 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
 }
 
 async fn blocking_read<H: DomainHost>(host: Arc<H>, read: impl FnOnce(&H) -> Response + Send + 'static) -> Response {
-    let work = host.domain().read_work.clone();
+    let work = host.api().runtime.work(host.domain(), Lane::Read).clone();
     work.run(move || read(&host)).await.unwrap_or_else(|_| storage_error())
 }
 
+/// A schedule route's answer, `{"status", "body"}`, as its response.
+pub(crate) fn schedule_response(value: Value) -> Response {
+    let status = value["status"].as_u64().and_then(|status| StatusCode::from_u16(status as u16).ok())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (status, Json(value["body"].clone())).into_response()
+}
+
 fn schedule_read<H: DomainHost>(host: &H, path: &str) -> Response {
-    crate::domain_schedule_api::response(crate::domain_schedule_api::read(host.domain(), path))
+    schedule_response(host.api().sdk.schedule_read(host.domain(), path))
 }
 async fn schedule_list<H: DomainHost>(State(host): State<Arc<H>>, signed: Option<Extension<Signed>>) -> Response {
     blocking_read(host, move |host| {
@@ -139,12 +148,12 @@ async fn schedule_mutation<H: DomainHost>(
         Err(_) if bodyless => None,
         Err(_) => return domain_error(DomainError::new("invalid_input", "invalid Schedule draft")),
     };
-    let work = host.domain().command_work.clone();
+    let work = host.api().runtime.work(host.domain(), Lane::Command).clone();
     work.run(move || {
         let home = host.home().to_owned();
-        crate::domain_schedule_api::response(crate::domain_schedule_api::mutation(
+        schedule_response(host.api().sdk.schedule_mutation(
             host.domain(), host.home(), method.as_str(), uri.path(), body.as_ref(), None,
-            || approved(&home, &device),
+            &|| approved(&home, &device),
         ))
     }).await.unwrap_or_else(|_| storage_error())
 }
@@ -161,21 +170,18 @@ async fn attachment_content<H: DomainHost>(
 }
 
 async fn attachment_content_inner(
-    domain: &DomainRuntime, home: &FsPath, interaction: String, attachment: String, query: Option<String>,
+    domain: &dyn Runtime, home: &FsPath, interaction: String, attachment: String, query: Option<String>,
 ) -> Response {
     let Some((offset, version)) = query.as_deref().and_then(document_content_query) else {
         return domain_error(DomainError::new("invalid_input", "offset and version query are invalid"));
     };
-    let state = match domain.state() {
-        Ok(state) => state,
-        Err(_) => return storage_error(),
-    };
+    let state = domain.state();
     let Some(stored) = state.interactions.get(&InteractionId(interaction.clone()))
         .and_then(|card| card.attachments.iter().find(|item| item.id == attachment)).cloned() else {
         return domain_error(DomainError::new("not_found", "interaction attachment does not exist"));
     };
     let home = home.to_path_buf();
-    let reads = domain.stored_reads.clone();
+    let reads = crate::runtime_api::stored_reads(domain);
     let digest = stored.content_digest.clone();
     match alondra_core::clock::spawn_blocking(move || {
         reads.attachment(&home, &stored.content_reference, &stored.content_digest, offset, version)
@@ -219,17 +225,14 @@ async fn document_content<H: DomainHost>(
     response
 }
 
-pub(crate) async fn document_content_inner(domain: &DomainRuntime, home: &FsPath, id: String, query: Option<String>) -> Response {
+pub(crate) async fn document_content_inner(domain: &dyn Runtime, home: &FsPath, id: String, query: Option<String>) -> Response {
     let Some((offset, version)) = query.as_deref().and_then(document_content_query) else {
         return domain_error(DomainError::new(
             "invalid_input",
             "offset and version query are invalid",
         ));
     };
-    let state = match domain.state() {
-        Ok(state) => state,
-        Err(_) => return storage_error(),
-    };
+    let state = domain.state();
     let Some(revision) = state.document_revisions.get(&DocumentRevisionId(id)) else {
         return domain_error(DomainError::new(
             "not_found",
@@ -241,7 +244,7 @@ pub(crate) async fn document_content_inner(domain: &DomainRuntime, home: &FsPath
     let response_digest = digest.clone();
     let revision_id = revision.id.clone();
     let home = home.to_path_buf();
-    let reads = domain.stored_reads.clone();
+    let reads = crate::runtime_api::stored_reads(domain);
     let chunk = alondra_core::clock::spawn_blocking(move || {
         reads.verified(&home, &reference, &digest, offset, version)
     })
@@ -303,11 +306,8 @@ async fn task_actions<H: DomainHost>(
     response
 }
 
-pub(crate) fn task_actions_inner(domain: &DomainRuntime, id: String) -> Response {
-    let state = match domain.state() {
-        Ok(state) => state,
-        Err(_) => return storage_error(),
-    };
+pub(crate) fn task_actions_inner(domain: &dyn Runtime, id: String) -> Response {
+    let state = domain.state();
     match state.task_actions(&TaskId(id)) {
         Some(actions) => Json(json!({"protocol_version": PROTOCOL_VERSION,
             "data_epoch": state.data_epoch, "revision": state.revision,
@@ -370,28 +370,24 @@ async fn capabilities<H: DomainHost>(
     }).await
 }
 
-fn capabilities_inner(domain: &DomainRuntime) -> Response {
+fn capabilities_inner(domain: &dyn Runtime) -> Response {
     capabilities_supported(domain, false)
 }
-fn capabilities_supported(domain: &DomainRuntime, operation_results: bool) -> Response {
-    match domain.state() {
-        Ok(state) => {
-            let mut body = json!({"protocol_version": PROTOCOL_VERSION, "data_epoch": state.data_epoch, "revision": state.revision});
-            if operation_results { body["operation_results"] = json!(true);body["operation_journal"] = json!(true); }
-            Json(body).into_response()
-        },
-        Err(_) => storage_error(),
-    }
+fn capabilities_supported(domain: &dyn Runtime, operation_results: bool) -> Response {
+    let state = domain.state();
+    let mut body = json!({"protocol_version": PROTOCOL_VERSION, "data_epoch": state.data_epoch, "revision": state.revision});
+    if operation_results { body["operation_results"] = json!(true);body["operation_journal"] = json!(true); }
+    Json(body).into_response()
 }
 /// Encrypted reads enter through a verified, still-approved device proof. They
 /// never round-trip over the unsigned loopback HTTP listener.
 pub(crate) async fn encrypted_read_runtime(
-    domain: &DomainRuntime, home: &FsPath,
+    domain: &dyn Runtime, api: &alondra_engine_ports::domain_api::DomainApi, home: &FsPath,
     approved: &crate::service::ApprovedDevice<'_>, path: &str,
 ) -> anyhow::Result<Response> {
     approved.recheck()?;
-    let response = if crate::domain_schedule_api::approved_read_path(path) {
-        crate::domain_schedule_api::response(crate::domain_schedule_api::read(domain, path))
+    let response = if alondra_engine_ports::schedule_routes::approved_read_path(path) {
+        schedule_response(api.sdk.schedule_read(domain, path))
     } else if let Some(query) = path.strip_prefix("/delivery-attempts?") {
         delivery_evidence_inner(domain, query)
     } else if path == "/capabilities" {
@@ -442,11 +438,11 @@ async fn delivery_evidence<H: DomainHost>(
     }).await
 }
 
-pub(crate) fn delivery_evidence_inner(domain: &DomainRuntime, query: &str) -> Response {
+pub(crate) fn delivery_evidence_inner(domain: &dyn Runtime, query: &str) -> Response {
     let Some(after) = delivery_evidence_query(query) else {
         return domain_error(DomainError::new("invalid_input", "after cursor is invalid"));
     };
-    let mut store = domain.store.lock_or_exit("the domain store");
+    let mut store = domain.store().lock_or_exit("the domain store");
     let state = match store.load() {
         Ok(state) => state,
         Err(_) => return storage_error(),
@@ -476,7 +472,7 @@ struct ResolveDelivery {
 }
 
 pub(crate) fn encrypted_resolve_delivery_runtime(
-    domain: &DomainRuntime, home: &FsPath, sender: &str, attempt_id: i64, body: Option<&Value>,
+    domain: &dyn Runtime, home: &FsPath, sender: &str, attempt_id: i64, body: Option<&Value>,
     identity: TransportIdentity<'_>, authorize: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<Value> {
     if sender != identity.0 || attempt_id < 1 {
@@ -488,7 +484,7 @@ pub(crate) fn encrypted_resolve_delivery_runtime(
     if body.protocol_version != PROTOCOL_VERSION {
         return Ok(json!({"status":409,"body":DomainError::new("incompatible_protocol", "domain protocol 2 is required")}));
     }
-    let mut store = domain.store.lock_or_exit("the domain store");
+    let mut store = domain.store().lock_or_exit("the domain store");
     // Match DomainRuntime's lock order: domain store → approval lease. A
     // revocation cannot complete after this check but before the resolution
     // and its transport receipt commit.
@@ -505,9 +501,9 @@ pub(crate) fn encrypted_resolve_delivery_runtime(
     })
 }
 /// What the Agent of an auto-merge Task is told when it registers its PR.
-pub(crate) fn auto_merge_notice(domain: &DomainRuntime, command: &Command) -> Option<String> {
+pub(crate) fn auto_merge_notice(domain: &dyn Runtime, command: &Command) -> Option<String> {
     let Command::RegisterPr { task_id, .. } = command else { return None };
-    let state = domain.state().ok()?;
+    let state = domain.state();
     let task = state.tasks.get(task_id)?;
     if !state.requests.get(&task.request_id)?.auto_merge {
         return None;
@@ -515,9 +511,9 @@ pub(crate) fn auto_merge_notice(domain: &DomainRuntime, command: &Command) -> Op
     Some("This task merges automatically: present the pull request as your final result with present_result, and once its checks pass Alondra merges it and tells you; do not merge it yourself.".into())
 }
 
-fn task_wait_notice(domain: &DomainRuntime, command: &Command) -> Option<String> {
+fn task_wait_notice(domain: &dyn Runtime, command: &Command) -> Option<String> {
     let Command::WaitForTasks { task_id, .. } = command else { return None };
-    let state = domain.state().ok()?;
+    let state = domain.state();
     let task = state.tasks.get(task_id)?;
     Some(if task.waiting_for_tasks.iter().all(|id| task.ended_task_waits.contains_key(id)) {
         let results: Vec<Landed> = task.ended_task_waits.values().cloned().collect();
@@ -544,12 +540,11 @@ async fn resource_command<H: DomainHost>(
     if let Err(error) = check_launch_shape(method.as_str(), uri.path(), &body) {
         return domain_error(error);
     }
-    if let Ok(state) = host.domain().state() {
-        if let Err(error) = crate::pr_ids::assign(&state, method.as_str(), uri.path(), params.get("id").map(String::as_str), &mut body)
-            .and_then(|()| crate::pr_heads::check(&state, method.as_str(), uri.path(), &mut body))
-        {
-            return domain_error(error);
-        }
+    let state = host.domain().state();
+    if let Err(error) = crate::pr_ids::assign(&state, method.as_str(), uri.path(), params.get("id").map(String::as_str), &mut body)
+        .and_then(|()| crate::pr_heads::check(&state, method.as_str(), uri.path(), &mut body))
+    {
+        return domain_error(error);
     }
     let Some(envelope) = resource_envelope(method.as_str(), uri.path(), &params, body) else {
         return domain_error(unknown_operation(&headers));
@@ -609,7 +604,7 @@ async fn request_resource<H: DomainHost>(
             return domain_error(DomainError::new("forbidden", "the launch form is available to a paired User only"));
         }
         let Some(device) = signed_device(&*host, &signed) else { return unsigned_read(); };
-        let work = host.domain().external_work.clone();
+        let work = host.api().runtime.work(host.domain(), Lane::External).clone();
         let runtime = tokio::runtime::Handle::current();
         return work.run(move || runtime.block_on(async move {
             let Some(client) = host.new_work_client() else { return storage_error(); };
@@ -802,7 +797,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
 }
 
 pub(crate) fn approved_resource_read_path(path: &str) -> bool {
-    crate::domain_schedule_api::approved_read_path(path)
+    alondra_engine_ports::schedule_routes::approved_read_path(path)
         || attachment_content_path(path).is_some()
         || path == "/capabilities"
         || path.strip_prefix("/delivery-attempts?").is_some_and(|query| delivery_evidence_query(query).is_some())
@@ -862,7 +857,7 @@ async fn execute_command<H: DomainHost>(
         let token = token.to_owned();
         let resolving = host.clone();
         let credential = token.clone();
-        let principal = match host.domain().producer_work.run(move || resolving.domain().resolve_bearer(&credential)).await {
+        let principal = match host.api().runtime.work(host.domain(), Lane::Producer).run(move || resolving.domain().resolve_bearer(&credential)).await {
             Ok(Ok(principal)) => principal,
             Ok(Err(error)) => return store_error(error),
             Err(_) => return storage_error(),
@@ -895,7 +890,7 @@ async fn execute_command<H: DomainHost>(
     let Some(device) = signed_device(&*host, &signed) else {
         return unsigned_read();
     };
-    let work = host.domain().command_work.clone();
+    let work = host.api().runtime.work(host.domain(), Lane::Command).clone();
     let mut envelope = envelope;
     work.run(move || {
         if let Err(refusal) = crate::spec_checks::stamp(host.domain(), &mut envelope.command) {
@@ -925,8 +920,8 @@ fn answered(outcome: Result<Value, DomainError>) -> Response {
 
 /// Whether the final delivery `interaction` is already stored. Sending it again checks nothing:
 /// the store answers it as already recorded, or refuses it when it holds something else.
-fn final_delivery_stored(domain: &DomainRuntime, interaction: &InteractionId) -> bool {
-    domain.state().is_ok_and(|state| state.interactions.contains_key(interaction))
+fn final_delivery_stored(domain: &dyn Runtime, interaction: &InteractionId) -> bool {
+    domain.state().interactions.contains_key(interaction)
 }
 
 /// Who sent a final delivery and what it holds: a call sent again only joins the delivery its
@@ -1014,11 +1009,11 @@ async fn checked_producer_command<H: DomainHost>(
         steps.step("checking the presented pull requests on GitHub", client.verify_presentation(&envelope.command)).await?;
     }
     if let (Principal::Agent { .. }, Command::PresentResult { task_id, interaction_id, is_final: true, .. }) = (&principal, &envelope.command)
-        && host.domain().state().is_ok_and(|state| !state.interactions.contains_key(interaction_id))
+        && !host.domain().state().interactions.contains_key(interaction_id)
     {
         let (checking, task) = (host.clone(), task_id.clone());
         let refusal = steps.step("checking the task's specs", alondra_core::clock::spawn_blocking(move || {
-            let Ok(state) = checking.domain().state() else { return Some(storage()) };
+            let state = checking.domain().state();
             crate::spec_checks::delivery_refusal(checking.domain(), &state, &task)
         })).await.unwrap_or_else(|_| Some(storage()));
         if let Some(refusal) = refusal {
@@ -1027,7 +1022,7 @@ async fn checked_producer_command<H: DomainHost>(
     }
     if let (Principal::Agent { session_id, .. }, Command::PresentResult { task_id, interaction_id, targets, is_final: true, .. })
         = (&principal, &envelope.command)
-        && let Ok(state) = host.domain().state()
+        && let state = host.domain().state()
         && !state.interactions.contains_key(interaction_id)
         && let Some(refusal) = steps.step("checking the worktree with git", host.domain().ports().worktrees().final_refusal(&state, session_id, task_id, targets, git_within)).await
     {
@@ -1035,7 +1030,7 @@ async fn checked_producer_command<H: DomainHost>(
     }
     if let (Principal::Agent { session_id, .. }, Command::PresentResult { task_id, interaction_id, checklist, is_final: true, .. }) = (&principal, &envelope.command)
         && !checklist.is_empty()
-        && let Ok(state) = host.domain().state()
+        && let state = host.domain().state()
         && !state.interactions.contains_key(interaction_id)
         && let Some(refusal) = steps.step("checking the checklist's commits with git", host.domain().ports().worktrees().evidence_refusal(&state, session_id, task_id, checklist, git_within)).await
     {
@@ -1043,13 +1038,13 @@ async fn checked_producer_command<H: DomainHost>(
     }
     if let (Principal::Agent { session_id, .. }, Command::AskQuestion { scope: Scope::Task { task_id }, card, .. }) = (&principal, &envelope.command)
         && let Some(destination) = &card.secret_destination
-        && let Ok(state) = host.domain().state()
+        && let state = host.domain().state()
         && let Some(refusal) = host.domain().ports().worktrees().secret_refusal(&state, session_id, task_id, destination)
     {
         return Err(refusal);
     }
     if let (Principal::Agent { .. }, Command::ConfirmCleanup { task_id, discard }) = (&principal, &envelope.command)
-        && let Ok(state) = host.domain().state()
+        && let state = host.domain().state()
         && let Some(task) = state.tasks.get(task_id)
     {
         let left: Vec<(String, String)> = crate::task_worktrees::leftovers(host.domain(), task).await.into_iter()
@@ -1062,21 +1057,21 @@ async fn checked_producer_command<H: DomainHost>(
         }
     }
     let reviewed = if matches!(principal, Principal::Agent { .. }) && !stored {
-        let state = host.domain().state().map_err(|_| storage())?;
+        let state = host.domain().state();
         let github = host.domain().ports().github();
         let merger = host.new_work_client().map_or_else(|| github.merger.clone(), crate::client_routes::Client::pr_merger);
         steps.step("the public content review", final_delivery_review(host.home(), merger, github.reads.clone(), state, &envelope.command)).await?
     } else { None };
-    let work = host.domain().producer_work.clone();
+    let work = host.api().runtime.work(host.domain(), Lane::Producer).clone();
     let mut envelope = envelope;
     steps.step("storing it", work.run(move || {
         check_launch_plan(host.domain(), host.home(), &envelope.command)?;
         crate::launch_plans::stamp_project(host.domain(), host.home(), &mut envelope.command);
         crate::spec_checks::stamp(host.domain(), &mut envelope.command)?;
         let kept = crate::result_files::keep(host.home(), &mut envelope.command)?;
-        let executed = host.domain().execute_bearer_answered(&token, &envelope, |state| {
+        let executed = host.api().runtime.execute_bearer_answered(host.domain(), &token, &envelope, Box::new(|state| {
             reviewed.as_ref().map_or(Ok(()), |reviewed| reviewed.verify(state))
-        });
+        }));
         if executed.is_err() && let Some(file) = kept {
             let _ = std::fs::remove_file(file);
         }
@@ -1113,7 +1108,7 @@ fn approved(home: &FsPath, device: &Signed) -> anyhow::Result<()> {
 /// Sender is the verified envelope identity; a body cannot change this principal.
 /// The caller retains its ciphertext journal and rechecks device approval at commit.
 pub(crate) fn encrypted_command_runtime(
-    domain: &DomainRuntime, sender: &str, body: Option<&Value>,
+    domain: &dyn Runtime, sender: &str, body: Option<&Value>,
     identity: TransportIdentity<'_>, authorize: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<Value> {
     if sender != identity.0 {
@@ -1154,7 +1149,7 @@ pub(crate) fn encrypted_command_runtime(
 }
 
 pub(crate) async fn encrypted_resource_command_runtime(
-    domain: &DomainRuntime, new_work: Option<&crate::client_routes::Client>,
+    domain: &dyn Runtime, new_work: Option<&crate::client_routes::Client>,
     sender: &str, method: &str, path: &str, body: Option<&Value>,
     identity: TransportIdentity<'_>, authorize: impl Fn() -> anyhow::Result<()> + Sync,
 ) -> anyhow::Result<Value> {
@@ -1165,7 +1160,7 @@ pub(crate) async fn encrypted_resource_command_runtime(
 }
 
 pub(crate) async fn resource_command_runtime(
-    domain: &DomainRuntime, new_work: Option<&crate::client_routes::Client>,
+    domain: &dyn Runtime, new_work: Option<&crate::client_routes::Client>,
     sender: &str, method: &str, path: &str, body: Option<&Value>,
     identity: Option<TransportIdentity<'_>>, authorize: impl Fn() -> anyhow::Result<()> + Sync,
 ) -> anyhow::Result<Value> {
@@ -1209,13 +1204,13 @@ fn storage_error() -> Response {
 }
 /// Whether the launch plan of a new Task is one a launch would accept: its folder exists and its
 /// model and effort fit the request. A Task without a plan is refused by the domain itself.
-pub(crate) fn check_launch_plan(domain: &DomainRuntime, home: &std::path::Path, command: &Command) -> Result<(), DomainError> {
+pub(crate) fn check_launch_plan(domain: &dyn Runtime, home: &std::path::Path, command: &Command) -> Result<(), DomainError> {
     match command {
         Command::CreateTask { request_id, launch: Some(plan), .. }
         | Command::SettleSuggestion { decision: SuggestionDecision::NewTask { request_id, launch: plan, .. }, .. } =>
             crate::launch_plans::validate(domain, home, request_id, plan),
         Command::SettlePlanReview { task_id, outcome: alondra_domain_model::PlanReviewOutcome::PlanChanged { launch: plan, .. }, .. } => {
-            let state = domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
+            let state = domain.state();
             let task = state.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
             crate::launch_plans::validate(domain, home, &task.request_id, plan)
         }
@@ -1231,6 +1226,7 @@ fn store_error(error: StoreError) -> Response {
 #[cfg(test)]
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
+    use crate::engine_tests::Kernel as _;
     use super::*;
     use crate::principal::Principal;
     use axum::http::StatusCode;
@@ -1368,7 +1364,7 @@ mod tests {
         ] {
             host.domain.execute(&actor, &envelope(&host, id, command), None, || Ok(())).unwrap();
         }
-        let token = host.domain.issue(Principal::Orchestrator { generation: 0, execution_id: "continuation-probe".into() }).unwrap();
+        let token = host.domain.kernel().issue(Principal::Orchestrator { generation: 0, execution_id: "continuation-probe".into() }).unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("authorization", format!("Bearer {}", token.expose_for_child_environment()).parse().unwrap());
         let command = envelope(&host, "continue-api", Command::CreateTask { priority: Default::default(),
@@ -1379,7 +1375,7 @@ mod tests {
         let observer = rusqlite::Connection::open(crate::domain_store::active_path(&host.home)).unwrap();
         observer.execute_batch("CREATE TRIGGER fail_continuation BEFORE INSERT ON task_checklists WHEN NEW.task_id='continued'
             BEGIN SELECT RAISE(ABORT,'injected continuation cause'); END;").unwrap();
-        let before = host.domain.state().unwrap();
+        let before = host.domain.state();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let reply = execute_command(host.daemon.clone(), "127.0.0.1:12345".parse().unwrap(), None, headers.clone(), command.clone()).await;
@@ -1389,12 +1385,12 @@ mod tests {
             assert!(text.contains("storage_unavailable"), "{text}");
             assert!(text.contains("domain transaction could not be completed"), "{text}");
             assert!(!text.contains("injected continuation cause") && !text.contains("persisting domain state"), "{text}");
-            assert_eq!(host.domain.state().unwrap(), before);
+            assert_eq!(host.domain.state(), before);
             observer.execute_batch("DROP TRIGGER fail_continuation").unwrap();
             let reply = execute_command(host.daemon.clone(), "127.0.0.1:12345".parse().unwrap(), None, headers, command).await;
             assert_eq!(reply.status(), StatusCode::OK);
         });
-        let after = host.domain.state().unwrap();
+        let after = host.domain.state();
         assert_eq!(after.checklists.get(&TaskId::from("continued")), before.checklists.get(&TaskId::from("task-a")));
         assert!(!after.checklists.contains_key(&TaskId::from("task-a")));
         assert_eq!(after.tasks[&TaskId::from("continued")].worktrees[path].origin, WorktreeOrigin::Inherited);
@@ -1407,15 +1403,15 @@ mod tests {
         drop(crate::engine_tests::open(&directory).unwrap());
         let host = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
         let domain = host.domain();
-        let state = domain.state().unwrap();
+        let state = domain.state();
         domain.execute(&Actor::User { user_id: "fixture".into() }, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "request".into(), expected_revision: state.revision,
             command: Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false },
         }, None, || Ok(())).unwrap();
-        let token = domain.issue(Principal::Orchestrator { generation: 0, execution_id: "fixture".into() }).unwrap();
+        let token = domain.kernel().issue(Principal::Orchestrator { generation: 0, execution_id: "fixture".into() }).unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("authorization", format!("Bearer {}", token.expose_for_child_environment()).parse().unwrap());
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "task".into(), expected_revision: state.revision,
             command: Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: None,
@@ -1424,7 +1420,7 @@ mod tests {
         let driver = std::thread::current().id();
         let threads = Arc::new(std::sync::Mutex::new(Vec::new()));
         let running = threads.clone();
-        domain.producer_work.on_start(move || {
+        domain.kernel().producer_work.on_start(move || {
             let thread = std::thread::current().id();
             assert_ne!(thread, driver, "producer authority/store work occupies the async worker");
             running.lock().unwrap().push(thread);
@@ -1435,7 +1431,7 @@ mod tests {
             assert_eq!(reply.status(), StatusCode::OK);
         });
         assert_eq!(threads.lock().unwrap().len(), 2, "both capability resolution and the actual command use the producer lane");
-        assert!(domain.state().unwrap().tasks.contains_key(&"task".into()));
+        assert!(domain.state().tasks.contains_key(&"task".into()));
     }
 
     #[tokio::test]
@@ -1454,7 +1450,7 @@ mod tests {
         let signed = Some(Extension(Signed { device_id: device.id,
             name: device.name, public_key: device.public_key }));
         let host = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
-        let epoch = host.domain().state().unwrap().data_epoch.0.clone();
+        let epoch = host.domain().state().data_epoch.0.clone();
 
         let legacy = changes::<crate::domain_bootstrap::DomainDaemon>(State(host.clone()), signed.clone(),
             RawQuery(Some(format!("data_epoch={epoch}&after=0&wait=0")))).await;
@@ -1493,31 +1489,31 @@ mod tests {
     fn encrypted_delivery_resolution_requires_authorized_exact_decision_and_replays() {
         let (home, host) = fixture();
         let _directory = host.test_directory.clone();
-        let mut store = host.domain.store.lock().unwrap();
+        let mut store = host.domain.store().lock().unwrap();
         let message = store.pending_messages().unwrap().into_iter()
             .find(|item| item.recipient_kind == "user").unwrap();
         let claim = store.claim_message(message.id).unwrap().unwrap();
         store.finish_message(claim.attempt_id, claim.version,
             alondra_core::delivery::State::Uncertain, Some("push_unknown")).unwrap();
         drop(store);
-        let epoch = host.domain.state().unwrap().data_epoch.clone();
+        let epoch = host.domain.state().data_epoch.clone();
         let body = json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
             "decision":"retry"});
         let digest = [31u8; 32];
-        let denied = encrypted_resolve_delivery_runtime(&host.domain, &host.home, "phone-a", claim.attempt_id,
+        let denied = encrypted_resolve_delivery_runtime(&*host.domain, &host.home, "phone-a", claim.attempt_id,
             Some(&body), ("phone-a", "work-a", &digest), || anyhow::bail!("revoked")).unwrap();
         assert_eq!(denied["status"], 403);
-        let first = encrypted_resolve_delivery_runtime(&host.domain, &host.home, "phone-a", claim.attempt_id,
+        let first = encrypted_resolve_delivery_runtime(&*host.domain, &host.home, "phone-a", claim.attempt_id,
             Some(&body), ("phone-a", "work-a", &digest), || Ok(())).unwrap();
         assert_eq!(first["status"], 200);
         assert_eq!(first["body"]["state"], "retryable");
-        assert_eq!(first, encrypted_resolve_delivery_runtime(&host.domain, &host.home, "phone-a", claim.attempt_id,
+        assert_eq!(first, encrypted_resolve_delivery_runtime(&*host.domain, &host.home, "phone-a", claim.attempt_id,
             Some(&body), ("phone-a", "work-a", &digest), || Ok(())).unwrap());
-        let changed = encrypted_resolve_delivery_runtime(&host.domain, &host.home, "phone-a", claim.attempt_id,
+        let changed = encrypted_resolve_delivery_runtime(&*host.domain, &host.home, "phone-a", claim.attempt_id,
             Some(&json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
                 "decision":"discard"})), ("phone-a", "work-a", &[32u8; 32]), || Ok(())).unwrap();
         assert_eq!(changed["body"]["code"], "idempotency_conflict");
-        let response = delivery_evidence_inner(&host.domain, "after=0");
+        let response = delivery_evidence_inner(&*host.domain, "after=0");
         assert_eq!(response.status(), StatusCode::OK);
         drop(host);
         std::fs::remove_dir_all(home).unwrap();
@@ -1535,14 +1531,14 @@ mod tests {
         let code = auth.new_pairing_code();
         let device = auth.pair(&code, "Recovery phone",
             &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
-        let mut store = host.domain.store.lock().unwrap();
+        let mut store = host.domain.store().lock().unwrap();
         let message = store.pending_messages().unwrap().into_iter()
             .find(|item| item.recipient_kind == "user").unwrap();
         let claim = store.claim_message(message.id).unwrap().unwrap();
         store.finish_message(claim.attempt_id, claim.version,
             alondra_core::delivery::State::Uncertain, Some("push_unknown")).unwrap();
         drop(store);
-        let epoch = host.domain.state().unwrap().data_epoch.clone();
+        let epoch = host.domain.state().data_epoch.clone();
         let body = json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
             "decision":"retry"});
         let (checked_tx, checked_rx) = mpsc::channel();
@@ -1551,7 +1547,7 @@ mod tests {
         let writer_host = host.clone();
         let writer_id = device.id.clone();
         let writer = std::thread::spawn(move || {
-            encrypted_resolve_delivery_runtime(&writer_host.domain, &writer_host.home, &writer_id, claim.attempt_id,
+            encrypted_resolve_delivery_runtime(&*writer_host.domain, &writer_host.home, &writer_id, claim.attempt_id,
                 Some(&body), (&writer_id, "recovery-work", &[31u8; 32]), || {
                     anyhow::ensure!(crate::auth::Auth::open(&writer_home)?.list().iter()
                         .any(|entry| entry.id == writer_id));
@@ -1580,7 +1576,7 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
     fn envelope(host: &Host, id: &str, command: Command) -> CommandEnvelope {
-        let state = host.domain.state().unwrap();
+        let state = host.domain.state();
         CommandEnvelope {
             protocol_version: 2,
             data_epoch: state.data_epoch.clone(),
@@ -1623,7 +1619,7 @@ mod tests {
             ("POST", "/tasks/t-1/results"), ("PUT", "/interactions/i-1/subject"), ("POST", "/tasks/t-1/cleanup"), ("PUT", "/tasks/t-1/post-merge-work"),
             ("POST", "/schedules"), ("PUT", "/tasks/t-1/task-wait"),
         ] {
-            let schedule = crate::domain_schedule_api::approved_mutation_path(method, path, true);
+            let schedule = alondra_engine_ports::schedule_routes::approved_mutation_path(method, path, true);
             assert!(is_resource_mutation_path(method, path) || schedule, "{method} {path}");
         }
         assert!(!is_resource_mutation_path("POST", "/commands"));
@@ -1788,7 +1784,7 @@ mod tests {
     }
     struct Host {
         daemon: Arc<crate::domain_bootstrap::DomainDaemon>,
-        domain: Arc<DomainRuntime>,
+        domain: Arc<dyn Runtime>,
         home: std::path::PathBuf,
         test_directory: Arc<crate::test_support::Directory>,
     }
@@ -1884,7 +1880,7 @@ mod tests {
         assert_eq!(first.status(), reqwest::StatusCode::NOT_FOUND, "there is no generic command endpoint");
         let body = serde_json::to_value(&request).unwrap();
         let result = encrypted_command_runtime(
-            &host.domain,
+            &*host.domain,
             "phone-a",
             Some(&body),
             ("phone-a", "request-one", &[1; 32]),
@@ -1895,7 +1891,7 @@ mod tests {
         assert_eq!(
             result,
             encrypted_command_runtime(
-                &host.domain,
+                &*host.domain,
                 "phone-a",
                 Some(&body),
                 ("phone-a", "request-one", &[1; 32]),
@@ -1904,7 +1900,7 @@ mod tests {
             .unwrap()
         );
         let conflict = encrypted_command_runtime(
-            &host.domain,
+            &*host.domain,
             "phone-b",
             Some(&body),
             ("phone-b", "request-one", &[1; 32]),
@@ -1930,7 +1926,7 @@ mod tests {
         );
         let body = serde_json::to_value(remote).unwrap();
         let result = encrypted_command_runtime(
-            &host.domain,
+            &*host.domain,
             "phone-a",
             Some(&body),
             ("phone-a", "request-two", &[2; 32]),
@@ -1941,7 +1937,7 @@ mod tests {
         assert_eq!(
             result,
             encrypted_command_runtime(
-                &host.domain,
+                &*host.domain,
                 "phone-a",
                 Some(&body),
                 ("phone-a", "request-two", &[2; 32]),
@@ -1949,9 +1945,9 @@ mod tests {
             )
             .unwrap()
         );
-        let pending_before_mismatch = host.domain.store.lock().unwrap().pending_messages().unwrap();
+        let pending_before_mismatch = host.domain.store().lock().unwrap().pending_messages().unwrap();
         let mismatch = encrypted_command_runtime(
-            &host.domain,
+            &*host.domain,
             "phone-a",
             Some(&body),
             ("phone-a", "request-two", &[3; 32]),
@@ -1960,12 +1956,12 @@ mod tests {
         .unwrap();
         assert_eq!(mismatch["body"]["code"], "idempotency_conflict");
         assert_eq!(
-            host.domain.store.lock().unwrap().pending_messages().unwrap(),
+            host.domain.store().lock().unwrap().pending_messages().unwrap(),
             pending_before_mismatch,
         );
         assert!(
             host.domain
-                .store
+                .store()
                 .lock()
                 .unwrap()
                 .delivery_evidence()
@@ -1983,7 +1979,7 @@ mod tests {
         );
         let capabilities: Value = signed_get(&client, &base, &key, &device_id, "/capabilities")
             .send().await.unwrap().json().await.unwrap();
-        assert_eq!(capabilities["data_epoch"], host.domain.state().unwrap().data_epoch.0);
+        assert_eq!(capabilities["data_epoch"], host.domain.state().data_epoch.0);
         assert_eq!(
             signed_get(&client, &base, &key, &device_id, "/inbox?filter=all").send().await.unwrap().status(),
             reqwest::StatusCode::NOT_FOUND
@@ -2010,10 +2006,10 @@ mod tests {
         let (_home, host) = fixture();
         let _directory = host.test_directory.clone();
         let (base, server, _, _) = server(host.clone()).await;
-        let token = host.domain.issue(Principal::Agent {
+        let token = host.domain.kernel().issue(Principal::Agent {
             session_id: "agent-a".into(), task_binding: None, provider_agent_id: None,
         }).unwrap();
-        let state = host.domain.state().unwrap();
+        let state = host.domain.state();
         let send = |client: &'static str| {
             reqwest::Client::new().post(format!("{base}/questions"))
                 .bearer_auth(token.expose_for_child_environment())
@@ -2041,10 +2037,10 @@ mod tests {
         let (home, host) = fixture();
         let _directory = host.test_directory.clone();
         let (base, server, _, _) = server(host.clone()).await;
-        let token = host.domain.issue(Principal::Agent {
+        let token = host.domain.kernel().issue(Principal::Agent {
             session_id: "agent-a".into(), task_binding: None, provider_agent_id: None,
         }).unwrap();
-        let state = host.domain.state().unwrap();
+        let state = host.domain.state();
         let literal = "# Release design\n\nThe document remains literal.";
         let response = reqwest::Client::new().post(format!("{base}/questions"))
             .bearer_auth(token.expose_for_child_environment())
@@ -2059,7 +2055,7 @@ mod tests {
         let status = response.status();
         let answer: Value = response.json().await.unwrap();
         assert_eq!(status, reqwest::StatusCode::OK, "{answer}");
-        let state = host.domain.state().unwrap();
+        let state = host.domain.state();
         let card = &state.interactions[&"legacy-card".into()].card;
         assert_eq!(card.title.as_deref(), Some("Release design"));
         assert_eq!(card.need, "Choose an option");
@@ -2076,14 +2072,14 @@ mod tests {
         let (home, host) = fixture();
         let _directory = host.test_directory.clone();
         let (base, server, _, _) = server(host.clone()).await;
-        let token = host.domain.issue(Principal::Agent {
+        let token = host.domain.kernel().issue(Principal::Agent {
             session_id: "agent-a".into(), task_binding: None, provider_agent_id: None,
         }).unwrap();
         let user = alondra_core::user_language::current();
         let other = if user == alondra_view_model::Lang::Es { "en" } else { "es" };
         let own = if user == alondra_view_model::Lang::Es { "es" } else { "en" };
         let send = |language: &'static str| {
-            let state = host.domain.state().unwrap();
+            let state = host.domain.state();
             let request = reqwest::Client::new().post(format!("{base}/questions"))
                 .bearer_auth(token.expose_for_child_environment())
                 .json(&json!({"data_epoch":state.data_epoch,"command_id":format!("language-{language}"),"expected_revision":state.revision,
@@ -2098,11 +2094,11 @@ mod tests {
         let body: Value = refused.json().await.unwrap();
         assert_eq!((body["code"].as_str(), body["subject"].as_str()), (Some("card_language_mismatch"), Some("language")), "{body}");
         assert!(body["message"].as_str().unwrap().contains(&format!("language \"{own}\"")), "{body}");
-        assert!(!host.domain.state().unwrap().interactions.contains_key(&"language-card".into()), "a refused card is not sent");
+        assert!(!host.domain.state().interactions.contains_key(&"language-card".into()), "a refused card is not sent");
         let accepted = send(own).await;
         let status = accepted.status();
         assert_eq!(status, reqwest::StatusCode::OK, "{}", accepted.text().await.unwrap());
-        let card = &host.domain.state().unwrap().interactions[&"language-card".into()].card;
+        let card = &host.domain.state().interactions[&"language-card".into()].card;
         assert_eq!(card.language, Some(user));
         server.abort();
         let _ = server.await;
@@ -2118,7 +2114,7 @@ mod tests {
         let client = reqwest::Client::new();
         let token = host
             .domain
-            .issue(Principal::Agent {
+            .kernel().issue(Principal::Agent {
                 session_id: "agent-a".into(),
                 task_binding: None,
                 provider_agent_id: None,
@@ -2136,7 +2132,7 @@ mod tests {
         assert_eq!(client.get(format!("{base}/merge-authorizations/missing"))
             .bearer_auth(token.expose_for_child_environment()).send().await.unwrap().status(),
             reqwest::StatusCode::NOT_FOUND);
-        let before = host.domain.state().unwrap();
+        let before = host.domain.state();
         let request = json!({"data_epoch":before.data_epoch,"command_id":"bad-read",
             "expected_revision":before.revision});
         let anonymous = client
@@ -2173,9 +2169,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(before, host.domain.state().unwrap());
+        assert_eq!(before, host.domain.state());
         let revoked = encrypted_command_runtime(
-            &host.domain,
+            &*host.domain,
             "phone-a",
             Some(&serde_json::to_value(&request).unwrap()),
             ("phone-a", "revoked", &[4; 32]),
@@ -2184,7 +2180,7 @@ mod tests {
         .unwrap();
         assert_eq!(revoked["status"], 422);
         assert_eq!(revoked["body"]["code"], "invalid_input");
-        assert_eq!(before, host.domain.state().unwrap());
+        assert_eq!(before, host.domain.state());
         server.abort();
         let _ = server.await;
         drop(host);
@@ -2197,7 +2193,7 @@ mod tests {
         let data = b"# Synthetic design\n";
         std::fs::create_dir_all(home.join("files")).unwrap();
         std::fs::write(home.join("files/design.md"), data).unwrap();
-        let before_bad_document = host.domain.state().unwrap();
+        let before_bad_document = host.domain.state();
         let invalid = host.domain.execute(
             &Actor::Agent { agent_id: "agent-a".into() },
             &envelope(&host, "document-wrong-hash", Command::CreateDocument {
@@ -2207,7 +2203,7 @@ mod tests {
                 role: "result".into(),
             }), None, || Ok(()));
         assert!(invalid.is_err());
-        assert_eq!(host.domain.state().unwrap(), before_bad_document);
+        assert_eq!(host.domain.state(), before_bad_document);
         let valid_digest: String = Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect();
         let rejected = host.domain.execute(
             &Actor::Agent { agent_id: "agent-a".into() },
@@ -2244,7 +2240,7 @@ mod tests {
                 || Ok(()),
             )
             .unwrap();
-        let managed = host.domain.state().unwrap().document_revisions[&DocumentRevisionId("rev-a".into())]
+        let managed = host.domain.state().document_revisions[&DocumentRevisionId("rev-a".into())]
             .content_reference.clone();
         assert!(managed.starts_with("files/domain-v2/"));
         let (base, server, key, device_id) = server(host.clone()).await;

@@ -1,5 +1,5 @@
 use alondra_daemon_engine::domain_runtime::RuntimeRecords as _;
-use alondra_engine_admission::AdmissionOf as _;
+use alondra_engine_ports::gate::GateOf as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::contexts::ContextsOf as _;
 use crate::locks::Poisonable as _;
@@ -174,7 +174,7 @@ impl Facts {
         let hooks = live.changed.subscribe();
         let reports = live.mods.changed.subscribe();
         let usage = live.usage_pause.subscribe();
-        let gate = client.domain.admission().subscribe();
+        let gate = client.domain.gate().subscribe();
         let sampled = client.feeds.subscribe_shared();
         let pull_requests = client.details.version();
         let contexts = client.domain.contexts().version();
@@ -537,10 +537,7 @@ async fn gather_inner(
             live
         })
         .collect();
-    let orchestrator = crate::domain_orchestrator::status(&crate::domain_orchestrator::executor(
-        client.domain.clone(),
-        client.home(),
-    ))
+    let orchestrator = client.api.orchestrator.status(client.domain.clone(), client.home())
     .ok()
     .map(|value| LiveOrchestrator {
         working: value["phase"] == "running",
@@ -686,7 +683,7 @@ async fn gather_inner(
         waits_for_session,
         launch_refusals,
         start_waits,
-        pacing: client.domain.admission().live(&*client.domain, now),
+        pacing: client.api.admission.pacing(&*client.domain, now),
         allowed_rules: keyed.allowed_rules,
         allow_always_missing: keyed.allow_always_missing,
         mcp_probes: keyed.mcp_probes,
@@ -1012,7 +1009,7 @@ async fn gather_keyed(
     let (allowed_rules, allow_always_missing) = allowed_rules(client, keys);
     let (mcp_probes, mcp_removed) = if wants_mcp { (client.mcp_probes.snapshot(), client.mcp_probes.removals()) } else { Default::default() };
     let wants_metrics = keys.iter().any(|key| alondra_view_model::Family::of(key) == Some(alondra_view_model::Family::Metrics));
-    let metrics = wants_metrics.then(|| client.domain.metrics_inputs(alondra_core::now_millis()))
+    let metrics = wants_metrics.then(|| client.api.runtime.metrics_inputs(&*client.domain, alondra_core::now_millis()))
         .and_then(|read| read.inspect_err(|error| log!("the metrics could not be read: {error:#}")).ok());
     Keyed { projects, options, project_options, issues, issue_error, activity, task_history, search_matches, allowed_rules, allow_always_missing, mcp_probes, mcp_removed, metrics }
 }
@@ -1166,29 +1163,31 @@ fn digest_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 #[cfg(not(feature = "real-hosts"))]
 mod cache_tests {
+    use crate::engine_tests::Kernel as _;
+    use alondra_engine_admission::AdmissionOf as _;
     use alondra_store_sqlite::AsSqlite as _;
     use super::*;
     use alondra_domain_model::{Actor, Command, CommandEnvelope};
     use std::{fs, sync::Arc};
 
-    fn execute(domain: &crate::domain_runtime::DomainRuntime, actor: Actor, id: &str, command: Command) {
-        let state = domain.state().unwrap();
+    fn execute(domain: &dyn alondra_engine_ports::Runtime, actor: Actor, id: &str, command: Command) {
+        let state = domain.state();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: alondra_domain_model::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
             expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap();
     }
 
-    fn report(domain: &crate::domain_runtime::DomainRuntime, value: Value, at: Millis) {
+    fn report(domain: &dyn alondra_engine_ports::Runtime, value: Value, at: Millis) {
         domain.report(serde_json::from_value(value).unwrap(), at);
     }
 
 
-    fn wait_fixture() -> (crate::test_support::Directory, Arc<crate::domain_runtime::DomainRuntime>, Arc<crate::client_routes::Client>) {
+    fn wait_fixture() -> (crate::test_support::Directory, Arc<dyn alondra_engine_ports::Runtime>, Arc<crate::client_routes::Client>) {
         wait_fixture_observed(Observation::default())
     }
 
-    fn wait_fixture_observed(observation: Observation) -> (crate::test_support::Directory, Arc<crate::domain_runtime::DomainRuntime>, Arc<crate::client_routes::Client>) {
+    fn wait_fixture_observed(observation: Observation) -> (crate::test_support::Directory, Arc<dyn alondra_engine_ports::Runtime>, Arc<crate::client_routes::Client>) {
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
@@ -1196,12 +1195,12 @@ mod cache_tests {
         // and play the sampler with `feeds.shared_changed()`.
         let client = std::thread::scope(|scope| scope.spawn(||
             crate::client_routes::Client::open_observed(domain.clone(), &home, Arc::new(Mutex::new(None)), observation)).join().unwrap());
-        execute(&domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
+        execute(&*domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        execute(&domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request".into(), title: "Work".into() });
+        execute(&*domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request".into(), title: "Work".into() });
         for id in ["room", "launch", "relaunch", "send", "closed", "retry"] {
-            execute(&domain, Actor::Orchestrator { generation: 0 }, id, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+            execute(&*domain, Actor::Orchestrator { generation: 0 }, id, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: id.into(), request_id: "request".into(), title: id.into(), agent_id: None,
                 review_prs: true, dependencies: Default::default(), stack: None,
                 launch: Some(alondra_domain_model::LaunchPlan::new("node", home.to_str().unwrap())),
@@ -1223,11 +1222,11 @@ mod cache_tests {
         let observation = Observation::armed();
         observation.start();
         let (_home, domain, client) = wait_fixture_observed(observation.clone());
-        execute(&domain, Actor::System, "agent", Command::RegisterAgent {
+        execute(&*domain, Actor::System, "agent", Command::RegisterAgent {
             agent_id: "clock-node".into(), name: "Clock".into(), at: 0,
         });
         let noon = crate::usage_pause::local_at(1_794_536_820_000, 0, 12, 0);
-        report(&domain, serde_json::json!({"session_id":"clock-node", "event":"tool.start", "tool":"Bash", "input":{"command":"build"}}), noon);
+        report(&*domain, serde_json::json!({"session_id":"clock-node", "event":"tool.start", "tool":"Bash", "input":{"command":"build"}}), noon);
         let read = domain.read();
         for lang in [Lang::En, Lang::Es] {
             let first = gather_now(&client, &read, lang, &[], false, true, noon).await;
@@ -1248,7 +1247,7 @@ mod cache_tests {
         let observation = Observation::armed();
         observation.start();
         let (home, domain, client) = wait_fixture_observed(observation.clone());
-        execute(&domain, Actor::System, "agent", Command::RegisterAgent {
+        execute(&*domain, Actor::System, "agent", Command::RegisterAgent {
             agent_id: "file-node".into(), name: "Files".into(), at: 0,
         });
         let dir = home.join("workflow-fixture");
@@ -1256,7 +1255,7 @@ mod cache_tests {
         let journal = dir.join("journal.jsonl");
         let started = "{\"type\":\"started\",\"agentId\":\"worker\",\"label\":\"Review\"}\n";
         fs::write(&journal, started).unwrap();
-        report(&domain, serde_json::json!({"session_id":"file-node", "event":"workflow.start", "id":"review", "name":"Review", "transcript_dir":dir}), 1_000);
+        report(&*domain, serde_json::json!({"session_id":"file-node", "event":"workflow.start", "id":"review", "name":"Review", "transcript_dir":dir}), 1_000);
         let read = domain.read();
         let first = gather_now(&client, &read, Lang::En, &[], false, true, 2_000).await;
         assert_eq!(first.nodes[0].workflows[0].workflow.as_ref().unwrap().running, 1);
@@ -1348,7 +1347,7 @@ mod cache_tests {
         let read = domain.read();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (weak, once) = (Arc::downgrade(&client), fired.clone());
-        domain.reads.lock().unwrap().sqlite_mut().on_live_read(move |getter| {
+        domain.kernel().reads.lock().unwrap().sqlite_mut().on_live_read(move |getter| {
             if getter == "task_state_times" && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
                 && let Some(client) = weak.upgrade() { client.feeds.shared_changed(); }
         });
@@ -1390,7 +1389,7 @@ mod cache_tests {
     async fn cached_quota_views_keep_the_reading_clock_for_rows_choices_and_task_reasons() {
         use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus};
         let (_home, domain, client) = wait_fixture();
-        let mut state = (*domain.state().unwrap()).clone();
+        let mut state = (*domain.state()).clone();
         let account = AccountId::default_account();
         state.accounts = vec![AccountStatus { antigravity: None,
             provider: Provider::Codex, id: account.clone(), name: "Default".into(), state: AccountState::SignedIn,
@@ -1432,15 +1431,15 @@ mod cache_tests {
         assert_eq!(gathered(&client), 1, "nothing changed, so the second view reuses the snapshot");
         let getter_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls = getter_calls.clone();
-        domain.reads.lock().unwrap().sqlite_mut().on_live_read(move |_| {
+        domain.kernel().reads.lock().unwrap().sqlite_mut().on_live_read(move |_| {
             calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
         let before = (gathered(&client), keyed(&client));
-        domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
+        domain.kernel().reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
         for _ in 0..3 {
             assert_eq!(gather(&client, &read, Lang::En, &home, true, false).await, first);
         }
-        let trace = domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
+        let trace = domain.kernel().reads.lock().unwrap().sqlite_mut().end_live_read_trace();
         assert_eq!(getter_calls.load(std::sync::atomic::Ordering::Relaxed), 0, "warm snapshots must not call instrumented live getters");
         assert!(trace.is_empty(), "warm snapshots must not execute instrumented live getters: {trace:?}");
         assert_eq!((gathered(&client), keyed(&client)), before, "warm snapshots reuse shared and keyed data");
@@ -1454,9 +1453,9 @@ mod cache_tests {
         assert_eq!(keyed(&client), 3, "and reuses it while nothing changes");
 
         let changes: [(&str, Box<dyn Fn() + '_>); 5] = [
-            ("a store write outside commands", Box::new(|| domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((1, 2_000_000_000_000))).unwrap())),
+            ("a store write outside commands", Box::new(|| domain.store().lock().unwrap().set_start_retry(&"retry".into(), Some((1, 2_000_000_000_000))).unwrap())),
             ("a hook", Box::new(|| domain.live().observe(&serde_json::json!({"session_id": "node", "hook_event_name": "Stop", "last_assistant_message": "Done"})))),
-            ("a node report", Box::new(|| report(&domain, serde_json::json!({"session_id": "node", "event": "turn.complete", "answer": "Done"}), 1_000))),
+            ("a node report", Box::new(|| report(&*domain, serde_json::json!({"session_id": "node", "event": "turn.complete", "answer": "Done"}), 1_000))),
             ("pull request details", Box::new(|| client.details.record("pr", Default::default()))),
             ("the live sampler", Box::new(|| client.feeds.shared_changed())),
         ];
@@ -1472,7 +1471,7 @@ mod cache_tests {
         assert!(matches!(retried.start_waits["retry"], alondra_view_model::LiveStartWait::Retry { .. }));
 
         let before = gathered(&client);
-        execute(&domain, Actor::Orchestrator { generation: 0 }, "retitle", Command::TitleRequest { request_id: "request".into(), title: "Work again".into() });
+        execute(&*domain, Actor::Orchestrator { generation: 0 }, "retitle", Command::TitleRequest { request_id: "request".into(), title: "Work again".into() });
         gather(&client, &read, Lang::En, &home, true, false).await;
         gather(&client, &read, Lang::En, &home, true, false).await;
         assert_eq!(gathered(&client), before + 2, "an older revision than the store's is never kept");
@@ -1536,16 +1535,16 @@ mod cache_tests {
             let observation = Observation::armed();
             observation.start();
             let (_home, domain, client) = wait_fixture_observed(observation.clone());
-            execute(&domain, Actor::System, "pr-agent", Command::RegisterAgent {
+            execute(&*domain, Actor::System, "pr-agent", Command::RegisterAgent {
                 agent_id: "pr-agent".into(), name: "Review node".into(), at: 0,
             });
-            execute(&domain, Actor::Orchestrator { generation: 0 }, "pr-task", Command::CreateTask { priority: Default::default(),
+            execute(&*domain, Actor::Orchestrator { generation: 0 }, "pr-task", Command::CreateTask { priority: Default::default(),
                 task_id: "pr-task".into(), request_id: "request".into(), title: "Export report".into(),
                 agent_id: Some("pr-agent".into()), review_prs: true, dependencies: Default::default(),
                 stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/work")),
                 plan_items: None, continues: None,
             });
-            execute(&domain, Actor::Agent { agent_id: "pr-agent".into() }, "register-pr", Command::RegisterPr {
+            execute(&*domain, Actor::Agent { agent_id: "pr-agent".into() }, "register-pr", Command::RegisterPr {
                 task_id: "pr-task".into(), pr_id: "pr".into(), host: "github.com".into(),
                 repository: "demo/reports".into(), number: 7, head: "export-report".into(),
                 base: "main".into(), allowed_methods: vec![alondra_domain_model::MergeMethod::Squash],
@@ -1606,7 +1605,7 @@ mod cache_tests {
             "unchanged view requests must reuse the serialized live digest");
         assert_eq!(crate::views::cache::Input::of(&read, &first), crate::views::cache::Input::prepared(&read, &first),
             "reusing the digest preserves the cursor bytes");
-        domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((1, 2_000_000_000_000))).unwrap();
+        domain.store().lock().unwrap().set_start_retry(&"retry".into(), Some((1, 2_000_000_000_000))).unwrap();
         let changed = gather(&client, &read, Lang::En, &keys, false, false).await;
         assert_ne!(first.start_waits, changed.start_waits, "a store change reaches the next snapshot");
         assert_ne!(first.digest(), changed.digest(), "the changed snapshot has a different wire digest");
@@ -1659,7 +1658,7 @@ mod cache_tests {
         let read = domain.read();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (weak, once) = (Arc::downgrade(&client), fired.clone());
-        domain.reads.lock().unwrap().sqlite_mut().on_live_read(move |getter| {
+        domain.kernel().reads.lock().unwrap().sqlite_mut().on_live_read(move |getter| {
             if getter == "task_state_times" && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
                 && let Some(client) = weak.upgrade() { client.feeds.shared_changed(); }
         });
@@ -1684,7 +1683,7 @@ mod cache_tests {
         client.feeds.shared_changed();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (weak, once) = (Arc::downgrade(&client), fired.clone());
-        domain.reads.lock().unwrap().sqlite_mut().on_live_read(move |getter| {
+        domain.kernel().reads.lock().unwrap().sqlite_mut().on_live_read(move |getter| {
             if getter == "task_state_times" && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
                 && let Some(client) = weak.upgrade() { client.feeds.shared_changed(); }
         });
@@ -1706,7 +1705,7 @@ mod cache_tests {
         let (_home, domain, client) = wait_fixture();
         let start = 1_700_000_000_000;
         for (state, at) in [("not_started", start - 600_000), ("running", start), ("needs_you", start + 60_000), ("running", start + 120_000)] {
-            domain.store.lock().unwrap().sqlite_mut().add_history_step("room", state, at);
+            domain.store().lock().unwrap().sqlite_mut().add_history_step("room", state, at);
         }
         let read = domain.read();
         let live = gather_at(&client, &read, Lang::En, &["home".to_owned()], true, false, start + 180_000).await;
@@ -1721,7 +1720,7 @@ mod cache_tests {
         let mut measured = Vec::new();
         for steps in [2, 20] {
             let (home, domain, client) = wait_fixture();
-            domain.store.lock().unwrap().sqlite_mut().add_task_history(314, steps);
+            domain.store().lock().unwrap().sqlite_mut().add_task_history(314, steps);
             let connection = rusqlite::Connection::open(crate::domain_store::active_path(&home)).unwrap();
             let tasks: i64 = connection.query_row("SELECT count(*) FROM tasks", [], |row| row.get(0)).unwrap();
             let tasks = u64::try_from(tasks).unwrap();
@@ -1731,9 +1730,9 @@ mod cache_tests {
             assert_eq!(tasks, 320, "both fixtures retain the same Task population");
             assert!(history >= tasks * steps as u64, "the real SQL history must be populated");
             let read = domain.read();
-            domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
+            domain.kernel().reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
             let live = gather_at(&client, &read, Lang::En, &["home".to_owned()], true, false, 1_700_000_000_000).await;
-            let trace = domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
+            let trace = domain.kernel().reads.lock().unwrap().sqlite_mut().end_live_read_trace();
             assert_eq!(live.task_since.len(), 6, "finished archived Tasks stay out of the visible snapshot");
             assert_eq!(live.task_since["room"], timestamp(latest), "the actual latest history value reaches the snapshot");
             let mut getters = BTreeMap::new();
@@ -1770,9 +1769,9 @@ mod cache_tests {
         use alondra_view_model::LiveStartWait;
         use crate::domain_store::model_metrics::{Decision, DecisionKind};
         let (_home, domain, client) = wait_fixture();
-        execute(&domain, Actor::System, "closed-node", Command::RegisterAgent { agent_id: "closed-node".into(), name: "Closed node".into(), at: 0 });
-        execute(&domain, Actor::User { user_id: "u".into() }, "closed-assign", Command::AssignTask { task_id: "closed".into(), agent_id: "closed-node".into(), model: None });
-        execute(&domain, Actor::System, "closed-release", Command::ReleaseTask { task_id: "closed".into(), reason: "node closed by the user".into(),
+        execute(&*domain, Actor::System, "closed-node", Command::RegisterAgent { agent_id: "closed-node".into(), name: "Closed node".into(), at: 0 });
+        execute(&*domain, Actor::User { user_id: "u".into() }, "closed-assign", Command::AssignTask { task_id: "closed".into(), agent_id: "closed-node".into(), model: None });
+        execute(&*domain, Actor::System, "closed-release", Command::ReleaseTask { task_id: "closed".into(), reason: "node closed by the user".into(),
             relaunch: crate::client_routes::Relaunch::AskUser, cwd: None });
         let read = domain.read();
         let state = read.state();
@@ -1785,11 +1784,11 @@ mod cache_tests {
                 at: now, kind, model: None, effort: None, approach: None, chosen_by: ModelChooser::Orchestrator,
                 reason: None, title: id.into(), provider: None, tags: None }).unwrap();
         }
-        domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((2, now + 60_000))).unwrap();
-        domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
+        domain.store().lock().unwrap().set_start_retry(&"retry".into(), Some((2, now + 60_000))).unwrap();
+        domain.kernel().reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
         let changed = gather_at(&client, &read, Lang::En, &[], false, false, now).await;
-        let trace = domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
-        assert_eq!(domain.state().unwrap().revision, state.revision);
+        let trace = domain.kernel().reads.lock().unwrap().sqlite_mut().end_live_read_trace();
+        assert_eq!(domain.state().revision, state.revision);
         assert_eq!(changed.start_waits.keys().map(String::as_str).collect::<Vec<_>>(), ["retry", "room", "send"]);
         assert_eq!(changed.start_waits["room"], LiveStartWait::Room);
         assert_eq!(changed.start_waits["send"], LiveStartWait::Room);
@@ -1801,7 +1800,7 @@ mod cache_tests {
         let later = gather_at(&client, &read, Lang::Es, &[], false, false, now + 2 * 86_400_000).await;
         assert_eq!(later.start_waits["retry"], LiveStartWait::Room,
             "a retry whose time has passed waits for room at the gate, never «Reintento a las» an hour gone by");
-        domain.store.lock().unwrap().set_start_retry(&"retry".into(), None).unwrap();
+        domain.store().lock().unwrap().set_start_retry(&"retry".into(), None).unwrap();
         let restored = gather_at(&client, &read, Lang::En, &[], false, false, now).await;
         assert_eq!(restored.start_waits["retry"], LiveStartWait::Room);
     }
@@ -1812,9 +1811,9 @@ mod cache_tests {
         let read = domain.read();
         let connection = rusqlite::Connection::open(crate::domain_store::active_path(&home)).unwrap();
         connection.execute_batch("DROP TABLE model_decisions").unwrap();
-        domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
+        domain.kernel().reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
         let live = gather_at(&client, &read, Lang::En, &[], false, false, 1_700_000_000_000).await;
-        let trace = domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
+        let trace = domain.kernel().reads.lock().unwrap().sqlite_mut().end_live_read_trace();
         assert!(live.start_waits.is_empty(), "unknown launch history must not advertise a fresh launch slot");
         let failed: Vec<_> = trace.iter().filter(|read| read.failed).collect();
         assert_eq!(failed.len(), 1);
@@ -1829,18 +1828,18 @@ mod cache_tests {
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         for id in ["connected", "reported", "assigned", "hidden"] {
-            execute(&domain, Actor::System, id, Command::RegisterAgent { agent_id: id.into(), name: id.into(), at: 0 });
+            execute(&*domain, Actor::System, id, Command::RegisterAgent { agent_id: id.into(), name: id.into(), at: 0 });
         }
-        execute(&domain, Actor::System, "hide", Command::MoveNode { agent_id: "hidden".into(), event: alondra_domain_model::NodeEvent::SessionClosed});
-        execute(&domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
+        execute(&*domain, Actor::System, "hide", Command::MoveNode { agent_id: "hidden".into(), event: alondra_domain_model::NodeEvent::SessionClosed});
+        execute(&*domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        execute(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        execute(&*domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: Some("assigned".into()),
             review_prs: true, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_model::LaunchPlan::new("node", home.to_str().unwrap())),
         });
-        report(&domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
+        report(&*domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
         let read = domain.read();
         let state = read.state();
         let first = gather_at(&client, &read, Lang::En, &[], false, false, 2_000).await;
@@ -1863,7 +1862,7 @@ mod cache_tests {
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
-        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "known".into(), name: "Known".into(), at: 0 });
+        execute(&*domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "known".into(), name: "Known".into(), at: 0 });
         domain.live().observe(&serde_json::json!({"session_id": "known", "hook_event_name": "Stop", "last_assistant_message": "Ready"}));
         let since = domain.live().node("known").unwrap().state_since;
         let read = domain.read();
@@ -1875,7 +1874,7 @@ mod cache_tests {
         let before_view = client.views.render("tasks", &read, &before, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         let later_view = client.views.render("tasks", &read, &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_eq!(later_view, before_view, "time alone changes nothing a node shows");
-        report(&domain, serde_json::json!({"session_id": "known", "event": "turn.complete", "answer": "New answer"}), since + 1_000);
+        report(&*domain, serde_json::json!({"session_id": "known", "event": "turn.complete", "answer": "New answer"}), since + 1_000);
         let recent_answer = gather_at(&client, &read, Lang::En, &[], false, false, since + 30 * 60_000).await;
         assert_eq!(recent_answer.nodes[0].last_message.as_deref(), Some("New answer"));
         assert_eq!(recent_answer.nodes[0].state_since, Some(timestamp(since)));
@@ -1888,9 +1887,9 @@ mod cache_tests {
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
-        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "reported".into(), name: "Reported".into(), at: 0 });
-        report(&domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
-        report(&domain, serde_json::json!({"session_id": "reported", "event": "tool.start", "tool": "Bash", "input": {"command": "build"}}), 2_000);
+        execute(&*domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "reported".into(), name: "Reported".into(), at: 0 });
+        report(&*domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
+        report(&*domain, serde_json::json!({"session_id": "reported", "event": "tool.start", "tool": "Bash", "input": {"command": "build"}}), 2_000);
         let read = domain.read();
         let state = read.state();
         let limit = 2_000 + 48 * 60 * 60_000;
@@ -1899,7 +1898,7 @@ mod cache_tests {
         domain.live().mods.set_shell_alive("reported", Some(false), limit);
         domain.live().mods.set_shell_alive("reported", Some(false), limit + 1);
         let working_view = client.views.render("tasks", &read, &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        report(&domain, serde_json::json!({"session_id": "reported", "event": "turn.complete", "answer": "Done", "aborted": true}), limit + 2);
+        report(&*domain, serde_json::json!({"session_id": "reported", "event": "turn.complete", "answer": "Done", "aborted": true}), limit + 2);
         let answer = gather_at(&client, &read, Lang::En, &[], false, false, limit + 2).await;
         assert_eq!(answer.nodes[0].last_message.as_deref(), Some("Done"));
         assert_eq!(answer.nodes[0].last_message_at, Some(timestamp(limit + 2)));
@@ -1918,7 +1917,7 @@ mod cache_tests {
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = std::thread::scope(|scope| scope.spawn(||
             crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)))).join().unwrap());
-        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "sdk-a".into(), name: "Writer".into(), at: 0 });
+        execute(&*domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "sdk-a".into(), name: "Writer".into(), at: 0 });
         let message = |parent: Option<&str>, content: Value| json!({"type": "assistant", "parent_tool_use_id": parent,
             "message": {"role": "assistant", "content": content}});
         for (at, observed) in [
@@ -1954,7 +1953,7 @@ mod cache_tests {
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
-        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "sdk-a".into(), name: "Writer".into(), at: 0 });
+        execute(&*domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "sdk-a".into(), name: "Writer".into(), at: 0 });
         let message = |parent: Option<&str>, content: Value| json!({"type": "assistant", "parent_tool_use_id": parent,
             "message": {"role": "assistant", "model": "claude-opus-5-5", "content": content}});
         for (at, observed) in [
@@ -2015,27 +2014,27 @@ mod cache_tests {
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(2)) });
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
-        execute(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+        execute(&*domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        execute(&domain, Actor::User { user_id: "u".into() }, "title", Command::TitleRequest { request_id: "request".into(), title: "Work".into() });
+        execute(&*domain, Actor::User { user_id: "u".into() }, "title", Command::TitleRequest { request_id: "request".into(), title: "Work".into() });
         let now = alondra_core::now_millis();
         for id in ["build", "docs", "harness"] {
             let agent = format!("agent-{id}");
-            execute(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+            execute(&*domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: id.into(), request_id: "request".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
                 dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
             });
-            execute(&domain, Actor::System, &format!("register-{id}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone(), at: 0 });
+            execute(&*domain, Actor::System, &format!("register-{id}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone(), at: 0 });
             alondra_daemon_engine::domain_store::admit_through_sdk(&domain, &id.into(), &agent);
             let input = domain.state().unwrap().lifecycle_of(&id.into()).unwrap().pending_inputs()[0].as_str().to_owned();
-            execute(&domain, Actor::System, &format!("turn-{id}"), Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
+            execute(&*domain, Actor::System, &format!("turn-{id}"), Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
                 alondra_domain_model::RuntimeObservation::ResourceAvailable,
                 alondra_domain_model::RuntimeObservation::TurnStarted { turn: format!("turn-{id}"), input },
             ] });
             domain.report(Envelope { session_id: agent, report: Report::TurnStart }, now);
         }
-        assert!(domain.admission().hold_back(&*domain, "agent-harness", crate::pauses::Reason::Declared {
+        assert!(domain.admission().hold_back(&*domain, "agent-harness", alondra_engine_ports::admission::Reason::Declared {
             reason: "The build ran out of memory".into(),
         }, now));
 
@@ -2560,7 +2559,7 @@ mod tests {
     use super::*;
     use alondra_domain_model::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
 
-    fn run(domain: &std::sync::Arc<crate::domain_runtime::DomainRuntime>, actor: Actor, id: &str, command: Command) {
+    fn run(domain: &dyn alondra_engine_ports::Runtime, actor: Actor, id: &str, command: Command) {
         let read = domain.read();
         let state = read.state();
         domain.execute(&actor, &CommandEnvelope {
@@ -2575,11 +2574,11 @@ mod tests {
         let domain = fixture.open_domain();
         for n in 0..nodes {
             let (agent, request, task) = (format!("sdk-{n}"), format!("request-{n}"), format!("task-{n}"));
-            run(&domain, Actor::System, &format!("register-{n}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone(), at: 0 });
-            run(&domain, Actor::User { user_id: "u".into() }, &format!("request-{n}"), Command::CreateRequest {
+            run(&*domain, Actor::System, &format!("register-{n}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone(), at: 0 });
+            run(&*domain, Actor::User { user_id: "u".into() }, &format!("request-{n}"), Command::CreateRequest {
                 request_id: request.as_str().into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
             });
-            run(&domain, Actor::Orchestrator { generation: 0 }, &format!("task-{n}"), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+            run(&*domain, Actor::Orchestrator { generation: 0 }, &format!("task-{n}"), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: task.as_str().into(), request_id: request.as_str().into(), title: "Task".into(), agent_id: None, review_prs: false,
                 dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
             });

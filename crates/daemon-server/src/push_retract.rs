@@ -12,7 +12,7 @@
 //! without the notification service extension, so the count travels in the clear.
 use alondra_core::clock;
 use alondra_core::clock::Instant;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::service::Service;
 use alondra_domain_model::ReadIndex;
 use alondra_view_model as views;
@@ -29,7 +29,7 @@ const MIN_INTERVAL: Duration = Duration::from_secs(120);
 /// binding and the envelope's own fields.
 const PAYLOAD_BUDGET: usize = 1_200;
 
-pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
+pub async fn run(domain: Arc<dyn Runtime>, service: Arc<Service>) {
     let mut changed = domain.subscribe();
     let mut pending = Pending::new(waiting(domain.read().index()));
     loop {

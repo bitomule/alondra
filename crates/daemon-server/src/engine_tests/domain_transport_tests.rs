@@ -130,7 +130,7 @@ fn an_answer_the_node_cannot_take_yet_waits_instead_of_being_dropped() {
     node_with_task(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>));
     free_text_question(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
     free_text_answer(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), user_actor(), "q", "Call it Atlas");
-    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&domain), 0, "the task has no execution to take it yet");
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&*domain), 0, "the task has no execution to take it yet");
     assert_eq!(outbox_message(&(domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>), "q", "agent").state, "retryable", "the answer waits for the node");
 }
 

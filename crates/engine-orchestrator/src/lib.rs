@@ -26,6 +26,11 @@ pub mod stall_context;
 
 use alondra_engine_kernel::domain_runtime::DomainRuntime;
 
+/// Gives the registry the orchestrator as the server shows and steers it.
+pub fn wire(registry: &alondra_engine_ports::Registry) {
+    registry.provide::<dyn alondra_engine_ports::domain_api::OrchestratorApi>(std::sync::Arc::new(domain_orchestrator::Api));
+}
+
 /// The runtime the orchestrator's tests open: the orchestrator's own port, the doubled agent hosts
 /// the host models play, doubles of the rest of the engine, and the faults a test injects at its home failing the orchestrator's writes there.
 #[cfg(test)]

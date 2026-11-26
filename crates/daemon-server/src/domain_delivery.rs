@@ -4,7 +4,7 @@ use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::domain_store::OutboxMessage;
 use crate::push::Push;
 use crate::service::Service;
@@ -23,7 +23,7 @@ const RETRY_BACKOFF: Duration = Duration::from_secs(120);
 /// Domain dispatcher: all receipts live in the active domain database. User hints are sent
 /// here; the orchestrator executor and producer transport own producer messages.
 pub async fn run(
-    domain: Arc<DomainRuntime>,
+    domain: Arc<dyn Runtime>,
     home: std::path::PathBuf,
     push: Arc<Push>,
     service: Option<Arc<Service>>,
@@ -35,7 +35,7 @@ pub async fn run(
     loop {
         retry_after.retain(|_, at| alondra_core::clock::since(*at) < RETRY_BACKOFF);
         let pending = {
-            let mut store = domain.store.lock_or_exit("the domain store");
+            let mut store = domain.store().lock_or_exit("the domain store");
             store.discard_expired_orchestrator_messages(
                 alondra_core::now_millis()
                     .saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS),
@@ -49,7 +49,7 @@ pub async fn run(
         for message in ready_by_recipient(pending, &retry_after) {
             let id = message.id;
             let waited = clock::since(*first_seen.entry(id).or_insert_with(clock::instant));
-            deliver_from_runtime(&domain, &home, &push, service.as_deref(), &client, message, waited).await?;
+            deliver_from_runtime(&*domain, &home, &push, service.as_deref(), &client, message, waited).await?;
             retry_after.insert(id, clock::instant());
         }
         tokio::select! {
@@ -60,7 +60,7 @@ pub async fn run(
 }
 
 pub(crate) async fn deliver_from_runtime(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     home: &Path,
     push: &Push,
     service: Option<&Service>,
@@ -68,7 +68,7 @@ pub(crate) async fn deliver_from_runtime(
     message: OutboxMessage,
     waited: Duration,
 ) -> Result<()> {
-    let to_sdk_node = message.recipient_kind == "agent" && domain.state().is_ok_and(|state| {
+    let to_sdk_node = message.recipient_kind == "agent" && Some(domain.state()).is_some_and(|state| {
         message.agent_id.as_ref().is_some_and(|agent| {
             let agent = AgentId(agent.clone());
             crate::sdk_live::runs_through_sdk(&state, &agent) || crate::sdk_handover::successor(domain, &agent).is_some()
@@ -80,7 +80,7 @@ pub(crate) async fn deliver_from_runtime(
         return Ok(());
     }
     let claim = {
-        let mut store = domain.store.lock_or_exit("the domain store");
+        let mut store = domain.store().lock_or_exit("the domain store");
         store.claim_message(message.id)?
     };
     let Some(claim) = claim else { return Ok(()) };
@@ -94,7 +94,7 @@ pub(crate) async fn deliver_from_runtime(
         Err((state, reason)) => (state, Some(reason)),
     };
     let finished = {
-        let mut store = domain.store.lock_or_exit("the domain store");
+        let mut store = domain.store().lock_or_exit("the domain store");
         store.finish_message(claim.attempt_id, claim.version, state, reason)?
     };
     anyhow::ensure!(finished, "domain delivery claim changed while finishing");
@@ -103,25 +103,25 @@ pub(crate) async fn deliver_from_runtime(
 
 /// Tells the nodes of the Agent SDK what the outbox owes them, as its worker does: how many it told.
 #[cfg(test)]
-pub(crate) fn tell_sdk_nodes(domain: &DomainRuntime) -> usize {
-    let pending = domain.store.lock().unwrap().pending_messages().unwrap();
+pub(crate) fn tell_sdk_nodes(domain: &dyn Runtime) -> usize {
+    let pending = domain.store().lock().unwrap().pending_messages().unwrap();
     let mut told = 0;
     for message in pending.into_iter().filter(|message| message.recipient_kind == "agent") {
-        let Some(claim) = domain.store.lock().unwrap().claim_message(message.id).unwrap() else { continue };
+        let Some(claim) = domain.store().lock().unwrap().claim_message(message.id).unwrap() else { continue };
         let (state, reason) = match tell_sdk_node(domain, &claim.message) {
             Ok(()) => (State::Handed, None),
             Err((state, reason)) => (state, Some(reason)),
         };
         told += usize::from(state == State::Handed);
-        assert!(domain.store.lock().unwrap().finish_message(claim.attempt_id, claim.version, state, reason).unwrap());
+        assert!(domain.store().lock().unwrap().finish_message(claim.attempt_id, claim.version, state, reason).unwrap());
     }
     told
 }
 
 /// What Alondra tells the node of an SDK task becomes an input of its lifecycle, kept before it
 /// leaves for the host. A retry after a crash finds the same command already told.
-fn tell_sdk_node(domain: &DomainRuntime, message: &OutboxMessage) -> std::result::Result<(), (State, &'static str)> {
-    let state = domain.state().map_err(|_| (State::Retryable, "domain_unavailable"))?;
+fn tell_sdk_node(domain: &dyn Runtime, message: &OutboxMessage) -> std::result::Result<(), (State, &'static str)> {
+    let state = domain.state();
     let agent = message.agent_id.clone().ok_or((State::Discarded, "no_agent"))?;
     let task = message.task_id.clone().map(TaskId::from)
         .or_else(|| state.tasks.values().find(|t| t.agent_id.as_ref().is_some_and(|node| node.0 == agent) && !t.state.terminal()).map(|t| t.id.clone()))
@@ -131,7 +131,7 @@ fn tell_sdk_node(domain: &DomainRuntime, message: &OutboxMessage) -> std::result
     let from_user = crate::domain_transport::from_user(&state, message);
     let answers = answered_card(&state, &task, message);
     let author = if from_user || answers.is_some() {
-        let origin = domain.store.lock_or_exit("the domain store").message_origin(message.id).map_err(|_| (State::Retryable, "domain_unavailable"))?;
+        let origin = domain.store().lock_or_exit("the domain store").message_origin(message.id).map_err(|_| (State::Retryable, "domain_unavailable"))?;
         origin.map_or_else(|| crate::node_push::ALONDRA.to_owned(), |(_, actor)| crate::node_push::author_of(&actor))
     } else {
         crate::node_push::ALONDRA.to_owned()
@@ -193,7 +193,7 @@ fn ready_messages(
 }
 
 async fn deliver_user_runtime(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     home: &Path,
     push: &Push,
     service: Option<&Service>,
@@ -211,7 +211,7 @@ async fn deliver_user_runtime(
     }
     if let Some(id) = message.interaction_id.as_deref() {
         let copies = crate::push_gate::earlier_copies(read.state(), &InteractionId::from(id));
-        let told = !copies.is_empty() && domain.store.lock_or_exit("the domain store").user_push_handed(&copies)
+        let told = !copies.is_empty() && domain.store().lock_or_exit("the domain store").user_push_handed(&copies)
             .map_err(|_| (State::Retryable, "domain_read_failed"))?;
         if told {
             return Err((State::Discarded, "already_notified"));
@@ -281,8 +281,8 @@ impl Quieted {
     }
 }
 
-fn quieted_by(domain: &DomainRuntime, read: &ReadSnapshot, message: &OutboxMessage, now: i64) -> Result<Option<Quieted>> {
-    let history = domain.store.lock_or_exit("the domain store").user_push_history(message.id)?;
+fn quieted_by(domain: &dyn Runtime, read: &ReadSnapshot, message: &OutboxMessage, now: i64) -> Result<Option<Quieted>> {
+    let history = domain.store().lock_or_exit("the domain store").user_push_history(message.id)?;
     let resurfaced_at = message.interaction_id.as_deref()
         .and_then(|id| read.state().interactions.get(&InteractionId::from(id)))
         .and_then(|card| card.resurfaced_at_revision);
@@ -453,8 +453,8 @@ mod tests {
         );
     }
 
-    fn apply_command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
-        let state = domain.state().unwrap();
+    fn apply_command(domain: &dyn Runtime, actor: Actor, id: &str, command: Command) {
+        let state = domain.state();
         domain
             .execute(
                 &actor,
@@ -486,7 +486,7 @@ mod tests {
             Default::default(),
         );
         apply_command(
-            &domain,
+            &*domain,
             Actor::System,
             "agent",
             Command::RegisterAgent {
@@ -495,7 +495,7 @@ mod tests {
             },
         );
         apply_command(
-            &domain,
+            &*domain,
             Actor::User {
                 user_id: "u".into(),
             },
@@ -507,7 +507,7 @@ mod tests {
             },
         );
         apply_command(
-            &domain,
+            &*domain,
             Actor::Orchestrator { generation: 0 },
             "task",
             Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
@@ -522,7 +522,7 @@ mod tests {
             },
         );
         apply_command(
-            &domain,
+            &*domain,
             Actor::Agent {
                 agent_id: "agent-a".into(),
             },
@@ -553,7 +553,7 @@ mod tests {
             .into_iter()
             .find(|message| message.recipient_kind == "user")
             .unwrap();
-        deliver_from_runtime(&domain, &home, &push, None, &client, user.clone(), Duration::ZERO)
+        deliver_from_runtime(&*domain, &home, &push, None, &client, user.clone(), Duration::ZERO)
             .await
             .unwrap();
         assert!(
@@ -571,7 +571,7 @@ mod tests {
             InteractionPayload::Question { .. }
         ));
         apply_command(
-            &domain,
+            &*domain,
             Actor::User {
                 user_id: "u".into(),
             },
@@ -592,7 +592,7 @@ mod tests {
             .into_iter()
             .find(|message| message.recipient_kind == "agent")
             .unwrap();
-        deliver_from_runtime(&domain, &home, &push, None, &client, producer.clone(), Duration::ZERO)
+        deliver_from_runtime(&*domain, &home, &push, None, &client, producer.clone(), Duration::ZERO)
             .await
             .unwrap();
         let evidence = domain
@@ -672,7 +672,7 @@ mod tests {
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         apply_command(
-            &domain,
+            &*domain,
             Actor::System,
             "agent",
             Command::RegisterAgent {
@@ -681,7 +681,7 @@ mod tests {
             },
         );
         apply_command(
-            &domain,
+            &*domain,
             Actor::User {
                 user_id: "u".into(),
             },
@@ -693,7 +693,7 @@ mod tests {
             },
         );
         apply_command(
-            &domain,
+            &*domain,
             Actor::Orchestrator { generation: 0 },
             "task",
             Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
@@ -708,7 +708,7 @@ mod tests {
             },
         );
         apply_command(
-            &domain,
+            &*domain,
             Actor::System,
             "info",
             Command::PublishInformation {
@@ -731,7 +731,7 @@ mod tests {
             .find(|m| m.recipient_kind == "user")
             .unwrap();
         let push = Push::open(&home).unwrap();
-        deliver_from_runtime(&domain, &home, &push, None, &client, message.clone(), Duration::ZERO)
+        deliver_from_runtime(&*domain, &home, &push, None, &client, message.clone(), Duration::ZERO)
             .await
             .unwrap();
         let evidence = domain
@@ -749,7 +749,7 @@ mod tests {
         assert!(matches!(state.interactions[&"info-a".into()].payload,
             InteractionPayload::Information { ref read_by } if read_by.is_empty()));
         apply_command(
-            &domain,
+            &*domain,
             Actor::System,
             "info-2",
             Command::PublishInformation {
@@ -772,7 +772,7 @@ mod tests {
             .into_iter()
             .find(|m| m.interaction_id.as_deref() == Some("info-b"))
             .unwrap();
-        deliver_from_runtime(&domain, &home, &push, None, &client, user_message.clone(), Duration::ZERO)
+        deliver_from_runtime(&*domain, &home, &push, None, &client, user_message.clone(), Duration::ZERO)
             .await
             .unwrap();
         assert!(
@@ -1093,16 +1093,16 @@ mod tests {
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let orchestrator = Actor::Orchestrator { generation: 0 };
-        apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+        apply_command(&*domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_command(&domain, orchestrator, "close", Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_model::CloseOutcome::Answered),
+        apply_command(&*domain, orchestrator, "close", Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_model::CloseOutcome::Answered),
             request_id: "a7efd99d".into(),
             answer: Some("Sí: se cifran en el cliente antes de subirlas a R2".into()),
             withdrawn: false,
             title: Some("Cifrar imágenes vía R2".into()),
             headline: Some("Cifrar imágenes con R2 es posible".into()), folded_into: None });
-        let user: Vec<_> = domain.store.lock().unwrap().pending_messages().unwrap()
+        let user: Vec<_> = domain.store().lock().unwrap().pending_messages().unwrap()
             .into_iter().filter(|message| message.recipient_kind == "user").collect();
         assert_eq!(user.len(), 1, "one push for the answer");
         assert_eq!(user[0].interaction_id.as_deref(), Some("a7efd99d-answer"));
@@ -1116,8 +1116,8 @@ mod tests {
         assert_eq!(payload["aps"]["thread-id"], "a7efd99d", "the answer groups with its Request");
         assert_eq!(payload["aps"]["badge"], 0, "the answer waits in the inbox to read, and a card only read never counts on the icon");
         let push = Push::open(&home).unwrap();
-        deliver_from_runtime(&domain, &home, &push, None, &client, user[0].clone(), Duration::ZERO).await.unwrap();
-        assert!(domain.store.lock().unwrap().delivery_evidence_page(0).unwrap()
+        deliver_from_runtime(&*domain, &home, &push, None, &client, user[0].clone(), Duration::ZERO).await.unwrap();
+        assert!(domain.store().lock().unwrap().delivery_evidence_page(0).unwrap()
             .iter().any(|item| item.message_id == user[0].id && item.state == "handed"));
     }
 
@@ -1139,23 +1139,23 @@ mod tests {
         assert_eq!((&quieted["aps"]["alert"], &quieted["aps"]["badge"]), (&notice["aps"]["alert"], &notice["aps"]["badge"]));
     }
 
-    fn quiet_fixture(name: &str) -> (crate::test_support::Directory, std::path::PathBuf, Arc<DomainRuntime>) {
+    fn quiet_fixture(name: &str) -> (crate::test_support::Directory, std::path::PathBuf, Arc<dyn Runtime>) {
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!("alondra-{name}-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
-        apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
-        apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+        apply_command(&*domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
+        apply_command(&*domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        apply_command(&*domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
         (scratch_directory, home, domain)
     }
 
-    fn user_message(domain: &DomainRuntime, card: &str) -> OutboxMessage {
-        domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+    fn user_message(domain: &dyn Runtime, card: &str) -> OutboxMessage {
+        domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some(card) && message.recipient_kind == "user")
             .unwrap()
     }
@@ -1166,26 +1166,26 @@ mod tests {
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let question = |need: &str| GroupQuestion { title: Some("Release".into()), need: need.into(), why: "The release needs it".into(),
             recommended: None, options: ["Yes", "No"].map(|label| QuestionOption { id: label.to_lowercase(), label: label.into(), description: None }).into() };
-        apply_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "questions", Command::AskQuestions {
+        apply_command(&*domain, Actor::Agent { agent_id: "agent-a".into() }, "questions", Command::AskQuestions {
             interaction_id: "g".into(), scope: Scope::Task { task_id: "task-a".into() }, recipient: Recipient::User, blocking: true,
             why: "Two things".into(), questions: vec![question("Which name?"), question("Ship it today?")], language: None });
         let now = alondra_core::now_millis();
         let deliver = |message: OutboxMessage| {
             let (domain, home, client) = (domain.clone(), home.clone(), &client);
-            async move { deliver_from_runtime(&domain, &home, &Push::open(&home).unwrap(), None, client, message, Duration::ZERO).await.unwrap() }
+            async move { deliver_from_runtime(&*domain, &home, &Push::open(&home).unwrap(), None, client, message, Duration::ZERO).await.unwrap() }
         };
-        let quieted = |message: &OutboxMessage| quieted_by(&domain, &domain.read(), message, now).unwrap();
+        let quieted = |message: &OutboxMessage| quieted_by(&*domain, &domain.read(), message, now).unwrap();
 
-        let first = user_message(&domain, "g-q1");
-        let second = user_message(&domain, "g-q2");
+        let first = user_message(&*domain, "g-q1");
+        let second = user_message(&*domain, "g-q2");
         assert_eq!(quieted(&first), None, "the first question of the group sounds");
         deliver(first).await;
         assert_eq!(quieted(&second), Some(Quieted::Group), "the rest of the group arrives quietly");
         deliver(second).await;
 
-        apply_command(&domain, Actor::User { user_id: "u".into() }, "snooze", Command::SnoozeCard { interaction_id: "g-q1".into(), until: now + 1, now });
-        apply_command(&domain, Actor::System, "return", Command::ResurfaceDueCards { now: now + 1 });
-        let returned = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        apply_command(&*domain, Actor::User { user_id: "u".into() }, "snooze", Command::SnoozeCard { interaction_id: "g-q1".into(), until: now + 1, now });
+        apply_command(&*domain, Actor::System, "return", Command::ResurfaceDueCards { now: now + 1 });
+        let returned = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
             .filter(|message| message.interaction_id.as_deref() == Some("g-q1") && message.recipient_kind == "user")
             .max_by_key(|message| message.id).unwrap();
         assert_eq!(quieted(&returned), None, "the reminder the user asked for sounds");
@@ -1197,14 +1197,14 @@ mod tests {
     #[test]
     fn the_phone_stays_quiet_while_the_user_was_at_the_mac_in_the_last_two_minutes() {
         let (_scratch, home, domain) = quiet_fixture("quiet-desk");
-        apply_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
+        apply_command(&*domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question-a".into(), scope: Scope::Task { task_id: "task-a".into() },
             recipient: Recipient::User, body: "Choose".into(), blocking: true,
             options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }],
             card: CardSpec::derived(CardKind::Provide, "Answer the question"),
         });
-        let message = user_message(&domain, "question-a");
-        let quieted = |at| quieted_by(&domain, &domain.read(), &message, at).unwrap();
+        let message = user_message(&*domain, "question-a");
+        let quieted = |at| quieted_by(&*domain, &domain.read(), &message, at).unwrap();
         let now = alondra_core::now_millis();
         domain.live().touch("ios");
         assert_eq!(quieted(now), None, "the phone itself is not the Mac");
@@ -1225,29 +1225,29 @@ mod tests {
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let agent = Actor::Agent { agent_id: "agent-a".into() };
-        apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
-        apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+        apply_command(&*domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
+        apply_command(&*domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        apply_command(&*domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
-        apply_command(&domain, agent.clone(), "question", Command::AskQuestion {
+        apply_command(&*domain, agent.clone(), "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question-a".into(), scope: Scope::Task { task_id: "task-a".into() },
             recipient: Recipient::User, body: "Choose".into(), blocking: true,
             options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }],
             card: CardSpec::derived(CardKind::Provide, "Answer the question"),
         });
-        apply_command(&domain, agent, "withdraw", Command::Withdraw { interaction_id: "question-a".into() });
-        let user = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        apply_command(&*domain, agent, "withdraw", Command::Withdraw { interaction_id: "question-a".into() });
+        let user = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("question-a") && message.recipient_kind == "user")
             .unwrap();
         let push = Push::open(&home).unwrap();
-        deliver_from_runtime(&domain, &home, &push, None, &client, user.clone(), Duration::ZERO).await.unwrap();
-        assert!(domain.store.lock().unwrap().delivery_evidence_page(0).unwrap()
+        deliver_from_runtime(&*domain, &home, &push, None, &client, user.clone(), Duration::ZERO).await.unwrap();
+        assert!(domain.store().lock().unwrap().delivery_evidence_page(0).unwrap()
             .iter().any(|item| item.message_id == user.id && item.state == "discarded"),
             "a card that is gone is never announced");
-        assert!(!domain.store.lock().unwrap().pending_messages().unwrap().iter().any(|message| message.id == user.id));
+        assert!(!domain.store().lock().unwrap().pending_messages().unwrap().iter().any(|message| message.id == user.id));
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -1261,39 +1261,39 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let open = || Arc::new(crate::engine_tests::open(&home).unwrap());
         let domain = open();
-        apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
-        apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+        apply_command(&*domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
+        apply_command(&*domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        apply_command(&*domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
-        let plan = |domain: &DomainRuntime, call: &str, text: &str| {
+        let plan = |domain: &dyn Runtime, call: &str, text: &str| {
             let card = serde_json::from_value(json!({"session_id": "agent-a", "id": call, "kind": "plan", "input": {"plan": text}})).unwrap();
             match crate::domain_holds::post(domain, &card, true).unwrap() {
                 crate::domain_holds::Posted::Held(id) => id,
                 _ => panic!("the plan is held"),
             }
         };
-        let push = |domain: Arc<DomainRuntime>, card: InteractionId| {
+        let push = |domain: Arc<dyn Runtime>, card: InteractionId| {
             let home = home.clone();
             async move {
                 let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
-                let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+                let message = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
                     .find(|message| message.interaction_id.as_deref() == Some(card.0.as_str()) && message.recipient_kind == "user")
                     .unwrap();
-                deliver_from_runtime(&domain, &home, &Push::open(&home).unwrap(), None, &client, message.clone(), Duration::ZERO).await.unwrap();
-                let evidence = domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();
+                deliver_from_runtime(&*domain, &home, &Push::open(&home).unwrap(), None, &client, message.clone(), Duration::ZERO).await.unwrap();
+                let evidence = domain.store().lock().unwrap().delivery_evidence_page(0).unwrap();
                 let item = evidence.iter().find(|item| item.message_id == message.id).unwrap();
                 (item.state.clone(), item.reason.clone())
             }
         };
         let handed = ("handed".to_owned(), None);
 
-        let first = plan(&domain, "call-1", "- [ ] Ship the parser");
+        let first = plan(&*domain, "call-1", "- [ ] Ship the parser");
         assert_eq!(push(domain.clone(), first).await, handed);
         crate::domain_holds::release_call(&*domain, "agent-a", "call-1").unwrap();
-        let again = plan(&domain, "call-2", "- [ ] Ship the parser");
+        let again = plan(&*domain, "call-2", "- [ ] Ship the parser");
         drop(domain);
 
         let domain = open();
@@ -1303,12 +1303,12 @@ mod tests {
             "the card still waits in the inbox");
 
         crate::domain_holds::release_call(&*domain, "agent-a", "call-2").unwrap();
-        let changed = plan(&domain, "call-3", "- [ ] Ship the parser and its tests");
+        let changed = plan(&*domain, "call-3", "- [ ] Ship the parser and its tests");
         assert_eq!(push(domain.clone(), changed.clone()).await, handed, "a plan that changed is a new notice");
 
-        apply_command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
+        apply_command(&*domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: changed, option_id: Hold::REQUEST_CHANGES.into(), inputs: Default::default() });
-        let asked_again = plan(&domain, "call-4", "- [ ] Ship the parser and its tests");
+        let asked_again = plan(&*domain, "call-4", "- [ ] Ship the parser and its tests");
         assert_eq!(push(domain.clone(), asked_again).await, handed, "asked again after an answer: told again");
         drop(domain);
         std::fs::remove_dir_all(home).unwrap();

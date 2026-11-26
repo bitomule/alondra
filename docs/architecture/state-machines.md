@@ -4234,7 +4234,7 @@ machine = "M-LIFE-9"
 [[file]]
 name = "admission.json"
 writer = "crates/engine-admission/src/admission.rs"
-readers = ["crates/engine-ports/src/admission.rs", "crates/daemon-server/src/preflight.rs"]
+readers = ["crates/engine-ports/src/admission.rs", "crates/alondrad/src/preflight.rs"]
 machine = "M-ENGINE-1"
 [[file]]
 name = "apns.json"
@@ -4273,7 +4273,7 @@ machine = "M-SERVER-D1"
 [[file]]
 name = "devices.json"
 writer = "crates/daemon-server/src/auth.rs"
-readers = ["crates/cli-report/src/report/private.rs", "crates/cli/src/service_pair.rs", "crates/daemon-server/src/preflight.rs"]
+readers = ["crates/cli-report/src/report/private.rs", "crates/cli/src/service_pair.rs", "crates/alondrad/src/preflight.rs"]
 offline_writers = ["crates/cli/src/service_setup/recovery.rs"]
 offline_why = "service recovery rewrites it under the home lock while the daemon is stopped"
 machine = "M-SERVER-D1"
@@ -4296,7 +4296,7 @@ machine = "M-CLIENTS-R7"
 [[file]]
 name = "domain-capabilities.json"
 writer = "crates/engine-kernel/src/domain_runtime/capabilities.rs"
-readers = ["crates/daemon-server/src/preflight.rs", "crates/engine-sdk/src/domain_schedule_runner.rs"]
+readers = ["crates/alondrad/src/preflight.rs", "crates/engine-sdk/src/domain_schedule_runner.rs"]
 machine = "M-ENGINE-20"
 [[file]]
 name = "iroh-terminals.json"
@@ -4329,17 +4329,17 @@ machine = "M-PROV-12"
 [[file]]
 name = "options.pending"
 writer = "crates/daemon-engine-model/src/options.rs"
-readers = ["crates/daemon-server/src/preflight.rs"]
+readers = ["crates/alondrad/src/preflight.rs"]
 machine = "M-PROV-12"
 [[file]]
 name = "options.toml"
 writer = ["crates/engine-kernel/src/settings_projection.rs", "crates/engine-admission/src/admission.rs"]
-readers = ["crates/core/src/options.rs", "crates/daemon-server/src/preflight.rs"]
+readers = ["crates/core/src/options.rs", "crates/alondrad/src/preflight.rs"]
 machine = "M-PROV-12"
 [[file]]
 name = "orchestrator.json"
 writer = "crates/engine-orchestrator/src/domain_orchestrator.rs"
-readers = ["crates/daemon-server/src/preflight.rs"]
+readers = ["crates/alondrad/src/preflight.rs"]
 machine = "M-ORCH-1"
 [[file]]
 name = "owner.json"
@@ -4489,7 +4489,7 @@ that task: its test could include a `domain-capabilities.json` of another format
 - **Invalid state/transition and broken invariant**: a binary judged "fit" by preflight that, when it replaces the
   daemon, does not start in the real home folder.
 - **Evidence**:
-  1. `snapshot` copies only the databases in `DATABASES` and two markers (`daemon-server/src/preflight.rs:12-18,
+  1. `snapshot` copies only the databases in `DATABASES` and two markers (`alondrad/src/preflight.rs:12-18,
      60-96`).
   2. The real startup fails with an unreadable `domain-capabilities.json` or one of another format
      (`engine-kernel/src/domain_runtime/capabilities.rs:46-72`, `deny_unknown_fields`, `format == 1`) and with an
@@ -4506,7 +4506,7 @@ that task: its test could include a `domain-capabilities.json` of another format
 - **Expected fix and files**: copy to the snapshot (with the same ownership and mode checks) all the state files the
   startup reads (`domain-capabilities.json`, `devices.json`, `options.toml`/`options.pending`, `config.toml`,
   `service.toml`/`service-recovery.json`, `orchestrator.json`, `admission.json`), or validate their reading in the
-  real home folder read-only. File: `daemon-server/src/preflight.rs`.
+  real home folder read-only. File: `alondrad/src/preflight.rs`.
 
 #### F-STORE-3 · "Retry" of an uncertain orchestrator message older than 24 h discards itself
 **Status**: FIXED in `2fc1e9349` (G3, #520). A retry of an expired orchestrator message is refused with `delivery_expired` before anything changes (`resolve_uncertain_authenticated`). Test: `store-sqlite` `tests::retrying_an_uncertain_orchestrator_message_past_its_24_hours_is_refused_and_discarding_it_works`.

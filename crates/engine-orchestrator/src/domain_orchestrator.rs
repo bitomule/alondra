@@ -1185,16 +1185,23 @@ pub fn executor(domain: Arc<DomainRuntime>, home: &Path) -> Executor {
     Executor { domain, home: home.to_owned(), claude_home: crate::watcher::claude_home() }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Decision { Cancel, Acknowledge, Retry }
+pub use alondra_engine_ports::orchestrator::{Decision, decision_route};
 
-/// `POST /orchestrator/{cancel,acknowledge,retry}`, the user's decision on an execution.
-pub fn decision_route(path: &str) -> Option<Decision> {
-    match path {
-        "/orchestrator/cancel" => Some(Decision::Cancel),
-        "/orchestrator/acknowledge" => Some(Decision::Acknowledge),
-        "/orchestrator/retry" => Some(Decision::Retry),
-        _ => None,
+/// The orchestrator as the server asks it through `OrchestratorApi`.
+pub struct Api;
+
+impl alondra_engine_ports::domain_api::OrchestratorApi for Api {
+    fn status(&self, runtime: Arc<dyn alondra_engine_ports::Runtime>, home: &Path) -> Result<serde_json::Value> {
+        status(&executor(DomainRuntime::shared(runtime), home))
+    }
+
+    fn decide(&self, runtime: Arc<dyn alondra_engine_ports::Runtime>, home: &Path, decision: Decision, body: Option<&serde_json::Value>) -> serde_json::Value {
+        decide(&executor(DomainRuntime::shared(runtime), home), decision, body)
+    }
+
+    fn active_run(&self, home: &Path) -> Result<alondra_engine_ports::orchestrator::ActiveRun> {
+        let runtime = load(home)?;
+        Ok(alondra_engine_ports::orchestrator::ActiveRun { run_id: runtime.active_run.map(|run| run.id), failed: runtime.last_error.is_some() })
     }
 }
 

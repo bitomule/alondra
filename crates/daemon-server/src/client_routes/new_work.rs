@@ -243,7 +243,7 @@ impl Client {
             issue_text,
             attachments: body.attachments,
         };
-        let state = self.domain.state()?;
+        let state = self.domain.state();
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),

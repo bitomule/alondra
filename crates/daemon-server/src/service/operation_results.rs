@@ -157,7 +157,7 @@ impl Service {
             .domain
             .as_ref()
             .context("operation journal requires domain authority")?
-            .state()?
+            .state()
             .data_epoch
             .0
             .clone();
@@ -255,7 +255,7 @@ impl Service {
             "operation journal key binding changed"
         );
         anyhow::ensure!(
-            self.domain.as_ref().unwrap().state()?.data_epoch.0 == epoch,
+            self.domain.as_ref().unwrap().state().data_epoch.0 == epoch,
             "operation journal epoch changed"
         );
         Ok(match result {
@@ -284,7 +284,7 @@ impl Service {
         else {
             return Ok(None);
         };
-        if domain.state()?.data_epoch.0 != epoch {
+        if domain.state().data_epoch.0 != epoch {
             return Ok(None);
         }
         let command_id = request
@@ -324,7 +324,7 @@ impl Service {
             .domain
             .as_ref()
             .context("operation results require the domain store")?;
-        if domain.state()?.data_epoch.0 != request.data_epoch {
+        if domain.state().data_epoch.0 != request.data_epoch {
             return Ok(json!({"status":409,"body":unknown_body(UnknownReason::DataReset)}));
         }
         let binding = self.operation_binding(sender, &device, transport, &request.data_epoch)?;
@@ -352,7 +352,7 @@ impl Service {
             })
         }).await?;
         approved.recheck()?;
-        if domain.state()?.data_epoch.0 != request.data_epoch
+        if domain.state().data_epoch.0 != request.data_epoch
             || self.operation_binding(sender, &device, transport, &request.data_epoch)? != binding
         {
             return Ok(json!({"status":409,"body":unknown_body(UnknownReason::DataReset)}));

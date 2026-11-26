@@ -120,12 +120,9 @@ LAYER_EXCEPTIONS = {
         "crates/daemon-support",
         "crates/provider-codex",
     ],
-    # The server reaches the engine directly until phase 4 puts the application behind ports.
+    # The server reaches the rest of the engine through `DomainApi` once phase 7 moves it there.
     "crates/daemon-server": [
         "crates/daemon-engine",
-        "crates/engine-admission",
-        "crates/engine-orchestrator",
-        "crates/engine-sdk",
     ],
     "crates/daemon-support": [
         "crates/provider-claude",

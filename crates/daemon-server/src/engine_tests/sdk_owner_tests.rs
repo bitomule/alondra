@@ -30,7 +30,7 @@ fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_th
         std::fs::write(&path, br#"{"what":"the server","progress":"2 of 3","detail":"Acknowledgement","since_ms":1794324000000}"#).unwrap();
         let before = slice.domain.read();
         let slots = before.index().slots().clone();
-        let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
+        let client = crate::client_routes::Client::open(slice.domain.clone(), &slice._home, Default::default());
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let read = slice.domain.read();
         for lang in [Lang::En, Lang::Es] {
@@ -80,7 +80,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_th
     assert_eq!(Slice::lifecycle(&*slice.domain).awaits(), Some(&alondra_domain::Await::User("q-name".into())), "the turn waits on its question");
 
     answer(&slice.domain, &"q-name".into(), "short");
-    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the answer goes to the node");
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&*slice.domain), 1, "the answer goes to the node");
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     let prompts = slice.prompts();
@@ -108,9 +108,9 @@ async fn alondras_cleanup_request_reaches_the_sdk_node_as_its_next_input() {
     let pending: Vec<_> = slice.domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
         .filter(|message| message.recipient_kind == "agent" && message.agent_id.as_deref() == Some(agent.0.as_str())).collect();
     assert_eq!(pending.len(), 1, "Alondra asks the node to clean up: {pending:?}");
-    let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
+    let client = crate::client_routes::Client::open(slice.domain.clone(), &slice._home, Default::default());
     let push = crate::push::Push::open(&slice._home).unwrap();
-    crate::domain_delivery::deliver_from_runtime(&slice.domain, &slice._home, &push, None, &client, pending[0].clone(), std::time::Duration::ZERO).await.unwrap();
+    crate::domain_delivery::deliver_from_runtime(&*slice.domain, &slice._home, &push, None, &client, pending[0].clone(), std::time::Duration::ZERO).await.unwrap();
     assert!(slice.domain.store.lock().unwrap().pending_messages().unwrap().iter().all(|message| message.id != pending[0].id), "the message is handed");
     assert_eq!(driver.pending_permits(), 1, "it leaves for the node's host");
     driver.step(&|| false).unwrap();
@@ -137,9 +137,9 @@ async fn an_sdk_node_asked_to_clean_up_is_closed_only_once_it_says_it_did() {
     });
     slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
     let pending = slice.domain.store.lock().unwrap().pending_messages().unwrap().into_iter().find(|message| message.recipient_kind == "agent").unwrap();
-    let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
+    let client = crate::client_routes::Client::open(slice.domain.clone(), &slice._home, Default::default());
     let push = crate::push::Push::open(&slice._home).unwrap();
-    crate::domain_delivery::deliver_from_runtime(&slice.domain, &slice._home, &push, None, &client, pending, std::time::Duration::ZERO).await.unwrap();
+    crate::domain_delivery::deliver_from_runtime(&*slice.domain, &slice._home, &push, None, &client, pending, std::time::Duration::ZERO).await.unwrap();
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Resting, "the turn with the request ended");
@@ -181,7 +181,7 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
     assert_eq!((lifecycle(&*slice.domain).phase(), lifecycle(&*slice.domain).activity()), (alondra_domain::TaskPhase::Delivered, ActivityView::Resting));
     slice.run(&user(), "reply", Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(), targets,
         body: "background-shell".into(), instruction: alondra_domain_model::Instruction::Reply });
-    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the reply is told to the node");
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&*slice.domain), 1, "the reply is told to the node");
     driver.step(&|| false).unwrap();
     until_own_work(&slice, &mut driver);
     let (session, _) = strand_host(&slice, driver);
@@ -218,7 +218,7 @@ fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
     let reply = "Shorter please stall-while-held";
     slice.run(&user(), "reply", Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(), targets,
         body: reply.into(), instruction: alondra_domain_model::Instruction::Reply });
-    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1);
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&*slice.domain), 1);
     until_prompted(&slice, &mut driver, reply, 1);
     assert_eq!(lifecycle(&*slice.domain).activity(), ActivityView::Starting, "Claude holds the reply and starts no turn");
     let shown = |lang| {
@@ -266,8 +266,8 @@ fn press(slice: &Slice, verb: alondra_view_model::action_id::Verb, agent: &Agent
         input: Default::default(),
     };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
-        crate::views::actions::execute_action(&slice.domain, &client, &slice._home, "test-device", request, None, || Ok(())).await.unwrap()
+        let client = crate::client_routes::Client::open(slice.domain.clone(), &slice._home, Default::default());
+        crate::views::actions::execute_action(&*slice.domain, &client, &slice._home, "test-device", request, None, || Ok(())).await.unwrap()
     })
 }
 
@@ -369,8 +369,8 @@ fn cancel_from_turn_end_card(slice: &Slice) -> serde_json::Value {
         input: Default::default(),
     };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
-        crate::views::actions::execute_action(&slice.domain, &client, &slice._home, "test-device", request, None, || Ok(())).await
+        let client = crate::client_routes::Client::open(slice.domain.clone(), &slice._home, Default::default());
+        crate::views::actions::execute_action(&*slice.domain, &client, &slice._home, "test-device", request, None, || Ok(())).await
     }).unwrap_or_else(|error| panic!("the cancellation failed in the store: {error:#}"))
 }
 
@@ -441,7 +441,7 @@ fn shown_context(prompt: &str) -> (Option<u32>, Option<u64>) {
     let slice = Slice::new();
     let mut driver = slice.launch_with(prompt);
     slice.settle(&mut driver);
-    let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
+    let client = crate::client_routes::Client::open(slice.domain.clone(), &slice._home, Default::default());
     let read = slice.domain.read();
     let live = tokio::runtime::Runtime::new().unwrap()
         .block_on(crate::views::live::gather(&client, &read, alondra_view_model::Lang::En, &[], false, false));
@@ -483,8 +483,8 @@ async fn an_actual_codex_cli_asks_enters_native_plan_and_presents_the_result_thr
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let port=listener.local_addr().unwrap().port();
     let journey=slice._home.join("native-journey.json");std::fs::write(&journey,serde_json::to_vec(&serde_json::json!({"task":TASK,"expected_answer":"English."})).unwrap()).unwrap();
     let (_model,model_trace,code_home,selected)=native_model_fixture(&slice,Some((&journey,port)),alondra_engine_doubles::accounts::codex_fixture());
-    let daemon=crate::domain_bootstrap::DomainDaemon::over_shared(&slice._home,Arc::clone(&slice.domain)).unwrap();
-    let outbox_domain=Arc::clone(&slice.domain);let outbox_home=slice._home.to_path_buf();
+    let daemon=crate::domain_bootstrap::DomainDaemon::over_shared(&slice._home,slice.domain.clone()).unwrap();
+    let outbox_domain=slice.domain.clone();let outbox_home=slice._home.to_path_buf();
     let push=Arc::new(crate::push::Push::open(&outbox_home).unwrap());assert!(!push.enabled());
     let outbox_client=daemon.client();let(stop_outbox,outbox_stopped)=tokio::sync::oneshot::channel();
     let outbox=tokio::spawn(async move {tokio::select! {
@@ -494,11 +494,11 @@ async fn an_actual_codex_cli_asks_enters_native_plan_and_presents_the_result_thr
     let auth=Arc::clone(&daemon.auth);let app=crate::domain_bootstrap::router(daemon).layer(axum::middleware::from_fn_with_state(auth,crate::auth::guard));
     let (shutdown,closed)=tokio::sync::oneshot::channel();
     let server=tokio::spawn(async move {axum::serve(listener,app.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(async{let _=closed.await;}).await.unwrap();});
-    let domain=Arc::clone(&slice.domain);let fixture=Arc::new(tokio::sync::Mutex::new(slice));let scope=Arc::clone(&fixture);
+    let domain=slice.domain.clone();let fixture=Arc::new(tokio::sync::Mutex::new(slice));let scope=Arc::clone(&fixture);
     let scenario=tokio::spawn(async move {
         let slice=scope.lock().await;
         let (pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.on_acknowledge(move||pulse.send_modify(|count|*count+=1));
-        let effective=selected.effective.clone().unwrap();let backend=slice.backend.clone();let owner_domain=Arc::clone(&slice.domain);
+        let effective=selected.effective.clone().unwrap();let backend=slice.backend.clone();let owner_domain=slice.domain.clone();
         let native=Launch{task:TASK.into(),name:"Native report journey".into(),directory:slice.worktree.display().to_string(),prompt:"Write a report. Ask which language it should use, prepare a plan for approval, then present the completed report through Alondra.".into(),plugin:slice.plugin.clone(),options:LaunchOptions{provider:Provider::Codex,selection:Some(selected),model:Some(effective.model.model),effort:effective.reasoning_effort,disallowed_tools:vec![]},model:None,account:AccountId::default_account()};
         let driver=alondra_core::clock::spawn_blocking_unwatched(move||start(owner_domain,&backend,native).unwrap()).await.unwrap();slice.domain.add_sdk_owner(Owner::spawn(driver));
         native_business_until(&slice,&mut changed,"language question",&model_trace,|state|state.interactions.contains_key(&InteractionId::from("native-language-decision"))).await;
@@ -553,7 +553,7 @@ fn an_answer_reaches_the_sdk_node_from_the_user_with_its_card() {
         body: "Pick the name".into(), blocking: true, options, card: CardSpec::derived(CardKind::Decide, "Pick the name"),
     });
     slice.answer("q-name", "", Some("Call it Atlas")).unwrap();
-    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the answer goes to the node");
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&*slice.domain), 1, "the answer goes to the node");
     let told = slice.domain.read().state().lifecycle_journal[&TaskId::from(TASK)].iter().rev()
         .find_map(|record| match record {
             LifecycleRecord::Told { text, answers, .. } => Some((text.clone().unwrap_or_default(), answers.clone())),
@@ -639,7 +639,7 @@ async fn an_accepted_pr_that_turns_conflicting_goes_back_to_its_node_with_a_conf
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     accepted_then_conflicting(&slice, &mut driver).await;
-    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the conflicts go to the node");
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&*slice.domain), 1, "the conflicts go to the node");
     for _ in 0..40 {
         if !conflict_prompts(&slice).is_empty() {
             break;
@@ -667,7 +667,7 @@ async fn an_accepted_pr_that_turns_conflicting_after_its_host_died_reaches_a_hos
     drop(driver);
     slice.domain.enable_sdk(slice.backend.clone());
     let mut changed = slice.domain.subscribe();
-    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the conflicts go to the node");
+    assert_eq!(crate::domain_delivery::tell_sdk_nodes(&*slice.domain), 1, "the conflicts go to the node");
     tokio::time::timeout(std::time::Duration::from_secs(20), changed.wait_for(|_| !conflict_prompts(&slice).is_empty())).await
         .expect("a host that resumes the session gets the conflict turn").unwrap();
     assert_eq!(conflict_prompts(&slice).len(), 1, "{:?}", slice.prompts());

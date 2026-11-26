@@ -472,7 +472,7 @@ async fn finish_batch_after_tool_call(
         f.held().await;
         let bearer = f.starts().into_iter().next().unwrap();
         let outcome = crate::domain_runtime::batch_operations::execute(
-            Arc::clone(&f.executor.domain),
+            f.executor.domain.clone(),
             &bearer,
             Some("abcd"),
             kind,

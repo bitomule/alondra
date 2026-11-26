@@ -114,8 +114,8 @@ async fn barrier(
     }
     response
 }
-fn seed(domain: &crate::domain_runtime::DomainRuntime, actor: Actor, id: &str, command: Command) {
-    let state = domain.state().unwrap();
+fn seed(domain: &dyn alondra_engine_ports::Runtime, actor: Actor, id: &str, command: Command) {
+    let state = domain.state();
     domain
         .execute(
             &actor,
@@ -360,7 +360,7 @@ async fn full_stack_fixture_server() {
 
 async fn relay_daemon(
     home: Arc<crate::test_support::Directory>,
-    domain: Arc<crate::domain_runtime::DomainRuntime>,
+    domain: Arc<dyn alondra_engine_ports::Runtime>,
     relay_url: &str,
     epoch: &str,
     action: &str,
@@ -427,7 +427,7 @@ const MAC_AGREEMENT: [u8; 32] = [2u8; 32];
 /// keys come from the fixed seeds above, which the ready line hands to the client.
 fn iroh_service(
     home: &Path,
-    domain: Arc<crate::domain_runtime::DomainRuntime>,
+    domain: Arc<dyn alondra_engine_ports::Runtime>,
 ) -> Arc<crate::service::Service> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let signing = SigningKey::from_slice(&PHONE_SIGNING).unwrap();
@@ -641,7 +641,7 @@ fn stdin_commands() -> (tokio::sync::mpsc::UnboundedReceiver<Value>, std::thread
 /// a restarted daemon is found where the phone last reached it.
 async fn iroh_daemon(
     home: Arc<crate::test_support::Directory>,
-    domain: Arc<crate::domain_runtime::DomainRuntime>,
+    domain: Arc<dyn alondra_engine_ports::Runtime>,
     epoch: &str,
     action: &str,
 ) {

@@ -6,6 +6,7 @@ use alondra_engine_admission::AdmissionOf as _;
 use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use super::*;
+use crate::domain_runtime::DomainRuntime;
 use crate::auth::Auth;
 use crate::domain_bootstrap::DomainDaemon;
 use alondra_domain_model::{
@@ -54,7 +55,7 @@ impl Fixture {
         let key = SigningKey::from_slice(&[31u8; 32]).unwrap();
         let device = auth.pair(&auth.new_pairing_code(), "terminal", &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
         let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
-        let domain = state.domain();
+        let domain = DomainRuntime::shared(state.domain());
         let client = state.client();
         let app = crate::domain_bootstrap::router(state.clone())
             .layer(axum::middleware::from_fn_with_state(state.auth(), crate::auth::guard));

@@ -219,6 +219,18 @@ impl alondra_engine_ports::Runtime for DomainRuntime {
 }
 
 impl DomainRuntime {
+    /// The kernel's runtime behind `runtime`: the daemon runs on no other.
+    pub fn of(runtime: &dyn alondra_engine_ports::Runtime) -> &Self {
+        let any: &dyn std::any::Any = runtime;
+        any.downcast_ref().expect("the daemon runs on the kernel's runtime")
+    }
+
+    /// `of`, keeping the runtime shared.
+    pub fn shared(runtime: Arc<dyn alondra_engine_ports::Runtime>) -> Arc<Self> {
+        let any: Arc<dyn std::any::Any + Send + Sync> = runtime;
+        any.downcast().unwrap_or_else(|_| panic!("the daemon runs on the kernel's runtime"))
+    }
+
     pub fn ports(&self) -> &alondra_engine_ports::Registry {
         &self.ports
     }

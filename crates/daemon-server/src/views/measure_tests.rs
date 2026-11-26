@@ -27,7 +27,7 @@ async fn measure_real_domain_views() {
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     println!("open daemon: {:.1} ms", ms(opened));
     let client = daemon.client();
-    let state = client.domain.state().unwrap();
+    let state = client.domain.state();
     println!("domain: {} tasks, {} agents, {} requests, {} interactions, {} PRs",
         state.tasks.len(), state.agents.len(), state.requests.len(), state.interactions.len(), state.pull_requests.len());
 
@@ -154,7 +154,7 @@ async fn measure_background_per_change() {
     std::fs::set_permissions(home.join("domain.db"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     let client = daemon.client();
-    let state = client.domain.state().unwrap();
+    let state = client.domain.state();
     let index = alondra_domain_model::ReadIndex::build(&state);
     let inbox: Vec<_> = index.queued(&state).map(std::borrow::Cow::into_owned).collect();
     let id_of = |item: &alondra_domain_model::InboxItem| {
@@ -178,7 +178,7 @@ async fn measure_background_per_change() {
     let mut samples: std::collections::BTreeMap<&str, Vec<(f64, f64)>> = Default::default();
     let mut measure = |name: &'static str, cpu: f64, at: Instant| samples.entry(name).or_default().push((ms(at), cpu_ms() - cpu));
     for round in 0..ROUNDS {
-        let state = client.domain.state().unwrap();
+        let state = client.domain.state();
         let envelope = alondra_domain_model::CommandEnvelope {
             protocol_version: alondra_domain_model::PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
@@ -192,7 +192,7 @@ async fn measure_background_per_change() {
         // The live sampler answers the commit on its own thread, and the readers this measures used
         // to walk the whole domain: settle and walk it once, untimed, so each reader starts alike.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        std::hint::black_box(alondra_domain_model::ReadIndex::build(&client.domain.state().unwrap()));
+        std::hint::black_box(alondra_domain_model::ReadIndex::build(&client.domain.state()));
 
         let (cpu, at) = (cpu_ms(), Instant::now());
         let read = client.domain.read();
@@ -211,7 +211,7 @@ async fn measure_background_per_change() {
         }
 
         let (cpu, at) = (cpu_ms(), Instant::now());
-        std::hint::black_box(crate::notices::notices(&client.domain, Lang::Es).unwrap());
+        std::hint::black_box(crate::notices::notices(&*client.domain, Lang::Es).unwrap());
         measure("Mac notices", cpu, at);
 
         let (cpu, at) = (cpu_ms(), Instant::now());

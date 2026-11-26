@@ -92,4 +92,5 @@ pub mod task_context;
 pub use alondra_engine_kernel::untaken;
 pub mod usage_pause;
 pub mod usage_probe;
+pub mod runtime_api;
 pub mod wiring;

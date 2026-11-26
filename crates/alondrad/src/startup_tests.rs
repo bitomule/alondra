@@ -106,6 +106,7 @@ fn the_daemon_implements_every_port() {
     drop(crate::engine::open(&home).unwrap());
     alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
     let runtime = domain_runtime::DomainRuntime::open_unwired_at(&home, &alondra_engine_ports::journal::active_path(&home)).unwrap();
+    crate::wiring::wire_engine(runtime.ports());
     crate::wire(runtime.ports());
     offline_github().wire(runtime.ports());
     let daemon = domain_bootstrap::DomainDaemon::over(&home, runtime).unwrap();
@@ -125,6 +126,7 @@ fn the_ports_run_on_a_runtime_that_is_not_the_kernels() {
     drop(crate::engine::open(&home).unwrap());
     alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
     let runtime = domain_runtime::DomainRuntime::open_unwired_at(&home, &alondra_engine_ports::journal::active_path(&home)).unwrap();
+    crate::wiring::wire_engine(runtime.ports());
     crate::wire(runtime.ports());
     let daemon = domain_bootstrap::DomainDaemon::over(&home, runtime).unwrap();
     let domain = daemon.domain();
@@ -145,7 +147,7 @@ fn the_ports_run_on_a_runtime_that_is_not_the_kernels() {
 #[test]
 fn the_daemons_wiring_alone_implements_every_port() {
     let registry = alondra_engine_ports::Registry::default();
-    domain_bootstrap::wire(&registry);
+    crate::wiring::wire_engine(&registry);
     crate::wire(&registry);
     offline_github().wire(&registry);
     assert_eq!(registry.missing(), Vec::<&str>::new(), "a port the daemon's wiring leaves to nothing");

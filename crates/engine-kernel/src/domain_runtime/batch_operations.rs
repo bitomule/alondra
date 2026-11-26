@@ -107,7 +107,8 @@ impl DomainRuntime {
 
 /// Dropping the HTTP consumer does not cancel an admitted physical operation. Its executor
 /// records the actual outcome, and the batch waits for that executor before changing authority.
-pub async fn execute(domain: Arc<DomainRuntime>, bearer: &str, identity: Option<&str>, kind: &'static str, request: Value, work: impl std::future::Future<Output=Answer> + Send + 'static) -> Answer {
+pub async fn execute(domain: Arc<dyn alondra_engine_ports::Runtime>, bearer: &str, identity: Option<&str>, kind: &'static str, request: Value, work: impl std::future::Future<Output=Answer> + Send + 'static) -> Answer {
+    let domain = DomainRuntime::shared(domain);
     let admission = domain.begin_tool_operation(bearer,identity,kind,&request).map_err(|error| match error {
         StoreError::Domain(error) => error,
         _ => DomainError::new("storage_unavailable","The operation intent could not be recorded"),
@@ -171,7 +172,7 @@ mod tests {
         assert!(!domain.operations_live.lock().unwrap().is_empty());
         release.send(()).unwrap();
         domain.drain_batch_operations("run").await.unwrap();
-        let repeated = execute(Arc::clone(&domain),&token,Some("ab12"),"launch",json!({"task":"task"}),async { panic!("a durable tool call cannot run twice") }).await.unwrap();
+        let repeated = execute(domain.clone(),&token,Some("ab12"),"launch",json!({"task":"task"}),async { panic!("a durable tool call cannot run twice") }).await.unwrap();
         assert_eq!(repeated,json!({"node":"the-actually-started-node"}));
         assert!(domain.confirmed_batch_effects("run",&["launch".into()]).unwrap());
         assert_eq!(effects.load(Ordering::SeqCst),1);
@@ -213,7 +214,7 @@ mod tests {
         let effects = AtomicUsize::new(0);
         let count = Arc::new(effects);
         let observed = Arc::clone(&count);
-        let answer = execute(Arc::clone(&domain),&token,Some("ab12"),"launch",json!({"task":"task"}),async move { observed.fetch_add(1,Ordering::SeqCst); Ok(json!({"node":"never"})) }).await;
+        let answer = execute(domain.clone(),&token,Some("ab12"),"launch",json!({"task":"task"}),async move { observed.fetch_add(1,Ordering::SeqCst); Ok(json!({"node":"never"})) }).await;
         assert_eq!(answer.unwrap_err().code,"storage_unavailable");
         assert_eq!(count.load(Ordering::SeqCst),0);
         assert!(domain.operations_live.lock().unwrap().is_empty());
@@ -228,10 +229,10 @@ mod tests {
         let token = domain.bind_orchestrator("run").unwrap().expose_for_child_environment().to_owned();
         let admission = domain.begin_tool_operation(&token,Some("ab12"),"launch",&json!({"task":"task"})).unwrap();
         drop(admission);
-        let answer = execute(Arc::clone(&domain),&token,Some("ab12"),"launch",json!({"task":"task"}),async { panic!("an uncertain previous effect cannot be replayed") }).await;
+        let answer = execute(domain.clone(),&token,Some("ab12"),"launch",json!({"task":"task"}),async { panic!("an uncertain previous effect cannot be replayed") }).await;
         assert_eq!(answer.unwrap_err().code,"operation_uncertain");
         assert!(!domain.confirmed_batch_effects("run",&["launch".into()]).unwrap());
-        let changed = execute(Arc::clone(&domain),&token,Some("ab12"),"launch",json!({"task":"different"}),async { panic!("a reused identity cannot change its command") }).await;
+        let changed = execute(domain.clone(),&token,Some("ab12"),"launch",json!({"task":"different"}),async { panic!("a reused identity cannot change its command") }).await;
         assert!(changed.is_err());
     }
 
@@ -283,11 +284,11 @@ mod tests {
         std::fs::create_dir_all(&*home).unwrap();
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open_unwired_at(&home,&home.join("domain.db")).unwrap());
         let token = domain.bind_orchestrator("run").unwrap().expose_for_child_environment().to_owned();
-        let refused = execute(Arc::clone(&domain),&token,Some("ab12"),"set_launch_plan",json!({"task":"task"}),async { Err(DomainError::new("conflict","the task or its launch plan changed")) }).await;
+        let refused = execute(domain.clone(),&token,Some("ab12"),"set_launch_plan",json!({"task":"task"}),async { Err(DomainError::new("conflict","the task or its launch plan changed")) }).await;
         assert_eq!(refused.unwrap_err().code,"conflict");
         assert!(domain.confirmed_batch_effects("run",&["set_launch_plan".into()]).unwrap(), "a refusal changed nothing");
         assert!(domain.unconfirmed_operations("run").is_empty());
-        let lost = execute(Arc::clone(&domain),&token,Some("cd34"),"send",json!({"node":"node"}),async { Err(DomainError::new("operation_uncertain","its executor stopped")) }).await;
+        let lost = execute(domain.clone(),&token,Some("cd34"),"send",json!({"node":"node"}),async { Err(DomainError::new("operation_uncertain","its executor stopped")) }).await;
         assert_eq!(lost.unwrap_err().code,"operation_uncertain");
         assert!(!domain.confirmed_batch_effects("run",&["set_launch_plan".into(),"send".into()]).unwrap());
         assert_eq!(domain.unconfirmed_operations("run"),["send:uncertain(operation_uncertain)"]);

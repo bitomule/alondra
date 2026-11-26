@@ -27,12 +27,10 @@ impl Client {
     /// The states the task entered, oldest first, each with the time of the commit that moved it.
     pub(super) fn task_history(&self, id: &str) -> Response {
         let task = TaskId(id.to_owned());
-        match self.domain.state() {
-            Ok(state) if state.tasks.contains_key(&task) => {}
-            Ok(_) => return Reply::error(DomainError::new("not_found", "task does not exist")).into_response(),
-            Err(_) => return storage(),
+        if !self.domain.state().tasks.contains_key(&task) {
+            return Reply::error(DomainError::new("not_found", "task does not exist")).into_response();
         }
-        match self.domain.store.lock_or_exit("the domain store").task_history(&task) {
+        match self.domain.store().lock_or_exit("the domain store").task_history(&task) {
             Ok(history) => Json(json!({"brief": null, "history": history})).into_response(),
             Err(_) => storage(),
         }
@@ -48,13 +46,13 @@ impl Client {
             return Ok(Reply::error(DomainError::new("invalid_input", "a reason has words and fits in 4 KiB")));
         }
         let task = TaskId(id.to_owned());
-        let Some(cancelled) = self.domain.state()?.tasks.get(&task).map(alondra_domain_model::Task::cancelled) else {
+        let Some(cancelled) = self.domain.state().tasks.get(&task).map(alondra_domain_model::Task::cancelled) else {
             return Ok(Reply::error(DomainError::new("not_found", "task does not exist")));
         };
         if !cancelled {
             return Ok(Reply::error(DomainError::new("task_not_cancelled", "only a cancelled task has a reason")));
         }
-        self.domain.store.lock_or_exit("the domain store").set_cancel_reason(&task, reason)?;
+        self.domain.store().lock_or_exit("the domain store").set_cancel_reason(&task, reason)?;
         Ok(Reply::ok(json!({})))
     }
 

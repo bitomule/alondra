@@ -30,7 +30,7 @@ impl Client {
             return Ok(Reply::error(DomainError::new("invalid_input", "invalid close request")));
         }
         let agent = AgentId(agent_id.to_owned());
-        let Some(known) = self.domain.state()?.agents.get(&agent).cloned() else {
+        let Some(known) = self.domain.state().agents.get(&agent).cloned() else {
             return Ok(Reply::error(DomainError::new("not_found", "agent does not exist")));
         };
         if self.domain.read().index().node(&agent).is_some_and(|node| node.through_sdk) {

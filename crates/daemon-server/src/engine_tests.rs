@@ -70,6 +70,7 @@ pub(crate) fn wired() {
 pub(crate) fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
     alondra_domain_model::invariants::check_after_every_command();
     let runtime = engine_assembly::open_engine_at(home, database, files)?;
+    alondra_engine_orchestrator::wire(runtime.ports());
     alondra_engine_doubles::machine::wire(runtime.ports(), alondra_engine_ports::watcher::claude_home);
     alondra_engine_doubles::github::wire(runtime.ports());
     #[cfg(feature = "real-hosts")]
@@ -78,6 +79,27 @@ pub(crate) fn open_at(home: &std::path::Path, database: &std::path::Path, files:
     alondra_engine_doubles::agent_host::wire(runtime.ports());
     alondra_engine_admission::for_tests(&runtime);
     Ok(runtime)
+}
+
+/// The kernel's runtime behind the server's `dyn Runtime`, for a test that drives what only the
+/// kernel offers: capabilities, fixture commands, its lanes of work.
+pub(crate) trait Kernel {
+    fn kernel(&self) -> &alondra_engine_kernel::domain_runtime::DomainRuntime;
+}
+
+impl Kernel for dyn alondra_engine_ports::Runtime {
+    fn kernel(&self) -> &alondra_engine_kernel::domain_runtime::DomainRuntime {
+        alondra_engine_kernel::domain_runtime::DomainRuntime::of(self)
+    }
+}
+
+impl crate::domain_bootstrap::DomainDaemon {
+    /// The daemon over the engine as a test opens it on its thread, on `files`.
+    pub(crate) fn open(home: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<std::sync::Arc<Self>> {
+        crate::domain_bootstrap::require_database(home)?;
+        wired();
+        Self::over(home, alondra_daemon_engine::wiring::open_on(home, &alondra_engine_ports::journal::active_path(home), files)?)
+    }
 }
 
 /// `open_at` at the home's active database; the engine's fixtures this thread opens open the same.

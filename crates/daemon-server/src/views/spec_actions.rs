@@ -82,7 +82,7 @@ fn field_of(edit: &SpecEdit) -> &'static str {
 }
 
 pub(crate) fn execute(
-    domain: &crate::domain_runtime::DomainRuntime, state: &DomainState, action: &ActionId, request: &ActionRequest, user_id: &str, lang: Lang,
+    domain: &dyn alondra_engine_ports::Runtime, state: &DomainState, action: &ActionId, request: &ActionRequest, user_id: &str, lang: Lang,
     authorize: &(dyn Fn() -> anyhow::Result<()> + Sync),
 ) -> anyhow::Result<Value> {
     let task_id = TaskId(action.subject.clone());

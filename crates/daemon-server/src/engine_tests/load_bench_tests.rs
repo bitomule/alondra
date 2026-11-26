@@ -1,5 +1,6 @@
 //! Opt-in measurements of signed card requests and the live store reads behind them, against a
 //! domain `store-sqlite`'s `load_bench` seeds.
+use crate::engine_tests::Kernel as _;
 use alondra_store_sqlite::AsSqlite as _;
 use alondra_store_sqlite::load_bench::*;
 
@@ -161,9 +162,9 @@ async fn trace_card_live_store_reads() {
     let client = daemon.client();
     let read = client.domain.read();
     let before = process_resources();
-    client.domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
+    client.domain.kernel().reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
     let live = crate::views::live::gather(&client, &read, Lang::En, &["card:info-0".into()], true, false).await;
-    let trace = client.domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
+    let trace = client.domain.kernel().reads.lock().unwrap().sqlite_mut().end_live_read_trace();
     let after = process_resources();
     let mut getters = std::collections::BTreeMap::<&str, (usize, usize, usize, usize, f64)>::new();
     for read in &trace {

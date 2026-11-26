@@ -111,7 +111,8 @@ pub async fn catch_up_task(domain: &DomainRuntime, github: &GitHub, task_id: &Ta
 
 /// Branches and the PRs the node opened are read from `github`; registered PRs use the caller's
 /// source of current facts.
-pub async fn catch_up_task_using(domain: &DomainRuntime, github: &GitHub, source: &impl PrObserver, task_id: &TaskId, is_final: bool) -> Result<()> {
+pub async fn catch_up_task_using(domain: &dyn alondra_engine_ports::Runtime, github: &GitHub, source: &impl PrObserver, task_id: &TaskId, is_final: bool) -> Result<()> {
+    let domain = DomainRuntime::of(domain);
     let state = domain.state()?;
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
     if is_final {
@@ -383,7 +384,8 @@ impl ObservationFailures {
 }
 
 /// Records what GitHub reported of one PR, outside the watcher's round.
-pub fn observe(domain: &DomainRuntime, pr_id: &PrId, facts: &PrFacts) -> Result<()> {
+pub fn observe(domain: &dyn alondra_engine_ports::Runtime, pr_id: &PrId, facts: &PrFacts) -> Result<()> {
+    let domain = DomainRuntime::of(domain);
     let state = domain.state()?;
     let Some(pr) = state.pull_requests.get(pr_id) else { return Ok(()) };
     apply(domain, &state, pr, facts)

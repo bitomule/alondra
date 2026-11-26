@@ -112,7 +112,11 @@ binary, links the real client. Its entry on `daemon-support` is gone too (phase 
 used (device sign-in in `auth`, pushes, updates, relaunch, the scoped reads, …) live in the server;
 the ones it shares with the engine went lower, `blocking_work` and `uuid` to `foundation` and the
 file and network helpers (`approval_lease`, `uploads`, `service_files`, `watcher`, the cutover
-marker, …) to `engine-ports`, which `daemon-support` re-exports for the engine. Phase 3b moved `agent-runtime`
+marker, …) to `engine-ports`, which `daemon-support` re-exports for the engine.
+Phase 7c took three more away: the server reaches `engine-sdk`, `engine-admission` and
+`engine-orchestrator` only through the port `DomainApi` of `engine-ports`, whose parts each of
+those pieces gives the registry in its `wire`, and the root, not the server, opens the daemon and
+runs `--preflight`. Phase 3b moved `agent-runtime`
 behind the `AgentHost` port of `engine-ports`: no provider or piece of the engine depends on it,
 only the roots and the tests that start real hosts.
 
