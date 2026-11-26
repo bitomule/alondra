@@ -144,3 +144,41 @@ fn a_button_of_the_reader_that_opens_a_screen_leaves_the_reader_for_it() {
     assert!(app.reader.is_none(), "the editor the button opens is on screen, not under the document it left");
     assert_eq!(app.view_navigation.last().map(String::as_str), Some("task_specs:t-1"));
 }
+
+fn specs_menu(key: &str, label: &str) -> views::Action {
+    let views::Item::Card(card) = serde_json::from_value::<views::Item>(super::parity::view_fixture("card-question.json")["sections"][0]["items"][0].clone()).unwrap() else { panic!() };
+    let mut action = views::Action::from(card.actions[0].clone());
+    action.id = format!("menu-{key}");
+    action.label = label.into();
+    action.key = Some(key.into());
+    action.presentation = views::Presentation::Menu;
+    action.option_id = None;
+    action.enabled = true;
+    let (style, input) = (action.style.clone(), action.input.clone());
+    action.options = ["a", "b"]
+        .map(|id| views::ActionOption { id: id.into(), label: id.into(), description: None, style: style.clone(), input: input.clone(), key: None })
+        .to_vec();
+    action
+}
+
+#[test]
+fn the_specs_screen_shows_a_menu_folded_under_its_own_key() {
+    let mut view = super::parity::view_fixture("card-question.json");
+    view["view"] = json!("task_specs");
+    view["key"] = json!("task_specs:t-1");
+    let mut view: views::View = serde_json::from_value(view).unwrap();
+    let level = specs_menu("Shift+N", "Cambiar el nivel");
+    let remove = specs_menu("x", "Quitar del plan");
+    view.sections = vec![views::Section { id: "actions".into(), title: None, count: None, collapsed: false, items: vec![views::Item::Actions(views::ActionBar { actions: vec![level, remove] })], card_ids: vec![], card_waits: vec![], more: None, style: None, actions: vec![] }];
+    let mut app = card_screen(view, crate::i18n::Lang::Es);
+    app.focus = Pane::Detail;
+    let keys = super::draw::footer_keys(&app);
+    let shown: Vec<String> = keys.iter().map(|(key, label)| format!("{key} {label}")).collect();
+    assert!(shown.iter().any(|entry| entry.contains("Shift+N Cambiar el nivel")), "{shown:?}");
+    assert!(shown.iter().any(|entry| entry.contains("x Quitar del plan")), "{shown:?}");
+    assert!(keys.iter().all(|(key, _)| !key.chars().all(|c| c.is_ascii_digit())), "{shown:?}");
+    press(&mut app, '1');
+    assert!(app.posted.borrow().is_empty() && app.card_menu.is_none());
+    press(&mut app, 'x');
+    assert_eq!(app.card_menu.as_ref().map(|menu| menu.entries.len()), Some(2));
+}
