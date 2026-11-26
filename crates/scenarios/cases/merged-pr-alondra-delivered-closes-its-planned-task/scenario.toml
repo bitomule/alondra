@@ -1,4 +1,5 @@
 name = "a pull request Alondra delivered for a node that kept stopping closes its planned task once merged, when the node's turn after the cleanup request ends at rest, across a restart of the daemon, and the task waiting on it starts"
+fixes = "#695"
 max_virtual = "2h"
 
 [[step]]
