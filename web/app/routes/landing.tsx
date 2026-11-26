@@ -75,9 +75,9 @@ export default function Landing() {
 
     <section className="feature feature-flip wrap" aria-labelledby="review-title">
       <div className="feature-text">
-        <h2 id="review-title">Review the diff where you are.</h2>
-        <p>A pull request card opens its changes, file by file, in the iPhone and Mac apps. Tap or click a line to comment on it, and your comments go back to the agent when you request changes. The card shows how the checks went.</p>
-        <p>In the terminal the diff opens in tuicr, which Homebrew installs with Alondra. When you accept a delivery, Alondra merges the pull request and removes the task’s worktree.</p>
+        <h2 id="review-title">Review a pull request where you are.</h2>
+        <p>A pull request card says what the task did and how its checks went, in the iPhone and Mac apps and in the terminal. Request changes and your note goes back to the agent.</p>
+        <p>When you accept a delivery, Alondra merges the pull request and removes the task’s worktree.</p>
       </div>
       <Capture name="mac-review" className="feature-mac" alt="The Mac app showing the changes of a pull request: two added files, each with its lines marked as added."/>
     </section>

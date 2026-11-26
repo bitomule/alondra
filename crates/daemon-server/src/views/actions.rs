@@ -3520,8 +3520,6 @@ for line in sys.stdin:
         fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
             Box::pin(async { Err("not used".into()) })
         }
-        fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> crate::node_close::Answer<'a, Result<alondra_engine_ports::github::Marks, String>> { Box::pin(async { Err("not used".into()) }) }
-        fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> crate::node_close::Answer<'a, Result<(), String>> { Box::pin(async { Err("not used".into()) }) }
     }
 
     #[tokio::test]
@@ -3857,8 +3855,6 @@ for line in sys.stdin:
         fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
             Box::pin(async move { self.3.ok_or_else(|| "GitHub did not answer".to_owned()) })
         }
-        fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> crate::node_close::Answer<'a, Result<alondra_engine_ports::github::Marks, String>> { Box::pin(async { Err("not used".into()) }) }
-        fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> crate::node_close::Answer<'a, Result<(), String>> { Box::pin(async { Err("not used".into()) }) }
     }
 
     const FIRST: &str = "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10";
@@ -4189,8 +4185,6 @@ for line in sys.stdin:
         fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
             Box::pin(async { Ok(alondra_domain_rules::PrState::Open) })
         }
-        fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> crate::node_close::Answer<'a, Result<alondra_engine_ports::github::Marks, String>> { Box::pin(async { Err("not used".into()) }) }
-        fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> crate::node_close::Answer<'a, Result<(), String>> { Box::pin(async { Err("not used".into()) }) }
     }
 
     /// "Close without merging" acts on GitHub only on a pull request a read confirmed. One nobody

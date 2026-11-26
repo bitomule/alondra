@@ -65,7 +65,7 @@
                 "key": "card:d1",
                 "kind": "view"
               },
-              "meta": "demo/app · csv-export → main · 1 archivo · +1 −0 · 1 de 1 correctos",
+              "meta": "demo/app · csv-export → main · 1 de 1 correctos",
               "more": [
                 {
                   "attachments": false,
@@ -145,22 +145,6 @@
               "type": "card"
             }
           ]
-        },
-        {
-          "collapsed": false,
-          "id": "diff",
-          "items": [
-            {
-              "commentable": true,
-              "digest": "0000000000000000000000000000000000000001",
-              "fetch": "/pull-requests/github.com%2Fdemo%2Fapp%237/diff",
-              "kind": "diff",
-              "size": 0,
-              "title": "Diferencias",
-              "type": "content_ref"
-            }
-          ],
-          "title": "Diferencias"
         },
         {
           "collapsed": false,

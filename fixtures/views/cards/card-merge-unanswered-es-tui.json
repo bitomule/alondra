@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "tui",
-  "version": "vb18e87bc8afda26f",
+  "version": "v70a991d89b7ae4b3",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -112,52 +112,6 @@
             },
             "resolves_card": true
           },
-          "more": [
-            {
-              "id": "close_unmerged:d@9",
-              "label": "Cerrar sin hacer merge",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "¿Cerrar la PR #1 sin hacer merge?",
-                "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.",
-                "button": "Cerrar la PR"
-              },
-              "enabled": true,
-              "stamp": "Cerrando…",
-              "key": "k",
-              "resolves_card": true
-            },
-            {
-              "id": "",
-              "label": "Revisar copia local",
-              "style": "plain",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "key": "l",
-              "link": {
-                "kind": "local",
-                "local": {
-                  "kind": "review_clone",
-                  "repo": "owner/repo",
-                  "branch": "head1",
-                  "pr": 1,
-                  "pr_id": "pr"
-                }
-              },
-              "resolves_card": false
-            }
-          ],
           "link": {
             "kind": "view",
             "key": "card:d"
@@ -210,24 +164,28 @@
               "stamp": "Haciendo merge…",
               "key": "1",
               "resolves_card": true
+            },
+            {
+              "id": "close_unmerged:d@9",
+              "label": "Cerrar sin hacer merge",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Cerrar la PR #1 sin hacer merge?",
+                "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.",
+                "button": "Cerrar la PR"
+              },
+              "enabled": true,
+              "stamp": "Cerrando…",
+              "key": "k",
+              "resolves_card": true
             }
           ]
-        }
-      ]
-    },
-    {
-      "id": "diff",
-      "title": "Diferencias",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "content_ref",
-          "kind": "diff",
-          "title": "Diferencias",
-          "size": 0,
-          "digest": "head1",
-          "fetch": "/pull-requests/pr/diff",
-          "commentable": true
         }
       ]
     },

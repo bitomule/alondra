@@ -152,7 +152,7 @@ import Testing
         #expect(deliveryCard.title == "Review the beta candidate")
     }
 
-    @Test func pullRequestOpensDiffAndItsCardRequestsChangesInItsField() async throws {
+    @Test func pullRequestCardRequestsChangesInItsField() async throws {
         let client = ViewsClient.demo()
         let prID = "github.com/example/repo#12"
         guard case let .document(pr) = try await client.load(.pullRequest(prID), nil) else {
@@ -160,18 +160,11 @@ import Testing
             return
         }
         let items = pr.sections.flatMap(\.items)
-        let diff = try #require(items.compactMap { item -> ContentRef? in
-            if case let .contentRef(value) = item, value.kind == .diff { return value }
-            return nil
-        }.first)
-        #expect(diff.fetch == "/pull-requests/github.com%2Fexample%2Frepo%2312/diff")
-        #expect(try await client.fetchContent(diff).contains("diff --git"))
-        #expect(try await client.fetchDiff(diff).text.contains("diff --git"))
         let actions = items.flatMap { item -> [AlondraContract.Action] in
             if case let .actions(bar) = item { return bar.actions }
             return []
         }
-        #expect(actions.contains { $0.label == "Request changes" && $0.comments?.kind == .diffLines })
+        #expect(actions.contains { $0.label == "Request changes" })
 
         guard case let .document(prCardView) = try await client.load(.card(prID), nil),
               case let .card(prCard) = try #require(prCardView.sections.flatMap(\.items).first) else {
@@ -180,7 +173,6 @@ import Testing
         }
         let review = try #require(prCard.reply)
         #expect(review.label == "Request changes")
-        #expect(review.comments?.kind == .diffLines)
         #expect(review.enabled)
         #expect(review.link == .view(key: "pull_request:\(prID)"))
     }

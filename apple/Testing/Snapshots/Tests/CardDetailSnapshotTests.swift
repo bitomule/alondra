@@ -242,6 +242,20 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store)
     }
 
+    /// A daemon from before the diff was dropped still sends its section: the detail leaves it out.
+    func test_pullRequestFromAnOlderDaemonLeavesItsChangesOut() throws {
+        let card = try Fixtures.document("card-pr") { object in
+            var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+            sections.removeAll { $0["id"] as? String == "diff" }
+            sections.insert(["id": "diff", "title": "Changes", "collapsed": false, "items": [[
+                "type": "content_ref", "kind": "diff", "title": "Changes", "size": 120, "digest": "abcdef12",
+                "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff", "commentable": false,
+            ]]], at: 1)
+            object["sections"] = sections
+        }
+        assertDetail(ScreenStores.cardDetail(card))
+    }
+
     func test_pullRequestReadyToMerge_es() throws {
         let store = ScreenStores.cardDetail(try Fixtures.spanishCard(Fixtures.pullRequestID))
         assertDetail(store, language: .spanish)

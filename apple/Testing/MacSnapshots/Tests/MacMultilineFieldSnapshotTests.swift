@@ -8,7 +8,7 @@ import SwiftUI
 import XCTest
 
 /// The Mac's multi-line fields with a minimum height: an action's written answer, a form's
-/// multiline and lines fields, the diff line comment and the pairing invitation's field. Each keeps
+/// multiline and lines fields and the pairing invitation's field. Each keeps
 /// its minimum lines inside a bezel, whatever line height SwiftUI cached for another font.
 @MainActor
 final class MacMultilineFieldSnapshotTests: XCTestCase {
@@ -63,12 +63,6 @@ final class MacMultilineFieldSnapshotTests: XCTestCase {
         let store = try actionStore(Self.send)
         let form = try ContractCodec.decode(WireForm.self, from: Data(Self.form.utf8))
         assertField(height: 340) { ActionInputView(store: store, form: form) }
-    }
-
-    func test_lineComment() throws {
-        let diff = "diff --git a/App.swift b/App.swift\n--- a/App.swift\n+++ b/App.swift\n@@ -1,1 +1,1 @@\n-let title = \"Hi\"\n+let title = \"Hello\"\n"
-        let line = try XCTUnwrap(UnifiedDiff.parse(diff).flatMap(\.lines).first { $0.kind == .added })
-        assertField(height: 300) { LineCommentSheet(line: line, initial: "", text: .constant(""), onSave: { _ in }) }
     }
 
     func test_invitationField_emptyAndWritten() {

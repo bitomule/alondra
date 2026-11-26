@@ -326,12 +326,11 @@ final class TriageCardFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testRequestingChangesOnAPullRequestWithNothingWrittenOpensItsDiffToComment() async throws {
+    func testRequestingChangesOnAPullRequestWithNothingWrittenOpensThePullRequest() async throws {
         let feed = FeedStub()
         let store = try await store(Fixtures.pullRequestID, feed: feed, loaded: try Fixtures.card(Fixtures.pullRequestID))
         let changes = try XCTUnwrap(store.state.replyAction)
         XCTAssertEqual(changes.id?.hasPrefix("changes:"), true, "the PR card's field requests changes")
-        XCTAssertEqual(changes.comments?.kind, .diffLines)
 
         await store.send(.replySent(changes))
         await store.receive(\.opened, .pullRequest("github.com/example/repo#12"))

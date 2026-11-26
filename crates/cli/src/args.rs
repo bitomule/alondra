@@ -1040,8 +1040,8 @@ mod api_tests {
         let Some(Cmd::Doctor { fix, yes, only, .. }) = parsed(&["doctor", "--fix", "--yes", "--only", "service,plugin"]).command else { panic!() };
         assert!(fix && yes);
         assert_eq!(only, ["service", "plugin"]);
-        let Some(Cmd::Doctor { skip, .. }) = parsed(&["doctor", "--skip", "validate", "--skip", "tuicr"]).command else { panic!() };
-        assert_eq!(skip, ["validate", "tuicr"]);
+        let Some(Cmd::Doctor { skip, .. }) = parsed(&["doctor", "--skip", "validate", "--skip", "relay"]).command else { panic!() };
+        assert_eq!(skip, ["validate", "relay"]);
         assert_eq!(refused(&["doctor", "--yes"]), ErrorKind::MissingRequiredArgument, "--yes only with --fix");
         assert_eq!(refused(&["doctor", "--only", "service", "--skip", "plugin"]), ErrorKind::ArgumentConflict);
         assert_eq!(refused(&["doctor", "--only", "everything"]), ErrorKind::InvalidValue);

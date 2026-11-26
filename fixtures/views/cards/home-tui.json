@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v962ceb1dda5884f2",
+  "version": "va93806cf01a0b642",
   "cursor": "cursor-1",
   "status": {
     "version": "v2449cfcaedc9d3ba",
@@ -195,12 +195,6 @@
           "title_is_separate": true,
           "why": "Two checks passed; one is still running, and the branch is up to date with main.",
           "meta": "Alondra · Demo Garden",
-          "content_row": {
-            "kind": "diff",
-            "icon": "pull_request",
-            "label": "Changes",
-            "summary": "4 files · +120 −30"
-          },
           "link": {
             "kind": "view",
             "key": "card:hf-weekly-2026-09-30"

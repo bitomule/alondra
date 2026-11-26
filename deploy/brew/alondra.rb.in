@@ -6,7 +6,6 @@ class Alondra < Formula
 
   depends_on macos: :tahoe
   depends_on arch: :arm64
-  depends_on "tuicr"
 
   # Signed bytes must survive Homebrew cleaning unchanged.
   skip_clean "bin/alondra", "bin/alondrad", "bin/alondrad-launcher", "libexec/alondra/sdk/alondra-host", "libexec/alondra/codex/alondra-codex-host",

@@ -15,10 +15,6 @@ struct MacSectionView: View {
     var onContent: (ContentRef) -> Void
     var onContentRow: () -> Void
     var onFilledForm: (AlondraContract.Action, RequestedForm, [String: JSONValue]) -> Void = { _, _, _ in }
-    var diff: MacDiff?
-    var marks: [String: FileViewed]?
-    var diffFailed: String?
-    var onDiffNeeded: (ContentRef) -> Void = { _ in }
     var opened = false
     var page: SectionPage?
     var onToggle: () -> Void = {}
@@ -32,7 +28,7 @@ struct MacSectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let title = section.title, section.id != "diff" {
+            if let title = section.title {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     if section.collapsed && section.count != 0 {
                         Button {
@@ -74,8 +70,6 @@ struct MacSectionView: View {
                         MacActionBar(bar: bar, onAction: onAction)
                     } else if section.id == "documents", case let .facts(facts) = item {
                         MacDocumentLinks(facts: facts, onLink: onLink)
-                    } else if case let .contentRef(reference) = item, reference.kind == .diff {
-                        diffSummary(reference)
                     } else {
                         ViewItemRenderer(item: item, onAction: onAction, onLink: onLink, onForm: onForm, onContent: onContent)
                     }
@@ -89,17 +83,6 @@ struct MacSectionView: View {
                 }
             }
         }
-    }
-
-    private func diffSummary(_ reference: ContentRef) -> some View {
-        let identity = reference.digest ?? reference.fetch
-        let current = diff.flatMap { $0.digest == identity ? $0.files : nil }
-        return DiffSummaryCard(summary: current.map(DiffSummary.init),
-                               viewed: current.flatMap { DiffSummary.viewedCount($0, marks: marks) },
-                               failed: diffFailed == identity, shortcut: KeyboardShortcut("d", modifiers: .command),
-                               open: { onContent(reference) }, retry: { onDiffNeeded(reference) })
-            .frame(maxWidth: 560, alignment: .leading)
-            .task(id: identity) { onDiffNeeded(reference) }
     }
 
     /// A card is identified by its id, so a card that arrives above it in a refresh never takes over

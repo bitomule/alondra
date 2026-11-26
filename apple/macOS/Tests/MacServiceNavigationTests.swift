@@ -522,18 +522,6 @@ struct MacAnsweringTests {
     }
 
     @Test
-    func requestChangesOnAPRCarriesTheDiffComments() async throws {
-        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
-        store.dependencies.viewsClient.perform = { _ in try response("applied") }
-        await store.send(.diffCommentsChanged(["f.swift:3": ActionComment(anchor: "f.swift:3", text: "Rename it")]))
-        let changes = try decodeAction(#"{"id":"changes:a@1","label":"Request changes","style":"secondary","role":"neutral","presentation":"button","input":{"kind":"text","required":true,"multiline":true},"attachments":true,"comments":{"kind":"diff_lines"},"enabled":true,"resolves_card":true}"#)
-        await store.send(.sendReply(changes, text: ""))
-        await store.skipReceivedActions()
-        #expect(store.state.actionPresented)
-        #expect(store.state.actionFeature.comments.map(\.text) == ["Rename it"])
-    }
-
-    @Test
     func aReplyTheServerSaysAnswersTheQuestionTakesTheCardOutAtOnce() async throws {
         let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
         store.dependencies.viewsClient.perform = { _ in try response("applied") }
@@ -874,74 +862,33 @@ struct MacFormTests {
 
 @MainActor
 struct MacContentTests {
-    private func content(_ digest: String) throws -> ContentRef {
-        let json = #"{"kind":"diff","title":"Changes","size":10,"digest":"\#(digest)","fetch":"content/\#(digest)","commentable":true}"#
+    private func content(_ digest: String, kind: String = "file") throws -> ContentRef {
+        let json = #"{"kind":"\#(kind)","title":"Changes","size":10,"digest":"\#(digest)","fetch":"/files/\#(digest)","commentable":false}"#
         return try JSONDecoder().decode(ContentRef.self, from: Data(json.utf8))
     }
 
     @Test
     func openingContentLoadsItsBodyIntoTheSheet() async throws {
-        var state = MacPresentationFeature.State()
-        state.diffComments = ["a": ActionComment(anchor: "a", text: "old")]
-        let store = TestStore(initialState: state) { MacPresentationFeature() } withDependencies: {
-            $0.viewsClient.fetchDiff = { _ in FetchedDiff(text: Self.diff, truncated: true) }
+        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
+            $0.viewsClient.fetchContent = { _ in "let added = true" }
         }
         store.exhaustivity = .off
-        let ref = try content("d1")
 
-        await store.send(.contentRequested(ref))
+        await store.send(.contentRequested(try content("d1")))
         #expect(store.state.contentPresented)
         #expect(store.state.contentLoading)
-        #expect(store.state.diffComments.isEmpty, "comments belong to the diff they were written on")
         await store.skipReceivedActions()
-        #expect(store.state.contentShown == .diff(UnifiedDiff.parse(Self.diff), truncated: true))
-        #expect(store.state.contentIsDiff)
+        #expect(store.state.contentShown == .text("let added = true"))
         #expect(!store.state.contentLoading)
     }
 
-    nonisolated static let diff = "diff --git a/a.swift b/a.swift\n--- a/a.swift\n+++ b/a.swift\n@@ -1 +1 @@\n-old\n+added\n"
-
     @Test
-    func theSummaryFetchesTheDiffOnceAndTheViewerOpensItAtOnce() async throws {
-        let fetches = LockIsolated(0)
-        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
-            $0.viewsClient.fetchDiff = { _ in
-                fetches.withValue { $0 += 1 }
-                return FetchedDiff(text: Self.diff)
-            }
-        }
-        store.exhaustivity = .off
-        let ref = try content("d1")
+    func anOlderDaemonsPullRequestDiffOpensNothing() async throws {
+        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
+        let diff = try content("d1", kind: "diff")
 
-        await store.send(.diffNeeded(ref))
-        await store.skipReceivedActions()
-        #expect(store.state.diff?.files == UnifiedDiff.parse(Self.diff))
-        await store.send(.diffNeeded(ref))
-        await store.send(.contentRequested(ref))
-        #expect(!store.state.contentLoading, "the viewer opens on the diff the summary already read")
-        #expect(fetches.value == 1)
-    }
-
-    @Test
-    func aSummaryThatCouldNotLoadTriesAgain() async throws {
-        struct Offline: Error {}
-        let attempts = LockIsolated(0)
-        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
-            $0.viewsClient.fetchDiff = { _ in
-                if attempts.withValue({ $0 += 1; return $0 }) == 1 { throw Offline() }
-                return FetchedDiff(text: Self.diff)
-            }
-        }
-        store.exhaustivity = .off
-        let ref = try content("d1")
-
-        await store.send(.diffNeeded(ref))
-        await store.skipReceivedActions()
-        #expect(store.state.diffFailed == "d1")
-        await store.send(.diffNeeded(ref))
-        await store.skipReceivedActions()
-        #expect(store.state.diffFailed == nil)
-        #expect(store.state.diff?.digest == "d1")
+        await store.send(.contentRequested(diff))
+        #expect(!store.state.contentPresented)
     }
 
     @Test
@@ -974,23 +921,10 @@ struct MacContentTests {
     }
 
     @Test
-    func reopeningTheSameDiffKeepsItsComments() async throws {
-        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
-            $0.viewsClient.fetchDiff = { _ in FetchedDiff(text: Self.diff) }
-        }
-        store.exhaustivity = .off
-        let ref = try content("d1")
-        await store.send(.contentRequested(ref))
-        await store.send(.diffCommentsChanged(["a": ActionComment(anchor: "a", text: "keep")]))
-        await store.send(.contentRequested(ref))
-        #expect(store.state.diffComments["a"]?.text == "keep")
-    }
-
-    @Test
     func aContentFailureIsShownInTheSheet() async throws {
         struct Offline: Error {}
         let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
-            $0.viewsClient.fetchDiff = { _ in throw Offline() }
+            $0.viewsClient.fetchContent = { _ in throw Offline() }
         }
         store.exhaustivity = .off
         await store.send(.contentRequested(try content("d1")))

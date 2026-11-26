@@ -317,7 +317,6 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
         "/interactions/info-parity/attachments/..%2Foutside-files/content?offset=0".to_owned(),
         "/document-revisions/rev-parity/content?offset=0".to_owned(),
         "/document-revisions/missing/content?offset=0".to_owned(),
-        "/pull-requests/missing/diff".to_owned(),
     ];
     for (index, path) in paths.iter().enumerate() {
         let mut local = local_get(&client, &base, &phone_key, device_id, path).await;

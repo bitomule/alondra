@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "ios",
-  "version": "v89d0dd416d5fdd46",
+  "version": "v77e54edfa3a89546",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -183,22 +183,6 @@
               "resolves_card": true
             }
           ]
-        }
-      ]
-    },
-    {
-      "id": "diff",
-      "title": "Diff",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "content_ref",
-          "kind": "diff",
-          "title": "Diff",
-          "size": 0,
-          "digest": "head1",
-          "fetch": "/pull-requests/pr/diff",
-          "commentable": true
         }
       ]
     },

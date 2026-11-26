@@ -1,6 +1,6 @@
 import Foundation
 
-/// Colours fenced code blocks with the diff's highlighter, away from the main thread. A block
+/// Colours fenced code blocks with highlight.js, away from the main thread. A block
 /// highlight.js cannot colour is cached as its plain text, so it is not tried again.
 public enum CodeHighlighter {
     static let cache = CodeColourCache(capacity: 256)
@@ -14,8 +14,8 @@ public enum CodeHighlighter {
         if let cached = cache[key] { return cached }
         let trimmed = String(key.code.reversed().drop(while: \.isWhitespace).reversed())
         var text = AttributedString(key.code)
-        if let coloured = await DiffHighlighter.colour(trimmed, language: key.language, dark: key.dark),
-           let restored = DiffHighlighter.restoringIndent(coloured, of: trimmed) {
+        if let coloured = await SyntaxColour.colour(trimmed, language: key.language, dark: key.dark),
+           let restored = SyntaxColour.restoringIndent(coloured, of: trimmed) {
             text = restored
         }
         cache.store(text, for: key)

@@ -34,12 +34,11 @@ account on any build cache.
 - `bazelisk` (it downloads the Bazel version pinned in `.bazelversion`). You do **not** need
   Rust for Alondra: Bazel's `rules_rust` downloads its own toolchain.
 - Claude Code with background sessions (`claude --bg`), logged in.
-- `tmux` (Alondra wakes stopped nodes through it), `gh` (logged in), `jq`, and `tuicr` 0.26 or later (the TUI opens a
-  PR's diff in it; `alondra doctor` says if it is missing).
+- `tmux` (Alondra wakes stopped nodes through it), `gh` (logged in) and `jq`.
 
 ```bash
 xcode-select --install 2>/dev/null; sudo xcodebuild -license accept
-brew install bazelisk tmux gh jq tuicr
+brew install bazelisk tmux gh jq
 ```
 
 Nothing else is installed by hand to build and test. Bazel downloads, checks against a pinned hash
@@ -57,7 +56,7 @@ Their versions are in `bazel/env/tools.bzl`, the only place to change them.
 
 ```bash
 uname -m; sw_vers -productVersion; xcodebuild -version | head -1; xcode-select -p
-bazelisk --version; tmux -V; gh auth status 2>&1 | head -3; jq --version; tuicr --version
+bazelisk --version; tmux -V; gh auth status 2>&1 | head -3; jq --version
 claude --version; claude --help | grep -c -- '--bg'
 ```
 
@@ -157,7 +156,7 @@ alondra config list; curl -s http://127.0.0.1:47800/v1/health | jq .config; alon
 
 **Success:** `alondra config list` shows your `name`, `listen = 0.0.0.0`, `public_url`; the health
 answer has the same values; `alondra doctor` shows ✓ for `config`, `alondrad`, `launchd`,
-`claude`, `plugin`, `tmux`, `tuicr`. Expected at this point: `!` for
+`claude`, `plugin`, `tmux`. Expected at this point: `!` for
 `apns` (step 4) and `pairing` (step 5). Only the sessions Alondra launches load the plugin;
 any other Claude session never talks to Alondra.
 

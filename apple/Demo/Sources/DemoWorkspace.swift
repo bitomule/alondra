@@ -38,11 +38,8 @@ enum DemoWorkspace {
             setAsideAnswers: { nil },
             dismissSetAsideAnswers: {},
             fetchContent: { reference in
-                if reference.kind == .diff { return demoDiff }
                 return "# Sample document\n\nThis document exists only in the demo."
             },
-            fetchDiff: { _ in FetchedDiff(text: demoDiff) },
-            setFileViewed: { viewed, _, _ in viewed ? .viewed : .unviewed },
             fetchAttachment: { _ in Data("Demo attachment".utf8) }
         )
     }
@@ -128,12 +125,3 @@ enum DemoWorkspace {
         try ContractCodec.decode(ActionOutcome.self, from: Data(#"{"protocol":1,"outcome":"applied","stamp":"Saved in the demo","revision":2}"#.utf8))
     }
 }
-
-private let demoDiff = """
-diff --git a/Welcome.swift b/Welcome.swift
---- a/Welcome.swift
-+++ b/Welcome.swift
-@@ -1 +1 @@
--let greeting = "Welcome to the dashboard"
-+let greeting = "What needs your attention?"
-"""

@@ -376,7 +376,6 @@
     "Saving…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Guardando…"}}}},
     "This pull request is no longer available": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta solicitud de cambios ya no está disponible"}}}},
     "Running in the background": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "En segundo plano"}}}},
-    "Couldn’t load the diff. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar el diff. Inténtalo de nuevo."}}}},
     "About": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Acerca de"}}}},
     "Mac %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Mac %@"}}}},
     "Pending Requests": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Solicitudes pendientes"}}}},
@@ -417,7 +416,6 @@
     "This changed while you were looking. It’s updated now; try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esto cambió mientras lo mirabas. Ya está actualizado; vuelve a intentarlo."}}}},
     "Your answer wasn’t sent: this card is no longer on your Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu respuesta no se envió: esta tarjeta ya no está en tu Mac."}}}},
     "Couldn’t reach your Mac. Nothing was sent; try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo contactar con tu Mac. No se envió nada; inténtalo de nuevo."}}}},
-    "Diff": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cambios"}}}},
     "This screen is no longer available": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta pantalla ya no está disponible"}}}},
     "Couldn’t load this from your Mac. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar desde tu Mac. Vuelve a intentarlo."}}}},
     "This PR is no longer open": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este PR ya no está abierto"}}}},
@@ -596,16 +594,6 @@
         }
       }
     },
-    "Collapse All Files": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Plegar todos los archivos"
-          }
-        }
-      }
-    },
     "Comment": {
       "localizations": {
         "es": {
@@ -716,18 +704,6 @@
         }
       }
     },
-    "Expand All Files": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desplegar todos los archivos"
-          }
-        }
-      }
-    },
-    "Expand All": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Desplegar todo"}}}},
-    "Collapse All": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Plegar todo"}}}},
     "Finished without tasks": {
       "localizations": {
         "es": {
@@ -1044,16 +1020,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Toca un bloque para comentarlo"
-          }
-        }
-      }
-    },
-    "Tap a line to comment on it": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Toca una línea para comentarla"
           }
         }
       }
@@ -2686,10 +2652,6 @@
     "No task that uses this server runs now. Try again in a moment.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ahora no está en marcha ninguna tarea que use este servidor. Vuelve a intentarlo en un momento."}}}},
     "Alondra has the sign-in": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra tiene el inicio de sesión"}}}},
     "You can close this page and go back to Alondra.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puedes cerrar esta página y volver a Alondra."}}}},
-    "Changes": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cambios"}}}},
-    "Couldn’t load the changes": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudieron cargar los cambios"}}}},
-    "Wrap Lines": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ajustar líneas"}}}},
-    "%lld comments": {"localizations": {"en": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld comment"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld comments"}}}}}, "es": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld comentario"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld comentarios"}}}}}}},
     "%lld active nodes": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "%lld nodos activos"}}}},
     "%lld%% used": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "%lld%% usado"}}}},
     "1 active node": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "1 nodo activo"}}}},

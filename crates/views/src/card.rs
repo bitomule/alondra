@@ -4,7 +4,7 @@
 use super::{
     CardAction,
     Action, Attachment, AttachmentKind, BlockChip, BuildError, Card, Check, CheckState,
-    Checks, Client, CommentSpec, ContentRef, ContentRow, ContextLine, Detail, Fact, Facts, Icon, Input, Item,
+    Checks, Client, CommentSpec, ContentRow, ContextLine, Detail, Fact, Facts, Icon, Input, Item,
     Label, Lang, Link, LocalLink, Markdown, Notice, RenderContext, Role, Row, SETTLED_VIEW, Settled, Stamp, Style,
     TimeFormat, Tone, VIEWS_PROTOCOL, View,
     action_id::{ActionId, Verb},
@@ -841,7 +841,7 @@ fn content_row(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
         Some(content) => {
             let agent = content.summary.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(|text| clip(text, 60));
             let derived = match content.kind {
-                DomainContent::Diff if pr.is_some() => diff_summary(pr, live, lang),
+                DomainContent::Diff if pr.is_some() => return None,
                 DomainContent::Document if reviewed_revision(interaction).is_some() => {
                     Some(document_summary(interaction, domain, lang)).filter(|title| !title.is_empty())
                 }
@@ -853,9 +853,8 @@ fn content_row(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
             let others = if content.kind == DomainContent::Attachments { 0 } else { attachments };
             (content.kind, text.unwrap_or_default(), others)
         }
-        None if pr.is_some() => {
-            (DomainContent::Diff, diff_summary(pr, live, lang).unwrap_or_default(), attachments)
-        }
+        None if pr.is_some() && attachments == 0 => return None,
+        None if pr.is_some() => (DomainContent::Attachments, summary::attachments(lang, attachments), 0),
         None if reviewed_revision(interaction).is_some() => {
             (DomainContent::Document, document_summary(interaction, domain, lang), attachments)
         }
@@ -885,13 +884,6 @@ fn payload_options(interaction: &Interaction) -> Option<usize> {
         InteractionPayload::Question { options, .. } | InteractionPayload::ActionRequest { options, .. } => Some(options.len()),
         _ => None,
     }
-}
-
-fn diff_summary(pr: Option<&PullRequest>, live: Option<&super::LivePullRequest>, lang: Lang) -> Option<String> {
-    if let Some(live) = live.filter(|live| live.changed_files > 0) {
-        return Some(summary::changes(lang, live.changed_files, live.additions, live.deletions));
-    }
-    pr.map(|pr| format!("{} #{}", pr.repository, pr.number))
 }
 
 fn document_summary(interaction: &Interaction, domain: &DomainState, lang: Lang) -> String {
@@ -2041,15 +2033,6 @@ fn extra_actions(item: &InboxItem, interaction: Option<&Interaction>, context: &
         open.key = (context.client != Client::Ios).then(|| "w".into());
         out.push(open);
     }
-    if context.client == Client::Tui && context.transport == super::Transport::Loopback {
-        if let Some(pr) = pr {
-            out.push(local_action(
-                t!(lang, "Review local clone", "Revisar copia local"),
-                "l",
-                LocalLink::ReviewClone { repo: pr.repository.clone(), branch: pr.head.clone(), pr: pr.number, pr_id: pr.id.0.clone() },
-            ));
-        }
-    }
     out
 }
 
@@ -2407,9 +2390,8 @@ fn pr_meta(pr: &PullRequest, context: &RenderContext<'_>) -> String {
         Some(head) => format!("{head} → {}", pr.base),
         None => format!("→ {}", pr.base),
     };
-    let size = live.filter(|detail| detail.changed_files > 0).map(|detail| changes_summary(detail, lang));
     let checks = live.and_then(|detail| super::pr_status::checks_summary(&detail.checks, lang)).map(|summary| summary.text);
-    [Some(pr.repository.clone()), Some(branches), size, checks]
+    [Some(pr.repository.clone()), Some(branches), checks]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
@@ -2427,7 +2409,7 @@ fn without_pr_link(report: &str, pr: &PullRequest) -> String {
     kept.trim().to_owned()
 }
 
-/// A PR card: the diff first, what failed in the checks, then the description folded away.
+/// A PR card: what failed in the checks, then the description folded away.
 fn pr_sections(item: &InboxItem, context: &RenderContext<'_>) -> Option<Vec<super::Section>> {
     let lang = context.lang;
     let domain = context.domain;
@@ -2458,18 +2440,6 @@ fn pr_sections(item: &InboxItem, context: &RenderContext<'_>) -> Option<Vec<supe
     if !stack.is_empty() {
         sections.push(super::common::section("stack", None, vec![Item::Facts(Facts { items: stack })]));
     }
-    sections.push(super::common::section(
-        "diff",
-        Some(t!(lang, "Diff", "Diferencias").into()),
-        vec![Item::ContentRef(ContentRef {
-            kind: super::ContentKind::Diff,
-            title: t!(lang, "Diff", "Diferencias").into(),
-            size: 0,
-            digest: Some(pr.head.clone()),
-            fetch: format!("/pull-requests/{}/diff", alondra_core::id::path_segment(&pr.id.0)),
-            commentable: true,
-        })],
-    ));
     let text = [report, description].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
     if !text.is_empty() {
         sections.push(super::common::section(
@@ -2615,10 +2585,6 @@ fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
 // Pull requests
 // ---------------------------------------------------------------------------------------------
 
-pub(super) fn changes_summary(detail: &super::LivePullRequest, lang: Lang) -> String {
-    summary::changes(lang, detail.changed_files, detail.additions, detail.deletions)
-}
-
 /// A pull request's facts and checks, for its card and for its own view.
 pub(super) fn pr_overview(pr: &PullRequest, context: &RenderContext<'_>) -> (Facts, Option<Checks>) {
     let lang = context.lang;
@@ -2630,9 +2596,6 @@ pub(super) fn pr_overview(pr: &PullRequest, context: &RenderContext<'_>) -> (Fac
     ];
     if let Some(head) = live.and_then(|detail| detail.head_ref.clone()) {
         facts.push(fact(t!(lang, "Head", "Rama"), head));
-    }
-    if let Some(detail) = live.filter(|detail| detail.changed_files > 0) {
-        facts.push(fact(t!(lang, "Changes", "Cambios"), changes_summary(detail, lang)));
     }
     if let Some(stacked) = live.and_then(|detail| detail.stacked_on.as_deref()) {
         facts.push(Fact {

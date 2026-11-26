@@ -2218,7 +2218,6 @@ mod tests {
                 "/document-revisions/missing/content?offset=0",
                 StatusCode::NOT_FOUND,
             ),
-            ("/pull-requests/missing/diff", StatusCode::NOT_FOUND),
         ] {
             assert_eq!(
                 client
@@ -2250,7 +2249,7 @@ mod tests {
                 assert_eq!(body["code"], "not_found", "handler must answer {path}");
             }
         }
-        for path in ["/tasks/missing/actions"] {
+        for path in ["/tasks/missing/actions", "/pull-requests/missing/diff"] {
             assert_eq!(client.get(format!("{base}{path}")).send().await.unwrap().status(),
                 StatusCode::NOT_FOUND, "retired {path}");
         }

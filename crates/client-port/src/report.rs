@@ -75,7 +75,7 @@ pub fn omitted_label(key: &str) -> String {
 pub const CHECK_IDS: &[&str] = &[
     "mac", "providers", "codex", "antigravity", "claude", "claude.profile", "claude.signin", "projects", "identity", "config", "service",
     "alondrad", "login-item", "state", "startup", "upgrade", "update", "hooks", "codex.signin", "plugin", "validate",
-    "relay", "direct", "devices", "notifications", "tuicr",
+    "relay", "direct", "devices", "notifications",
 ];
 
 static DIAGNOSIS: OnceLock<fn() -> Vec<(String, String)>> = OnceLock::new();

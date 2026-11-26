@@ -390,46 +390,6 @@
         }
       }
     },
-    "%lld comments": {
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld comment"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld comments"
-                }
-              }
-            }
-          }
-        },
-        "es": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld comentario"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld comentarios"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "%lld tasks waiting": {
       "localizations": {
         "en": {
@@ -816,26 +776,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "«%@»"
-          }
-        }
-      }
-    },
-    "Expand All Files": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Desplegar todos los archivos"
-          }
-        }
-      }
-    },
-    "Collapse All Files": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Plegar todos los archivos"
           }
         }
       }
@@ -1963,10 +1903,6 @@
     "No task that uses this server runs now. Try again in a moment.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ahora no está en marcha ninguna tarea que use este servidor. Vuelve a intentarlo en un momento."}}}},
     "Alondra has the sign-in": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra tiene el inicio de sesión"}}}},
     "You can close this page and go back to Alondra.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puedes cerrar esta página y volver a Alondra."}}}},
-    "Changes": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cambios"}}}},
-    "Wrap Lines": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ajustar líneas"}}}},
-    "Expand All": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Desplegar todo"}}}},
-    "Collapse All": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Plegar todo"}}}},
     "Account plan": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Plan de cuenta"}}}},
     "This selection changed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta selección ha cambiado"}}}},
     "Your draft is retained. Save these choices against the current selection?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu borrador se conserva. ¿Guardar estas elecciones con la selección actual?"}}}},

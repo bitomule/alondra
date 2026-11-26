@@ -64,7 +64,7 @@
                 "key": "card:github.com/demo/app#7",
                 "kind": "view"
               },
-              "meta": "demo/app · csv-export → main · 1 file · +1 −0 · 1 of 1 passed",
+              "meta": "demo/app · csv-export → main · 1 of 1 passed",
               "more": [
                 {
                   "attachments": false,
@@ -165,22 +165,6 @@
             }
           ],
           "title": "Other PRs of this task"
-        },
-        {
-          "collapsed": false,
-          "id": "diff",
-          "items": [
-            {
-              "commentable": true,
-              "digest": "0000000000000000000000000000000000000001",
-              "fetch": "/pull-requests/github.com%2Fdemo%2Fapp%237/diff",
-              "kind": "diff",
-              "size": 0,
-              "title": "Diff",
-              "type": "content_ref"
-            }
-          ],
-          "title": "Diff"
         },
         {
           "collapsed": false,
@@ -385,7 +369,7 @@
                 "key": "card:github.com/demo/app#8",
                 "kind": "view"
               },
-              "meta": "demo/app · pdf-export → main · 1 file · +1 −0 · 1 of 1 passed",
+              "meta": "demo/app · pdf-export → main · 1 of 1 passed",
               "more": [
                 {
                   "attachments": false,
@@ -486,22 +470,6 @@
             }
           ],
           "title": "Other PRs of this task"
-        },
-        {
-          "collapsed": false,
-          "id": "diff",
-          "items": [
-            {
-              "commentable": true,
-              "digest": "0000000000000000000000000000000000000002",
-              "fetch": "/pull-requests/github.com%2Fdemo%2Fapp%238/diff",
-              "kind": "diff",
-              "size": 0,
-              "title": "Diff",
-              "type": "content_ref"
-            }
-          ],
-          "title": "Diff"
         },
         {
           "collapsed": false,

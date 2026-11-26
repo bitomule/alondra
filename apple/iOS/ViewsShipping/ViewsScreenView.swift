@@ -12,7 +12,6 @@ struct ViewsScreenView: View {
     let openView: (ViewKey) -> Void
     @Environment(\.openURL) private var openURL
     @Environment(\.mcpLinks) private var mcpLinks
-    @State private var diffComments: [String: ActionComment] = [:]
 
     private var isTasksScreen: Bool { store.key.rawValue == "tasks" || store.key.rawValue.hasPrefix("tasks?") }
     private var isInlineForm: Bool { store.hasInlineForm }
@@ -28,19 +27,6 @@ struct ViewsScreenView: View {
     private var lifecycleContent: some View {
         screenContent
         .task { await store.send(.appeared).finish() }
-        .task(id: store.document?.version) {
-            guard let document = store.document else { return }
-            if store.key.rawValue.hasPrefix("pull_request:"),
-               let diff = document.sections.lazy.flatMap(\.items).compactMap({ item -> ContentRef? in
-                    if case let .contentRef(reference) = item, reference.kind == .diff { reference } else { nil }
-                }).first {
-                if store.contentReference?.digest != diff.digest {
-                    diffComments = [:]
-                    store.send(.fetchContent(diff))
-                }
-                return
-            }
-        }
         .onDisappear { store.send(.disappeared) }
     }
 
@@ -133,14 +119,9 @@ struct ViewsScreenView: View {
                             sectionContent(section)
                         }
                         if let content = store.content {
-                            if store.contentReference?.kind == .diff {
-                                DiffView(text: content, comments: $diffComments)
-                                    .id(store.contentReference?.digest)
-                            } else {
-                                Text(content).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-                                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 12))
-                            }
+                            Text(content).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 12))
                         }
                         if let empty = document.empty, store.key.rawValue != "schedules" { NoticeView(notice: empty) }
                         if store.loading { ProgressView().frame(maxWidth: .infinity).padding() }
@@ -202,9 +183,6 @@ struct ViewsScreenView: View {
 
     private func present(_ action: AlondraContract.Action) {
         store.send(.action(.present(action)))
-        if action.comments?.kind == .diffLines {
-            store.send(.action(.commentsChanged(diffComments.values.sorted { $0.anchor < $1.anchor })))
-        }
     }
 
     @ViewBuilder private func sectionContent(_ section: ViewSection) -> some View {

@@ -11,25 +11,6 @@ import XCTest
 /// The PR screen as the daemon's `pull_request:` view fills it.
 @MainActor
 final class PRReviewSnapshotTests: XCTestCase {
-    private static let diff = """
-    diff --git a/Sources/ScheduleEditor.swift b/Sources/ScheduleEditor.swift
-    --- a/Sources/ScheduleEditor.swift
-    +++ b/Sources/ScheduleEditor.swift
-    @@ -10,6 +10,7 @@ struct ScheduleEditor: View {
-         var body: some View {
-    -        Form { longForm }
-    +        Form { compactRow }
-    +        Button("Launch options") { showOptions = true }
-         }
-     }
-    diff --git a/Cargo.lock b/Cargo.lock
-    --- a/Cargo.lock
-    +++ b/Cargo.lock
-    @@ -1,2 +1,2 @@
-    -version = 3
-    +version = 4
-    """
-
     private static let merge = """
     {"id":"merge:github.com/example/repo#12@3~abcdef12","label":"Merge","style":"primary","presentation":"menu",
      "options":[{"id":"merge","label":"Merge commit","style":"secondary","input":{"kind":"none"}},
@@ -64,19 +45,14 @@ final class PRReviewSnapshotTests: XCTestCase {
 
     private func screen(
         adding action: String,
-        comments: [String: ActionComment] = [:],
-        collapsed: Set<String> = [],
         holding held: [String: String] = [:],
         spanish: Bool = false
     ) throws -> some View {
-        PRReviewView(store: store(try state(adding: action, comments: comments, collapsed: collapsed, holding: held, spanish: spanish)))
-            .environment(\.highlightsDiffs, false)
+        PRReviewView(store: store(try state(adding: action, holding: held, spanish: spanish)))
     }
 
     private func state(
         adding action: String,
-        comments: [String: ActionComment] = [:],
-        collapsed: Set<String> = [],
         holding held: [String: String] = [:],
         spanish: Bool = false
     ) throws -> PRReviewFeature.State {
@@ -117,10 +93,6 @@ final class PRReviewSnapshotTests: XCTestCase {
         var state = PRReviewFeature.State(key: .pullRequest("github.com/example/repo#12"))
         state.screen.document = spanish ? try SpanishTestData.document(document) : document
         state.screen.phase = .loaded
-        state.diffDigest = "abcdef12"
-        state.diff = .loaded(UnifiedDiff.parse(Self.diff))
-        state.comments = comments
-        state.collapsed = collapsed
         return state
     }
 
@@ -143,37 +115,26 @@ final class PRReviewSnapshotTests: XCTestCase {
         assertScreenVariants { view }
     }
 
-    func test_prReview_conflictsWithCommentsAndAFoldedFile() throws {
-        let anchor = UnifiedDiff.parse(Self.diff).first?.lines.compactMap(\.anchor).first ?? ""
-        let view = try screen(
-            adding: Self.conflicts,
-            comments: [anchor: ActionComment(anchor: anchor, text: "Does this keep the weekday picker?")],
-            collapsed: ["Cargo.lock"]
-        )
+    func test_prReview_conflicts() throws {
+        let view = try screen(adding: Self.conflicts)
         assertScreenVariants { view }
     }
 
-    func test_prReview_requestChangesSheetWithAComment() throws {
-        let anchor = UnifiedDiff.parse(Self.diff).first?.lines.compactMap(\.anchor).first ?? ""
-        let comment = ActionComment(anchor: anchor, text: "Does this keep the weekday picker?")
-        var state = try state(adding: Self.merge, comments: [anchor: comment])
+    func test_prReview_requestChangesSheet() throws {
+        var state = try state(adding: Self.merge)
         state.actions.action = try XCTUnwrap(state.review?.requestChanges)
-        state.actions.comments = [comment]
         state.actions.text = "Keep the weekday picker and add a test for it."
         let view = composer(state)
         assertScreenVariants(inNavigationStack: false) { view }
     }
 
     func test_prReview_spanishDaemonLabels() throws {
-        let anchor = UnifiedDiff.parse(Self.diff).first?.lines.compactMap(\.anchor).first ?? ""
-        let comment = ActionComment(anchor: anchor, text: "¿Mantiene el selector de días?")
-        let ready = try screen(adding: Self.merge, comments: [anchor: comment], spanish: true)
+        let ready = try screen(adding: Self.merge, spanish: true)
         assertAppSnapshot(of: spanishScreen(ready), as: spanishImage(.dark), named: "merge_dark_es")
         let conflicts = try screen(adding: Self.conflicts, spanish: true)
         assertAppSnapshot(of: spanishScreen(conflicts), as: spanishImage(.light), named: "conflicts_light_es")
-        var sheet = try state(adding: Self.merge, comments: [anchor: comment], spanish: true)
+        var sheet = try state(adding: Self.merge, spanish: true)
         sheet.actions.action = try XCTUnwrap(sheet.review?.requestChanges)
-        sheet.actions.comments = [comment]
         assertAppSnapshot(of: AnyView(composer(sheet).environment(\.locale, Locale(identifier: "es_ES"))),
                           as: spanishImage(.light), named: "sheet_light_es")
     }

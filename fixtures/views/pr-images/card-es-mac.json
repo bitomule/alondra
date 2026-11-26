@@ -270,22 +270,6 @@
     },
     {
       "collapsed": false,
-      "id": "diff",
-      "items": [
-        {
-          "commentable": true,
-          "digest": "2aa1c3bc5b41403eb84358e260a61035ceabee9e",
-          "fetch": "/pull-requests/github.com%2Fsandbox%2Frepo%237/diff",
-          "kind": "diff",
-          "size": 0,
-          "title": "Diferencias",
-          "type": "content_ref"
-        }
-      ],
-      "title": "Diferencias"
-    },
-    {
-      "collapsed": false,
       "id": "description",
       "items": [
         {

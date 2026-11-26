@@ -77,17 +77,6 @@ final class FeedTests: XCTestCase {
         XCTAssertFalse(FeedSession.validViewKey("tasks?section=archived&after=42"))
     }
 
-    func testCanonicalPullRequestDiffSegmentDecodesOnce() {
-        let rawID = "github.com/bitomule/alondra#154"
-        let fetch = "/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff"
-        XCTAssertEqual(AlondraAPIClient.decodedPullRequestID(from: fetch), rawID)
-        XCTAssertEqual(AlondraAPIClient.decodedPullRequestID(from: "/pull-requests/pr-154/diff"), "pr-154")
-        XCTAssertNil(AlondraAPIClient.decodedPullRequestID(from: "/pull-requests/github.com%252Fbitomule%252Falondra%2523154/diff"))
-        XCTAssertNil(AlondraAPIClient.decodedPullRequestID(from: "/pull-requests/github.com%2fbitomule%2falondra%23154/diff"))
-        XCTAssertNil(AlondraAPIClient.decodedPullRequestID(from: "/pull-requests/..%2F154/diff"))
-        XCTAssertNil(AlondraAPIClient.decodedPullRequestID(from: "/pull-requests/github.com%2Fbitomule%2Falondra%23154/extra/diff"))
-    }
-
     func testConditionalViewResponseIsNotDecodedAsDocument() throws {
         let bytes = Data(#"{"protocol":1,"unchanged":true,"cursor":"c1.next"}"#.utf8)
         let result = try ContractCodec.decode(ViewFetch.self, from: bytes)

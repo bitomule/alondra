@@ -1,12 +1,6 @@
 import AlondraContract
 import SwiftUI
 
-public extension EnvironmentValues {
-    /// Whether diff lines are syntax coloured. Colouring finishes after the first frame, so a
-    /// snapshot turns it off to capture one stable image.
-    @Entry var highlightsDiffs = true
-}
-
 /// A server timestamp as the daemon asked for it: relative ("2 min ago") or a date and time.
 struct TimeText: View {
     let raw: String

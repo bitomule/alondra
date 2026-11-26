@@ -103,8 +103,8 @@ screens use, is in [`docs/architecture/overview.md`](docs/architecture/overview.
   opened on the other. The relay carries bytes it cannot read.
 - **More than one Mac.** Pair your iPhone with each of your Macs and switch between them in the
   app. Using several at once from one screen is coming soon.
-- **Review where you are.** Pull request cards open the diff in the iPhone and Mac apps, and in the
-  terminal UI in `tuicr` (installed separately).
+- **Review where you are.** A pull request card says what the task did and how its checks went. You
+  accept it, ask for changes, or open the pull request on GitHub.
 - **Model and effort per task.** For each task the orchestrator picks a model and a reasoning
   effort from what your connected Claude, Codex and Antigravity accounts offer, and records why. Alondra runs the
   task on one of your accounts that offers that model, in the order you set, passing over any whose

@@ -27,9 +27,6 @@ enum EnvelopeRequestPolicy {
         guard encoded.count == 4, encoded[0].isEmpty,
               let id = String(encoded[2]).removingPercentEncoding,
               APIRequest.validViewID(id) else { return false }
-        if encoded[1] == "pull-requests", encoded[3] == "diff" {
-            return components.queryItems == nil
-        }
         if encoded[1] == "document-revisions", encoded[3] == "content",
            let query = components.queryItems {
             let names = query.map(\.name)

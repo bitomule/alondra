@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/acme/storefront#6",
   "client": "ios",
-  "version": "v20187a2e87eefcbc",
+  "version": "v0e10119f3c2174b3",
   "cursor": "cursor-1",
   "title": "Review the result · storefront#6",
   "status": {
@@ -196,22 +196,6 @@
               }
             }
           ]
-        }
-      ]
-    },
-    {
-      "id": "diff",
-      "title": "Diferencias",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "content_ref",
-          "kind": "diff",
-          "title": "Diferencias",
-          "size": 0,
-          "digest": "6666666666666666666666666666666666666666",
-          "fetch": "/pull-requests/github.com%2Facme%2Fstorefront%236/diff",
-          "commentable": true
         }
       ]
     },

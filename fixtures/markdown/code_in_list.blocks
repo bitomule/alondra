@@ -1,4 +1,4 @@
 item 0 | 1. Install:
-code:bash 1 | brew install tuicr
+code:bash 1 | brew install jq
 item 0 | 2. Run it:
-code:bash 1 | tuicr pr 12
+code:bash 1 | jq . report.json

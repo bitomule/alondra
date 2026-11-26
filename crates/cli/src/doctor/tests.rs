@@ -101,7 +101,7 @@ impl Fake {
             marketplace: RefCell::new(true),
             node_plugin: Some("/m/plugin".into()),
             fingerprint: Some("fp-1".into()),
-            tools: [("tuicr", "tuicr 0.26.0")].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            tools: BTreeMap::new(),
             port_owner: None,
             log: (1..=12).map(|n| format!("line {n}")).collect(),
             memory: RefCell::new(Memory {
@@ -216,9 +216,6 @@ impl System for Fake {
     fn codex_version(&self) -> Option<String> { self.tools.get("codex").cloned() }
     fn agy_version(&self) -> Option<String> { self.tools.get("agy").cloned() }
     fn native_accounts(&self) -> Option<Value> { self.health.borrow().as_ref().ok()?.get("provider_accounts").cloned() }
-    fn tool(&self, program: &str, _args: &[&str]) -> Option<String> {
-        self.tools.get(program).cloned()
-    }
     fn port_owner(&self, _port: u16) -> Option<String> {
         self.port_owner.clone()
     }
@@ -501,10 +498,6 @@ fn devices_identity_config_and_tools() {
     assert!(matches!(config_check(p, Some("nmae = 1"), install).fix, Some(Fix::Manual(_))));
     assert!(hooks_port_check(alondra_core::DEFAULT_PORT).is_none());
     assert_eq!(hooks_port_check(47897).map(|c| c.status), Some(Status::Warn));
-    assert_eq!(tuicr_check(Some("tuicr 0.26.0")).status, Status::Pass);
-    assert_eq!(tuicr_check(Some("tuicr 1.2.0\n")).status, Status::Pass);
-    assert_eq!(tuicr_check(Some("tuicr 0.18.3")).status, Status::Warn);
-    assert_eq!(tuicr_check(None).fix, Some(Fix::Manual("brew install tuicr".into())));
 }
 
 #[test]
@@ -792,7 +785,7 @@ fn exit_codes_put_a_silent_daemon_first_then_breakage_then_a_person() {
     let o = |id: &'static str, status, fix| Outcome { id, name: id, group: Group::Service, status, detail: String::new(), fix };
     let ask = || Some(Fix::Ask { question: String::new(), default: true, action: Action::EnableRelay, instead: String::new() });
     let down = o("alondrad", Status::Fail, Some(Fix::Auto(Action::RestartService)));
-    let broken = o("tuicr", Status::Fail, Some(Fix::Manual("brew install tuicr".into())));
+    let broken = o("config", Status::Fail, Some(Fix::Manual("fix ~/.alondra/config.toml".into())));
     let person = o("claude.signin", Status::Fail, ask());
     let warning = o("update", Status::Warn, None);
     assert_eq!(exit_code(&[down.clone(), broken.clone(), person.clone()]), 4);
@@ -815,8 +808,6 @@ fn json_keeps_todays_fields_and_adds_schema_id_fixable_and_next_step() {
     assert_eq!(daemon["detail"], "connection refused");
     assert_eq!(daemon["fix"], "alondra doctor --fix");
     assert_eq!(daemon["fixable"], true);
-    let tuicr = doc["checks"].as_array().unwrap().iter().find(|c| c["id"] == "tuicr").unwrap();
-    assert_eq!((tuicr["fix"].as_str(), tuicr["fixable"].as_bool()), (Some(""), Some(false)));
     assert_eq!(doc["next_step"], "alondra doctor --fix");
     assert_eq!(report(&diagnose(&env(&Fake::healthy())), None)["next_step"], Value::Null);
     let target = json!({"program": "/opt/homebrew/opt/alondra/bin/alondrad", "profile_mode": "implicit"});
@@ -869,10 +860,9 @@ fn grouped_output_aligns_details_and_fixes_in_one_column() {
     sys.memory.borrow_mut().test_push = None;
     let lines = render::grouped("Alondra 0.4.0 on Ana's Mac", &diagnose(&env(&sys)));
     assert_eq!(lines[0], "Alondra 0.4.0 on Ana's Mac");
-    for group in ["Service", "Claude", "Devices", "Tools"] {
+    for group in ["Service", "Claude", "Devices"] {
         assert!(lines.contains(&group.to_string()), "{lines:#?}");
     }
-    assert!(lines.contains(&"  ✓ tuicr".to_string()), "{lines:#?}");
     assert_eq!(lines.last().unwrap(), "1 warning. Nothing is broken.");
     let column = |needle: &str| lines.iter().find_map(|l| l.find(needle).map(|at| l[..at].chars().count())).unwrap_or_else(|| panic!("{needle}: {lines:#?}"));
     assert_eq!(column("never tested on a device"), column("→ alondra doctor --test-push"));
@@ -880,9 +870,19 @@ fn grouped_output_aligns_details_and_fixes_in_one_column() {
 }
 
 #[test]
+fn doctor_never_checks_or_mentions_tuicr() {
+    english();
+    let sys = Fake::healthy();
+    let outcomes = diagnose(&env(&sys));
+    assert!(outcomes.iter().all(|o| o.id != "tuicr"), "{:?}", outcomes.iter().map(|o| o.id).collect::<Vec<_>>());
+    let lines = render::grouped("Alondra 0.4.0 on Ana's Mac", &outcomes);
+    assert!(!lines.iter().any(|l| l.contains("tuicr") || l == "Tools"), "{lines:#?}");
+}
+
+#[test]
 fn the_summary_counts_problems_and_warnings() {
     english();
-    let o = |status| Outcome { id: "x", name: "x", group: Group::Tools, status, detail: String::new(), fix: None };
+    let o = |status| Outcome { id: "x", name: "x", group: Group::Service, status, detail: String::new(), fix: None };
     assert_eq!(render::summary(&[o(Status::Pass)]), "Nothing is broken.");
     assert_eq!(render::summary(&[o(Status::Warn), o(Status::Warn)]), "2 warnings. Nothing is broken.");
     assert_eq!(render::summary(&[o(Status::Fail), o(Status::Warn)]), "1 problem, 1 warning.");
@@ -893,7 +893,7 @@ fn the_summary_counts_problems_and_warnings() {
 #[test]
 fn after_an_update_only_the_checks_that_need_something_are_listed() {
     english();
-    let o = |name, status, detail: &str, fix: Option<Fix>| Outcome { id: "x", name, group: Group::Tools, status, detail: detail.into(), fix };
+    let o = |name, status, detail: &str, fix: Option<Fix>| Outcome { id: "x", name, group: Group::Service, status, detail: detail.into(), fix };
     assert_eq!(render::after_update(&[o("config", Status::Pass, "read", None)]), ["  ✓ Nothing is broken."]);
     let lines = render::after_update(&[
         o("config", Status::Pass, "read", None),

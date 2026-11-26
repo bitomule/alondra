@@ -366,9 +366,12 @@ public struct ContentRefView: View {
     public var onOpen: (Link) -> Void
     public var onLoad: ((ContentRef) -> Void)?
     public init(content: ContentRef, onOpen: @escaping (Link) -> Void = { _ in }, onLoad: ((ContentRef) -> Void)? = nil) { self.content = content; self.onOpen = onOpen; self.onLoad = onLoad }
+    /// A pull request's diff, which only an older daemon still points at, opens nowhere.
     public var body: some View {
-        Button { if let onLoad { onLoad(content) } else { onOpen(.url(url: content.fetch)) } } label: { Label(content.title, systemImage: content.kind == .diff ? "arrow.left.arrow.right" : "doc.text.magnifyingglass").font(.subheadline.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading).padding(12).background(ViewPalette.night.opacity(0.5), in: .rect(cornerRadius: 12)) }
-            .buttonStyle(.plain).accessibilityHint("\(content.size) bytes")
+        if content.kind != .diff {
+            Button { if let onLoad { onLoad(content) } else { onOpen(.url(url: content.fetch)) } } label: { Label(content.title, systemImage: "doc.text.magnifyingglass").font(.subheadline.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading).padding(12).background(ViewPalette.night.opacity(0.5), in: .rect(cornerRadius: 12)) }
+                .buttonStyle(.plain).accessibilityHint("\(content.size) bytes")
+        }
     }
 }
 

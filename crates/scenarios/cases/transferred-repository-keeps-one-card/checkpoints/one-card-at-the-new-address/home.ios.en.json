@@ -64,7 +64,7 @@
                 "key": "card:d1",
                 "kind": "view"
               },
-              "meta": "lumo-org/lumo · csv-export → main · 1 file · +1 −0 · 1 of 1 passed",
+              "meta": "lumo-org/lumo · csv-export → main · 1 of 1 passed",
               "more": [
                 {
                   "attachments": false,
@@ -144,22 +144,6 @@
               "type": "card"
             }
           ]
-        },
-        {
-          "collapsed": false,
-          "id": "diff",
-          "items": [
-            {
-              "commentable": true,
-              "digest": "0000000000000000000000000000000000000001",
-              "fetch": "/pull-requests/github.com%2Fana%2Flumo%237/diff",
-              "kind": "diff",
-              "size": 0,
-              "title": "Diff",
-              "type": "content_ref"
-            }
-          ],
-          "title": "Diff"
         },
         {
           "collapsed": false,

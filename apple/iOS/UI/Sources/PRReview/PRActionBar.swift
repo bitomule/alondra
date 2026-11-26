@@ -15,7 +15,7 @@ struct PRActionBar: View {
             if let changes = review.requestChanges {
                 if changes.enabled {
                     Button { store.send(.perform(changes)) } label: {
-                        GlassBarLabel(changesTitle(changes))
+                        GlassBarLabel(changes.label)
                     }
                     .buttonStyle(.glass)
                 } else {
@@ -35,10 +35,6 @@ struct PRActionBar: View {
                 if merge.enabled { mergeMenu(merge) } else { held(merge, systemImage: "square.stack.3d.up") }
             }
         }
-    }
-
-    private func changesTitle(_ action: WireAction) -> String {
-        store.comments.isEmpty ? action.label : "\(action.label) (\(store.comments.count))"
     }
 
     /// An action the server holds back: its reason, on the bar's glass, in place of the button;

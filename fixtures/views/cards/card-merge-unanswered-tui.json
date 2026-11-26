@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "tui",
-  "version": "v5ed567a783ba2d91",
+  "version": "vc6407ac89ad3c64a",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -112,52 +112,6 @@
             },
             "resolves_card": true
           },
-          "more": [
-            {
-              "id": "close_unmerged:d@9",
-              "label": "Close without merging",
-              "style": "destructive",
-              "role": "risk",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close PR #1 without merging?",
-                "message": "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
-                "button": "Close PR"
-              },
-              "enabled": true,
-              "stamp": "Closing…",
-              "key": "k",
-              "resolves_card": true
-            },
-            {
-              "id": "",
-              "label": "Review local clone",
-              "style": "plain",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "key": "l",
-              "link": {
-                "kind": "local",
-                "local": {
-                  "kind": "review_clone",
-                  "repo": "owner/repo",
-                  "branch": "head1",
-                  "pr": 1,
-                  "pr_id": "pr"
-                }
-              },
-              "resolves_card": false
-            }
-          ],
           "link": {
             "kind": "view",
             "key": "card:d"
@@ -210,24 +164,28 @@
               "stamp": "Merging…",
               "key": "1",
               "resolves_card": true
+            },
+            {
+              "id": "close_unmerged:d@9",
+              "label": "Close without merging",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Close PR #1 without merging?",
+                "message": "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
+                "button": "Close PR"
+              },
+              "enabled": true,
+              "stamp": "Closing…",
+              "key": "k",
+              "resolves_card": true
             }
           ]
-        }
-      ]
-    },
-    {
-      "id": "diff",
-      "title": "Diff",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "content_ref",
-          "kind": "diff",
-          "title": "Diff",
-          "size": 0,
-          "digest": "head1",
-          "fetch": "/pull-requests/pr/diff",
-          "commentable": true
         }
       ]
     },

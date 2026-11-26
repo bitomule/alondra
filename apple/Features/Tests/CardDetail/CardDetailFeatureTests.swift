@@ -33,7 +33,6 @@ final class CardDetailFeatureTests: XCTestCase {
             $0.viewsClient.perform = feed.perform()
             if let content {
                 $0.viewsClient.fetchContent = content
-                $0.viewsClient.fetchDiff = { FetchedDiff(text: try await content($0)) }
             }
             $0.dismiss = DismissEffect { dismissed.withValue { $0 += 1 } }
         }
@@ -100,54 +99,35 @@ final class CardDetailFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testAPullRequestsDiffOpensItsOwnScreenFromTheContent() async throws {
+    func testAPullRequestCardShowsNoChanges() async throws {
         let store = store(try Fixtures.card(Fixtures.pullRequestID))
-        let reference = try XCTUnwrap(store.state.subject?.sections.first { $0.id == "diff" }?.items.compactMap {
-            if case .contentRef(let reference) = $0 { reference } else { nil }
-        }.first)
 
-        XCTAssertEqual(CardDetailFeature.Subject.diffKey(of: reference), .pullRequest("github.com/example/repo#12"))
-        XCTAssertEqual(store.state.subject?.sections.map(\.id), ["checks", "diff", "description", "context"])
+        XCTAssertEqual(store.state.subject?.sections.map(\.id), ["checks", "description", "context"])
         XCTAssertEqual(store.state.subject?.title, "Review the beta candidate")
     }
 
     @MainActor
-    func testAPullRequestsDiffLoadsInsideTheDetail() async throws {
-        let card = try Fixtures.card(Fixtures.pullRequestID)
+    func testAnOlderDaemonsDiffSectionIsLeftOutAndNeverFetched() async throws {
+        let card = try Fixtures.document("card-pr") { object in
+            var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+            sections.removeAll { $0["id"] as? String == "diff" }
+            sections.insert(["id": "diff", "title": "Changes", "collapsed": false, "items": [[
+                "type": "content_ref", "kind": "diff", "title": "Changes", "size": 120, "digest": "abcdef12",
+                "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff", "commentable": false,
+            ]]], at: 1)
+            object["sections"] = sections
+        }
         let fetched = LockIsolated<[String]>([])
         let store = store(card, content: { reference in
             fetched.withValue { $0.append(reference.fetch) }
-            return "diff --git a/a.swift b/a.swift\n--- a/a.swift\n+++ b/a.swift\n@@ -1 +1 @@\n-old\n+new\n"
+            return "diff --git a/a.swift b/a.swift\n"
         })
 
         await store.send(.screen(.loaded(card)))
-        await store.skipReceivedActions()
+        await store.finish()
 
-        XCTAssertEqual(fetched.value.count, 1)
-        XCTAssertEqual(fetched.value.first?.hasPrefix("/pull-requests/"), true)
-        XCTAssertEqual(store.state.diff?.count, 1)
-        XCTAssertFalse(store.state.diffFailed)
-        XCTAssertFalse(store.state.showsChanges, "the diff waits behind View changes")
-    }
-
-    @MainActor
-    func testADiffTheMacCutSaysSoAndOpensOnItsOwnScreen() async throws {
-        let card = try Fixtures.card(Fixtures.pullRequestID)
-        let store = store(card)
-        store.dependencies.viewsClient.fetchDiff = { _ in
-            FetchedDiff(text: "diff --git a/a.swift b/a.swift\n--- a/a.swift\n+++ b/a.swift\n@@ -1 +1 @@\n-old\n+new\n", truncated: true)
-        }
-
-        await store.send(.screen(.loaded(card)))
-        await store.skipReceivedActions()
-        XCTAssertTrue(store.state.diffTruncated)
-
-        await store.send(.changesShown(true))
-        XCTAssertTrue(store.state.showsChanges)
-        await store.send(.toggleAllFiles)
-        XCTAssertEqual(store.state.collapsedFiles, ["a.swift"])
-        await store.send(.changesShown(false))
-        XCTAssertFalse(store.state.showsChanges)
+        XCTAssertEqual(store.state.subject?.sections.map(\.id), ["checks", "description", "context"])
+        XCTAssertEqual(fetched.value, [])
     }
 
     @MainActor

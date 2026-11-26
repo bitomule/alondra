@@ -18,7 +18,6 @@ mod mcp_servers;
 mod metrics;
 mod tasks;
 mod title;
-mod unified_diff;
 mod updated;
 mod usage_banner;
 mod version_watch;
@@ -95,30 +94,6 @@ fn view_action_result(value: serde_json::Value) -> std::result::Result<ViewActio
     Ok(ViewActionReply::Outcome(outcome))
 }
 
-/// Where a PR diff is kept: its route at the head it was read for, so new commits read it again.
-fn diff_key(route: &str, head: &str) -> String {
-    format!("{route}@{head}")
-}
-
-/// The PR whose diff a content route fetches: `/pull-requests/{id}/diff`, the id path-encoded.
-fn diff_pull_request(route: &str) -> Option<String> {
-    let segment = route.strip_prefix("/pull-requests/")?.strip_suffix("/diff")?;
-    let mut bytes = vec![];
-    let mut rest = segment.as_bytes();
-    while let Some((&first, tail)) = rest.split_first() {
-        if first == b'%' {
-            let hex = std::str::from_utf8(tail.get(..2)?).ok()?;
-            bytes.push(u8::from_str_radix(hex, 16).ok()?);
-            rest = &tail[2..];
-        } else {
-            bytes.push(first);
-            rest = tail;
-        }
-    }
-    let id = String::from_utf8(bytes).ok()?;
-    (alondra_core::id::valid(&id) && alondra_core::id::path_segment(&id) == segment).then_some(id)
-}
-
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -126,7 +101,7 @@ use std::time::{Duration, Instant};
 
 use alondra_domain_rules::{
     AgentId, AttachmentRef, AvailableAction, Command, DeliveryTarget, Interaction, InteractionId,
-    PrId, Revision, TaskId,
+    Revision, TaskId,
 };
 use alondra_core::now_millis;
 use crate::client::Delivery;
@@ -340,8 +315,6 @@ pub enum Part {
     Text(String),
     /// `kind` and `size` come with a card's attachment; a document's own content has neither.
     File { name: String, route: String, kind: Option<AttachmentKind>, size: Option<u64> },
-    /// A PR's diff, read by file.
-    Diff { route: String, id: String, head: String },
 }
 
 impl Part {
@@ -359,7 +332,6 @@ impl Part {
         match self {
             Part::Text(_) => None,
             Part::File { route, .. } => Some(route.clone()),
-            Part::Diff { route, head, .. } => Some(diff_key(route, head)),
         }
     }
 }
@@ -383,10 +355,6 @@ pub struct Reader {
     pub find: Option<Find>,
     /// The numbered list of what the selected block opens, when it opens more than one thing.
     pub picking: bool,
-    /// The diff files the user folded or unfolded; the rest keep how they start.
-    folds: HashMap<md::diff::At, bool>,
-    /// Puts the cursor on the diff's files as soon as the diff is on screen.
-    to_diff: bool,
     /// The block the next frame scrolls to the top.
     pub show_from: Option<usize>,
 }
@@ -512,30 +480,6 @@ impl Reader {
         self.cursor = self.cursor.min(self.blocks.len().saturating_sub(1));
         if !self.blocks.get(self.cursor).is_some_and(Block::selectable) {
             self.step(1);
-        }
-    }
-
-    fn header(&self, at: md::diff::At) -> Option<usize> {
-        self.blocks.iter().position(|b| matches!(&b.kind, md::Kind::DiffFile(h) if h.at == at))
-    }
-
-    fn has_files(&self) -> bool {
-        self.blocks.iter().any(|b| matches!(b.kind, md::Kind::DiffFile(_)))
-    }
-
-    /// Moves to the header of the next or previous file of the diff and brings it to the top.
-    fn next_file(&mut self, forward: bool) {
-        let headers: Vec<usize> = (0..self.blocks.len())
-            .filter(|&i| matches!(self.blocks[i].kind, md::Kind::DiffFile(_)))
-            .collect();
-        let next = if forward {
-            headers.iter().find(|&&i| i > self.cursor)
-        } else {
-            headers.iter().rev().find(|&&i| i < self.cursor)
-        };
-        if let Some(&i) = next {
-            self.cursor = i;
-            self.show_from = Some(i);
         }
     }
 }
@@ -729,13 +673,6 @@ pub enum Flow {
     /// Quit confirmed over answers still on their way.
     QuitNow,
     NextMac,
-    /// The PR in tuicr on its local clone; its comments come back as feedback on `key`.
-    Review {
-        key: Key,
-        pr: PrId,
-        number: u64,
-        dir: std::path::PathBuf,
-    },
 }
 
 pub struct App {
@@ -881,7 +818,6 @@ pub struct App {
     card_view_asked: Option<String>,
     screen_view_asked: Option<String>,
     view_navigation: Vec<String>,
-    reader_after_view: Option<String>,
     /// Whether this terminal is behind its daemon, and what to do about it.
     pub updated: updated::Watch,
 }
@@ -1003,30 +939,6 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
                             active = (active + 1) % macs.len();
                             chosen = true;
                             dirty = true;
-                            break;
-                        }
-                        Flow::Review {
-                            key,
-                            pr,
-                            number,
-                            dir,
-                        } => {
-                            if app.remote_mac().is_some() {
-                                app.fail(tr!("tuicr runs on the destination Mac; the diff opens here instead", "tuicr funciona en el Mac de destino; aquí se abre el diff"));
-                                break;
-                            }
-                            draw(terminal, app)?;
-                            let _ = execute!(stdout(), DisableBracketedPaste);
-                            let res = crate::pty::run_tool(
-                                "tuicr",
-                                &["--stdout", "--no-update-check", "pr", &number.to_string()],
-                                &dir,
-                            );
-                            crossterm::terminal::enable_raw_mode()?;
-                            let _ = execute!(stdout(), EnableBracketedPaste);
-                            app.reviewed(key, pr, number, res);
-                            tab_title.forget();
-                            repaint(terminal, app)?;
                             break;
                         }
                         Flow::Go => {}
@@ -1280,34 +1192,6 @@ fn open_stored(target: &MacTarget, name: &str, route: &str) -> Result<()> {
     Ok(())
 }
 
-/// Where to review a PR: the agent's own checkout, else `~/Projects/<repo name>`.
-fn clone_of(agent_cwd: Option<&str>, repository: &str) -> Option<std::path::PathBuf> {
-    let is_repo = |p: &std::path::Path| p.join(".git").exists();
-    if let Some(cwd) = agent_cwd
-        .map(std::path::PathBuf::from)
-        .filter(|p| is_repo(p))
-    {
-        return Some(cwd);
-    }
-    let name = repository.rsplit('/').next()?;
-    let home = std::env::var("HOME").ok()?;
-    Some(std::path::Path::new(&home).join("Projects").join(name)).filter(|p| is_repo(p))
-}
-
-/// The tool was not found where it was launched; any other launch failure is shown as it is.
-fn not_installed(error: &anyhow::Error) -> bool {
-    error.chain().find_map(|cause| cause.downcast_ref::<std::io::Error>()).map(std::io::Error::kind) == Some(std::io::ErrorKind::NotFound)
-}
-
-/// A tuicr export carries numbered comments anchored to files (`1. \`src/a.rs:42\` - …`).
-fn has_comments(export: &str) -> bool {
-    export.lines().any(|l| {
-        let t = l.trim_start();
-        t.split_once(". ")
-            .is_some_and(|(n, rest)| n.parse::<u32>().is_ok() && rest.starts_with('`'))
-    })
-}
-
 impl App {
     fn new(tx: SyncSender<Msg>) -> Self {
         Self::with_target(tx, MacTarget::Local)
@@ -1416,7 +1300,6 @@ impl App {
             card_view_asked: None,
             screen_view_asked: None,
             view_navigation: vec![],
-            reader_after_view: None,
             updated: updated::Watch::default(),
         }
     }
@@ -1684,7 +1567,6 @@ impl App {
             self.settings_after_view = Some((settings, self.view_navigation.len()));
             self.focus = Pane::Detail;
         }
-        self.reader_after_view = None;
         self.view_navigation.push(key.to_owned());
         self.card_view = None;
         self.card_view_asked = None;
@@ -1969,74 +1851,6 @@ impl App {
         });
     }
 
-    fn fetch_diff(&mut self, route: &str, id: &str, expected_head: &str) {
-        let route = diff_key(route, expected_head);
-        if self.files.contains_key(&route) || !self.loading.insert(route.clone()) {
-            return;
-        }
-        let id = id.to_string();
-        let expected_head = expected_head.to_string();
-        self.spawn(move |tx, target| {
-            let result = Client::for_target(target, Duration::from_secs(30))
-                .pull_request_diff(&id, &expected_head)
-                .map(|diff| files::FileBody::Diff(std::sync::Arc::new(unified_diff::Diff::read(&diff.text, diff.truncated))))
-                .map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Msg::File { route, result });
-        });
-    }
-
-    /// What tuicr left on stdout when the user quit it: the comments go to the agent as
-    /// feedback on the delivery that presents the PR; without comments nothing is sent.
-    fn reviewed(&mut self, key: Key, pr: PrId, number: u64, res: Result<String>) {
-        match res {
-            Ok(text) if has_comments(&text) => {
-                if let Some(view) = self
-                    .card_view
-                    .as_ref()
-                    .filter(|view| view.key == self.selected_view_key().unwrap_or_default())
-                {
-                    let action = view_render::actions(view).into_iter().find(|action| {
-                        action.enabled
-                            && alondra_view_model::action_id::ActionId::parse(&action.id)
-                                .is_ok_and(|id| {
-                                    id.verb == alondra_view_model::action_id::Verb::Changes
-                                })
-                    });
-                    if let Some(action) = action {
-                        let request = Client::action_body(
-                            &view.data_epoch,
-                            &action.id,
-                            None,
-                            json!({"text": text.trim()}),
-                        );
-                        self.submit_view_request(request, None);
-                    } else {
-                        self.fail(tr!(
-                            "Request changes is unavailable for this PR",
-                            "No se pueden solicitar cambios para esta PR"
-                        ));
-                    }
-                } else {
-                    self.fail(tr!(
-                        "Request changes is unavailable for this PR",
-                        "No se pueden solicitar cambios para esta PR"
-                    ));
-                }
-            }
-            Ok(_) => self.flash(trf!(
-                "PR #{number} reviewed without comments",
-                "PR #{number} revisado sin comentarios"
-            )),
-            Err(e) if not_installed(&e) => {
-                self.fail(tr!(
-                    "tuicr is not installed: brew install tuicr",
-                    "tuicr no está instalado: brew install tuicr"
-                ));
-            }
-            Err(e) => self.fail(trf!("tuicr: {e}", "tuicr: {e}")),
-        }
-    }
-
     /// Copies a dropped file into Alondra's storage while the user keeps writing.
     fn attach(&mut self, path: std::path::PathBuf) {
         if self.composer.as_ref().and_then(|composer| composer.form.as_ref()).is_some_and(|form| form.loaded && !form.submit.as_ref().is_some_and(|submit| submit.attachments)) {
@@ -2242,11 +2056,6 @@ impl App {
                     self.card_view_asked = None;
                     self.view_data_epoch = Some(view.data_epoch.clone());
                     self.card_view = Some(view);
-                    self.prefetch_diffs();
-                    if self.reader_after_view.as_deref() == Some(&key) {
-                        self.reader_after_view = None;
-                        self.open_reader_at(true);
-                    }
                 }
             }
             Msg::ViewCard {
@@ -2269,9 +2078,6 @@ impl App {
                         }
                     }
                     self.card_view_asked = None;
-                    if self.reader_after_view.as_deref() == Some(&key) {
-                        self.reader_after_view = None;
-                    }
                     self.fail(error);
                 }
             }
@@ -2812,7 +2618,6 @@ impl App {
         self.elicitation = None;
         self.view_navigation.clear();
         self.settings_after_view = None;
-        self.reader_after_view = None;
         self.schedules_open = false;
         self.rules = None;
         self.mcp_servers = None;
@@ -3189,33 +2994,8 @@ impl App {
         self.submit_view_request(request, None);
     }
 
+    /// Opens the reader on what is selected.
     fn open_reader(&mut self) {
-        self.open_reader_at(false);
-    }
-
-    /// Asks for the PR diffs the detail on screen references, so it counts them and `d` opens at once.
-    fn prefetch_diffs(&mut self) {
-        let Some(view) = self.card_view.as_ref() else { return };
-        let diffs: Vec<(String, String, String)> = view
-            .sections
-            .iter()
-            .flat_map(|section| &section.items)
-            .filter_map(|item| match item {
-                alondra_view_model::Item::ContentRef(content)
-                    if content.kind == alondra_view_model::ContentKind::Diff =>
-                {
-                    Some((content.fetch.clone(), diff_pull_request(&content.fetch)?, content.digest.clone()?))
-                }
-                _ => None,
-            })
-            .collect();
-        for (route, id, head) in diffs {
-            self.fetch_diff(&route, &id, &head);
-        }
-    }
-
-    /// Opens the reader on what is selected; `to_diff` puts the cursor on the diff's files.
-    fn open_reader_at(&mut self, to_diff: bool) {
         if let Some(view) = self
             .card_view
             .as_ref()
@@ -3234,17 +3014,8 @@ impl App {
                             }
                         }
                         alondra_view_model::Item::ContentRef(content)
-                            if content.kind == alondra_view_model::ContentKind::Diff =>
+                            if content.kind != alondra_view_model::ContentKind::Diff =>
                         {
-                            if let (Some(id), Some(head)) = (diff_pull_request(&content.fetch), content.digest.as_ref()) {
-                                parts.push(Part::Diff {
-                                    route: content.fetch.clone(),
-                                    id,
-                                    head: head.clone(),
-                                });
-                            }
-                        }
-                        alondra_view_model::Item::ContentRef(content) => {
                             parts.push(Part::File {
                                 name: content.title.clone(),
                                 route: content.fetch.clone(),
@@ -3271,10 +3042,10 @@ impl App {
             }
             parts.insert(0, Part::Text(text));
             for part in &parts {
-                match part {
-                    Part::Diff { route, id, head } => self.fetch_diff(route, id, head),
-                    Part::File { route, kind, .. } if files::read_up_front(*kind) => self.fetch(route),
-                    Part::File { .. } | Part::Text(_) => {}
+                if let Part::File { route, kind, .. } = part
+                    && files::read_up_front(*kind)
+                {
+                    self.fetch(route);
                 }
             }
             let first_card = view
@@ -3319,8 +3090,6 @@ impl App {
                 total: 0,
                 find: None,
                 picking: false,
-                folds: HashMap::new(),
-                to_diff,
                 show_from: None,
             });
             self.rebuild_reader();
@@ -3379,8 +3148,6 @@ impl App {
                 total: 0,
                 find: None,
                 picking: false,
-                folds: HashMap::new(),
-                to_diff,
                 show_from: None,
             });
             self.rebuild_reader();
@@ -3394,20 +3161,9 @@ impl App {
         };
         let drawn = self.picker.as_ref().filter(|p| files::graphics(p.protocol_type()).is_some());
         let mut blocks = vec![];
-        for (index, part) in r.parts.iter().enumerate() {
+        for part in &r.parts {
             match part {
                 Part::Text(t) => blocks.extend(md::parse(t)),
-                Part::Diff { route, head, .. } => match self.files.get(&diff_key(route, head)) {
-                    Some(Ok(files::FileBody::Diff(diff))) => blocks.extend(md::diff::blocks(diff, index, |file| {
-                        let at = md::diff::At { part: index, file };
-                        r.folds.get(&at).copied().unwrap_or_else(|| diff.files[file].starts_folded())
-                    })),
-                    Some(Err(e)) => blocks.push(Block::para(&trf!(
-                        "Could not load the changes: {e}",
-                        "No se pudieron cargar los cambios: {e}"
-                    ))),
-                    _ => blocks.push(Block::para(tr!("Loading the changes…", "Cargando los cambios…"))),
-                },
                 Part::File { name, route, kind, size } => {
                     blocks.push(Block::label(&format!("{} {name}", files::glyph(*kind))));
                     let opens = md::Target {
@@ -3444,32 +3200,6 @@ impl App {
         }
         r.blocks = blocks;
         r.settle_cursor();
-        if r.to_diff
-            && let Some(first) = r.blocks.iter().position(|b| matches!(b.kind, md::Kind::DiffEntry(_)))
-        {
-            r.to_diff = false;
-            r.cursor = first;
-            r.show_from = Some(first - 1);
-        }
-    }
-
-    /// Folds or unfolds the diff file under the cursor; on the list, unfolds it and goes to it.
-    fn diff_file(&mut self) {
-        let Some(r) = self.reader.as_mut() else { return };
-        let (header, open) = match r.blocks.get(r.cursor).map(|b| &b.kind) {
-            Some(md::Kind::DiffFile(header)) => (header.clone(), false),
-            Some(md::Kind::DiffEntry(header)) => (header.clone(), true),
-            _ => return,
-        };
-        r.folds.insert(header.at, !open && !header.folded);
-        self.rebuild_reader();
-        let Some(r) = self.reader.as_mut() else { return };
-        if let Some(at) = r.header(header.at) {
-            r.cursor = at;
-            if open {
-                r.show_from = Some(at);
-            }
-        }
     }
 
     fn reader_cmd(&mut self, cmd: Cmd) {

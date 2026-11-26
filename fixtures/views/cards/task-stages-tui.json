@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "tui",
-  "version": "v9051b10682ea9693",
+  "version": "v202c9decd699e541",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -305,12 +305,6 @@
           "title_is_separate": true,
           "why": "Two checks passed; one is still running, and the branch is up to date with main.",
           "meta": "Alondra · Demo Garden",
-          "content_row": {
-            "kind": "diff",
-            "icon": "pull_request",
-            "label": "Changes",
-            "summary": "4 files · +120 −30"
-          },
           "link": {
             "kind": "view",
             "key": "card:hf-weekly-2026-09-30"

@@ -3,27 +3,12 @@
 
 use std::collections::BTreeMap;
 
-use alondra_domain_rules::PrId;
 use alondra_core::now_millis;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::keys::{self, Cmd, Motion};
 use super::{App, Flow, Key, Msg, Pane, Part, Screen, Target, md, unavailable};
 use crate::ops::{self, MessageKind};
-
-pub(super) fn review_clone_flow(
-    selected: &Key,
-    pr_id: &str,
-    number: u64,
-    dir: std::path::PathBuf,
-) -> Option<Flow> {
-    alondra_core::id::valid(pr_id).then(|| Flow::Review {
-        key: selected.clone(),
-        pr: PrId(pr_id.to_string()),
-        number,
-        dir,
-    })
-}
 
 impl App {
     pub fn inbox_keys(&self) -> Vec<Key> {
@@ -346,7 +331,9 @@ impl App {
                     self.fail(super::view_render::update_to_use());
                 }
                 alondra_view_model::Link::Local { local } => match local {
-                    alondra_view_model::LocalLink::Unsupported => self.fail(super::view_render::update_to_use()),
+                    alondra_view_model::LocalLink::Unsupported => {
+                        self.fail(super::view_render::update_to_use())
+                    }
                     alondra_view_model::LocalLink::Attach { .. } => {
                         self.fail(tr!(
                             "Alondra no longer opens a node's terminal: its detail has its state and its cards",
@@ -361,29 +348,6 @@ impl App {
                         self.flash(trf!(
                             "Local file reference: {path}",
                             "Referencia de archivo local: {path}"
-                        ));
-                    }
-                    alondra_view_model::LocalLink::ReviewClone {
-                        repo, pr, pr_id, ..
-                    } => {
-                        if !alondra_core::id::valid(pr_id) {
-                            self.fail(tr!(
-                                "Invalid PR review target",
-                                "Destino de revisión de PR no válido"
-                            ));
-                            return Flow::Go;
-                        }
-                        if let Some(dir) = super::clone_of(None, repo) {
-                            if let Some(flow) = review_clone_flow(selected, pr_id, *pr, dir) {
-                                return flow;
-                            }
-                        }
-                        let key = format!("pull_request:{pr_id}");
-                        self.navigate_view(&key);
-                        self.reader_after_view = Some(key);
-                        self.flash(tr!(
-                            "Opening the PR diff…",
-                            "Abriendo las diferencias de la PR…"
                         ));
                     }
                 },

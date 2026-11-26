@@ -9,22 +9,6 @@ import XCTest
 final class PRReviewFeatureTests: XCTestCase {
     private let key = ViewKey.pullRequest("github.com/example/repo#12")
 
-    private nonisolated static let diffText = """
-    diff --git a/Sources/App.swift b/Sources/App.swift
-    --- a/Sources/App.swift
-    +++ b/Sources/App.swift
-    @@ -1,2 +1,2 @@
-    -let a = 1
-    +let a = 2
-     let b = 3
-    diff --git a/Cargo.lock b/Cargo.lock
-    --- a/Cargo.lock
-    +++ b/Cargo.lock
-    @@ -1,1 +1,1 @@
-    -version = 1
-    +version = 2
-    """
-
     private static let mergeAction = """
     {"id":"merge:github.com/example/repo#12@3~abcdef12","label":"Merge","style":"primary","presentation":"menu",
      "options":[{"id":"merge","label":"Merge commit","style":"secondary","input":{"kind":"none"}},
@@ -37,7 +21,7 @@ final class PRReviewFeatureTests: XCTestCase {
      "input":{"kind":"none"},"attachments":false,"enabled":true}
     """
 
-    private func document(adding actions: [String] = [], head: String? = nil) throws -> ViewDocument {
+    private func document(adding actions: [String] = []) throws -> ViewDocument {
         try Fixtures.document("pull-request-ios", edit: { object in
             if !actions.isEmpty {
                 var bar = items(of: "actions", in: object)
@@ -48,18 +32,12 @@ final class PRReviewFeatureTests: XCTestCase {
                 bar[0]["actions"] = inner
                 replaceItems(of: "actions", in: &object, with: bar)
             }
-            if let head {
-                var refs = items(of: "diff", in: object)
-                refs[0]["digest"] = head
-                replaceItems(of: "diff", in: &object, with: refs)
-            }
         })
     }
 
     private func store(
         requests: LockIsolated<[ActionRequest]> = LockIsolated([]),
         reply: String = #"{"protocol":1,"outcome":"applied","message":"Done"}"#,
-        diffs: LockIsolated<[String?]> = LockIsolated([]),
         dismissed: LockIsolated<Bool> = LockIsolated(false)
     ) -> TestStoreOf<PRReviewFeature> {
         let store = TestStore(initialState: PRReviewFeature.State(key: key)) {
@@ -73,10 +51,6 @@ final class PRReviewFeatureTests: XCTestCase {
         } withDependencies: {
             $0.uuid = .incrementing
             $0.dismiss = DismissEffect { dismissed.setValue(true) }
-            $0.viewsClient.fetchDiff = { ref in
-                diffs.withValue { $0.append(ref.digest) }
-                return FetchedDiff(text: Self.diffText)
-            }
             $0.viewsClient.perform = { request in
                 requests.withValue { $0.append(request) }
                 return try Fixtures.response(reply)
@@ -91,13 +65,12 @@ final class PRReviewFeatureTests: XCTestCase {
 
         XCTAssertEqual(review.title, "Add the compact schedule editor")
         XCTAssertEqual(review.facts.map(\.value),
-                       ["example/repo", "main", "feature/compact-schedule-editor", "4 files · +120 −30"])
+                       ["example/repo", "main", "feature/compact-schedule-editor"])
         XCTAssertEqual(review.checks.map(\.name), ["Build", "Unit tests", "Lint"])
         XCTAssertEqual(review.checks.map(\.state), [.pass, .pass, .pending])
         XCTAssertTrue(review.description?.text.hasPrefix("Replaces the long schedule form") == true)
-        XCTAssertEqual(review.diff?.digest, "abcdef12")
         XCTAssertEqual(review.pageURL, URL(string: "https://github.com/example/repo/pull/12"))
-        XCTAssertEqual(review.requestChanges?.comments?.kind, .diffLines)
+        XCTAssertNotNil(review.requestChanges)
         XCTAssertEqual(review.merge?.options.map(\.id), ["merge", "squash"])
         XCTAssertNotNil(review.resolveConflicts)
     }
@@ -109,98 +82,30 @@ final class PRReviewFeatureTests: XCTestCase {
         XCTAssertNil(PRReview.pageURL("https://notgithub.com/o/r/pull/1"))
     }
 
-    func testShowsTheDiffOfTheCurrentHeadParsedAndFoldsGeneratedFiles() async throws {
-        let diffs = LockIsolated<[String?]>([])
-        let store = store(diffs: diffs)
-
-        await store.send(.screen(.loaded(try document())))
-        await store.receive(\.diffLoaded)
-
-        XCTAssertEqual(diffs.value, ["abcdef12"])
-        XCTAssertEqual(store.state.diff, .loaded(UnifiedDiff.parse(Self.diffText)))
-        XCTAssertEqual(store.state.collapsed, ["Cargo.lock"])
-        XCTAssertEqual(store.state.actions.dataEpoch, "test-epoch")
-    }
-
-    func testAnUnchangedHeadIsNotFetchedAgain() async throws {
-        let diffs = LockIsolated<[String?]>([])
-        let store = store(diffs: diffs)
-
-        await store.send(.screen(.loaded(try document())))
-        await store.receive(\.diffLoaded)
-        await store.send(.screen(.loaded(try Fixtures.document("pull-request-ios", version: "v2"))))
-
-        XCTAssertEqual(diffs.value, ["abcdef12"])
-    }
-
-    func testAMovedHeadDropsTheLineCommentsAndFetchesItsDiff() async throws {
-        let diffs = LockIsolated<[String?]>([])
-        let store = store(diffs: diffs)
-        await store.send(.screen(.loaded(try document())))
-        await store.receive(\.diffLoaded)
-        await store.send(.comment(anchor: "Sources/App.swift:new:1", ActionComment(anchor: "Sources/App.swift:new:1", text: "Why 2?")))
-        XCTAssertEqual(store.state.comments.count, 1)
-
-        await store.send(.screen(.loaded(try document(head: "feed1234"))))
-        await store.receive(\.diffLoaded)
-
-        XCTAssertEqual(diffs.value, ["abcdef12", "feed1234"])
-        XCTAssertTrue(store.state.comments.isEmpty)
-        XCTAssertEqual(store.state.diffDigest, "feed1234")
-    }
-
-    func testADiffThatArrivesForAnOldHeadIsIgnored() async throws {
-        let store = store()
-        await store.send(.screen(.loaded(try document())))
-        await store.receive(\.diffLoaded)
-        let shown = store.state.diff
-
-        await store.send(.diffLoaded(digest: "old0000", []))
-        await store.send(.diffFailed(digest: "old0000", "late"))
-
-        XCTAssertEqual(store.state.diff, shown)
-    }
-
-    func testAFailedDiffCanBeTriedAgain() async throws {
-        let attempts = LockIsolated(0)
-        let store = TestStore(initialState: PRReviewFeature.State(key: key)) { PRReviewFeature() } withDependencies: {
-            $0.viewsClient.fetchDiff = { _ in
-                if attempts.withValue({ $0 += 1; return $0 }) == 1 { throw ViewsClientError.missingView }
-                return FetchedDiff(text: Self.diffText, truncated: true)
-            }
-        }
-        store.exhaustivity = .off
-
-        await store.send(.screen(.loaded(try document())))
-        await store.receive(\.diffFailed)
-        XCTAssertEqual(store.state.diff, .failed("Couldn’t load the diff. Try again."))
-        await store.send(.retryDiff)
-        await store.receive(\.diffLoaded)
-
-        XCTAssertEqual(store.state.diff, .loaded(UnifiedDiff.parse(Self.diffText)))
-        XCTAssertTrue(store.state.diffTruncated, "a diff the Mac cut says so")
-    }
-
-    func testAViewWithoutADiffShowsNone() async throws {
-        let store = store()
+    func testAnOlderDaemonsDiffSectionLoadsNothingMore() async throws {
+        let store = TestStore(initialState: PRReviewFeature.State(key: key)) { PRReviewFeature() }
         let document = try Fixtures.document("pull-request-ios", edit: { object in
-            object["sections"] = (object["sections"] as? [[String: Any]] ?? []).filter { $0["id"] as? String != "diff" }
+            var sections = object["sections"] as? [[String: Any]] ?? []
+            sections.removeAll { $0["id"] as? String == "diff" }
+            sections.append(["id": "diff", "title": "Changes", "collapsed": false, "items": [[
+                "type": "content_ref", "kind": "diff", "title": "Changes", "size": 120, "digest": "abcdef12",
+                "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff", "commentable": false,
+            ]]])
+            object["sections"] = sections
         })
 
-        await store.send(.screen(.loaded(document)))
-
-        XCTAssertEqual(store.state.diff, .unavailable)
+        await store.send(.screen(.loaded(document))) {
+            $0.screen.document = document
+            $0.screen.phase = .loaded
+            $0.actions.dataEpoch = document.dataEpoch
+        }
+        XCTAssertEqual(store.state.review?.title, "Add the compact schedule editor")
     }
 
-    func testRequestChangesSendsTheLineCommentsAndTheNote() async throws {
+    func testRequestChangesSendsTheNote() async throws {
         let requests = LockIsolated<[ActionRequest]>([])
         let store = store(requests: requests)
         await store.send(.screen(.loaded(try document())))
-        await store.receive(\.diffLoaded)
-        let second = ActionComment(anchor: "Sources/App.swift:new:2", text: "Keep b")
-        let first = ActionComment(anchor: "Sources/App.swift:new:1", text: "Why 2?")
-        await store.send(.comment(anchor: second.anchor, second))
-        await store.send(.comment(anchor: first.anchor, first))
         let changes = try XCTUnwrap(store.state.review?.requestChanges)
 
         await store.send(.perform(changes))
@@ -215,14 +120,12 @@ final class PRReviewFeatureTests: XCTestCase {
         let request = try XCTUnwrap(requests.value.first)
         XCTAssertEqual(request.actionId, changes.id)
         XCTAssertEqual(request.input.text, "Please revisit")
-        XCTAssertEqual(request.input.comments, [first, second])
     }
 
     func testAMergeTheServerHoldsBackOpensNothingAndSendsNothing() async throws {
         let requests = LockIsolated<[ActionRequest]>([])
         let store = store(requests: requests)
         await store.send(.screen(.loaded(try document())))
-        await store.receive(\.diffLoaded)
         let merge = try XCTUnwrap(store.state.review?.merge)
         XCTAssertFalse(merge.enabled, "the server's own fixture holds it back until a question is answered")
 
@@ -238,7 +141,6 @@ final class PRReviewFeatureTests: XCTestCase {
         let requests = LockIsolated<[ActionRequest]>([])
         let store = store(requests: requests)
         await store.send(.screen(.loaded(try document(adding: [Self.mergeAction]))))
-        await store.receive(\.diffLoaded)
         let merge = try XCTUnwrap(store.state.review?.merge)
 
         await store.send(.perform(merge, optionID: "squash"))
@@ -254,7 +156,6 @@ final class PRReviewFeatureTests: XCTestCase {
         let requests = LockIsolated<[ActionRequest]>([])
         let store = store(requests: requests)
         await store.send(.screen(.loaded(try document(adding: [Self.conflictsAction]))))
-        await store.receive(\.diffLoaded)
         let conflicts = try XCTUnwrap(store.state.review?.resolveConflicts)
 
         await store.send(.perform(conflicts))
@@ -273,7 +174,6 @@ final class PRReviewFeatureTests: XCTestCase {
             return try Fixtures.response(#"{"protocol":1,"outcome":"rejected","message":"Checks are failing"}"#)
         }
         await store.send(.screen(.loaded(try document(adding: [Self.conflictsAction]))))
-        await store.receive(\.diffLoaded)
 
         await store.send(.perform(try XCTUnwrap(store.state.review?.resolveConflicts)))
         await store.receive(\.actions.sent)
@@ -282,31 +182,6 @@ final class PRReviewFeatureTests: XCTestCase {
 
         XCTAssertTrue(dismissed.value)
         XCTAssertFalse(performed.value, "the app delivers it and reports the outcome; the screen never waits")
-    }
-
-    func testFoldingOneFileOrAllOfThem() async throws {
-        let store = store()
-        await store.send(.screen(.loaded(try document())))
-        await store.receive(\.diffLoaded)
-        XCTAssertEqual(store.state.collapsed, ["Cargo.lock"])
-
-        await store.send(.toggleFile("Sources/App.swift"))
-        XCTAssertEqual(store.state.collapsed, ["Cargo.lock", "Sources/App.swift"])
-        await store.send(.toggleAllFiles)
-        XCTAssertEqual(store.state.collapsed, [])
-        await store.send(.toggleAllFiles)
-        XCTAssertEqual(store.state.collapsed, ["Cargo.lock", "Sources/App.swift"])
-    }
-
-    func testACommentCanBeEditedAndRemoved() async {
-        let store = store()
-        let comment = ActionComment(anchor: "a", text: "one")
-
-        await store.send(.comment(anchor: "a", comment))
-        await store.send(.comment(anchor: "a", ActionComment(anchor: "a", text: "two")))
-        XCTAssertEqual(store.state.comments["a"]?.text, "two")
-        await store.send(.comment(anchor: "a", nil))
-        XCTAssertTrue(store.state.comments.isEmpty)
     }
 
     func testALinkToAScreenOpensItInTheTabAndAWebLinkOpensNothing() async {
