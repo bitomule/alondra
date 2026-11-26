@@ -85,12 +85,14 @@ low_opt_rust_test(
 
 # Every family of views renders a real-size domain within its budget, with alondra_views built as
 # the daemon links it: without the checks only its own unit tests compile in.
-# It stays at the build's opt-level: the budget is a speed measurement.
+# It stays at the build's opt-level: the budget counts the instructions of that code.
 rust_test(
     name = "views_budget_test",
     size = "small",
     crate_root = "tests/views_budget.rs",
-    srcs = ["tests/views_budget.rs"],
+    srcs = ["tests/views_budget.rs", "tests/views_budget_meter.rs"],
+    # The budgets count the whole process's instructions: one test at a time.
+    args = ["--test-threads=1"],
     edition = "2024",
     version = "0.1.0",
     deps = [
