@@ -217,6 +217,29 @@ fn closing_after_the_peer_hung_up_is_not_a_failure() {
     close_after_reply(&server, std::net::Shutdown::Both);
 }
 
+/// Replies and keeps the connection open until the hook acknowledges. The hook may acknowledge and
+/// exit before this thread runs again, and macOS refuses socket options with `EINVAL` once the peer
+/// has closed, so the timeout is set before the reply. `replied` is where a test lets the hook finish.
+fn reply_and_await_ack(mut stream: &std::os::unix::net::UnixStream, body: &str, replied: impl FnOnce()) {
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).unwrap();
+    stream.write_all(&200u16.to_be_bytes()).unwrap();
+    stream.write_all(body.as_bytes()).unwrap();
+    replied();
+    let mut ack = [0];
+    stream.read_exact(&mut ack).expect("the hook acknowledges a complete reply while the connection stays open");
+    assert_eq!(ack, [6]);
+}
+
+#[test]
+fn a_hook_that_exits_before_the_daemon_waits_for_it_is_still_acknowledged() {
+    let (server, mut hook) = std::os::unix::net::UnixStream::pair().unwrap();
+    reply_and_await_ack(&server, "{}", move || {
+        hook.read_exact(&mut [0; 4]).unwrap();
+        hook.write_all(&[6]).unwrap();
+        drop(hook);
+    });
+}
+
 fn run_hook(name: &str, daemon: Daemon, launched: bool, input: &[u8]) -> std::process::Output {
     let scratch_directory = crate::test_support::Directory::new();
     let home = scratch_directory.parent().unwrap().join(format!("alondra-hook-{name}-{}", std::process::id()));
@@ -240,14 +263,7 @@ fn run_hook(name: &str, daemon: Daemon, launched: bool, input: &[u8]) -> std::pr
                         close_after_reply(&stream, std::net::Shutdown::Write);
                         let _ = stream.read(&mut [0]);
                     }
-                    Daemon::RepliesAndAwaitsAck(body) => {
-                        stream.write_all(&200u16.to_be_bytes()).unwrap();
-                        stream.write_all(body.as_bytes()).unwrap();
-                        stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).unwrap();
-                        let mut ack = [0];
-                        stream.read_exact(&mut ack).expect("the hook acknowledges a complete reply while the connection stays open");
-                        assert_eq!(ack, [6]);
-                    }
+                    Daemon::RepliesAndAwaitsAck(body) => reply_and_await_ack(&stream, body, || ()),
                     Daemon::RepliesAndDropsAck(body) => {
                         stream.write_all(&200u16.to_be_bytes()).unwrap();
                         stream.write_all(body.as_bytes()).unwrap();
