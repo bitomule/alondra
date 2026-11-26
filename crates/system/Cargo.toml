@@ -21,6 +21,8 @@ sysinfo.workspace = true
 tokio.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "libc", "objc2"] }
 security-framework = "3.7.0"
 objc2 = "0.6.4"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSDate", "NSError", "NSTimeZone", "NSNotification", "NSString", "NSOperation", "NSURL", "NSValue", "block2"] }

@@ -11,6 +11,7 @@ host_model = []
 
 [dependencies]
 alondra-agent-protocol.workspace = true
+alondra-core.workspace = true
 alondra-engine-ports.workspace = true
 alondra-agent-application.workspace = true
 alondra-provider-contract.workspace = true

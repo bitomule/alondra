@@ -18,6 +18,4 @@ pub mod domain_authority;
 pub mod domain_content;
 pub mod hook_text;
 pub mod node_cost;
-#[cfg(target_os = "macos")]
-pub mod schedule_clock;
 pub mod schedules;

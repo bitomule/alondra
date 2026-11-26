@@ -8,7 +8,7 @@ use crate::principal::Principal;
 use crate::domain_store::{StoreError, TransportIdentity};
 use alondra_engine_ports::Runtime;
 use alondra_engine_ports::domain_api::Lane;
-pub(crate) use alondra_daemon_engine::reply::status_for;
+pub(crate) use crate::reply::status_for;
 use std::path::Path as FsPath;
 use alondra_domain_model::*;
 use axum::extract::{ConnectInfo, Path, RawQuery, State, rejection::JsonRejection};

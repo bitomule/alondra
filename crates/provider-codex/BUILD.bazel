@@ -6,6 +6,7 @@ load("//bazel/rules:rust.bzl", "rust_library")
 
 _DEPS = [
     "//crates/codex-protocol:codex_protocol",
+    "//crates/core:alondra_core",
     "//crates/engine-ports:engine_ports",
     "//crates/agent-application:agent_application",
     "//crates/provider-contract:provider_contract",

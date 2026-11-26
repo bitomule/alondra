@@ -114,7 +114,7 @@ pub fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOptio
     if let Some(url) = str_field(p, "url") {
         detail.push(url);
     }
-    let accept_hint = alondra_provider_claude::only_text_field(p.get("requested_schema").unwrap_or(&Value::Null)).map(|(_, title)| format!("Write the {title}"));
+    let accept_hint = alondra_core::model::elicitation::only_text_field(p.get("requested_schema").unwrap_or(&Value::Null)).map(|(_, title)| format!("Write the {title}"));
     (
         title,
         Some(detail.into_iter().filter(|d| !d.is_empty()).collect::<Vec<_>>().join("\n\n")),
@@ -126,7 +126,7 @@ pub fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOptio
 }
 
 pub fn elicitation_content(schema: &Value, said: &str, filled: Option<&serde_json::Map<String, Value>>) -> Value {
-    Value::Object(alondra_provider_claude::elicitation_content(schema, said, filled))
+    Value::Object(alondra_core::model::elicitation::elicitation_content(schema, said, filled))
 }
 
 #[cfg(test)]

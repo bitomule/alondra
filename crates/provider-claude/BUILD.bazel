@@ -21,6 +21,7 @@ _PROVIDER_TEST_SOURCES = _PROVIDER_SOURCES + [
 
 _PROVIDER_DEPS = [
     "//crates/agent-protocol:agent_protocol",
+    "//crates/core:alondra_core",
     "//crates/engine-ports:engine_ports",
     "//crates/agent-application:agent_application",
     "//crates/provider-contract:provider_contract",

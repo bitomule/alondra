@@ -7,6 +7,7 @@ use crate::engine::EngineOf as _;
 use alondra_engine_ports::gate::GateOf as _;
 use crate::locks::Poisonable as _;
 use alondra_engine_ports::Runtime;
+use alondra_engine_ports::schedule_clock::{ClockChange, ScheduleClock};
 use crate::domain_store::StoreError;
 use alondra_engine_ports::worktrees::Workplace;
 use alondra_domain_model::{
@@ -798,26 +799,27 @@ fn rebased_schedules(
 
 enum WakeReason {
     Schedule,
-    Clock(crate::schedule_clock::ClockChange),
+    Clock(ClockChange),
     Deadline,
     Closed,
 }
 
 async fn wait_for_next_run(
+    clock: &dyn ScheduleClock,
     deadline: Option<i64>,
     schedules: &mut tokio::sync::watch::Receiver<alondra_domain_model::Revision>,
     usage: &mut tokio::sync::watch::Receiver<Option<alondra_engine_ports::orchestrator::Exhausted>>,
-    clock_changes: &mut tokio::sync::watch::Receiver<crate::schedule_clock::ClockChange>,
+    clock_changes: &mut tokio::sync::watch::Receiver<ClockChange>,
     turn: &mut tokio::sync::watch::Receiver<u64>,
 ) -> WakeReason {
     if let Some(deadline) = deadline {
-        let (_timer, mut timer_fired) = crate::schedule_clock::WallTimer::at(deadline);
+        let mut timer = clock.timer_at(deadline);
         tokio::select! {
             result = schedules.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
             result = usage.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
             result = turn.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
             result = clock_changes.changed() => if result.is_ok() { WakeReason::Clock(*clock_changes.borrow_and_update()) } else { WakeReason::Closed },
-            result = timer_fired.changed() => if result.is_ok() { WakeReason::Deadline } else { WakeReason::Closed },
+            result = timer.receiver.wait_for(|fired| *fired) => if result.is_ok() { WakeReason::Deadline } else { WakeReason::Closed },
         }
     } else {
         tokio::select! {
@@ -829,6 +831,7 @@ async fn wait_for_next_run(
     }
 }
 
+/// Runs the schedules as they fall due, waiting on the wall clock the registry gives.
 pub async fn run(
     domain: Arc<dyn Runtime>,
     home: PathBuf,
@@ -837,24 +840,26 @@ pub async fn run(
     let mut schedule_changes = domain.subscribe_schedules();
     let mut usage_changes = domain.engine().usage_changes();
     let mut turn = domain.gate().subscribe();
-    let mut system_clock = crate::schedule_clock::ClockChanges::new();
+    let clock = domain.ports().schedule_clock();
+    let mut system_clock = clock.changes();
     loop {
         run_cycle(&*domain, &home, due_enabled).await?;
         let deadline = if domain.engine().usage_paused() { None } else { nearest_run(&*domain.state(), due_enabled) };
         match wait_for_next_run(
+            &*clock,
             deadline,
             &mut schedule_changes,
             &mut usage_changes,
-            system_clock.receiver(),
+            &mut system_clock.receiver,
             &mut turn,
         )
         .await
         {
-            WakeReason::Clock(crate::schedule_clock::ClockChange::SystemClock) => {
+            WakeReason::Clock(ClockChange::SystemClock) => {
                 run_cycle(&*domain, &home, due_enabled).await?;
                 rebase_runs(&*domain, false)?;
             }
-            WakeReason::Clock(crate::schedule_clock::ClockChange::TimeZone) => {
+            WakeReason::Clock(ClockChange::TimeZone) => {
                 rebase_runs(&*domain, true)?
             }
             WakeReason::Closed => return Ok(()),
@@ -1019,6 +1024,40 @@ mod tests {
             rebased_schedules(&rebase_state, &BTreeSet::new(), 1_000_000_000_000, true);
         assert_eq!(after_time_zone_change.len(), 1);
         assert!(after_time_zone_change[0].next_run.unwrap() > 1_000_000_000_000);
+    }
+
+    // The runner sets the wall clock's timer at the nearest run and claims that run once the timer
+    // fires, never before.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_runner_claims_a_due_schedule_when_the_wall_clock_reaches_its_next_run() {
+        let fixture = Fixture::new();
+        let clock = Arc::new(alondra_engine_doubles::schedule_clock::Clock::default());
+        fixture.domain.ports().provide::<dyn ScheduleClock>(clock.clone());
+        let at = alondra_core::now_millis() + 300;
+        let mut schedule = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
+        schedule.enabled = true;
+        schedule.next_run = Some(at);
+        schedule.revision += 1;
+        execute_system(&*fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
+        let due_runs = || fixture.domain.state().unwrap().schedule.runs.values().filter(|run| run.origin == ScheduleRunOrigin::Due).count();
+
+        let runner = tokio::spawn(run(fixture.domain.clone(), fixture.home.clone(), true));
+        tokio::time::timeout(std::time::Duration::from_secs(30), clock.asked_for(at)).await.expect("the runner sets a timer at the next run");
+        assert_eq!(due_runs(), 0, "nothing runs before the timer fires");
+
+        while alondra_core::now_millis() < at {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let mut changes = fixture.domain.subscribe_schedules();
+        clock.reach(at);
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while due_runs() == 0 {
+                changes.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("the runner claims the run once its timer fires");
+        runner.abort();
     }
 
     #[test]

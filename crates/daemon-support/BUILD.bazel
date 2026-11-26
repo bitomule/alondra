@@ -1,4 +1,4 @@
-load("//tools/layers:crates.bzl", "application_crate")
+load("//tools/layers:crates.bzl", "port_crate")
 load("//bazel/rules:tree.bzl", "repo_tree")
 load("//bazel/rules:rust_inputs_test.bzl", "rust_inputs_test")
 load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
@@ -11,10 +11,9 @@ WORKSPACE_DEPS = [
     "//crates/foundation:foundation",
     "//crates/domain-model:domain_model",
     "//crates/engine-ports:engine_ports",
-    "//crates/provider-claude:provider_claude",
 ]
 
-application_crate(
+port_crate(
     name = "daemon_support",
     srcs = glob(["src/**/*.rs"]),
     crate_name = "alondra_daemon_support",
