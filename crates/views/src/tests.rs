@@ -1,3 +1,4 @@
+use alondra_domain_rules::Apply as _;
 use super::*;
 use alondra_domain_model::{
     NodePhase, PauseReason, TaskId,

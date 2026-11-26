@@ -272,7 +272,7 @@ async fn full_stack_fixture_server() {
         return;
     }
     drop(domain);
-    let state = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+    let state = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
     let signing = SigningKey::from_slice(&[41u8; 32]).unwrap();
     let auth = state.auth();
     let device = auth

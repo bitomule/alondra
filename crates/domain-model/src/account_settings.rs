@@ -5,35 +5,8 @@ use super::*;
 use alondra_core::accounts::{AccountBilling, AccountChange, AccountId, AccountKey, AccountState, AccountStatus, Provider, WEIGHT_LIMIT};
 
 impl DomainState {
-    pub(super) fn replace_account_configuration(&mut self, actor: &Actor, config: &alondra_core::accounts::AccountsConfig, expected_version: &str) -> Result<()> {
-        user(actor)?;
-        if expected_version.is_empty() || expected_version != self.account_config_version { return fail("stale_config", "The accounts changed; refresh Settings before saving"); }
-        config.check().map_err(|why| DomainError::new("invalid_input", why))?;
-        if !config.any_enabled_globally() { return fail("invalid_input", "At least one account stays on"); }
-        let ordered = config.ordered_accounts();
-        let keys: BTreeSet<_> = ordered.iter().map(|(key, _)| key.clone()).collect();
-        if let Some(task) = self.tasks.values().find(|task| !task.over() && task.agent_id.is_some() && !keys.contains(&task.account_key())) {
-            return fail("account_in_use", &format!("Open task {} still runs on {}; finish it before removing the account", task.id, task.account_key().wire_id()));
-        }
-        let statuses: Vec<_> = ordered.iter().map(|(key, account)| {
-            let previous = self.accounts.iter().find(|previous| previous.provider == key.provider && previous.id == key.account);
-            let billing = previous.filter(|previous| previous.billing == AccountBilling::PayPerUse).map_or_else(|| account.billing.clone(), |_| AccountBilling::PayPerUse);
-            AccountStatus { provider: key.provider, id: key.account.clone(), name: account.name.clone(), billing,
-                state: if !account.enabled { AccountState::Disabled } else { previous.map_or(AccountState::Unchecked, |previous| if previous.state == AccountState::Disabled { AccountState::Unchecked } else { previous.state }) },
-                native_identity: previous.and_then(|previous| previous.native_identity.clone()), email: previous.and_then(|previous| previous.email.clone()), plan: previous.and_then(|previous| previous.plan.clone()), sign_ins: previous.map_or(0, |previous| previous.sign_ins), profile: previous.and_then(|previous| previous.profile.clone()),
-                antigravity: (key.provider == Provider::Antigravity).then(|| alondra_core::accounts::AntigravityStatus::of(&config.antigravity_settings(&key.account), previous.and_then(|previous| previous.antigravity.as_ref()).is_some_and(|status| status.key_set))) }
-        }).collect();
-        self.record_accounts(&statuses);
-        self.account_order = ordered.into_iter().map(|(key, _)| key).collect();
-        self.account_config_version = alondra_core::accounts::config_version(config);
-        self.account_reserve = alondra_core::usage::Share::of(config.distribution.reserve);
-        self.account_policy = config.distribution.policy;
-        self.account_moves = config.distribution.move_when_exhausted;
-        self.model_catalogs.retain(|catalog| keys.contains(&catalog.account));
-        Ok(())
-    }
 
-    pub(super) fn model_profile_guard(&self, actor: &Actor, provider: Provider, profile: alondra_core::model_selection::ModelProfile, policy: &alondra_core::model_selection::RoleModelPolicy, expected_version: &str) -> Result<()> {
+    pub fn model_profile_guard(&self, actor: &Actor, provider: Provider, profile: alondra_core::model_selection::ModelProfile, policy: &alondra_core::model_selection::RoleModelPolicy, expected_version: &str) -> Result<()> {
         user(actor)?;
         if expected_version.is_empty() || expected_version != self.model_profiles_version { return fail("stale_config", "The model profiles changed; refresh Settings before saving"); }
         if !self.accounts.iter().any(|account| account.provider == provider) { return fail("not_found", "Connect an account of this provider before choosing its models"); }
@@ -61,7 +34,7 @@ impl DomainState {
             .count()
     }
 
-    pub(super) fn validate_account_order(&self, order: &[AccountKey]) -> Result<()> {
+    pub fn validate_account_order(&self, order: &[AccountKey]) -> Result<()> {
         let known: BTreeSet<_> = self.accounts.iter().map(|status| AccountKey::new(status.provider, status.id.clone())).collect();
         let proposed: BTreeSet<_> = order.iter().cloned().collect();
         if order.len() != proposed.len() || proposed != known {
@@ -70,7 +43,7 @@ impl DomainState {
         Ok(())
     }
 
-    pub(super) fn account_order_guard(&self, actor: &Actor, order: &[AccountKey], expected_version: &str) -> Result<()> {
+    pub fn account_order_guard(&self, actor: &Actor, order: &[AccountKey], expected_version: &str) -> Result<()> {
         user(actor)?;
         if expected_version.is_empty() || expected_version != self.account_config_version {
             return fail("stale_config", "The accounts changed; refresh Settings before reordering them");
@@ -78,7 +51,7 @@ impl DomainState {
         self.validate_account_order(order)
     }
 
-    pub(super) fn accounts_guard(&self, actor: &Actor, provider: Provider, change: &AccountChange) -> Result<()> {
+    pub fn accounts_guard(&self, actor: &Actor, provider: Provider, change: &AccountChange) -> Result<()> {
         user(actor)?;
         let Some(account) = change.account() else {
             return match change {
@@ -132,80 +105,6 @@ impl DomainState {
         }
     }
 
-    /// The user set or cleared the key of a named Antigravity account: the daemon already wrote it
-    /// to the account's folder, and only that its credential changed is recorded. The account is
-    /// checked again on its next credential, so its models and usage of the old one go.
-    pub(super) fn record_account_credential(&mut self, actor: &Actor, account: &AccountKey, set: bool) -> Result<()> {
-        user(actor)?;
-        if account.provider != Provider::Antigravity { return fail("invalid_input", "Only an Antigravity account keeps a key of Alondra's"); }
-        if account.account.is_default() { return fail("invalid_input", "The default account is agy's own sign-in: add a named account for a key"); }
-        let Some(status) = self.accounts.iter_mut().find(|status| status.provider == account.provider && status.id == account.account) else {
-            return fail("not_found", "The account is no longer listed");
-        };
-        let Some(antigravity) = status.antigravity.as_mut().filter(|antigravity| !set || antigravity.access.takes_key()) else {
-            return fail("invalid_input", "This account signs in with Google and keeps no key");
-        };
-        antigravity.key_set = set;
-        status.sign_ins += 1;
-        if status.state != AccountState::Disabled { status.state = AccountState::Unchecked; }
-        self.model_catalogs.retain(|catalog| catalog.account != *account);
-        self.account_usage.retain(|usage| !(usage.provider == account.provider && usage.account == account.account));
-        Ok(())
-    }
 
-    /// Makes `change` in the recorded accounts, as the next check will see it.
-    pub(super) fn change_accounts(&mut self, provider: Provider, change: &AccountChange) {
-        let at = |state: &Self, account: &AccountId| state.accounts.iter().position(|s| s.provider == provider && s.id == *account);
-        match change {
-            AccountChange::Rename { account, name } => {
-                if let Some(at) = at(self, account) { self.accounts[at].name = name.trim().into(); }
-            }
-            AccountChange::SetPolicy { policy } => self.account_policy = *policy,
-            AccountChange::SetMoveWhenExhausted { on } => self.account_moves = *on,
-            AccountChange::Connect | AccountChange::Add { .. } => {}
-            AccountChange::Enable { account } => {
-                if let Some(at) = at(self, account) {
-                    self.accounts[at].state = AccountState::Unchecked;
-                }
-            }
-            AccountChange::Disable { account } => {
-                if let Some(at) = at(self, account) {
-                    let status = &mut self.accounts[at];
-                    status.state = AccountState::Disabled;
-                    status.email = None;
-                }
-            }
-            AccountChange::Remove { account } => {
-                self.accounts.retain(|s| !(s.provider == provider && s.id == *account));
-                self.account_usage.retain(|u| !(u.provider == provider && u.account == *account));
-                self.account_order.retain(|key| !(key.provider == provider && key.account == *account));
-                self.model_catalogs.retain(|catalog| !(catalog.account.provider == provider && catalog.account.account == *account));
-            }
-            AccountChange::MoveUp { account } | AccountChange::MoveDown { account } => {
-                let up = matches!(change, AccountChange::MoveUp { .. });
-                if !self.account_order.is_empty() {
-                    if let Some(from) = self.account_order.iter().position(|key| key.provider == provider && key.account == *account) {
-                        let to = if up { from.checked_sub(1) } else { Some(from + 1).filter(|to| *to < self.account_order.len()) };
-                        if let Some(to) = to { self.account_order.swap(from, to); }
-                    }
-                    return;
-                }
-                let same: Vec<usize> = self.accounts.iter().enumerate().filter(|(_, s)| s.provider == provider).map(|(i, _)| i).collect();
-                if let Some(from) = same.iter().position(|i| self.accounts[*i].id == *account) {
-                    let to = if up { from.checked_sub(1) } else { Some(from + 1).filter(|to| *to < same.len()) };
-                    if let Some(to) = to {
-                        self.accounts.swap(same[from], same[to]);
-                    }
-                }
-            }
-            AccountChange::SetWeight { account, weight } => {
-                if let Some(at) = at(self, account)
-                    && let AccountBilling::Subscription { weight: set, .. } = &mut self.accounts[at].billing
-                {
-                    *set = *weight;
-                }
-            }
-        }
-    }
 }
 

@@ -23,7 +23,7 @@ fn reading_the_metrics_folds_the_tasks_that_ended_since_the_last_fold() {
 #[test]
 fn the_inputs_hold_tasks_weeks_spend_without_a_task_and_releases() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let now = 20_752 * DAY_MS;
     insert_task(&store, "t-recent", now - DAY_MS, "opus", true, Some(300), Some(5_000_000));
     insert_task(&store, "t-unpriced", now - 2 * DAY_MS, "codex", false, None, None);

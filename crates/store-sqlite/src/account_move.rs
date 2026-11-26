@@ -136,7 +136,7 @@ mod tests {
     fn store() -> (crate::test_support::Directory, DomainStore) {
         let dir = crate::test_support::Directory::new();
         std::fs::create_dir(&dir).unwrap();
-        let store = DomainStore::open(&dir.join("domain.db")).unwrap();
+        let store = DomainStore::open(&dir.join("domain.db"), &alondra_domain_rules::Rules).unwrap();
         store.conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
         (dir, store)
     }

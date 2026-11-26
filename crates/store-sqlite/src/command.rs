@@ -43,6 +43,7 @@ pub(super) fn stage(
     conn: &Connection,
     base: Base<'_>,
     protected: &alondra_engine_ports::worktrees::WorktreeRules,
+    rules: &dyn DomainRules,
     actor: &Actor,
     envelope: &CommandEnvelope,
     transport: Option<TransportIdentity<'_>>,
@@ -159,7 +160,7 @@ pub(super) fn stage(
     {
         return Err(DomainError::new("session_unreachable", "The task's session is being removed: nothing was sent. Send the work as a new request").into());
     }
-    let (next, outcome) = state.transition(actor, envelope)?;
+    let (next, outcome) = rules.transition(&state, actor, envelope)?;
     if outcome.changed {
         repository::save_changes(conn, journal, &state, &next).context("persisting domain state")?;
         if let Command::RecordScheduleRunFailed { run_id, .. } = &envelope.command

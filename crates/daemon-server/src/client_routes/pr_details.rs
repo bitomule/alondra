@@ -603,6 +603,7 @@ fn parse(id: &str, number: u64, view: &Value) -> Details {
 #[cfg(test)]
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
+    use alondra_domain_rules::Apply as _;
     use super::{Details, PrDetails, hand_back_conflicts, parse};
     use alondra_domain_model::{
         Actor, Command, CommandEnvelope, DeliveryTarget, Instruction, InteractionPayload, MergeMethod, PrState,

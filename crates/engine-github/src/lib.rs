@@ -18,7 +18,7 @@ fn unwired(home: &std::path::Path) -> anyhow::Result<domain_runtime::DomainRunti
     #[cfg(test)]
     {
         alondra_foundation::durability::relax();
-        alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+        alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules));
     }
     let runtime = domain_runtime::DomainRuntime::open_unwired_at(home, &alondra_engine_ports::journal::active_path(home))?;
     alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);

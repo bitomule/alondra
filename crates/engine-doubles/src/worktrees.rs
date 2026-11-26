@@ -743,7 +743,7 @@ mod tests {
     fn the_double_keeps_the_contract_of_the_macs_git() {
         let double = Worktrees::default();
         crate::contract::worktrees(&double, &repository);
-        crate::contract::final_checks(&double, &repository, &slow);
+        crate::contract::final_checks(&double, &repository, &slow, &alondra_domain_rules::Rules);
         crate::contract::saved_work(&double, &crate::contract::Saving {
             task_worktree: &testing::task_worktree, local_commit: &|top| { local_commit(top); }, push: &push, branch_exists: &branch_exists,
         });

@@ -2261,6 +2261,7 @@ fn head_prefix(head: &str) -> &str {
 #[cfg(test)]
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
+    use alondra_domain_rules::Apply as _;
     use crate::engine_tests::Kernel as _;
     use alondra_engine_admission::AdmissionOf as _;
     use super::*;
@@ -2386,7 +2387,7 @@ mod tests {
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
         drop(crate::engine_tests::open(&directory).unwrap());
-        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
+        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let key = p256::ecdsa::SigningKey::from_slice(&[21u8; 32]).unwrap();
         let public_key = STANDARD.encode(key.verifying_key().to_sec1_bytes());
         let auth = daemon.auth();
@@ -2431,7 +2432,7 @@ mod tests {
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
         drop(crate::engine_tests::open(&directory).unwrap());
-        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
+        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let domain = daemon.domain();
         apply_seed_command(&*domain, Actor::User { user_id: "fixture".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,

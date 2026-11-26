@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 
 /// How much of a Task's final result the Tasks that build on it read.
 pub const RESULT_LIMIT: usize = 4_000;
-const TITLE_LIMIT: usize = 120;
+pub const TITLE_LIMIT: usize = 120;
 
 /// A text cut to a limit, and whether the cut left something out.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,38 +61,15 @@ impl DomainState {
         tasks.into_iter().collect()
     }
 
-    pub(super) fn compact_ended_tasks(&mut self, task_ids: &[TaskId]) -> Result<()> {
-        if task_ids.is_empty() || task_ids.len() > 64 {
-            return fail("invalid_input", "Compact between 1 and 64 tasks at a time");
-        }
-        for task_id in task_ids {
-            if !self.tasks.get(task_id).is_some_and(|task| task.state.terminal()) {
-                return fail("conflict", "Only the cards of a done or cancelled task are compacted");
-            }
-        }
-        let kept = self.kept_whole();
-        let compacted: Vec<Interaction> = self
-            .interactions
-            .values()
-            .filter_map(|i| {
-                let task = self.ended_task_of(i).filter(|task| task_ids.contains(&task.id))?;
-                self.compacted(i, task, &kept)
-            })
-            .collect();
-        for i in compacted {
-            self.interactions.insert(i.id.clone(), i);
-        }
-        Ok(())
-    }
 
-    fn ended_task_of(&self, i: &Interaction) -> Option<&Task> {
+    pub fn ended_task_of(&self, i: &Interaction) -> Option<&Task> {
         let Scope::Task { task_id } = &i.scope else { return None };
         self.tasks.get(task_id).filter(|task| task.state.terminal())
     }
 
     /// The cards read whole after their Task ended: a plan another Task implements, and the
     /// decisions a plan review reads.
-    fn kept_whole(&self) -> BTreeSet<InteractionId> {
+    pub fn kept_whole(&self) -> BTreeSet<InteractionId> {
         let mut kept: BTreeSet<InteractionId> = self
             .checklists
             .iter()
@@ -106,7 +83,7 @@ impl DomainState {
     }
 
     /// The card as its ended Task keeps it, or nothing when it already is.
-    fn compacted(&self, i: &Interaction, task: &Task, kept: &BTreeSet<InteractionId>) -> Option<Interaction> {
+    pub fn compacted(&self, i: &Interaction, task: &Task, kept: &BTreeSet<InteractionId>) -> Option<Interaction> {
         let unread = matches!(&i.payload, InteractionPayload::Information { read_by } if read_by.is_empty()) && !i.withdrawn;
         if matches!(i.author, Author::System) || unread || kept.contains(&i.id) {
             return None;

@@ -824,6 +824,7 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
+    use alondra_domain_rules::Apply as _;
     use super::*;
 
     fn run(dir: &Path, args: &[&str]) {

@@ -29,7 +29,7 @@ fn body(i: usize) -> String {
 fn seed_load_bench() {
     let path = std::env::var("ALONDRA_LOAD_BENCH_DB").expect("ALONDRA_LOAD_BENCH_DB");
     let nodes: usize = std::env::var("ALONDRA_LOAD_BENCH_NODES").map_or(20, |n| n.parse().unwrap());
-    let mut store = DomainStore::open(Path::new(&path)).unwrap();
+    let mut store = DomainStore::open(Path::new(&path), &alondra_domain_rules::Rules).unwrap();
     seed(&mut store, nodes);
 }
 

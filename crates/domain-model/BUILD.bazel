@@ -14,7 +14,8 @@ DOMAIN_MODEL_DEPS = all_crate_deps(normal = True) + [
     "//crates/spec-engine:spec_engine",
 ]
 
-# The rules of the domain: every command, the state it changes and the cards it raises.
+# The domain's state, its reads and the guards every screen shares. What a command changes lives in
+# //crates/domain-rules, behind the `DomainRules` port.
 domain_crate(
     name = "domain_model",
     srcs = production_sources(),
@@ -36,7 +37,6 @@ low_opt_rust_test(
     name = "domain_model_test",
     timeout = "moderate",
     srcs = glob(["src/**/*.rs"]),
-    compile_data = ["fixtures/inbox_order.json", "//:docs/architecture/cards.md", "//:docs/architecture/state-machines.md"],
     crate_name = "alondra_domain_model",
     crate_root = "src/lib.rs",
     deps = DOMAIN_MODEL_DEPS + all_crate_deps(normal_dev = True),
@@ -50,7 +50,7 @@ rust_binary(
     testonly = True,
     srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
     edition = "2024",
-    deps = [":domain_model", "@crates//:libc"] + all_crate_deps(normal = True),
+    deps = [":domain_model", "//crates/domain-rules:domain_rules", "@crates//:libc"] + all_crate_deps(normal = True),
 )
 
 low_opt_rust_test(
@@ -59,7 +59,7 @@ low_opt_rust_test(
     crate_root = "benches/read_index_cost.rs",
     srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
     edition = "2024",
-    deps = [":domain_model", "@crates//:libc"] + all_crate_deps(normal = True),
+    deps = [":domain_model", "//crates/domain-rules:domain_rules", "@crates//:libc"] + all_crate_deps(normal = True),
 )
 
 # The library compiles only production sources: a test file among its inputs would rebuild every
@@ -67,14 +67,11 @@ low_opt_rust_test(
 rust_inputs_test(
     name = "production_inputs_test",
     size = "small",
-    required_sources = ["crates/domain-model/src/lib.rs", "crates/domain-model/src/rules.rs"],
+    required_sources = ["crates/domain-model/src/lib.rs", "crates/domain-model/src/checks.rs"],
     source_dir = "crates/domain-model/src/",
     target_under_test = ":domain_model",
-    test_only_sources = ["crates/domain-model/src/tests.rs", "crates/domain-model/src/lifecycle_tests.rs"],
     test_sources = False,
 )
-
-exports_files(["src/tests.rs"])
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
@@ -84,6 +81,22 @@ filegroup(
     name = "report_sources",
     srcs = production_sources(),
     visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/cli-report:__pkg__", "//crates/views:__pkg__"],
+)
+
+# The sources the rules' tests scan with theirs: the refusal catalog against every code a guard or a
+# rule produces, and the identity of a pull request against any provider's name.
+filegroup(
+    name = "scanned_sources",
+    srcs = [
+        "src/checklist.rs",
+        "src/checks.rs",
+        "src/checks/plan_review.rs",
+        "src/checks/pr_identity.rs",
+        "src/checks/spec_rules.rs",
+        "src/pr_identity.rs",
+        "src/stage_rules.rs",
+    ],
+    visibility = ["//crates/domain-rules:__pkg__"],
 )
 
 repo_tree()

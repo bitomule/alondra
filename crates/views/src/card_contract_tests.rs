@@ -1,5 +1,6 @@
 //! What the clients show of a card follows its type's contract: a result asks to review it, the
 //! button that closes the task says so, and a card that is only read never counts as waiting.
+use alondra_domain_rules::Apply as _;
 use super::*;
 use alondra_domain_model::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind, DeliveryTarget, DomainState, LaunchPlan,

@@ -8,6 +8,7 @@ use alondra_views as views;
 use crate::inbox_items;
 use alondra_views::{Client, Lang, LiveSnapshot, RenderContext, Transport};
 use std::collections::BTreeSet;
+use alondra_domain_rules::Apply as _;
 
 #[test]
 fn audit_case_5_a_stored_delivery_of_a_closed_pr_has_no_card_or_button() {

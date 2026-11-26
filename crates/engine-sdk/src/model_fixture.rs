@@ -19,7 +19,7 @@ pub fn open(home: &std::path::Path) -> anyhow::Result<crate::domain_runtime::Dom
     use alondra_engine_ports::orchestrator::OrchestratorEngine;
     use std::sync::Arc;
     alondra_foundation::durability::relax();
-    let files = *alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    let files = *alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules));
     let observers: Vec<Box<dyn crate::domain_runtime::CommitObserver>> = vec![Box::new(crate::task_closer::Unattended), Box::new(crate::sdk_owner::Retakes)];
     let runtime = DomainRuntime::open_observed(home, &alondra_engine_ports::journal::active_path(home), files, None, observers)?;
     let ports = runtime.ports();

@@ -81,7 +81,7 @@ pub fn main(seams: fn() -> assemble::Seams) -> Result<()> {
         [flag] if flag == "--preflight" => {
             let checked = Config::load()
                 .map_err(|e| anyhow!("config.toml unreadable: {e}"))
-                .and_then(|config| preflight::run(&config, &alondra_store_sqlite::Sqlite, wiring::open, wire_machine));
+                .and_then(|config| preflight::run(&config, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules), wiring::open, wire_machine));
             match checked {
                 Ok(summary) => println!("preflight ok: {summary}"),
                 Err(e) => {
@@ -147,7 +147,7 @@ async fn run(diagnostic: Option<String>, seams: fn() -> assemble::Seams) -> Resu
     }
     log::rotate_when_full(&config.home);
     relaunch::record_supervision(&config.service_label);
-    home_renames::apply(&config.home, domain_orchestrator::RECORDS, &alondra_store_sqlite::Sqlite)?;
+    home_renames::apply(&config.home, domain_orchestrator::RECORDS, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules))?;
     legacy_home::refuse_legacy_home(&config.home)?;
     let (database_migrated, _source_fence) =
         domain_database_migration::migrate_and_fence(&config.home)?;
@@ -173,7 +173,7 @@ async fn run(diagnostic: Option<String>, seams: fn() -> assemble::Seams) -> Resu
     }
     ensure_domain_protocol(&config.home)?;
     sdk_owner::backend::load(&config.home, config.sandbox, &options::user_home())?;
-    let (_writer, domain) = open_as_writer(&config.home, |home| wiring::open(home, &alondra_store_sqlite::Sqlite))?;
+    let (_writer, domain) = open_as_writer(&config.home, |home| wiring::open(home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)))?;
     run_domain(&config, domain, seams()).await
 }
 
@@ -640,7 +640,7 @@ mod argument_tests {
         legacy_home::refuse_legacy_home(&home).unwrap();
         ensure_domain_protocol(&home).unwrap();
         let _domain = crate::engine::open(&home).unwrap();
-        crate::open_daemon(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        crate::open_daemon(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         assert!(home.join("domain.db").is_file());
         assert!(!home.join("alondra.db").exists());
         std::fs::remove_dir_all(home).unwrap();
@@ -671,7 +671,7 @@ mod argument_tests {
             scratch_directory.parent().unwrap().join(format!("alondra-domain-guard-{}", alondra_foundation::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
         let legacy_domain = home.join("domain-v2.db");
-        drop(alondra_store_sqlite::DomainStore::open(&legacy_domain).unwrap());
+        drop(alondra_store_sqlite::DomainStore::open(&legacy_domain, &alondra_domain_rules::Rules).unwrap());
         let conn = rusqlite::Connection::open(&legacy_domain).unwrap();
         conn.execute("UPDATE domain_meta SET revision=1 WHERE singleton=1", [])
             .unwrap();
@@ -705,7 +705,7 @@ mod engine {
     /// of a test.
     pub fn wired() {
         alondra_foundation::durability::relax();
-        alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+        alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules));
         alondra_daemon_engine::wiring::open_with(open_at);
     }
 
@@ -722,7 +722,7 @@ mod engine {
 
     /// `open_at` at the home's active database; the engine's fixtures this thread opens open the same.
     pub fn open(home: &std::path::Path) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
-        open_on(home, &alondra_store_sqlite::Sqlite)
+        open_on(home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules))
     }
 
     /// `open`, on `files`.

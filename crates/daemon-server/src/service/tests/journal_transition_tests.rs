@@ -82,7 +82,7 @@ fn retained_writer_at_transition(stage: ReceiptWrite, workers: usize) {
     let (_directory, mut service, phone) = push_fixture();
     activate_push(&service);
     drop(crate::engine_tests::open(&service.home).unwrap());
-    let state = crate::domain_bootstrap::DomainDaemon::open(&service.home, &alondra_store_sqlite::Sqlite).unwrap();
+    let state = crate::domain_bootstrap::DomainDaemon::open(&service.home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
         .enable_all()

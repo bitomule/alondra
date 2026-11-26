@@ -37,7 +37,7 @@ low_opt_rust_test(
     crate_root = "src/lib.rs",
     edition = "2024",
     version = VERSION,
-    deps = _DEPS + all_crate_deps(normal_dev = True),
+    deps = ["//crates/domain-rules:domain_rules"] + _DEPS + all_crate_deps(normal_dev = True),
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

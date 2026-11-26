@@ -59,13 +59,7 @@ pub struct McpWaiting {
     pub order: Revision,
 }
 
-fn connected_text(name: &str) -> String {
-    format!("{name} is connected: go on with your task from where it stopped.")
-}
 
-fn without_text(name: &str) -> String {
-    format!("{name} is not available: go on with your task without it.")
-}
 
 impl DomainState {
     /// The open tasks that wait for an MCP server, oldest card first.
@@ -101,7 +95,7 @@ impl DomainState {
     }
 
     /// An MCP wait's card that Waiting for You leaves out: another of its server stands for it.
-    pub(crate) fn mcp_grouped_away(&self, i: &Interaction) -> bool {
+    pub fn mcp_grouped_away(&self, i: &Interaction) -> bool {
         McpServerKey::of_card(i).is_some() && !self.shown_mcp_cards().contains(&i.id)
     }
 
@@ -113,7 +107,7 @@ impl DomainState {
 
     /// The node waits for a server its Claude reported and that is not connected: on its own card,
     /// paused, as the user decides or the server connects.
-    pub(super) fn mcp_wait_guard(&self, actor: &Actor, task_id: &TaskId, server: &str) -> Result<(McpServerKey, LifecycleRecord)> {
+    pub fn mcp_wait_guard(&self, actor: &Actor, task_id: &TaskId, server: &str) -> Result<(McpServerKey, LifecycleRecord)> {
         self.assigned(actor, task_id)?;
         let lifecycle = self.sdk_lifecycle(task_id)?;
         let reported = self.mcp_server(task_id, server)?;
@@ -128,92 +122,9 @@ impl DomainState {
         Ok((McpServerKey::of(reported), record))
     }
 
-    /// The user hears of a server only when no other task waits for it.
-    pub(super) fn wait_for_mcp(&mut self, actor: &Actor, task_id: &TaskId, server: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
-        let (key, record) = self.mcp_wait_guard(actor, task_id, server)?;
-        let LifecycleRecord::Paused { card, .. } = &record else { unreachable!("the guard pauses the task") };
-        let card = card.clone();
-        let announce = self.mcp_waiting_for(&key).is_empty();
-        let revision = self.revision + 1;
-        self.insert_system_card(mcp_card(card.clone(), task_id, &key, revision))?;
-        if announce {
-            effects.push(DomainEffect::NotifyUser { task_id: Some(task_id.clone()), interaction_id: card });
-        }
-        self.decide(lifecycles, task_id, record)
-    }
 
-    /// The task's node reported its servers: each of its waits for a server now connected ends,
-    /// and the task goes on.
-    pub(super) fn mcp_reported(&mut self, task_id: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
-        let released: Vec<McpWaiting> = self
-            .mcp_waiting()
-            .into_iter()
-            .filter(|waiting| waiting.task == *task_id)
-            .filter(|waiting| self.mcp_server_of(task_id, &waiting.server).is_some_and(|server| server.status == McpStatus::Connected))
-            .collect();
-        for waiting in released {
-            self.retire(&waiting.card);
-            self.resume_mcp(&waiting, connected_text(&waiting.server.name), lifecycles)?;
-        }
-        Ok(())
-    }
 
-    /// Only Go on without it answers an MCP wait's card: Connect is the sign-in itself.
-    pub(super) fn mcp_answer_guard(&self, card: &Interaction, option_id: &str) -> Result<()> {
-        if McpServerKey::of_card(card).is_some() && option_id != MCP_GO_ON_WITHOUT {
-            return refuse("invalid_input", "option_id", &format!("This card is answered only with {MCP_GO_ON_WITHOUT}: Connect opens the sign-in"));
-        }
-        Ok(())
-    }
 
-    /// The user went on without the server: every task that waits for it goes on, and the other
-    /// cards of the server are withdrawn. False for any other card.
-    pub(super) fn settle_mcp_card(&mut self, card: &InteractionId, lifecycles: &mut Lifecycles) -> Result<bool> {
-        let Some(key) = self.interactions.get(card).and_then(McpServerKey::of_card) else { return Ok(false) };
-        let Some(Scope::Task { task_id }) = self.interactions.get(card).map(|i| i.scope.clone()) else { return Ok(true) };
-        let order = self.interactions[card].order;
-        let answered = McpWaiting { task: task_id, card: card.clone(), server: key.clone(), order };
-        let waiting: Vec<McpWaiting> = std::iter::once(answered).chain(self.mcp_waiting_for(&key)).collect();
-        for waiting in waiting {
-            if waiting.card != *card {
-                self.retire(&waiting.card);
-            }
-            if self.tasks.get(&waiting.task).is_some_and(|task| !task.over()) {
-                self.resume_mcp(&waiting, without_text(&key.name), lifecycles)?;
-            }
-        }
-        Ok(true)
-    }
 
-    fn resume_mcp(&mut self, waiting: &McpWaiting, text: String, lifecycles: &mut Lifecycles) -> Result<()> {
-        let record = LifecycleRecord::Resumed { card: waiting.card.clone(), input: self.next_input(&waiting.task), text: Some(text) };
-        self.decide(lifecycles, &waiting.task, record)
-    }
 }
 
-fn mcp_card(id: InteractionId, task: &TaskId, server: &McpServerKey, revision: u64) -> Interaction {
-    let need = clip(&format!("Sign in to {}: a task waits for it", server.name), CardSpec::NEED_MAX);
-    let why = format!("The task needs the MCP server {} and Claude cannot use it until you sign in.", server.name);
-    let card = CardSpec::new(CardKind::Problem, need.clone()).why(clip(&why, CardSpec::WHY_MAX));
-    let option = QuestionOption {
-        id: MCP_GO_ON_WITHOUT.into(),
-        label: format!("Go on without {}", server.name),
-        description: Some("Every task that waits for it goes on without it".into()),
-    };
-    Interaction {
-        attachments: vec![],
-        id,
-        scope: Scope::Task { task_id: task.clone() },
-        author: Author::System,
-        recipient: Recipient::User,
-        body: serde_json::to_string(server).expect("a server key serializes"),
-        blocking: true,
-        subject: None,
-        payload: InteractionPayload::Question { options: vec![option], answer: None },
-        revision,
-        order: revision,
-        withdrawn: false,
-        card,
-        clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::McpWait), shortened: false,
-    }
-}

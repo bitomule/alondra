@@ -42,7 +42,7 @@ fn committed_cutover(home: &Path) {
 
 fn source_database(home: &Path) -> Connection {
     let path = home.join(SOURCE);
-    let store = crate::DomainStore::open(&path).unwrap();
+    let store = crate::DomainStore::open(&path, &alondra_domain_rules::Rules).unwrap();
     drop(store);
     let conn = Connection::open(&path).unwrap();
     conn.execute("INSERT INTO schedules
@@ -145,7 +145,7 @@ fn assert_migrated(home: &Path) {
         "source is retained as a private recovery copy"
     );
     assert!(home.join(MARKER).exists());
-    let state = crate::DomainStore::open(&active_path(home)).unwrap().load().unwrap();
+    let state = crate::DomainStore::open(&active_path(home), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     let schedule = &state.schedule.schedules[&"schedule-keep".into()];
     assert_eq!(schedule.next_run, Some(4_102_444_799_000));
     assert_eq!(schedule.revision, 7);
@@ -204,7 +204,7 @@ fn committed_migration_allows_normal_writes_and_restarts_without_losing_them() {
     );
 
     let target = home.path().join(DATABASE);
-    let mut store = crate::DomainStore::open(&target).unwrap();
+    let mut store = crate::DomainStore::open(&target, &alondra_domain_rules::Rules).unwrap();
     let state = store.load().unwrap();
     let envelope = alondra_domain_model::CommandEnvelope {
         protocol_version: 2,
@@ -228,7 +228,7 @@ fn committed_migration_allows_normal_writes_and_restarts_without_losing_them() {
 
     let (migrated, _fence) = migrate_and_fence(home.path()).unwrap();
     assert!(migrated);
-    let mut restarted = crate::DomainStore::open(&target).unwrap();
+    let mut restarted = crate::DomainStore::open(&target, &alondra_domain_rules::Rules).unwrap();
     let state = restarted.load().unwrap();
     assert!(
         state
@@ -319,14 +319,14 @@ fn interrupted_migration_resumes_at_each_durable_phase() {
 fn migration_refuses_ambiguous_or_uncommitted_sources_without_touching_them() {
     let home = Home::new();
     let source = home.path().join(SOURCE);
-    let _ = crate::DomainStore::open(&source).unwrap();
+    let _ = crate::DomainStore::open(&source, &alondra_domain_rules::Rules).unwrap();
     let target = home.path().join(DATABASE);
-    let _ = crate::DomainStore::open(&target).unwrap();
+    let _ = crate::DomainStore::open(&target, &alondra_domain_rules::Rules).unwrap();
     assert!(migrate_locked(home.path(), |_| Ok(())).is_err());
     assert!(source.exists() && target.exists());
 
     let other = Home::new();
-    let _ = crate::DomainStore::open(&other.path().join(SOURCE)).unwrap();
+    let _ = crate::DomainStore::open(&other.path().join(SOURCE), &alondra_domain_rules::Rules).unwrap();
     assert!(migrate_locked(other.path(), |_| Ok(())).is_err());
     assert!(other.path().join(SOURCE).exists());
     assert!(
@@ -474,7 +474,7 @@ fn prepared_marker_never_overwrites_an_existing_target() {
     assert!(stopped.is_err());
 
     let target = home.path().join(DATABASE);
-    let _ = crate::DomainStore::open(&target).unwrap();
+    let _ = crate::DomainStore::open(&target, &alondra_domain_rules::Rules).unwrap();
     let target_digest = file_digest(&target);
     let source_digest = file_digest(&home.path().join(SOURCE));
     assert!(migrate_locked(home.path(), |_| Ok(())).is_err());

@@ -126,7 +126,7 @@ fn assert_joined(store: &mut DomainStore, kept: &PrId, copy: &PrId) {
 #[test]
 fn pr_identity_survives_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let (kept, copy) = two_copies(&mut store);
     let site = id(SITE, 5);
 
@@ -136,7 +136,7 @@ fn pr_identity_survives_a_restart() {
     let committed = store.load().unwrap();
     drop(store);
 
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap(), committed, "a restart reads the same identities");
     assert_joined(&mut store, &kept, &copy);
     assert_eq!(committed.pull_requests[&site].tracking, PrTracking::Detached { at: 2_000 });
@@ -165,13 +165,13 @@ fn to_the_shape_before_identities(path: &std::path::Path) {
 #[test]
 fn an_old_database_with_duplicate_records_upgrades_and_joins() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let (kept, copy) = two_copies(&mut store);
     let before = store.load().unwrap();
     drop(store);
     to_the_shape_before_identities(&fixture.path());
 
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let upgraded = store.load().unwrap();
     assert_eq!(upgraded, before, "both records load as they were");
     for pr in [&kept, &copy] {
@@ -198,7 +198,7 @@ fn refused(store: &DomainStore, sql: &str) -> bool {
 #[test]
 fn the_schema_refuses_invalid_identity_combinations() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     register(&mut store, "task-1", &agent(), OLD, 42);
     register(&mut store, "task-1", &agent(), SITE, 5);
@@ -254,7 +254,7 @@ fn metrics_project(store: &DomainStore) -> Option<String> {
 #[test]
 fn metrics_follow_the_current_repository_name() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     ended_task_in_lumo(&mut store);
     assert_eq!(metrics_project(&store).as_deref(), Some("lumo"));
 
@@ -278,7 +278,7 @@ fn gone(store: &mut DomainStore, pr: &PrId) {
 #[test]
 fn review_the_schema_lets_a_joined_record_follow_its_survivor() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     for (number, repository) in [(1, OLD), (2, NEW), (3, SITE)] {
         register(&mut store, "task-1", &agent(), repository, number);
@@ -301,7 +301,7 @@ fn review_the_schema_lets_a_joined_record_follow_its_survivor() {
 #[test]
 fn review_the_survivor_of_a_join_can_be_removed() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let (kept, copy) = two_copies(&mut store);
     execute(&mut store, &Actor::System, "observe-old", observe(&kept, OLD, 1_000, confirmed("key-a", NEW)));
     assert_joined(&mut store, &kept, &copy);
@@ -313,14 +313,14 @@ fn review_the_survivor_of_a_join_can_be_removed() {
     assert_eq!(committed.pull_requests[&kept].tracking, PrTracking::Detached { at: 20_000_000 });
     assert_eq!(committed.pull_requests[&copy].tracking, PrTracking::Superseded { by: kept.clone() }, "the copy still follows it");
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap(), committed, "a restart reads the same records");
 }
 
 #[test]
 fn review_a_displaced_record_can_still_be_found_by_its_locator() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     register(&mut store, "task-1", &agent(), OLD, 42);
     let lumo = id(OLD, 42);
@@ -333,7 +333,7 @@ fn review_a_displaced_record_can_still_be_found_by_its_locator() {
     assert_eq!(identity.key(), Some(&ProviderPrKey("key-a".into())));
     drop(store);
 
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap(), committed, "the locator survives a restart");
 }
 
@@ -341,7 +341,7 @@ fn review_a_displaced_record_can_still_be_found_by_its_locator() {
 #[test]
 fn review_a_database_that_kept_no_locator_for_unresolvable_records_upgrades() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     register(&mut store, "task-1", &agent(), OLD, 42);
     register(&mut store, "task-1", &agent(), SITE, 5);
@@ -355,7 +355,7 @@ fn review_a_database_that_kept_no_locator_for_unresolvable_records_upgrades() {
         CREATE TABLE copied AS SELECT * FROM pull_requests; DROP TABLE pull_requests; {before};
         INSERT INTO pull_requests SELECT * FROM copied; DROP TABLE copied;")).unwrap();
 
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let stored: String = store.conn.query_row("SELECT sql FROM sqlite_schema WHERE type='table' AND name='pull_requests'", [], |row| row.get(0)).unwrap();
     assert_eq!(stored, declared, "the table is the one the schema declares");
     assert!(store.load().unwrap().pull_requests[&id(OLD, 42)].identity.is_verified(), "its records are kept");
@@ -367,7 +367,7 @@ fn review_a_database_that_kept_no_locator_for_unresolvable_records_upgrades() {
 #[test]
 fn review_removing_a_pr_keeps_the_project_of_its_tasks_metrics() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     ended_task_in_lumo(&mut store);
     let lumo = id(OLD, 42);
     execute(&mut store, &Actor::System, "reused", observe(&lumo, OLD, 1_000, PrAddressVerdict::NamesAnotherPr));
@@ -382,7 +382,7 @@ fn review_removing_a_pr_keeps_the_project_of_its_tasks_metrics() {
 #[test]
 fn review_weeks_older_than_90_days_count_under_the_current_name() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     ended_task_in_lumo(&mut store);
     let finished: i64 = store.conn.query_row("SELECT finished_at FROM task_metrics WHERE task_id='task-1'", [], |row| row.get(0)).unwrap();
     let tx = store.conn.unchecked_transaction().unwrap();

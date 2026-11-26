@@ -10,6 +10,7 @@ pub(crate) use prs::{answered_while_its_turn_waits, two_open_prs};
 pub(crate) use mcp::waiting_for_linear;
 
 mod prs {
+    use alondra_domain_rules::Apply as _;
     use alondra_domain_model::*;
     #[allow(unused_imports)]
     use std::collections::{BTreeMap, BTreeSet};
@@ -117,6 +118,7 @@ pub(crate) fn two_open_prs() -> DomainState {
 }
 
 mod mcp {
+    use alondra_domain_rules::Apply as _;
     use alondra_domain_model::*;
     #[allow(unused_imports)]
     use std::collections::{BTreeMap, BTreeSet};

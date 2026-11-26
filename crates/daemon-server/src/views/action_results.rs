@@ -535,7 +535,7 @@ mod tests {
         home: Arc<crate::test_support::Directory>,
     ) -> (Arc<crate::domain_bootstrap::DomainDaemon>, String, Server) {
         drop(crate::engine_tests::open(&home).unwrap());
-        let state = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let router = crate::domain_bootstrap::router(state.clone())
             .layer(axum::middleware::from_fn_with_state(
                 state.auth(),

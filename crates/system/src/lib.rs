@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn the_macs_git_keeps_the_contract_the_doubles_keep() {
         alondra_engine_doubles::contract::worktrees(&GitWorktrees { claude_home: PathBuf::new }, &git_repository);
-        alondra_engine_doubles::contract::final_checks(&GitWorktrees { claude_home: PathBuf::new }, &git_repository, &slow_status);
+        alondra_engine_doubles::contract::final_checks(&GitWorktrees { claude_home: PathBuf::new }, &git_repository, &slow_status, &alondra_domain_rules::Rules);
         let git = |dir: &std::path::Path, args: &[&str]| std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
         alondra_engine_doubles::contract::saved_work(&GitWorktrees { claude_home: PathBuf::new }, &alondra_engine_doubles::contract::Saving {
             task_worktree: &worktree::testing::task_worktree,

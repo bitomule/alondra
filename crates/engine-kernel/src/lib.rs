@@ -46,6 +46,6 @@ pub static TEST_JOURNAL: std::sync::OnceLock<&'static dyn alondra_engine_ports::
 
 pub fn test_journal() -> &'static dyn alondra_engine_ports::journal::JournalFiles {
     #[cfg(test)]
-    TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules));
     *TEST_JOURNAL.get().expect("the test sets alondra_engine_kernel::TEST_JOURNAL to the journal its runtimes open on")
 }

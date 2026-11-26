@@ -41,7 +41,7 @@ fn text() -> Vec<DeliveryTarget> {
 /// task-1, launched on sonnet at medium effort, asks one question, gets changes asked on its first
 /// delivery and is accepted on its second, its session having spent on two models.
 pub(in crate::domain_store) fn done_task(fixture: &Fixture) -> DomainStore {
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     store.record_model_decision(&Chosen {
         task_id: "task-1".into(), request_id: "request-1".into(), agent_id: Some("agent-1".into()), at: 0, kind: ChosenKind::Launch,
@@ -114,7 +114,7 @@ fn pass(store: &mut DomainStore, policy: fn(&Transaction<'_>, i64, i64) -> rusql
 #[test]
 fn a_session_keeps_its_highest_totals_ignores_an_empty_report_and_a_drop_marks_it_partial() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let model = "claude-opus-5-5";
     spend(&mut store, "s", Some("task-1"), Role::Node, &[usage(model, Some(1_000_000), 100)], steps(3, 1), 1);
@@ -130,7 +130,7 @@ fn a_session_keeps_its_highest_totals_ignores_an_empty_report_and_a_drop_marks_i
 #[test]
 fn a_session_without_a_task_adds_what_it_grew_by_to_the_day_it_spent_it() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let day = |n: i64| n * DAY_MS + 1;
     spend(&mut store, "o", None, Role::Orchestrator, &[usage("claude-opus-5-5", Some(1_000_000), 100)], StepCounts::default(), day(1));
     spend(&mut store, "o", None, Role::Orchestrator, &[usage("claude-opus-5-5", Some(3_000_000), 300)], StepCounts::default(), day(2));
@@ -235,7 +235,7 @@ fn samples_of_an_open_task_or_spent_after_the_fold_stay() {
 #[test]
 fn sessions_without_a_task_go_after_a_week_without_spending() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     spend(&mut store, "o", None, Role::Orchestrator, &[usage("claude-opus-5-5", Some(1), 1)], steps(1, 0), 10);
     assert_eq!(pass(&mut store, idle_sessions_without_task, 10 + SAMPLES_MS, 256), 0);
     assert_eq!(pass(&mut store, idle_sessions_without_task, 11 + SAMPLES_MS, 256), 2);
@@ -262,7 +262,7 @@ pub(in crate::domain_store) fn insert_task(store: &DomainStore, task: &str, fini
 #[test]
 fn tasks_older_than_90_days_add_up_exactly_into_their_week_and_their_models_day() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let monday = 20_017 * DAY_MS;
     insert_task(&store, "t-a", monday + 1, "opus", true, Some(120), Some(4_000_000));
     insert_task(&store, "t-b", monday + 3 * DAY_MS, "opus", true, None, Some(6_000_000));
@@ -314,7 +314,7 @@ fn a_folded_task_keeps_the_provider_of_its_last_launch_and_the_kind_it_was_tagge
 #[test]
 fn a_folded_task_takes_at_most_400_bytes() {
     let fixture = Fixture::new();
-    let store = DomainStore::open(&fixture.path()).unwrap();
+    let store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let size = |store: &DomainStore| store.conn.query_row("SELECT page_count*page_size FROM pragma_page_count(),pragma_page_size()", [], |r| r.get::<_, i64>(0)).unwrap();
     let before = size(&store);
     for n in 0..1_000 {
@@ -327,7 +327,7 @@ fn a_folded_task_takes_at_most_400_bytes() {
 #[test]
 fn a_release_keeps_the_time_it_first_started() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     store.record_release("0.3.7", 10).unwrap();
     store.record_release("0.3.7", 20).unwrap();
     let first: i64 = store.conn.query_row("SELECT first_seen_at FROM daemon_releases WHERE version='0.3.7'", [], |r| r.get(0)).unwrap();
@@ -336,7 +336,7 @@ fn a_release_keeps_the_time_it_first_started() {
 
 /// task-1 folded with a merged PR on GitHub, whose size is not known yet.
 fn merged_pr_store(fixture: &Fixture) -> DomainStore {
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     run(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
     run(&mut store, &agent(), "pr", Command::RegisterPr {
@@ -363,7 +363,7 @@ pub fn with_a_merged_pr(test: impl FnOnce(&crate::domain_runtime::DomainRuntime)
 /// Runs `test` on a daemon whose store holds task-1 running on agent-1.
 pub fn with_a_running_task(test: impl FnOnce(&crate::domain_runtime::DomainRuntime)) {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     run(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
     drop(store);
@@ -372,7 +372,7 @@ pub fn with_a_running_task(test: impl FnOnce(&crate::domain_runtime::DomainRunti
 
 #[test]
 fn codex_native_orchestrator_samples_keep_partial_coverage_and_unknown_cost_after_updates() {
-    let fixture = Fixture::new(); let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let fixture = Fixture::new(); let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     for tokens in [100, 200] {
         let observed = [usage("native-model", None, tokens)];
         store.record_spend(&Spent { session_id: "codex-batch", task_id: None, role: Role::Orchestrator, provider: "codex", usage: &observed, steps: StepCounts::default(), at: tokens }).unwrap();

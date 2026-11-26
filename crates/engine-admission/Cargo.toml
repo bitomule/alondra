@@ -23,6 +23,7 @@ tokio.workspace = true
 alondra-view-model.workspace = true
 
 [dev-dependencies]
+alondra-domain-rules.workspace = true
 alondra-engine-kernel.workspace = true
 alondra-store-sqlite.workspace = true
 alondra-engine-doubles.workspace = true

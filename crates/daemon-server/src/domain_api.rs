@@ -1401,7 +1401,7 @@ mod tests {
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
         drop(crate::engine_tests::open(&directory).unwrap());
-        let host = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
+        let host = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let domain = host.domain();
         let state = domain.state();
         domain.execute(&Actor::User { user_id: "fixture".into() }, &CommandEnvelope {
@@ -1449,7 +1449,7 @@ mod tests {
             &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
         let signed = Some(Extension(Signed { device_id: device.id,
             name: device.name, public_key: device.public_key }));
-        let host = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let host = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let epoch = host.domain().state().data_epoch.0.clone();
 
         let legacy = changes::<crate::domain_bootstrap::DomainDaemon>(State(host.clone()), signed.clone(),
@@ -1793,7 +1793,7 @@ mod tests {
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
         drop(crate::engine_tests::open(&directory).unwrap());
-        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
+        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let host = Arc::new(Host {
             domain: daemon.domain(),
             daemon,

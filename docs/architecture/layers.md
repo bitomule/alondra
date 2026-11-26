@@ -11,12 +11,13 @@ recompiles that crate, its test and the link of the root, not half the repositor
 |---|---|---|
 | `foundation` | foundation | everyone |
 | `domain` | foundation, domain | every layer but foundation |
+| `domain-rules` | foundation, domain | roots |
 | `ports` | foundation, domain, ports | ports, application, adapters, roots |
 | `application` | foundation, domain, ports | roots |
 | `adapter-in` | foundation, domain, ports | roots |
 | `adapter-out` | foundation, domain, ports | roots |
 | `adapter-private` | foundation, domain, ports | only the adapter that owns it |
-| `root` | foundation, domain, ports, application, adapters | nobody |
+| `root` | foundation, domain, domain-rules, ports, application, adapters | nobody |
 
 Pieces of the application never depend on each other, and adapters never depend on each other or on
 the application: they talk through ports, and the roots wire them together.
@@ -28,7 +29,8 @@ the application: they talk through ports, and the roots wire them together.
 | Layer | Packages |
 |---|---|
 | foundation | `foundation` (with the clock, the daemon's log, its locks and atomic saves), `process-group`, `host` (Bonjour, the Claude Code install and its updater, the record of failed starts, the Homebrew install and the user the process runs as: what the CLI, the server and the clients reach by themselves), `e2e`, `scenarios-transcript`, `spec-engine` (specs, boundaries, decisions and what is validated, read from the files its caller hands it) |
-| domain | `domain`, `domain-model`, `core` (mixed: its config, options and home lock still read and write Alondra's home) |
+| domain | `domain`, `domain-model` (the domain's state, its reads and the guards the screens share), `core` (mixed: its config, options and home lock still read and write Alondra's home) |
+| domain-rules | `domain-rules` (what each command changes, behind the model's `DomainRules` port: the root hands it to the store when it opens it) |
 | ports | `engine-ports`, `provider-contract`, `view-model`, `client-port`, `store`, `agent-application` |
 | application | `engine-kernel`, `daemon-engine`, `daemon-engine-model`, `daemon-engine-machine`, `engine-admission`, `engine-orchestrator`, `engine-sdk`, `engine-github`, `engine-live`, `engine-mcp`, `engine-worktrees`, `daemon-support` (mixed: most of it goes to the `system` adapter), `views` |
 | adapter-in | `daemon-server` (the daemon's routes, transports, pushes and screens' cache), `cli`, `cli-tui`, `cli-mcp`, `cli-report`, `client-transport` |

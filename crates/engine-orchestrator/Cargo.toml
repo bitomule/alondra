@@ -26,6 +26,7 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+alondra-domain-rules.workspace = true
 alondra-store-sqlite.workspace = true
 alondra-agent-runtime.workspace = true
 alondra-codex-protocol.workspace = true

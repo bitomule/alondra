@@ -9,7 +9,7 @@ import sys
 PRODUCTION_RULES = {
     "rust_binary", "rust_library", "rust_proc_macro", "rust_shared_library", "rust_static_library",
     # The layer macros of tools/layers/crates.bzl, which declare every production crate.
-    "foundation_crate", "domain_crate", "port_crate", "application_crate", "adapter_in_crate",
+    "foundation_crate", "domain_crate", "rules_crate", "port_crate", "application_crate", "adapter_in_crate",
     "adapter_out_crate", "adapter_private_crate", "root_library", "root_binary",
 }
 SECTION = re.compile(r"^\[([^\]]+)\]\s*$")

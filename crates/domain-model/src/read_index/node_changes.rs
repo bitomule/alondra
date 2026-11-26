@@ -49,8 +49,10 @@ impl LiveNodeReading {
 /// A private lineage and publication position; revisions alone do not identify reloads.
 #[derive(Clone, Debug)]
 pub struct NodeChangeCursor {
-    lineage: Arc<AtomicU64>,
-    generation: u64,
+    #[doc(hidden)]
+    pub lineage: Arc<AtomicU64>,
+    #[doc(hidden)]
+    pub generation: u64,
 }
 
 impl PartialEq for NodeChangeCursor {
@@ -68,14 +70,15 @@ pub enum NodeChanges {
     Changed { cursor: NodeChangeCursor, nodes: BTreeSet<AgentId> },
 }
 
-const RETAINED_NODE_IDS: usize = 4096;
+pub const RETAINED_NODE_IDS: usize = 4096;
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct NodeHistory {
-    lineage: Arc<AtomicU64>,
-    generation: u64,
-    floor: u64,
-    entries: VecDeque<(u64, AgentId)>,
+#[doc(hidden)]
+pub struct NodeHistory {
+    pub lineage: Arc<AtomicU64>,
+    pub generation: u64,
+    pub floor: u64,
+    pub entries: VecDeque<(u64, AgentId)>,
 }
 
 impl NodeHistory {
@@ -147,6 +150,3 @@ impl ReadSnapshot {
     }
 }
 
-#[cfg(test)]
-#[path = "node_changes_tests.rs"]
-mod tests;

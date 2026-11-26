@@ -4,6 +4,7 @@ use super::*;
 use alondra_domain_model::{Actor, Command, CommandEnvelope, QuestionOption, Scope, TaskId, PROTOCOL_VERSION};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use alondra_domain_rules::Apply as _;
 
 struct Fixture(crate::test_support::Directory, DomainRuntime);
 impl Drop for Fixture {

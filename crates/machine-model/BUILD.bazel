@@ -16,7 +16,7 @@ low_opt_rust_test(
     edition = "2024",
     env = {"HOME": "."},
     version = VERSION,
-    deps = [
+    deps = ["//crates/domain-rules:domain_rules"] + [
         "//crates/core:alondra_core",
         "//crates/domain-model:domain_model",
         "//crates/daemon-engine:daemon_engine",

@@ -4,6 +4,7 @@ use crate::testing::envelope;
 use std::collections::BTreeSet;
 use std::os::unix::fs::DirBuilderExt;
 use std::{fs, path::PathBuf};
+use alondra_domain_rules::Apply as _;
 fn attachment(id: &str) -> AttachmentRef {
     AttachmentRef {
         id: id.into(),
@@ -21,17 +22,17 @@ fn user() -> Actor {
 #[test]
 fn worktrees_root_wait_reason_migrates_without_losing_previous_launch_refusals() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     store.conn.execute_batch("DROP TABLE launch_refusals;").unwrap();
     store.conn.execute_batch(&LAUNCH_REFUSALS.replace(",'worktrees_unavailable'", "")).unwrap();
     store.set_launch_refusal(&"task-1".into(), Some(("disk_low", Some("retained"))), 12).unwrap();
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.launch_refusals().unwrap(), vec![("task-1".into(), "disk_low".into(), Some("retained".into()))]);
     store.set_launch_refusal(&"task-1".into(), Some(("worktrees_unavailable", None)), 13).unwrap();
     drop(store);
-    let store = DomainStore::open(&fixture.path()).unwrap();
+    let store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.launch_refusals().unwrap(), vec![("task-1".into(), "worktrees_unavailable".into(), None)]);
 }
 
@@ -86,7 +87,7 @@ fn feedback(store: &mut DomainStore) -> CommandEnvelope {
 fn feedback_targets_roundtrip_and_older_databases_default_to_the_whole_delivery() {
     use alondra_domain_model::{FeedbackTarget, InteractionPayload};
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let pr = alondra_domain_model::hosted_pr_id("github.com", "acme/widgets", 7);
     let head = "1".repeat(40);
@@ -114,11 +115,11 @@ fn feedback_targets_roundtrip_and_older_databases_default_to_the_whole_delivery(
     repository::save_changes(&store.conn, &mut journal, &before, &after).unwrap();
     journal.commit().unwrap();
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(*store.load().unwrap(), after);
     store.conn.execute_batch("ALTER TABLE delivery_feedback DROP COLUMN target;").unwrap();
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap(), before, "legacy feedback applies to the whole delivery");
     let column: i64 = store.conn.query_row("SELECT count(*) FROM pragma_table_info('delivery_feedback') WHERE name='target'", [], |r| r.get(0)).unwrap();
     assert_eq!(column, 1);
@@ -132,7 +133,7 @@ fn feedback_targets_roundtrip_and_older_databases_default_to_the_whole_delivery(
 #[test]
 fn a_pr_noted_from_a_commands_output_is_dropped_once_and_the_real_pr_is_delivered() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let pr = alondra_domain_model::hosted_pr_id("github.com", "acme/widgets", 7);
     let head = "1".repeat(40);
@@ -150,7 +151,7 @@ fn a_pr_noted_from_a_commands_output_is_dropped_once_and_the_real_pr_is_delivere
     store.conn.execute_batch("DROP TABLE pr_notes_from_github;").unwrap();
     drop(store);
 
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(noted(&mut store), ["acme/widgets#7"], "only the registered PR still waits on GitHub");
     execute(&mut store, &Actor::System, "read", Command::RecordOpenedPr {
         task_id: "task-1".into(), host: "github.com".into(), repository: "acme/widgets".into(), number: 7, head: head.clone(),
@@ -167,7 +168,7 @@ fn a_pr_noted_from_a_commands_output_is_dropped_once_and_the_real_pr_is_delivere
         task_id: "task-1".into(), host: "github.com".into(), repository: "acme/site".into(), number: 3,
     });
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(noted(&mut store), ["acme/site#3"], "the cleanup runs once");
 }
 
@@ -181,7 +182,7 @@ fn count(store: &DomainStore, table: &str) -> i64 {
 #[test]
 fn reads_share_one_snapshot_until_a_commit_replaces_it() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let first = store.load().unwrap();
     assert!(Arc::ptr_eq(&first, &store.load().unwrap()), "a read without a write copies nothing");
@@ -207,7 +208,7 @@ fn reads_share_one_snapshot_until_a_commit_replaces_it() {
 #[test]
 fn sql_restart_roundtrip_receipts_and_read_has_no_communication() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(
         &mut store,
@@ -253,7 +254,7 @@ fn sql_restart_roundtrip_receipts_and_read_has_no_communication() {
     let pending = store.pending_messages().unwrap();
     let expected = store.load().unwrap();
     drop(store);
-    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let mut restarted = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(restarted.load().unwrap(), expected);
     let recovered = restarted
         .execute_authenticated(&user(), &e, Some(("phone", "request-x", &[1; 32])))
@@ -290,7 +291,7 @@ fn sql_restart_roundtrip_receipts_and_read_has_no_communication() {
 #[test]
 fn receipt_failure_rolls_back_decision_audit_outbox_and_revision() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     present(&mut store);
     let before = store.load().unwrap();
@@ -317,7 +318,7 @@ fn receipt_failure_rolls_back_decision_audit_outbox_and_revision() {
         .execute_batch("DROP TRIGGER fail_receipt")
         .unwrap();
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap(), before);
     assert_eq!(store.pending_messages().unwrap(), pending);
     store
@@ -332,7 +333,7 @@ fn receipt_failure_rolls_back_decision_audit_outbox_and_revision() {
 #[test]
 fn replay_returns_the_first_outcome() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let mut e = envelope(
         &mut store,
@@ -369,10 +370,10 @@ fn replay_returns_the_first_outcome() {
 #[test]
 fn two_connections_compete_by_revision_and_domain_rejection_writes_nothing() {
     let fixture = Fixture::new();
-    let mut first = DomainStore::open(&fixture.path()).unwrap();
+    let mut first = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut first);
     present(&mut first);
-    let mut second = DomainStore::open(&fixture.path()).unwrap();
+    let mut second = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let e = feedback(&mut first);
     let mut competing = e.clone();
     competing.command_id = "other-command".into();
@@ -395,7 +396,7 @@ fn two_connections_compete_by_revision_and_domain_rejection_writes_nothing() {
 #[test]
 fn lifetime_pr_sql_constraints_reject_a_repeated_pr_reparent_delete_and_bad_targets() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(
         &mut store,
@@ -456,7 +457,7 @@ fn lifetime_pr_sql_constraints_reject_a_repeated_pr_reparent_delete_and_bad_targ
 #[test]
 fn claimed_delivery_restart_is_uncertain_until_explicit_reconciliation() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     present(&mut store);
     let e = feedback(&mut store);
@@ -467,7 +468,7 @@ fn claimed_delivery_restart_is_uncertain_until_explicit_reconciliation() {
     let claim = store.claim_message(agent_message.id).unwrap().unwrap();
     assert!(store.claim_message(agent_message.id).unwrap().is_none());
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.pending_messages().unwrap().len(), 1);
     let evidence = store.delivery_evidence().unwrap();
     assert_eq!(evidence[0].state, "uncertain");
@@ -505,13 +506,13 @@ fn claimed_delivery_restart_is_uncertain_until_explicit_reconciliation() {
 #[test]
 fn retrying_an_uncertain_orchestrator_message_past_its_24_hours_is_refused_and_discarding_it_works() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     execute(&mut store, &user(), "old-request", Command::CreateRequest { request_id: "old".into(), body: "Fix the login".into(), auto_merge: false, maintenance: false, message: false });
     let message = store.pending_messages().unwrap().into_iter().find(|message| message.recipient_kind == "orchestrator").unwrap();
     let claim = store.claim_message(message.id).unwrap().unwrap();
     store.set_message_created_at_for_test(message.id, alondra_core::now_millis() - ORCHESTRATOR_MESSAGE_TTL_MS - 3_600_000).unwrap();
     drop(store);
-    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let mut restarted = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let epoch = restarted.load().unwrap().data_epoch.0.clone();
     let retried = restarted.resolve_uncertain_authenticated(claim.attempt_id, 2, &epoch, true, ("phone-a", "retry", &[17u8; 32]));
     assert!(matches!(&retried, Err(StoreError::Domain(error)) if error.code == "delivery_expired" && error.message.contains("discard it")), "{retried:?}");
@@ -523,7 +524,7 @@ fn retrying_an_uncertain_orchestrator_message_past_its_24_hours_is_refused_and_d
 #[test]
 fn encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisions() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     present(&mut store);
     let e = feedback(&mut store);
@@ -532,7 +533,7 @@ fn encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisi
         .find(|message| message.recipient_kind == "agent").unwrap();
     let claim = store.claim_message(agent_message.id).unwrap().unwrap();
     drop(store);
-    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let mut restarted = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let epoch = restarted.load().unwrap().data_epoch.0.clone();
     let page = restarted.delivery_evidence_page(0).unwrap();
     assert_eq!(page.len(), 1);
@@ -557,7 +558,7 @@ fn encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisi
         if error.code == "delivery_uncertain"));
     let followup = restarted.claim_message(agent_message.id).unwrap().unwrap();
     drop(restarted);
-    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let mut restarted = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(restarted.delivery_evidence_page(followup.attempt_id - 1).unwrap()[0].state,
         "uncertain");
     let discarded = restarted.resolve_uncertain_authenticated(followup.attempt_id, 2, &epoch,
@@ -569,11 +570,11 @@ fn encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisi
 #[test]
 fn a_reopened_store_keeps_its_rows() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let expected = store.load().unwrap();
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap(), expected);
     assert_eq!(store.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
     assert!(!fixture.0.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".old-")));
@@ -585,7 +586,7 @@ fn an_unsupported_schema_is_refused_without_replacing_the_database() {
     for journal in ["wal", "delete"] {
         for other in [1, 7, 8, SCHEMA_VERSION + 1] {
             let fixture = Fixture::new();
-            let mut store = DomainStore::open(&fixture.path()).unwrap();
+            let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
             let command = envelope(&mut store, "old", Command::CreateRequest {
                 request_id: "old".into(), body: "Made before".into(),
                 auto_merge: false, maintenance: false, message: false,
@@ -597,7 +598,7 @@ fn an_unsupported_schema_is_refused_without_replacing_the_database() {
             drop(store);
             let before = fs::metadata(fixture.path()).unwrap();
             let bytes = fs::read(fixture.path()).unwrap();
-            let error = match DomainStore::open(&fixture.path()) {
+            let error = match DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules) {
                 Ok(_) => panic!("schema {other} must not activate an empty replacement"),
                 Err(error) => error,
             };
@@ -614,7 +615,7 @@ fn an_unsupported_schema_is_refused_without_replacing_the_database() {
                 row.get::<_, String>(0)).unwrap(), "Made before");
             preserved.pragma_update(None, "user_version", SCHEMA_VERSION).unwrap();
             drop(preserved);
-            let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+            let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
             assert_eq!(reopened.load().unwrap(), expected);
             let retry = reopened.execute_authenticated(&user(), &command, None).unwrap();
             assert_eq!(retry.state, expected, "the original semantic receipt survives refusal");
@@ -647,7 +648,7 @@ fn crash_recovery_preserves_committed_work_and_receipts_before_schema_admission(
     for journal in ["WAL", "DELETE"] {
         for (committed_schema, uncommitted_schema) in [(SCHEMA_VERSION, false), (99, false), (SCHEMA_VERSION, true)] {
             let fixture = Fixture::new();
-            let mut store = DomainStore::open(&fixture.path()).unwrap();
+            let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
             seeded(&mut store);
             let command = envelope(&mut store, "retained-command", Command::CreateRequest {
                 request_id: "retained".into(), body: "Committed work".into(),
@@ -670,7 +671,7 @@ fn crash_recovery_preserves_committed_work_and_receipts_before_schema_admission(
             assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stderr));
             let sidecar = fixture.path().with_file_name(if journal == "DELETE" { "domain.sqlite-journal" } else { "domain.sqlite-wal" });
             assert!(fs::metadata(&sidecar).unwrap().len() > 0, "crash did not retain its transaction journal");
-            let opened = DomainStore::open(&fixture.path());
+            let opened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules);
             if committed_schema == SCHEMA_VERSION {
                 let mut recovered = opened.unwrap();
                 assert_eq!(recovered.load().unwrap(), expected, "compatible stores must recover automatically");
@@ -690,7 +691,7 @@ fn crash_recovery_preserves_committed_work_and_receipts_before_schema_admission(
             assert_eq!(preserved.query_row("SELECT count(*) FROM semantic_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), receipt_count);
             preserved.pragma_update(None, "user_version", SCHEMA_VERSION).unwrap();
             drop(preserved);
-            let mut recovered = DomainStore::open(&fixture.path()).unwrap();
+            let mut recovered = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
             assert_eq!(recovered.load().unwrap(), expected);
             let retry = recovered.execute_authenticated(&user(), &command, None).unwrap();
             assert_eq!(retry.state, expected, "recovery retained the original command receipt");
@@ -702,7 +703,7 @@ fn crash_recovery_preserves_committed_work_and_receipts_before_schema_admission(
 #[test]
 fn schedule_schema_enforces_run_relations_and_survives_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let before = store.load().unwrap();
     let mut upgraded = store;
@@ -763,7 +764,7 @@ fn schedule_schema_enforces_run_relations_and_survives_restart() {
         VALUES ('phone','schedule-command',X'00','{\"ok\":true}');").unwrap();
     upgraded.integrity_check().unwrap();
     drop(upgraded);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let reloaded = reopened.load().unwrap();
     assert_eq!(reloaded.tasks, before.tasks);
     assert_eq!(reloaded.requests.len(), 2);
@@ -782,14 +783,14 @@ fn schedule_schema_enforces_run_relations_and_survives_restart() {
 #[test]
 fn restart_preserves_existing_outbox_and_user_notifications_claim_normally() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     present(&mut store);
     let before = store.load().unwrap();
     let old_message_id = store.pending_messages().unwrap()[0].id;
     let existing_targets = count(&store, "domain_message_user_targets");
     drop(store);
-    let mut upgraded = DomainStore::open(&fixture.path()).unwrap();
+    let mut upgraded = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(upgraded.load().unwrap(), before);
     assert_eq!(upgraded.pending_messages().unwrap()[0].id, old_message_id);
     assert_eq!(count(&upgraded, "domain_message_user_targets"), existing_targets);
@@ -832,7 +833,7 @@ fn restart_preserves_existing_outbox_and_user_notifications_claim_normally() {
 #[test]
 fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &agent(), "question", Command::AskQuestion {
         attachments: vec![], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task-1".into() },
@@ -849,7 +850,7 @@ fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_res
     execute(&mut store, &user(), "close-3", Command::CloseRequest { covered_by: vec![], outcome: None, request_id: "request-3".into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None });
     let before = store.load().unwrap();
     drop(store);
-    let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     assert_eq!(reopened, before);
     assert!(reopened.interactions[&"question-1".into()].withdrawn);
     assert_eq!(reopened.tasks[&"task-1".into()].title, "Editor colours");
@@ -860,7 +861,7 @@ fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_res
 #[test]
 fn work_declared_after_the_merge_survives_a_restart_and_leaves_no_row_once_it_ends() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     present(&mut store);
     let accept = acceptance(&mut store);
@@ -868,7 +869,7 @@ fn work_declared_after_the_merge_survives_a_restart_and_leaves_no_row_once_it_en
     let declare = |reason: Option<&str>| Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: reason.map(str::to_owned), waits_for: vec![] };
     execute(&mut store, &agent(), "declare", declare(Some("release.sh publishes 0.2.54")));
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let work = store.load().unwrap().tasks[&"task-1".into()].wrap_up.post_merge_work.clone().unwrap();
     assert_eq!(work.reason, "release.sh publishes 0.2.54");
     assert!(!work.turn_since);
@@ -879,47 +880,47 @@ fn work_declared_after_the_merge_survives_a_restart_and_leaves_no_row_once_it_en
 #[test]
 fn a_requests_auto_merge_choice_survives_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     execute(&mut store, &user(), "auto", Command::CreateRequest { request_id: "auto".into(), body: "Merge alone".into(), auto_merge: true, maintenance: false, message: false });
     execute(&mut store, &user(), "manual", Command::CreateRequest { request_id: "manual".into(), body: "Ask me".into(), auto_merge: false, maintenance: false, message: false });
     drop(store);
-    let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     assert_eq!((reopened.requests[&"auto".into()].auto_merge, reopened.requests[&"manual".into()].auto_merge), (true, false));
 }
 
 #[test]
 fn the_merge_method_set_in_settings_survives_restart_and_a_database_without_one_merges_with_squash() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap().merge_method, MergeMethod::Squash);
     execute(&mut store, &user(), "rebase", Command::SetMergeMethod { method: MergeMethod::Rebase });
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap().merge_method, MergeMethod::Rebase);
     execute(&mut store, &user(), "merge", Command::SetMergeMethod { method: MergeMethod::Merge });
     drop(store);
-    assert_eq!(DomainStore::open(&fixture.path()).unwrap().load().unwrap().merge_method, MergeMethod::Merge);
+    assert_eq!(DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap().merge_method, MergeMethod::Merge);
 }
 
 #[test]
 fn the_branch_update_set_in_settings_survives_restart_and_a_database_without_one_rebases() {
     use alondra_domain_model::BranchUpdate;
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap().branch_update, BranchUpdate::Rebase);
     execute(&mut store, &user(), "merge", Command::SetBranchUpdate { update: BranchUpdate::Merge });
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap().branch_update, BranchUpdate::Merge);
     execute(&mut store, &user(), "rebase", Command::SetBranchUpdate { update: BranchUpdate::Rebase });
     drop(store);
-    assert_eq!(DomainStore::open(&fixture.path()).unwrap().load().unwrap().branch_update, BranchUpdate::Rebase);
+    assert_eq!(DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap().branch_update, BranchUpdate::Rebase);
 }
 
 #[test]
 fn restart_preserves_decisions_documents_and_relations() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(
         &mut store,
@@ -1056,7 +1057,7 @@ fn restart_preserves_decisions_documents_and_relations() {
     let pending = store.pending_messages().unwrap();
     let user_targets = count(&store, "domain_message_user_targets");
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap(), before);
     assert_eq!(store.pending_messages().unwrap(), pending);
     assert_eq!(count(&store, "command_audit"), audits);
@@ -1080,7 +1081,7 @@ fn restart_preserves_decisions_documents_and_relations() {
 #[test]
 fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(
         &mut store,
@@ -1147,7 +1148,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
     assert_eq!(count(&store, "interaction_attachments"), 4);
     let state = store.load().unwrap();
     drop(store);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(reopened.load().unwrap(), state);
     let q = &state.interactions[&InteractionId::from("question-1")];
     assert_eq!(q.attachments[0].id, "question-file");
@@ -1169,7 +1170,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
 #[test]
 fn a_second_users_read_is_refused_and_leaves_no_receipt_and_no_delivery() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(
         &mut store,
@@ -1218,7 +1219,7 @@ fn a_second_users_read_is_refused_and_leaves_no_receipt_and_no_delivery() {
 fn closed_request_reopen_rejection_survives_sql_restart() {
     let fixture = Fixture::new();
     let path = fixture.path();
-    let mut store = DomainStore::open(&path).unwrap();
+    let mut store = DomainStore::open(&path, &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(
         &mut store,
@@ -1252,7 +1253,7 @@ fn closed_request_reopen_rejection_survives_sql_restart() {
     assert_eq!(count(&store, "semantic_receipts"), receipts);
     assert_eq!(count(&store, "command_audit"), audit);
     drop(store);
-    let mut reopened = DomainStore::open(&path).unwrap();
+    let mut reopened = DomainStore::open(&path, &alondra_domain_rules::Rules).unwrap();
     assert_eq!(reopened.load().unwrap(), before);
     let result = reopened.execute_authenticated(&user(), &attempt, None);
     assert!(matches!(result, Err(StoreError::Domain(error)) if error.code == "not_found"));
@@ -1262,7 +1263,7 @@ fn closed_request_reopen_rejection_survives_sql_restart() {
 #[test]
 fn a_cleared_request_its_ended_task_takes_back_loads_open_after_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let (pr, head) = ("github.com/acme/widgets#7".to_owned(), "a".repeat(40));
     execute(&mut store, &agent(), "register", Command::RegisterPr {
@@ -1288,9 +1289,9 @@ fn a_cleared_request_its_ended_task_takes_back_loads_open_after_a_restart() {
     let adopted = store.load().unwrap().requests[&"request-1".into()].clone();
     assert!(!adopted.closed && !adopted.cleared, "{adopted:?}");
     drop(store);
-    let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     assert_eq!(reopened.requests[&"request-1".into()], adopted);
-    assert_eq!(count(&DomainStore::open(&fixture.path()).unwrap(), "cleared_requests"), 0);
+    assert_eq!(count(&DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap(), "cleared_requests"), 0);
 }
 
 fn document_package(store: &mut DomainStore, pr: bool) -> Vec<DeliveryTarget> {
@@ -1357,7 +1358,7 @@ fn document_package(store: &mut DomainStore, pr: bool) -> Vec<DeliveryTarget> {
 #[test]
 fn acceptance_from_a_snapshot_older_than_a_rejection_is_stale() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let targets = document_package(&mut store, false);
     let reject = envelope(
@@ -1390,7 +1391,7 @@ fn acceptance_from_a_snapshot_older_than_a_rejection_is_stale() {
 #[test]
 fn second_merge_authorization_from_the_same_snapshot_is_stale() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     document_package(&mut store, true);
     execute(&mut store, &Actor::System, "pr-1-identity", Command::ObservePrAddress {
@@ -1430,9 +1431,9 @@ fn second_merge_authorization_from_the_same_snapshot_is_stale() {
 #[test]
 fn a_commit_landing_right_after_ours_is_never_served_from_the_cache() {
     let fixture = Fixture::new();
-    let mut first = DomainStore::open(&fixture.path()).unwrap();
+    let mut first = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut first);
-    let mut second = DomainStore::open(&fixture.path()).unwrap();
+    let mut second = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let foreign = envelope(
         &mut second,
         "foreign-request",
@@ -1459,7 +1460,7 @@ fn a_commit_landing_right_after_ours_is_never_served_from_the_cache() {
     );
     first.execute_authenticated(&user(), &own, None).unwrap();
     let served = first.load().unwrap();
-    let persisted = DomainStore::open_readonly(&fixture.path())
+    let persisted = DomainStore::open_readonly(&fixture.path(), &alondra_domain_rules::Rules)
         .unwrap()
         .load()
         .unwrap();
@@ -1470,7 +1471,7 @@ fn a_commit_landing_right_after_ours_is_never_served_from_the_cache() {
 #[test]
 fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     present(&mut store);
     let e = acceptance(&mut store);
@@ -1546,7 +1547,7 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
 #[test]
 fn persisting_a_removed_entry_is_refused_instead_of_leaving_its_row() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let before = store.load().unwrap();
     let mut after = DomainState::clone(&before);
@@ -1562,7 +1563,7 @@ fn persisting_a_removed_entry_is_refused_instead_of_leaving_its_row() {
 #[test]
 fn a_request_and_what_the_user_chose_for_its_launch_commit_together_or_not_at_all() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let launch = RequestLaunch {
         project: Some("App".into()),
         options: alondra_core::options::OptionsFile::default().resolve(Some("App"), &Default::default()).unwrap(),
@@ -1594,7 +1595,7 @@ fn a_request_and_what_the_user_chose_for_its_launch_commit_together_or_not_at_al
     assert!(store.conn.execute("DELETE FROM request_launch", []).is_err(), "and retained");
     let expected = store.load().unwrap();
     drop(store);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(reopened.load().unwrap(), expected);
     assert_eq!(reopened.request_launch(&"request-1".into()).unwrap().as_ref(), Some(&launch), "the launch survives a restart");
 }
@@ -1602,17 +1603,17 @@ fn a_request_and_what_the_user_chose_for_its_launch_commit_together_or_not_at_al
 #[test]
 fn a_tasks_model_survives_restart_and_a_store_made_before_models_still_opens() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let launched = alondra_domain_model::TaskModel { model: "opus".into(), chosen_by: alondra_domain_model::ModelChooser::Orchestrator };
     execute(&mut store, &user(), "model", Command::AssignTask { task_id: "task-1".into(), agent_id: "agent-1".into(), model: Some(launched.clone()) });
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap().tasks[&"task-1".into()].model, Some(launched));
 
     store.conn.execute_batch("DROP TABLE task_models").unwrap();
     drop(store);
-    let mut before_models = DomainStore::open(&fixture.path()).unwrap();
+    let mut before_models = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(before_models.load().unwrap().tasks[&"task-1".into()].model, None, "the old store opens with the task as it was");
     assert_eq!(before_models.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
     assert!(!fixture.0.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".old-")), "nothing was moved aside");
@@ -1621,7 +1622,7 @@ fn a_tasks_model_survives_restart_and_a_store_made_before_models_still_opens() {
 #[test]
 fn a_task_saved_without_its_model_gets_the_one_its_launches_or_its_sessions_name() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let model = |store: &mut DomainStore| store.load().unwrap().tasks[&"task-1".into()].model.clone()
         .map(|model| (model.model, model.chosen_by));
@@ -1645,14 +1646,14 @@ fn a_task_saved_without_its_model_gets_the_one_its_launches_or_its_sessions_name
         INSERT INTO model_decisions(task_id,request_id,agent_id,at,kind,model,chosen_by,title) VALUES('task-1','request-1',NULL,2,'relaunch','opus','orchestrator','Task');").unwrap();
     assert_eq!(store.fill_task_models().unwrap(), 1);
     drop(store);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(model(&mut reopened), Some(("opus".into(), alondra_domain_model::ModelChooser::Orchestrator)), "the model its last launch chose comes first and survives a restart");
 }
 
 #[test]
 fn a_tasks_project_survives_restart_and_a_store_made_before_projects_fills_them_in() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &user(), "title", Command::TitleRequest { request_id: "request-1".into(), title: "Work".into() });
     let launch = RequestLaunch {
@@ -1671,14 +1672,14 @@ fn a_tasks_project_survives_restart_and_a_store_made_before_projects_fills_them_
     store.execute_filling_revision(&orchestrator, &planned_task("next-3", "request-1", &epoch, alondra_daemon_engine_model::LaunchPlan::new("elsewhere", "/tmp"))).unwrap();
     store.conn.execute("INSERT INTO task_worktree_records(task_id,path,origin,branch,discard,end) VALUES('task-1','/synthetic/Lumo/.claude/worktrees/goal','task',NULL,1,NULL)", []).unwrap();
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let projects = |state: &DomainState| state.tasks.values().map(|task| (task.id.0.clone(), task.project.clone())).collect::<Vec<_>>();
     assert_eq!(projects(&store.load().unwrap()), [("next-1".into(), Some("Quill".into())), ("next-2".into(), None), ("next-3".into(), None), ("task-1".into(), None)],
         "the project each task was created with survives a restart");
 
     store.conn.execute_batch("DROP TABLE task_projects").unwrap();
     drop(store);
-    let mut before_projects = DomainStore::open(&fixture.path()).unwrap();
+    let mut before_projects = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert!(projects(&before_projects.load().unwrap()).iter().all(|(_, project)| project.is_none()), "the old store opens with its tasks as they were");
     assert_eq!(before_projects.fill_task_projects(Path::new("/synthetic")).unwrap(), 3);
     assert_eq!(projects(&before_projects.load().unwrap()), [("next-1".into(), Some("App".into())), ("next-2".into(), Some("Kiosk".into())),
@@ -1686,20 +1687,20 @@ fn a_tasks_project_survives_restart_and_a_store_made_before_projects_fills_them_
         "the request's project first, else the folder of its launch plan, else that of its worktree");
     assert_eq!(before_projects.fill_task_projects(Path::new("/synthetic")).unwrap(), 0, "a task that has its project keeps it");
     drop(before_projects);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(reopened.load().unwrap().tasks[&"task-1".into()].project.as_deref(), Some("Lumo"), "what was filled in survives a restart");
 }
 
 #[test]
 fn a_store_made_before_wrap_ups_launch_plans_and_closings_opens_in_place() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
     store.begin_task_closing(&"task-1".into(), 5).unwrap();
     store.conn.execute_batch("DROP TABLE task_wrap_ups; DROP TABLE task_waits; DROP TABLE task_relations; DROP TABLE task_closings; DROP TABLE auto_launches; DROP TABLE task_launch_plans; DROP TABLE inherited_worktrees; DROP TABLE maintenance_requests; DROP TABLE cleared_requests; DROP TABLE request_origins").unwrap();
     drop(store);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     for table in ["task_wrap_ups", "task_waits", "task_relations", "task_closings", "auto_launches", "task_launch_plans", "inherited_worktrees", "maintenance_requests", "cleared_requests", "request_origins"] {
         let count: i64 = reopened.conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0, "{table} is created empty");
@@ -1712,12 +1713,12 @@ fn a_store_made_before_wrap_ups_launch_plans_and_closings_opens_in_place() {
 #[test]
 fn a_maintenance_message_stays_one_after_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &user(), "maintenance", Command::CreateRequest {
         request_id: "request-m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true, message: false });
     drop(store);
-    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let state = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     assert!(state.requests[&"request-m".into()].maintenance);
     assert!(!state.requests[&"request-1".into()].maintenance);
 }
@@ -1725,14 +1726,14 @@ fn a_maintenance_message_stays_one_after_a_restart() {
 #[test]
 fn who_raised_a_request_is_kept_after_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &Actor::Orchestrator { generation: 0 }, "raised", Command::CreateRequest {
         request_id: "request-o".into(), body: "Measure the SDK usage".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut store, &user(), "asked", Command::CreateRequest {
         request_id: "request-u".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false });
     drop(store);
-    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let state = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     assert_eq!(state.requests[&"request-o".into()].origin, RequestOrigin::Orchestrator);
     assert_eq!(state.requests[&"request-u".into()].origin, RequestOrigin::User);
 }
@@ -1740,7 +1741,7 @@ fn who_raised_a_request_is_kept_after_a_restart() {
 #[test]
 fn a_cleared_request_stays_cleared_after_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     for id in ["request-q", "request-open"] {
         execute(&mut store, &user(), id, Command::CreateRequest {
@@ -1751,7 +1752,7 @@ fn a_cleared_request_stays_cleared_after_a_restart() {
     let seen = store.load().unwrap().revision;
     execute(&mut store, &user(), "clear", Command::ClearCompleted { seen });
     drop(store);
-    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let state = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     assert!(state.requests[&"request-q".into()].cleared);
     assert!(!state.requests[&"request-open".into()].cleared);
 }
@@ -1759,14 +1760,14 @@ fn a_cleared_request_stays_cleared_after_a_restart() {
 #[test]
 fn a_message_to_the_orchestrator_stays_one_after_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &user(), "message", Command::CreateRequest {
         request_id: "request-q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: true });
     execute(&mut store, &user(), "maintenance", Command::CreateRequest {
         request_id: "request-m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true, message: false });
     drop(store);
-    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let state = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     assert!(state.requests[&"request-q".into()].message);
     assert!(state.requests[&"request-m".into()].message, "maintenance is a message too");
     assert!(!state.requests[&"request-1".into()].message);
@@ -1775,7 +1776,7 @@ fn a_message_to_the_orchestrator_stays_one_after_a_restart() {
 #[test]
 fn a_card_reply_keeps_its_reference_and_launch_after_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &Actor::System, "notice", Command::PublishInformation {
         interaction_id: "weekly-notice".into(), scope: Scope::Task { task_id: "task-1".into() },
@@ -1807,7 +1808,7 @@ fn a_card_reply_keeps_its_reference_and_launch_after_a_restart() {
     }));
     drop(store);
 
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let state = store.load().unwrap();
     assert_eq!(serde_json::to_value(&state.requests[&"follow-up".into()]).unwrap(), request);
     assert_eq!(store.request_launch(&"follow-up".into()).unwrap(), Some(launch.clone()));
@@ -1822,14 +1823,14 @@ fn a_card_reply_keeps_its_reference_and_launch_after_a_restart() {
 #[test]
 fn a_database_without_card_replies_opens_with_no_reference_on_old_messages() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     execute(&mut store, &user(), "old-message", Command::CreateRequest {
         request_id: "old-message".into(), body: "A general message".into(),
         auto_merge: false, maintenance: false, message: true,
     });
     store.conn.execute_batch("DROP TABLE IF EXISTS request_card_replies").unwrap();
     drop(store);
-    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let state = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     assert!(state.requests[&"old-message".into()].message);
     assert!(serde_json::to_value(&state.requests[&"old-message".into()]).unwrap()["reply_to"].is_null());
 }
@@ -1837,7 +1838,7 @@ fn a_database_without_card_replies_opens_with_no_reference_on_old_messages() {
 #[test]
 fn a_store_made_before_messages_were_marked_marks_the_ones_the_message_route_made() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let routed = "request-0123456789abcdef0123456789abcdef";
     for (id, maintenance) in [(routed, false), ("request-m", true), ("5f1c2c1e-6d55-4a2e-9a77-0b3c1d7e9f10", false), ("request-0123456789abcdef0123456789abcdeg", false)] {
@@ -1846,7 +1847,7 @@ fn a_store_made_before_messages_were_marked_marks_the_ones_the_message_route_mad
     }
     store.conn.execute_batch("DROP TABLE message_requests").unwrap();
     drop(store);
-    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let state = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     let marked: BTreeSet<&str> = state.requests.values().filter(|r| r.message).map(|r| r.id.0.as_str()).collect();
     assert_eq!(marked, BTreeSet::from([routed, "request-m"]));
 }
@@ -1854,7 +1855,7 @@ fn a_store_made_before_messages_were_marked_marks_the_ones_the_message_route_mad
 #[test]
 fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Reviewer".into(), at: 0 });
     execute(&mut store, &user(), "request-title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
@@ -1880,7 +1881,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
         task_id: "task-2".into(), presentation_id: "delivery-2".into(), verdict: Verdict::ChangesRequested { text: "Fix it".into(), serious_findings: Some(1) },
     });
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let state = store.load().unwrap();
     let review = &state.tasks[&"task-2".into()];
     assert_eq!((review.blocks.len(), review.delivered_dependencies.len()), (1, 1));
@@ -1913,7 +1914,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     });
     assert_eq!(pushes(&store, "delivery-1b"), 1, "one push when the review lets the delivery through");
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap().tasks[&"task-1".into()].state, TaskState::ForYourReview);
     execute(&mut store, &user(), "rename", Command::RetitleTask { task_id: "task-1".into(), title: "Goal, renamed".into() });
     assert_eq!(pushes(&store, "delivery-1b"), 1, "a restart and an unrelated command never repeat it");
@@ -1923,25 +1924,25 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
 #[test]
 fn a_tasks_wrap_up_survives_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
     execute(&mut store, &Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: NodeEnd::KeptByUser, agent_id: None });
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let wrap_up = store.load().unwrap().tasks[&"task-1".into()].wrap_up.clone();
     assert_eq!(wrap_up, WrapUp { asked_at: None, cleaned_at: None, close_cancelled: true, node: Some(NodeEnd::KeptByUser), post_merge_work: None, cleanup_turn: None });
 
     execute(&mut store, &user(), "reopen", Command::ReopenTask { task_id: "task-1".into() });
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert!(store.load().unwrap().tasks[&"task-1".into()].wrap_up.is_default(), "a reset is written back, not left stale");
 }
 
 #[test]
 fn task_closings_keep_their_wait_failures_and_card_across_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let mut row = store.begin_task_closing(&"task-1".into(), 100).unwrap();
     assert_eq!((row.since, row.failures), (100, 0));
@@ -1953,7 +1954,7 @@ fn task_closings_keep_their_wait_failures_and_card_across_a_restart() {
     row.problem_id = Some("problem-close-task-1-ab".into());
     store.save_task_closing(&row).unwrap();
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.begin_task_closing(&"task-1".into(), 5_000).unwrap(), row, "the wait is not restarted");
     assert_eq!(store.task_closings().unwrap(), vec![row]);
     store.forget_task_closing(&"task-1".into()).unwrap();
@@ -1978,7 +1979,7 @@ fn planned_task(id: &str, request: &str, epoch: &alondra_domain_model::DataEpoch
 #[test]
 fn a_launch_plan_is_stored_with_its_task_in_one_transaction() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &user(), "title", Command::TitleRequest { request_id: "request-1".into(), title: "Work".into() });
     let epoch = store.load().unwrap().data_epoch.clone();
@@ -1998,19 +1999,19 @@ fn a_launch_plan_is_stored_with_its_task_in_one_transaction() {
     assert!(store.execute_filling_revision(&orchestrator, &planned_task("next-1", "request-1", &epoch, other)).is_err(), "the same command with another plan");
     assert_eq!(store.launch_plan(&"next-1".into()).unwrap(), Some(plan()), "a replay does not write the plan again");
     drop(store);
-    let reopened = DomainStore::open(&fixture.path()).unwrap();
+    let reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(reopened.launch_plan(&"next-1".into()).unwrap(), Some(plan()), "the plan survives a restart");
 }
 
 #[test]
 fn a_failed_start_retry_is_kept_until_it_is_cleared() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let task: TaskId = "task-1".into();
     store.set_start_retry(&task, Some((2, 900))).unwrap();
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.start_retries().unwrap().get(&task), Some(&(2, 900)), "it survives a restart");
     store.set_start_retry(&task, None).unwrap();
     assert!(store.start_retries().unwrap().is_empty());
@@ -2019,7 +2020,7 @@ fn a_failed_start_retry_is_kept_until_it_is_cleared() {
 #[test]
 fn an_automatic_launch_is_claimed_once_per_task() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let task: TaskId = "task-1".into();
     assert!(store.claim_auto_launch(&task, 1, false).unwrap());
@@ -2030,7 +2031,7 @@ fn an_automatic_launch_is_claimed_once_per_task() {
     assert!(store.claim_auto_launch(&task, 6, true).unwrap());
     assert_eq!(store.auto_launch(&task).unwrap().unwrap().state, AutoLaunchState::Launching);
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.auto_launches().unwrap().len(), 1, "the claim survives a restart");
     store.forget_auto_launch(&task).unwrap();
     assert_eq!(store.auto_launch(&task).unwrap(), None);
@@ -2039,19 +2040,19 @@ fn an_automatic_launch_is_claimed_once_per_task() {
 #[test]
 fn the_orchestrators_session_survives_a_restart_and_a_new_one_replaces_it() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap().orchestrator_session, None);
     execute(&mut store, &Actor::System, "bind-1", Command::BindOrchestratorSession { session_id: "session-1".into() });
     execute(&mut store, &Actor::System, "bind-2", Command::BindOrchestratorSession { session_id: "session-2".into() });
     drop(store);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(reopened.load().unwrap().orchestrator_session, Some("session-2".into()));
 }
 
 fn revision_times_fixture() -> DomainStore {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch("CREATE TABLE command_audit(revision INTEGER PRIMARY KEY,at INTEGER NOT NULL);").unwrap();
-    DomainStore::from_connection(conn)
+    DomainStore::from_connection(conn, &alondra_domain_rules::Rules)
 }
 
 #[test]
@@ -2101,7 +2102,7 @@ fn revision_times_batch_preserves_missing_duplicates_wrapping_and_fresh_timestam
 
 #[test]
 fn revision_times_batch_preserves_empty_schema_errors_and_invalid_timestamp_errors() {
-    let missing = DomainStore::from_connection(Connection::open_in_memory().unwrap());
+    let missing = DomainStore::from_connection(Connection::open_in_memory().unwrap(), &alondra_domain_rules::Rules);
     assert!(missing.revision_times(&[]).is_err());
     assert!(missing.revision_times(&[1]).is_err());
     let store = revision_times_fixture();
@@ -2116,7 +2117,7 @@ fn revision_times_batch_preserves_empty_schema_errors_and_invalid_timestamp_erro
 #[test]
 fn an_approved_plan_s_checklist_and_the_final_delivery_s_marks_survive_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let plan = "# Goal\n\n- [ ] Write the answer\n- [ ] Check it\n";
     let held = |id: &str| Command::HoldHook {
@@ -2139,7 +2140,7 @@ fn an_approved_plan_s_checklist_and_the_final_delivery_s_marks_survive_a_restart
     });
     assert_eq!(count(&store, "task_checklists"), 1, "a later approved plan replaces the task's checklist");
     drop(store);
-    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let mut restarted = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let state = restarted.load().unwrap();
     assert_eq!(state.checklists[&TaskId::from("task-1")].plan, InteractionId::from("plan-2"));
     assert_eq!(state.checklists[&TaskId::from("task-1")].items.len(), 2);
@@ -2149,7 +2150,7 @@ fn an_approved_plan_s_checklist_and_the_final_delivery_s_marks_survive_a_restart
 #[test]
 fn an_approved_proposed_plan_its_request_and_the_new_task_s_scope_survive_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let plan = "# Index the library\n\n- [ ] Store feature prints\n- [ ] Follow changes\n";
     let targets = vec![DeliveryTarget::Text { text: "Report".into() }];
@@ -2174,7 +2175,7 @@ fn an_approved_proposed_plan_its_request_and_the_new_task_s_scope_survive_a_rest
         review_prs: false, dependencies: ["build".into()].into(), stack: None, launch: Some(LaunchPlan::new("follow", "/tmp/repo")),
     });
     drop(store);
-    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let mut restarted = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let state = restarted.load().unwrap();
     let ids = |task: &str| state.checklists[&TaskId::from(task)].items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
     assert_eq!((ids("build"), ids("follow")), (vec!["1".to_owned()], vec!["2".to_owned()]), "a phase's points stay split after a restart");
@@ -2195,13 +2196,13 @@ fn a_lifecycle_column_edited_behind_the_journal_is_refused_not_repaired() {
         ("state", "UPDATE tasks SET state='done' WHERE id='task-1'"),
     ] {
         let fixture = Fixture::new();
-        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         seeded(&mut store);
         execute(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
         store.conn.execute(edit, []).unwrap();
         let edited: (Option<String>, i64, String) = store.conn.query_row("SELECT agent_id,started,state FROM tasks WHERE id='task-1'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
         drop(store);
-        let error = match DomainStore::open(&fixture.path()) {
+        let error = match DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules) {
             Ok(mut store) => store.load().map(|_| ()).unwrap_err(),
             Err(error) => error,
         };
@@ -2217,7 +2218,7 @@ fn a_lifecycle_column_edited_behind_the_journal_is_refused_not_repaired() {
 #[test]
 fn a_command_about_another_task_leaves_a_task_as_its_journal_left_it() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
     let before = store.load().unwrap();
@@ -2239,7 +2240,7 @@ fn a_command_about_another_task_leaves_a_task_as_its_journal_left_it() {
 #[test]
 fn a_stored_wait_from_before_the_lifecycle_recorded_it_is_recorded_on_the_first_command() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request-1".into(), title: "Goal".into() });
     execute(&mut store, &Actor::Orchestrator { generation: 0 }, "waiting", Command::CreateTask { priority: Default::default(),
@@ -2260,7 +2261,7 @@ fn a_stored_wait_from_before_the_lifecycle_recorded_it_is_recorded_on_the_first_
     conn.execute_batch(&retained).unwrap();
     drop(conn);
 
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let old = store.load().unwrap();
     assert_eq!(old.tasks[&waiting].state, TaskState::WaitingDependency, "the row kept the wait");
     assert_eq!(old.lifecycle_journal[&waiting].len() + 1, recorded.len(), "the journal is the one kept before the wait was recorded");
@@ -2281,7 +2282,7 @@ fn a_stored_wait_from_before_the_lifecycle_recorded_it_is_recorded_on_the_first_
 #[test]
 fn the_texts_the_retention_lets_go_of_leave_the_state_the_store_keeps() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &Actor::System, "release", Command::ReleaseTask { task_id: "task-1".into(), reason: "The SDK host takes it".into(), relaunch: alondra_domain_model::Relaunch::ByItself, cwd: None });
     let admit = envelope(&mut store, "admit", Command::AdmitExecution {
@@ -2335,7 +2336,7 @@ fn the_texts_the_retention_lets_go_of_leave_the_state_the_store_keeps() {
 #[test]
 fn the_lifecycle_journal_is_persisted_append_only_and_read_back_on_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
     execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
@@ -2346,7 +2347,7 @@ fn the_lifecycle_journal_is_persisted_append_only_and_read_back_on_restart() {
     let expected = store.load().unwrap();
     drop(store);
 
-    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let mut restarted = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(restarted.load().unwrap(), expected, "the journal and the ending it yields come back");
     execute(&mut restarted, &Actor::System, "end", Command::RecordNodeEnd {
         task_id: "task-1".into(), end: NodeEnd::Closed, agent_id: Some("agent-1".into()),
@@ -2358,7 +2359,7 @@ fn the_lifecycle_journal_is_persisted_append_only_and_read_back_on_restart() {
     restarted.conn.execute("UPDATE tasks SET state='running' WHERE id='task-1'", []).unwrap();
     drop(restarted);
 
-    let error = match DomainStore::open(&fixture.path()) {
+    let error = match DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules) {
         Ok(mut store) => store.load().map(|_| ()).unwrap_err(),
         Err(error) => error,
     };
@@ -2370,7 +2371,7 @@ fn the_lifecycle_journal_is_persisted_append_only_and_read_back_on_restart() {
 #[test]
 fn a_journal_event_edited_behind_the_store_is_refused() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
     let trigger: String = store.conn.query_row("SELECT sql FROM sqlite_master WHERE name='lifecycle_event_immutable'", [], |r| r.get(0)).unwrap();
@@ -2379,7 +2380,7 @@ fn a_journal_event_edited_behind_the_store_is_refused() {
     assert_eq!(changed, 1, "the last event is moved out of its place");
     store.conn.execute_batch(&trigger).unwrap();
     drop(store);
-    let error = match DomainStore::open(&fixture.path()) {
+    let error = match DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules) {
         Ok(mut store) => store.load().map(|_| ()).unwrap_err(),
         Err(error) => error,
     };
@@ -2406,9 +2407,9 @@ fn no_daemon_code_writes_the_journal_tables_but_the_store() {
 #[test]
 fn a_read_transaction_reads_one_commit_while_the_writer_writes_beside_it() {
     let fixture = Fixture::new();
-    let mut writer = DomainStore::open(&fixture.path()).unwrap();
+    let mut writer = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut writer);
-    let reader: std::sync::Mutex<Box<dyn alondra_engine_ports::journal::Journal>> = std::sync::Mutex::new(Box::new(DomainStore::open_readonly(&fixture.path()).unwrap()));
+    let reader: std::sync::Mutex<Box<dyn alondra_engine_ports::journal::Journal>> = std::sync::Mutex::new(Box::new(DomainStore::open_readonly(&fixture.path(), &alondra_domain_rules::Rules).unwrap()));
     let before = writer.request_times().unwrap();
     let (mark, newest) = alondra_engine_ports::journal::ReadTransaction::begin(reader.lock().unwrap()).read_mark().unwrap();
     {
@@ -2436,9 +2437,9 @@ fn a_read_transaction_reads_one_commit_while_the_writer_writes_beside_it() {
 #[test]
 fn read_changes_follow_commits_not_setters_or_rolled_back_writes() {
     let fixture = Fixture::new();
-    let mut writer = DomainStore::open(&fixture.path()).unwrap();
+    let mut writer = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut writer);
-    let reader = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let reader = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path(), &alondra_domain_rules::Rules).unwrap());
     let task = TaskId::from("task-1");
     let before = ReadTransaction::begin(reader.lock().unwrap()).read_cursor().unwrap();
     writer.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -2474,9 +2475,9 @@ fn read_changes_follow_commits_not_setters_or_rolled_back_writes() {
 #[test]
 fn read_changes_reset_for_auxiliary_setters_and_unannotated_external_sql() {
     let fixture = Fixture::new();
-    let mut writer = DomainStore::open(&fixture.path()).unwrap();
+    let mut writer = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut writer);
-    let reader = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let reader = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path(), &alondra_domain_rules::Rules).unwrap());
     let mut cursor = ReadTransaction::begin(reader.lock().unwrap()).read_cursor().unwrap();
     let mut reset = || {
         let read = ReadTransaction::begin(reader.lock().unwrap());
@@ -2507,25 +2508,25 @@ fn read_changes_reset_for_auxiliary_setters_and_unannotated_external_sql() {
 #[test]
 fn read_changes_cannot_reuse_a_cursor_from_another_reader_or_a_reopened_connection() {
     let fixture = Fixture::new();
-    let mut writer = DomainStore::open(&fixture.path()).unwrap();
+    let mut writer = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut writer);
-    let first = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let first = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path(), &alondra_domain_rules::Rules).unwrap());
     let before = ReadTransaction::begin(first.lock().unwrap()).read_cursor().unwrap();
-    let other = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let other = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path(), &alondra_domain_rules::Rules).unwrap());
     let read = ReadTransaction::begin(other.lock().unwrap());
     assert_eq!(read.changes_since(&before).changed, ReadChange::Reset);
     drop(read);
     drop(first);
-    let reopened = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let reopened = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path(), &alondra_domain_rules::Rules).unwrap());
     assert_eq!(ReadTransaction::begin(reopened.lock().unwrap()).changes_since(&before).changed, ReadChange::Reset);
 }
 
 #[test]
 fn read_change_errors_fail_closed_and_invalidate_older_boundaries_after_recovery() {
     let fixture = Fixture::new();
-    let mut writer = DomainStore::open(&fixture.path()).unwrap();
+    let mut writer = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut writer);
-    let reader = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let reader = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path(), &alondra_domain_rules::Rules).unwrap());
     let before;
     let original_mark;
     {
@@ -2553,7 +2554,7 @@ fn read_change_errors_fail_closed_and_invalidate_older_boundaries_after_recovery
 fn launched_tasks_answers_for_every_task_in_one_statement() {
     use crate::model_metrics::{Decision, DecisionKind};
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     for kind in [DecisionKind::Send, DecisionKind::Relaunch] {
         store.record_model_decision(&Decision { task_id: "task-1".into(), request_id: "request-1".into(), agent_id: None,
@@ -2573,17 +2574,17 @@ fn launched_tasks_answers_for_every_task_in_one_statement() {
 fn snooze_survives_reopening_an_old_store_and_clears_its_sql_column_on_return() {
     let fixture = Fixture::new();
     let path = fixture.path();
-    let mut store = DomainStore::open(&path).unwrap();
+    let mut store = DomainStore::open(&path, &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     present(&mut store);
     store.conn.execute_batch("ALTER TABLE interactions DROP COLUMN snoozed_until; ALTER TABLE interactions DROP COLUMN resurfaced_at_revision;").unwrap();
     drop(store);
 
-    let mut store = DomainStore::open(&path).unwrap();
+    let mut store = DomainStore::open(&path, &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap().interactions[&InteractionId::from("delivery-1")].snoozed_until, None);
     execute(&mut store, &user(), "snooze", Command::SnoozeCard { interaction_id: "delivery-1".into(), until: 200, now: 100 });
     drop(store);
-    let mut store = DomainStore::open(&path).unwrap();
+    let mut store = DomainStore::open(&path, &alondra_domain_rules::Rules).unwrap();
     let state = store.load().unwrap();
     let index = ReadIndex::build(&state);
     assert!(index.waiting().is_empty());
@@ -2599,7 +2600,7 @@ fn snooze_survives_reopening_an_old_store_and_clears_its_sql_column_on_return() 
     assert_eq!(revision, returned.map(|revision| revision as i64));
     assert_eq!(store.conn.query_row("SELECT count(*) FROM domain_message_user_targets targets JOIN domain_messages messages ON messages.id=targets.message_id WHERE messages.revision=?1 AND messages.interaction_id='delivery-1'", [commit.state.revision as i64], |row| row.get::<_, i64>(0)).unwrap(), 1);
     drop(store);
-    let mut store = DomainStore::open(&path).unwrap();
+    let mut store = DomainStore::open(&path, &alondra_domain_rules::Rules).unwrap();
     let state = store.load().unwrap();
     assert_eq!(state.interactions[&InteractionId::from("delivery-1")].snoozed_until, None);
     assert_eq!(state.interactions[&InteractionId::from("delivery-1")].resurfaced_at_revision, returned);
@@ -2621,7 +2622,7 @@ fn a_database_from_before_typed_cards_gets_them_once_from_what_alondra_wrote() {
     };
     let resume = SystemCard::PaceResume { day: "2026-11-02".into() };
     {
-        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         seeded(&mut store);
         present(&mut store);
         let body = alondra_domain_model::merge_failed_text(7, "https://github.com/o/r/pull/7", "main", "review required");
@@ -2635,7 +2636,7 @@ fn a_database_from_before_typed_cards_gets_them_once_from_what_alondra_wrote() {
             CardSpec::new(CardKind::Decide, "Choose the database").why("The cache needs one.")));
         store.conn.execute_batch("ALTER TABLE interactions DROP COLUMN system_card; ALTER TABLE delivery_feedback DROP COLUMN merge_failure;").unwrap();
     }
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let state = store.load().unwrap();
     assert_eq!(state.interactions[&"pace-resume-2026-11-02".into()].system_card, Some(resume.clone()), "Alondra's card gets its kind");
     assert_eq!(state.interactions[&"which-database".into()].system_card, None, "a node's card is never one of Alondra's");
@@ -2643,14 +2644,14 @@ fn a_database_from_before_typed_cards_gets_them_once_from_what_alondra_wrote() {
     assert_eq!(feedback.last().unwrap().merge_failure, Some(MergeFailure { number: 7, reason: "review required".into() }), "the hand-back says which merge failed");
     store.conn.execute("UPDATE interactions SET system_card=NULL WHERE id='pace-resume-2026-11-02'", []).unwrap();
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap().interactions[&"pace-resume-2026-11-02".into()].system_card, None, "the upgrade runs once");
 }
 
 #[test]
 fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let orchestrator = Actor::Orchestrator { generation: 0 };
     let root = crate::test_support::Directory::new();
     let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
@@ -2669,7 +2670,7 @@ fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
     execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     execute(&mut store, &Actor::System, "handed", Command::ReleaseTaskWorktree { task_id: "t".into(), path: worktree.into(), end: WorktreeEnd::HandedOver });
     drop(store);
-    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let mut restarted = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let state = restarted.load().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t-claude")].continues, Some("t".into()));
     assert_eq!(state.tasks[&TaskId::from("t")].worktrees[worktree].end, Some(WorktreeEnd::HandedOver));
@@ -2680,12 +2681,12 @@ fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
 fn a_continuation_inherits_the_approved_checklist_and_existing_worktree_after_restart() {
     let root = crate::test_support::Directory::new();
     let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "original");
-    let (fixture, mut store, command, checklist) = crate::testing::continuation_fixture(&worktree);
+    let (fixture, mut store, command, checklist) = crate::testing::continuation_fixture(&worktree, &alondra_domain_rules::Rules);
     let commit = store.execute_authenticated(&Actor::Orchestrator { generation: 0 }, &command, None).unwrap();
     assert_eq!(store.load().unwrap(), commit.state);
     let path = commit.state.tasks[&TaskId::from("continued")].worktrees.keys().next().unwrap().clone();
     drop(store);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let state = reopened.load().unwrap();
     assert_eq!(state.checklists.get(&TaskId::from("continued")), Some(&checklist));
     assert!(!state.checklists.contains_key(&TaskId::from("task-1")));
@@ -2702,7 +2703,7 @@ fn a_checklist_cannot_disappear_without_one_new_matching_continuation() {
     for invalid in ["missing", "changed", "existing", "other-request", "duplicate"] {
         let root = crate::test_support::Directory::new();
         let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "original");
-        let (_fixture, mut store, command, _) = crate::testing::continuation_fixture(&worktree);
+        let (_fixture, mut store, command, _) = crate::testing::continuation_fixture(&worktree, &alondra_domain_rules::Rules);
         let before = store.load().unwrap();
         let mut after = DomainState::clone(&before);
         after.execute(&Actor::Orchestrator { generation: 0 }, &command).unwrap();
@@ -2731,7 +2732,7 @@ fn a_checklist_cannot_disappear_without_one_new_matching_continuation() {
 #[test]
 fn worktree_records_kept_before_a_worktree_could_be_handed_over_keep_their_rows_and_take_that_end() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     store.conn.execute_batch("DROP TABLE task_worktree_records; CREATE TABLE task_worktree_records(\
  task_id TEXT NOT NULL REFERENCES tasks(id),\
@@ -2744,19 +2745,19 @@ fn worktree_records_kept_before_a_worktree_could_be_handed_over_keep_their_rows_
  INSERT INTO task_worktree_records(task_id,path,origin,branch,discard,end) VALUES('task-1','/synthetic/app/.claude/worktrees/one','task','worktree-one',0,'removed');").unwrap();
     assert!(store.conn.execute("UPDATE task_worktree_records SET end='handed_over'", []).is_err(), "the old table refuses the new end");
     drop(store);
-    let store = DomainStore::open(&fixture.path()).unwrap();
+    let store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let row: (String, String, Option<String>, i64, Option<String>) = store.conn.query_row(
         "SELECT task_id,path,branch,discard,end FROM task_worktree_records", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
     assert_eq!(row, ("task-1".into(), "/synthetic/app/.claude/worktrees/one".into(), Some("worktree-one".into()), 0, Some("removed".into())));
     store.conn.execute("UPDATE task_worktree_records SET end='handed_over'", []).unwrap();
     drop(store);
-    DomainStore::open(&fixture.path()).unwrap();
+    DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
 }
 
 #[test]
 fn a_folded_request_the_batch_base_and_each_tasks_creation_survive_a_restart() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     execute(&mut store, &Actor::System, "bind", Command::BindOrchestratorSession { session_id: "session-1".into() });
     seeded(&mut store);
     execute(&mut store, &Actor::Orchestrator { generation: 0 }, "covered", Command::CreateRequest {
@@ -2768,7 +2769,7 @@ fn a_folded_request_the_batch_base_and_each_tasks_creation_survive_a_restart() {
     });
     let before = store.load().unwrap();
     drop(store);
-    let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     assert_eq!(reopened.requests[&"request-2".into()].folded_into, Some("task-1".into()));
     assert_eq!(reopened.orchestrator_batch_base, before.orchestrator_batch_base);
     assert!(reopened.orchestrator_batch_base.is_some());
@@ -2780,7 +2781,7 @@ fn a_folded_request_the_batch_base_and_each_tasks_creation_survive_a_restart() {
 fn reply_windows_roundtrip_and_legacy_rows_keep_the_last_reply_only() {
     use alondra_domain_model::{FeedbackTarget, InboxSubject, InteractionId, InteractionPayload, ReadIndex};
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let prs = [
         alondra_domain_model::hosted_pr_id("github.com", "acme/widgets", 7),
@@ -2812,7 +2813,7 @@ fn reply_windows_roundtrip_and_legacy_rows_keep_the_last_reply_only() {
     assert_eq!(feedback.len(), 2);
     assert!(feedback.iter().all(|feedback| feedback.reply_window_start == Some(start)), "both replies belong to the same persisted window");
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(store.load().unwrap(), with_window, "the current window survives a restart");
     let reopened = store.load().unwrap();
     let p = &reopened.interactions[&InteractionId::from("delivery-1")];
@@ -2824,7 +2825,7 @@ fn reply_windows_roundtrip_and_legacy_rows_keep_the_last_reply_only() {
     assert!(ReadIndex::build(&reopened).cards().is_empty(), "both scoped replies remain with the node after reopening");
     store.conn.execute_batch("ALTER TABLE delivery_feedback DROP COLUMN reply_window_start;").unwrap();
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let mut legacy = DomainState::clone(&with_window);
     let InteractionPayload::Delivery { feedback, .. } = &mut legacy.interactions.get_mut(&"delivery-1".into()).unwrap().payload else { panic!("delivery") };
     for feedback in feedback { feedback.reply_window_start = None; }
@@ -2853,7 +2854,7 @@ fn reply_windows_roundtrip_and_legacy_rows_keep_the_last_reply_only() {
         repository::save_changes(&store.conn, &mut journal, &before, &after).unwrap();
         journal.commit().unwrap();
         drop(store);
-        store = DomainStore::open(&fixture.path()).unwrap();
+        store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         assert_eq!(*store.load().unwrap(), after, "saving {window:?} updates or clears the stored window");
     }
     store.integrity_check().unwrap();
@@ -2870,7 +2871,7 @@ fn pages_read(store: &DomainStore) -> i64 {
 #[test]
 fn adding_a_column_reads_only_the_table_it_changed() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     store.conn.execute_batch(
         "CREATE TABLE unrelated_history(id INTEGER PRIMARY KEY, task_id TEXT REFERENCES tasks(id), body BLOB NOT NULL);
@@ -2880,7 +2881,7 @@ fn adding_a_column_reads_only_the_table_it_changed() {
     ).unwrap();
     let unrelated_pages: i64 = store.conn.query_row("SELECT count(*) FROM dbstat WHERE name='unrelated_history'", [], |r| r.get(0)).unwrap();
     drop(store);
-    let reopened = DomainStore::open(&fixture.path()).unwrap();
+    let reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let column: i64 = reopened.conn.query_row("SELECT count(*) FROM pragma_table_info('merge_authorizations') WHERE name='despite_pending_message'", [], |r| r.get(0)).unwrap();
     assert_eq!(column, 1);
     let read = pages_read(&reopened);
@@ -2890,7 +2891,7 @@ fn adding_a_column_reads_only_the_table_it_changed() {
 #[test]
 fn a_migrated_table_with_a_broken_reference_is_refused_when_it_opens() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     store.conn.execute_batch(
         "PRAGMA foreign_keys=OFF;
@@ -2899,7 +2900,7 @@ fn a_migrated_table_with_a_broken_reference_is_refused_when_it_opens() {
          VALUES('orphan','no-task','no-pr','no-card','head','squash','user',1,'unclaimed',NULL,1);",
     ).unwrap();
     drop(store);
-    let refused = DomainStore::open(&fixture.path()).err().expect("a dangling merge authorization is refused");
+    let refused = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).err().expect("a dangling merge authorization is refused");
     assert!(format!("{refused:#}").contains("foreign key check of merge_authorizations"), "{refused:#}");
 }
 
@@ -2908,7 +2909,7 @@ fn a_tasks_stages_survive_a_reopen_and_a_task_stored_without_them_reads_as_a_sin
     use alondra_core::model_selection::{ModelProfile, TaskSelection};
     use alondra_domain_model::{ExecutionRole, TaskStages};
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
     execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
@@ -2917,7 +2918,7 @@ fn a_tasks_stages_survive_a_reopen_and_a_task_stored_without_them_reads_as_a_sin
     let selections = TaskStages::role_selections(&TaskSelection::automatic(ModelProfile::Implementation));
     execute(&mut store, &Actor::System, "stages", Command::RecordTaskStages { task_id: "task-2".into(), staged: true, reason: "It is large".into(), selections: selections.clone() });
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let state = store.load().unwrap();
     let stages = &state.tasks[&TaskId::from("task-2")].stages;
     assert_eq!((stages.staged, stages.reason.as_deref(), &stages.selections), (true, Some("It is large"), &selections));

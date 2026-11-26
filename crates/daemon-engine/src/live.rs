@@ -515,6 +515,7 @@ mod change_tests {
 
 #[cfg(test)]
 mod sdk_node_tests {
+    use alondra_domain_rules::Apply as _;
     use super::*;
     use alondra_domain_model::{Actor, Command, CommandEnvelope, DomainState, LaunchPlan, PROTOCOL_VERSION};
     use std::collections::BTreeSet;

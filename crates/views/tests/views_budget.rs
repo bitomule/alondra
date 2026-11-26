@@ -8,6 +8,7 @@ use alondra_domain_model::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, DeliveryTarget, DomainState, InteractionId, PROTOCOL_VERSION,
     ReadSnapshot, Recipient, Scope,
 };
+use alondra_domain_rules::Apply as _;
 use alondra_views::{Client, Family, Lang, RenderContext, Transport, build};
 use alondra_views_budget_fixture::{
     Seed, Shape, TOKEN, absorb, first_cards, id, live, loaded, mcp_card, real_size, serialized, sized, unit, user,

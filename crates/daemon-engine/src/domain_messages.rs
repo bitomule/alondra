@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(answer["status"], 200, "{answer}");
         assert_eq!(answer["body"]["reaches"], "task");
         let id: TaskId = serde_json::from_value(answer["body"]["task_id"].clone()).unwrap();
-        let mut reopened = alondra_store_sqlite::DomainStore::open(&fixture.0.join("domain.db")).unwrap();
+        let mut reopened = alondra_store_sqlite::DomainStore::open(&fixture.0.join("domain.db"), &alondra_domain_rules::Rules).unwrap();
         let state = reopened.load().unwrap();
         let followup = &state.tasks[&id];
         assert_eq!(followup.title, "Weekly report");

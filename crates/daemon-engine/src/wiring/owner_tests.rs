@@ -575,7 +575,7 @@ fn a_turn_end_behind_work_of_its_own_commits_no_card_and_frees_the_slot() {
         .unwrap();
     assert!(!runtime.read().state().interactions.contains_key(&turn_ended_card()));
     drop(runtime);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let scope = scope_of(&reopened.load().unwrap());
     let (holds, _) = reopened.own(scope, |owner| Ok(owner.journal().load(&task())?.holds_slot())).unwrap();
     assert!(holds, "work of its own keeps its process and its memory");
@@ -613,7 +613,7 @@ fn a_turn_end_whose_card_cannot_be_made_lets_nothing_escape() {
 fn a_sandbox_task_whose_sdk_turn_ended_without_a_next_step() {
     let path = PathBuf::from(std::env::var("ALONDRA_TURN_END_DB").expect("ALONDRA_TURN_END_DB names a sandbox database"));
     assert!(!path.components().any(|part| part.as_os_str() == ".alondra"), "never the user's own database");
-    let mut store = DomainStore::open(&path).unwrap();
+    let mut store = DomainStore::open(&path, &alondra_domain_rules::Rules).unwrap();
     let state = store.load().unwrap();
     let id = |name: &str| format!("{name}-{}", state.revision);
     let task: TaskId = id("sdk-turn").as_str().into();

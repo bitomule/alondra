@@ -6,6 +6,7 @@ use alondra_views as views;
 use alondra_domain::EMPTY_TURN_WAKES;
 use proptest::prelude::*;
 use std::collections::BTreeSet;
+use alondra_domain_rules::Apply as _;
 
 /// The task says on every client that it closed without a delivery, with what got done.
 #[test]
