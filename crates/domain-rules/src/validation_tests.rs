@@ -231,3 +231,28 @@ fn a_validation_survives_a_round_trip_through_its_stored_form() {
     }).unwrap();
     assert!(old.validation.is_default(), "a task stored before validation existed reads as never validated");
 }
+
+#[test]
+fn a_commit_after_the_validated_delivery_withdraws_it_and_the_same_validator_validates_that_commit() {
+    let mut s = implementing();
+    must(&mut s, node("b"), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
+        number: 1, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
+    must(&mut s, node("b"), ready(items()));
+    hand_over(&mut s, "c", 3);
+    let input = crate::replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap().pending_inputs()[0].as_str().to_owned();
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 3, facts: vec![RuntimeObservation::TurnStarted { turn: "turn-v".into(), input }] });
+    must(&mut s, node("c"), record("billing/unit", ValidationKind::Suite, ValidationVerdict::Met));
+    must(&mut s, node("c"), record("billing.partial/part", ValidationKind::Adequate, ValidationVerdict::Met));
+    let mut delivery = present_command("r1");
+    if let Command::PresentResult { targets, .. } = &mut delivery { *targets = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }]; }
+    must(&mut s, node("c"), delivery);
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 3, turn: "turn-v".into(), failure: None, failed: None });
+    assert_eq!(validation(&s).current().unwrap().state, RoundState::Delivered);
+    must(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head2".into(), base: "main".into(), state: PrState::Open, merged_head: None });
+    let round = validation(&s).current().unwrap();
+    assert_eq!((round.state, round.head.as_str()), (RoundState::Validating, "head2"), "the round validates the commit the pull request received");
+    assert!(s.interactions[&InteractionId::from("r1")].withdrawn, "the validated delivery is withdrawn");
+    assert_eq!(role(&s), Some(ExecutionRole::Validator));
+    assert!(handover(&s).is_none(), "the same validator carries on");
+    assert_aggregate_rules(&s);
+}
