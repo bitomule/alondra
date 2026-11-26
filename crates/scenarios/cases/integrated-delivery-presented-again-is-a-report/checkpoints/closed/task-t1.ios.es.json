@@ -200,7 +200,8 @@
     "capabilities": [
       "account_presentation",
       "model_selection",
-      "provider_accounts"
+      "provider_accounts",
+      "spec_fields"
     ],
     "version": "<version>",
     "views_protocol": {

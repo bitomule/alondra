@@ -56,7 +56,9 @@ behaviour the scenario states were broken.
 
 For each scenario listed as `judged`: look at its evidence (the committed captures its
 `@evidence` names, or run what it describes) and judge whether it shows what the scenario says.
-Record `judged` with `reasoning` and the paths you looked at in `evidence`, then
+Record `judged` with `reasoning` and the paths you looked at in `evidence` (the delivery shows
+the user the PNG and JPEG captures the delivered commit holds at those paths, so a capture that
+is not committed reads as not available), then
 `alondra spec record <spec>/<scenario> --kind judged --verdict met|unmet [--evidence <file>]...`.
 
 For each section listed as `reference`: read it and what it explains; record whether it is still

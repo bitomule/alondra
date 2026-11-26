@@ -20,6 +20,7 @@ mod misc;
 mod pacing;
 pub mod pr_status;
 mod schedules;
+mod spec_sheet;
 mod sidebar;
 mod status;
 mod summary;
@@ -36,6 +37,7 @@ mod capabilities_tests;
 pub mod text;
 
 pub use components::*;
+pub use alondra_view_model::spec_sheet::*;
 pub use alondra_view_model::capabilities::{ClientCapabilities, InvalidCapabilities};
 pub use card::answer_label;
 pub use messages::{Outcome, OutcomeKind, refusal_text, scheduled_message_stamp, send_anyway, transport_failure, unknown_outcome};

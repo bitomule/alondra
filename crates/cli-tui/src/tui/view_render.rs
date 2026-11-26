@@ -181,6 +181,8 @@ pub fn rows(view: &View) -> Vec<(&Row, bool)> {
                 | Item::Form(_)
                 | Item::Notice(_)
                 | Item::Actions(_)
+                | Item::SpecSheet(_)
+                | Item::DecisionSheet(_)
                 | Item::Unknown => {}
             }
         }
@@ -777,6 +779,7 @@ pub fn document_lines(view: &View, width: usize, open_checks: bool, open_folds: 
                             (FieldKind::Toggle, serde_json::Value::Bool(on)) => if *on { tr!("On", "Activado") } else { tr!("Off", "Desactivado") }.into(),
                             (_, serde_json::Value::String(value)) => value.clone(),
                             (_, serde_json::Value::Null) => String::new(),
+                            (FieldKind::Attachments, serde_json::Value::Array(attached)) if attached.is_empty() => "—".into(),
                             (_, value) => value.to_string(),
                         };
                         let mut parts = value.lines();
@@ -785,6 +788,10 @@ pub fn document_lines(view: &View, width: usize, open_checks: bool, open_folds: 
                             Span::raw(parts.next().unwrap_or_default().to_owned()),
                         ]));
                         lines.extend(parts.map(|part| Line::from(format!("  {part}"))));
+                        if matches!(field.kind, FieldKind::Mermaid { .. }) && !value.trim().is_empty() {
+                            let drawing = super::md::Block::of_sheet(super::md::Kind::Diagram, 1, value.trim_end());
+                            lines.extend(super::md::render(&[drawing], width).lines);
+                        }
                         if let Some(help) = &field.help {
                             lines.push(Line::from(format!("  {help}").fg(DIM)));
                         }
@@ -810,6 +817,8 @@ pub fn document_lines(view: &View, width: usize, open_checks: bool, open_folds: 
                         elapsed: None,
                     }),
                 ))),
+                Item::SpecSheet(sheet) => lines.extend(super::md::render(&super::sheet::spec_blocks(sheet, &BTreeSet::new()), width).lines),
+                Item::DecisionSheet(sheet) => lines.extend(super::md::render(&super::sheet::decision_blocks(sheet), width).lines),
                 Item::Actions(_) | Item::Unknown => {}
             }
         }
@@ -836,7 +845,7 @@ pub fn placeholders(view: &mut View) {
             Item::Form(form) => supported_form(form),
             Item::Notice(notice) => supported_notice(notice),
             Item::Actions(bar) => bar.actions.iter_mut().for_each(supported_action),
-            Item::ContentRef(_) | Item::Timeline(_) => {}
+            Item::ContentRef(_) | Item::Timeline(_) | Item::SpecSheet(_) | Item::DecisionSheet(_) => {}
         }
     }
     view.empty.iter_mut().chain(&mut view.notices).chain(&mut view.status.update).for_each(supported_notice);

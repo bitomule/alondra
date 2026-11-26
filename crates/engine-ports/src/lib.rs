@@ -22,6 +22,7 @@ pub mod github;
 pub mod hooks;
 pub mod hosts;
 pub mod job_state;
+pub mod kept_images;
 pub mod journal;
 pub mod launch;
 pub mod local_network;

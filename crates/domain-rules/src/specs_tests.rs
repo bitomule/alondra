@@ -34,7 +34,12 @@ impl Files for Mem {
 }
 
 pub(crate) fn changes(entries: &[(&str, Option<&str>)]) -> SpecFiles {
-    entries.iter().map(|(path, text)| ((*path).to_owned(), text.map(str::to_owned))).collect()
+    entries.iter().map(|(path, text)| ((*path).to_owned(), text.map(Into::into))).collect()
+}
+
+/// What a file of a change holds as text.
+pub(crate) fn text<'a>(files: &'a SpecFiles, path: &str) -> Option<&'a str> {
+    files.get(path)?.as_ref()?.text()
 }
 
 const PARTIAL: &str = "@spec:billing.partial\nFeature: Partial refunds\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n";
@@ -46,12 +51,12 @@ pub(crate) fn decision(id: &str, status: &str) -> String {
 #[test]
 fn a_proposal_the_engine_reads_is_clean_and_keeps_what_each_file_held() {
     let base = Mem::project();
-    let check = check(&base, &changes(&[("specs/billing/partial.feature", Some(PARTIAL)), (REFUNDS_PATH, Some(REFUNDS))]));
+    let check = check(&base, &changes(&[("specs/billing/partial.feature", Some(PARTIAL)), (REFUNDS_PATH, Some(REFUNDS))]), &NoImages);
     assert_eq!(check.mode, SpecMode::Committed);
     assert!(check.clean(), "{}", check.summary());
     assert_eq!(check.before["specs/billing/partial.feature"], None);
-    assert_eq!(check.before[REFUNDS_PATH].as_deref(), Some(REFUNDS));
-    let gone = super::specs::check(&base, &changes(&[(REFUNDS_PATH, None)]));
+    assert_eq!(text(&check.before, REFUNDS_PATH), Some(REFUNDS));
+    let gone = super::specs::check(&base, &changes(&[(REFUNDS_PATH, None)]), &NoImages);
     assert!(gone.problems.iter().any(|p| p.code == "boundary_without_scenario"), "removing the spec that states the boundary's promise is read as a problem: {}", gone.summary());
     assert_eq!(check.dirs.decisions.as_deref(), Some("docs/decisions"));
 }
@@ -59,7 +64,7 @@ fn a_proposal_the_engine_reads_is_clean_and_keeps_what_each_file_held() {
 #[test]
 fn a_proposal_the_engine_cannot_read_names_each_problem_by_file_and_line() {
     let broken = PARTIAL.replace("  @id:part\n", "");
-    let check = check(&Mem::project(), &changes(&[("specs/billing/partial.feature", Some(&broken))]));
+    let check = check(&Mem::project(), &changes(&[("specs/billing/partial.feature", Some(&broken))]), &NoImages);
     assert!(!check.clean());
     let problem = &check.problems[0];
     assert_eq!((problem.path.as_str(), problem.code.as_str()), ("specs/billing/partial.feature", "missing_scenario_id"));
@@ -70,16 +75,16 @@ fn a_proposal_the_engine_cannot_read_names_each_problem_by_file_and_line() {
 fn a_spec_may_cite_a_decision_its_own_proposal_proposes() {
     let cited = PARTIAL.replace("@spec:billing.partial\n", "@spec:billing.partial\n@decision:keep-refunds\n");
     let proposal = changes(&[("specs/billing/partial.feature", Some(&cited)), ("docs/decisions/keep-refunds.md", Some(&decision("keep-refunds", "proposed")))]);
-    let check = check(&Mem::project(), &proposal);
+    let check = check(&Mem::project(), &proposal, &NoImages);
     assert!(check.clean(), "the proposed decision reads as accepted, as it is once approved: {}", check.summary());
     let accepted = accepted(&proposal, &check.dirs);
-    assert_eq!(frontmatter(accepted["docs/decisions/keep-refunds.md"].as_deref().unwrap(), "status").as_deref(), Some("accepted"));
+    assert_eq!(frontmatter(text(&accepted, "docs/decisions/keep-refunds.md").unwrap(), "status").as_deref(), Some("accepted"));
 }
 
 #[test]
 fn a_proposal_only_changes_spec_files_never_code_nor_the_ledger() {
     for path in ["crates/billing/src/lib.rs", "specs/ledger/billing/suites/unit.toml", "../outside.feature"] {
-        let check = check(&Mem::project(), &changes(&[(path, Some("x"))]));
+        let check = check(&Mem::project(), &changes(&[(path, Some("x"))]), &NoImages);
         assert!(check.problems.iter().any(|p| p.path == path && matches!(p.code.as_str(), "path_outside_specs" | "path_outside_repository")), "{path}: {}", check.summary());
     }
 }
@@ -87,18 +92,18 @@ fn a_proposal_only_changes_spec_files_never_code_nor_the_ledger() {
 #[test]
 fn settings_decide_the_mode_and_unreadable_settings_never_read_as_off() {
     let off = Mem::default().with(SETTINGS_PATH, "format = 1\n");
-    assert_eq!(check(&off, &SpecFiles::new()).mode, SpecMode::Off);
-    assert_eq!(check(&Mem::default(), &SpecFiles::new()).mode, SpecMode::Off, "no settings file: specs are off");
+    assert_eq!(check(&off, &SpecFiles::new(), &NoImages).mode, SpecMode::Off);
+    assert_eq!(check(&Mem::default(), &SpecFiles::new(), &NoImages).mode, SpecMode::Off, "no settings file: specs are off");
     let broken = Mem::project().with(SETTINGS_PATH, "format = 1\n[specs\n");
-    let unreadable = check(&broken, &SpecFiles::new());
+    let unreadable = check(&broken, &SpecFiles::new(), &NoImages);
     assert_eq!(unreadable.mode, SpecMode::Unreadable);
     assert_eq!(unreadable.problems[0].path, SETTINGS_PATH);
     assert!(settings_problem(Some(b"format = 1\n[specs\n")).is_some());
     assert!(settings_problem(None).is_none());
     let unknown = Mem::project().with(SETTINGS_PATH, "format = 1\nsurprise = true\n");
-    assert_eq!(check(&unknown, &SpecFiles::new()).mode, SpecMode::Unreadable, "an unknown key is a problem, not a way to turn specs off");
+    assert_eq!(check(&unknown, &SpecFiles::new(), &NoImages).mode, SpecMode::Unreadable, "an unknown key is a problem, not a way to turn specs off");
     let elsewhere = Mem::default().with(SETTINGS_PATH, "format = 1\n\n[specs]\nenabled = true\ncommitted = false\n");
-    assert_eq!(check(&elsewhere, &SpecFiles::new()).mode, SpecMode::Uncommitted);
+    assert_eq!(check(&elsewhere, &SpecFiles::new(), &NoImages).mode, SpecMode::Uncommitted);
 }
 
 #[test]
@@ -138,7 +143,7 @@ fn drift_refuses_a_head_whose_settings_cannot_be_read_and_ignores_a_project_with
 }
 
 fn draft(files: SpecFiles) -> SpecDraft {
-    let check = check(&Mem::project(), &files);
+    let check = check(&Mem::project(), &files, &NoImages);
     SpecDraft { level: SpecLevel::Light, files, check, revision: 3, edited: false }
 }
 
@@ -148,7 +153,7 @@ fn a_scenario_added_on_the_card_is_written_in_its_spec_and_read_back() {
     let edit = SpecEdit::PutScenario { path: "specs/billing/partial.feature".into(), scenario: None, id: "twice".into(), title: "Refunded twice".into(),
         steps: "Given a refunded order\nWhen it is refunded again\nThen nothing is paid".into(), judged: true };
     let (_, files) = edited(&draft, &edit).unwrap();
-    let spec = engine::read_spec("x", files["specs/billing/partial.feature"].as_ref().unwrap().as_bytes()).unwrap();
+    let spec = engine::read_spec("x", text(&files, "specs/billing/partial.feature").unwrap().as_bytes()).unwrap();
     let added = spec.scenarios.iter().find(|s| s.id == "twice").unwrap();
     assert_eq!(added.steps.len(), 3);
     assert!(added.judgment.is_some(), "the scenario is judged");
@@ -160,7 +165,7 @@ fn editing_a_scenario_keeps_its_tags_and_a_step_it_cannot_read_names_the_line() 
     let base = draft(changes(&[(REFUNDS_PATH, Some(&pictured))]));
     let edit = |steps: &str| SpecEdit::PutScenario { path: REFUNDS_PATH.into(), scenario: Some("stands-alone".into()), id: "stands-alone".into(), title: "Billing stands alone".into(), steps: steps.into(), judged: false };
     let (_, files) = edited(&base, &edit("Given the billing crate\nThen none is another component")).unwrap();
-    let spec = engine::read_spec("x", files[REFUNDS_PATH].as_ref().unwrap().as_bytes()).unwrap();
+    let spec = engine::read_spec("x", text(&files, REFUNDS_PATH).unwrap().as_bytes()).unwrap();
     let kept = spec.scenarios.iter().find(|s| s.id == "stands-alone").unwrap();
     assert_eq!(kept.title, "Billing stands alone");
     assert!(kept.promise.is_some(), "its boundary tag stays");
@@ -180,7 +185,7 @@ fn removing_from_the_card_drops_a_new_file_and_marks_an_existing_one_removed() {
     let (_, files) = edited(&base, &SpecEdit::RemoveSpec { path: REFUNDS_PATH.into() }).unwrap();
     assert!(!files.contains_key(REFUNDS_PATH), "taking a spec of the repository out of the plan leaves it as it is, never deletes it");
     let (_, files) = edited(&base, &SpecEdit::RemoveScenario { path: REFUNDS_PATH.into(), scenario: "full".into() }).unwrap();
-    assert!(!files[REFUNDS_PATH].as_ref().unwrap().contains("@id:full"));
+    assert!(!text(&files, REFUNDS_PATH).unwrap().contains("@id:full"));
     let (level, _) = edited(&base, &SpecEdit::Level(SpecLevel::Full)).unwrap();
     assert_eq!(level, SpecLevel::Full);
 }
@@ -189,11 +194,11 @@ fn removing_from_the_card_drops_a_new_file_and_marks_an_existing_one_removed() {
 fn a_new_spec_goes_to_its_components_folder_and_a_decision_to_the_decisions_folder() {
     let base = draft(SpecFiles::new());
     let (_, files) = edited(&base, &SpecEdit::PutSpec { path: None, component: "billing".into(), id: "billing.credits".into(), title: "Credits".into(), explanation: "Money kept for later.\nNever expires.".into() }).unwrap();
-    let text = files["specs/billing/credits.feature"].as_ref().unwrap();
+    let text = text(&files, "specs/billing/credits.feature").unwrap();
     assert_eq!(engine::read_spec("x", text.as_bytes()).unwrap().description, ["Money kept for later.", "Never expires."]);
     let fields = DecisionFields { id: "keep".into(), title: "Keep".into(), context: "c".into(), decision: "d".into(), consequences: "e".into(), confirmation: "f".into(), supersedes: vec![] };
     let (_, files) = edited(&base, &SpecEdit::PutDecision { path: None, fields: fields.clone(), date: "2026-11-26".into() }).unwrap();
-    let written = files["docs/decisions/keep.md"].as_ref().unwrap();
+    let written = self::text(&files, "docs/decisions/keep.md").unwrap();
     assert_eq!(decision_fields(written), fields);
     assert_eq!(frontmatter(written, "status").as_deref(), Some("proposed"));
     let empty = DecisionFields { context: " ".into(), ..fields };
@@ -204,12 +209,12 @@ fn a_new_spec_goes_to_its_components_folder_and_a_decision_to_the_decisions_fold
 fn a_decision_that_supersedes_another_marks_it_superseded_by_it() {
     let base = Mem::project().with("docs/decisions/old.md", &decision("old", "accepted"));
     let fields = DecisionFields { id: "new".into(), title: "New".into(), context: "c".into(), decision: "d".into(), consequences: "e".into(), confirmation: "f".into(), supersedes: vec!["old".into()] };
-    let dirs = check(&base, &SpecFiles::new()).dirs;
+    let dirs = check(&base, &SpecFiles::new(), &NoImages).dirs;
     let files = decision_files(&fields, "2026-11-26", &dirs, &base).unwrap();
-    let old = files["docs/decisions/old.md"].as_deref().unwrap();
+    let old = text(&files, "docs/decisions/old.md").unwrap();
     assert_eq!(frontmatter(old, "status").as_deref(), Some("superseded"));
     assert_eq!(frontmatter(old, "superseded_by").as_deref(), Some("new"));
-    let read = check(&base, &accepted(&files, &dirs));
+    let read = check(&base, &accepted(&files, &dirs), &NoImages);
     assert!(read.clean(), "both sides of the supersession agree: {}", read.summary());
     let missing = DecisionFields { supersedes: vec!["nowhere".into()], ..fields };
     assert_eq!(decision_files(&missing, "2026-11-26", &dirs, &base).unwrap_err().0, "decision.supersedes");
@@ -217,7 +222,7 @@ fn a_decision_that_supersedes_another_marks_it_superseded_by_it() {
 
 #[test]
 fn a_proposal_is_bounded_in_files_size_and_paths() {
-    let file = |path: &str, text: &str| SpecFile { path: path.into(), text: Some(text.into()) };
+    let file = |path: &str, text: &str| SpecFile::of(path.into(), Some(text.into()));
     assert!(proposal(SpecLevel::Light, &[file(REFUNDS_PATH, REFUNDS)]).is_ok());
     assert_eq!(proposal(SpecLevel::Light, &[]).unwrap_err().0, "files", "a light proposal changes something");
     assert!(proposal(SpecLevel::None, &[]).is_ok());
@@ -247,4 +252,146 @@ fn handles_name_files_and_scenarios_of_a_proposal() {
     assert_eq!(file_of(&draft, &handle(REFUNDS_PATH)), Some(REFUNDS_PATH));
     assert_eq!(scenario_of(&draft, &scenario_handle(REFUNDS_PATH, "full")), Some((REFUNDS_PATH.into(), "full".into())));
     assert_eq!(file_of(&draft, "nothing"), None);
+}
+
+/// The images Alondra keeps, in memory.
+#[derive(Default)]
+pub(crate) struct Shots(std::cell::RefCell<BTreeMap<String, Vec<u8>>>);
+
+impl KeptImages for Shots {
+    fn keep(&self, bytes: &[u8]) -> Option<StoredImage> {
+        let image = StoredImage::describe(bytes)?;
+        self.0.borrow_mut().insert(image.file.clone(), bytes.to_vec());
+        Some(image)
+    }
+
+    fn read(&self, image: &StoredImage) -> Option<Vec<u8>> {
+        self.0.borrow().get(&image.file).cloned()
+    }
+}
+
+fn png(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    bytes.extend(width.to_be_bytes());
+    bytes.extend(height.to_be_bytes());
+    bytes.extend([8, 6, 0, 0, 0]);
+    bytes
+}
+
+/// A repository whose files may hold bytes that are no text.
+#[derive(Clone, Default)]
+struct Bytes(BTreeMap<String, Vec<u8>>);
+
+impl Files for Bytes {
+    fn paths(&self) -> Vec<String> {
+        self.0.keys().cloned().collect()
+    }
+
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        self.0.get(path).cloned()
+    }
+}
+
+fn repository() -> Bytes {
+    Bytes(Mem::project().0.into_iter().map(|(path, text)| (path, text.into_bytes())).collect())
+}
+
+const PICTURED: &str = "@spec:billing.partial\n@diagram:flow.mmd\nFeature: Partial refunds\n\n  @id:part @mockup:sheet.png\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    Then the customer receives 10 EUR\n\n  @id:other\n  Scenario: Another\n    Then nothing\n";
+const FLOW: &str = "flowchart LR\n  Order --> Refund\n";
+
+fn pictured(images: &Shots) -> SpecFiles {
+    let mockup = images.keep(&png(390, 844)).unwrap();
+    [("specs/billing/partial.feature".to_owned(), Some(PICTURED.into())), ("specs/billing/flow.mmd".to_owned(), Some(FLOW.into())),
+        ("specs/billing/sheet.png".to_owned(), Some(SpecContent::Mockup(mockup)))].into()
+}
+
+#[test]
+fn a_proposal_with_a_diagram_and_a_kept_mockup_reads_clean_and_keeps_what_each_part_holds() {
+    let images = Shots::default();
+    let files = pictured(&images);
+    let check = check(&repository(), &files, &images);
+    assert!(check.clean(), "{}", check.summary());
+    let mockup = check.parts["specs/billing/sheet.png"].image().unwrap();
+    assert_eq!((mockup.width, mockup.height, mockup.bytes), (390, 844, png(390, 844).len() as u64));
+    assert_eq!(check.parts["specs/billing/flow.mmd"].text(), Some(FLOW));
+    let gone = super::specs::check(&repository(), &files, &Shots::default());
+    assert!(gone.problems.iter().any(|problem| problem.code == "unreadable_file"), "a mockup Alondra keeps no copy of is not read: {}", gone.summary());
+}
+
+#[test]
+fn a_mockup_the_branch_holds_unlike_the_approved_or_the_base_one_is_a_spec_changed_without_approval() {
+    let images = Shots::default();
+    let approved = pictured(&images);
+    let mut head = repository();
+    head.0.insert("specs/billing/partial.feature".into(), PICTURED.into());
+    head.0.insert("specs/billing/flow.mmd".into(), FLOW.into());
+    head.0.insert("specs/billing/sheet.png".into(), png(390, 844));
+    assert_eq!(drift(&head, &repository(), &approved).unwrap(), [], "the approved bytes");
+    let mut other = head.clone();
+    other.0.insert("specs/billing/sheet.png".into(), png(390, 845));
+    assert_eq!(drift(&other, &repository(), &approved).unwrap(), [SpecDrift { path: "specs/billing/sheet.png".into(), approved: true }]);
+    assert_eq!(drift(&other, &head, &SpecFiles::new()).unwrap(), [SpecDrift { path: "specs/billing/sheet.png".into(), approved: false }],
+        "a mockup changed from the base without approval is a change too, though it is no text");
+}
+
+fn pictured_draft(images: &Shots) -> SpecDraft {
+    let files = pictured(images);
+    let check = check(&repository(), &files, images);
+    SpecDraft { level: SpecLevel::Light, files, check, revision: 3, edited: false }
+}
+
+const SPEC: &str = "specs/billing/partial.feature";
+
+#[test]
+fn the_user_adds_edits_and_removes_a_diagram_and_a_mockup() {
+    let images = Shots::default();
+    let base = pictured_draft(&images);
+    let diagram = |scenario: Option<&str>, part: Option<&str>, name: &str, code: &str| SpecEdit::PutDiagram {
+        path: SPEC.into(), scenario: scenario.map(str::to_owned), part: part.map(str::to_owned), name: name.into(), code: code.into() };
+    let (_, files) = edited(&base, &diagram(None, Some("flow.mmd"), "flow.mmd", "sequenceDiagram\n  A->>B: refund")).unwrap();
+    assert_eq!(text(&files, "specs/billing/flow.mmd"), Some("sequenceDiagram\n  A->>B: refund\n"));
+    let (_, files) = edited(&base, &diagram(Some("other"), None, "second", "flowchart TD\n  A")).unwrap();
+    assert_eq!(text(&files, "specs/billing/second.mmd"), Some("flowchart TD\n  A\n"), "the extension is added");
+    assert!(text(&files, SPEC).unwrap().contains("@id:other @diagram:second.mmd"), "{:?}", text(&files, SPEC));
+    let refused = edited(&base, &diagram(None, Some("flow.mmd"), "flow.mmd", "pie\n  title no")).unwrap_err();
+    assert_eq!(refused.field, "code");
+    assert_eq!(edited(&base, &diagram(None, None, "two words", "flowchart LR\n  A")).unwrap_err().field, "name");
+    assert_eq!(edited(&base, &diagram(Some("other"), None, "flow.mmd", "flowchart LR\n  B")).unwrap_err().field, "name", "a name another part holds takes nothing else");
+
+    let replacement = images.keep(&png(100, 200)).unwrap();
+    let (_, files) = edited(&base, &SpecEdit::PutMockup { path: SPEC.into(), scenario: Some("part".into()), part: Some("sheet.png".into()), name: "sheet-two.png".into(), image: replacement.clone() }).unwrap();
+    assert_eq!(files["specs/billing/sheet-two.png"], Some(SpecContent::Mockup(replacement)));
+    assert!(!files.contains_key("specs/billing/sheet.png"), "the part the proposal added and nothing cites leaves it");
+
+    let (_, files) = edited(&base, &SpecEdit::RemovePart { path: SPEC.into(), scenario: Some("part".into()), kind: engine::PartKind::Mockup, part: "sheet.png".into() }).unwrap();
+    assert!(!files.contains_key("specs/billing/sheet.png"));
+    assert!(!text(&files, SPEC).unwrap().contains("@mockup"));
+}
+
+#[test]
+fn removing_the_only_scenario_that_cites_an_image_removes_the_image_and_the_proposal_stays_readable() {
+    let images = Shots::default();
+    let base = pictured_draft(&images);
+    let (_, files) = edited(&base, &SpecEdit::RemoveScenario { path: SPEC.into(), scenario: "part".into() }).unwrap();
+    assert!(!files.contains_key("specs/billing/sheet.png"));
+    assert!(check(&repository(), &files, &images).clean(), "no file is left that nothing cites");
+    let (_, files) = edited(&base, &SpecEdit::RemoveSpec { path: SPEC.into() }).unwrap();
+    assert!(files.is_empty(), "a spec taken out of the plan takes its parts with it: {files:?}");
+}
+
+#[test]
+fn removing_the_citation_of_an_image_the_project_has_removes_it_unless_another_spec_cites_it() {
+    let images = Shots::default();
+    let mut committed = repository();
+    committed.0.insert(SPEC.into(), PICTURED.into());
+    committed.0.insert("specs/billing/flow.mmd".into(), FLOW.into());
+    committed.0.insert("specs/billing/sheet.png".into(), png(390, 844));
+    let changed: SpecFiles = [(SPEC.to_owned(), Some(PICTURED.into()))].into();
+    let draft = |base: &Bytes| SpecDraft { level: SpecLevel::Light, files: changed.clone(), check: check(base, &changed, &images), revision: 3, edited: false };
+    let remove = SpecEdit::RemovePart { path: SPEC.into(), scenario: Some("part".into()), kind: engine::PartKind::Mockup, part: "sheet.png".into() };
+    let (_, files) = edited(&draft(&committed), &remove).unwrap();
+    assert_eq!(files.get("specs/billing/sheet.png"), Some(&None), "the change removes the file");
+    committed.0.insert("specs/billing/also.feature".into(), "@spec:billing.also\n@mockup:sheet.png\nFeature: Also\n\n  @id:a\n  Scenario: A\n    Then b\n".into());
+    let (_, files) = edited(&draft(&committed), &remove).unwrap();
+    assert!(!files.contains_key("specs/billing/sheet.png"), "another spec still cites it");
 }

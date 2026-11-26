@@ -240,7 +240,7 @@ impl Client {
     }
 
     fn observe_capabilities(&self, service: Option<&alondra_view_model::Service>) -> bool {
-        let supported = service.map(|service| service.capabilities.iter().filter(|cap| matches!(cap.as_str(), "provider_accounts" | "model_selection" | "account_presentation")).cloned().collect::<Vec<_>>().join(",")).unwrap_or_default();
+        let supported = service.map(|service| service.capabilities.iter().filter(|cap| matches!(cap.as_str(), "provider_accounts" | "model_selection" | "account_presentation" | "spec_fields")).cloned().collect::<Vec<_>>().join(",")).unwrap_or_default();
         let next = alondra_view_model::ClientCapabilities::parse(&supported).unwrap_or_default();
         let mut capabilities = self.capabilities.lock().unwrap_or_else(|poison| poison.into_inner());
         if *capabilities == next { return false; }

@@ -1,12 +1,15 @@
 //! What Alondra reads and writes of the spec files in a task's worktrees. The rules about them are
 //! the domain's (`alondra_domain_model::specs`); this port only hands it the files.
-use alondra_domain_model::specs::{Files, SpecFiles};
+use alondra_domain_model::specs::Files;
 use alondra_domain_model::{DomainState, TaskId};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// A worktree's files as the spec engine reads them.
 pub type SpecSource = Box<dyn Files + Send + Sync>;
+
+/// The files a write puts in a worktree, by path: their bytes, or `None` to remove them.
+pub type FileBytes = BTreeMap<String, Option<Vec<u8>>>;
 
 pub trait SpecWorktrees: Send + Sync {
     /// The worktree Alondra made for the task, where its specs are proposed and written.
@@ -35,7 +38,10 @@ pub trait SpecWorktrees: Send + Sync {
     fn uncommitted(&self, root: &Path) -> Result<Vec<String>, String>;
     /// The bytes of the settings file at `root`, `None` when it has none.
     fn settings(&self, root: &Path) -> Result<Option<Vec<u8>>, String>;
+    /// The bytes of the file at `path` of the worktree at `root` as it is on disk, at most `limit`
+    /// of them, never outside it nor through a link.
+    fn file(&self, root: &Path, path: &str, limit: usize) -> Result<Vec<u8>, String>;
     /// Writes `files` into the worktree at `root`, `None` removing one, never outside it nor
     /// through a link: the path and fingerprint of each file it wrote.
-    fn write(&self, root: &Path, files: &SpecFiles) -> Result<BTreeMap<String, String>, String>;
+    fn write(&self, root: &Path, files: &FileBytes) -> Result<BTreeMap<String, String>, String>;
 }

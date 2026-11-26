@@ -103,7 +103,7 @@ pub(crate) fn approve_plan_specs(domain: &mut DomainState, task_id: &TaskId, car
         task.specs.answered(DecisionAnswer { id: fields.id, verdict: DecisionVerdict::Accepted, card: card.clone(), words: words.map(str::to_owned), revision });
     }
     let files = specs::accepted(&draft.files, &dirs);
-    task.specs.approve(card, revision, draft.level, draft.check.mode, &dirs, &files, &draft.check.before);
+    task.specs.approve(card, revision, draft.level, &files, &draft.check);
 }
 /// Alondra wrote these approved files into the task's worktree while no agent worked. The
 /// execution working on the task is told to commit them, unless a new one starts from them.
@@ -151,7 +151,7 @@ pub(crate) fn request_spec_change(domain: &mut DomainState, actor: &Actor, task_
     let next = task.specs.amendments.iter().filter_map(|a| a.id.strip_prefix('a')?.parse::<u64>().ok()).max().unwrap_or(0) + 1;
     let id = format!("a{next}");
     let task = domain.tasks.get_mut(task_id).expect("assigned");
-    task.specs.amended(SpecAmendment { id: id.clone(), reason: reason.trim().to_owned(), state: AmendmentState::Requested, files: SpecFiles::new(), before: BTreeMap::new(), card: None, words: None });
+    task.specs.amended(SpecAmendment { id: id.clone(), reason: reason.trim().to_owned(), state: AmendmentState::Requested, files: SpecFiles::new(), before: BTreeMap::new(), check: None, card: None, words: None });
     task.stages.handover = Some(StageHandover { to: ExecutionRole::Author, cause: HandoverCause::SpecChangeRequested { amendment: id }, transition: None, attempts: 0, refused: false });
     let input = domain.next_input(task_id);
     domain.decide(lifecycles, task_id, LifecycleRecord::Told { input, text: Some(stage_input(ExecutionRole::Author)), answers: None })
@@ -181,7 +181,7 @@ pub(crate) fn propose_amendment(domain: &mut DomainState, actor: &Actor, task_id
     }
     let files = proposal_files(SpecLevel::Light, files)?;
     check_refusal(check)?;
-    let before: BTreeMap<String, Option<String>> = files.keys()
+    let before: SpecFiles = files.keys()
         .map(|path| (path.clone(), approved.files.get(path).cloned().unwrap_or_else(|| check.before.get(path).cloned().flatten())))
         .collect();
     let card_id = InteractionId(format!("{AMENDMENT_PREFIX}{}-{}", task_id.0, requested.id));
@@ -191,6 +191,7 @@ pub(crate) fn propose_amendment(domain: &mut DomainState, actor: &Actor, task_id
     amendment.state = AmendmentState::Proposed;
     amendment.files = files;
     amendment.before = before;
+    amendment.check = Some(Box::new(check.clone()));
     amendment.card = Some(card_id.clone());
     let body = SpecCard::Amendment { task: task_id.0.clone(), id: requested.id.clone() };
     raise_spec_card(domain, &card_id, task_id, &body, effects, created)?;
@@ -257,10 +258,11 @@ pub(crate) fn settle_spec_card(domain: &mut DomainState, card: &InteractionId, o
             let Some(amendment) = task.specs.amendments.iter_mut().find(|a| a.id == id && a.state == AmendmentState::Proposed) else { return Ok(()) };
             amendment.state = if approved { AmendmentState::Approved } else { AmendmentState::Rejected };
             amendment.words = words.clone();
-            let (files, before, reason) = (amendment.files.clone(), amendment.before.clone(), amendment.reason.clone());
+            let (files, reason) = (amendment.files.clone(), amendment.reason.clone());
+            let check = SpecCheck { before: amendment.before.clone(), ..amendment.check.as_deref().cloned().unwrap_or_default() };
             if approved {
                 if let Some(specs) = task.specs.approved.as_mut() {
-                    specs.merge(&files, &before);
+                    specs.merge(&files, &check);
                 }
                 format!("The user approved the change of the specs you asked for («{reason}»).{said}")
             } else {
@@ -274,7 +276,8 @@ pub(crate) fn settle_spec_card(domain: &mut DomainState, card: &InteractionId, o
             task.specs.answered(DecisionAnswer { id: id.clone(), verdict, card: card.clone(), words: words.clone(), revision });
             if approved {
                 let files = specs::accepted(&proposed.files, &proposed.dirs);
-                task.specs.approve(card, revision, SpecLevel::None, proposed.mode, &proposed.dirs, &files, &proposed.before);
+                let check = SpecCheck { mode: proposed.mode, dirs: proposed.dirs.clone(), before: proposed.before.clone(), ..SpecCheck::default() };
+                task.specs.approve(card, revision, SpecLevel::None, &files, &check);
                 format!("The user accepted the decision «{}».{said}", proposed.title)
             } else {
                 format!("The user rejected the decision «{}»: nothing is written.{said}", proposed.title)

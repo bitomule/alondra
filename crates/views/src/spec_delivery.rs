@@ -5,18 +5,13 @@
 //! delivered commit when the delivery passed the gate, never what an agent says.
 use super::{
     common,
+    spec_sheet::{lanes, line, picture, spec_sheet, Source, Version},
     text::{t, tf},
-    Icon, Item, Markdown, Notice, RenderContext, Row, Section, Tone,
+    Icon, Item, Markdown, Notice, RenderContext, Section, SheetAnchor, SheetPart, SheetPartKind, SheetResult, SheetScenario, SheetUnchanged, SheetVerdict, SpecSheet, Tone,
 };
 use alondra_domain_model::spec_card;
-use alondra_domain_model::{clip, DeliveredScenario, DeliveredValidation, DeliveredVerdict, Interaction, InteractionPayload, Scope, Task, ValidationKind, ValidationVerdict};
-
-fn row(id: String, icon: Icon, title: String, subtitle: Option<String>, depth: u8) -> Row {
-    let mut row = common::row(&id, "", icon, title, subtitle);
-    row.link = None;
-    row.depth = depth;
-    row
-}
+use alondra_domain_model::specs::{engine, StoredImage};
+use alondra_domain_model::{clip, DeliveredScenario, DeliveredSpec, DeliveredValidation, DeliveredVerdict, Interaction, InteractionPayload, Scope, Task, ValidationKind, ValidationState, ValidationVerdict};
 
 fn plain(text: String) -> Item {
     Item::Markdown(Markdown { text, truncated: false, more: None, commentable: false })
@@ -70,47 +65,151 @@ fn all_valid(scenario: &DeliveredScenario) -> bool {
     scenario.states.iter().all(|(_, state)| state == "valid")
 }
 
-fn scenario_row(scenario: &DeliveredScenario, delivered: &DeliveredValidation, context: &RenderContext<'_>) -> Item {
+/// The result of a scenario inside its sheet: its state, each check, the tests that declare it and
+/// what the validator judged.
+fn result(scenario: &DeliveredScenario, delivered: &DeliveredValidation, validating: bool, context: &RenderContext<'_>) -> SheetResult {
     let lang = context.lang;
-    let states = scenario.states.iter().map(|(kind, state)| format!("{}: {}", check_word(kind, context), state_word(state, context))).collect::<Vec<_>>().join(" · ");
-    let kind = if scenario.judged.is_some() { t!(lang, "judgment", "de juicio") } else { t!(lang, "tested", "con test") };
-    let (icon, status) = if all_valid(scenario) { (Icon::Check, t!(lang, "Validated", "Validado")) } else { (Icon::Warning, t!(lang, "Not validated", "Sin validar")) };
-    let mut parent = row(format!("spec-{}", scenario.id), icon, scenario.title.clone(),
-        Some(format!("{status} · {kind} · `{}` · {states}", scenario.id)), 0);
-    let mut children = vec![];
-    if !scenario.steps.is_empty() {
-        children.push(row(format!("spec-{}-steps", scenario.id), Icon::Document, scenario.steps.join(" · "), None, 1));
-    }
-    for (n, test) in scenario.tests.iter().enumerate() {
+    let unavailable = scenario.judged.as_deref() == Some("capture")
+        && scenario.verdicts.iter().any(|verdict| verdict.kind == ValidationKind::Judged && verdict.captures.iter().all(|capture| capture.image.is_none()));
+    let state = if validating {
+        line(Icon::History, Tone::Info, t!(lang, "Validating now", "Validando ahora"), None)
+    } else if !all_valid(scenario) {
+        line(Icon::Warning, Tone::Warning, t!(lang, "Not validated", "Sin validar"), None)
+    } else if unavailable {
+        line(Icon::Notice, Tone::Warning, t!(lang, "Evidence not available", "Evidencia no disponible"), None)
+    } else {
+        line(Icon::Check, Tone::Success, t!(lang, "Validated", "Validado"), None)
+    };
+    let checks = scenario.states.iter().map(|(kind, state)| {
+        let (icon, tone) = if state == "valid" { (Icon::Check, Tone::Success) } else { (Icon::Warning, Tone::Warning) };
+        line(icon, tone, format!("{}: {}", check_word(kind, context), state_word(state, context)), None)
+    }).collect();
+    let tests = scenario.tests.iter().map(|test| {
         let name = test.name.as_deref().map(|name| format!(" · {name}")).unwrap_or_default();
         let ran = test.suites.iter().map(|suite| {
             let shown = delivered.suites.iter().find(|s| s.id == *suite);
             let result = shown.and_then(|s| s.verdict).map(|v| verdict_word(v, context)).unwrap_or_else(|| shown.map_or(t!(lang, "not run", "sin ejecutar"), |s| state_word(&s.state, context)));
             tf!(lang, "suite {suite}: {result}", "suite {suite}: {result}")
         }).collect::<Vec<_>>().join(" · ");
-        children.push(row(format!("spec-{}-test-{n}", scenario.id), Icon::Check,
-            format!("Test · {}:{}{name}", test.path, test.line), (!ran.is_empty()).then_some(ran), 1));
-    }
-    for verdict in &scenario.verdicts {
-        children.extend(verdict_rows(&scenario.id, verdict, context));
-    }
-    parent.children = children;
-    Item::Row(parent)
+        line(Icon::Document, Tone::Neutral, format!("Test · {}:{}{name}", test.path, test.line), (!ran.is_empty()).then_some(ran))
+    }).collect();
+    let verdicts = scenario.verdicts.iter().map(|verdict| verdict_of(&scenario.id, verdict, context)).collect();
+    SheetResult { state, checks, tests, verdicts }
 }
 
-fn verdict_rows(id: &str, verdict: &DeliveredVerdict, context: &RenderContext<'_>) -> Vec<Row> {
+fn verdict_of(id: &str, verdict: &DeliveredVerdict, context: &RenderContext<'_>) -> SheetVerdict {
     let lang = context.lang;
     let what = spec_card::kind_name(verdict.kind, lang);
-    let mut rows = vec![row(format!("spec-{id}-{}", verdict.kind.as_str()), Icon::Question,
-        tf!(lang, "Judgment · {what}: {result}", "Juicio · {what}: {result}", result = verdict_word(verdict.verdict, context)),
-        verdict.reasoning.as_deref().map(|reasoning| clip(reasoning, 600)), 1)];
-    if let Some(nearest) = verdict.nearest_wrong.as_deref().filter(|_| verdict.kind == ValidationKind::Adequate) {
-        rows.push(row(format!("spec-{id}-nearest"), Icon::Notice,
-            t!(lang, "Nearest wrong behaviour these tests still accept", "Lo más cercano a un error que estos tests aún aceptan").into(), Some(clip(nearest, 600)), 2));
+    let (icon, tone) = match verdict.verdict {
+        ValidationVerdict::Met => (Icon::Question, Tone::Info),
+        _ => (Icon::Warning, Tone::Warning),
+    };
+    let nearest = verdict.nearest_wrong.as_deref().filter(|_| verdict.kind == ValidationKind::Adequate);
+    let evidence = if verdict.captures.is_empty() {
+        verdict.evidence.iter().map(|path| capture(id, path, None, context)).collect()
+    } else {
+        verdict.captures.iter().map(|kept| capture(id, &kept.path, kept.image.as_ref(), context)).collect()
+    };
+    SheetVerdict {
+        line: line(icon, tone, tf!(lang, "Judgment · {what}: {result}", "Juicio · {what}: {result}", result = verdict_word(verdict.verdict, context)), None),
+        reasoning: verdict.reasoning.as_deref().map(|reasoning| clip(reasoning, 1200)),
+        nearest_label: nearest.map(|_| t!(lang, "Nearest wrong behaviour these tests still accept", "Lo más cercano a un error que estos tests aún aceptan").to_owned()),
+        nearest_wrong: nearest.map(|nearest| clip(nearest, 1200)),
+        evidence,
     }
-    rows.extend(verdict.evidence.iter().enumerate().map(|(n, path)| row(format!("spec-{id}-evidence-{n}"), Icon::Attachment,
-        tf!(lang, "Evidence · {path}", "Evidencia · {path}"), None, 2)));
-    rows
+}
+
+fn capture(scenario: &str, path: &str, image: Option<&StoredImage>, context: &RenderContext<'_>) -> SheetPart {
+    let lang = context.lang;
+    let title = tf!(lang, "Evidence · {path}", "Evidencia · {path}");
+    let id = format!("evidence:{scenario}:{path}");
+    SheetPart {
+        kind: SheetPartKind::Mockup,
+        name: path.to_owned(),
+        alt: tf!(lang, "Capture {path} the validator judged for {scenario}", "Captura {path} que el validador juzgó para {scenario}"),
+        mark: None,
+        code: None,
+        picture: image.map(picture),
+        unavailable: image.is_none().then(|| t!(lang, "Evidence not available: Alondra keeps no image of it.", "Evidencia no disponible: Alondra no guarda su imagen.").to_owned()),
+        anchor: Some(SheetAnchor { id: id.clone(), quote: format!("{scenario} · {path}") }),
+        edit: None,
+        title,
+        id,
+    }
+}
+
+/// A scenario of a delivery recorded before Alondra kept its spec files: its title and steps.
+fn plain_scenario(scenario: &DeliveredScenario, context: &RenderContext<'_>) -> SheetScenario {
+    let steps: Vec<engine::Step> = scenario.steps.iter().map(|step| {
+        let (word, text) = step.split_once(' ').unwrap_or((step, ""));
+        let keyword = [engine::Keyword::Given, engine::Keyword::When, engine::Keyword::Then, engine::Keyword::And, engine::Keyword::But]
+            .into_iter().find(|keyword| keyword.as_str() == word).unwrap_or(engine::Keyword::And);
+        engine::Step { keyword, text: text.to_owned(), doc: None, table: vec![] }
+    }).collect();
+    SheetScenario {
+        id: scenario.id.clone(),
+        title: scenario.title.clone(),
+        kind: if scenario.judged.is_some() { t!(context.lang, "judgment", "juicio").into() } else { "test".into() },
+        mark: None,
+        collapsed: false,
+        lanes: lanes(&steps, context.lang),
+        examples: None,
+        parts: vec![],
+        result: None,
+        anchor: Some(SheetAnchor { id: format!("scenario:{}", scenario.id), quote: format!("{} · {}", scenario.id, scenario.title) }),
+        edit: None,
+        add: vec![],
+    }
+}
+
+fn delivered_sheet(spec: &DeliveredSpec, delivered: &DeliveredValidation, task: &Task, context: &RenderContext<'_>) -> SpecSheet {
+    let lang = context.lang;
+    let after = |path: &str| spec.parts.get(path).cloned();
+    let before = |path: &str| spec.base_parts.get(path).cloned();
+    let built = spec.source.as_deref().and_then(|source| spec_sheet(&Source {
+        path: &spec.path,
+        after: Some(Version { text: source, parts: &after }),
+        before: spec.base.as_deref().map(|text| Version { text, parts: &before }),
+        titles: &spec.decisions,
+    }, None, lang).ok());
+    let mut sheet = built.unwrap_or_else(|| SpecSheet {
+        id: format!("spec:{}", spec.id),
+        spec: spec.id.clone(),
+        title: spec.title.clone(),
+        mark: None,
+        explanation: String::new(),
+        decisions: None,
+        parts: vec![],
+        background: None,
+        scenarios: spec.scenarios.iter().map(|scenario| plain_scenario(scenario, context)).collect(),
+        unchanged: None,
+        empty: None,
+        anchor: Some(SheetAnchor { id: format!("spec:{}", spec.id), quote: format!("{} · {}", spec.id, spec.title) }),
+        edit: None,
+        add: vec![],
+        actions: vec![],
+    });
+    let running = |subject: &str| task.validation.open_round()
+        .is_some_and(|round| round.items.iter().any(|item| item.subject == subject && item.state == ValidationState::Running));
+    let fill = |drawn: &mut SheetScenario| {
+        let found = spec.scenarios.iter().find(|scenario| scenario.id == drawn.id);
+        drawn.result = found.map(|found| result(found, delivered, running(&found.id), context));
+        drawn.collapsed = drawn.result.as_ref().is_some_and(|result| result.state.tone == Tone::Success);
+    };
+    sheet.scenarios.iter_mut().for_each(fill);
+    if let Some(mut folded) = sheet.unchanged.take() {
+        folded.scenarios.iter_mut().for_each(fill);
+        let (quiet, loud): (Vec<_>, Vec<_>) = folded.scenarios.into_iter().partition(|scenario| scenario.collapsed);
+        sheet.scenarios.extend(loud);
+        sheet.unchanged = (!quiet.is_empty()).then(|| SheetUnchanged {
+            label: match quiet.len() {
+                1 => t!(lang, "1 unchanged scenario, validated", "1 escenario sin cambios, validado").into(),
+                n => tf!(lang, "{n} unchanged scenarios, validated", "{n} escenarios sin cambios, validados"),
+            },
+            scenarios: quiet,
+        });
+    }
+    sheet
 }
 
 /// What the delivery shows of its specs, or why it shows nothing; none for a task without specs.
@@ -122,7 +221,7 @@ pub(super) fn delivery_section(interaction: &Interaction, context: &RenderContex
         items.push(notice(tf!(lang, "The project's alondra.toml cannot be read: {problem}", "No se puede leer el alondra.toml del proyecto: {problem}", problem = problem.located()), Tone::Warning));
     }
     match task.validation.delivered(&interaction.id) {
-        Some(delivered) => items.extend(delivered_items(delivered, context)),
+        Some(delivered) => items.extend(delivered_items(delivered, task, context)),
         None if task.validation.open_round().is_some() => items.push(notice(
             t!(lang, "A validator is checking this work against its specs.", "Un validador está comprobando este trabajo contra sus specs.").into(), Tone::Info)),
         None if !task.validation.rounds.is_empty() => items.push(notice(
@@ -133,7 +232,7 @@ pub(super) fn delivery_section(interaction: &Interaction, context: &RenderContex
     (!items.is_empty()).then(|| common::section("specs", Some("Specs".into()), items))
 }
 
-fn delivered_items(delivered: &DeliveredValidation, context: &RenderContext<'_>) -> Vec<Item> {
+fn delivered_items(delivered: &DeliveredValidation, task: &Task, context: &RenderContext<'_>) -> Vec<Item> {
     let lang = context.lang;
     let mut items = vec![];
     let scenarios: usize = delivered.specs.iter().map(|spec| spec.scenarios.len()).sum();
@@ -146,21 +245,15 @@ fn delivered_items(delivered: &DeliveredValidation, context: &RenderContext<'_>)
             "**{valid} de {scenarios} escenarios validados** en el commit `{head}`. Un juicio es el veredicto de un validador, nunca un hecho que mostró un test.",
             head = &delivered.head[..delivered.head.len().min(7)])));
     }
-    for spec in &delivered.specs {
-        items.push(plain(format!("**{}** · `{}`", spec.title, spec.id)));
-        items.extend(spec.scenarios.iter().map(|scenario| scenario_row(scenario, delivered, context)));
-    }
+    items.extend(delivered.specs.iter().map(|spec| Item::SpecSheet(Box::new(delivered_sheet(spec, delivered, task, context)))));
     if !delivered.suites.is_empty() {
-        items.push(plain(format!("**{}**", t!(lang, "Suites", "Suites"))));
-        items.extend(delivered.suites.iter().map(|suite| {
+        let suites = delivered.suites.iter().map(|suite| {
             let result = suite.verdict.map(|v| verdict_word(v, context)).unwrap_or_else(|| state_word(&suite.state, context));
-            let mut shown = row(format!("suite-{}", suite.id), if suite.state == "valid" { Icon::Check } else { Icon::Warning },
-                tf!(lang, "{id}: {result}", "{id}: {result}", id = suite.id), None, 0);
-            if let Some(output) = &suite.output {
-                shown.children = vec![row(format!("suite-{}-output", suite.id), Icon::Document, clip(output.lines().last().unwrap_or_default(), 200), None, 1)];
-            }
-            Item::Row(shown)
-        }));
+            let mark = if suite.state == "valid" { "✓" } else { "!" };
+            let last = suite.output.as_deref().and_then(|output| output.lines().last()).map(|line| format!(" · `{}`", clip(line, 200).replace('`', "'"))).unwrap_or_default();
+            tf!(lang, "- {mark} `{id}`: {result}{last}", "- {mark} `{id}`: {result}{last}", id = suite.id)
+        }).collect::<Vec<_>>();
+        items.push(plain(format!("**{}**\n\n{}", t!(lang, "Suites", "Suites"), suites.join("\n"))));
     }
     if !delivered.outside.is_empty() {
         let said = match delivered.outside.len() {
@@ -171,10 +264,11 @@ fn delivered_items(delivered: &DeliveredValidation, context: &RenderContext<'_>)
         };
         items.push(notice(said, Tone::Warning));
         const SHOWN: usize = 20;
-        items.extend(delivered.outside.iter().take(SHOWN).enumerate().map(|(n, path)| Item::Row(row(format!("outside-{n}"), Icon::Document, path.clone(), None, 0))));
+        let mut files = delivered.outside.iter().take(SHOWN).map(|path| format!("- `{path}`")).collect::<Vec<_>>();
         if delivered.outside.len() > SHOWN {
-            items.push(plain(tf!(lang, "and {n} more", "y {n} más", n = delivered.outside.len() - SHOWN)));
+            files.push(tf!(lang, "- and {n} more", "- y {n} más", n = delivered.outside.len() - SHOWN));
         }
+        items.push(plain(files.join("\n")));
     }
     for section in &delivered.sections {
         items.push(plain(tf!(lang, "**Reference changed** · `{path}`", "**Referencia cambiada** · `{path}`", path = section.path)));

@@ -100,6 +100,7 @@ pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
         ["pr", "diff", url] => diff(fakes, url),
         ["pr", "ready", url] => change(fakes, url, |pr| pr.draft = false),
         ["pr", "close", url, ..] => change(fakes, url, |pr| pr.state = "CLOSED".into()),
+        ["repo", "view", _, "--json", "defaultBranchRef"] => Ok(json!({"defaultBranchRef": {"name": "main"}}).to_string()),
         ["repo", "view", _, "--json", _] => Ok(json!({"mergeCommitAllowed": false, "squashMergeAllowed": true, "rebaseMergeAllowed": false}).to_string()),
         ["api", "graphql", ..] => Ok("false".into()),
         ["api", "--hostname", _, "-H", accept, endpoint] => return api(fakes, accept, endpoint),
@@ -242,8 +243,9 @@ fn facts(fakes: &Fakes, pr: &Pr, fields: &str) -> Result<Value, String> {
         ("OPEN", _) => ("MERGEABLE", "CLEAN"),
         _ => ("UNKNOWN", "UNKNOWN"),
     };
+    let base_head = git(&remote, &["rev-parse", &pr.base]).unwrap_or_default();
     let all = json!({
-        "state": pr.state, "headRefOid": head, "baseRefName": pr.base, "headRefName": pr.branch, "statusCheckRollup": rollup,
+        "state": pr.state, "headRefOid": head, "baseRefOid": base_head.trim(), "baseRefName": pr.base, "headRefName": pr.branch, "statusCheckRollup": rollup,
         "isDraft": pr.draft, "url": format!("https://github.com/{}/pull/{}", pr.repository, pr.number),
         "title": title, "body": pr.body.as_deref().unwrap_or("Made by a scripted sandbox node."), "additions": additions, "deletions": deletions,
         "changedFiles": files, "mergeable": mergeable, "mergeStateStatus": merge_state,

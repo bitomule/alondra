@@ -83,8 +83,12 @@ pub fn field_visible(field: &Field, values: &BTreeMap<String, Value>) -> bool {
         || actual.is_some_and(|value| condition.any_of.contains(value))
 }
 
+fn is_long(kind: &FieldKind) -> bool {
+    matches!(kind, FieldKind::Multiline { .. } | FieldKind::Steps { .. } | FieldKind::Mermaid { .. })
+}
+
 fn is_primary(field: &Field) -> bool {
-    matches!(field.kind, FieldKind::Multiline { .. })
+    is_long(&field.kind)
 }
 
 fn is_row(field: &Field) -> bool {
@@ -370,6 +374,8 @@ impl OptionsForm {
             FieldKind::Attachments | FieldKind::Unsupported => {}
             FieldKind::Text { .. }
             | FieldKind::Multiline { .. }
+            | FieldKind::Steps { .. }
+            | FieldKind::Mermaid { .. }
             | FieldKind::Date
             | FieldKind::Time
             | FieldKind::Stepper { .. }
@@ -602,7 +608,7 @@ impl OptionsForm {
                 continue;
             }
             let value = match &field.kind {
-                FieldKind::Multiline { .. } if self.primary().is_some_and(|p| p.id == field.id) => json!(text),
+                kind if is_long(kind) && self.primary().is_some_and(|p| p.id == field.id) => json!(text),
                 FieldKind::Attachments if attachments.is_empty() => continue,
                 FieldKind::Attachments => json!(attachments),
                 _ => match self.values.get(&field.id) {
@@ -630,7 +636,7 @@ fn modern_intent(values: &BTreeMap<String, Value>) -> bool {
 fn keeps(kind: &FieldKind, value: &Value) -> bool {
     match kind {
         FieldKind::Choice { items } => items.iter().any(|item| value.as_str() == Some(item.id.as_str())),
-        FieldKind::Multiline { .. } | FieldKind::Attachments => false,
+        FieldKind::Multiline { .. } | FieldKind::Steps { .. } | FieldKind::Mermaid { .. } | FieldKind::Attachments => false,
         _ => true,
     }
 }

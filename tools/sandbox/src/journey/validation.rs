@@ -12,7 +12,11 @@ use alondra_spec_engine as engine;
 const TASK: &str = "t-validation";
 const SETTINGS: &str = "format = 1\n\n[specs]\nenabled = true\n";
 const BOUNDARY: &str = "id = \"billing\"\nowns = [\"src/billing/**\"]\n\n[[suite]]\nid = \"unit\"\nrun = [\"cargo\", \"test\", \"--package\", \"billing\"]\ntests = [\"src/billing/tests/*.rs\"]\n";
-const PARTIAL: &str = "@spec:billing.partial\nFeature: Partial refunds\n  A customer gets back any amount up to what is left of the order, and nothing more.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n    And 20 EUR are left to refund\n\n  @id:more-than-left\n  Scenario: More than what is left\n    Given a paid order of 30 EUR with 18 EUR refunded\n    When 20 EUR are refunded\n    Then the refund is refused with \"Only 12.00 EUR is left to refund\"\n\n  @id:stands-alone @boundary:dependencies\n  Scenario: Billing uses no other component\n    Given the billing code\n    When its dependencies are listed\n    Then none is another component\n";
+const BEFORE_PARTIAL: &str = "@spec:billing.partial\nFeature: Partial refunds\n  A customer gets back any amount up to what is left of the order.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n\n  @id:more-than-left\n  Scenario: More than what is left\n    Given a paid order of 30 EUR with 18 EUR refunded\n    When 20 EUR are refunded\n    Then the refund is refused with \"Only 12.00 EUR is left to refund\"\n\n  @id:stands-alone @boundary:dependencies\n  Scenario: Billing uses no other component\n    Given the billing code\n    When its dependencies are listed\n    Then none is another component\n";
+const FLOW: &str = "flowchart LR\n  Order[Paid order] --> Check{Within what is left?}\n  Check -->|yes| Refund[Refund]\n  Check -->|no| Refuse[Refusal]\n";
+const SHOT: &str = "shots/refund-sheet.png";
+const CAPTURE: &str = "src/billing/captures/refund-sheet.png";
+const PARTIAL: &str = "@spec:billing.partial\n@diagram:refund-flow.mmd\nFeature: Partial refunds\n  A customer gets back any amount up to what is left of the order, and nothing more.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n    And 20 EUR are left to refund\n\n  @id:more-than-left\n  Scenario: More than what is left\n    Given a paid order of 30 EUR with 18 EUR refunded\n    When 20 EUR are refunded\n    Then the refund is refused with \"Only 12.00 EUR is left to refund\"\n\n  @id:sheet-shows-what-is-left @judged:capture @evidence:src/billing/captures/*.png @mockup:refund-sheet.png\n  Scenario: The refund sheet shows what is left\n    Given a paid order of 30 EUR with 10 EUR refunded\n    When the refund sheet opens\n    Then it shows \"20.00 EUR left\"\n\n  @id:stands-alone @boundary:dependencies\n  Scenario: Billing uses no other component\n    Given the billing code\n    When its dependencies are listed\n    Then none is another component\n";
 const TESTS: &str = "// spec: billing.partial/part\n#[test]\nfn refunds_part_of_an_order() {\n    let mut order = Order::paid(3000);\n    assert_eq!(order.refund(1000), Ok(1000));\n    assert_eq!(order.left(), 2000);\n}\n\n// spec: billing.partial/more-than-left\n#[test]\nfn refuses_more_than_what_is_left() {\n    let mut order = Order::paid(3000);\n    order.refund(1800).unwrap();\n    assert_eq!(order.refund(2000), Err(Refused::Left(1200)));\n}\n\n// spec: billing.partial/stands-alone\n#[test]\nfn billing_uses_no_other_component() {\n    assert!(dependencies().is_empty());\n}\n";
 const BEFORE: &str = "pub struct Order { paid: u32 }\n";
 const AFTER: &str = "pub struct Order { paid: u32, refunded: u32 }\n\nimpl Order {\n    pub fn refund(&mut self, amount: u32) -> Result<u32, Refused> {\n        let left = self.paid - self.refunded;\n        if amount > left { return Err(Refused::Left(left)); }\n        self.refunded += amount;\n        Ok(amount)\n    }\n}\n";
@@ -30,22 +34,40 @@ impl engine::Files for Tree {
     }
 }
 
-fn files(changed: &[(&str, &str)]) -> Tree {
-    let base = [("alondra.toml", SETTINGS), ("specs/billing/boundary.toml", BOUNDARY), ("specs/billing/partial.feature", PARTIAL),
+/// The repository as its default branch holds it.
+fn base_files() -> Tree {
+    let base = [("alondra.toml", SETTINGS), ("specs/billing/boundary.toml", BOUNDARY), ("specs/billing/partial.feature", BEFORE_PARTIAL),
         ("src/billing/tests/refunds.rs", TESTS), ("src/billing/lib.rs", BEFORE)];
-    Tree(base.iter().chain(changed).map(|(path, text)| ((*path).to_owned(), text.as_bytes().to_vec())).collect())
+    let mut files: BTreeMap<String, Vec<u8>> = base.iter().map(|(path, text)| ((*path).to_owned(), text.as_bytes().to_vec())).collect();
+    files.insert(SHOT.into(), super::png(1170, 2532));
+    Tree(files)
+}
+
+/// What the implementer's work holds, with the approved specs Alondra wrote into it.
+fn implemented_files() -> Tree {
+    let mut files = base_files().0;
+    for (path, text) in [("specs/billing/partial.feature", PARTIAL), ("specs/billing/refund-flow.mmd", FLOW), ("src/billing/lib.rs", AFTER), ("README.md", README)] {
+        files.insert(path.into(), text.as_bytes().to_vec());
+    }
+    files.insert("specs/billing/refund-sheet.png".into(), super::png(1170, 2532));
+    files.insert(CAPTURE.into(), super::png(1170, 2400));
+    Tree(files)
 }
 
 /// The ledger `alondra spec run` and `alondra spec record` write for everything the engine lists
 /// on the implementer's commit, each met.
 fn ledger() -> Result<Vec<(String, String)>> {
-    let project = engine::load(&files(&[("src/billing/lib.rs", AFTER), ("README.md", README)])).map_err(|problems| anyhow::anyhow!("{problems:?}"))?;
+    let tree = implemented_files();
+    let project = engine::load(&tree).map_err(|problems| anyhow::anyhow!("{problems:?}"))?;
     let mut entries = vec![];
     for item in project.report(None).items.iter().filter(|item| item.state != engine::State::Valid) {
         let entry = match item.kind {
             engine::Kind::Suite => project.suite_passed(&item.component, item.subject.rsplit('/').next().unwrap_or_default()),
             engine::Kind::Passes => continue,
-            kind => project.verdict(&item.subject, kind, engine::Verdict::Met, &[]),
+            kind => {
+                let judged = (kind == engine::Kind::Judged).then(|| engine::Evidence { name: CAPTURE.into(), bytes: tree.0[CAPTURE].clone() });
+                project.verdict(&item.subject, kind, engine::Verdict::Met, &judged.into_iter().collect::<Vec<_>>())
+            }
         }.map_err(|problem| anyhow::anyhow!(problem.message))?;
         entries.push((entry.path, String::from_utf8(entry.bytes)?));
     }
@@ -62,7 +84,7 @@ fn git(dir: &std::path::Path, args: &[&str]) -> Result<()> {
 
 fn project(fakes: &Fakes) -> Result<()> {
     let repo = fakes.repo();
-    for (path, text) in files(&[]).0 {
+    for (path, text) in base_files().0 {
         let file = repo.join(path);
         std::fs::create_dir_all(file.parent().context("a file has a folder")?)?;
         std::fs::write(file, text)?;
@@ -114,7 +136,12 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         script.tasks[0].staged = true;
         request(report, fakes, &user, &script, "Let customers get part of an order refunded")?;
         let author = launched(report, fakes, TASK)?;
-        turn(report, fakes, &author, "the author's first turn ends", vec![])?;
+        let specs = json!([
+            {"path": "specs/billing/partial.feature", "text": PARTIAL},
+            {"path": "specs/billing/refund-flow.mmd", "text": FLOW},
+            {"path": "specs/billing/refund-sheet.png", "source": SHOT},
+        ]);
+        turn(report, fakes, &author, "the author proposes the plan's specs and its first turn ends", vec![Step::Call { tool: "propose_specs".into(), arguments: json!({"task_id": TASK, "level": "light", "files": specs}) }])?;
         std::thread::scope(|scope| {
             let plan = scope.spawn(|| native::order(fakes, &author, &Order { steps: vec![Step::OwnTurn { said: "Plan".into() }, Step::LeavePlanMode { points: 1 }], end_turn: false }));
             let card = wait(report, "the author's plan waits in Inbox", || card_in_inbox(&user, &format!("decision-{TASK}-")))?;
@@ -131,6 +158,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         turn(report, fakes, &implementer, "the implementer changes the code, opens its pull request and says it is ready", vec![
             Step::Commit { file: "src/billing/lib.rs".into(), text: AFTER.into() },
             Step::Commit { file: "README.md".into(), text: README.into() },
+            Step::Capture { file: CAPTURE.into(), width: 1170, height: 2400 },
             Step::Push, Step::OpenPr { number: 61, draft: false, checks: Default::default() }, Step::RegisterPr { number: 61 },
             Step::Call { tool: "ready_for_validation".into(), arguments: json!({"task_id": TASK}) },
         ])?;
@@ -139,6 +167,13 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             record("billing/unit", "suite", "", None),
             record("billing.partial/part", "adequate", "The test refunds 10 of 30 EUR and checks both what comes back and the 20 EUR left.", Some("Refunding the amount without lowering what is left")),
             record("billing.partial/more-than-left", "adequate", "The test refunds 18 EUR first, then asks for 20 and checks the refusal names the 12 EUR left.", Some("Refusing with another amount in the message")),
+            {
+                let mut judged = record("billing.partial/sheet-shows-what-is-left", "judged", "The capture shows the sheet with 20.00 EUR left under the amount.", None);
+                if let Step::Call { arguments, .. } = &mut judged {
+                    arguments["evidence"] = json!([CAPTURE]);
+                }
+                judged
+            },
             record("billing.partial/stands-alone", "adequate", "The test lists the dependencies of billing and checks there are none.", Some("A dependency added only for tests")),
         ];
         steps.extend(ledger()?.into_iter().map(|(file, text)| Step::Commit { file, text }));
@@ -168,7 +203,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             }
             if outcome.text.contains("card_language_mismatch") {
                 language = tried.next().context("no language was taken")?;
-            } else if !outcome.text.contains("delivery_review_pending") {
+            } else if !outcome.text.contains("delivery_review_pending") && !outcome.text.contains("github_unreachable") {
                 bail!("the delivery was refused: {}", outcome.text);
             }
             Ok((None, outcome.text))
@@ -176,7 +211,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         let view = user.view(&format!("card:{delivered}"))?;
         report.snapshot("card-validated-delivery", &view)?;
         report.step("the card shows the specs it validated", || {
-            anyhow::ensure!(super::user::mentions(&view, "3 of 3 scenarios validated") || super::user::mentions(&view, "3 de 3 escenarios validados"), "{view}");
+            anyhow::ensure!(super::user::mentions(&view, "4 of 4 scenarios validated") || super::user::mentions(&view, "4 de 4 escenarios validados"), "{view}");
             Ok(())
         })
     });
