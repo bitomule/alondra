@@ -192,7 +192,7 @@ fn what_could_not_run_goes_to_one_new_validator_then_to_the_user() {
 fn a_lost_validator_keeps_what_it_recorded_and_owes_the_rest_once_taken_over() {
     let mut s = validating();
     must(&mut s, node("c"), record("billing/unit", ValidationKind::Suite, ValidationVerdict::Met));
-    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "The host stopped".into(), quiet: false, signed_out: false });
+    must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "The host stopped".into(), quiet: false, signed_out: false, node: None });
     let round = validation(&s).current().unwrap();
     assert_eq!(round.state, RoundState::Interrupted);
     assert_eq!(round.items.iter().map(|item| item.state).collect::<Vec<_>>(), [ValidationState::Met, ValidationState::Incomplete]);
