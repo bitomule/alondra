@@ -77,16 +77,17 @@ pub enum SystemCardKind {
     RequestTasks,
     Inbox,
     RefusedCards,
+    SpecChange,
     Unknown,
 }
 
 impl SystemCardKind {
-    pub const ALL: [SystemCardKind; 33] = {
+    pub const ALL: [SystemCardKind; 34] = {
         use SystemCardKind::*;
         [NodePause, OverPace, PaceResume, Machine, LocalNetwork, ReportHeld, CapabilityCapacity, McpWait, ClaudeSignedOut, ClaudeOutage, ClaudeUsage,
             HostLost, TurnEnded, Stalled, SessionEnded, HandoffDoubt, DecisionCancelled, Dropped, Unheard, EndedUnanswered,
             StartProblem, PostMergeProblem, CloseProblem, DiscardWorktrees, OpenPrDelivery, LaunchProblem, BatchProblem,
-            StuckProblem, RequestDone, RequestTasks, Inbox, RefusedCards, Unknown]
+            StuckProblem, RequestDone, RequestTasks, Inbox, RefusedCards, SpecChange, Unknown]
     };
 }
 
@@ -126,6 +127,7 @@ impl SystemCard {
             Self::RequestTasks => K::RequestTasks,
             Self::Inbox { .. } => K::Inbox,
             Self::RefusedCards { .. } => K::RefusedCards,
+            Self::SpecChange => K::SpecChange,
             Self::Unknown => K::Unknown,
         }
     }
@@ -365,6 +367,7 @@ impl CardType {
                     S::RequestDone | S::RequestTasks => alondra(to_user, &[K::Know], Reads, Request, &[Read, Withdrawn, Replaced]),
                     S::Inbox => alondra(&[R::Orchestrator, R::User], &[K::Know, K::Problem], Either, Request, &[Answered, Read, Withdrawn, Replaced]),
                     S::RefusedCards => alondra(&[R::Orchestrator], &[K::Know], Reads, Task, &[Read, Withdrawn]),
+                    S::SpecChange => alondra(to_user, &[K::Decide], Decides, Task, &[Answered, Withdrawn, TaskEnded]),
                     S::Unknown => c(&[], &[], &[], Reads, &[], Task, &[]),
                 }
             }

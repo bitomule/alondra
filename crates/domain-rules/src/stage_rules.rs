@@ -83,6 +83,9 @@ impl DomainState {
         let Some(handover) = task.stages.handover.clone().filter(StageHandover::due) else {
             return fail("conflict", "The task owes no change of role");
         };
+        if !task.specs.due().is_empty() {
+            return fail("specs_unwritten", "The approved specs are written into the worktree before a new agent takes the task");
+        }
         if task.pending_selection.is_some() {
             return fail("selection_pending", "A selection change is already pending for this task");
         }

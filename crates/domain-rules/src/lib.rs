@@ -41,6 +41,8 @@ mod rules;
 mod schedule;
 mod situation;
 mod stages;
+pub mod specs;
+pub mod spec_card;
 mod system_card;
 #[cfg(test)]
 mod attention_tests;
@@ -136,7 +138,12 @@ mod situation_tests;
 mod read_index_tests;
 #[cfg(test)]
 mod stage_tests;
+#[cfg(test)]
+mod spec_tests;
+#[cfg(test)]
+mod specs_tests;
 pub use attention::*;
+pub use specs::{AmendmentState, ApprovedSpecs, DecisionAnswer, DecisionFields, DecisionVerdict, ProposedDecision, SpecAmendment, SpecCheck, SpecDirs, SpecDraft, SpecFile, SpecFileKind, SpecFiles, SpecLevel, SpecMode, SpecProblem, TaskSpecs};
 pub use card_contract::*;
 pub use checklist::*;
 pub use cited_files::*;

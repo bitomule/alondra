@@ -106,6 +106,9 @@ pub const INTERNAL_CODES: &[&str] = &[
     "plan_items_unknown", "plan_items_take_all", "plan_items_unavailable", "task_waiting", "continuation_request",
     "model_catalog_changed", "model_catalog_unavailable", "stall_needs_outcome", "stall_settled", "stall_limit", "plan_refused_needs_outcome",
     "close_outcome_required", "close_outcome_mismatch", "close_answer_required", "role_forbids_tool", "selection_pending", "stale_selection",
+    "specs_disabled", "spec_settings_unreadable", "specs_unreadable", "specs_need_stages", "specs_approved", "plan_open", "no_specs",
+    "plan_not_open", "stale_specs", "no_approved_specs", "spec_change_pending", "no_spec_change", "decisions_disabled", "decision_pending",
+    "specs_unwritten",
 ];
 
 impl Refusal {
@@ -144,7 +147,7 @@ mod tests {
     /// the catalog lists as only reachable by a node; a new code must be put in one of them.
     #[test]
     fn every_code_the_rules_produce_is_known_to_the_refusal_catalog() {
-        let source = [include_str!("rules.rs"), include_str!("rules/plan_review.rs"), include_str!("rules/pr_identity.rs"), include_str!("checklist.rs"), include_str!("stage_rules.rs")].concat();
+        let source = [include_str!("rules.rs"), include_str!("rules/plan_review.rs"), include_str!("rules/pr_identity.rs"), include_str!("checklist.rs"), include_str!("stage_rules.rs"), include_str!("rules/spec_rules.rs")].concat();
         let mut found = std::collections::BTreeSet::new();
         for marker in ["fail(\"", "refuse(\"", "DomainError::new(\"", "fail(\n", "Some((\""] {
             for part in source.split(marker).skip(1) {

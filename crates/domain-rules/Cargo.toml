@@ -9,10 +9,12 @@ publish.workspace = true
 alondra-core.workspace = true
 alondra-foundation.workspace = true
 alondra-domain.workspace = true
+alondra-spec-engine.workspace = true
 rpds.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 libc.workspace = true

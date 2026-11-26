@@ -93,9 +93,12 @@ pub enum Verb {
     /// Set the key of the account named as the subject (its provider as `extra`) to the text, or
     /// clear it with the option `clear`. The key goes to the account's file, never to the domain.
     AccountCredential,
+    /// Edit the specs a task proposes with its plan, named as the subject: `extra` says which
+    /// spec, scenario or decision and how, the revision is the proposal's.
+    SpecEdit,
 }
 impl Verb {
-    pub const ALL: [Self; 64] = [
+    pub const ALL: [Self; 65] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -160,6 +163,7 @@ impl Verb {
         Self::ProviderConnect,
         Self::AccountAdd,
         Self::AccountCredential,
+        Self::SpecEdit,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -227,6 +231,7 @@ impl Verb {
             Self::ProviderConnect => "provider_connect",
             Self::AccountAdd => "account_add",
             Self::AccountCredential => "account_credential",
+            Self::SpecEdit => "spec_edit",
         }
     }
     fn parse(value: &str) -> Option<Self> {

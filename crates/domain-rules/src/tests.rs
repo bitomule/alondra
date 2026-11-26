@@ -149,7 +149,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
+        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), specs: Default::default(), continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
     };
     (request, task)
 }
@@ -3274,9 +3274,16 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordTaskStages { .. } => 143,
         Command::BeginStageHandover { .. } => 144,
         Command::StageHandoverFailed { .. } => 145,
+        Command::ProposeSpecs { .. } => 146,
+        Command::ReviseSpecs { .. } => 147,
+        Command::RecordSpecSettings { .. } => 148,
+        Command::RecordSpecsWritten { .. } => 149,
+        Command::RequestSpecChange { .. } => 150,
+        Command::ProposeAmendment { .. } => 151,
+        Command::ProposeDecision { .. } => 152,
     }
 }
-const COMMAND_KINDS: usize = 146;
+const COMMAND_KINDS: usize = 153;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3413,6 +3420,13 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::PauseQueuedTask { task_id: ids.task.into(), at: 1 }, false),
         (Command::ResumeQueuedTask { task_id: ids.task.into() }, false),
         (Command::RecordTaskStages { task_id: ids.task.into(), staged: false, reason: "Small".into(), selections: Default::default() }, false),
+        (Command::ProposeSpecs { task_id: ids.task.into(), level: crate::SpecLevel::Light, files: vec![], check: Default::default() }, false),
+        (Command::ReviseSpecs { task_id: ids.task.into(), expected: 1, level: crate::SpecLevel::Light, files: vec![], check: Default::default() }, false),
+        (Command::RecordSpecSettings { task_id: ids.task.into(), problem: None }, false),
+        (Command::RecordSpecsWritten { task_id: ids.task.into(), written: Default::default() }, false),
+        (Command::RequestSpecChange { task_id: ids.task.into(), reason: "Missing case".into() }, false),
+        (Command::ProposeAmendment { task_id: ids.task.into(), amendment_id: "a1".into(), files: vec![], check: Default::default() }, false),
+        (Command::ProposeDecision { task_id: ids.task.into(), decision: Default::default(), files: Default::default(), check: Default::default() }, false),
         (Command::BeginStageHandover { task_id: ids.task.into(), expected_selection: "fixture".into(), transition: "stage".into(), pending: alondra_core::model_selection::PendingTaskSelection {
             account: alondra_core::accounts::AccountKey::native(alondra_core::accounts::Provider::Claude),
             model: alondra_core::model_selection::ModelSelection { model: alondra_core::model_selection::ModelKey { provider: alondra_core::accounts::Provider::Claude, model: "fixture".into() }, reasoning_effort: None, catalog_revision: "fixture".into() }, reason: "The implementer takes it over".into(),

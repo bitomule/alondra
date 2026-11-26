@@ -252,6 +252,10 @@ pub struct Task {
     /// Its stages, the plans the user approved and every execution it had.
     #[serde(default, skip_serializing_if = "TaskStages::is_default")]
     pub stages: TaskStages,
+    /// Its specs: what its author proposed with the plan, what the user approved and every change
+    /// since.
+    #[serde(default, skip_serializing_if = "crate::TaskSpecs::is_default")]
+    pub specs: crate::TaskSpecs,
 }
 /// What a relaunch needs of the node that closed while it worked on a task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

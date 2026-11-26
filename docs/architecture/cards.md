@@ -189,4 +189,5 @@ or forces, read from the command's words.
 | `system:request_tasks` | alondra | user | know | reads | — | request | its author | read, withdrawn, replaced |
 | `system:inbox` | alondra | orchestrator, user | know, problem | either | — | request | its author | answered, read, withdrawn, replaced |
 | `system:refused_cards` | alondra | orchestrator | know | reads | — | task | its author | read, withdrawn |
+| `system:spec_change` | alondra | user | decide | decides | — | task | its author | answered, withdrawn, task_ended |
 | `system:unknown` | — | — | — | reads | — | task | its author | — |

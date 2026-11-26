@@ -159,7 +159,7 @@ The user approved this plan to be implemented: it is already this task's approve
 /// What the author of a staged task is told when it starts.
 pub const AUTHOR_MISSION: &str = "## Your stage
 
-This task goes in stages, and you are its author. Plan it through plan mode: ask the user every decision first, then present the plan with its checklist. Do not build it. Once the user approves the plan, Alondra hands the task to a new agent that implements it in this same worktree: end your turn then, without changing anything else. You never register or deliver a pull request.";
+This task goes in stages, and you are its author. Plan it through plan mode: ask the user every decision first, then present the plan with its checklist. Do not build it. When the project has specs (an alondra.toml at the root of the repository that turns them on), load the spec-design skill first and send the plan's specs with propose_specs before presenting the plan. Once the user approves the plan, Alondra hands the task to a new agent that implements it in this same worktree: end your turn then, without changing anything else. You never register or deliver a pull request.";
 
 /// What a new execution of a staged task starts from, written by Alondra instead of the
 /// conversation of the execution before it: the task's whole record, its approved plan, where its
@@ -195,8 +195,42 @@ pub fn stage_packet(state: &DomainState, task: &alondra_domain_rules::Task, role
     if !plan.is_empty() {
         lines.extend([String::new(), "## The plan the user approved".to_owned(), String::new(), plan]);
     }
+    let specs = spec_packet(task, role);
+    if !specs.is_empty() {
+        lines.extend([String::new(), specs]);
+    }
     lines.extend([String::new(), "## The task's record".to_owned(), String::new(), canonical.text]);
     Ok(lines.join("\n"))
+}
+
+/// What a new execution of a staged task is told of its specs: the approved ones, which win over
+/// any other text, and the change of them its role has to draft or wait for.
+pub fn spec_packet(task: &alondra_domain_rules::Task, role: alondra_domain_rules::ExecutionRole) -> String {
+    use alondra_domain_rules::{spec_card, AmendmentState, ExecutionRole, SpecMode};
+    use alondra_core::text::Lang;
+    let Some(approved) = &task.specs.approved else { return String::new() };
+    let mut out = vec!["## The approved specs".to_owned(), String::new(),
+        "Specs are the only source of truth: where any other text, the plan included, disagrees with a spec, the spec wins.".to_owned(), String::new()];
+    let paths: Vec<&str> = approved.files.keys().map(String::as_str).collect();
+    match approved.mode {
+        SpecMode::Uncommitted => out.push(format!("This project keeps its specs in Alondra, never in the repository: do not commit them. They are: {}.", paths.join(", "))),
+        _ if approved.unwritten.is_empty() => out.push(format!(
+            "Alondra wrote the approved spec files into the worktree: {}. Commit them exactly as they are, in a commit of their own if they are not committed yet.", paths.join(", "))),
+        _ => out.push(format!("Alondra writes these approved spec files into the worktree: {}.", paths.join(", "))),
+    }
+    out.extend([String::new(), "Never edit a spec, boundary or decision: a delivery whose spec files differ from what the user approved is refused. A change the work needs goes through request_spec_change.".to_owned(), String::new()]);
+    out.push(spec_card::changes(&approved.files, &approved.before, &approved.dirs, Lang::En));
+    for amendment in &task.specs.amendments {
+        match (role, amendment.state) {
+            (ExecutionRole::Author, AmendmentState::Requested) => out.extend([String::new(), format!("## The change of specs the implementer asks for ({})", amendment.id), String::new(),
+                amendment.reason.clone(), String::new(),
+                format!("Draft it with propose_amendment, amendment_id {}, as the whole new text of each file it changes, then end your turn. If the user has to decide something first, ask with `ask` before drafting it.", amendment.id)]),
+            (ExecutionRole::Implementer, AmendmentState::Proposed) => out.extend([String::new(), format!("## A change of specs waits for the user ({})", amendment.id), String::new(),
+                format!("You asked: {}. The author drafted it and the user decides on its card; carry on with what does not depend on it. Alondra tells you what the user decided.", amendment.reason)]),
+            _ => {}
+        }
+    }
+    out.join("\n")
 }
 
 /// The plan the user approved for the task, whoever wrote it.

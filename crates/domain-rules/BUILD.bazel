@@ -11,6 +11,7 @@ DOMAIN_RULES_DEPS = all_crate_deps(normal = True) + [
     "//crates/core:alondra_core",
     "//crates/domain:domain",
     "//crates/foundation:foundation",
+    "//crates/spec-engine:spec_engine",
 ]
 
 # The rules of the domain: every command, the state it changes and the cards it raises.

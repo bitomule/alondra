@@ -1,0 +1,160 @@
+name = "in a project with specs, the author's specs go on the plan's card; once the user approves the plan Alondra writes them into the worktree before the implementer starts, a delivery that changes another spec is refused, and the implementer asks for a change instead"
+max_virtual = "2h"
+
+[[step]]
+do = "request"
+text = "Let customers get part of an order refunded"
+task = "t1"
+title = "Refund part of an order"
+
+[[step]]
+do = "node"
+task = "t1"
+model = "demo-model"
+stages = true
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "worktree"
+task = "t1"
+
+[[step.base]]
+path = "alondra.toml"
+text = "format = 1\n\n[specs]\nenabled = true\n\n[decisions]\nenabled = true\n"
+
+[[step.base]]
+path = "specs/billing/boundary.toml"
+text = "id = \"billing\"\nowns = [\"crates/billing/**\"]\n"
+
+[[step.base]]
+path = "specs/billing/refunds.feature"
+text = "@spec:billing.refunds\nFeature: Refunds return the money\n\n  @id:full\n  Scenario: Full refund\n    Given a paid order of 30 EUR\n    When the order is refunded\n    Then the customer receives 30 EUR\n\n  @id:stands-alone @boundary:dependencies\n  Scenario: Billing uses no other component\n    Given the billing crate\n    When its dependencies are listed\n    Then none is another component\n"
+
+[[step]]
+do = "propose_specs"
+task = "t1"
+level = "light"
+refused = "specs_unreadable"
+
+[[step.files]]
+path = "specs/billing/partial.feature"
+text = "@spec:billing.partial\nFeature: Partial refunds\n\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n"
+
+[[step]]
+do = "propose_specs"
+task = "t1"
+level = "light"
+
+[[step.files]]
+path = "specs/billing/partial.feature"
+text = "@spec:billing.partial\nFeature: Partial refunds\n  Any amount up to what is left of the order comes back.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n"
+
+[[step]]
+do = "plan"
+task = "t1"
+request = "author-plan"
+plan = "# Refund part of an order\n\n- [ ] Refund any amount up to what is left (billing.partial/part)"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "specs-on-the-plan"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Part of an order"
+
+[[step.expect]]
+check = "worktree_file"
+task = "t1"
+path = "specs/billing/partial.feature"
+
+[[step]]
+do = "edit_spec"
+task = "t1"
+item = "Part of an order"
+
+[step.fields]
+steps = "Given a paid order of 30 EUR\nWhen 10 EUR are refunded\nThen the customer receives 10 EUR\nAnd 20 EUR are left to refund"
+
+[[step]]
+do = "press"
+presentation = "decision-t1-1-6"
+action = "accept"
+screen = "home"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "written-before-the-implementer"
+
+[[step.expect]]
+check = "worktree_file"
+task = "t1"
+path = "specs/billing/partial.feature"
+text = "@spec:billing.partial\nFeature: Partial refunds\n  Any amount up to what is left of the order comes back.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n    And 20 EUR are left to refund\n"
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 2
+running = 1
+sessions = 2
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t1"
+text = "written in the worktree"
+
+[[step]]
+do = "commit"
+task = "t1"
+message = "Change a spec nobody approved"
+
+[[step.files]]
+path = "specs/billing/refunds.feature"
+text = "@spec:billing.refunds\nFeature: Refunds return the money\n\n  @id:full\n  Scenario: Full refund\n    Given a paid order of 30 EUR\n    When the order is refunded\n    Then the customer receives 40 EUR\n\n  @id:stands-alone @boundary:dependencies\n  Scenario: Billing uses no other component\n    Given the billing crate\n    When its dependencies are listed\n    Then none is another component\n"
+
+[[step]]
+do = "present"
+task = "t1"
+id = "result-1"
+text = "Partial refunds"
+body = "Partial refunds work."
+refused = "specs_differ"
+
+[[step]]
+do = "request_spec_change"
+task = "t1"
+reason = "A full refund pays 40 EUR in the new rules"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "change-asked"
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t1"
+text = "asked for, the author drafts it"

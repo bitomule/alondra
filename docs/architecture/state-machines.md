@@ -1042,6 +1042,57 @@ truth = ["sqlite:task_stages"]
   survives a restart: its selection change resumes from its journal (M-ENGINE-7), or, aborted, the
   next pass starts it again.
 
+### M-LIFE-16 · Task specs (`TaskSpecs`, added by the specs-in-the-plan phase)
+
+```toml state-machine
+id = "M-LIFE-16"
+code = ["crates/domain-rules/src/specs.rs::TaskSpecs", "crates/domain-rules/src/rules/spec_rules.rs::propose_specs", "crates/domain-rules/src/rules/spec_rules.rs::approve_plan_specs", "crates/domain-rules/src/rules/spec_rules.rs::record_specs_written", "crates/domain-rules/src/rules/spec_rules.rs::request_spec_change", "crates/domain-rules/src/rules/spec_rules.rs::propose_amendment", "crates/domain-rules/src/rules/spec_rules.rs::settle_spec_card", "crates/engine-sdk/src/spec_writes.rs::write_due"]
+truth = ["sqlite:task_specs"]
+states = "crates/domain-rules/src/specs.rs::AmendmentState"
+variants = ["Requested", "Proposed", "Approved", "Rejected"]
+terminals = ["Approved", "Rejected"]
+initial = ["Requested"]
+transitions = ["Requested -> Proposed", "Proposed -> Approved", "Proposed -> Rejected"]
+```
+
+- **Kind**: explicit, product. In a project whose `alondra.toml` turns specs on, the specs of a
+  task in stages go with its plan and change afterwards only through the user's approval
+  (`docs/architecture/specs.md`, "Specs in a task"). A task in a project without specs has none of
+  this record.
+- **Components**: `draft: Option<SpecDraft{level, files, check, revision, edited}>` (the author's
+  proposal, as the user edits it on the plan's card) × `approved: Option<ApprovedSpecs{card,
+  revision, level, mode, files, before, dirs, unwritten}>` × `amendments` (each with its
+  `AmendmentState`) × `proposed_decisions` (lasting decisions waiting on their own card) ×
+  `decisions` (the user's answer on each decision, with their words) × `settings: Option<SpecProblem>`
+  (why the worktree's `alondra.toml` cannot be read, when Alondra last found it could not).
+- **Moves**:
+
+| From | Event [guard] | Result |
+|---|---|---|
+| no approved specs, no plan card open | `ProposeSpecs` [the task's author, the task has stages, Alondra's reading of the worktree with them is clean] | `draft` replaced |
+| `draft`, plan card open | `ReviseSpecs` [the user, `expected` is the draft's revision, the reading is clean] | `draft` replaced, `edited`; a decision taken out is answered `Rejected` |
+| any | `RecordSpecSettings` [system] | `settings` set or cleared |
+| `draft` | the user approves the plan [`settings` none, the draft reads clean] | `approved` = the draft with its decisions accepted, `unwritten` = its paths in a committed project; each decision answered `Accepted` with the user's words; `draft` none |
+| `unwritten` not empty | `RecordSpecsWritten` [system] | each path whose written fingerprint is the approved text's leaves `unwritten`; the working execution is told to commit them unless a change of role is owed |
+| `approved`, role `Implementer`, no amendment `Requested`, no handover | `RequestSpecChange` | amendment `Requested`; handover to `Author` (`SpecChangeRequested`) |
+| amendment `Requested`, role `Author` | `ProposeAmendment` [clean reading] | `Proposed`, its `system:spec_change` card raised; handover to `Implementer` (`AmendmentProposed`) |
+| amendment `Proposed` | the user answers its card `approve` / `reject` | `Approved` (merged into `approved`, its paths `unwritten`) / `Rejected` (the working execution told, with the user's words) |
+| any | `ProposeDecision` [the author or a task without stages, decisions on, clean reading] | `proposed_decisions` + its card |
+| a proposed decision | the user answers its card | `Accepted` (its file and every superseded one joins `approved`) or `Rejected`, with the user's words |
+
+- **Engine**: `provider_transition::pass` first records what each concerned task's `alondra.toml`
+  says (`spec_writes::note_settings`), then writes every owed file into the worktree of each task
+  no agent works in (`spec_writes::write_due`: no execution, or one with no turn, no own work and
+  no decision it waits on). A change of role never starts while files are owed
+  (`specs_unwritten`), so a new implementer always starts from the approved files.
+- **Delivery**: a final delivery is refused (`specs_differ`) when the branch holds a spec file
+  changed from where it leaves its base without the user's approval, or an approved one otherwise
+  than approved; `spec_settings_unreadable` when the settings cannot be read
+  (`daemon-server/src/spec_checks.rs::delivery_refusal`).
+- **Persistence and restart**: the whole record is one JSON row of `task_specs`, written by the
+  commit that changes it. A write cut by a restart is done again on the next pass: the files are
+  written whole, and only their fingerprints clear them.
+
 ## Cards, plans, documents and requests (`CARDS`)
 
 Scope: the interaction machines and the work machines of the domain, outside the turn/node lifecycle. Code: `crates/domain-rules/src/` (mainly `rules.rs`, `guards.rs`, `model.rs`, `card_contract.rs`, `rules/plan_review.rs`, `rules/snooze.rs`, `rules/open_pr.rs`, `ownership.rs`, `projection.rs`, `attention.rs`), `crates/engine-orchestrator/src/orchestrator_inbox.rs` (only where it closes requests), `crates/store-sqlite/src/lib.rs` (schema) and `crates/store-sqlite/src/command.rs` (effect outbox). Audited commit: `1567967b9`.

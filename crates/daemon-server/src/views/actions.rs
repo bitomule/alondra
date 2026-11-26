@@ -328,7 +328,7 @@ fn is_external(verb: Verb) -> bool {
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::NewRequestSelection | Verb::ScheduleSelection | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule |
         Verb::McpSignOut | Verb::McpCheck | Verb::McpRemove | Verb::AccountEnable | Verb::AccountDisable | Verb::AccountRemove | Verb::AccountUp
-        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ProviderConnect | Verb::AccountAdd | Verb::AccountCredential | Verb::ModelProfile | Verb::TaskSelection | Verb::MoveTask)
+        | Verb::AccountDown | Verb::AccountWeight | Verb::AccountPolicy | Verb::AccountMoves | Verb::AccountRename | Verb::AccountOrder | Verb::AccountCheck | Verb::AccountModels | Verb::AccountLogin | Verb::AccountLoginCancel | Verb::ProviderConnect | Verb::AccountAdd | Verb::AccountCredential | Verb::ModelProfile | Verb::TaskSelection | Verb::MoveTask | Verb::SpecEdit)
 }
 
 pub(crate) async fn execute_action(
@@ -462,6 +462,7 @@ async fn execute_external(
         Verb::AccountOrder => "Order saved",
         Verb::ModelProfile => "Model profile saved",
         Verb::TaskSelection => "Selection change requested",
+        Verb::SpecEdit => "Specs updated",
         Verb::MoveTask => "Moving",
         Verb::ProviderConnect => "Connected",
         Verb::AccountAdd => "Added",
@@ -756,6 +757,7 @@ async fn execute_external(
                 Err(crate::accounts::ChangeRefused::Store(refused)) => Ok(error_value("conflict", &refused.message(lang))),
             }
         }
+        Verb::SpecEdit => crate::views::spec_actions::execute(domain, &state, action, request, &user_id, lang, &authorize),
         Verb::TaskSelection => {
             let task_id = TaskId(action.subject.clone());
             let Some(task) = state.tasks.get(&task_id) else { return Ok(no_longer_available(lang, "This task is no longer listed")); };

@@ -47,6 +47,9 @@ pub struct TaskScript {
     /// The model the orchestrator launches it with; Sonnet when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Whether the orchestrator launches it in stages: an author plans it, a new agent builds it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub staged: bool,
 }
 
 fn yes() -> bool {

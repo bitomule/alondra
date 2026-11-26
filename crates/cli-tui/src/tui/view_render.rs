@@ -779,10 +779,12 @@ pub fn document_lines(view: &View, width: usize, open_checks: bool, open_folds: 
                             (_, serde_json::Value::Null) => String::new(),
                             (_, value) => value.to_string(),
                         };
+                        let mut parts = value.lines();
                         lines.push(Line::from(vec![
                             Span::styled(format!("{}: ", field.label), Style::new().fg(DIM)),
-                            Span::raw(value),
+                            Span::raw(parts.next().unwrap_or_default().to_owned()),
                         ]));
+                        lines.extend(parts.map(|part| Line::from(format!("  {part}"))));
                         if let Some(help) = &field.help {
                             lines.push(Line::from(format!("  {help}").fg(DIM)));
                         }

@@ -122,7 +122,7 @@ macro_rules! families {
     };
 }
 families!(Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Orchestrator, Schedules, Schedule, NewRequest,
-    IssuePicker, Search, Machine, McpServers, Accounts, ModelProfile, TaskSelection, Metrics);
+    IssuePicker, Search, Machine, McpServers, Accounts, ModelProfile, TaskSelection, Metrics, TaskSpecs);
 
 impl Family {
     /// The family a key belongs to, or none for a key no view answers.
@@ -140,6 +140,8 @@ impl Family {
             Family::Sidebar
         } else if listed("tasks") {
             Family::Tasks
+        } else if key.starts_with("task_specs:") {
+            Family::TaskSpecs
         } else if key.starts_with("task_selection:") {
             Family::TaskSelection
         } else if key.starts_with("model_profile:") {

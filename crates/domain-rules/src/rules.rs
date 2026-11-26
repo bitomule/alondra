@@ -35,6 +35,7 @@ mod account_settings;
 mod task_selection;
 #[path = "stage_rules.rs"]
 mod stage_rules;
+mod spec_rules;
 pub use stage_rules::{HANDED_OVER_PLAN, STAGE_REFUSED};
 #[path = "mcp_wait.rs"]
 mod mcp_wait;
@@ -2974,6 +2975,13 @@ impl DomainState {
             | Command::DeferTaskMove { task_id, .. }
             | Command::AbortTaskSelection { task_id, .. }
             | Command::RecordTaskStages { task_id, .. }
+            | Command::ProposeSpecs { task_id, .. }
+            | Command::ReviseSpecs { task_id, .. }
+            | Command::RecordSpecSettings { task_id, .. }
+            | Command::RecordSpecsWritten { task_id, .. }
+            | Command::RequestSpecChange { task_id, .. }
+            | Command::ProposeAmendment { task_id, .. }
+            | Command::ProposeDecision { task_id, .. }
             | Command::BeginStageHandover { task_id, .. }
             | Command::StageHandoverFailed { task_id, .. }
             | Command::RecordHostReleased { task_id, .. }
@@ -3874,7 +3882,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: *priority, paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: *priority, paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), specs: Default::default(), continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;
@@ -4587,6 +4595,7 @@ impl DomainState {
                     && option_id == Hold::APPROVE
                 {
                     self.plan_waits(task_id)?;
+                    self.plan_specs_refusal(task_id)?;
                 }
                 let a = Answer {
                     attachments: attachments.clone(),
@@ -4610,6 +4619,8 @@ impl DomainState {
                     let task_id = task_id.clone();
                     self.checklists.insert(task_id.clone(), checklist);
                     let generation = self.lifecycle(lifecycles, &task_id)?.generation();
+                    let words = inputs.values().find_map(|value| match value { InputValue::Text(text) => Some(text.clone()), _ => None });
+                    self.approve_plan_specs(&task_id, interaction_id, words.as_deref());
                     self.record_plan_approval(&task_id, interaction_id, generation, lifecycles)?;
                 }
                 let written = inputs.values().find_map(|value| match value { InputValue::Text(text) => Some(text.clone()), _ => None });
@@ -4621,6 +4632,7 @@ impl DomainState {
                     self.answer_lifecycle_card(actor, interaction_id, option_id, written.as_deref(), effects, created, lifecycles)?;
                 }
                 self.settle_start_problem(actor, interaction_id, option_id, effects, created, lifecycles)?;
+                self.settle_spec_card(interaction_id, option_id, written.as_deref(), lifecycles)?;
                 self.settle_post_merge_problem(interaction_id, option_id, lifecycles)?;
                 self.settle_plan_review_problem(interaction_id, option_id, lifecycles)?;
                 if matches!(actor, Actor::User { .. }) {
@@ -5764,6 +5776,27 @@ impl DomainState {
             }
             Command::StageHandoverFailed { task_id, transition, refused } => {
                 self.stage_handover_failed(actor, task_id, transition.as_deref(), *refused)?;
+            }
+            Command::ProposeSpecs { task_id, level, files, check } => {
+                self.propose_specs(actor, task_id, *level, files, check)?;
+            }
+            Command::ReviseSpecs { task_id, expected, level, files, check } => {
+                self.revise_specs(actor, task_id, *expected, *level, files, check)?;
+            }
+            Command::RecordSpecSettings { task_id, problem } => {
+                self.record_spec_settings(actor, task_id, problem.as_ref())?;
+            }
+            Command::RecordSpecsWritten { task_id, written } => {
+                self.record_specs_written(actor, task_id, written, lifecycles)?;
+            }
+            Command::RequestSpecChange { task_id, reason } => {
+                self.request_spec_change(actor, task_id, reason, lifecycles)?;
+            }
+            Command::ProposeAmendment { task_id, amendment_id, files, check } => {
+                self.propose_amendment(actor, task_id, amendment_id, files, check, effects, created, lifecycles)?;
+            }
+            Command::ProposeDecision { task_id, decision, files, check } => {
+                self.propose_decision(actor, task_id, decision, files, check, effects, created)?;
             }
             Command::AbortTaskSelection { task_id, selection, refused } => {
                 system(actor)?;

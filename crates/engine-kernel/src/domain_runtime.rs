@@ -1156,6 +1156,13 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordTaskStages { task_id, .. }
         | Command::BeginStageHandover { task_id, .. }
         | Command::StageHandoverFailed { task_id, .. }
+        | Command::ProposeSpecs { task_id, .. }
+        | Command::ReviseSpecs { task_id, .. }
+        | Command::RecordSpecSettings { task_id, .. }
+        | Command::RecordSpecsWritten { task_id, .. }
+        | Command::RequestSpecChange { task_id, .. }
+        | Command::ProposeAmendment { task_id, .. }
+        | Command::ProposeDecision { task_id, .. }
         | Command::RequestTaskSelection { task_id, .. }
         | Command::MoveTask { task_id, .. }
         | Command::SettlePlanReview { task_id, .. }

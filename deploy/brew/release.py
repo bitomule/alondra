@@ -30,7 +30,7 @@ PUBLIC_FILES = {
     ANTIGRAVITY_HOST, ANTIGRAVITY_MANIFEST, '.claude-plugin/marketplace.json',
     'plugin/bin/alondra', 'plugin/.mcp.json', 'plugin/hooks/hooks.json',
     'plugin/hooks/register.ts', 'plugin/tests/register.test.ts', 'plugin/tests/holds.test.ts',
-    'plugin/.claude-plugin/plugin.json', 'plugin/skills/alondra/SKILL.md',
+    'plugin/.claude-plugin/plugin.json', 'plugin/skills/alondra/SKILL.md', 'plugin/skills/spec-design/SKILL.md',
     'plugin-orchestrator/.mcp.json', 'plugin-orchestrator/.claude-plugin/plugin.json',
     'plugin-orchestrator/skills/alondra-orchestrator/SKILL.md',
     'plugin-orchestrator/bin/alondra',

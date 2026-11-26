@@ -52,7 +52,7 @@ fn tools(role: Role, user: &str) -> Value {
     if role == Role::Node {
         list.push(domain_tool("request_plan_mode","Request read-only native planning for your own task. Stop or join existing work first, call this, then end the current turn. Alondra applies the mode before the next turn; produce the full checklist plan there and wait for its approval. This does not approve a plan. The task title supplies the card heading: write the plan content without an opening heading repeating that title. Correct: task title=Release design, plan=- [ ] Implement Atlas. Incorrect: plan=# Release design followed by the checklist.",json!({"task_id":{"type":"string"}}),&["task_id"]));
     }
-    list.push(domain_tool("read_skill", "Read the installed instructions for your Alondra role. Follow next_line when the skill has another page.", json!({"name":{"type":"string","enum":[if role == Role::Node { "alondra" } else { "alondra-orchestrator" }]},"start_line":{"type":"integer","minimum":1,"maximum":1000000}}), &["name"]));
+    list.push(domain_tool("read_skill", "Read the installed instructions for your Alondra role. Follow next_line when the skill has another page.", json!({"name":{"type":"string","enum":if role == Role::Node { vec!["alondra", "spec-design"] } else { vec!["alondra-orchestrator"] }},"start_line":{"type":"integer","minimum":1,"maximum":1000000}}), &["name"]));
     if role == Role::Node {
         list.push(domain_tool("task_context", "Read a page of your task's retained public conversation. When next is non-null, pass the last entry reference as after. Missing older content and omitted bytes are explicit; private reasoning is never returned.", json!({"task_id":{"type":"string"},"after":{"type":"object","properties":{"task":{"type":"string"},"sequence":{"type":"integer","minimum":1},"generation":{"type":"integer","minimum":1},"cursor":{"type":"integer","minimum":0}},"required":["task","sequence","generation","cursor"],"additionalProperties":false},"limit":{"type":"integer","minimum":1,"maximum":128}}), &["task_id"]));
     } else {
@@ -468,6 +468,34 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
             json!({"task_id":{"type":"string"},"presentation_id":{"type":"string"},"verdict":{"type":"object","oneOf":[{"type":"object","properties":{"kind":{"type":"string","const":"approved"},"summary":{"type":"string"},"open_issues":{"type":"boolean"},"serious_findings":{"type":"integer","minimum":0}},"required":["kind","summary"],"additionalProperties":false},{"type":"object","properties":{"kind":{"type":"string","const":"changes_requested"},"text":{"type":"string"},"serious_findings":{"type":"integer","minimum":0}},"required":["kind","text","serious_findings"],"additionalProperties":false}]}}),
             vec!["task_id", "presentation_id", "verdict"],
         ),
+        (
+            "propose_specs",
+            "propose_specs",
+            "Author of a task in stages, in a project with specs: send the specs that go with your plan, before presenting the plan. Each file is a whole file of the repository: feature files (Gherkin syntax, one spec each, every scenario with its @id), a boundary.toml, decisions with status proposed, a reference section, or alondra.toml. Alondra reads them with the spec engine over your worktree and refuses the call with every problem it finds, by file and line: fix them and send the whole set again. The plan's card shows them as specs the user reads, edits and approves with the plan; Alondra writes the approved files into the worktree before the implementer starts. level: none (no new specs, files empty), light (up to 5 scenarios, low risk) or full. Load the spec-design skill first (read_skill spec-design where the provider has no Skill tool).",
+            json!({"task_id":{"type":"string"},"level":{"type":"string","enum":["none","light","full"]},"files":json!({"type":"array","maxItems":64,"items":{"type":"object","properties":{"path":{"type":"string","description":"Relative to the repository root, e.g. specs/billing/refunds.feature"},"text":{"type":"string","description":"The whole new text of the file; leave it out to remove the file"}},"required":["path"],"additionalProperties":false}})}),
+            vec!["task_id", "level", "files"],
+        ),
+        (
+            "request_spec_change",
+            "request_spec_change",
+            "Implementer of a task with approved specs: ask for a change to them when the work needs something they do not say (a case they miss, one that is wrong, a boundary or decision to change). Never edit a spec, boundary or decision yourself: the delivery is refused while they differ from what the user approved. Say in reason what is missing and why, plainly. Then end your turn: the author drafts the change, the user decides on it, and you take the task back meanwhile.",
+            json!({"task_id":{"type":"string"},"reason":{"type":"string","description":"What the approved specs do not cover and why the work needs it, in at most 4000 characters"}}),
+            vec!["task_id", "reason"],
+        ),
+        (
+            "propose_amendment",
+            "propose_amendment",
+            "Author: draft the change of specs the implementer asked for (amendment_id from your context), as the whole new text of each file it changes, or a file without text to remove it; no files at all when the approved specs already cover what was asked, and the implementer is told so. Alondra checks it with the spec engine, sends the user a card with what each file held and what it would hold, and hands the task back to the implementer at once. End your turn after it.",
+            json!({"task_id":{"type":"string"},"amendment_id":{"type":"string"},"files":json!({"type":"array","maxItems":64,"items":{"type":"object","properties":{"path":{"type":"string","description":"Relative to the repository root, e.g. specs/billing/refunds.feature"},"text":{"type":"string","description":"The whole new text of the file; leave it out to remove the file"}},"required":["path"],"additionalProperties":false}})}),
+            vec!["task_id", "amendment_id", "files"],
+        ),
+        (
+            "propose_decision",
+            "propose_decision",
+            "Author, in a project that keeps decisions: propose a lasting decision on a card of its own, when the user's answer to a design question should bind future work (an architecture choice, a format, a rule specs rest on). Write it in the repository's language. Alondra writes it as the project's decision file once the user accepts it, and marks each decision it supersedes as superseded by it; the user's own words stay in Alondra. Decisions that go with your plan go in propose_specs instead, as files with status proposed.",
+            json!({"task_id":{"type":"string"},"decision":{"type":"object","properties":{"id":{"type":"string","description":"Lowercase letters, digits, dots and hyphens: its file name"},"title":{"type":"string"},"context":{"type":"string"},"decision":{"type":"string"},"consequences":{"type":"string"},"confirmation":{"type":"string","description":"How anyone can check it holds: a test, a check, a review"},"supersedes":{"type":"array","items":{"type":"string"}}},"required":["id","title","context","decision","consequences","confirmation"],"additionalProperties":false}}),
+            vec!["task_id", "decision"],
+        ),
     ];
     tools.extend(
         simple
@@ -696,6 +724,10 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "present_result"
         | "publish_stack_readiness"
         | "record_verdict"
+        | "propose_specs"
+        | "request_spec_change"
+        | "propose_amendment"
+        | "propose_decision"
         | "cleanup_done"
         | "open_cards"
         | "post_merge_work"
@@ -863,6 +895,18 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "cleanup_done"
         | "post_merge_work"
         | "wait_for_tasks" => submit(client, &domain_bearer()?, name, args)?,
+        "propose_specs" => {
+            submit(client, &domain_bearer()?, name, args)?;
+            "Specs recorded with your plan. Now present the plan through plan mode: its card shows these specs to the user.".to_owned()
+        }
+        "propose_decision" => {
+            submit(client, &domain_bearer()?, name, args)?;
+            "The decision waits for the user on its own card. Carry on; Alondra tells you what the user decided.".to_owned()
+        }
+        "request_spec_change" | "propose_amendment" => {
+            submit(client, &domain_bearer()?, name, args)?;
+            "Noted. End your turn now: the next agent of this task takes it over from what Alondra writes for it.".to_owned()
+        }
         "wait_for_mcp" => {
             submit(client, &domain_bearer()?, name, args)?;
             let server = args.get("server").and_then(Value::as_str).unwrap_or("the server");
@@ -1251,6 +1295,10 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "set_relations" => "set_relations",
         "set_priority" => "set_priority",
         "record_verdict" => "record_verdict",
+        "propose_specs" => "propose_specs",
+        "request_spec_change" => "request_spec_change",
+        "propose_amendment" => "propose_amendment",
+        "propose_decision" => "propose_decision",
         "start_task" => "start_task",
         "cleanup_done" => "confirm_cleanup",
         "post_merge_work" => "declare_post_merge_work",

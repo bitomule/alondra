@@ -484,13 +484,15 @@ fn normalize_key(raw: &str) -> Option<String> {
         "schedule",
         "model_profile",
         "task_selection",
+        "task_specs",
     ] {
         let id = raw
             .strip_prefix(&format!("{prefix}:"))
             .or_else(|| raw.strip_prefix(&format!("{prefix}%3A")))
             .or_else(|| raw.strip_prefix(&format!("{prefix}%3a")));
         if let Some(id) = id {
-            return (plain_id(id) || prefix == "schedule" && id == "new")
+            let editor = prefix == "task_specs" && id.split(':').all(plain_id);
+            return (plain_id(id) || editor || prefix == "schedule" && id == "new")
                 .then(|| format!("{prefix}:{id}"));
         }
     }
@@ -560,7 +562,7 @@ mod tests {
     #[test]
     fn every_family_of_views_is_reached_by_a_device() {
         let keys = ["home", "sidebar", "tasks", "orchestrator", "schedules", "new_request", "issue_picker", "search", "machine", "mcp_servers", "accounts", "metrics",
-            "card:i-1", "document:rev-1", "document:i-1.report", "document:i-1.file-2", "pull_request:pr-1", "task:t-1", "request:r-1", "schedule:s-1", "model_profile:claude-orchestrator", "task_selection:t-1"];
+            "card:i-1", "document:rev-1", "document:i-1.report", "document:i-1.file-2", "pull_request:pr-1", "task:t-1", "request:r-1", "schedule:s-1", "model_profile:claude-orchestrator", "task_selection:t-1", "task_specs:t-1", "task_specs:t-1:scenario:0123456789ab"];
         for key in keys {
             assert_eq!(normalize_key(key).as_deref(), Some(key), "{key}");
         }

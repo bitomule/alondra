@@ -23,6 +23,7 @@ pub mod plugins;
 pub mod rehearsal;
 pub mod secret_files;
 pub mod sign_in_returns;
+pub mod spec_worktree;
 pub mod worktree;
 pub mod worktrees_root;
 
@@ -52,6 +53,7 @@ pub fn wire(registry: &Registry, claude_home: fn() -> PathBuf) {
 /// `wire`, with the Mac of an upgrade rehearsal (`rehearsal`) in place of the real disk and gauges.
 pub fn wire_with(registry: &Registry, claude_home: fn() -> PathBuf, rehearsal: bool) {
     registry.provide::<dyn Worktrees>(Arc::new(GitWorktrees { claude_home }));
+    registry.provide::<dyn alondra_engine_ports::spec_worktrees::SpecWorktrees>(Arc::new(spec_worktree::GitSpecWorktrees));
     if rehearsal {
         registry.provide::<dyn Disk>(Arc::new(rehearsal::RoomyDisk));
         registry.provide::<dyn MachineProbe>(Arc::new(rehearsal::RoomyMac));

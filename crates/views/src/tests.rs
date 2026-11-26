@@ -12,6 +12,8 @@ use crate::domain_fixtures::inbox_items;
 mod client_language_tests;
 #[path = "merge_message_tests.rs"]
 mod merge_message_tests;
+#[path = "spec_view_tests.rs"]
+mod spec_view_tests;
 
 fn inbox_badge(state: &DomainState) -> u32 {
     super::inbox_badge(&alondra_domain_rules::ReadIndex::build(state))
@@ -61,7 +63,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
+            waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), paused_in_queue: None, ending: None, stalls: 0, stall_closing: None, open_pr: None, released: None, stages: Default::default(), specs: Default::default(), continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {

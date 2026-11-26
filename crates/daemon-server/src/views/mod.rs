@@ -11,6 +11,7 @@ pub(crate) mod live;
 pub(crate) mod observation;
 pub(crate) mod reset_time;
 pub(crate) mod routes;
+pub(crate) mod spec_actions;
 #[cfg(test)]
 mod serialization;
 #[cfg(test)]
