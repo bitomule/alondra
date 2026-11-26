@@ -179,8 +179,11 @@ visibility on both).
 - Its tests are `//crates/engine-orchestrator:engine_orchestrator_test`, on the doubled hosts the
   orchestrator model of `//crates/provider-claude:claude_host_model` plays as the fake orchestrator
   Claude plays them, and `//crates/provider-codex:codex_host_model` as the Codex host and fake Codex
-  play a Codex batch, with no program run, and `engine_orchestrator_host_test` (the feature
-  `real-hosts`), with only the real processes of the child the orchestrator owns. They
+  play a Codex batch, with no program run. It is the crate's only test target: the record of the
+  child the orchestrator owns, which needs real processes, lives in `process-group` (`owner.rs`).
+  Each model is held to its real host by a case both run: `provider-claude`'s
+  `host_cases/orchestrator_tests.rs` (`sdk_worker_test` and `claude_host_model_test`) and
+  `provider-codex`'s `host_cases_tests.rs` (`codex_host_test` and `provider_codex_test`). They
   link neither `daemon-engine` nor `engine-sdk`: they
   open a runtime with the doubles of `engine-doubles` registered for the ports they do not test. The
   tests that need the whole engine are in `alondrad` (`engine_tests/orchestrator_*_tests.rs`).
@@ -1534,3 +1537,52 @@ completed), with the outbox and the fake app-server's transcript the model alrea
 
 The host test's run still ends with its longest case, a `recovery_tests::a_write_failure_*` of
 25 s here; it falls to the three process tests once the decision tests move to the model.
+
+## The orchestrator's child in `process-group`, and no orchestrator test with real hosts (2026-11-26)
+
+The record of the child the orchestrator owns (`Ownership`, the lock the child inherits, and
+`owner.json` with `record`, `end_recorded`, `recorded_run`, `fence_recorded` and
+`terminate_orphan`) moved from `engine-orchestrator/src/orchestrator_process.rs` to
+`process-group/src/owner.rs`. `process-group` depends only on `foundation`, so an edit of the
+domain does not reach it; a test's write faults come in as a closure instead of the orchestrator's
+`Injected`. Its three tests with real processes (`/bin/cat`, `/bin/sleep`, a fork held before exec)
+run in `process_group_test`. `engine_orchestrator_host_test`, the feature `real-hosts`, its data
+(the Node host and the fake orchestrator Claude) and its check go: the orchestrator has one test
+target, `engine_orchestrator_test`, on the doubled hosts.
+
+Each host model the orchestrator's tests run on is held to its real host by a case both run, the
+same steps and the same expectations:
+
+- Claude: `provider-claude/src/host_cases/orchestrator_tests.rs`, in `sdk_worker_test` (the Node
+  host with the fake orchestrator Claude) and `claude_host_model_test`.
+- Codex: `provider-codex/src/host_cases_tests.rs`, in the new `codex_host_test` (`agent-host`'s
+  Codex host with `fake-codex.py`) and `provider_codex_test` (the Codex host model). It compares
+  the events of a batch in order, every native request the app-server got (`thread/start` read-only
+  with the inherited MCP server and every native tool family off, `turn/start` at the profile's
+  model and effort), the refusal of the app-server's request for approval, and the host ending the
+  app-server once the turn completed.
+
+Both cases reach `domain-rules` (through `engine-ports`), so an edit of the domain reruns them: one
+test target with real hosts of the orchestrator leaves what a domain edit reruns, and the Codex case
+enters it. `bazel query 'rdeps(//..., //crates/domain-rules:domain_rules)'` names no
+`engine_orchestrator_host_test` any more.
+
+`edit_bench --edit crates/domain-rules/src/rules.rs --edit crates/engine-orchestrator/src/domain_orchestrator.rs`
+on the shared Mac, before on main at c5518b711 (load average 15 to 20) and after on this change
+rebased on it (load average 18 to 35):
+
+| Edit | Test targets reopened | Actions run (rustc / clippy / tests) | Build: critical path | Longest test target | Critical path | Edit + build or test |
+|---|---:|---|---:|---|---:|---:|
+| `domain-rules/src/rules.rs`, before | 145 | 293 (90 / 48 / 151) | 71 s | `domain_rules_test` 90 s | 128 s | 208 s |
+| `domain-rules/src/rules.rs`, after | 145 | 289 (90 / 48 / 147) | 53 s | `domain_rules_test` 72 s | 133 s | 236 s |
+| `engine-orchestrator/src/domain_orchestrator.rs`, before | 55 | 154 (17 / 9 / 127) | 26 s | `doctor_service_test` 22 s | 64 s | 89 s |
+| `engine-orchestrator/src/domain_orchestrator.rs`, after | 54 | 148 (16 / 8 / 123) | 24 s | `doctor_service_test` 19 s | 45 s | 75 s |
+
+- An edit of the orchestrator compiles one crate and runs one test binary less (the host test) and
+  takes 89 → 75 s.
+- An edit of the domain runs four test actions less; its time did not fall. The orchestrator's host
+  test was no longer on its critical path once its decision tests moved to the model (3.3 to 3.9 s),
+  `domain_rules_test` is, and the after run met twice the load (it also failed
+  `views_budget_test`, a CPU budget, under it). The plan's estimate (edit + test of `rules.rs` from
+  188 s to about 150 s) counted the decision tests leaving the host test, which the first phase
+  already did; this phase adds no measurable cut to that edit.

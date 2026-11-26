@@ -21,17 +21,50 @@ adapter_out_crate(
     version = "0.1.0",
     deps = _DEPS,
 )
+_TEST_SRCS = glob(["src/*.rs"]) + ["//crates/provider-claude:src/archive_tests.rs", "//crates:test_support.rs"]
+
+_TEST_DEPS = _DEPS + ["//crates/domain:domain", "//crates/provider-conformance:provider_conformance"] + all_crate_deps(normal_dev = True)
+
+_TEST_COMPILE_DATA = ["//crates/agent-protocol:fixtures/hello.json", "//crates/domain-store-schema:schema.sql"] + glob(["fixtures/native/*.jsonl"])
+
+# The crate's tests, and the orchestrator batch of `src/host_cases_tests.rs` on the Codex host model.
 low_opt_rust_test(
     name = "provider_codex_test",
     size = "small",
     crate_root = "src/lib.rs",
-    srcs = glob(["src/*.rs"]) + ["//crates/provider-claude:src/archive_tests.rs", "//crates:test_support.rs"],
+    srcs = _TEST_SRCS,
+    crate_features = ["host_model"],
     crate_name = "alondra_provider_codex",
     edition = "2024",
     version = "0.1.0",
-    deps = _DEPS + ["//crates/domain:domain", "//crates/provider-conformance:provider_conformance"] + all_crate_deps(normal_dev = True),
-    compile_data = ["//crates/agent-protocol:fixtures/hello.json", "//crates/domain-store-schema:schema.sql"] + glob(["fixtures/native/*.jsonl"]),
+    deps = _TEST_DEPS + [":codex_host_model", "//crates/engine-doubles:engine_doubles"],
+    compile_data = _TEST_COMPILE_DATA,
     env = {"HOME": "."},
+)
+
+# The same orchestrator batch on the real Codex host with the fake app-server, so the model cannot
+# drift from the host it stands for.
+low_opt_rust_test(
+    name = "codex_host_test",
+    size = "medium",
+    crate_root = "src/lib.rs",
+    srcs = _TEST_SRCS,
+    crate_features = ["host_fixture"],
+    crate_name = "alondra_provider_codex",
+    edition = "2024",
+    version = "0.1.0",
+    deps = _TEST_DEPS + ["//crates/agent-runtime:agent_runtime"],
+    compile_data = _TEST_COMPILE_DATA,
+    data = [
+        "//agent-host:alondra-codex-host",
+        "//agent-host:fake-codex.py",
+    ],
+    env = {
+        "HOME": ".",
+        "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
+        "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
+        "TEST_EXECS": "$(rootpath //agent-host:alondra-codex-host) /usr/bin/python3 tmpdir",
+    },
 )
 # The Codex host, its session and the fake native app-server played in a test's own process, on the
 # transport the Claude host model speaks too: the doubled hosts of engine-doubles serve with it.

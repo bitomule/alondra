@@ -2,7 +2,7 @@ use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use crate::orchestrator_provider::ProviderOwner;
 use crate::engine::OrchestratorOf as _;
 use crate::domain_store::batch_effects::BatchReport;
-use crate::orchestrator_process::{Output, ProcessOwner, Stream, bounded};
+use crate::orchestrator_process::{Output, Stream, bounded};
 use crate::orchestrator_provider::Batch;
 use alondra_engine_ports::agent_host::VerifiedArtifact;
 use alondra_provider_codex::{BatchHost, CodexConfiguration, HostEvent, McpServer, OrchestratorProfile};
@@ -275,7 +275,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
     };
     let mut output = Output { stream: Stream::for_input(host.input()), diagnostic: String::new(), exit_ok: false };
     let mut native = NativeTurn { resumed: batch.resume, ..NativeTurn::default() };
-    if let Err(error) = ProcessOwner::record(&batch.directory, host.process_id(), &run, &batch.domain.orchestrator().injected).and_then(|()| spawned()) {
+    if let Err(error) = crate::orchestrator_process::record_owner(&batch.directory, host.process_id(), &run, &batch.domain.orchestrator().injected).and_then(|()| spawned()) {
         output.stream.storage_failure=true;
         output.stream.error = Some(bounded(format!("Cannot record the Codex host: {error:#}")));
         stop(host, &batch.directory, None);
@@ -379,7 +379,6 @@ fn profile(batch: &Batch) -> anyhow::Result<OrchestratorProfile> {
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 
@@ -624,7 +623,6 @@ mod tests {
 /// Batches on Codex, whose hosts and app-server the Codex host model plays as the real host and the
 /// fake Codex play them.
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 mod policy_integration{
     use super::*;
     use alondra_core::accounts::{AccountId,AccountKey,AccountState,AccountStatus,Provider};

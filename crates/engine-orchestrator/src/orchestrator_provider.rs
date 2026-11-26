@@ -138,7 +138,6 @@ pub(crate) fn record_policy_refused(domain: &crate::domain_runtime::DomainRuntim
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use alondra_core::accounts::{AccountId, AccountState, AccountStatus, Provider};

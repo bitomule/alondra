@@ -29,7 +29,6 @@ use alondra_engine_kernel::domain_runtime::DomainRuntime;
 /// The runtime the orchestrator's tests open: the orchestrator's own port, the doubled agent hosts
 /// the host models play, doubles of the rest of the engine, and the faults a test injects at its home failing the orchestrator's writes there.
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 mod wiring {
     use crate::engine::OrchestratorOf as _;
     use alondra_daemon_engine_model::faults;

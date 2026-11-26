@@ -18,7 +18,6 @@ use alondra_domain_rules::{Actor, Author, Command, CommandEnvelope, DomainError,
 use alondra_core::now_millis;
 use alondra_domain_rules::orchestrator_batch::{BATCH_CONTINUE, BATCH_CONTINUE_LABEL, BATCH_PROBLEM_PREFIX, BATCH_RETRY, BATCH_RETRY_LABEL, BatchProblem, BatchStop};
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 use alondra_domain_rules::orchestrator_cards::{STUCK_PROBLEM_PREFIX, STUCK_RETRY, STUCK_RETRY_LABEL, StuckProblem};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -128,7 +127,6 @@ pub fn load(home: &Path) -> Result<Runtime> {
 
 /// Writes the runtime record a test seeds, with no fault injected.
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 pub(crate) fn save(home: &Path, runtime: &Runtime) -> Result<()> {
     write(home, runtime, &crate::engine::Injected::default())
 }
@@ -179,7 +177,6 @@ impl Executor {
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 use alondra_daemon_engine_model::faults;
 #[path = "domain_orchestrator/recovery.rs"]
 mod recovery;
@@ -187,19 +184,15 @@ mod recovery;
 mod watchdog;
 pub(crate) use watchdog::HostGuard;
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 #[path = "domain_orchestrator/tests/recovery.rs"]
 mod recovery_tests;
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 #[path = "domain_orchestrator/tests/recovery_decisions.rs"]
 mod recovery_decisions;
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 #[path = "domain_orchestrator/tests/deadline.rs"]
 mod deadline_tests;
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 #[path = "domain_orchestrator/tests/model.rs"]
 pub(crate) mod model_fixture;
 
@@ -211,7 +204,6 @@ const SUBJECT_LINE: usize = 120;
 /// A newer batch card replaces an open one.
 const BATCH_CAUSE: &str = "orchestrator_batch";
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 const STUCK_CAUSE: &str = "orchestrator_stuck";
 
 pub struct Executor {
@@ -980,7 +972,6 @@ impl Executor {
     }
 
     #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
     fn raise_stuck_problem(&self, run_id: &str, failures: u32, error: &str) -> Option<String> {
         let id = format!("{STUCK_PROBLEM_PREFIX}{run_id}");
         let problem = StuckProblem { failures, error: error.to_owned() };
@@ -1269,86 +1260,15 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: PathBuf
     }
 }
 
-/// An executor whose batches run through the pinned Node host with the official SDK and the fake
-/// orchestrator Claude (`agent-host/orchestrator-fake-claude.py`), which answers each prompt as its
-/// marker says. A wrapper around the fake records each start with the capability it got, and,
-/// from files beside its capture, puts a marker in front of every prompt (`.marker`, or
-/// `.marker-once` for the next start only), holds the first prompt before Claude sees it
-/// (`.hold-before`) or adds fields to every result (`.result-extra`). A held turn waits on a FIFO
-/// the test writes, never on a clock. Without the feature real-hosts the crate's own tests run no
-/// process: the orchestrator model of the Claude host model plays the host and the fake as they
-/// play together, and the test sets on it what the wrapper reads from files.
+/// An executor whose batches run through the SDK on doubled hosts. The crate's own tests run no
+/// process: the orchestrator model of the Claude host model plays the host and the fake orchestrator
+/// Claude as they play together, and the test sets on it the markers, held turns and results.
 pub mod testing {
     use super::*;
     use crate::orchestrator_process::Ownership;
     use alondra_domain_rules::{CardKind, CardSpec, LaunchPlan};
     use std::collections::{BTreeMap, BTreeSet};
     use std::io::{Read, Write};
-    use std::os::unix::fs::PermissionsExt;
-
-    const WRAPPER: &str = r#"#!/usr/bin/python3
-import json
-import os
-import sys
-
-capture = os.environ['FIXTURE_CAPTURE']
-with open(capture + '.starts', 'a') as stream:
-    stream.write(os.environ.get('ALONDRA_DOMAIN_CAPABILITY', '') + '\n')
-marker = None
-for name in ('.marker', '.marker-once'):
-    if os.path.exists(capture + name):
-        with open(capture + name) as stream:
-            marker = stream.read().strip()
-        if name == '.marker-once':
-            os.remove(capture + name)
-        break
-hold_before = os.path.exists(capture + '.hold-before')
-extra = json.load(open(capture + '.result-extra')) if os.path.exists(capture + '.result-extra') else {}
-
-
-class Inputs:
-    def __iter__(self):
-        for raw in sys.__stdin__:
-            message = json.loads(raw)
-            if message.get('type') == 'user':
-                if hold_before:
-                    with open(os.environ['FIXTURE_HELD'], 'w') as held:
-                        held.write('held\n')
-                    with open(os.environ['FIXTURE_RELEASE']) as release:
-                        release.read(1)
-                if marker:
-                    message['message']['content'] = marker + ' ' + message['message']['content']
-            yield json.dumps(message) + '\n'
-
-
-class Outputs:
-    def write(self, text):
-        for line in text.splitlines(True):
-            if extra and line.strip():
-                value = json.loads(line)
-                if value.get('type') == 'result':
-                    value.update(extra)
-                    line = json.dumps(value, ensure_ascii=False) + '\n'
-            sys.__stdout__.write(line)
-
-    def flush(self):
-        sys.__stdout__.flush()
-
-
-sys.stdin = Inputs()
-sys.stdout = Outputs()
-fake = FAKE
-sys.argv = [fake] + sys.argv[1:]
-exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
-"#;
-
-    fn runfile(name: &str) -> PathBuf {
-        std::fs::canonicalize(std::env::var(name).unwrap_or_else(|_| panic!("{name} names a runfile"))).unwrap()
-    }
-
-    fn fifo(path: &Path) {
-        assert!(std::process::Command::new("/usr/bin/mkfifo").arg(path).status().unwrap().success());
-    }
 
     /// Alondra's node and orchestrator plugins, registered in the returned Claude home.
     pub fn registered_plugins(root: &Path) -> PathBuf {
@@ -1373,7 +1293,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// The model that plays the orchestrator's Claude when no process does: the files and pipes
         /// above are then never made.
         #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
         played: Option<super::model_fixture::Played>,
         _hosts: Box<dyn Send>,
         pub root: PathBuf,
@@ -1384,7 +1303,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
     /// orchestrator model of the Claude host model plays as the fake orchestrator Claude plays them.
     /// Every runtime the test opens at its home gets the same hosts.
     #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
     pub(crate) fn fixture() -> Fixture {
         let (root, home) = daemon_home();
         let played = super::model_fixture::Played::serve(&home);
@@ -1397,7 +1315,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
     }
 
     #[cfg(test)]
-    #[cfg(not(feature = "real-hosts"))]
     fn daemon_home() -> (crate::test_support::Directory, PathBuf) {
         use std::os::unix::fs::DirBuilderExt;
         let root = crate::test_support::Directory::new();
@@ -1450,42 +1367,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
     }
 
     impl Fixture {
-        /// The orchestrator of `domain`, whose daemon home is `home`, through the SDK; its fakes live
-        /// in `owner` and its hosts in `hosts`, which it keeps until it is dropped.
-        pub fn over<R: AsRef<Path> + Send + 'static, H: AsRef<Path> + Send + 'static>(owner: R, domain: Arc<DomainRuntime>, home: PathBuf, hosts: H) -> Self {
-            let root = owner.as_ref().to_owned();
-            let fake = root.join("orchestrator-fake-claude.py");
-            std::fs::copy(runfile("FIXTURE_ORCHESTRATOR_NATIVE"), &fake).unwrap();
-            let native = root.join("native");
-            std::fs::write(&native, WRAPPER.replace("FAKE", &format!("{:?}", fake.to_str().unwrap()))).unwrap();
-            std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let (capture, held, release) = (root.join("capture.json"), root.join("held"), root.join("release"));
-            fifo(&held);
-            fifo(&release);
-            let environment = environment(&root);
-            let mut native_environment = environment.clone();
-            for (name, path) in [("FIXTURE_CAPTURE", &capture), ("FIXTURE_HELD", &held), ("FIXTURE_RELEASE", &release)] {
-                native_environment.insert(name.into(), path.to_str().unwrap().into());
-            }
-            let (node, host) = (runfile("FIXTURE_NODE"), runfile("FIXTURE_HOST"));
-            let backend = crate::sdk_backend::SdkBackend {
-                node_sha256: crate::sdk_backend::digest(&node).unwrap(),
-                host_sha256: crate::sdk_backend::digest(&host).unwrap(),
-                native_sha256: crate::sdk_backend::digest(&native).unwrap(),
-                node,
-                host,
-                native,
-                host_environment: environment,
-                native_environment,
-                confinement: None,
-                state_root: hosts.as_ref().join("h"),
-                io_timeout_seconds: 30,
-                installed_native: false, release: crate::sdk_backend::this_release(),
-            provider: alondra_core::accounts::Provider::Claude, origin: None,
-            };
-            Self::serving(owner, domain, home, backend, Box::new(hosts))
-        }
-
         /// The orchestrator of `domain` through the SDK on `backend`, with Alondra's plugins
         /// registered in `root`; it keeps `root` and `hosts` until it is dropped. A test crate whose
         /// doubled hosts a model plays gives it the backend of that model.
@@ -1499,7 +1380,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
                 executor: Executor { domain, home, claude_home: claude_home.clone() }, _ownership: ownership,
                 capture: folder.join("capture.json"), held: folder.join("held"), release: folder.join("release"), claude_home,
                 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
                 played: None,
                 _hosts: hosts, root: folder, _root: Box::new(owner),
             }
@@ -1507,7 +1387,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
 
         /// The model that plays the orchestrator's Claude, if no process does.
         #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
         fn model(&self) -> Option<&alondra_claude_host_model::OrchestratorModel> {
             self.played.as_ref().map(|played| &played.model)
         }
@@ -1559,7 +1438,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// Every prompt the fake Claude got, in order.
         pub fn prompts(&self) -> Vec<String> {
             #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
             if let Some(model) = self.model() {
                 return model.prompts();
             }
@@ -1569,7 +1447,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// The capability each start of the fake Claude got, one per start.
         pub fn starts(&self) -> Vec<String> {
             #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
             if let Some(model) = self.model() {
                 return model.starts();
             }
@@ -1579,7 +1456,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// What the last start of the fake Claude was launched with.
         pub fn arguments(&self) -> Vec<String> {
             #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
             if let Some(model) = self.model() {
                 return model.arguments();
             }
@@ -1590,7 +1466,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// Every prompt from now on starts with `marker` until `clear_marker`.
         pub fn mark(&self, marker: &str) {
             #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
             if let Some(model) = self.model() {
                 return model.mark(Some(marker));
             }
@@ -1600,7 +1475,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// Only the next start's prompts start with `marker`.
         pub fn mark_once(&self, marker: &str) {
             #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
             if let Some(model) = self.model() {
                 return model.mark_once(marker);
             }
@@ -1609,7 +1483,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
 
         pub fn clear_marker(&self) {
             #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
             if let Some(model) = self.model() {
                 return model.mark(None);
             }
@@ -1619,7 +1492,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// The next starts hold their first prompt before Claude sees it, until `release`.
         pub fn hold_before_claude(&self) {
             #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
             if let Some(model) = self.model() {
                 return model.hold_before_claude();
             }
@@ -1629,7 +1501,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// Every result the fake Claude reports carries `fields` too.
         pub fn add_to_results(&self, fields: serde_json::Value) {
             #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
             if let Some(model) = self.model() {
                 return model.add_to_results(fields);
             }
@@ -1663,7 +1534,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// Blocks until the fake Claude holds its turn.
         pub fn wait_held(&self) {
             #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
             if let Some(model) = self.model() {
                 assert_eq!(model.held(), "held");
                 return;
@@ -1677,7 +1547,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// the test: `held`, or its domain capability for `fixture:quiet-hold`.
         pub async fn held(&self) -> String {
             #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
             if let Some(played) = &self.played {
                 let (model, recorded, home) = (played.model.clone(), Arc::clone(&played.recorded), self.executor.home.clone());
                 return alondra_core::clock::spawn_blocking_unwatched(move || {
@@ -1696,21 +1565,18 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
 
         /// Each answer from now on reports `tokens` input tokens.
         #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
         pub fn set_tokens(&self, tokens: u64) {
             self.model().expect("the orchestrator model plays this fixture").set_tokens(tokens);
         }
 
         /// Claude no longer finds any conversation it had.
         #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
         pub fn forget_sessions(&self) {
             self.model().expect("the orchestrator model plays this fixture").forget_sessions();
         }
 
         /// Every live host stops where it is: no stop request ends it any more, only a kill.
         #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
         pub fn freeze_hosts(&self) {
             let played = self.played.as_ref().expect("the orchestrator model plays this fixture");
             for state_dir in played.hosts.live() {
@@ -1720,7 +1586,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
 
         pub fn release(&self) {
             #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
             if let Some(model) = self.model() {
                 return model.release();
             }
@@ -1730,7 +1595,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use alondra_store_sqlite::AsSqlite as _;
     use super::testing::{Fixture, fixture};

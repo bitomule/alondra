@@ -1,6 +1,5 @@
 # Tests that keep a generous limit and run in every validation: target, a tab, and why.
 //apple/Testing/TriageTouch:TriageTouchUITests	Creates and boots a simulator of its own every run, about 140 seconds, because the shared pool cannot install the UI test runner with Xcode 27.
-//crates/engine-orchestrator:engine_orchestrator_host_test	The orchestrator's tests that need a real Agent SDK or Codex host, a fake Claude or Codex or real processes: about 100 tests, about 60 seconds.
 //agent-host:codex_session_test	About 40 tests, each through a real Codex host and a fake Codex app-server, that wait on events with no per-test clock: about 25 seconds on an idle Mac, 80 under background QoS and up to 270 with other test runs on the Mac.
 //crates/engine-sdk:engine_sdk_engine_test	The SDK owners' tests on the Claude host model, with no network and no clock of their own, including property and ten-node matrices: about 60 seconds alone, 240 to 325 seconds in a full run on a busy Mac.
 //crates/daemon-server:daemon_server_test	The server's tests on the host models render with the real screens: 87 to 93 seconds alone and 270 to 325 seconds in a full run on a busy Mac before the real-host tests left for daemon_server_host_test.

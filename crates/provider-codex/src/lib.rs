@@ -14,6 +14,8 @@ mod wire;
 mod test_support;
 #[cfg(test)]
 mod conformance_tests;
+#[cfg(all(test, any(feature = "host_fixture", feature = "host_model")))]
+mod host_cases_tests;
 
 pub use adapter::{CodexConfiguration, CodexWorker, Found, NativeLiveness, WorkerProfile, answered_by_event, answered_control, native_exited};
 pub use batch::{BatchHost, HostEvent, PendingHostEvent, McpServer, OrchestratorProfile};

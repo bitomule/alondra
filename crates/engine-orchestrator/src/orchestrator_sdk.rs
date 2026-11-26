@@ -5,7 +5,7 @@
 use crate::engine::OrchestratorOf as _;
 use crate::orchestrator_provider::ProviderOwner;
 use crate::domain_store::batch_effects::BatchReport;
-use crate::orchestrator_process::{self as process, Output, ProcessOwner, Stream, bounded};
+use crate::orchestrator_process::{self as process, Output, Stream, bounded};
 use crate::sdk_backend::SdkBackend;
 use alondra_engine_ports::agent_host::{Preparing, VerifiedArtifact};
 use alondra_provider_claude::{BatchHost, ClaudeConfiguration, HostEvent, McpServer, OrchestratorProfile};
@@ -59,7 +59,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
         Err(error) => { stop(host, &batch.directory, Some(&configuration.state_directory)); return failed(format!("Cannot own the orchestrator host: {error:#}")); }
     };
     let mut output = Output { stream: Stream::for_input(host.input()), diagnostic: String::new(), exit_ok: false };
-    if let Err(error) = ProcessOwner::record(&batch.directory, host.process_id(), &run, &batch.domain.orchestrator().injected).and_then(|()| spawned()) {
+    if let Err(error) = process::record_owner(&batch.directory, host.process_id(), &run, &batch.domain.orchestrator().injected).and_then(|()| spawned()) {
         output.stream.storage_failure=true;
         output.stream.error = Some(bounded(format!("cannot record the SDK host: {error:#}")));
         stop(host, &batch.directory, None);
@@ -240,6 +240,5 @@ fn profile(batch: &Batch) -> OrchestratorProfile {
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "real-hosts"))]
 #[path = "orchestrator_sdk/tests.rs"]
 mod tests;
