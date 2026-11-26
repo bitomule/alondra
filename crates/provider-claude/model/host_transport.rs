@@ -414,6 +414,17 @@ impl<P> Host<P> {
 
     /// The host's process ends, its connections with it: by itself once it closed, or killed.
     pub fn end(&self, closed: bool) {
+        self.finish(Some(closed));
+    }
+
+    /// The host's process exited, killed by the daemon or ended by the host: the host ends with it,
+    /// attached or not, and what the daemon wrote to it that it had not passed on yet is lost with
+    /// it, as is anything written from now on.
+    pub fn exited(&self) {
+        self.finish(None);
+    }
+
+    fn finish(&self, ending: Option<bool>) {
         let mut state = lock(&self.state);
         if std::mem::replace(&mut state.wire.ended, true) {
             return;
@@ -424,16 +435,12 @@ impl<P> Host<P> {
         let connections = std::mem::take(&mut state.wire.connections);
         drop(state);
         self.clock.host_gone(&self.bootstrap.host_instance_id);
-        self.process.end(closed);
+        if let Some(closed) = ending {
+            self.process.end(closed);
+        }
         for connection in connections {
             let _ = connection.shutdown(std::net::Shutdown::Both);
         }
-    }
-
-    /// The host's process exited, killed by the daemon or ended by the host: what the daemon wrote to
-    /// it that it had not passed on yet is lost with it, and nothing written from now on is read.
-    pub fn exited(&self) {
-        self.clock.host_gone(&self.bootstrap.host_instance_id);
     }
 
     /// Keeps the host's end of a connection, closed when the host ends; false once it ended.
