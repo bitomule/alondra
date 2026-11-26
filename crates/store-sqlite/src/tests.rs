@@ -2925,3 +2925,20 @@ fn a_tasks_stages_survive_a_reopen_and_a_task_stored_without_them_reads_as_a_sin
     assert_eq!(stages.next_role(), Some(ExecutionRole::Author));
     assert!(state.tasks[&TaskId::from("task-1")].stages.is_default(), "a task with no row of stages ran as before");
 }
+
+#[test]
+fn a_tasks_validation_survives_a_reopen_and_a_task_stored_without_it_was_never_validated() {
+    use alondra_domain_model::{DeliveredSpec, DeliveredValidation};
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
+    seeded(&mut store);
+    let delivered = DeliveredValidation { delivery: "result-1".into(), head: "a".repeat(40),
+        specs: vec![DeliveredSpec { id: "billing.partial".into(), path: "specs/billing/partial.feature".into(), title: "Partial refunds".into(), scenarios: vec![] }],
+        suites: vec![], outside: vec!["README.md".into()], sections: vec![] };
+    execute(&mut store, &Actor::System, "delivered", Command::RecordDeliveredValidation { task_id: "task-1".into(), validation: delivered.clone() });
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
+    let state = store.load().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("task-1")].validation.delivered, [delivered]);
+    assert!(state.tasks.values().filter(|task| task.id.0 != "task-1").all(|task| task.validation.is_default()), "a task without a row was never validated");
+}

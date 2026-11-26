@@ -46,6 +46,8 @@ struct World {
     /// GitHub answers nothing at all: a network failure.
     unreachable: bool,
     default_branch: String,
+    /// The commit each branch of the repository is at, when a test set it.
+    branches: BTreeMap<String, String>,
     repository: String,
     delete_head_on_merge: bool,
     commits: u64,
@@ -133,6 +135,7 @@ impl GithubWorld {
             gone: BTreeSet::new(),
             unreachable: false,
             default_branch: "main".into(),
+            branches: BTreeMap::new(),
             repository: "owner/repo".into(),
             delete_head_on_merge: false,
             commits: 0,
@@ -244,6 +247,16 @@ impl GithubWorld {
     /// GitHub answers nothing while `on`: every read and change fails as a network does.
     pub fn set_unreachable(&self, on: bool) {
         self.world().unreachable = on;
+    }
+
+    /// The branch `name` of the repository is at the commit `head`, one a test already knows.
+    pub fn set_branch(&self, name: &str, head: &str) {
+        self.world().branches.insert(name.to_owned(), head.to_owned());
+    }
+
+    /// The PR's branch now points at the commit `head`, one a test already knows.
+    pub fn set_head(&self, number: u64, head: &str) {
+        self.change(number, |pr| head.clone_into(&mut pr.head));
     }
 
     /// A new commit on the PR's branch; returns the new head.
@@ -478,12 +491,18 @@ impl PrMerger for GithubWorld {
 }
 
 impl PrObserver for GithubWorld {
+    fn default_branch_of<'a>(&'a self, _host: &'a str, _repository: &'a str) -> Pending<'a, String> {
+        let base = self.world().default_branch.clone();
+        Box::pin(async move { Ok(base) })
+    }
+
     fn observe<'a>(&'a self, _host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         let mut world = self.world();
         world.observations.push((repository.to_owned(), number));
         let facts = world.lookup(repository, number).map(|(_, github)| PrFacts {
             head: github.head.clone(),
             base: github.base.clone(),
+            base_head: world.branches.get(&github.base).cloned(),
             merged_head: (github.state == PrState::Merged).then(|| github.head.clone()),
             state: github.state,
             allowed_methods: github.methods.clone(),
@@ -603,7 +622,7 @@ impl GithubWorld {
             MergeState::Other => ("MERGEABLE", "BLOCKED"),
         };
         Some(json!({
-            "title": pr.title, "body": pr.body, "baseRefName": pr.base, "headRefName": pr.head_ref, "headRefOid": pr.head,
+            "title": pr.title, "body": pr.body, "baseRefName": pr.base, "baseRefOid": world.branches.get(&pr.base), "headRefName": pr.head_ref, "headRefOid": pr.head,
             "additions": 1, "deletions": 0, "changedFiles": 1, "isDraft": pr.draft,
             "state": match pr.state { PrState::Merged => "MERGED", PrState::Closed => "CLOSED", _ => "OPEN" },
             "mergeable": mergeable, "mergeStateStatus": status, "statusCheckRollup": rollup(&pr.checks),

@@ -218,7 +218,7 @@ fn checklist_schema() -> Value {
         "item":{"type":"string","description":"The number of the point in the approved plan, from 1"},
         "evidence":{"type":"array","minItems":1,"maxItems":alondra_domain_model::EVIDENCE_MAX_PER_ITEM,"items":{"type":"object","properties":{
             "kind":{"type":"string","enum":alondra_domain_model::EvidenceKind::ALL.map(alondra_domain_model::EvidenceKind::as_str)},
-            "value":{"type":"string","minLength":1,"maxLength":alondra_domain_model::EVIDENCE_MAX_TEXT,"description":"commit: its sha, in your branch's history; test or command: what you ran; screenshot: the id of one of this result's attachments; pr: your PR's number; file: its path; link: the URL"},
+            "value":{"type":"string","minLength":1,"maxLength":alondra_domain_model::EVIDENCE_MAX_TEXT,"description":"commit: its sha, in your branch's history; test or command: what you ran; screenshot: the id of one of this result's attachments; pr: your PR's number; file: its path; link: the URL; scenario: a scenario of the task's specs, <spec>/<scenario>"},
             "detail":{"type":"string","maxLength":alondra_domain_model::EVIDENCE_MAX_TEXT,"description":"What it showed, such as \"713 passed\""}
         },"required":["kind","value"],"additionalProperties":false}}
     },"required":["item","evidence"],"additionalProperties":false}})
@@ -496,6 +496,27 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
             json!({"task_id":{"type":"string"},"decision":{"type":"object","properties":{"id":{"type":"string","description":"Lowercase letters, digits, dots and hyphens: its file name"},"title":{"type":"string"},"context":{"type":"string"},"decision":{"type":"string"},"consequences":{"type":"string"},"confirmation":{"type":"string","description":"How anyone can check it holds: a test, a check, a review"},"supersedes":{"type":"array","items":{"type":"string"}}},"required":["id","title","context","decision","consequences","confirmation"],"additionalProperties":false}}),
             vec!["task_id", "decision"],
         ),
+        (
+            "ready_for_validation",
+            "ready_for_validation",
+            "Implementer of a task in stages, in a project with specs: say your work is ready instead of delivering it. Commit everything first. Alondra reads your commit with the spec engine and hands the task to a new agent, the validator, that runs and judges every check the engine lists; it delivers once they all pass, or sends the work back with its findings. Refused with nothing_to_validate when the engine lists nothing: then deliver with present_result as usual. End your turn after it.",
+            json!({"task_id":{"type":"string"}}),
+            vec!["task_id"],
+        ),
+        (
+            "record_validation",
+            "record_validation",
+            "Validator: record what one check found, right after you run or judge it. subject is what alondra spec validate names (<component>/<suite>, <spec>/<scenario>, or a reference section id) and check is suite, adequate (the tests that declare the scenario really check it), judged (a judgment scenario holds on its evidence) or reference (a reference section is still true). verdict met, unmet, or incomplete when it could not run (a tool missing, a time limit), with why in reasoning. A suite carries the end of its output; a judgment carries its reasoning; adequate met carries nearest_wrong, the nearest wrong behaviour those tests would still accept. Alondra stamps the fingerprint itself from the commit you validate: a ledger entry no validator recorded is refused at delivery.",
+            json!({"task_id":{"type":"string"},"subject":{"type":"string"},"check":{"type":"string","enum":["suite","adequate","judged","reference"]},"verdict":{"type":"string","enum":["met","unmet","incomplete"]},"reasoning":{"type":"string","description":"At most 4000 characters"},"nearest_wrong":{"type":"string","description":"At most 4000 characters"},"output":{"type":"string","description":"The end of what the run printed"},"evidence":{"type":"array","maxItems":32,"items":{"type":"string","description":"A committed capture or video the judgment looked at, relative to the repository root"}}}),
+            vec!["task_id", "subject", "check", "verdict"],
+        ),
+        (
+            "end_validation",
+            "end_validation",
+            "Validator: end your round without delivering, when a check you recorded is unmet (the work goes back to the implementer with your findings; after the third round in a row the user decides), or when what is left could not run (a new validator tries once more). findings says what failed and why, plainly. Never fix the code yourself. End your turn after it.",
+            json!({"task_id":{"type":"string"},"findings":{"type":"string","description":"What failed or could not run, and why, in at most 4000 characters"}}),
+            vec!["task_id", "findings"],
+        ),
     ];
     tools.extend(
         simple
@@ -728,6 +749,9 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "request_spec_change"
         | "propose_amendment"
         | "propose_decision"
+        | "ready_for_validation"
+        | "record_validation"
+        | "end_validation"
         | "cleanup_done"
         | "open_cards"
         | "post_merge_work"
@@ -903,9 +927,13 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
             submit(client, &domain_bearer()?, name, args)?;
             "The decision waits for the user on its own card. Carry on; Alondra tells you what the user decided.".to_owned()
         }
-        "request_spec_change" | "propose_amendment" => {
+        "request_spec_change" | "propose_amendment" | "ready_for_validation" | "end_validation" => {
             submit(client, &domain_bearer()?, name, args)?;
             "Noted. End your turn now: the next agent of this task takes it over from what Alondra writes for it.".to_owned()
+        }
+        "record_validation" => {
+            submit(client, &domain_bearer()?, name, args)?;
+            "Recorded at the fingerprint Alondra read of the commit you validate. Record the rest; once every validation is met, commit only the ledger, push and deliver with present_result.".to_owned()
         }
         "wait_for_mcp" => {
             submit(client, &domain_bearer()?, name, args)?;
@@ -1299,6 +1327,9 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "request_spec_change" => "request_spec_change",
         "propose_amendment" => "propose_amendment",
         "propose_decision" => "propose_decision",
+        "ready_for_validation" => "ready_for_validation",
+        "record_validation" => "record_validation",
+        "end_validation" => "end_validation",
         "start_task" => "start_task",
         "cleanup_done" => "confirm_cleanup",
         "post_merge_work" => "declare_post_merge_work",
@@ -2491,7 +2522,7 @@ mod tests {
         let catalog = tools(Role::Node, "Ana");
         let schema = catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "present_result").unwrap();
         let kinds = &schema["inputSchema"]["properties"]["checklist"]["items"]["properties"]["evidence"]["items"]["properties"]["kind"]["enum"];
-        assert_eq!(kinds, &json!(["commit", "test", "command", "screenshot", "pr", "file", "link"]));
+        assert_eq!(kinds, &json!(["commit", "test", "command", "screenshot", "pr", "file", "link", "scenario"]));
     }
 
     #[test]

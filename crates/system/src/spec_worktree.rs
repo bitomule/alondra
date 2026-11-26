@@ -4,8 +4,11 @@ use alondra_domain_model::{DomainState, TaskId, WorktreeOrigin};
 use alondra_engine_ports::spec_worktrees::{SpecSource, SpecWorktrees};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use alondra_engine_ports::worktrees::CHECK_LIMIT;
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 pub struct GitSpecWorktrees;
 
@@ -17,13 +20,44 @@ fn worktrees(state: &DomainState, task: &TaskId) -> Vec<PathBuf> {
     open.into_iter().filter_map(|(path, _)| PathBuf::from(path).canonicalize().ok()).collect()
 }
 
+/// Runs git at `dir`, killed when it has not finished within the check's time limit, with the
+/// repository's replacement objects, grafts and cached commit graph ignored: what is read comes
+/// from git's objects, never from something the agent can write beside them.
 fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let output = Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::null()).stderr(Stdio::piped()).output()
+    git_within(dir, args, CHECK_LIMIT)
+}
+
+fn git_within(dir: &Path, args: &[&str], limit: Duration) -> Result<Vec<u8>, String> {
+    let mut child = Command::new("git").arg("-C").arg(dir).args(["-c", "core.commitGraph=false"]).args(args)
+        .env("GIT_NO_REPLACE_OBJECTS", "1").env("GIT_GRAFT_FILE", "/dev/null")
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
         .map_err(|error| format!("git could not run: {error}"))?;
-    if !output.status.success() {
-        return Err(format!("git {} failed: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&output.stderr).trim()));
+    let drain = |pipe: Option<Box<dyn Read + Send>>| std::thread::spawn(move || {
+        let mut bytes = vec![];
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    });
+    let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        match child.try_wait().map_err(|error| format!("git could not run: {error}"))? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("git {} did not finish within {} seconds", args.first().unwrap_or(&""), limit.as_secs()));
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let (stdout, stderr) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
+    if !status.success() {
+        return Err(format!("git {} failed: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&stderr).trim()));
     }
-    Ok(output.stdout)
+    Ok(stdout)
 }
 
 fn names(bytes: Vec<u8>) -> Vec<String> {
@@ -93,15 +127,21 @@ impl Files for Commit {
     }
 }
 
-/// Where the branch of the worktree at `root` leaves the remote's default branch.
-fn fork_point(root: &Path) -> Result<String, String> {
+/// The full sha of the commit `revision` names at `root`.
+fn resolved(root: &Path, revision: &str) -> Result<String, String> {
+    let found = git(root, &["rev-parse", "--verify", "--quiet", &format!("{revision}^{{commit}}")])?;
+    Ok(String::from_utf8_lossy(&found).trim().to_owned())
+}
+
+/// Where `revision` leaves the remote's default branch, in the repository at `root`.
+fn fork_point(root: &Path, revision: &str) -> Result<String, String> {
     let base = git(root, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).ok()
         .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
         .filter(|name| !name.is_empty())
         .or_else(|| ["origin/main", "origin/master", "main", "master"].into_iter()
             .find(|name| git(root, &["rev-parse", "--verify", "--quiet", name]).is_ok()).map(str::to_owned))
         .ok_or("the repository has no default branch to compare with")?;
-    let found = git(root, &["merge-base", "HEAD", &base])?;
+    let found = git(root, &["merge-base", revision, &base])?;
     Ok(String::from_utf8_lossy(&found).trim().to_owned())
 }
 
@@ -165,7 +205,42 @@ impl SpecWorktrees for GitSpecWorktrees {
     }
 
     fn base(&self, root: &Path) -> Result<SpecSource, String> {
-        Ok(Box::new(Commit::of(root, &fork_point(root)?)?))
+        Ok(Box::new(Commit::of(root, &fork_point(root, "HEAD")?)?))
+    }
+
+    fn head_commit(&self, root: &Path) -> Result<String, String> {
+        resolved(root, "HEAD")
+    }
+
+    fn commit(&self, root: &Path, commit: &str) -> Result<SpecSource, String> {
+        if resolved(root, commit).is_err() && commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+            git(root, &["fetch", "--quiet", "--no-tags", "origin", commit])?;
+        }
+        Ok(Box::new(Commit::of(root, commit)?))
+    }
+
+    fn base_commit(&self, root: &Path, commit: &str) -> Result<String, String> {
+        fork_point(root, commit)
+    }
+
+    fn merge_base(&self, root: &Path, a: &str, b: &str) -> Result<String, String> {
+        let (a, b) = (resolved(root, a)?, resolved(root, b)?);
+        let found = git(root, &["merge-base", &a, &b])?;
+        Ok(String::from_utf8_lossy(&found).trim().to_owned())
+    }
+
+    fn changed(&self, root: &Path, from: &str, to: &str) -> Result<Vec<String>, String> {
+        let (from, to) = (resolved(root, from)?, resolved(root, to)?);
+        Ok(names(git(root, &["diff", "--name-only", "-z", "--no-renames", &from, &to])?))
+    }
+
+    fn uncommitted(&self, root: &Path) -> Result<Vec<String>, String> {
+        let status = git(root, &["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"])?;
+        let mut paths: Vec<String> = String::from_utf8_lossy(&status).split('\0')
+            .filter_map(|entry| entry.get(3..)).filter(|path| !path.is_empty()).map(str::to_owned).collect();
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
     }
 
     fn settings(&self, root: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -236,12 +311,40 @@ mod tests {
         let head = Commit::of(&root, "HEAD").unwrap();
         std::fs::write(root.join("specs/billing/boundary.toml"), BOUNDARY).unwrap();
         assert_ne!(head.read("specs/billing/boundary.toml").as_deref(), Some(BOUNDARY.as_bytes()), "what counts is the commit, never a file put back on disk");
-        let base = Commit::of(&root, &fork_point(&root).unwrap()).unwrap();
+        let base = Commit::of(&root, &fork_point(&root, "HEAD").unwrap()).unwrap();
         assert_eq!(base.read("specs/billing/boundary.toml").as_deref(), Some(BOUNDARY.as_bytes()), "the base is where the branch left main");
         let found = specs::drift(&head, &base, &SpecFiles::new()).unwrap();
         assert_eq!(found, [specs::SpecDrift { path: "specs/billing/boundary.toml".into(), approved: false }]);
         let approved: SpecFiles = [("specs/billing/boundary.toml".to_owned(), Some(BOUNDARY.replace("billing/**", "billing/src/**")))].into();
         assert_eq!(specs::drift(&head, &base, &approved).unwrap(), [], "the change the user approved, as approved");
+    }
+
+    #[test]
+    fn a_validation_reads_the_commits_the_paths_between_them_and_what_no_commit_holds_yet() {
+        let dir = Directory::new();
+        std::fs::create_dir_all(&*dir).unwrap();
+        let root = dir.canonicalize().unwrap();
+        run(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("alondra.toml"), SETTINGS).unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        run(&root, &["add", "-A"]);
+        run(&root, &["commit", "-q", "-m", "Start"]);
+        let port = GitSpecWorktrees;
+        let first = port.head_commit(&root).unwrap();
+        assert!(alondra_domain_model::is_commit_sha(&first), "{first}");
+        std::fs::create_dir_all(root.join("specs/ledger")).unwrap();
+        std::fs::write(root.join("specs/ledger/unit.toml"), "inputs = \"sha256:0\"\n").unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("target/out"), "built").unwrap();
+        assert_eq!(port.uncommitted(&root).unwrap(), ["specs/ledger/unit.toml"], "a new file counts, an ignored one never");
+        run(&root, &["add", "-A"]);
+        run(&root, &["commit", "-q", "-m", "Ledger"]);
+        std::fs::write(root.join("alondra.toml"), "changed").unwrap();
+        assert_eq!(port.uncommitted(&root).unwrap(), ["alondra.toml"]);
+        let second = port.head_commit(&root).unwrap();
+        assert_eq!(port.changed(&root, &first, &second).unwrap(), ["specs/ledger/unit.toml"]);
+        assert_eq!(port.commit(&root, &first).unwrap().read("specs/ledger/unit.toml"), None, "the first commit has no ledger");
+        assert!(port.changed(&root, &first, "not-a-commit").is_err());
     }
 
     #[test]
@@ -260,5 +363,43 @@ mod tests {
         for path in ["../escape.feature", "/etc/escape", "specs/./a.feature"] {
             assert!(write_into(&root, &changes(&[(path, Some("x"))])).is_err(), "{path} is refused");
         }
+    }
+
+    #[test]
+    fn a_replacement_object_the_agent_writes_changes_nothing_alondra_reads() {
+        let dir = Directory::new();
+        std::fs::create_dir_all(&*dir).unwrap();
+        let root = dir.canonicalize().unwrap();
+        let run = |args: &[&str]| -> String {
+            let out = Command::new("git").current_dir(&root).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(["-c", "user.name=Ana", "-c", "user.email=ana@example.com"]).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        run(&["init", "--quiet"]);
+        std::fs::write(root.join("alondra.toml"), "enabled = true\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "--quiet", "-m", "On"]);
+        let on = run(&["rev-parse", "HEAD"]);
+        std::fs::write(root.join("alondra.toml"), "enabled = false\n").unwrap();
+        run(&["commit", "--quiet", "-am", "Off"]);
+        let off = run(&["rev-parse", "HEAD"]);
+        run(&["replace", &off, &on]);
+        assert_eq!(GitSpecWorktrees.commit(&root, &off).unwrap().read("alondra.toml").unwrap(), b"enabled = false\n");
+        assert_eq!(GitSpecWorktrees.merge_base(&root, &off, &on).unwrap(), on);
+    }
+
+    #[test]
+    fn a_git_that_does_not_finish_in_time_is_killed() {
+        let dir = Directory::new();
+        std::fs::create_dir_all(&*dir).unwrap();
+        let root = dir.canonicalize().unwrap();
+        git(&root, &["init", "--quiet"]).unwrap();
+        let fifo = std::ffi::CString::new(root.join("never-written").into_os_string().into_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0, "a pipe nobody writes to");
+        let started = Instant::now();
+        let refused = git_within(&root, &["hash-object", "never-written"], Duration::from_millis(200)).unwrap_err();
+        assert!(refused.contains("did not finish"), "{refused}");
+        assert!(started.elapsed() < Duration::from_secs(10), "it was stopped, not waited for");
     }
 }

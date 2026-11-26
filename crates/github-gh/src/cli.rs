@@ -9,7 +9,7 @@ use std::time::Duration;
 /// How long a delivery waits for GitHub to name one branch's open PR.
 const BRANCH_PR_LIMIT: Duration = Duration::from_secs(3);
 
-const OBSERVED_FIELDS: &str = "state,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup,fullDatabaseId,id,url,headRefName";
+const OBSERVED_FIELDS: &str = "state,headRefOid,baseRefName,baseRefOid,mergeable,mergeStateStatus,statusCheckRollup,fullDatabaseId,id,url,headRefName";
 
 /// The fields of a PR that say which one it is, asked for in every read that already reads it.
 pub const IDENTITY_FIELDS: &str = "fullDatabaseId,id,url,headRefName";
@@ -55,6 +55,16 @@ impl GhCli {
 }
 
 impl PrObserver for GhCli {
+    fn default_branch_of<'a>(&'a self, host: &'a str, repository: &'a str) -> alondra_engine_ports::github::Pending<'a, String> {
+        Box::pin(async move {
+            let url = format!("https://{}/{repository}", alondra_domain_model::normalize_pr_host(host));
+            let out = self.run(&["repo", "view", &url, "--json", "defaultBranchRef"], None, Duration::from_secs(30)).await?;
+            let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
+            value["defaultBranchRef"]["name"].as_str().filter(|name| !name.is_empty()).map(str::to_owned)
+                .ok_or_else(|| GhFailure::Unreadable("GitHub did not provide the repository's default branch".into()))
+        })
+    }
+
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         Box::pin(async move {
             let url = format!("https://{}/{repository}/pull/{number}", alondra_domain_model::normalize_pr_host(host));

@@ -112,6 +112,7 @@ pub mod service;
 pub use service::scenario_phone;
 pub mod settings;
 pub(crate) mod spec_checks;
+pub(crate) mod validation_checks;
 pub mod client_routes;
 pub mod reply;
 pub mod views;

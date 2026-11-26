@@ -477,6 +477,21 @@ impl super::Client {
     /// watcher's next round: Alondra asks GitHub for the PR and records what it reports, so the
     /// domain judges the head against the PR's real commit. GitHub can take a moment to move the
     /// PR after a push, so it is asked again while it still reports another commit.
+    /// The commit GitHub reports each open pull request of `task` has its base branch at.
+    pub(crate) async fn base_heads(&self, task: &alondra_domain_model::TaskId) -> std::collections::BTreeMap<alondra_domain_model::PrId, alondra_engine_ports::spec_reading::GitHubBase> {
+        let state = self.domain.state();
+        let (view, merger) = (self.pr_view(), self.pr_merger());
+        let mut heads = std::collections::BTreeMap::new();
+        let Some(task) = state.tasks.get(task) else { return heads };
+        for pr in state.open_prs(task) {
+            let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
+            let Some(facts) = view.view(&url).await.and_then(|answer| alondra_engine_ports::github::pr_facts(&answer).ok()) else { continue };
+            let (Some(tip), Ok(default_branch)) = (facts.base_head, merger.default_branch(pr).await) else { continue };
+            heads.insert(pr.id.clone(), alondra_engine_ports::spec_reading::GitHubBase { branch: facts.base, tip, default_branch });
+        }
+        heads
+    }
+
     pub(crate) async fn catch_up_heads(&self, command: &Command) {
         let Command::PresentResult { targets, interaction_id, .. } = command else { return };
         let state = self.domain.state();

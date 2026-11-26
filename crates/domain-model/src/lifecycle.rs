@@ -1299,6 +1299,9 @@ impl DomainState {
     /// A lifecycle decision on a task: the aggregate validates it, the journal keeps it and
     /// the task's DTO reads it, in one step. A refusal changes nothing.
     pub fn decide(&mut self, lifecycles: &mut Lifecycles, task: &TaskId, record: LifecycleRecord) -> Result<()> {
+        if let LifecycleRecord::Presented { delivery } = &record {
+            self.delivery_admitted(task, delivery)?;
+        }
         let lifecycle = self.lifecycle(lifecycles, task)?;
         let event = event(task, &record, lifecycle)?;
         let next = Arc::new(lifecycle.advanced(lifecycle.revision(), event).map_err(|refusal| refused(task, &record, lifecycle, refusal))?);
@@ -2231,6 +2234,7 @@ impl DomainState {
         let generation = self.lifecycle(lifecycles, task)?.execution().map(|stamp| stamp.generation())
             .ok_or_else(|| DomainError::new("conflict", format!("Task {task} has no execution to lose")))?;
         self.sdk_execution(task, generation, lifecycles)?;
+        self.validator_lost(task);
         let cards: Vec<(InteractionId, WaitReason)> = self.lifecycle(lifecycles, task)?.cards().into_iter().map(|(card, reason)| (card.clone(), reason)).collect();
         if cards.iter().any(|(card, _)| self.interactions.get(card).is_some_and(retakes)) {
             return Ok(());
@@ -2344,6 +2348,8 @@ impl DomainState {
             LifecycleRecord::Answered { card: card.clone(), input, text: Some(text) }
         };
         self.decide(lifecycles, &task_id, record)?;
+        let generation = self.lifecycle(lifecycles, &task_id)?.generation();
+        self.validator_retaken(&task_id, generation);
         Ok(true)
     }
 

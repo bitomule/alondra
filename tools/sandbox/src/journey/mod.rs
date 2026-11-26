@@ -14,6 +14,7 @@ mod specs;
 mod steps;
 mod task_cycle;
 mod user;
+mod validation;
 
 use std::{path::PathBuf, time::Duration};
 
@@ -32,7 +33,7 @@ pub const PATIENCE: Duration = Duration::from_secs(60);
 
 pub const NAMES: [&str; 7] = ["task-cycle", "session", "reopen", "mcp", "report", "local", "accounts"];
 /// Journeys that need a sandbox started for them, which `all` does not run.
-pub const OPT_IN: [&str; 2] = ["sdk", "specs"];
+pub const OPT_IN: [&str; 3] = ["sdk", "specs", "validation"];
 
 pub fn run(sandbox: &Sandbox, names: &[String]) -> Result<()> {
     if let Some(unknown) = names.iter().find(|name| *name != "all" && !NAMES.contains(&name.as_str()) && !OPT_IN.contains(&name.as_str())) {
@@ -60,6 +61,7 @@ pub fn run(sandbox: &Sandbox, names: &[String]) -> Result<()> {
             "report" => crash_report::run(&mut report, sandbox, &fakes),
             "sdk" => sdk::run(&mut report, sandbox, &fakes),
             "specs" => specs::run(&mut report, sandbox, &fakes),
+            "validation" => validation::run(&mut report, sandbox, &fakes),
             _ => unreachable!(),
         }
     }

@@ -36,6 +36,7 @@ pub(crate) fn record_run(domain: &mut DomainState, task_id: &TaskId, agent: &Age
         .map(|key| TaskModel { model: key.model.clone(), chosen_by: ModelChooser::Orchestrator });
     let model = admitted.cloned().or(chosen).or_else(|| task.model.clone());
     task.stages.admitted(TaskRun { generation, agent: agent.clone(), role, provider: task.provider, account: task.account.clone(), model });
+    domain.validation_admitted(task_id, generation);
 }
 /// The user approved a plan of the task: Alondra records it, and a staged task's author hands
 /// the task over to a new implementer once it rests. The input the implementer starts from is

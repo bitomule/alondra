@@ -20,9 +20,13 @@ pub fn pr_facts(value: &Value) -> Result<PrFacts, String> {
         Some("MERGED") => PrState::Merged,
         other => return Err(format!("gh reported an unknown PR state {other:?}")),
     };
+    let base_head = value["baseRefOid"].as_str()
+        .filter(|base| base.len() == 40 && base.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_owned);
     Ok(PrFacts {
         head: head.to_owned(),
         base: base.to_owned(),
+        base_head,
         merged_head: (state == PrState::Merged).then(|| head.to_owned()),
         state,
         allowed_methods: vec![],

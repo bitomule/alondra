@@ -55,6 +55,9 @@ pub enum RoleTool {
     ProposeAmendment,
     ProposeDecision,
     RequestSpecChange,
+    ReadyForValidation,
+    RecordValidation,
+    EndValidation,
 }
 
 impl RoleTool {
@@ -70,6 +73,9 @@ impl RoleTool {
             Self::ProposeAmendment => "propose_amendment",
             Self::ProposeDecision => "propose_decision",
             Self::RequestSpecChange => "request_spec_change",
+            Self::ReadyForValidation => "ready_for_validation",
+            Self::RecordValidation => "record_validation",
+            Self::EndValidation => "end_validation",
         }
     }
 }
@@ -82,10 +88,12 @@ impl ExecutionRole {
         match (self, tool) {
             (Self::Author, RoleTool::RequestPlanMode | RoleTool::Plan | RoleTool::ProposeSpecs | RoleTool::ProposeAmendment | RoleTool::ProposeDecision) => true,
             (Self::Author, _) => false,
-            (Self::Implementer, RoleTool::RecordVerdict | RoleTool::ProposeSpecs | RoleTool::ProposeAmendment | RoleTool::ProposeDecision) => false,
+            (Self::Implementer, RoleTool::RecordVerdict | RoleTool::ProposeSpecs | RoleTool::ProposeAmendment | RoleTool::ProposeDecision
+                | RoleTool::RecordValidation | RoleTool::EndValidation) => false,
             (Self::Implementer, _) => true,
             (Self::Validator, RoleTool::RequestPlanMode | RoleTool::Plan | RoleTool::RegisterPr | RoleTool::RecordVerdict
-                | RoleTool::ProposeSpecs | RoleTool::ProposeAmendment | RoleTool::ProposeDecision | RoleTool::RequestSpecChange) => false,
+                | RoleTool::ProposeSpecs | RoleTool::ProposeAmendment | RoleTool::ProposeDecision | RoleTool::RequestSpecChange
+                | RoleTool::ReadyForValidation) => false,
             (Self::Validator, _) => true,
         }
     }
@@ -94,8 +102,8 @@ impl ExecutionRole {
     pub fn refusal_fix(self, tool: RoleTool) -> String {
         let instead = match self {
             Self::Author => "You are the author of this task: you plan it and write its specs, and once the user approves the plan a new agent implements it. Present the plan through plan mode, or ask the user; never register or deliver a pull request.",
-            Self::Implementer => "You are the implementer of this task: build the approved plan and deliver it. Never write a spec or a decision: ask for the change with request_spec_change. Reviews are other tasks.",
-            Self::Validator => "You are the validator of this task: run its checks and deliver their result. Never plan, write a spec, open a pull request or review another task.",
+            Self::Implementer => "You are the implementer of this task: build the approved plan and deliver it, or say it is ready with ready_for_validation when its specs need validating. Never write a spec or a decision: ask for the change with request_spec_change. Only the validator records validations.",
+            Self::Validator => "You are the validator of this task: run its checks, record each with record_validation, and deliver their result, or send the work back with end_validation. Never plan, write a spec, change its code or tests, or open a pull request.",
         };
         format!("{} is not available to the {} of a task. {instead}", tool.name(), self.as_str())
     }
@@ -111,6 +119,24 @@ pub enum HandoverCause {
     SpecChangeRequested { amendment: String },
     /// The author drafted this change and it waits for the user: the implementer carries on.
     AmendmentProposed { amendment: String },
+    /// The implementer said its work is ready: a validator checks it in this round.
+    ReadyForValidation { round: u32 },
+    /// The validator sent the work of this round back with its findings.
+    ValidationFailed { round: u32 },
+    /// The validator of this round could not run all of it: a new validator tries once more.
+    ValidatorRetry { round: u32 },
+    /// The user decided how the task goes on after this round failed the last time allowed.
+    ValidationDecided { round: u32 },
+    /// The user asked for changes, or the work needs something after its delivery: the validator
+    /// delivered it, and an implementer does that work.
+    DeliveryReturned,
+}
+
+impl HandoverCause {
+    /// A new execution starts even when the one working already plays the role it hands over to.
+    pub fn renews(&self) -> bool {
+        matches!(self, Self::ValidatorRetry { .. })
+    }
 }
 
 /// A change of role the task owes: its current execution ends once it rests with nothing
@@ -141,6 +167,12 @@ impl StageHandover {
     /// Whether Alondra starts the change now: none runs, and its start is not waiting for the user.
     pub fn due(&self) -> bool {
         self.transition.is_none() && !self.refused
+    }
+
+    /// Whether an execution playing `role` owes this change: it plays another role, or a new
+    /// execution of the same role takes over.
+    pub fn owed_by(&self, role: Option<ExecutionRole>) -> bool {
+        role != Some(self.to) || self.cause.renews()
     }
 }
 

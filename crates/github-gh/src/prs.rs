@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
 
-const FIELDS: &str = "title,body,baseRefName,headRefName,additions,deletions,changedFiles,statusCheckRollup,mergeable,mergeStateStatus,state,headRefOid,isDraft,fullDatabaseId,id,url";
+const FIELDS: &str = "title,body,baseRefName,baseRefOid,headRefName,additions,deletions,changedFiles,statusCheckRollup,mergeable,mergeStateStatus,state,headRefOid,isDraft,fullDatabaseId,id,url";
 const LIMIT: Duration = Duration::from_secs(30);
 
 #[derive(Deserialize)]

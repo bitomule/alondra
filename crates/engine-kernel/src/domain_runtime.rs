@@ -1175,6 +1175,11 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RequestSpecChange { task_id, .. }
         | Command::ProposeAmendment { task_id, .. }
         | Command::ProposeDecision { task_id, .. }
+        | Command::ReadyForValidation { task_id, .. }
+        | Command::RecordValidation { task_id, .. }
+        | Command::EndValidation { task_id, .. }
+        | Command::RecordDeliveredValidation { task_id, .. }
+        | Command::RecordCommitReading { task_id, .. }
         | Command::RequestTaskSelection { task_id, .. }
         | Command::MoveTask { task_id, .. }
         | Command::SettlePlanReview { task_id, .. }

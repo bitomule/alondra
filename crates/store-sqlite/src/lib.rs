@@ -220,6 +220,11 @@ const TASK_STAGES: &str = "CREATE TABLE IF NOT EXISTS task_stages(\
 const TASK_SPECS: &str = "CREATE TABLE IF NOT EXISTS task_specs(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
  specs TEXT NOT NULL CHECK(json_valid(specs)));";
+/// Each task's validation: every round a validator checked its work in and what it recorded, each
+/// at its fingerprint; a task without a row was never validated.
+const TASK_VALIDATIONS: &str = "CREATE TABLE IF NOT EXISTS task_validations(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ validation TEXT NOT NULL CHECK(json_valid(validation)));";
 /// Each task's scope, the points of the last plan the user approved, and the points each final
 /// delivery marked done; created on every open like task_relations.
 const TASK_CHECKLISTS: &str = "CREATE TABLE IF NOT EXISTS task_checklists(\
@@ -734,6 +739,7 @@ impl DomainStore {
         tx.execute_batch(TASK_RELEASED_NODES)?;
         tx.execute_batch(TASK_STAGES)?;
         tx.execute_batch(TASK_SPECS)?;
+        tx.execute_batch(TASK_VALIDATIONS)?;
         tx.execute_batch(TASK_CHECKLISTS)?;
         tx.execute_batch(REQUEST_PLANS)?;
         tx.execute_batch(PLAN_REVIEWS)?;

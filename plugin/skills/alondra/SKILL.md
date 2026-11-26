@@ -603,9 +603,16 @@ same worktree and PR. Your mission says your role when it has one:
   boundary or decision. When the work needs a change to them, ask for it with
   `request_spec_change` (`task_id`, and `reason`: what the approved specs miss and why the work
   needs it, in plain words) and end your turn; a delivery whose spec files differ from what the user
-  approved is refused with `specs_differ`.
-- **Validator**: you run the task's checks and deliver what they found; you never plan, change its
-  code or open a pull request.
+  approved is refused with `specs_differ`. When the spec engine lists something to validate on your
+  work, you do not deliver it: commit everything, push, open and register its pull request, then
+  call `ready_for_validation` (`task_id`) and end your turn; a delivery is refused with `validation_required` while something is listed. When
+  the validator sends the work back, your context says what failed: fix it and call
+  `ready_for_validation` again.
+- **Validator**: another agent implemented the work and you check it against its specs. Load the
+  `spec-validation` skill (`read_skill` with name `spec-validation`) and follow it: run and judge
+  every validation your context lists, record each with `record_validation`, then commit only the
+  ledger, push and deliver with `present_result`, or send the work back with `end_validation`. You
+  never plan, change its code, tests or specs, or open a pull request.
 
 A tool your role does not allow is refused with `role_forbids_tool` and says what your role does
 instead. Your subagents work on your task; they need no task of their own. Something new the user asks

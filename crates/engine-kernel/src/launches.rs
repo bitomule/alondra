@@ -174,7 +174,7 @@ pub fn stage_packet(state: &DomainState, task: &alondra_domain_model::Task, role
     let instructions = match role {
         ExecutionRole::Author => "You are the author of this task: plan it through plan mode, ask the user every decision first, and end your turn once the user approves the plan. Do not build it.",
         ExecutionRole::Implementer => "You are the implementer of this task. The user approved the plan below, which another agent wrote: implement exactly that plan and its tests, validate them as the repository says, and deliver the result with present_result, marking every point of the plan done with its evidence. Do not plan again. When the plan does not cover something, ask the user with `ask` instead of deciding it.",
-        ExecutionRole::Validator => "You are the validator of this task: run every check it still needs, record what each found, and deliver that result. Never change its code, tests or plan.",
+        ExecutionRole::Validator => "You are the validator of this task: another agent implemented it, and you check it against its specs. Load the spec-validation skill first (read_skill spec-validation where the provider has no Skill tool) and follow it: run and judge every validation listed below, record each with record_validation, then either commit only the ledger, push and deliver with present_result, or send the work back with end_validation. Never change its code, tests, specs or plan.",
     };
     let mut lines = vec![
         format!("# Alondra task {}: {}", task.id, task.title),
@@ -198,6 +198,10 @@ pub fn stage_packet(state: &DomainState, task: &alondra_domain_model::Task, role
     let specs = spec_packet(task, role);
     if !specs.is_empty() {
         lines.extend([String::new(), specs]);
+    }
+    let validation = validation_packet(state, task, role);
+    if !validation.is_empty() {
+        lines.extend([String::new(), validation]);
     }
     lines.extend([String::new(), "## The task's record".to_owned(), String::new(), canonical.text]);
     Ok(lines.join("\n"))
@@ -231,6 +235,45 @@ pub fn spec_packet(task: &alondra_domain_model::Task, role: alondra_domain_model
         }
     }
     out.join("\n")
+}
+
+/// What a new execution of a staged task is told of its validation: the validator, what its round
+/// owes and what an earlier validator recorded; the implementer, why its work came back.
+pub fn validation_packet(state: &DomainState, task: &alondra_domain_model::Task, role: alondra_domain_model::ExecutionRole) -> String {
+    use alondra_domain_model::{ExecutionRole, InteractionPayload, RoundState, ValidationState};
+    use alondra_core::text::Lang;
+    let Some(round) = task.validation.current() else { return String::new() };
+    match role {
+        ExecutionRole::Validator if round.state.open() => {
+            let mut out = vec![format!("## Round {} of validation", round.number), String::new(),
+                format!("Validate commit {}: between it and the commit you deliver only the ledger may change. Alondra records the fingerprint of each validation from that commit itself.", round.head),
+                String::new(), "What the spec engine listed as not validated on it, and where each stands:".to_owned()];
+            out.extend(round.items.iter().map(|item| format!("- {} · {} · {}{}", item.subject, item.kind.as_str(), item.state.as_str(),
+                item.reason.as_deref().map(|reason| format!(" ({reason})")).unwrap_or_default())));
+            if !round.scope.is_empty() {
+                out.extend([String::new(), format!("The branch also changed files outside the components of its specs: {}. Say in your delivery whether each belongs to the work.", round.scope.join(", "))]);
+            }
+            out.join("\n")
+        }
+        ExecutionRole::Implementer if round.state == RoundState::Failed => {
+            let failing = alondra_domain_model::spec_card::failing(&task.validation, round.number, Lang::En);
+            format!("## The validator sent your work back (round {})\n\nFix what it found, commit, and call ready_for_validation again; a new validator checks it. Never change a spec to make a check pass.\n\n{failing}", round.number)
+        }
+        ExecutionRole::Implementer => {
+            let feedback = task.final_presentation.as_ref().or(state.interactions.values().filter(|i| i.scope == alondra_domain_model::Scope::Task { task_id: task.id.clone() }).filter(|i| matches!(i.payload, InteractionPayload::Delivery { is_final: true, .. })).map(|i| &i.id).last());
+            let said = feedback.and_then(|id| state.interactions.get(id)).and_then(|i| match &i.payload {
+                InteractionPayload::Delivery { feedback, .. } => feedback.last().map(|f| f.body.trim().to_owned()),
+                _ => None,
+            }).filter(|said| !said.is_empty());
+            let returned = round.state == RoundState::Delivered && round.items.iter().all(|item| item.state != ValidationState::Running);
+            match (returned, said) {
+                (true, Some(said)) => format!("## The validated delivery came back\n\nThe user answered the delivery the validator presented: «{said}». Do that work, commit, and call ready_for_validation again so a validator checks it before it reaches the user."),
+                (true, None) => "## The validated delivery came back\n\nDo the work its pull request needs now, commit, and call ready_for_validation again so a validator checks it before it reaches the user.".to_owned(),
+                _ => String::new(),
+            }
+        }
+        _ => String::new(),
+    }
 }
 
 /// The plan the user approved for the task, whoever wrote it.

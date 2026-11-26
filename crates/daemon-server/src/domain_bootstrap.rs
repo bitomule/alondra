@@ -1003,6 +1003,7 @@ async fn read_role_skill(
     let (root, name) = match (principal, query.name.as_str()) {
         (crate::principal::Principal::Agent { .. }, "alondra") => (state.domain.ports().plugins().node(&state.home), "alondra"),
         (crate::principal::Principal::Agent { .. }, "spec-design") => (state.domain.ports().plugins().node(&state.home), "spec-design"),
+        (crate::principal::Principal::Agent { .. }, "spec-validation") => (state.domain.ports().plugins().node(&state.home), "spec-validation"),
         (crate::principal::Principal::Orchestrator { .. }, "alondra-orchestrator") => (state.domain.ports().plugins().orchestrator(&state.home), "alondra-orchestrator"),
         _ => return crate::domain_api::domain_error(DomainError::new("forbidden", "Only the current role's installed skill may be read")),
     };
