@@ -29,7 +29,7 @@ pub mod worktrees_root;
 
 use alondra_core::options::WorktreesRoot;
 use alondra_core::secret_destination::SecretDestination;
-use alondra_domain_rules::{ChecklistMark, DeliveryTarget, DomainError, DomainState, Interaction, TaskId};
+use alondra_domain_model::{ChecklistMark, DeliveryTarget, DomainError, DomainState, Interaction, TaskId};
 use std::time::Duration;
 use alondra_core::accounts::{AccountId, AccountKey};
 use alondra_core::codex_account::ProbeReport;

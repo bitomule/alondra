@@ -1,5 +1,5 @@
 use super::*;
-use alondra_domain_rules::{Actor, AgentId, Command, CommandEnvelope, LaunchPlan, ReadSnapshot, PROTOCOL_VERSION};
+use alondra_domain_model::{Actor, AgentId, Command, CommandEnvelope, LaunchPlan, ReadSnapshot, PROTOCOL_VERSION};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -60,7 +60,7 @@ impl Fixture {
     }
 
     fn equivalent(&self, state: DomainState, agent: &str,
-        launches: &BTreeMap<alondra_domain_rules::RequestId, (Option<String>, Option<String>)>,
+        launches: &BTreeMap<alondra_domain_model::RequestId, (Option<String>, Option<String>)>,
         exhausted: &Option<crate::usage_pause::Exhausted>,
     ) -> Vec<Option<LiveNode>> {
         let read = ReadSnapshot::build(Arc::new(state));
@@ -171,7 +171,7 @@ fn indexed_node_rows_preserve_reported_work_and_localized_clocks() {
 
 #[test]
 fn indexed_node_rows_preserve_sdk_turn_and_pause_states() {
-    use alondra_domain_rules::{NodeEvent, Pause, PauseCleanup, PauseReason};
+    use alondra_domain_model::{NodeEvent, Pause, PauseCleanup, PauseReason};
     let fixture = Fixture::new();
     fixture.agent("sdk-node", "SDK worker");
     fixture.task("current");
@@ -203,10 +203,10 @@ fn indexed_node_rows_preserve_sdk_turn_and_pause_states() {
 
 #[cfg(test)]
 fn reference_node_row(client: &crate::client_routes::Client, state: &DomainState,
-    agent: &alondra_domain_rules::Agent, lang: Lang,
-    launches: &BTreeMap<alondra_domain_rules::RequestId, (Option<String>, Option<String>)>,
+    agent: &alondra_domain_model::Agent, lang: Lang,
+    launches: &BTreeMap<alondra_domain_model::RequestId, (Option<String>, Option<String>)>,
     exhausted: &Option<crate::usage_pause::Exhausted>, now: Millis) -> Option<LiveNode> {
-    let node_tasks = alondra_domain_rules::NodeTasks::new(state);
+    let node_tasks = alondra_domain_model::NodeTasks::new(state);
     let session_id = agent.id.0.clone();
     let reported = client.domain.live().mods.session(&session_id).unwrap_or_default();
     let mine = node_tasks.of(&agent.id);

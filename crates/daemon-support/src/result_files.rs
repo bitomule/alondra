@@ -1,7 +1,7 @@
 //! A report or plan a node delivers outlives its session: the session's folders, its temporary
 //! one included, go when the task closes, so the whole final result is kept in Alondra's files
 //! folder and its card says where.
-use alondra_domain_rules::{Command, DeliveryTarget, DomainError};
+use alondra_domain_model::{Command, DeliveryTarget, DomainError};
 use std::path::{Path, PathBuf};
 
 const RESULTS: &str = "files/results";
@@ -44,7 +44,7 @@ fn segment(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_domain_rules::{CardKind, CardSpec, ContentKind};
+    use alondra_domain_model::{CardKind, CardSpec, ContentKind};
 
     fn delivery(targets: Vec<DeliveryTarget>, card: CardSpec) -> Command {
         Command::PresentResult {

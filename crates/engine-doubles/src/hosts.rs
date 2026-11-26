@@ -1,6 +1,6 @@
 //! The owner of the SDK hosts in a runtime that runs none: nothing starts there.
 use alondra_core::accounts::{AccountId, Provider};
-use alondra_domain_rules::{AgentId, DomainError, DomainState, TaskId};
+use alondra_domain_model::{AgentId, DomainError, DomainState, TaskId};
 use alondra_engine_ports::Runtime;
 use alondra_engine_ports::hosts::{Launch, Launched, Reopening, SdkHosts};
 use alondra_engine_ports::launch::Failed;

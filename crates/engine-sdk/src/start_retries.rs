@@ -4,7 +4,7 @@
 use crate::engine::EngineOf as _;
 use crate::locks::Poisonable as _;
 use alondra_engine_ports::Runtime;
-use alondra_domain_rules::{DomainState, InteractionPayload, NodePhase, Reaction, START_RETRY, Start, StartProblem, TaskId};
+use alondra_domain_model::{DomainState, InteractionPayload, NodePhase, Reaction, START_RETRY, Start, StartProblem, TaskId};
 use alondra_engine_kernel::start_failures::{failed, problem_of, raise};
 use anyhow::Result;
 use std::path::Path;
@@ -55,12 +55,12 @@ fn settle_api_failure_cards(domain: &dyn Runtime) -> Result<()> {
 /// The orchestrator cancelled a task whose plan was refused: the reason it wrote is the task's.
 fn record_plan_cancels(domain: &dyn Runtime, state: &DomainState) -> Result<()> {
     let cancels: Vec<(TaskId, String)> = state.interactions.values()
-        .filter(|i| alondra_domain_rules::is_plan_refusal(i))
+        .filter(|i| alondra_domain_model::is_plan_refusal(i))
         .filter_map(|i| match (&i.scope, &i.payload) {
-            (alondra_domain_rules::Scope::Task { task_id }, alondra_domain_rules::InteractionPayload::Question { answer: Some(answer), .. })
-                if answer.option_id == alondra_domain_rules::START_CANCEL && state.tasks.get(task_id).is_some_and(|task| task.cancelled()) =>
+            (alondra_domain_model::Scope::Task { task_id }, alondra_domain_model::InteractionPayload::Question { answer: Some(answer), .. })
+                if answer.option_id == alondra_domain_model::START_CANCEL && state.tasks.get(task_id).is_some_and(|task| task.cancelled()) =>
                 answer.inputs.values().find_map(|value| match value {
-                    alondra_domain_rules::InputValue::Text(text) if !text.trim().is_empty() => Some((task_id.clone(), text.trim().to_owned())),
+                    alondra_domain_model::InputValue::Text(text) if !text.trim().is_empty() => Some((task_id.clone(), text.trim().to_owned())),
                     _ => None,
                 }),
             _ => None,

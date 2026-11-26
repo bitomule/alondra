@@ -182,7 +182,7 @@ class EditBenchTest(unittest.TestCase):
 
     def test_the_tracked_edits_cover_an_adapter_the_engine_the_root_and_the_domain(self):
         for edit in ("crates/github-gh/src/cli.rs", "crates/engine-sdk/src/sdk_owner.rs",
-                     "crates/alondrad/src/assemble.rs", "crates/domain-rules/src/rules.rs"):
+                     "crates/alondrad/src/assemble.rs", "crates/domain-model/src/rules.rs"):
             self.assertIn(edit, bench.TRACKED)
 
     def test_a_retried_invocation_is_told_apart(self):

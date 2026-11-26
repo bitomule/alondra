@@ -1,6 +1,6 @@
 //! The phone's Live Activity and the status header count from one place: whatever the domain went
 //! through, the three counts the daemon sends are the ones the header shows.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_views as views;
 use std::collections::{BTreeMap, BTreeSet};
 use alondra_views::{Client, Lang, LiveSnapshot, RenderContext, Transport};

@@ -13,7 +13,7 @@ use alondra_engine_ports::Runtime;
 use crate::domain_github::execute_system;
 use crate::node_close::{CloseOutcome, Sessions, close_node, listed};
 use alondra_engine_ports::worktrees::TaskWorktree;
-use alondra_domain_rules::{AgentId, Command, DomainState, NodeEnd, Task, TaskState};
+use alondra_domain_model::{AgentId, Command, DomainState, NodeEnd, Task, TaskState};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use std::path::Path;

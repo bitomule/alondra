@@ -171,9 +171,9 @@ fn a_second_daemon_is_refused_before_its_restart_recovery_touches_the_live_daemo
     std::fs::create_dir_all(&home).unwrap();
     let (_writer, live) = open_as_writer(&home, crate::engine::open).unwrap();
     let epoch = live.state().unwrap().data_epoch.clone();
-    live.execute_fixture(&alondra_domain_rules::Actor::User { user_id: "u".into() }, alondra_domain_rules::CommandEnvelope {
-        protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: epoch, command_id: "request".into(), expected_revision: 0,
-        command: alondra_domain_rules::Command::CreateRequest { request_id: "r".into(), body: "Fix the login".into(), auto_merge: false, maintenance: false, message: false },
+    live.execute_fixture(&alondra_domain_model::Actor::User { user_id: "u".into() }, alondra_domain_model::CommandEnvelope {
+        protocol_version: alondra_domain_model::PROTOCOL_VERSION, data_epoch: epoch, command_id: "request".into(), expected_revision: 0,
+        command: alondra_domain_model::Command::CreateRequest { request_id: "r".into(), body: "Fix the login".into(), auto_merge: false, maintenance: false, message: false },
     }).unwrap();
     let message = live.store.lock().unwrap().pending_messages().unwrap()[0].id;
     let claim = live.store.lock().unwrap().claim_message(message).unwrap().unwrap();

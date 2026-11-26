@@ -5,7 +5,7 @@
 use alondra_claude_host_model::{ClaudeModel, NativeStart, Turns};
 use alondra_codex_host_model::CodexModel;
 use alondra_daemon_engine_model::{LaunchOptions, LaunchOptionsFile as _};
-use alondra_domain_rules::InteractionId;
+use alondra_domain_model::InteractionId;
 use alondra_engine_doubles::agent_host::{InProcessHosts, Serve, Served, Stop};
 use alondra_engine_sdk::domain_runtime::DomainRuntime;
 use alondra_engine_sdk::sdk_backend::SdkBackend;
@@ -80,7 +80,7 @@ impl SdkLaunches {
     /// Every prompt the native Claudes took, in order, besides the wake Alondra sends after a turn
     /// that ended empty.
     pub fn prompts(&self) -> Vec<String> {
-        self.model.prompts().into_iter().filter(|prompt| !prompt.starts_with(alondra_domain_rules::WAKE_INSTRUCTION)).collect()
+        self.model.prompts().into_iter().filter(|prompt| !prompt.starts_with(alondra_domain_model::WAKE_INSTRUCTION)).collect()
     }
 
     /// Each native Claude the hosts started: its session, the one it resumed and its folder.
@@ -114,7 +114,7 @@ impl SdkLaunches {
         let state = self.domain.state().unwrap();
         let id = alondra_foundation::TaskId::from(task);
         let cards: Vec<&str> = state.interactions.iter()
-            .filter(|(_, card)| matches!(&card.scope, alondra_domain_rules::Scope::Task { task_id } if task_id == &id))
+            .filter(|(_, card)| matches!(&card.scope, alondra_domain_model::Scope::Task { task_id } if task_id == &id))
             .map(|(card, _)| card.0.as_str()).collect();
         format!("task {:?}, lifecycle {:?}, cards {cards:?}, native starts {:?}", state.tasks.get(&id), state.lifecycle_of(&id), self.starts())
     }
@@ -171,7 +171,7 @@ pub fn capture_of(start: &NativeStart) -> Value {
 /// Whether `card` is one an ended turn of `task` rests on: the case the orchestrator settles when
 /// the node stopped, or the user's card when the turn was interrupted or failed.
 fn rests_on(task: &str, card: &InteractionId) -> bool {
-    card.0.starts_with(&format!("{}{task}-", alondra_domain_rules::STALLED_PREFIX)) || card.0.starts_with(&format!("{}{task}-", alondra_domain_rules::TURN_ENDED_PREFIX))
+    card.0.starts_with(&format!("{}{task}-", alondra_domain_model::STALLED_PREFIX)) || card.0.starts_with(&format!("{}{task}-", alondra_domain_model::TURN_ENDED_PREFIX))
 }
 
 /// A backend whose host, Node and native Claude are files no process runs: the doubled hosts

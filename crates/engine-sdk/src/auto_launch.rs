@@ -16,7 +16,7 @@ use alondra_engine_ports::sdk::Relaunch;
 use alondra_engine_kernel::start_failures;
 use alondra_engine_ports::Runtime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use alondra_domain_rules::{DomainError, DomainState, Task, TaskId, TaskState};
+use alondra_domain_model::{DomainError, DomainState, Task, TaskId, TaskState};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -85,7 +85,7 @@ fn cancel_planless(domain: &dyn Runtime, state: &DomainState) -> Result<()> {
         .filter(|task| !planned.contains_key(&task.id) && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id)))
         .collect();
     for task in planless {
-        let cancelled = alondra_engine_github::domain_github::execute_system(domain, alondra_domain_rules::Command::CancelTask { task_id: task.id.clone(), reason: None });
+        let cancelled = alondra_engine_github::domain_github::execute_system(domain, alondra_domain_model::Command::CancelTask { task_id: task.id.clone(), reason: None });
         if let Err(error) = cancelled {
             log!("could not cancel {}, which has no launch plan: {error:?}", task.id);
             continue;

@@ -139,7 +139,7 @@ pub fn ended(session: &mut Reported, now: Millis) {
     session.end_background(|_| true, RunOutcome::Stopped, now); session.work.ended(now);
     if let Some(readings) = session.codex.as_mut() { readings.calls.clear(); readings.turn = None; readings.deltas.clear(); }
 }
-fn update_context(contexts:&crate::contexts::Contexts,task:&alondra_domain_rules::TaskId,before:Option<&Readings>,session:&Reported,message:&Value,now:Millis){
+fn update_context(contexts:&crate::contexts::Contexts,task:&alondra_domain_model::TaskId,before:Option<&Readings>,session:&Reported,message:&Value,now:Millis){
     use alondra_provider_claude::ContextEvent;
     let Some(current)=session.codex.as_ref() else{return};
     if before.is_some_and(|prior|prior.thread!=current.thread || prior.model!=current.model || (prior.turn!=current.turn && current.turn.is_some() && current.model_turn.is_none())){contexts.forget(task);}
@@ -159,7 +159,7 @@ fn update_context(contexts:&crate::contexts::Contexts,task:&alondra_domain_rules
         _=>{}
     }
 }
-pub fn feed(domain: &dyn alondra_engine_ports::Runtime, reports: &crate::node_reports::Reports, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
+pub fn feed(domain: &dyn alondra_engine_ports::Runtime, reports: &crate::node_reports::Reports, agent: &alondra_domain_model::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
     if let Some(message) = alondra_provider_codex::native_message(observation) {
         let before=reports.session(&agent.0).and_then(|session|session.codex);
         let now=alondra_core::now_millis();reports.apply_codex(&agent.0,&message,now);

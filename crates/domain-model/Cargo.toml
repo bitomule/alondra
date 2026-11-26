@@ -1,5 +1,5 @@
 [package]
-name = "alondra-domain-rules"
+name = "alondra-domain-model"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

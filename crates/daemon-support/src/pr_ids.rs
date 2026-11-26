@@ -4,7 +4,7 @@
 //! that later names "its PR" gets a registered PR of its own task. Explicit registered targets
 //! keep their identity so the domain can validate their ownership and state.
 
-use alondra_domain_rules::{hosted_pr_id, normalize_pr_host, normalize_pr_repository, DomainError, DomainState, InteractionId, PrId, PullRequest, Scope, TaskId};
+use alondra_domain_model::{hosted_pr_id, normalize_pr_host, normalize_pr_repository, DomainError, DomainState, InteractionId, PrId, PullRequest, Scope, TaskId};
 use serde_json::Value;
 
 pub fn assign(state: &DomainState, method: &str, path: &str, id: Option<&str>, body: &mut Value) -> Result<(), DomainError> {
@@ -127,13 +127,13 @@ mod tests {
     }
 
     fn task_with_two_open_prs() -> DomainState {
-        let pr = |repository: &str, number: u64, head: &str| alondra_domain_rules::PullRequest {
+        let pr = |repository: &str, number: u64, head: &str| alondra_domain_model::PullRequest {
             id: hosted_pr_id("github.com", repository, number), task_id: "t".into(), host: "github.com".into(), repository: repository.into(), number,
-            head: head.into(), base: "main".into(), state: alondra_domain_rules::PrState::Open, merged_head: None, allowed_methods: vec![], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
+            head: head.into(), base: "main".into(), state: alondra_domain_model::PrState::Open, merged_head: None, allowed_methods: vec![], review: None, aliases: Default::default(), address_read_at: 0, identity: Default::default(), tracking: Default::default(), missing: None, relocation_asked_at: None,
         };
         let mut state: DomainState = serde_json::from_value(serde_json::to_value(DomainState::new("epoch")).unwrap()).unwrap();
         let (first, second) = (pr("me/app", 1, "aaa"), pr("me/site", 2, "bbb"));
-        let mut task: alondra_domain_rules::Task = serde_json::from_value(json!({
+        let mut task: alondra_domain_model::Task = serde_json::from_value(json!({
             "id":"t","request_id":"r","agent_id":null,"title":"T","state":"running","revision":1,"started":true,"review_prs":false,
             "final_presentation":null,"pr_id":first.id.0,"later_prs":[second.id.0],"dependencies":[],"documents":{},"archived":false,
         })).unwrap();
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn a_closed_first_pr_never_owns_a_new_subject_or_changes_an_explicit_target() {
         let mut state = task_with_two_open_prs();
-        state.pull_requests.get_mut(&"github.com/me/app#1".into()).unwrap().state = alondra_domain_rules::PrState::Closed;
+        state.pull_requests.get_mut(&"github.com/me/app#1".into()).unwrap().state = alondra_domain_model::PrState::Closed;
         let mut subject = json!({});
         assign(&state, "POST", "/tasks/t/stack-readiness", Some("t"), &mut subject).unwrap();
         assert_eq!(subject["pr_id"], "github.com/me/site#2");

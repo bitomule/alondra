@@ -5,7 +5,7 @@ use crate::locks::Poisonable as _;
 use super::{Client, Reply};
 pub(crate) use crate::node_close::Answer;
 use crate::node_close::{CloseOutcome, Reason, Sessions, close_node};
-use alondra_domain_rules::{AgentId, DomainError};
+use alondra_domain_model::{AgentId, DomainError};
 use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};

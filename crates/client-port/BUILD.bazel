@@ -8,7 +8,7 @@ load("//:version.bzl", "VERSION")
 
 WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
-    "//crates/domain-rules:domain_rules",
+    "//crates/domain-model:domain_model",
     "//crates/view-model:view_model",
 ]
 

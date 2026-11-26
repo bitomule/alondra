@@ -1,5 +1,5 @@
 //! Domains the screen tests start from, built by the domain's own commands.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 
 /// The inbox as the index lists it, each card with its buttons.
 pub(crate) fn inbox_items(state: &DomainState) -> Vec<InboxItem> {
@@ -10,7 +10,7 @@ pub(crate) use prs::{answered_while_its_turn_waits, two_open_prs};
 pub(crate) use mcp::waiting_for_linear;
 
 mod prs {
-    use alondra_domain_rules::*;
+    use alondra_domain_model::*;
     #[allow(unused_imports)]
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -117,7 +117,7 @@ pub(crate) fn two_open_prs() -> DomainState {
 }
 
 mod mcp {
-    use alondra_domain_rules::*;
+    use alondra_domain_model::*;
     #[allow(unused_imports)]
     use std::collections::{BTreeMap, BTreeSet};
 

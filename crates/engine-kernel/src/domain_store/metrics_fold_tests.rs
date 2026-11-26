@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain_store::model_metrics::{Decision as Chosen, DecisionKind as ChosenKind};
 use crate::domain_store::testing::{Fixture, seeded};
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_core::options::Approach;
 
 fn envelope(store: &mut DomainStore, id: &str, command: Command) -> CommandEnvelope {

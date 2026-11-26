@@ -4,7 +4,7 @@ use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_engine_sdk::sdk_owner::Driver;
 use crate::engine_tests::engine_fixtures::owner::*;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_view_model::{Client, Lang, Transport, VIEWS_PROTOCOL};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;

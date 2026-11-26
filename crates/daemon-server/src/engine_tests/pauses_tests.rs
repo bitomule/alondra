@@ -5,7 +5,7 @@ use super::wired;
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_engine_admission::admission::Key;
 use alondra_engine_admission::pauses::Reason;
-use alondra_domain_rules::AgentId;
+use alondra_domain_model::AgentId;
 
 /// Pausing interrupts the turn with what the node goes on with already told: no card asks the user
 /// how it goes on, its task says it is paused, and resuming it is the user's one step.
@@ -17,7 +17,7 @@ async fn pausing_an_sdk_node_raises_no_card_and_its_task_shows_it_paused() {
     node.step();
     let state = node.domain.state().unwrap();
     let cards: Vec<_> = state.interactions.keys()
-        .filter(|id| [alondra_domain_rules::TURN_ENDED_PREFIX, alondra_domain_rules::STALLED_PREFIX].iter().any(|prefix| id.0.starts_with(prefix)))
+        .filter(|id| [alondra_domain_model::TURN_ENDED_PREFIX, alondra_domain_model::STALLED_PREFIX].iter().any(|prefix| id.0.starts_with(prefix)))
         .collect();
     assert!(cards.is_empty(), "a pause asks nothing: {cards:?}");
     let read = node.domain.read();

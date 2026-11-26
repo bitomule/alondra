@@ -1355,7 +1355,7 @@ fn help_lists_scheduled_tasks_the_disk_bar_and_no_fleet() {
 }
 
 fn held_plan_card() -> alondra_views::View {
-    use alondra_domain_rules::*;
+    use alondra_domain_model::*;
     let mut state = DomainState::new("e");
     let mut run = |actor: Actor, command: Command| {
         let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
@@ -1367,14 +1367,14 @@ fn held_plan_card() -> alondra_views::View {
     run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into(), at: 0 });
     run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Build".into(),
         agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
     run(Actor::System, Command::HoldHook { interaction_id: "hold-1".into(), task_id: "t".into(),
         agent_id: "agent-a".into(), hold: Hold::Plan, body: "# Ship the parser\n\n- [ ] Split the lexer".into(),
-        options: Hold::Plan.options(), card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Review, "Ship the parser")
-            .content(alondra_domain_rules::ContentKind::Plan, "- [ ] Split the lexer") });
+        options: Hold::Plan.options(), card: alondra_domain_model::CardSpec::new(alondra_domain_model::CardKind::Review, "Ship the parser")
+            .content(alondra_domain_model::ContentKind::Plan, "- [ ] Split the lexer") });
     let live = alondra_views::LiveSnapshot::default();
     alondra_views::build("card:hold-1", alondra_views::RenderContext {
-        domain: &state, index: &alondra_domain_rules::ReadIndex::build(&state), live: &live, client: alondra_views::Client::Tui, lang: alondra_views::Lang::En,
+        domain: &state, index: &alondra_domain_model::ReadIndex::build(&state), live: &live, client: alondra_views::Client::Tui, lang: alondra_views::Lang::En,
         transport: alondra_views::Transport::Loopback, cursor: "c", rendered_at: "",
     }).unwrap()
 }

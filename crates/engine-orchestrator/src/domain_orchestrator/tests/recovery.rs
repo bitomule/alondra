@@ -1,6 +1,6 @@
 use super::testing::{Fixture, fixture};
 use super::*;
-use alondra_domain_rules::LaunchPlan;
+use alondra_domain_model::LaunchPlan;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 fn request(f: &Fixture, id: &str) {

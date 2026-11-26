@@ -1,7 +1,7 @@
 //! The pauses' tests (`engine-admission`'s `pauses`) that run nodes through the SDK.
 use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use crate::domain_runtime::DomainRuntime;
-use alondra_domain_rules::{DomainState, TaskState};
+use alondra_domain_model::{DomainState, TaskState};
 use alondra_core::Millis;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -14,7 +14,7 @@ use crate::machine_state::NoRoom;
 use crate::node_push::testing::Node;
 use crate::node_reports::{Envelope, Report};
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure};
-use alondra_domain_rules::{API_RETRIES, Actor, AgentId, ApiRetry, Command, CommandEnvelope, NodePhase, OUTAGE_PROBE, PROTOCOL_VERSION, Pause, PauseReason, TaskId, TaskPriority};
+use alondra_domain_model::{API_RETRIES, Actor, AgentId, ApiRetry, Command, CommandEnvelope, NodePhase, OUTAGE_PROBE, PROTOCOL_VERSION, Pause, PauseReason, TaskId, TaskPriority};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -119,9 +119,9 @@ async fn resuming_a_paused_sdk_node_no_host_can_take_over_gives_its_task_a_card_
     node.domain.join_retakes();
     refuse(false);
     let card = node.host_lost_card().expect("the task has a card to try again");
-    let alondra_domain_rules::InteractionPayload::Question { options, .. } = &card.payload else { panic!("{card:?}") };
-    assert!(options.iter().any(|option| option.id == alondra_domain_rules::RETAKE), "{options:?}");
-    assert_eq!(node.domain.state().unwrap().tasks[&TaskId::from(SDK_TASK)].state, alondra_domain_rules::TaskState::NeedsYou);
+    let alondra_domain_model::InteractionPayload::Question { options, .. } = &card.payload else { panic!("{card:?}") };
+    assert!(options.iter().any(|option| option.id == alondra_domain_model::RETAKE), "{options:?}");
+    assert_eq!(node.domain.state().unwrap().tasks[&TaskId::from(SDK_TASK)].state, alondra_domain_model::TaskState::NeedsYou);
 }
 
 #[cfg(not(feature = "real-hosts"))]
@@ -198,8 +198,8 @@ async fn a_host_stopped_on_purpose_while_the_node_worked_on_a_delivery_sent_back
     node.get_it_back();
     node.tell(SDK_TASK, "Pass the MCP variables too");
     node.step_until(SdkNode::turn_ended);
-    assert!(node.domain.read().state().lifecycle_journal[&alondra_domain_rules::TaskId::from(SDK_TASK)].iter()
-        .any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::InputConsumed { .. })), "the node took what the user sent back");
+    assert!(node.domain.read().state().lifecycle_journal[&alondra_domain_model::TaskId::from(SDK_TASK)].iter()
+        .any(|record| matches!(record, alondra_domain_model::LifecycleRecord::InputConsumed { .. })), "the node took what the user sent back");
 
     node.lose_host();
     let generation = node.lifecycle().execution().unwrap().generation();
@@ -282,7 +282,7 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
     (0..4).for_each(&mut end_turn);
     run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "t-high".into(), request_id: "r".into(), title: "Task t-high".into(), agent_id: None, review_prs: false,
-        dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
+        dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")) });
     let high = Waiting { key: Key::Task("t-high".into()), priority: TaskPriority::High, resuming: false, since: now };
     run(&domain, user(), Command::SetPriority { task_id: "t-high".into(), priority: TaskPriority::High });
     assert!(gate.ask(&*domain, high, alondra_core::now_millis()).is_err(), "the nodes the disk held go first");
@@ -337,13 +337,13 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "t-light".into(), request_id: "r".into(), title: "Fix a typo".into(), agent_id: None, review_prs: false,
-        dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
+        dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")) });
     run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId("agent-light".into()), name: "agent-light".into(), at: 0 });
     crate::domain_store::admit_through_sdk(&domain, &"t-light".into(), "agent-light");
     let input = domain.state().unwrap().lifecycle_of(&"t-light".into()).unwrap().pending_inputs()[0].as_str().to_owned();
     run(&domain, Actor::System, Command::RecordRuntimeFacts { task_id: "t-light".into(), generation: 1, facts: vec![
-        alondra_domain_rules::RuntimeObservation::ResourceAvailable,
-        alondra_domain_rules::RuntimeObservation::TurnStarted { turn: "turn-light".into(), input },
+        alondra_domain_model::RuntimeObservation::ResourceAvailable,
+        alondra_domain_model::RuntimeObservation::TurnStarted { turn: "turn-light".into(), input },
     ] });
     let now = alondra_core::now_millis();
     let working = crate::admission::working_projects(&*domain, &domain.state().unwrap());
@@ -481,7 +481,7 @@ async fn a_delivering_task_whose_hosts_end_before_taking_its_input_is_never_take
         }
         looks.push(journal()[before..].to_vec());
     }
-    assert_eq!(looks[0].iter().filter(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TakenOver)).count(), 1, "the first look takes the task over once: {looks:#?}");
+    assert_eq!(looks[0].iter().filter(|record| matches!(record, alondra_domain_model::LifecycleRecord::TakenOver)).count(), 1, "the first look takes the task over once: {looks:#?}");
     assert!(looks[1..].iter().all(Vec::is_empty), "no later look takes over a task that waits on its owner: {looks:#?}");
     assert!(node.host_lost_card().is_some(), "the user is told its hosts end before they take anything: {looks:#?}");
     domain.stop_sdk_owners();
@@ -499,7 +499,7 @@ async fn a_takeover_that_fails_after_recording_is_not_repeated_by_its_own_revisi
     node.lose_host();
     std::fs::remove_file(&node.backend.native).unwrap();
     let takeovers = || domain.read().state().lifecycle_journal[&TaskId::from(SDK_TASK)].iter()
-        .filter(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TakenOver)).count();
+        .filter(|record| matches!(record, alondra_domain_model::LifecycleRecord::TakenOver)).count();
     for look in 0..4 {
         crate::sdk_owner::take_working_unowned(&*domain, &domain.state().unwrap(), alondra_core::now_millis() + look * 2 * MIN);
         domain.join_retakes();

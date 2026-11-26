@@ -103,7 +103,7 @@ fn weight_text(account: &AccountStatus, measured_plan: Option<&str>, lang: Lang)
 
 
 
-fn allowed(context: &RenderContext<'_>, provider: Provider, change: AccountChange) -> Result<(), alondra_domain_rules::Refusal> {
+fn allowed(context: &RenderContext<'_>, provider: Provider, change: AccountChange) -> Result<(), alondra_domain_model::Refusal> {
     let available = context.domain.account_action(provider, change);
     match available.refusal {
         Some(refusal) if !available.enabled => Err(refusal),
@@ -226,7 +226,7 @@ fn weight_action(account: &AccountStatus, measured_plan: Option<&str>, context: 
 fn remove_action(account: &AccountStatus, shown: &str, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
     let refused = allowed(context, account.provider, AccountChange::Remove { account: account.id.clone() }).err();
-    if refused.as_ref().is_some_and(|refusal| !matches!(refusal, alondra_domain_rules::Refusal::AccountInUse { .. })) {
+    if refused.as_ref().is_some_and(|refusal| !matches!(refusal, alondra_domain_model::Refusal::AccountInUse { .. })) {
         return None;
     }
     let mut remove = scoped_action(Verb::AccountRemove, account, t!(lang, "Remove", "Quitar"), Style::Destructive, context)?;

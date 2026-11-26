@@ -1,7 +1,7 @@
 //! What the model of the whole machine (`crates/machine-model`) runs of the hosts' owners and the
 //! moves between providers: their decisions, called as they are.
 use alondra_core::Millis;
-use alondra_domain_rules::{AgentId, Command, DomainError, DomainState, TaskId};
+use alondra_domain_model::{AgentId, Command, DomainError, DomainState, TaskId};
 use std::collections::BTreeMap;
 
 pub mod provider_transition {

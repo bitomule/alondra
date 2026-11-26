@@ -15,7 +15,7 @@ pub mod settings;
 use account_move::{AccountMove, Plan as AccountMovePlan};
 use alondra_core::Millis;
 use alondra_core::metrics::report::MetricsInputs;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     AttachmentRef,
     Actor, AgentId, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, DomainState, InteractionId, LaunchPlan,
     RequestId, Revision, TaskId,
@@ -115,7 +115,7 @@ pub trait Journal: Send {
     fn batch_outcomes(&self, run: &str, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value>;
     fn batch_run_manifest(&self, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value>;
     fn batch_selection(&self, run: &str) -> Result<Option<records::BatchSelection>>;
-    fn batch_stop(&self, run: &str) -> Result<Option<(alondra_domain_rules::orchestrator_batch::BatchStop, String)>>;
+    fn batch_stop(&self, run: &str) -> Result<Option<(alondra_domain_model::orchestrator_batch::BatchStop, String)>>;
     fn begin_task_closing(&mut self, task_id: &TaskId, now: i64) -> Result<TaskClosing>;
     fn begin_tool_operation(&mut self, run: &str, call: &str, kind: &str, request: &Value) -> Result<Option<(String,Option<String>,Option<String>)>>;
     fn bind_batch_effects(&mut self, run: &str, epoch: &DataEpoch) -> Result<()>;
@@ -123,8 +123,8 @@ pub trait Journal: Send {
     fn change_launch_plan(&mut self, task_id: &TaskId, plan: &LaunchPlan, changes: Option<&serde_json::Value>, now: i64) -> Result<()>;
     fn claim_auto_launch(&mut self, task_id: &TaskId, now: i64, retry: bool) -> Result<bool>;
     fn claim_message(&mut self, id: i64) -> Result<Option<DeliveryClaim>>;
-    fn claim_orchestrator_batch(&mut self, ids: &[i64], run: &str, session: &str, epoch: alondra_domain_rules::DataEpoch) -> Result<(Vec<DeliveryClaim>, BatchOwner)>;
-    fn claim_selected_orchestrator_batch(&mut self, ids: &[i64], run: &str, session: &str, epoch: alondra_domain_rules::DataEpoch, selection: Option<&records::BatchSelection>) -> Result<(Vec<DeliveryClaim>, BatchOwner)>;
+    fn claim_orchestrator_batch(&mut self, ids: &[i64], run: &str, session: &str, epoch: alondra_domain_model::DataEpoch) -> Result<(Vec<DeliveryClaim>, BatchOwner)>;
+    fn claim_selected_orchestrator_batch(&mut self, ids: &[i64], run: &str, session: &str, epoch: alondra_domain_model::DataEpoch, selection: Option<&records::BatchSelection>) -> Result<(Vec<DeliveryClaim>, BatchOwner)>;
     fn claim_task_removal(&mut self, task_id: &TaskId, now: i64) -> Result<bool>;
     fn complete_tool_operation(&mut self, run: &str, call: &str, answer: &std::result::Result<Value,DomainError>) -> Result<()>;
     fn conversation_directory(&self, task: &TaskId, conversation: &str) -> Result<Option<String>>;
@@ -373,7 +373,7 @@ pub trait OwnerJournal {
     fn unrecorded(&self) -> &[String];
     fn validate_selection_binding(&mut self, plan:&TransitionPlan) ->std::result::Result<(),StoreError>;
     fn validate_selection_source(&mut self, plan:&TransitionPlan) ->std::result::Result<(),StoreError>;
-    fn work_is_over(&self, task: &alondra_domain_rules::TaskId) -> bool;
+    fn work_is_over(&self, task: &alondra_domain_model::TaskId) -> bool;
 }
 
 impl dyn OwnerJournal + '_ {
@@ -583,18 +583,18 @@ pub struct UserPushHistory {
 pub struct BatchOwner {
     run: String,
     session: String,
-    epoch: alondra_domain_rules::DataEpoch,
+    epoch: alondra_domain_model::DataEpoch,
 }
 
 impl BatchOwner {
-    pub fn issued(run: &str, session: &str, epoch: alondra_domain_rules::DataEpoch) -> Self {
+    pub fn issued(run: &str, session: &str, epoch: alondra_domain_model::DataEpoch) -> Self {
         Self { run: run.into(), session: session.into(), epoch }
     }
     pub fn run(&self) -> &str {
         &self.run
     }
     pub fn session(&self) -> &str { &self.session }
-    pub fn epoch(&self) -> &alondra_domain_rules::DataEpoch { &self.epoch }
+    pub fn epoch(&self) -> &alondra_domain_model::DataEpoch { &self.epoch }
     pub fn host_name(&self) -> &str { BATCH_HOST }
 }
 

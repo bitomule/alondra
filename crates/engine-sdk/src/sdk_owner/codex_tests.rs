@@ -95,12 +95,12 @@ fn a_codex_node_uses_the_real_owner_store_and_commits_final_public_context_befor
         .query_map([TASK], |row| { let bytes: Vec<u8> = row.get(1)?; Ok((row.get(0)?, serde_json::from_slice(&bytes).unwrap())) }).unwrap().map(Result::unwrap).collect();
     assert_eq!(registered.len(), 1 + usize::from(alondra_domain::EMPTY_TURN_WAKES));
     let journal = &state.lifecycle_journal[&TaskId::from(TASK)];
-    let wake = journal.iter().find_map(|record| match record { alondra_domain_rules::LifecycleRecord::TurnEnded { wake: Some(wake), text, .. } => Some((wake, text)), _ => None }).unwrap();
+    let wake = journal.iter().find_map(|record| match record { alondra_domain_model::LifecycleRecord::TurnEnded { wake: Some(wake), text, .. } => Some((wake, text)), _ => None }).unwrap();
     assert_eq!(&registered[1].0, wake.0, "the second input is the domain's durable wake");
     assert_eq!(turns[1]["params"]["input"][0]["text"].as_str(), wake.1.as_deref());
     for (index, (input, metadata)) in registered.iter().enumerate() {
         assert_eq!(turns[index]["params"]["clientUserMessageId"], metadata["message_id"]);
-        assert_eq!(journal.iter().filter(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TurnStarted { input: seen, .. } if seen == input)).count(), 1);
+        assert_eq!(journal.iter().filter(|record| matches!(record, alondra_domain_model::LifecycleRecord::TurnStarted { input: seen, .. } if seen == input)).count(), 1);
     }
     assert!(Slice::lifecycle(&*slice.domain).pending_inputs().is_empty(), "the native turn acceptance consumed both registered inputs");
     let public: Vec<(String, String)> = observer.prepare("SELECT native_id,content FROM task_context_items WHERE task_id=?1 AND source='assistant'").unwrap()
@@ -169,7 +169,7 @@ fn an_accepted_native_request_stays_pending_until_its_exact_native_user_item_is_
     while slice.observations_with("alondra/inputAccepted") == 0 { driver.observe_written().unwrap(); }
     let state = slice.domain.state().unwrap();
     assert_eq!(Slice::lifecycle(&*slice.domain).pending_inputs().len(), 1);
-    assert!(!state.lifecycle_journal[&TaskId::from(TASK)].iter().any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TurnStarted { .. } | alondra_domain_rules::LifecycleRecord::InputConsumed { .. })));
+    assert!(!state.lifecycle_journal[&TaskId::from(TASK)].iter().any(|record| matches!(record, alondra_domain_model::LifecycleRecord::TurnStarted { .. } | alondra_domain_model::LifecycleRecord::InputConsumed { .. })));
     assert_eq!(transcript(&trace).iter().filter(|message| message["method"] == "turn/start").count(), 1);
     slice.run(&system(), "release-native-user-item", Command::ReadMcpStatus { task_id: TASK.into() });
     driver.step(&|| false).unwrap();
@@ -655,7 +655,7 @@ fn disabled_codex_waiting_for_native_capacity() -> (Slice, Driver, PathBuf, alon
         order: config.ordered_accounts().into_iter().map(|(key, _)| key).collect(), version: alondra_core::accounts::config_version(&config) });
     let mut driver = launch(&slice); slice.settle(&mut driver);
     let state = slice.domain.state().unwrap(); let task = TaskId::from(TASK);
-    let held = state.claude_held().into_iter().find(|held| held.task == task && held.provider == Provider::Codex && held.hold == alondra_domain_rules::ClaudeHold::Usage).expect("the actual native quota result held the existing node");
+    let held = state.claude_held().into_iter().find(|held| held.task == task && held.provider == Provider::Codex && held.hold == alondra_domain_model::ClaudeHold::Usage).expect("the actual native quota result held the existing node");
     let execution = state.lifecycle_of(&task).unwrap().execution().unwrap().clone();
     crate::accounts::change_for_provider(&*slice.domain, &slice._home, &user(), Provider::Codex,
         &alondra_core::accounts::AccountChange::Disable { account: AccountId::default_account() }).unwrap();
@@ -680,7 +680,7 @@ fn assert_no_native_inference_from_account_probe(slice: &Slice, sidecar: &Path) 
 fn a_disabled_existing_codex_node_recovers_from_real_native_capacity_without_becoming_new_work_eligible() {
     use alondra_core::accounts::AccountState;
     let (slice, mut driver, sidecar, execution, card) = disabled_codex_waiting_for_native_capacity();
-    assert!(crate::accounts::probe_current_codex(&*slice.domain, &TASK.into(), Some(alondra_domain_rules::ClaudeHold::Usage)).unwrap());
+    assert!(crate::accounts::probe_current_codex(&*slice.domain, &TASK.into(), Some(alondra_domain_model::ClaudeHold::Usage)).unwrap());
     let state = slice.domain.state().unwrap(); let key = AccountKey::native(Provider::Codex);
     let account = state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account).unwrap();
     assert_eq!(account.state, AccountState::Disabled);
@@ -711,7 +711,7 @@ fn an_existing_codex_probe_records_a_real_workspace_replacement_without_publishi
     replaced.workspace_id = Some("replacement-workspace".into());
     replaced.rate_limits = Some(serde_json::json!({"accountId":"replacement-workspace","ordinaryUsageAllowed":true,"rateLimits":null}));
     alondra_engine_doubles::accounts::of(slice.domain.ports()).answer_every_codex(Ok(replaced));
-    assert!(crate::accounts::probe_current_codex(&*slice.domain, &TASK.into(), Some(alondra_domain_rules::ClaudeHold::Usage)).unwrap_err().contains("original managed account and workspace"));
+    assert!(crate::accounts::probe_current_codex(&*slice.domain, &TASK.into(), Some(alondra_domain_model::ClaudeHold::Usage)).unwrap_err().contains("original managed account and workspace"));
     let state = slice.domain.state().unwrap(); let key = AccountKey::native(Provider::Codex);
     let account = state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account).unwrap();
     assert_eq!(account.state, AccountState::Disabled); assert_eq!(account.native_identity.as_deref(), Some("replacement-workspace"));
@@ -733,7 +733,7 @@ fn an_existing_codex_probe_never_turns_new_api_key_billing_into_paid_authorizati
     let mut api_key = alondra_engine_doubles::accounts::codex_fixture();
     (api_key.account_type, api_key.pay_per_use, api_key.workspace_id, api_key.email, api_key.plan) = (Some("apiKey".into()), true, None, None, None);
     alondra_engine_doubles::accounts::of(slice.domain.ports()).answer_every_codex(Ok(api_key));
-    assert!(crate::accounts::probe_current_codex(&*slice.domain, &TASK.into(), Some(alondra_domain_rules::ClaudeHold::Usage)).is_err());
+    assert!(crate::accounts::probe_current_codex(&*slice.domain, &TASK.into(), Some(alondra_domain_model::ClaudeHold::Usage)).is_err());
     let state = slice.domain.state().unwrap(); let key = AccountKey::native(Provider::Codex);
     let account = state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account).unwrap();
     assert_eq!(account.state, AccountState::Disabled); assert_eq!(account.billing, AccountBilling::PayPerUse);
@@ -807,7 +807,7 @@ fn initial_native_policy_rejection_keeps_original_mission_for_explicit_same_acco
 }
 
 pub fn turns_started(domain: &DomainRuntime) -> usize {
-    domain.read().state().lifecycle_journal[&TaskId::from(TASK)].iter().filter(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TurnStarted { .. })).count()
+    domain.read().state().lifecycle_journal[&TaskId::from(TASK)].iter().filter(|record| matches!(record, alondra_domain_model::LifecycleRecord::TurnStarted { .. })).count()
 }
 
 /// A Codex node is mid-turn when the Mac goes down, host and daemon with it. `meanwhile` changes
@@ -1462,7 +1462,7 @@ pub fn on_branch(worktree:&Path,branch:&str){
 }
 /// What makes the task itself, which a move leaves as it was.
 #[cfg(not(feature = "real-hosts"))]
-fn identity(slice:&Slice)->(String,alondra_domain_rules::RequestId,alondra_domain_rules::TaskPriority,BTreeSet<TaskId>,Option<String>){
+fn identity(slice:&Slice)->(String,alondra_domain_model::RequestId,alondra_domain_model::TaskPriority,BTreeSet<TaskId>,Option<String>){
     let state=slice.domain.state().unwrap();let task=&state.tasks[&TaskId::from(TASK)];
     (task.title.clone(),task.request_id.clone(),task.priority,task.dependencies.clone(),slice.domain.task_worktree(&task.id).unwrap())
 }
@@ -1714,7 +1714,7 @@ fn a_usage_limit_whose_turn_end_the_domain_refuses_still_holds_the_task_and_its_
     crate::domain_store::refuse_next(crate::domain_store::Refuse::TurnEnd);
     slice.settle(&mut driver);
     let task = TaskId::from(TASK);
-    let held = |slice: &Slice| slice.domain.state().unwrap().claude_held().iter().filter(|held| held.task == task && held.hold == alondra_domain_rules::ClaudeHold::Usage).count();
+    let held = |slice: &Slice| slice.domain.state().unwrap().claude_held().iter().filter(|held| held.task == task && held.hold == alondra_domain_model::ClaudeHold::Usage).count();
     let turns = |trace: &Path| transcript(trace).iter().filter(|request| request["method"] == "turn/start").count();
     assert_eq!(held(&slice), 1, "the limit holds the task although its turn end was refused");
     assert_eq!(slice.domain.state().unwrap().live_state(&task), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)), "the task holds no working slot");
@@ -1786,7 +1786,7 @@ async fn a_task_held_by_the_codex_limit_starts_on_the_account_it_moved_to(){
     slice.domain.enable_sdk(slice.backend.clone());
     let mut driver=launch(&slice);
     slice.settle(&mut driver);
-    let held=|slice:&Slice|slice.domain.state().unwrap().claude_held().iter().filter(|held|held.task==task&&held.hold==alondra_domain_rules::ClaudeHold::Usage).count();
+    let held=|slice:&Slice|slice.domain.state().unwrap().claude_held().iter().filter(|held|held.task==task&&held.hold==alondra_domain_model::ClaudeHold::Usage).count();
     assert_eq!(held(&slice),1,"Codex's limit holds the task");
     slice.domain.add_sdk_owner(Owner::spawn(driver));
     request_move(&slice);
@@ -1843,7 +1843,7 @@ fn built_on_a_compacted_result(slice:&Slice)->String{
     slice.run(&system(),"end-earlier",Command::RecordNodeEnd{task_id:earlier.clone(),end:NodeEnd::Closed,agent_id:None});
     slice.run(&Actor::Orchestrator{generation:0},"depend-on-earlier",Command::SetDependencies{task_id:TASK.into(),dependencies:BTreeSet::from([earlier]),stack:None,reason:None});
     slice.domain.retain(alondra_core::now_millis()).unwrap();
-    let state=slice.domain.state().unwrap();let result=&state.interactions[&alondra_domain_rules::InteractionId::from("journal-final")];
+    let state=slice.domain.state().unwrap();let result=&state.interactions[&alondra_domain_model::InteractionId::from("journal-final")];
     assert!(result.shortened,"the earlier result is compacted to its excerpt");
     result.body.lines().next().unwrap().to_owned()
 }
@@ -2108,7 +2108,7 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
         task_id: task.clone(), end: NodeEnd::Closed, agent_id: Some(old_node.clone()),
     });
     let terminal = slice.domain.state().unwrap();
-    assert_eq!(terminal.tasks[&task].state, alondra_domain_rules::TaskState::Cancelled);
+    assert_eq!(terminal.tasks[&task].state, alondra_domain_model::TaskState::Cancelled);
     crate::domain_orchestrator_tools::update_launch_plan(&*slice.domain, &slice._home, serde_json::from_value(serde_json::json!({
         "task_id": task, "changes": {"model": "codex/fixture-model", "reasoning_effort": "high"},
     })).unwrap()).unwrap();
@@ -2229,7 +2229,7 @@ async fn a_paused_task_moves_at_once_and_starts_on_the_new_account_when_resumed(
     assert_eq!(admissions(&slice),1,"nothing starts while it is paused");
     assert!(crate::provider_transition::moving(&*slice.domain,&task),"no node but the one on the new account may start it");
     let pause=Slice::lifecycle(&*slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
-    slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_domain_rules::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
+    slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_domain_model::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
     let mut changed=slice.domain.subscribe();
     while admissions(&slice)<2{
         crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
@@ -2258,7 +2258,7 @@ async fn a_moved_task_starts_with_a_long_message_when_the_destination_window_is_
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done");
     let pause=Slice::lifecycle(&*slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
-    slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_domain_rules::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
+    slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_domain_model::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
     let mut changed=slice.domain.subscribe();
     while admissions(&slice)<2{
         crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;
@@ -2286,7 +2286,7 @@ async fn a_moved_task_refused_on_its_new_account_waits_for_the_user_instead_of_s
     let context=u64::try_from(context).unwrap();
     claude_window(&slice,Some(context+alondra_store::HANDOFF_RESERVED_TOKENS),2);
     let pause=Slice::lifecycle(&*slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
-    slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_domain_rules::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
+    slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_domain_model::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
     let refusals=||move_steps(&slice).iter().filter(|step|*step=="start_refused").count();
     let refused=|count:usize|{let slice=&slice;async move{
         let mut changed=slice.domain.subscribe();
@@ -2303,16 +2303,16 @@ async fn a_moved_task_refused_on_its_new_account_waits_for_the_user_instead_of_s
     let refusal=state.tasks[&task].move_refused.clone().expect("the task says why it did not move");
     assert_eq!(refusal.account,AccountKey::native(Provider::Claude));
     let card=state.open_start_problem(&task).expect("a card asks the user").id.clone();
-    assert!(matches!(alondra_domain_rules::start_problem::from_body(&state.interactions[&card].body),Some(StartProblem::MoveStartRefused{account,..}) if account==AccountKey::native(Provider::Claude)));
+    assert!(matches!(alondra_domain_model::start_problem::from_body(&state.interactions[&card].body),Some(StartProblem::MoveStartRefused{account,..}) if account==AccountKey::native(Provider::Claude)));
     assert!(crate::provider_transition::moving(&*slice.domain,&task),"no other node starts it meanwhile");
-    slice.run(&user(),"retry-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:card.clone(),option_id:alondra_domain_rules::START_RETRY.into(),inputs:Default::default()});
+    slice.run(&user(),"retry-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:card.clone(),option_id:alondra_domain_model::START_RETRY.into(),inputs:Default::default()});
     refused(2).await;
     for _ in 0..5{crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;}
     assert_eq!(refusals(),2,"trying again tries once: {:?}",move_steps(&slice));
     let state=slice.domain.state().unwrap();
     let again=state.open_start_problem(&task).expect("the refused retry asks again").id.clone();
     assert_ne!(again,card);
-    slice.run(&user(),"cancel-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:again,option_id:alondra_domain_rules::START_CANCEL.into(),inputs:Default::default()});
+    slice.run(&user(),"cancel-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:again,option_id:alondra_domain_model::START_CANCEL.into(),inputs:Default::default()});
     assert!(slice.domain.state().unwrap().tasks[&task].over(),"cancelling closes the task");
     for _ in 0..3{crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;}
     assert_eq!(admissions(&slice),1);
@@ -2339,7 +2339,7 @@ async fn a_delivery_moved_while_reviewed_waits_for_the_user_and_starts_on_the_ne
     slice.domain.admission().ignore_mac();
     slice.domain.admission().tune(crate::admission::Tuning{spacing:0,limit:Some(crate::admission::Limit::Fixed(0))});
     slice.run(&user(),"send-back",Command::SubmitFeedback{merge_failure:None,attachments:vec![],presentation_id:"notes".into(),
-        targets:targets.clone(),body:"Add the date".into(),instruction:alondra_domain_rules::Instruction::Changes});
+        targets:targets.clone(),body:"Add the date".into(),instruction:alondra_domain_model::Instruction::Changes});
     assert_eq!(Slice::lifecycle(&*slice.domain).obligation().map(|o|(o.party,o.owed)), Some((alondra_domain::Party::Alondra,alondra_domain::Owed::Start)));
     for _ in 0..3{crate::provider_transition::pass(&(slice.domain.clone() as std::sync::Arc<dyn alondra_engine_ports::Runtime>)).await;}
     assert_eq!(admissions(&slice),1,"the gate holds the start while it has no slot");

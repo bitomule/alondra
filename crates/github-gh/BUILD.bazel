@@ -10,7 +10,7 @@ load("//bazel/rules:rust.bzl", "rust_binary")
 # piece of the engine: only the roots see it, and editing it rebuilds this crate and their link.
 WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
-    "//crates/domain-rules:domain_rules",
+    "//crates/domain-model:domain_model",
     "//crates/engine-ports:engine_ports",
 ]
 

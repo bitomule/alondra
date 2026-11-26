@@ -1,7 +1,7 @@
 //! What the clients show of a card follows its type's contract: a result asks to review it, the
 //! button that closes the task says so, and a card that is only read never counts as waiting.
 use super::*;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind, DeliveryTarget, DomainState, LaunchPlan,
 };
 use std::collections::BTreeSet;
@@ -36,11 +36,11 @@ fn present(s: &mut DomainState, need: &str) {
         is_final: true, nothing_to_review: false, card,
     });
 }
-fn context<'a>(domain: &'a DomainState, index: &'a alondra_domain_rules::ReadIndex, live: &'a LiveSnapshot, client: Client) -> RenderContext<'a> {
+fn context<'a>(domain: &'a DomainState, index: &'a alondra_domain_model::ReadIndex, live: &'a LiveSnapshot, client: Client) -> RenderContext<'a> {
     RenderContext { domain, index, live, client, lang: Lang::Es, transport: Transport::Loopback, cursor: "cursor-1", rendered_at: "" }
 }
 fn card_of(domain: &DomainState, id: &str) -> Card {
-    let index = alondra_domain_rules::ReadIndex::build(domain);
+    let index = alondra_domain_model::ReadIndex::build(domain);
     let live = LiveSnapshot::default();
     let item = inbox_items(domain).into_iter().find(|item| item.id == format!("interaction:{id}")).expect("the card is in the inbox");
     card::from_item(&item, &context(domain, &index, &live, Client::Ios), true).unwrap()
@@ -72,7 +72,7 @@ fn a_result_stored_with_a_decision_in_its_need_asks_to_review_it() {
 fn a_card_that_is_only_read_is_listed_apart_and_never_counts_on_the_icon() {
     let mut s = fixture();
     ok(&mut s, Actor::System, Command::AnnounceRequestTasks);
-    let index = alondra_domain_rules::ReadIndex::build(&s);
+    let index = alondra_domain_model::ReadIndex::build(&s);
     assert_eq!(index.waiting().len(), 1, "the notice is still in the inbox to read");
     assert_eq!(inbox_badge(&index), 0);
     let live = LiveSnapshot::default();
@@ -86,6 +86,6 @@ fn a_card_that_is_only_read_is_listed_apart_and_never_counts_on_the_icon() {
     assert_eq!(ios.status.badge, 0);
 
     present(&mut s, "Review it");
-    let index = alondra_domain_rules::ReadIndex::build(&s);
+    let index = alondra_domain_model::ReadIndex::build(&s);
     assert_eq!(inbox_badge(&index), 1, "the result asks for something");
 }

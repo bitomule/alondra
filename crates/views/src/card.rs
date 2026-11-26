@@ -11,7 +11,7 @@ use super::{
     summary,
     text::{t, tf},
 };
-use alondra_domain_rules::{CardType, InboxCard, Need, SystemCard,
+use alondra_domain_model::{CardType, InboxCard, Need, SystemCard,
     AvailableAction, Author, CardKind, CardSpec, ContentKind as DomainContent,
     DeliveryTarget, DocumentRevisionId, FeedbackTarget, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
     InteractionPayload, InteractionSubject, PrId, PrIdentity, PrState, PullRequest, UnresolvableReason, QuestionGroup, QuestionOption, Recipient, Scope, Task, clip, fit_title,
@@ -67,7 +67,7 @@ fn card_pr<'a>(item: &InboxItem, interaction: &'a Interaction, domain: &'a Domai
 /// The document revision a card is about: a delivery of one, or a question its node linked to one.
 fn reviewed_revision<'a>(
     interaction: &'a Interaction,
-) -> Option<&'a alondra_domain_rules::DocumentRevisionId> {
+) -> Option<&'a alondra_domain_model::DocumentRevisionId> {
     targets_of(interaction)
         .iter()
         .find_map(|target| match target {
@@ -431,12 +431,12 @@ fn state_label(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
 /// What the tasks that reviewed this one concluded: the line of each approval and, when the
 /// rounds ran out, the failures that were left.
 fn review_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLine> {
-    use alondra_domain_rules::{MAX_REVIEW_ROUNDS, Verdict};
+    use alondra_domain_model::{MAX_REVIEW_ROUNDS, Verdict};
     let lang = context.lang;
     let Some(task) = &item.task_id else { return vec![] };
     let line = |text: String| ContextLine { icon: Icon::Check, text, link: None, chip: None, state: None };
     let mut lines = vec![];
-    let reviewed_after = |reviewer: &alondra_domain_rules::Task| {
+    let reviewed_after = |reviewer: &alondra_domain_model::Task| {
         reviewer.final_presentation.as_ref().and_then(|id| context.domain.interactions.get(id)).is_some_and(|result| result.order > item.order)
     };
     let reviewers = context.index.reviewers(task).iter().filter_map(|id| context.domain.tasks.get(id));
@@ -527,7 +527,7 @@ fn merge_unavailable(item: &InboxItem, context: &RenderContext<'_>) -> Option<St
     let interaction = interaction_of(item, context.domain)?;
     let pr = card_pr(item, interaction, context.domain).filter(|pr| pr.state == PrState::Open && !pr.identity.is_unresolvable())?;
     if pr.identity.is_unverified() {
-        return Some(super::messages::refusal_text(&alondra_domain_rules::Refusal::PrNotCheckedYet, context.lang));
+        return Some(super::messages::refusal_text(&alondra_domain_model::Refusal::PrNotCheckedYet, context.lang));
     }
     let live = live_pr(pr, context);
     if blocked_reason(item, context).is_some() || live.is_some_and(|detail| detail.conflicts || detail.stacked_on.is_some()) {
@@ -535,7 +535,7 @@ fn merge_unavailable(item: &InboxItem, context: &RenderContext<'_>) -> Option<St
     }
     let merge = item.available_actions.iter().find(|action| action.kind == "authorize_merge" && !action.enabled)?;
     let refusal = merge.refusal.clone()
-        .unwrap_or_else(|| alondra_domain_rules::Refusal::for_code(merge.disabled_reason.as_deref().unwrap_or_default()));
+        .unwrap_or_else(|| alondra_domain_model::Refusal::for_code(merge.disabled_reason.as_deref().unwrap_or_default()));
     Some(super::messages::refusal_text(&refusal, context.lang))
 }
 
@@ -548,7 +548,7 @@ fn merge_notes(item: &InboxItem, context: &RenderContext<'_>) -> Vec<String> {
         return vec![];
     }
     match context.domain.merge_verdicts.get(&pr.id).filter(|observed| observed.head == head).map(|observed| &observed.verdict) {
-        Some(alondra_domain_rules::MergeVerdict::Mergeable { notes }) => notes.iter().map(|note| super::messages::note_text(note, context.lang)).collect(),
+        Some(alondra_domain_model::MergeVerdict::Mergeable { notes }) => notes.iter().map(|note| super::messages::note_text(note, context.lang)).collect(),
         _ => vec![],
     }
 }
@@ -700,7 +700,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     if interaction.is_some_and(|i| !i.withdrawn && matches!(i.payload, InteractionPayload::Question { answer: None, .. })) {
         card.form = spec.form.clone();
         if let Some(interaction) = interaction.filter(|i| i.system_card == Some(SystemCard::DiscardWorktrees))
-            && let Some(own) = alondra_domain_rules::discard_worktrees::DiscardWorktrees::from_body(&interaction.body)
+            && let Some(own) = alondra_domain_model::discard_worktrees::DiscardWorktrees::from_body(&interaction.body)
         {
             card.form = own.form(context.lang);
         }
@@ -1005,15 +1005,15 @@ fn spec_change_card(interaction: &Interaction, domain: &DomainState, lang: Lang)
     if interaction.author != Author::System || !matches!(interaction.system_card, Some(SystemCard::SpecChange)) {
         return None;
     }
-    let card = alondra_domain_rules::spec_card::SpecCard::from_body(&interaction.body)?;
+    let card = alondra_domain_model::spec_card::SpecCard::from_body(&interaction.body)?;
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let task = domain.tasks.get(task_id)?;
     Some(card.card(&task.title, &task.specs, lang))
 }
 
-fn start_problem_of(interaction: &Interaction) -> Option<alondra_domain_rules::StartProblem> {
+fn start_problem_of(interaction: &Interaction) -> Option<alondra_domain_model::StartProblem> {
     (interaction.author == Author::System && matches!(interaction.system_card, Some(SystemCard::StartProblem)))
-        .then(|| alondra_domain_rules::start_problem::from_body(&interaction.body))
+        .then(|| alondra_domain_model::start_problem::from_body(&interaction.body))
         .flatten()
 }
 
@@ -1022,10 +1022,10 @@ fn start_problem_card(interaction: &Interaction, domain: &DomainState, lang: Lan
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let title = domain.tasks.get(task_id)?.title.as_str();
     let dependency = match &problem {
-        alondra_domain_rules::StartProblem::DependencyCancelled { dependency } => domain.tasks.get(dependency).map(|task| task.title.as_str()),
+        alondra_domain_model::StartProblem::DependencyCancelled { dependency } => domain.tasks.get(dependency).map(|task| task.title.as_str()),
         _ => None,
     };
-    Some(alondra_domain_rules::start_problem::card(title, &problem, dependency, lang))
+    Some(alondra_domain_model::start_problem::card(title, &problem, dependency, lang))
 }
 
 fn start_problem_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
@@ -1089,12 +1089,12 @@ enum McpWay {
     Off,
 }
 
-fn mcp_way(interaction: &Interaction, domain: &DomainState) -> Option<(alondra_domain_rules::McpServerKey, McpWay)> {
-    let server = alondra_domain_rules::McpServerKey::of_card(interaction)?;
+fn mcp_way(interaction: &Interaction, domain: &DomainState) -> Option<(alondra_domain_model::McpServerKey, McpWay)> {
+    let server = alondra_domain_model::McpServerKey::of_card(interaction)?;
     let Scope::Task { task_id } = &interaction.scope else { return Some((server, McpWay::SignIn)) };
     let reported = domain.mcp_server_of(task_id, &server);
     let way = match reported {
-        Some(reported) if reported.status == alondra_domain_rules::McpStatus::Disabled => McpWay::Off,
+        Some(reported) if reported.status == alondra_domain_model::McpStatus::Disabled => McpWay::Off,
         Some(reported) if reported.source.as_deref() == Some("claudeai") || reported.transport.as_deref() == Some("claudeai-proxy") => McpWay::ClaudeAi,
         _ => McpWay::SignIn,
     };
@@ -1165,7 +1165,7 @@ fn mcp_actions(interaction: &Interaction, context: &RenderContext<'_>) -> Vec<Ac
 /// The card of a task its provider holds, in the viewer's language: Waiting for You shows one of them
 /// for every task that waits on the same hold.
 fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    use alondra_domain_rules::ClaudeHold;
+    use alondra_domain_model::ClaudeHold;
     if interaction.author != Author::System {
         return None;
     }
@@ -1203,10 +1203,10 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
         return Some((clip(&need, CardSpec::NEED_MAX), why));
     }
     let (detail, said) = match &interaction.system_card {
-        Some(alondra_domain_rules::SystemCard::ClaudeOutage { detail, said, .. }) => (detail.as_deref(), said.as_deref().map(|said| clip(said, OUTAGE_SAID_MAX))),
+        Some(alondra_domain_model::SystemCard::ClaudeOutage { detail, said, .. }) => (detail.as_deref(), said.as_deref().map(|said| clip(said, OUTAGE_SAID_MAX))),
         _ => (None, None),
     };
-    let unreachable = alondra_domain_rules::unreachable_api(detail);
+    let unreachable = alondra_domain_model::unreachable_api(detail);
     let need = match (hold, waiting, &named) {
         (ClaudeHold::SignedOut, _, None) => t!(lang, "Sign in to Claude outside Alondra", "Inicia sesión en Claude fuera de Alondra").to_owned(),
         (ClaudeHold::SignedOut, _, Some(name)) => tf!(lang, "Sign in to the Claude account {name} on the Mac", "Inicia sesión en la cuenta de Claude {name} en el Mac"),
@@ -1311,28 +1311,28 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let title = domain.tasks.get(task_id)?.title.as_str();
-    if interaction.card.why == alondra_domain_rules::REFUSED_WHY {
-        let refusal = alondra_domain_rules::REFUSALS.into_iter().find(|error| interaction.card.effective_title().ends_with(alondra_domain_rules::api_refusal(error)))
+    if interaction.card.why == alondra_domain_model::REFUSED_WHY {
+        let refusal = alondra_domain_model::REFUSALS.into_iter().find(|error| interaction.card.effective_title().ends_with(alondra_domain_model::api_refusal(error)))
             .map_or(t!(lang, "Claude Code cannot use the Claude API", "Claude Code no puede usar la API de Claude"), |error| api_refusal_text(error, lang));
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped: {refusal}", "«{title}» se ha parado: {refusal}"));
         return Some((need, t!(lang,
             "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.",
             "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.").into()));
     }
-    if interaction.card.why == alondra_domain_rules::INTERRUPTED_WHY {
+    if interaction.card.why == alondra_domain_model::INTERRUPTED_WHY {
         return Some(interrupted_text(title, lang));
     }
-    if interaction.card.why == alondra_domain_rules::NATIVE_REQUEST_REJECTED_WHY {
+    if interaction.card.why == alondra_domain_model::NATIVE_REQUEST_REJECTED_WHY {
         return Some((t!(lang, "Codex rejected this task's request: check it before continuing", "Codex rechazó la solicitud de esta tarea: revísala antes de continuar").into(), t!(lang,
             "Codex rejected this task's request. Check the selected model, reasoning effort and input before explicitly continuing on this account or cancelling. A listed model is not proof that this request will be accepted.",
             "Codex rechazó la solicitud de esta tarea. Revisa el modelo, el esfuerzo de razonamiento y la entrada antes de continuar expresamente con esta cuenta o cancelar. Que un modelo figure en la lista no demuestra que esta solicitud vaya a aceptarse.").into()));
     }
-    if interaction.card.why == alondra_domain_rules::NATIVE_CONTEXT_EXCEEDED_WHY {
+    if interaction.card.why == alondra_domain_model::NATIVE_CONTEXT_EXCEEDED_WHY {
         return Some((t!(lang, "This request exceeds the Codex model's context window", "Esta solicitud supera la ventana de contexto del modelo de Codex").into(), t!(lang,
             "Codex reports that this request exceeds the model's context window. Compact this session or reduce the next input before explicitly continuing. Model changes use this node's supported controls on the same account.",
             "Codex indica que esta solicitud supera la ventana de contexto del modelo. Compacta esta sesión o reduce la siguiente entrada antes de continuar expresamente. Los cambios de modelo usan los controles compatibles de este nodo con la misma cuenta.").into()));
     }
-    if interaction.card.why == alondra_domain_rules::NATIVE_FAILED_WHY {
+    if interaction.card.why == alondra_domain_model::NATIVE_FAILED_WHY {
         let code = interaction.card.effective_title().split('`').nth(1)?;
         let need = tf!(lang, "Codex's turn ended with an error (`{code}`): tell it how to go on",
             "El turno de Codex terminó con un error (`{code}`): dile cómo seguir");
@@ -1340,7 +1340,7 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
             "Codex ended its turn with an error. Tell it how to continue, write what to do next, or cancel the task.",
             "El turno de Codex terminó con un error. Dile cómo seguir, escríbele qué hacer después o cancela la tarea.").into()));
     }
-    if interaction.card.why == alondra_domain_rules::FAILED_WHY {
+    if interaction.card.why == alondra_domain_model::FAILED_WHY {
         let code = interaction.card.effective_title().split('`').nth(1)?;
         let need = tf!(lang, "Claude's turn ended with an error (`{code}`): tell it how to go on",
             "El turno de Claude terminó con un error (`{code}`): dile cómo seguir");
@@ -1348,7 +1348,7 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
             "Claude Code ended its turn as failed. Tell it how to go on, write to it what to do, or cancel the task.",
             "Claude Code terminó su turno como fallido. Dile cómo seguir, escríbele qué hacer o cancela la tarea.").into()));
     }
-    if interaction.card.why == alondra_domain_rules::TURN_ENDED_TWICE_WHY {
+    if interaction.card.why == alondra_domain_model::TURN_ENDED_TWICE_WHY {
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” ended two turns without delivering or asking: what next?",
             "«{title}» acabó dos turnos sin entregar ni preguntar: ¿cómo sigue?"));
         return Some((need, t!(lang,
@@ -1366,7 +1366,7 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
 fn recovery_content(interaction: &Interaction, lang: Lang) -> Option<String> {
     if interaction.author != Author::System { return None; }
     let retake = matches!(&interaction.payload, InteractionPayload::Question { options, .. }
-        if options.iter().any(|option| option.id == alondra_domain_rules::RETAKE));
+        if options.iter().any(|option| option.id == alondra_domain_model::RETAKE));
     if retake {
         return Some(t!(lang,
             "Alondra could not continue this task. Try again to resume it, or cancel the task.",
@@ -1378,7 +1378,7 @@ fn recovery_content(interaction: &Interaction, lang: Lang) -> Option<String> {
 }
 
 fn host_lost_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    let retake = matches!(&interaction.payload, InteractionPayload::Question { options, .. } if options.iter().any(|option| option.id == alondra_domain_rules::RETAKE));
+    let retake = matches!(&interaction.payload, InteractionPayload::Question { options, .. } if options.iter().any(|option| option.id == alondra_domain_model::RETAKE));
     if interaction.author != Author::System || !retake {
         return None;
     }
@@ -1423,27 +1423,27 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let title = domain.tasks.get(task_id)?.title.as_str();
-    if matches!(interaction.system_card, Some(SystemCard::SessionEnded)) && interaction.card.why == alondra_domain_rules::POST_MERGE_STOPPED_WHY {
+    if matches!(interaction.system_card, Some(SystemCard::SessionEnded)) && interaction.card.why == alondra_domain_model::POST_MERGE_STOPPED_WHY {
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "You stopped “{title}” during its work after the merge: tell it how to go on",
             "Paraste «{title}» durante su trabajo tras el merge: dile cómo seguir"));
         return Some((need, t!(lang,
             "Its PR is merged and you stopped what it ran after the merge. Tell it to go on, with all its context, or close the task if that work is done.",
             "Su PR ya tiene el merge hecho y paraste lo que hacía tras el merge. Dile que siga, con todo su contexto, o cierra la tarea si ese trabajo ya está hecho.").into()));
     }
-    if matches!(interaction.system_card, Some(SystemCard::SessionEnded)) && interaction.card.why == alondra_domain_rules::POST_MERGE_ENDED_WHY {
+    if matches!(interaction.system_card, Some(SystemCard::SessionEnded)) && interaction.card.why == alondra_domain_model::POST_MERGE_ENDED_WHY {
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped its work after the merge when its session closed: tell it how to go on",
             "«{title}» dejó a medias su trabajo tras el merge al cerrarse su sesión: dile cómo seguir"));
         return Some((need, t!(lang,
             "Its PR is merged. Its session closed while it ran what it said comes after the merge, and whatever ran in the background stopped. Tell it to go on, with all its context, or close the task if that work is done.",
             "Su PR ya tiene el merge hecho. Su sesión se cerró mientras hacía lo que dijo que venía tras el merge, y lo que corría en segundo plano se paró. Dile que siga, con todo su contexto, o cierra la tarea si ese trabajo ya está hecho.").into()));
     }
-    if matches!(interaction.system_card, Some(SystemCard::SessionEnded)) && interaction.card.why == alondra_domain_rules::INTERRUPTED_WHY {
+    if matches!(interaction.system_card, Some(SystemCard::SessionEnded)) && interaction.card.why == alondra_domain_model::INTERRUPTED_WHY {
         return Some(interrupted_text(title, lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::SessionEnded)) {
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” was interrupted when its session closed: tell it how to go on",
             "«{title}» se interrumpió al cerrarse su sesión: dile cómo seguir"));
-        let why = if interaction.card.why == alondra_domain_rules::SESSION_ENDED_AGAIN_WHY {
+        let why = if interaction.card.why == alondra_domain_model::SESSION_ENDED_AGAIN_WHY {
             t!(lang, "Alondra resumed its session after it closed, and it closed again before it could finish a turn. It resumes with all its context if you tell it to go on.",
                 "Alondra retomó su sesión después de cerrarse, y se volvió a cerrar antes de terminar un turno. Retoma con todo su contexto si le dices que siga.")
         } else {
@@ -1456,7 +1456,7 @@ fn session_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lan
         return None;
     }
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” closed before confirming it read your message: send it again?", "«{title}» se cerró sin confirmar que leyó tu mensaje: ¿se lo reenvío?"));
-    let launch = matches!(&interaction.payload, InteractionPayload::Question { options, .. } if options.iter().any(|option| option.id == alondra_domain_rules::CANCEL_TASK));
+    let launch = matches!(&interaction.payload, InteractionPayload::Question { options, .. } if options.iter().any(|option| option.id == alondra_domain_model::CANCEL_TASK));
     let why = if launch {
         t!(lang, "Its session closed before it started on the task, right after the message was handed over. Nothing is sent until you decide.",
             "Su sesión se cerró antes de empezar la tarea, justo después de entregarle el mensaje. No se envía nada hasta que decidas.")
@@ -1489,47 +1489,47 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
         return alondra_core::machine_incident::MachineCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::LocalNetwork)) {
-        return alondra_domain_rules::local_network_card::LocalNetworkCard::from_body(&interaction.body).map(|card| card.text(lang));
+        return alondra_domain_model::local_network_card::LocalNetworkCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::ReportHeld { .. })) {
-        return alondra_domain_rules::report_held_card::ReportHeldCard::from_body(&interaction.body).map(|card| card.text(lang));
+        return alondra_domain_model::report_held_card::ReportHeldCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::CapabilityCapacity)) {
-        return alondra_domain_rules::capability_capacity_card::CapabilityCapacityCard::from_body(&interaction.body).map(|card| card.text(lang));
+        return alondra_domain_model::capability_capacity_card::CapabilityCapacityCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::BatchProblem { .. })) {
-        return alondra_domain_rules::orchestrator_batch::BatchProblem::from_body(&interaction.body).map(|card| card.text(lang));
+        return alondra_domain_model::orchestrator_batch::BatchProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::StuckProblem)) {
-        return alondra_domain_rules::orchestrator_cards::StuckProblem::from_body(&interaction.body).map(|card| card.text(lang));
+        return alondra_domain_model::orchestrator_cards::StuckProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::Inbox { about: InboxCard::UnsplitProblem, .. })) {
-        return alondra_domain_rules::orchestrator_cards::UnsplitProblem::from_body(&interaction.body).map(|card| card.text(lang));
+        return alondra_domain_model::orchestrator_cards::UnsplitProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::RequestDone)) {
-        return alondra_domain_rules::request_outcome::DoneCard::from_body(&interaction.body).map(|card| card.text(lang));
+        return alondra_domain_model::request_outcome::DoneCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::RequestTasks)) {
-        return alondra_domain_rules::request_outcome::TasksCard::from_body(&interaction.body).map(|card| card.text(lang));
+        return alondra_domain_model::request_outcome::TasksCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::Inbox { about: InboxCard::UnansweredProblem, .. })) {
-        return alondra_domain_rules::orchestrator_cards::UnansweredProblem::from_body(&interaction.body).map(|card| card.text(lang));
+        return alondra_domain_model::orchestrator_cards::UnansweredProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::Inbox { about: InboxCard::PlanReviewProblem, .. })) {
-        return alondra_domain_rules::PlanReviewProblem::from_body(&interaction.body).map(|card| card.text(lang));
+        return alondra_domain_model::PlanReviewProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::CloseProblem))
-        && let Some(card) = alondra_domain_rules::close_problem::CloseProblem::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::close_problem::CloseProblem::from_body(&interaction.body)
     {
         return Some(card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::DiscardWorktrees))
-        && let Some(card) = alondra_domain_rules::discard_worktrees::DiscardWorktrees::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::discard_worktrees::DiscardWorktrees::from_body(&interaction.body)
     {
         return Some(card.text(lang));
     }
     if matches!(interaction.system_card, Some(SystemCard::OpenPrDelivery))
-        && let Some(card) = alondra_domain_rules::open_pr_delivery::OpenPrDelivery::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::open_pr_delivery::OpenPrDelivery::from_body(&interaction.body)
     {
         return Some(card.text(lang));
     }
@@ -1554,66 +1554,66 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
 fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: Lang) -> (String, Option<String>) {
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::SpecChange))
-        && let Some(card) = alondra_domain_rules::spec_card::SpecCard::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::spec_card::SpecCard::from_body(&interaction.body)
         && let Some(own) = card.options(lang).into_iter().find(|own| own.id == option.id)
     {
         return (own.label, own.description);
     }
     if interaction.author == Author::System {
         let own = match (interaction.system_card.as_ref(), option.id.as_str()) {
-            (Some(SystemCard::LaunchProblem { .. }), alondra_domain_rules::LAUNCH_RETRY_OPTION) => Some((
+            (Some(SystemCard::LaunchProblem { .. }), alondra_domain_model::LAUNCH_RETRY_OPTION) => Some((
                 t!(lang, "Try again", "Reintentar"), t!(lang, "Launch this schedule once more", "Arranca otra vez esta tarea programada"))),
             (Some(SystemCard::LaunchProblem { .. }), "seen") => Some((
                 t!(lang, "Skip it", "Saltar esta vez"), t!(lang, "Its task is cancelled; the schedule runs again at its next time", "Se cancela esta tarea; la programación vuelve a ejecutarse en su próxima fecha"))),
-            (Some(SystemCard::PostMergeProblem), alondra_domain_rules::POST_MERGE_CLOSE) => Some((
+            (Some(SystemCard::PostMergeProblem), alondra_domain_model::POST_MERGE_CLOSE) => Some((
                 t!(lang, "Close the task", "Cerrar la tarea"), t!(lang, "The work after the merge is finished and its session closes", "El trabajo tras el merge se da por terminado y se cierra su sesión"))),
-            (Some(SystemCard::PostMergeProblem), alondra_domain_rules::POST_MERGE_LEAVE) => Some((
+            (Some(SystemCard::PostMergeProblem), alondra_domain_model::POST_MERGE_LEAVE) => Some((
                 t!(lang, "Keep waiting", "Seguir esperando"), t!(lang, "The task stays open for its remaining work", "La tarea sigue abierta para terminar el trabajo pendiente"))),
             _ => None,
         };
         if let Some((label, description)) = own { return (label.into(), Some(description.into())); }
     }
     if let Some(problem) = start_problem_of(interaction)
-        && let Some(own) = alondra_domain_rules::start_problem::options(&problem, lang).into_iter().find(|own| own.id == option.id)
+        && let Some(own) = alondra_domain_model::start_problem::options(&problem, lang).into_iter().find(|own| own.id == option.id)
     {
         return (own.label, own.description);
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::LocalNetwork))
-        && let Some((label, description)) = alondra_domain_rules::local_network_card::option_text(&option.id, &option.label, lang)
+        && let Some((label, description)) = alondra_domain_model::local_network_card::option_text(&option.id, &option.label, lang)
     {
         return (label.into(), Some(description.into()));
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::ReportHeld { .. }))
-        && let Some(card) = alondra_domain_rules::report_held_card::ReportHeldCard::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::report_held_card::ReportHeldCard::from_body(&interaction.body)
         && let Some((label, description)) = card.option_text(&option.id, lang)
     {
         return (label, Some(description));
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::CapabilityCapacity))
-        && let Some((label, description)) = alondra_domain_rules::capability_capacity_card::option_text(&option.id, &option.label, lang)
+        && let Some((label, description)) = alondra_domain_model::capability_capacity_card::option_text(&option.id, &option.label, lang)
     {
         return (label.into(), Some(description.into()));
     }
-    if option.id == alondra_domain_rules::MCP_GO_ON_WITHOUT
-        && let Some(server) = alondra_domain_rules::McpServerKey::of_card(interaction)
+    if option.id == alondra_domain_model::MCP_GO_ON_WITHOUT
+        && let Some(server) = alondra_domain_model::McpServerKey::of_card(interaction)
     {
         let name = server.name.as_str();
         return (tf!(lang, "Go on without {name}", "Seguir sin {name}"),
             Some(t!(lang, "Every task that waits for it goes on without it", "Las tareas que lo esperan siguen sin él").into()));
     }
-    if let Some((label, description)) = alondra_domain_rules::close_problem::option_text(&option.id, &option.label, lang) {
+    if let Some((label, description)) = alondra_domain_model::close_problem::option_text(&option.id, &option.label, lang) {
         return (label.into(), Some(description.into()));
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::DiscardWorktrees))
-        && let Some((label, description)) = alondra_domain_rules::discard_worktrees::option_text(&option.id, &option.label, lang)
+        && let Some((label, description)) = alondra_domain_model::discard_worktrees::option_text(&option.id, &option.label, lang)
     {
         return (label.into(), Some(description.into()));
     }
-    if let Some((label, description)) = alondra_domain_rules::orchestrator_cards::option_text(&option.id, &option.label, lang) {
+    if let Some((label, description)) = alondra_domain_model::orchestrator_cards::option_text(&option.id, &option.label, lang) {
         return (label.into(), Some(description.into()));
     }
     let (label, description): (&str, Option<&str>) = match (option.id.as_str(), option.label.as_str()) {
@@ -1622,48 +1622,48 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
             Some(t!(lang, "Nothing starts and nodes wait until midnight, then carry on", "No arranca nada y los nodos esperan hasta medianoche; luego continúan")),
         ),
         ("keep_going", "Keep going") => (t!(lang, "Keep going", "Seguir"), None),
-        (alondra_domain_rules::SIGNED_IN, alondra_domain_rules::SIGNED_IN_LABEL) => (
+        (alondra_domain_model::SIGNED_IN, alondra_domain_model::SIGNED_IN_LABEL) => (
             t!(lang, "I signed in", "Ya he iniciado sesión"),
             Some(t!(lang, "One waiting task goes on; when Claude answers it, the rest go on too",
                 "Sigue una de las tareas que esperan; cuando Claude le responda, siguen las demás")),
         ),
-        (alondra_domain_rules::TRY_NOW, alondra_domain_rules::TRY_NOW_LABEL) => (
+        (alondra_domain_model::TRY_NOW, alondra_domain_model::TRY_NOW_LABEL) => (
             t!(lang, "Try now", "Reintentar ahora"),
             Some(t!(lang, "One waiting task tries again now; when Claude answers it, the rest go on too",
                 "Una de las tareas que esperan lo intenta ahora; cuando Claude le responda, siguen las demás")),
         ),
-        (alondra_domain_rules::CARRY_ON, alondra_domain_rules::CARRY_ON_LABEL) => (
+        (alondra_domain_model::CARRY_ON, alondra_domain_model::CARRY_ON_LABEL) => (
             t!(lang, "Carry on", "Que siga"),
             Some(t!(lang, "It goes on with its task and asks you through a card when it needs you",
                 "Sigue con su tarea y te pregunta con una tarjeta cuando te necesite")),
         ),
-        (alondra_domain_rules::RETAKE, alondra_domain_rules::RETAKE_LABEL) => (
+        (alondra_domain_model::RETAKE, alondra_domain_model::RETAKE_LABEL) => (
             t!(lang, "Try again", "Reintentar"),
             Some(t!(lang, "Alondra starts its session again where it left off", "Alondra vuelve a arrancar su sesión donde se quedó")),
         ),
-        (alondra_domain_rules::RESEND, alondra_domain_rules::RESEND_LABEL) => (
+        (alondra_domain_model::RESEND, alondra_domain_model::RESEND_LABEL) => (
             t!(lang, "Send it again", "Reenviar"),
             Some(t!(lang, "It gets the message again; if it had read it, it sees it twice",
                 "Lo recibe otra vez; si ya lo había leído, lo verá dos veces")),
         ),
-        (alondra_domain_rules::SEND_AGAIN, alondra_domain_rules::SEND_AGAIN_LABEL) => (
+        (alondra_domain_model::SEND_AGAIN, alondra_domain_model::SEND_AGAIN_LABEL) => (
             t!(lang, "Send it again", "Enviar otra vez"),
             Some(t!(lang, "It gets the same message again", "Le llega el mismo mensaje otra vez")),
         ),
-        (alondra_domain_rules::DISCARD, alondra_domain_rules::DISCARD_LABEL) => (
+        (alondra_domain_model::DISCARD, alondra_domain_model::DISCARD_LABEL) => (
             t!(lang, "Discard", "Descartar"),
             Some(t!(lang, "The message is not sent and the task goes on", "No se envía y la tarea sigue")),
         ),
-        (alondra_domain_rules::TAKE_AS_RECEIVED, alondra_domain_rules::TAKE_AS_RECEIVED_LABEL) => (
+        (alondra_domain_model::TAKE_AS_RECEIVED, alondra_domain_model::TAKE_AS_RECEIVED_LABEL) => (
             t!(lang, "Take it as received", "Darlo por recibido"),
             Some(t!(lang, "The message is not sent again and the task goes on", "No se reenvía y la tarea sigue")),
         ),
-        (alondra_domain_rules::CLOSE_TASK, alondra_domain_rules::CLOSE_TASK_LABEL) => (
+        (alondra_domain_model::CLOSE_TASK, alondra_domain_model::CLOSE_TASK_LABEL) => (
             t!(lang, "Close the task", "Cerrar la tarea"),
             Some(t!(lang, "Its work after the merge counts as done: the task is completed and Alondra closes its session",
                 "Su trabajo tras el merge se da por terminado: la tarea se completa y Alondra cierra su sesión")),
         ),
-        (alondra_domain_rules::CANCEL_TASK, alondra_domain_rules::CANCEL_TASK_LABEL) => (
+        (alondra_domain_model::CANCEL_TASK, alondra_domain_model::CANCEL_TASK_LABEL) => (
             t!(lang, "Cancel the task", "Cancelar la tarea"),
             Some(t!(lang, "The task ends and its execution is closed", "La tarea termina y se cierra su ejecución")),
         ),
@@ -1678,13 +1678,13 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
         ("works", "Works") => (t!(lang, "Works", "Funciona"), None),
         ("fails", "Doesn't work") => (t!(lang, "Doesn't work", "No funciona"), None),
         ("skip", "I can't provide it") => (t!(lang, "I can't provide it", "No puedo dárselo"), None),
-        (alondra_domain_rules::orchestrator_batch::BATCH_CONTINUE, alondra_domain_rules::orchestrator_batch::BATCH_CONTINUE_LABEL) => (
+        (alondra_domain_model::orchestrator_batch::BATCH_CONTINUE, alondra_domain_model::orchestrator_batch::BATCH_CONTINUE_LABEL) => (
             t!(lang, "Continue without running it again", "Seguir sin repetirlo"),
             Some(t!(lang,
                 "Nothing is done twice. The orchestrator knows it stopped and picks up the requests still without a task.",
                 "No se hace nada dos veces. El orquestador sabe que se cortó y retoma las peticiones que sigan sin tarea.")),
         ),
-        (alondra_domain_rules::orchestrator_batch::BATCH_RETRY, alondra_domain_rules::orchestrator_batch::BATCH_RETRY_LABEL) => (
+        (alondra_domain_model::orchestrator_batch::BATCH_RETRY, alondra_domain_model::orchestrator_batch::BATCH_RETRY_LABEL) => (
             t!(lang, "Run it again from the start", "Repetirlo desde el principio"),
             Some(t!(lang,
                 "It handles the same messages again. Choose it only if Tasks shows none of what it did; otherwise it is done twice.",
@@ -1761,7 +1761,7 @@ fn answer_actions(
         action.stamp = Some(t!(lang, "Answered", "Respondida").into());
         buttons.push(with_availability(action, available, lang));
     }
-    if let Some(server) = alondra_domain_rules::McpServerKey::of_card(interaction) {
+    if let Some(server) = alondra_domain_model::McpServerKey::of_card(interaction) {
         let name = server.name.as_str();
         let mut own = mcp_actions(interaction, context);
         let reconnect = own.pop();
@@ -2081,8 +2081,8 @@ fn local_action(label: &str, key: &str, local: LocalLink) -> Action {
 fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
     let interaction = interaction.filter(|interaction| {
-        start_problem_of(interaction).is_none() && !is_machine_card(interaction) && alondra_domain_rules::ClaudeHold::of(interaction).is_none()
-            && alondra_domain_rules::McpServerKey::of_card(interaction).is_none()
+        start_problem_of(interaction).is_none() && !is_machine_card(interaction) && alondra_domain_model::ClaudeHold::of(interaction).is_none()
+            && alondra_domain_model::McpServerKey::of_card(interaction).is_none()
     })?;
     let answers = answered_by_reply(interaction)
         && (interaction.author != Author::System || matches!(interaction.scope, Scope::Task { .. }));
@@ -2202,21 +2202,21 @@ fn main_content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::CloseProblem))
-        && let Some(card) = alondra_domain_rules::close_problem::CloseProblem::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::close_problem::CloseProblem::from_body(&interaction.body)
     {
         out.push(markdown(card.detail(lang)));
         return out;
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::DiscardWorktrees))
-        && let Some(card) = alondra_domain_rules::discard_worktrees::DiscardWorktrees::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::discard_worktrees::DiscardWorktrees::from_body(&interaction.body)
     {
         out.push(markdown(card.detail(lang)));
         return out;
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::OpenPrDelivery))
-        && let Some(card) = alondra_domain_rules::open_pr_delivery::OpenPrDelivery::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::open_pr_delivery::OpenPrDelivery::from_body(&interaction.body)
     {
         out.push(markdown(card.detail(lang)));
         return out;
@@ -2227,7 +2227,7 @@ fn main_content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::StuckProblem))
-        && let Some(card) = alondra_domain_rules::orchestrator_cards::StuckProblem::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::orchestrator_cards::StuckProblem::from_body(&interaction.body)
     {
         let detail = card.detail(lang);
         if !detail.is_empty() {
@@ -2237,11 +2237,11 @@ fn main_content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::RequestDone))
-        && let Some(card) = alondra_domain_rules::request_outcome::DoneCard::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::request_outcome::DoneCard::from_body(&interaction.body)
     {
         out.extend(card.full_summary().map(|summary| markdown(summary.into())));
         out.push(Item::Facts(Facts { items: card.tasks.iter().map(|task| {
-            let (label, value) = alondra_domain_rules::request_outcome::DoneCard::task_line(task, lang);
+            let (label, value) = alondra_domain_model::request_outcome::DoneCard::task_line(task, lang);
             Fact { kind: None, label, value, tone: (!task.cancelled).then_some(Tone::Success), link: Some(Link::View { key: format!("task:{}", task.id) }) }
         }).collect() }));
         out.extend(card.tasks.iter().filter_map(|task| task.result.as_ref()).map(|result| markdown(result.clone())));
@@ -2249,7 +2249,7 @@ fn main_content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::RequestTasks))
-        && let Some(card) = alondra_domain_rules::request_outcome::TasksCard::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::request_outcome::TasksCard::from_body(&interaction.body)
     {
         out.push(Item::Facts(Facts { items: card.tasks.iter().enumerate().map(|(i, task)| {
             let (label, value) = card.task_line(i, lang);
@@ -2259,7 +2259,7 @@ fn main_content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::BatchProblem { .. }))
-        && let Some(card) = alondra_domain_rules::orchestrator_batch::BatchProblem::from_body(&interaction.body)
+        && let Some(card) = alondra_domain_model::orchestrator_batch::BatchProblem::from_body(&interaction.body)
     {
         out.push(markdown(card.detail(lang)));
         return out;
@@ -2359,9 +2359,9 @@ fn proposed_plan(interaction: &Interaction) -> Option<&str> {
 }
 
 /// What the card puts in front of the user: the plan a result proposes, else its content.
-fn front_content(interaction: &Interaction) -> Option<std::borrow::Cow<'_, alondra_domain_rules::CardContent>> {
+fn front_content(interaction: &Interaction) -> Option<std::borrow::Cow<'_, alondra_domain_model::CardContent>> {
     match proposed_plan(interaction) {
-        Some(plan) => Some(std::borrow::Cow::Owned(alondra_domain_rules::CardContent { kind: DomainContent::Plan, summary: None, body: plan.to_owned() })),
+        Some(plan) => Some(std::borrow::Cow::Owned(alondra_domain_model::CardContent { kind: DomainContent::Plan, summary: None, body: plan.to_owned() })),
         None => interaction.shown_content(),
     }
 }
@@ -2453,7 +2453,7 @@ fn pr_sections(item: &InboxItem, context: &RenderContext<'_>) -> Option<Vec<supe
     let shown = interaction.shown_content();
     let content = shown.as_deref().filter(|content| content.kind != DomainContent::Diff);
     let open_pr = (interaction.author == Author::System && matches!(interaction.system_card, Some(SystemCard::OpenPrDelivery)))
-        .then(|| alondra_domain_rules::open_pr_delivery::OpenPrDelivery::from_body(&interaction.body)).flatten();
+        .then(|| alondra_domain_model::open_pr_delivery::OpenPrDelivery::from_body(&interaction.body)).flatten();
     let report = match open_pr {
         Some(card) => Some(card.detail(lang)),
         None => content.map(|content| without_pr_link(&content.body, pr)),
@@ -2576,7 +2576,7 @@ fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         | InteractionPayload::ActionRequest { options, answer: Some(answer) } => {
             let label = options.iter().find(|option| option.id == answer.option_id).map(|option| fixed_option_text(interaction, option, lang).0);
             let text = answer.inputs.values().find_map(|value| match value {
-                alondra_domain_rules::InputValue::Text(text) => Some(clip(text, 240)),
+                alondra_domain_model::InputValue::Text(text) => Some(clip(text, 240)),
                 _ => None,
             });
             row(
@@ -2591,7 +2591,7 @@ fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         }
         InteractionPayload::Delivery { acceptance, feedback, .. } => {
             for (index, feedback) in feedback.iter().enumerate() {
-                use alondra_domain_rules::Instruction;
+                use alondra_domain_model::Instruction;
                 if let Some(failure) = &feedback.merge_failure {
                     row(format!("feedback-{index}"), Icon::History,
                         tf!(lang, "Alondra couldn't merge #{number}", "Alondra no pudo hacer merge de la #{number}", number = failure.number),
@@ -2661,7 +2661,7 @@ mod delivery_action_tests {
     #[test]
     fn a_delivery_does_not_offer_merge_or_feedback_without_a_validated_action() {
         let domain = crate::domain_fixtures::two_open_prs();
-        let index = alondra_domain_rules::ReadIndex::build(&domain);
+        let index = alondra_domain_model::ReadIndex::build(&domain);
         let live = super::super::LiveSnapshot::default();
         let context = RenderContext { domain: &domain, index: &index, live: &live, client: Client::Tui, lang: Lang::En,
             transport: super::super::Transport::Loopback, cursor: "", rendered_at: "" };

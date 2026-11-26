@@ -7,7 +7,7 @@ use crate::node_close::{Answer, CloseOutcome, Sessions};
 use alondra_core::accounts::{AccountId, Provider};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
 use alondra_core::{Millis, Node};
-use alondra_domain_rules::{AgentId, DomainError, DomainState, StartFacts, Task, TaskId};
+use alondra_domain_model::{AgentId, DomainError, DomainState, StartFacts, Task, TaskId};
 use alondra_provider_contract::OrderedObservation;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -17,7 +17,7 @@ use std::pin::Pin;
 
 pub type Work<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-pub use alondra_domain_rules::{ClosedNode, Relaunch};
+pub use alondra_domain_model::{ClosedNode, Relaunch};
 
 /// The last request of a task this daemon timed: how large the conversation was after it, when it
 /// started and how long its cache lasts. A file an older daemon wrote also says whether that

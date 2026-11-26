@@ -2,7 +2,7 @@
 use alondra_engine_ports::Runtime as _;
 use crate::domain_runtime::*;
 use crate::domain_store::StoreError;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use std::sync::Arc;
 use alondra_core::accounts::{AccountId, Policy};
 use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};

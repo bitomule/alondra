@@ -15,7 +15,7 @@ use alondra_engine_ports::node_close::{Answer, CloseOutcome, Sessions};
 use alondra_engine_ports::{Registry, Runtime};
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
-use alondra_domain_rules::{AgentId, DomainError, DomainState, NodeEvent, StartFacts, Task, TaskId};
+use alondra_domain_model::{AgentId, DomainError, DomainState, NodeEvent, StartFacts, Task, TaskId};
 use crate::contexts::ContextsOf as _;
 use std::collections::BTreeMap;
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
@@ -202,7 +202,7 @@ impl AdmissionEngine for Engine {
         Box::pin(async move {
             let body = crate::domain_orchestrator_tools::LaunchBody::from_queue(&queued)
                 .map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
-            let choices = |request: &alondra_domain_rules::RequestId| crate::domain_orchestrator_tools::request_choices(runtime, request).ok().flatten();
+            let choices = |request: &alondra_domain_model::RequestId| crate::domain_orchestrator_tools::request_choices(runtime, request).ok().flatten();
             crate::domain_orchestrator_tools::launch_from(runtime, home, body, choices, crate::domain_orchestrator_tools::Origin::Admitted).await
         })
     }
@@ -249,7 +249,7 @@ impl SdkEngine for Engine {
         Box::pin(async move {
             let body = crate::domain_orchestrator_tools::LaunchBody::from_queue(&body)
                 .map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
-            let choices = |request: &alondra_domain_rules::RequestId| crate::domain_orchestrator_tools::request_choices(runtime, request).ok().flatten();
+            let choices = |request: &alondra_domain_model::RequestId| crate::domain_orchestrator_tools::request_choices(runtime, request).ok().flatten();
             crate::domain_orchestrator_tools::launch_from(runtime, home, body, choices, crate::domain_orchestrator_tools::Origin::Auto).await
         })
     }

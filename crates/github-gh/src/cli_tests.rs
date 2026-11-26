@@ -1,5 +1,5 @@
 use super::*;
-use alondra_domain_rules::{PrChecks, PrMergeable, PrState};
+use alondra_domain_model::{PrChecks, PrMergeable, PrState};
 use alondra_engine_ports::github::{PrFacts, PrObserver};
 use std::os::unix::fs::PermissionsExt;
 

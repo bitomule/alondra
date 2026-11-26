@@ -1,6 +1,6 @@
 //! The approved checklist stays owed through PR review, merge and session recovery; only a
 //! final delivery with evidence for every point can complete the task.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_views as views;
 use std::collections::{BTreeMap, BTreeSet};
 

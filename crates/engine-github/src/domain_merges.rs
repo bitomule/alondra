@@ -14,7 +14,7 @@ use crate::domain_github::{GhFailure, execute_system, pr_url};
 use crate::pr_identity::{identify, read_start};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     AuthorizationId, CardSpec, Command, DeliveryTarget, DomainError, DomainState, Feedback, FeedbackTarget, Instruction, InteractionId, InteractionPayload,
     MergeAttemptState, MergeBlocker, MergeMethod, MergeVerdict, PrId, PrState, ProviderPrKey, PullRequest, Scope, clip,
 };
@@ -57,7 +57,7 @@ pub fn due(state: &DomainState) -> Vec<Due> {
                 a.valid && a.presentation_id == p.id && &a.pr_id == pr_id && &a.head == head
                     && matches!(a.attempt, MergeAttemptState::Unclaimed | MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
             });
-            let authorized_by = authorization.map_or(alondra_domain_rules::Feedback::ALONDRA, |a| a.user_id.as_str());
+            let authorized_by = authorization.map_or(alondra_domain_model::Feedback::ALONDRA, |a| a.user_id.as_str());
             if state.authorized_merge_held(p, authorized_by, &feedback_target) {
                 continue;
             }
@@ -78,7 +78,7 @@ fn still_due(state: &DomainState, item: &Due, authorization: &AuthorizationId) -
     let Some(p) = task.final_presentation.as_ref().filter(|p| **p == item.presentation).and_then(|p| state.interactions.get(p)) else {
         return false;
     };
-    let authorized_by = state.merge_authorizations.get(authorization).map_or(alondra_domain_rules::Feedback::ALONDRA, |a| a.user_id.as_str());
+    let authorized_by = state.merge_authorizations.get(authorization).map_or(alondra_domain_model::Feedback::ALONDRA, |a| a.user_id.as_str());
     state.stack_ready_for_merge(&item.pr.id).is_ok()
         && !state.authorized_merge_held(p, authorized_by, &FeedbackTarget::PullRequest { pr_id: item.pr.id.clone(), head: item.head.clone() })
         && state.pull_requests.get(&item.pr.id).is_some_and(|pr| pr.state == PrState::Open && pr.head == item.head)
@@ -793,12 +793,12 @@ fn recorded(result: Result<(), StoreError>) -> Result<bool> {
 fn hand_back(domain: &DomainRuntime, item: &Due, reason: &str) -> Result<()> {
     log!("handing {} back to its node: {reason}", item.pr.id);
     let pr = &item.pr;
-    let body = alondra_domain_rules::merge_failed_text(pr.number, &pr_url(&pr.host, &pr.repository, pr.number), &pr.base, reason);
+    let body = alondra_domain_model::merge_failed_text(pr.number, &pr_url(&pr.host, &pr.repository, pr.number), &pr.base, reason);
     recorded(execute_system(domain, Command::SubmitFeedback {
         attachments: vec![], presentation_id: item.presentation.clone(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: item.head.clone() }],
         body, instruction: Instruction::Conflicts,
-        merge_failure: Some(alondra_domain_rules::MergeFailure { number: pr.number, reason: reason.trim().trim_end_matches('.').to_owned() }),
+        merge_failure: Some(alondra_domain_model::MergeFailure { number: pr.number, reason: reason.trim().trim_end_matches('.').to_owned() }),
     })).map(|_| ())
 }
 
@@ -967,7 +967,7 @@ impl PrMerger for FakeGithub {
         let status = self.statuses.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or_else(|| Err(GhFailure::Exit(Some(1), "no such PR".into())))
             .map(|mut status| {
                 status.identity.get_or_insert_with(|| crate::domain_github::ReadIdentity { key: fake_key(pr.number),
-                    locator: alondra_domain_rules::ProviderLocator(format!("PR_{}", pr.number)), repository: pr.repository.clone(), head_ref: status.head_ref.clone() });
+                    locator: alondra_domain_model::ProviderLocator(format!("PR_{}", pr.number)), repository: pr.repository.clone(), head_ref: status.head_ref.clone() });
                 status
             });
         Box::pin(async move { status })

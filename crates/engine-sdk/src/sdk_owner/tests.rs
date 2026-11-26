@@ -38,11 +38,11 @@ fn unchanged_driver_pause_checks_do_not_query_the_domain() {
     let own_tasks = slice.domain.read().index().node(&driver.agent).unwrap().all_tasks.len() as u64;
     assert_eq!(own_tasks, 1);
     assert!(!driver.paused());
-    let queries = alondra_domain_rules::measure::pause_queries();
-    let before = alondra_domain_rules::measure::tasks_read();
+    let queries = alondra_domain_model::measure::pause_queries();
+    let before = alondra_domain_model::measure::tasks_read();
     for _ in 0..32 { assert!(!driver.paused()); }
-    let read = alondra_domain_rules::measure::tasks_read() - before;
-    let queries = alondra_domain_rules::measure::pause_queries() - queries;
+    let read = alondra_domain_model::measure::tasks_read() - before;
+    let queries = alondra_domain_model::measure::pause_queries() - queries;
     driver.stop().unwrap();
     assert_eq!(queries, 0, "unchanged pause checks must not query the domain");
     assert_eq!(read, 0, "unchanged pause checks must not inspect tasks");
@@ -246,10 +246,10 @@ fn a_message_mid_turn_reaches_claude_inside_the_turn() {
         let read = domain.read();
         let journal = &read.state().lifecycle_journal[&TaskId::from(TASK)];
         let wakes: Vec<&String> = journal.iter().filter_map(|record| match record {
-            alondra_domain_rules::LifecycleRecord::TurnEnded { wake: Some(wake), .. } => Some(wake),
+            alondra_domain_model::LifecycleRecord::TurnEnded { wake: Some(wake), .. } => Some(wake),
             _ => None,
         }).collect();
-        journal.iter().filter(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TurnStarted { input, .. } if !wakes.contains(&input))).count()
+        journal.iter().filter(|record| matches!(record, alondra_domain_model::LifecycleRecord::TurnStarted { input, .. } if !wakes.contains(&input))).count()
     };
     assert_eq!(turns(&slice.domain), 1);
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Rebase on main before you push"})).unwrap();
@@ -450,7 +450,7 @@ fn the_orchestrators_node_and_tasks_in_progress_show_an_sdk_node_as_the_domain_h
     slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
     let state = slice.domain.state().unwrap();
     assert_eq!(state.agents[&agent].phase, NodePhase::ThroughSdk, "no event moves its phase");
-    let live = alondra_domain_rules::TaskActivity::Live(state.sdk_live(&agent).expect("its task is open")).key();
+    let live = alondra_domain_model::TaskActivity::Live(state.sdk_live(&agent).expect("its task is open")).key();
     let shown = crate::domain_orchestrator_reads::node(&*slice.domain, &agent.0).unwrap()["node"].clone();
     assert_eq!((shown["alive"].as_bool(), shown["state"].as_str(), shown["sdk_host"].as_bool()), (Some(true), Some(live), Some(true)), "{shown}");
     assert_eq!(shown["task"]["activity"].as_str(), Some(live), "the node's state is its task's");
@@ -706,7 +706,7 @@ async fn an_sdk_node_is_told_once_about_its_unsaved_worktree_and_its_confirmatio
     let root = Directory::new();
     let dirty = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "sdk-slice");
     slice.run(&Actor::System, "worktree", Command::RecordTaskWorktree {
-        task_id: TASK.into(), path: dirty.to_str().unwrap().into(), origin: alondra_domain_rules::WorktreeOrigin::Subagent, branch: None,
+        task_id: TASK.into(), path: dirty.to_str().unwrap().into(), origin: alondra_domain_model::WorktreeOrigin::Subagent, branch: None,
     });
     std::fs::write(dirty.join("draft.txt"), "x").unwrap();
     let targets = vec![DeliveryTarget::Text { text: "The notes".into() }];
@@ -1614,7 +1614,7 @@ async fn a_cancelled_sdk_task_with_unsaved_files_in_a_subagents_worktree_is_clos
     let subagent = repo.join(".claude/worktrees/agent-a0000000000000001");
     alondra_engine_doubles::worktrees::make_worktree(&repo, &subagent).unwrap();
     slice.run(&Actor::System, "subagent", Command::RecordTaskWorktree {
-        task_id: TASK.into(), path: subagent.to_str().unwrap().into(), origin: alondra_domain_rules::WorktreeOrigin::Subagent, branch: None,
+        task_id: TASK.into(), path: subagent.to_str().unwrap().into(), origin: alondra_domain_model::WorktreeOrigin::Subagent, branch: None,
     });
     std::fs::write(subagent.join("draft.txt"), "x").unwrap();
     slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
@@ -1626,9 +1626,9 @@ async fn a_cancelled_sdk_task_with_unsaved_files_in_a_subagents_worktree_is_clos
     assert!(!slice.domain.owns_sdk_host(&agent), "the host is closed: the node has nothing to settle");
     assert!(subagent.join("draft.txt").exists(), "nothing with unsaved files is deleted unasked");
     assert!(!own.exists(), "the worktree with nothing unsaved is deleted");
-    let cards: Vec<_> = state.interactions.values().filter(|i| i.system_card == Some(alondra_domain_rules::SystemCard::DiscardWorktrees)).collect();
+    let cards: Vec<_> = state.interactions.values().filter(|i| i.system_card == Some(alondra_domain_model::SystemCard::DiscardWorktrees)).collect();
     assert_eq!(cards.len(), 1);
-    let card = alondra_domain_rules::discard_worktrees::DiscardWorktrees::from_body(&cards[0].body).unwrap();
+    let card = alondra_domain_model::discard_worktrees::DiscardWorktrees::from_body(&cards[0].body).unwrap();
     assert_eq!((card.tasks[0].files, card.tasks[0].paths.clone()), (1, vec![subagent.to_str().unwrap().to_owned()]));
 }
 
@@ -1658,9 +1658,9 @@ async fn a_cancelled_sdk_task_settles_a_subagent_worktree_only_its_conversations
     crate::task_closer::pass(&*slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
     let state = slice.domain.state().unwrap();
     assert!(subagent.join("draft.txt").exists(), "nothing with unsaved files is deleted unasked");
-    let cards: Vec<_> = state.interactions.values().filter(|i| i.system_card == Some(alondra_domain_rules::SystemCard::DiscardWorktrees)).collect();
+    let cards: Vec<_> = state.interactions.values().filter(|i| i.system_card == Some(alondra_domain_model::SystemCard::DiscardWorktrees)).collect();
     assert_eq!(cards.len(), 1);
-    let card = alondra_domain_rules::discard_worktrees::DiscardWorktrees::from_body(&cards[0].body).unwrap();
+    let card = alondra_domain_model::discard_worktrees::DiscardWorktrees::from_body(&cards[0].body).unwrap();
     assert_eq!(card.tasks[0].paths, vec![subagent.to_str().unwrap().to_owned()]);
 }
 
@@ -2393,7 +2393,7 @@ async fn try_again_on_a_task_whose_ended_host_left_a_refused_plan_resumes_its_se
     let starts = slice.starts();
     assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
     let refused = restarted.read().state().lifecycle_journal[&TaskId::from(TASK)].iter().any(|record| matches!(record,
-        alondra_domain_rules::LifecycleRecord::DecidedByPolicy { decision: alondra_domain_rules::DecisionRecord::Deny { message }, .. } if message.contains("at most 40 points")));
+        alondra_domain_model::LifecycleRecord::DecidedByPolicy { decision: alondra_domain_model::DecisionRecord::Deny { message }, .. } if message.contains("at most 40 points")));
     assert!(refused, "the plan the ended host left was refused for its length");
 }
 
@@ -2719,7 +2719,7 @@ async fn a_cancelled_task_whose_ended_host_left_a_claim_with_no_command_closes_a
     let statuses: Vec<String> = slice.observer().prepare("SELECT status FROM lifecycle_dispatches WHERE task_id=?1 AND kind='input' ORDER BY id").unwrap()
         .query_map([TASK], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
     assert_eq!(statuses[0], "rejected", "the ended host never received the claimed input: {statuses:?}");
-    for prefix in [alondra_domain_rules::close_problem::CLOSE_PROBLEM_PREFIX, SESSION_ENDED_PREFIX, HANDOFF_DOUBT_PREFIX, HOST_LOST_PREFIX] {
+    for prefix in [alondra_domain_model::close_problem::CLOSE_PROBLEM_PREFIX, SESSION_ENDED_PREFIX, HANDOFF_DOUBT_PREFIX, HOST_LOST_PREFIX] {
         assert!(open_card(&slice.domain, prefix).is_none(), "no card about {prefix}");
     }
 }
@@ -3033,7 +3033,7 @@ fn a_plan_claude_never_wrote_sends_it_back_to_write_one_without_a_card() {
     slice.until(&mut driver, decided_or_asked);
     assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
     slice.rest(&mut driver);
-    assert_eq!(only_response(&slice), serde_json::json!({"behavior": "deny", "toolUseID": "toolu_fixture_1", "message": alondra_domain_rules::UNWRITTEN_PLAN}));
+    assert_eq!(only_response(&slice), serde_json::json!({"behavior": "deny", "toolUseID": "toolu_fixture_1", "message": alondra_domain_model::UNWRITTEN_PLAN}));
     assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
     driver.stop().unwrap();
 }
@@ -3086,7 +3086,7 @@ fn a_request_alondra_cannot_ask_is_denied_to_claude_with_why_and_the_node_goes_o
     let response = only_response(&slice);
     assert_eq!(response["behavior"], "deny", "{response}");
     let message = response["message"].as_str().unwrap_or_default();
-    assert_eq!(message, format!("{}: the test refuses it", alondra_domain_rules::UNASKABLE));
+    assert_eq!(message, format!("{}: the test refuses it", alondra_domain_model::UNASKABLE));
     assert!(Slice::decision_cards(&slice.domain).is_empty(), "no card");
     assert_eq!(Slice::read_cards(&*slice.domain).len(), 1, "its turn ended with its one card");
     instruct(&*slice.domain, "Ask it again");
@@ -3265,7 +3265,7 @@ fn assert_the_orchestrator_closes_it_from_its_case(slice: &Slice) {
     let (case, _) = Slice::read_cards(&*slice.domain).into_iter().find(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)).expect("an open case");
     let state = slice.domain.state().unwrap();
     let open_for_user = |state: &DomainState| state.interactions.values()
-        .filter(|card| card.recipient == alondra_domain_rules::Recipient::User && card.scope == alondra_domain_rules::Scope::Task { task_id: TASK.into() } && state.open(card))
+        .filter(|card| card.recipient == alondra_domain_model::Recipient::User && card.scope == alondra_domain_model::Scope::Task { task_id: TASK.into() } && state.open(card))
         .count();
     assert_eq!(open_for_user(&state), 0, "no card asks the user how it goes on");
     let result = "The release notes were never written.";
@@ -3275,7 +3275,7 @@ fn assert_the_orchestrator_closes_it_from_its_case(slice: &Slice) {
     let state = slice.domain.state().unwrap();
     let task = &state.tasks[&TaskId::from(TASK)];
     assert!(task.over(), "the task ends");
-    assert_eq!(task.stall_closing, Some(alondra_domain_rules::StallClosing::Settled { result: result.into() }));
+    assert_eq!(task.stall_closing, Some(alondra_domain_model::StallClosing::Settled { result: result.into() }));
     assert!(matches!(&state.interactions[&case.as_str().into()].payload, InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == STALL_CLOSE),
         "the case keeps the orchestrator's outcome");
     assert_eq!(open_for_user(&state), 0, "nobody asked the user");
@@ -3811,7 +3811,7 @@ fn stale_reopening_does_not_admit(reopen_again: bool) {
     if reopen_again {
         slice.run(&Actor::System, "cleanup-after-preparation", Command::RecordTaskCleanup { task_id: TASK.into() });
         assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].state, TaskState::Cancelled);
-        assert!(!slice.domain.state().unwrap().requests[&alondra_domain_rules::RequestId::from("sdk-slice-request")].closed);
+        assert!(!slice.domain.state().unwrap().requests[&alondra_domain_model::RequestId::from("sdk-slice-request")].closed);
         slice.run(&user(), "reopen-after-preparation", Command::ReopenTask { task_id: TASK.into() });
         assert_ne!(slice.domain.state().unwrap().pending_reopening(&TASK.into()), Some(input.as_str()));
     }
@@ -3974,7 +3974,7 @@ fn a_look_that_read_the_task_working_before_its_host_was_lost_takes_nothing_over
 
     assert_eq!(slice.starts().len(), starts, "no host starts for a task held for the user");
     assert!(open_card(&slice.domain, HOST_LOST_PREFIX).is_some(), "the card that holds the task stays open");
-    assert_eq!(slice.domain.state().unwrap().task_failure(&TASK.into()), Some(alondra_domain_rules::ReportedFailure::NotResumed));
+    assert_eq!(slice.domain.state().unwrap().task_failure(&TASK.into()), Some(alondra_domain_model::ReportedFailure::NotResumed));
     slice.domain.stop_sdk_owners();
 }
 
@@ -4517,7 +4517,7 @@ fn an_adopted_host_without_a_process_is_ended_at_adoption() {
     ADOPTED_PROCESS_GONE.with(|gone| gone.set(true));
     let replaced = slice.take_over(&restarted);
     let journal = restarted.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].clone();
-    assert!(journal.iter().any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::HostEnded { .. })), "{journal:?}");
+    assert!(journal.iter().any(|record| matches!(record, alondra_domain_model::LifecycleRecord::HostEnded { .. })), "{journal:?}");
     assert!(!crate::admission::working_tasks(&*restarted, &restarted.state().unwrap()).contains(&TaskId::from(TASK)));
     assert!(!processes.runs(), "nothing of the host is left running");
     slice.kill_host_and_daemon(replaced);

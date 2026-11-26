@@ -1,7 +1,7 @@
 //! The specs of a plan on its card, and the screens that edit them.
 use super::*;
-use alondra_domain_rules::specs::{self, SpecDirs};
-use alondra_domain_rules::{Hold, SpecCheck, SpecDraft, SpecLevel, SpecMode, SpecProblem};
+use alondra_domain_model::specs::{self, SpecDirs};
+use alondra_domain_model::{Hold, SpecCheck, SpecDraft, SpecLevel, SpecMode, SpecProblem};
 
 const PARTIAL_PATH: &str = "specs/billing/partial.feature";
 const PARTIAL: &str = "@spec:billing.partial\nFeature: Partial refunds\n  Any amount up to what is left of the order comes back.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n";
@@ -10,7 +10,7 @@ const PARTIAL: &str = "@spec:billing.partial\nFeature: Partial refunds\n  Any am
 fn planned(mode: SpecMode) -> DomainState {
     let mut state = fixture();
     state.holds.insert("i-1".into(), Hold::Plan);
-    let files: alondra_domain_rules::SpecFiles = [(PARTIAL_PATH.to_owned(), Some(PARTIAL.to_owned()))].into();
+    let files: alondra_domain_model::SpecFiles = [(PARTIAL_PATH.to_owned(), Some(PARTIAL.to_owned()))].into();
     let check = SpecCheck { mode, problems: vec![], before: [(PARTIAL_PATH.to_owned(), None)].into(), dirs: SpecDirs { specs: "specs".into(), decisions: Some("docs/decisions".into()), reference: None } };
     state.tasks.get_mut(&"t-1".into()).unwrap().specs.draft = Some(SpecDraft { level: SpecLevel::Light, files, check, revision: 7, edited: false });
     state
@@ -49,7 +49,7 @@ fn a_plan_whose_specs_or_settings_cannot_be_read_cannot_be_approved_and_says_why
     state.tasks.get_mut(&"t-1".into()).unwrap().specs.settings = Some(SpecProblem::new("invalid_settings", "alondra.toml", 3, "unknown key `surprise`"));
     let render_context_block = |lang| {
         let live = LiveSnapshot::default();
-        let index = alondra_domain_rules::ReadIndex::build(&state);
+        let index = alondra_domain_model::ReadIndex::build(&state);
         let context = RenderContext { domain: &state, index: &index, live: &live, client: Client::Ios, lang, transport: Transport::Loopback, cursor: "", rendered_at: "" };
         crate::specs::plan_block(&state.interactions[&"i-1".into()], &context)
     };
@@ -100,7 +100,7 @@ fn the_editor_lists_specs_with_their_scenarios_folded_and_opens_their_forms() {
 fn once_the_plan_is_decided_its_specs_no_longer_change_on_the_editor() {
     let mut state = planned(SpecMode::Committed);
     if let InteractionPayload::Question { answer, .. } = &mut state.interactions.get_mut(&"i-1".into()).unwrap().payload {
-        *answer = Some(alondra_domain_rules::Answer { attachments: vec![], option_id: "approve".into(), inputs: Default::default(), responder: "u".into(), at_revision: 9, decision: None });
+        *answer = Some(alondra_domain_model::Answer { attachments: vec![], option_id: "approve".into(), inputs: Default::default(), responder: "u".into(), at_revision: 9, decision: None });
     }
     let editor = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "task_specs:t-1", "");
     assert!(editor.sections.iter().all(|s| s.id != "documents"), "nothing left to open for editing");

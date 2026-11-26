@@ -1,7 +1,7 @@
 //! Merging a pull request with `gh`, and what GitHub's rules and checks say about merging it.
 use crate::cli::GhCli;
 use crate::verdict::{CheckKind, classify, derive, explains_with_rules, gate};
-use alondra_domain_rules::{MergeMethod, MergeVerdict, PrState, ProviderPrKey, PullRequest};
+use alondra_domain_model::{MergeMethod, MergeVerdict, PrState, ProviderPrKey, PullRequest};
 use alondra_engine_ports::github::{Checks, GhFailure, HttpAnswer, MergeState, Pending, PrMerger, Status, pr_url};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,7 +33,7 @@ impl GhCli {
 impl PrMerger for GhCli {
     fn default_branch<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, String> {
         Box::pin(async move {
-            let url = format!("https://{}/{}", alondra_domain_rules::normalize_pr_host(&pr.host), pr.repository);
+            let url = format!("https://{}/{}", alondra_domain_model::normalize_pr_host(&pr.host), pr.repository);
             let out = self.run(&["repo", "view", &url, "--json", "defaultBranchRef"], None, Duration::from_secs(30)).await?;
             let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
             value["defaultBranchRef"]["name"].as_str().filter(|name| !name.is_empty()).map(str::to_owned)
@@ -87,7 +87,7 @@ impl PrMerger for GhCli {
     }
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
         Box::pin(async move {
-            let host = alondra_domain_rules::normalize_pr_host(&pr.host);
+            let host = alondra_domain_model::normalize_pr_host(&pr.host);
             let repo = format!("repos/{}", pr.repository);
             let rules = self.api(&["--hostname", &host, &format!("{repo}/rules/branches/{base}?per_page=100")], Duration::from_secs(30)).await?;
             let mut required = match rules_read(&rules)? {
@@ -106,7 +106,7 @@ impl PrMerger for GhCli {
     }
     fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
         Box::pin(async move {
-            let host = alondra_domain_rules::normalize_pr_host(&pr.host);
+            let host = alondra_domain_model::normalize_pr_host(&pr.host);
             let repo = format!("repos/{}", pr.repository);
             let rules = self.api(&["--hostname", &host, &format!("{repo}/rules/branches/{base}?per_page=100")], Duration::from_secs(30)).await?;
             let Some(rules) = rules_read(&rules)? else { return Ok(vec![]) };
@@ -124,7 +124,7 @@ impl PrMerger for GhCli {
     }
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         Box::pin(async move {
-            let url = format!("https://{}/{}", alondra_domain_rules::normalize_pr_host(&pr.host), pr.repository);
+            let url = format!("https://{}/{}", alondra_domain_model::normalize_pr_host(&pr.host), pr.repository);
             let out = self.run(&["repo", "view", &url, "--json", "viewerPermission", "--jq", ".viewerPermission"], None,
                 Duration::from_secs(30)).await?;
             match String::from_utf8_lossy(&out).trim() {
@@ -156,7 +156,7 @@ impl PrMerger for GhCli {
         Box::pin(async move {
             let (owner, name) = pr.repository.split_once('/')
                 .ok_or_else(|| GhFailure::Unreadable("the PR's repository is not owner/name".into()))?;
-            let host = alondra_domain_rules::normalize_pr_host(&pr.host);
+            let host = alondra_domain_model::normalize_pr_host(&pr.host);
             let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){isInMergeQueue}}}";
             let (owner, name, number) = (format!("owner={owner}"), format!("name={name}"), format!("number={}", pr.number));
             let query = format!("query={query}");

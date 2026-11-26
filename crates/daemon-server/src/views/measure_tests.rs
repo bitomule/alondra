@@ -51,26 +51,26 @@ async fn measure_real_domain_views() {
     println!("attention and blockers of every task on demand: {:.1} ms", ms(at));
     let mut builds: Vec<f64> = (0..20).map(|_| {
         let at = Instant::now();
-        std::hint::black_box(alondra_domain_rules::ReadIndex::build(&state));
+        std::hint::black_box(alondra_domain_model::ReadIndex::build(&state));
         ms(at)
     }).collect();
     builds.sort_by(f64::total_cmp);
-    let index = alondra_domain_rules::ReadIndex::build(&state);
+    let index = alondra_domain_model::ReadIndex::build(&state);
     println!("ReadIndex::build: median {:.1} ms, max {:.1} ms ({} queued, {} waiting)",
         builds[builds.len() / 2], builds[builds.len() - 1], index.queue().len(), index.waiting().len());
     let at = Instant::now();
     let read = client.domain.read();
     std::hint::black_box((read.index().waiting(), read.index().counts(), read.index().acting()));
     println!("Waiting for You, counts and acting cards from the committed index: {:.3} ms", ms(at));
-    let envelope = alondra_domain_rules::CommandEnvelope {
-        protocol_version: alondra_domain_rules::PROTOCOL_VERSION,
+    let envelope = alondra_domain_model::CommandEnvelope {
+        protocol_version: alondra_domain_model::PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
         command_id: "measure-commit".into(),
         expected_revision: state.revision,
-        command: alondra_domain_rules::Command::RegisterAgent { agent_id: "measure-agent".into(), name: "Measure".into(), at: 0 },
+        command: alondra_domain_model::Command::RegisterAgent { agent_id: "measure-agent".into(), name: "Measure".into(), at: 0 },
     };
     let at = Instant::now();
-    client.domain.execute(&alondra_domain_rules::Actor::System, &envelope, None, || Ok(())).unwrap();
+    client.domain.execute(&alondra_domain_model::Actor::System, &envelope, None, || Ok(())).unwrap();
     println!("commit one command, index included: {:.1} ms", ms(at));
     let read = client.domain.read();
     let state = std::sync::Arc::clone(read.state());
@@ -91,7 +91,7 @@ async fn measure_real_domain_views() {
     let mut card_ids: Vec<String> = built.sections.iter().flat_map(|s| s.card_ids.clone()).collect();
     let inbox: Vec<_> = read.index().queued(&state).collect();
     card_ids.extend(inbox.iter().rev().filter(|item| item.kind == "delivery" && !item.pending).take(5).map(|item| {
-        let alondra_domain_rules::InboxSubject::Interaction { interaction_id, .. } = &item.subject;
+        let alondra_domain_model::InboxSubject::Interaction { interaction_id, .. } = &item.subject;
         interaction_id.0.clone()
     }));
 
@@ -155,10 +155,10 @@ async fn measure_background_per_change() {
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     let client = daemon.client();
     let state = client.domain.state().unwrap();
-    let index = alondra_domain_rules::ReadIndex::build(&state);
+    let index = alondra_domain_model::ReadIndex::build(&state);
     let inbox: Vec<_> = index.queued(&state).map(std::borrow::Cow::into_owned).collect();
-    let id_of = |item: &alondra_domain_rules::InboxItem| {
-        let alondra_domain_rules::InboxSubject::Interaction { interaction_id, .. } = &item.subject;
+    let id_of = |item: &alondra_domain_model::InboxItem| {
+        let alondra_domain_model::InboxSubject::Interaction { interaction_id, .. } = &item.subject;
         interaction_id.0.clone()
     };
     let mut cards: Vec<String> = inbox.iter().filter(|item| item.pending).map(id_of).collect();
@@ -179,20 +179,20 @@ async fn measure_background_per_change() {
     let mut measure = |name: &'static str, cpu: f64, at: Instant| samples.entry(name).or_default().push((ms(at), cpu_ms() - cpu));
     for round in 0..ROUNDS {
         let state = client.domain.state().unwrap();
-        let envelope = alondra_domain_rules::CommandEnvelope {
-            protocol_version: alondra_domain_rules::PROTOCOL_VERSION,
+        let envelope = alondra_domain_model::CommandEnvelope {
+            protocol_version: alondra_domain_model::PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
             command_id: format!("measure-change-{round}").into(),
             expected_revision: state.revision,
-            command: alondra_domain_rules::Command::RegisterAgent {
+            command: alondra_domain_model::Command::RegisterAgent {
                 agent_id: format!("measure-agent-{round}").into(), name: "Measure".into(), at: 0,
             },
         };
-        client.domain.execute(&alondra_domain_rules::Actor::System, &envelope, None, || Ok(())).unwrap();
+        client.domain.execute(&alondra_domain_model::Actor::System, &envelope, None, || Ok(())).unwrap();
         // The live sampler answers the commit on its own thread, and the readers this measures used
         // to walk the whole domain: settle and walk it once, untimed, so each reader starts alike.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        std::hint::black_box(alondra_domain_rules::ReadIndex::build(&client.domain.state().unwrap()));
+        std::hint::black_box(alondra_domain_model::ReadIndex::build(&client.domain.state().unwrap()));
 
         let (cpu, at) = (cpu_ms(), Instant::now());
         let read = client.domain.read();

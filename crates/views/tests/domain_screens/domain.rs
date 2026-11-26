@@ -1,4 +1,4 @@
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 #[allow(unused_imports)]
 use alondra_views as views;
 #[allow(unused_imports)]
@@ -50,10 +50,10 @@ fn clearing_takes_a_task_whose_request_closed_while_its_node_was_still_ending() 
     end_node(&mut s, "t");
     exec(&mut s, orchestrator(), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "c".into(), request_id: "r".into(),
         title: "c".into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) }).unwrap();
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")) }).unwrap();
     exec(&mut s, user(), Command::CancelTask { task_id: "c".into(), reason: None }).unwrap();
     assert!(s.tasks[&"c".into()].ending() && !s.tasks[&"c".into()].state.terminal());
-    exec(&mut s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::TasksEnded), request_id: "r".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None }).unwrap();
+    exec(&mut s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_model::CloseOutcome::TasksEnded), request_id: "r".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None }).unwrap();
     let seen = s.revision;
     exec(&mut s, user(), Command::ClearCompleted { seen }).unwrap();
     let index = ReadIndex::build(&s);
@@ -140,7 +140,7 @@ fn fixture() -> DomainState {
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         },
     )
     .unwrap();
@@ -165,7 +165,7 @@ fn present(s: &mut DomainState, id: &str, targets: Vec<DeliveryTarget>) {
             interaction_id: id.into(),
             body: "Result ready".into(),
             targets,
-            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
         },
     )
     .unwrap();

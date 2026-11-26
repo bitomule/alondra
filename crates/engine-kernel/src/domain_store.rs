@@ -11,19 +11,19 @@ pub use alondra_engine_ports::journal::provider_transition;
 
 /// The refusal a producer gets for a command the journal could not commit.
 pub trait IntoDomainError {
-    fn into_domain_error(self, envelope: &alondra_domain_rules::CommandEnvelope) -> alondra_domain_rules::DomainError;
+    fn into_domain_error(self, envelope: &alondra_domain_model::CommandEnvelope) -> alondra_domain_model::DomainError;
 }
 
 impl IntoDomainError for StoreError {
     /// Keeps storage diagnostics in the daemon while the producer receives a stable refusal.
-    fn into_domain_error(self, envelope: &alondra_domain_rules::CommandEnvelope) -> alondra_domain_rules::DomainError {
+    fn into_domain_error(self, envelope: &alondra_domain_model::CommandEnvelope) -> alondra_domain_model::DomainError {
         match self {
             Self::Domain(error) => error,
             Self::Storage(error) => {
                 let kind = serde_json::to_value(&envelope.command).ok()
                     .and_then(|value| value["kind"].as_str().map(str::to_owned)).unwrap_or_else(|| "unknown".into());
                 log!("domain storage failure: operation={kind} command_id={} cause={error:#}", envelope.command_id);
-                alondra_domain_rules::DomainError::new("storage_unavailable", "domain transaction could not be completed")
+                alondra_domain_model::DomainError::new("storage_unavailable", "domain transaction could not be completed")
             }
         }
     }
@@ -40,7 +40,7 @@ pub mod metrics_fold {
     pub use alondra_engine_ports::journal::metrics::Spent;
 }
 pub mod wording {
-    pub use alondra_domain_rules::orchestrator_wording::{approved_plan_work, orchestrator_text};
+    pub use alondra_domain_model::orchestrator_wording::{approved_plan_work, orchestrator_text};
     pub use alondra_engine_ports::journal::decisions::{SdkDecision, SdkDecisions};
 }
 pub mod provider_settings {
@@ -121,7 +121,7 @@ pub use alondra_store_sqlite::testing::{load, save_journal};
 mod lifecycle_cache_tests;
 #[cfg(test)]
 use {
-    alondra_domain_rules::*,
+    alondra_domain_model::*,
     anyhow::Result,
     rusqlite::{Connection, OptionalExtension, Transaction, params},
     serde_json::{Value, json},

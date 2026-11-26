@@ -2,7 +2,7 @@
 //! back to work after an API error cut its turn.
 use crate::admission::{Paused, Reason};
 use alondra_core::Millis;
-use alondra_domain_rules::{ApiHealth, OUTAGE_PROBE};
+use alondra_domain_model::{ApiHealth, OUTAGE_PROBE};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 

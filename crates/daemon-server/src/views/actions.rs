@@ -14,7 +14,7 @@ use alondra_daemon_engine::local_actions::{LocalActionReceipt, LocalActionResour
 #[path = "model_input.rs"]
 mod model_input;
 
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, ANSWER_CONTENT, ANSWER_TEXT, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
     InteractionId, InteractionPayload, MergeMethod, PrId, Refusal, Revision, Target, TaskId,
 };
@@ -258,8 +258,8 @@ pub(super) async fn execute(
     }
 }
 
-fn resources_of(state: &alondra_domain_rules::DomainState, action: &ActionId) -> Vec<(LocalActionResource, bool)> {
-    use alondra_domain_rules::{AgentId, PrId, Scope};
+fn resources_of(state: &alondra_domain_model::DomainState, action: &ActionId) -> Vec<(LocalActionResource, bool)> {
+    use alondra_domain_model::{AgentId, PrId, Scope};
     let mut keys = std::collections::BTreeMap::new();
     let mut add = |key, exclusive| { keys.entry(key).and_modify(|write| *write |= exclusive).or_insert(exclusive); };
     match action.verb {
@@ -407,14 +407,14 @@ async fn execute_external(
     home: &std::path::Path,
     device: &str,
     request: &ActionRequest,
-    attachments: &[alondra_domain_rules::AttachmentRef],
+    attachments: &[alondra_domain_model::AttachmentRef],
     action: &ActionId,
     identity: Option<(&str, &str, &[u8; 32])>,
     authorize: impl Fn() -> anyhow::Result<()> + Sync,
     lang: Lang,
 ) -> anyhow::Result<Value> {
     use crate::client_routes::Write;
-    use alondra_domain_rules::{AgentId, PrId, Scope};
+    use alondra_domain_model::{AgentId, PrId, Scope};
 
     let state = domain.state()?;
     if authorize().is_err() {
@@ -528,7 +528,7 @@ async fn execute_external(
         }
         Verb::AskPr => {
             let pr_id = PrId(action.subject.clone());
-            let Some(pr) = state.pull_requests.get(&pr_id).filter(|pr| pr.state == alondra_domain_rules::PrState::Open) else {
+            let Some(pr) = state.pull_requests.get(&pr_id).filter(|pr| pr.state == alondra_domain_model::PrState::Open) else {
                 return Ok(no_longer_available(lang, "This pull request is no longer open"));
             };
             let Some(task) = state.tasks.get(&pr.task_id) else { return Ok(no_longer_available(lang, "This pull request is no longer available")); };
@@ -544,15 +544,15 @@ async fn execute_external(
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
         Verb::CloseUnmerged => {
-            let looks_elsewhere = |pr: &alondra_domain_rules::PullRequest| look_for_by_locator(domain, pr);
+            let looks_elsewhere = |pr: &alondra_domain_model::PullRequest| look_for_by_locator(domain, pr);
             let Closing { pr, task_id, was_open, deferred } = match close_on_github(&state, client.github().as_ref(), &action.subject, lang, &looks_elsewhere).await {
                 Ok(closed) => closed,
                 Err(refused) => return Ok(refused),
             };
             let number = pr.number;
-            if pr.state == alondra_domain_rules::PrState::Open && !deferred {
+            if pr.state == alondra_domain_model::PrState::Open && !deferred {
                 let closed = Command::ObservePrState { pr_id: pr.id.clone(), head: pr.head.clone(), base: pr.base.clone(),
-                    state: alondra_domain_rules::PrState::Closed, merged_head: None };
+                    state: alondra_domain_model::PrState::Closed, merged_head: None };
                 if let Err(error) = crate::domain_github::execute_system(domain, closed) {
                     log!("could not record that PR #{number} was closed: {error}");
                 }
@@ -592,7 +592,7 @@ async fn execute_external(
         }
         Verb::Conflicts => {
             let pr_id = PrId(action.subject.clone());
-            let Some(_pr) = state.pull_requests.get(&pr_id).filter(|pr| pr.state == alondra_domain_rules::PrState::Open) else {
+            let Some(_pr) = state.pull_requests.get(&pr_id).filter(|pr| pr.state == alondra_domain_model::PrState::Open) else {
                 return Ok(no_longer_available(lang, "This pull request is no longer open"));
             };
             let reply = client.write(&user_id, Write::ResolveConflicts(pr_id.0), &json!({}), transport, &authorize).await?;
@@ -764,7 +764,7 @@ async fn execute_external(
             let Some(expected) = action.extra.as_deref() else { return Ok(rejected_field(lang, "model", "Reload this task and try again")); };
             let base = task.selection.clone().unwrap_or_else(|| {
                 let mut intent = alondra_core::model_selection::TaskSelection::automatic(alondra_core::model_selection::ModelProfile::Implementation);
-                if let Some(model) = task.model.as_ref().filter(|model| model.chosen_by == alondra_domain_rules::ModelChooser::User) {
+                if let Some(model) = task.model.as_ref().filter(|model| model.chosen_by == alondra_domain_model::ModelChooser::User) {
                     intent.request_model(Some(alondra_core::model_selection::ModelKey { provider: task.provider, model: model.model.clone() }));
                 }
                 intent
@@ -1012,7 +1012,7 @@ async fn schedule_action(
     lang: Lang,
     stamp: &str,
 ) -> anyhow::Result<Value> {
-    use alondra_domain_rules::ScheduleId;
+    use alondra_domain_model::ScheduleId;
     let state = domain.state()?;
     if matches!(action.verb, Verb::SchedSave | Verb::ScheduleSelection) && action.subject == "view" {
         let options = schedule_option_specs(home, &request.input.fields, None);
@@ -1056,7 +1056,7 @@ async fn schedule_action(
     Ok(schedule_reply(result, lang, stamp, state.revision))
 }
 
-fn schedule_option_specs(home: &std::path::Path, fields: &serde_json::Map<String, Value>, schedule: Option<&alondra_domain_rules::Schedule>) -> Vec<alondra_core::options::Spec> {
+fn schedule_option_specs(home: &std::path::Path, fields: &serde_json::Map<String, Value>, schedule: Option<&alondra_domain_model::Schedule>) -> Vec<alondra_core::options::Spec> {
     let project = fields.get("project").and_then(Value::as_str)
         .or_else(|| schedule.and_then(|schedule| schedule.project.as_deref()))
         .filter(|project| !project.is_empty());
@@ -1066,7 +1066,7 @@ fn schedule_option_specs(home: &std::path::Path, fields: &serde_json::Map<String
     file.catalog(project)
 }
 
-fn schedule_draft(fields: &serde_json::Map<String, Value>, schedule: Option<&alondra_domain_rules::Schedule>, option_specs: &[alondra_core::options::Spec]) -> Value {
+fn schedule_draft(fields: &serde_json::Map<String, Value>, schedule: Option<&alondra_domain_model::Schedule>, option_specs: &[alondra_core::options::Spec]) -> Value {
     let text = |key: &str, fallback: &str| -> String {
         fields.get(key).and_then(Value::as_str).unwrap_or(fallback).to_owned()
     };
@@ -1212,7 +1212,7 @@ fn execute_value(
     domain: &crate::domain_runtime::DomainRuntime,
     device: &str,
     mut request: ActionRequest,
-    attachments: &[alondra_domain_rules::AttachmentRef],
+    attachments: &[alondra_domain_model::AttachmentRef],
     identity: Option<(&str, &str, &[u8; 32])>,
     authorize: impl Fn() -> anyhow::Result<()> + Sync,
 ) -> anyhow::Result<Value> {
@@ -1253,7 +1253,7 @@ fn execute_value(
     };
     let expected_revision = expected_revision(&state, &command, &action);
     let conflicts = (action.verb == Verb::Conflicts)
-        .then(|| state.pull_requests.get(&alondra_domain_rules::PrId(action.subject.clone())))
+        .then(|| state.pull_requests.get(&alondra_domain_model::PrId(action.subject.clone())))
         .flatten();
     let (actor, command_id) = match conflicts {
         Some(pr) => (Actor::System, conflicts_command_id(pr)),
@@ -1281,7 +1281,7 @@ fn execute_value(
 
 /// The open card whose secret this action's text is: the text goes to the card's file, never to
 /// the domain.
-fn secret_card<'a>(state: &'a alondra_domain_rules::DomainState, action: &ActionId, request: &ActionRequest) -> Option<&'a alondra_domain_rules::Interaction> {
+fn secret_card<'a>(state: &'a alondra_domain_model::DomainState, action: &ActionId, request: &ActionRequest) -> Option<&'a alondra_domain_model::Interaction> {
     let typed = match action.verb {
         Verb::Reply => true,
         Verb::Ans => request.option_id.as_deref().is_none_or(str::is_empty),
@@ -1295,10 +1295,10 @@ fn secret_card<'a>(state: &'a alondra_domain_rules::DomainState, action: &Action
 /// The command an action asks for, or why Alondra will not do it. Every action is judged against
 /// the task's current final delivery, never against the one the user's id was made from.
 fn map_domain_action(
-    state: &alondra_domain_rules::DomainState,
+    state: &alondra_domain_model::DomainState,
     action: &ActionId,
     request: &ActionRequest,
-    attachments: &[alondra_domain_rules::AttachmentRef],
+    attachments: &[alondra_domain_model::AttachmentRef],
     lang: Lang,
 ) -> Result<(Command, String), Refusal> {
     if let Some(refusal) = untracked_pr_refusal(state, action) {
@@ -1315,13 +1315,13 @@ fn map_domain_action(
 
 /// An action on the card of a pull request that joined another record, or that the user removed:
 /// nothing is done, and the user is told why.
-fn untracked_pr_refusal(state: &alondra_domain_rules::DomainState, action: &ActionId) -> Option<Refusal> {
+fn untracked_pr_refusal(state: &alondra_domain_model::DomainState, action: &ActionId) -> Option<Refusal> {
     let pr = state.pull_requests.get(&PrId(action.subject.clone()))?;
     state.tracked_pr(&pr.id).err().map(|error| error.why())
 }
 
 /// Why an action that maps to nothing is no longer possible.
-fn unavailable(state: &alondra_domain_rules::DomainState, action: &ActionId) -> Refusal {
+fn unavailable(state: &alondra_domain_model::DomainState, action: &ActionId) -> Refusal {
     let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone())) else {
         return Refusal::NoLongerAvailable;
     };
@@ -1335,15 +1335,15 @@ fn unavailable(state: &alondra_domain_rules::DomainState, action: &ActionId) -> 
 
 /// Accepting or merging is decided on what the user saw: when the task has presented a newer
 /// result since, or the PR moved under the one that was shown, nothing is accepted or merged.
-fn seen_delivery_is_current(state: &alondra_domain_rules::DomainState, interaction: &str) -> Result<(), Refusal> {
+fn seen_delivery_is_current(state: &alondra_domain_model::DomainState, interaction: &str) -> Result<(), Refusal> {
     let Some(interaction) = state.interactions.get(&InteractionId(interaction.to_owned())) else { return Ok(()); };
     let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return Ok(()); };
-    let alondra_domain_rules::Scope::Task { task_id } = &interaction.scope else { return Ok(()); };
+    let alondra_domain_model::Scope::Task { task_id } = &interaction.scope else { return Ok(()); };
     if state.tasks.get(task_id).and_then(|task| task.final_presentation.as_ref()).is_some_and(|current| *current != interaction.id) {
         return Err(Refusal::NewerResult);
     }
     for target in targets {
-        if let alondra_domain_rules::DeliveryTarget::PullRequest { pr_id, head } = target
+        if let alondra_domain_model::DeliveryTarget::PullRequest { pr_id, head } = target
             && let Some(pr) = state.pull_requests.get(pr_id)
             && pr.head != *head
         {
@@ -1355,10 +1355,10 @@ fn seen_delivery_is_current(state: &alondra_domain_rules::DomainState, interacti
 
 /// The delivery an action about `interaction` is for: its task's current final one.
 fn current_delivery<'a>(
-    state: &'a alondra_domain_rules::DomainState,
-    interaction: &'a alondra_domain_rules::Interaction,
-) -> &'a alondra_domain_rules::Interaction {
-    let alondra_domain_rules::Scope::Task { task_id } = &interaction.scope else { return interaction; };
+    state: &'a alondra_domain_model::DomainState,
+    interaction: &'a alondra_domain_model::Interaction,
+) -> &'a alondra_domain_model::Interaction {
+    let alondra_domain_model::Scope::Task { task_id } = &interaction.scope else { return interaction; };
     if !matches!(interaction.payload, InteractionPayload::Delivery { .. }) { return interaction; }
     state.tasks.get(task_id)
         .and_then(|task| task.final_presentation.as_ref())
@@ -1370,7 +1370,7 @@ fn current_delivery<'a>(
 /// What "Close without merging" settled before the task is cancelled.
 #[derive(Debug)]
 struct Closing {
-    pr: alondra_domain_rules::PullRequest,
+    pr: alondra_domain_model::PullRequest,
     task_id: TaskId,
     was_open: bool,
     /// Nobody has read yet which pull request this is: the task is cancelled with the close
@@ -1379,9 +1379,9 @@ struct Closing {
 }
 
 /// Asks the engine to find `pr` again by its locator: its address answered with another pull request.
-fn look_for_by_locator(domain: &crate::domain_runtime::DomainRuntime, pr: &alondra_domain_rules::PullRequest) {
-    let command = Command::ObservePrAddress { pr_id: pr.id.clone(), read: alondra_domain_rules::PrRead::Address { repository: pr.repository.clone() },
-        read_started_at: crate::pr_identity::read_start(), verdict: alondra_domain_rules::PrAddressVerdict::NamesAnotherPr };
+fn look_for_by_locator(domain: &crate::domain_runtime::DomainRuntime, pr: &alondra_domain_model::PullRequest) {
+    let command = Command::ObservePrAddress { pr_id: pr.id.clone(), read: alondra_domain_model::PrRead::Address { repository: pr.repository.clone() },
+        read_started_at: crate::pr_identity::read_start(), verdict: alondra_domain_model::PrAddressVerdict::NamesAnotherPr };
     if let Err(error) = crate::domain_github::execute_system(domain, command) {
         log!("could not ask for {}#{} by its locator: {error}", pr.repository, pr.number);
     }
@@ -1392,8 +1392,8 @@ fn look_for_by_locator(domain: &crate::domain_runtime::DomainRuntime, pr: &alond
 /// Alondra cannot check is refused without reaching GitHub. A PR nobody has read yet is accepted
 /// when it is the only one its task has open, and closed once a read says which one it is.
 /// `looks_elsewhere` runs when GitHub answers that the address is another pull request now.
-async fn close_on_github(state: &alondra_domain_rules::DomainState, github: &dyn crate::client_routes::Github, subject: &str, lang: Lang,
-    looks_elsewhere: &dyn Fn(&alondra_domain_rules::PullRequest)) -> Result<Closing, Value> {
+async fn close_on_github(state: &alondra_domain_model::DomainState, github: &dyn crate::client_routes::Github, subject: &str, lang: Lang,
+    looks_elsewhere: &dyn Fn(&alondra_domain_model::PullRequest)) -> Result<Closing, Value> {
     let Some(pr) = closed_pr(state, subject) else { return Err(refused_value(&Refusal::NoLongerAvailable, lang)); };
     if let Err(error) = state.tracked_pr(&pr.id) {
         return Err(domain_refusal_value(&error, lang));
@@ -1405,9 +1405,9 @@ async fn close_on_github(state: &alondra_domain_rules::DomainState, github: &dyn
         return Err(refused_value(&Refusal::TaskNotActive, lang));
     };
     let number = pr.number;
-    let mut was_open = pr.state == alondra_domain_rules::PrState::Open;
+    let mut was_open = pr.state == alondra_domain_model::PrState::Open;
     let expected = match (&pr.identity, was_open) {
-        (alondra_domain_rules::PrIdentity::Verified { key, .. }, _) => Some(key),
+        (alondra_domain_model::PrIdentity::Verified { key, .. }, _) => Some(key),
         (_, true) => {
             let alone = state.open_prs(task).all(|other| other.id == pr.id) && state.merged_pr(task).is_none();
             if !alone {
@@ -1418,7 +1418,7 @@ async fn close_on_github(state: &alondra_domain_rules::DomainState, github: &dyn
         (_, false) => None,
     };
     if was_open && let Some(expected) = expected
-        && let Err(detail) = github.close_pr(&pr.host, &pr.repository, number, expected, &alondra_domain_rules::cancelled_pr_comment(&task.title)).await
+        && let Err(detail) = github.close_pr(&pr.host, &pr.repository, number, expected, &alondra_domain_model::cancelled_pr_comment(&task.title)).await
     {
         log!("could not close PR #{number} on GitHub: {detail}");
         if matches!(detail, crate::domain_github::GhFailure::IdentityMismatch(_)) {
@@ -1426,16 +1426,16 @@ async fn close_on_github(state: &alondra_domain_rules::DomainState, github: &dyn
             return Err(refused_value(&Refusal::PrNotCheckedYet, lang));
         }
         match github.pr_state(&pr.host, &pr.repository, number).await {
-            Ok(alondra_domain_rules::PrState::Merged) => return Err(refused_value(&Refusal::PrAlreadyMerged { number }, lang)),
-            Ok(alondra_domain_rules::PrState::Closed) => was_open = false,
-            Ok(alondra_domain_rules::PrState::Open) | Err(_) => return Err(refused_value(&Refusal::GithubUnreachable, lang)),
+            Ok(alondra_domain_model::PrState::Merged) => return Err(refused_value(&Refusal::PrAlreadyMerged { number }, lang)),
+            Ok(alondra_domain_model::PrState::Closed) => was_open = false,
+            Ok(alondra_domain_model::PrState::Open) | Err(_) => return Err(refused_value(&Refusal::GithubUnreachable, lang)),
         }
     }
     Ok(Closing { pr: pr.clone(), task_id: task.id.clone(), was_open, deferred: false })
 }
 
 /// The PR "Close without merging" is about: the one its card names, or its delivery's.
-fn closed_pr<'a>(state: &'a alondra_domain_rules::DomainState, subject: &str) -> Option<&'a alondra_domain_rules::PullRequest> {
+fn closed_pr<'a>(state: &'a alondra_domain_model::DomainState, subject: &str) -> Option<&'a alondra_domain_model::PullRequest> {
     if let Some(pr) = state.pull_requests.get(&PrId(subject.to_owned())) {
         return Some(pr);
     }
@@ -1444,20 +1444,20 @@ fn closed_pr<'a>(state: &'a alondra_domain_rules::DomainState, subject: &str) ->
 }
 
 fn pr_of<'a>(
-    state: &'a alondra_domain_rules::DomainState,
-    interaction: &alondra_domain_rules::Interaction,
-) -> Option<&'a alondra_domain_rules::PullRequest> {
+    state: &'a alondra_domain_model::DomainState,
+    interaction: &alondra_domain_model::Interaction,
+) -> Option<&'a alondra_domain_model::PullRequest> {
     let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
-    let prs: Vec<&alondra_domain_rules::PullRequest> = targets.iter().filter_map(|target| match target {
-        alondra_domain_rules::DeliveryTarget::PullRequest { pr_id, .. } => state.pull_requests.get(pr_id),
+    let prs: Vec<&alondra_domain_model::PullRequest> = targets.iter().filter_map(|target| match target {
+        alondra_domain_model::DeliveryTarget::PullRequest { pr_id, .. } => state.pull_requests.get(pr_id),
         _ => None,
     }).collect();
-    prs.iter().find(|pr| pr.state == alondra_domain_rules::PrState::Open).or(prs.first()).copied()
+    prs.iter().find(|pr| pr.state == alondra_domain_model::PrState::Open).or(prs.first()).copied()
 }
 
 /// Changes and replies belong to the task's current delivery, so they are judged against that
 /// delivery's own revision; accepting and merging keep the revision of the card they came from.
-fn expected_revision(state: &alondra_domain_rules::DomainState, command: &Command, action: &ActionId) -> Revision {
+fn expected_revision(state: &alondra_domain_model::DomainState, command: &Command, action: &ActionId) -> Revision {
     let presentation = match command {
         Command::SubmitFeedback { presentation_id, .. } => Some(presentation_id),
         _ => None,
@@ -1467,13 +1467,13 @@ fn expected_revision(state: &alondra_domain_rules::DomainState, command: &Comman
 }
 
 fn map_merge(
-    state: &alondra_domain_rules::DomainState,
+    state: &alondra_domain_model::DomainState,
     action: &ActionId,
     request: &ActionRequest,
     lang: Lang,
 ) -> Result<(Command, String), Refusal> {
     let gone = Refusal::NoLongerAvailable;
-    let presented = if state.pull_requests.contains_key(&alondra_domain_rules::PrId(action.subject.clone())) {
+    let presented = if state.pull_requests.contains_key(&alondra_domain_model::PrId(action.subject.clone())) {
         action.extra.as_deref().and_then(|extra| extra.split_once('-')).map(|(_, presentation)| presentation.to_owned())
     } else {
         Some(action.subject.clone())
@@ -1482,16 +1482,16 @@ fn map_merge(
         .and_then(|id| state.interactions.get(&InteractionId(id)))
         .ok_or_else(|| gone.clone())?;
     seen_delivery_is_current(state, &interaction.id.0)?;
-    let pr = state.pull_requests.get(&alondra_domain_rules::PrId(action.subject.clone())).or(pr_of(state, interaction)).ok_or_else(|| gone.clone())?;
+    let pr = state.pull_requests.get(&alondra_domain_model::PrId(action.subject.clone())).or(pr_of(state, interaction)).ok_or_else(|| gone.clone())?;
     let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return Err(gone); };
     let head = targets.iter().find_map(|target| match target {
-        alondra_domain_rules::DeliveryTarget::PullRequest { pr_id, head } if *pr_id == pr.id => Some(head.clone()),
+        alondra_domain_model::DeliveryTarget::PullRequest { pr_id, head } if *pr_id == pr.id => Some(head.clone()),
         _ => None,
     }).ok_or(Refusal::NoLongerAvailable)?;
     if pr.head != head { return Err(Refusal::StaleHead { number: pr.number }); }
-    if pr.state != alondra_domain_rules::PrState::Open { return Err(Refusal::PrClosed { number: pr.number }); }
+    if pr.state != alondra_domain_model::PrState::Open { return Err(Refusal::PrClosed { number: pr.number }); }
     if let Some(upstream) = state.pull_requests.values().find(|upstream| upstream.id != pr.id
-        && upstream.state == alondra_domain_rules::PrState::Open
+        && upstream.state == alondra_domain_model::PrState::Open
         && upstream.same_repository_as(pr) && upstream.head == pr.base) {
         return Err(Refusal::UpstreamPrOpen { number: upstream.number });
     }
@@ -1509,8 +1509,8 @@ fn map_merge(
     // checks is not: pressing again makes the merger look at the PR right now.
     let merging = state.merge_authorizations.values().any(|a| a.valid && a.pr_id == pr.id && a.head == head
         && a.method == method && a.presentation_id == interaction.id
-        && matches!(a.attempt, alondra_domain_rules::MergeAttemptState::Claimed
-            | alondra_domain_rules::MergeAttemptState::Uncertain));
+        && matches!(a.attempt, alondra_domain_model::MergeAttemptState::Claimed
+            | alondra_domain_model::MergeAttemptState::Uncertain));
     if merging { return Err(Refusal::MergeInProgress { number: pr.number }); }
     let stamp = if lang == Lang::Es { "Haciendo merge…" } else { "Merging…" };
     Ok((Command::AuthorizeMerge {
@@ -1524,14 +1524,14 @@ fn map_merge(
 const ANSWER_STAMP_LIMIT: usize = 60;
 
 fn map_action(
-    state: &alondra_domain_rules::DomainState,
+    state: &alondra_domain_model::DomainState,
     action: &ActionId,
     request: &ActionRequest,
-    attachments: &[alondra_domain_rules::AttachmentRef],
+    attachments: &[alondra_domain_model::AttachmentRef],
     lang: Lang,
 ) -> Option<(Command, String)> {
     let stamp = |en: &str, es: &str| if lang == Lang::Es { es } else { en }.to_owned();
-    let answered_with = |text: &str| format!("{} · {}", stamp("You answered", "Respondiste"), alondra_domain_rules::clip(text, ANSWER_STAMP_LIMIT));
+    let answered_with = |text: &str| format!("{} · {}", stamp("You answered", "Respondiste"), alondra_domain_model::clip(text, ANSWER_STAMP_LIMIT));
     match action.verb {
         Verb::Ans => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
@@ -1543,14 +1543,14 @@ fn map_action(
                 if request.input.content.is_some() { return None; }
                 let text = request.input.text.as_ref()?.trim();
                 if text.is_empty() { return None; }
-                inputs.insert("text".into(), alondra_domain_rules::InputValue::Text(text.into()));
+                inputs.insert("text".into(), alondra_domain_model::InputValue::Text(text.into()));
             } else {
                 option?;
                 if let Some(text) = request.input.text.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
-                    inputs.insert(ANSWER_TEXT.into(), alondra_domain_rules::InputValue::Text(text.into()));
+                    inputs.insert(ANSWER_TEXT.into(), alondra_domain_model::InputValue::Text(text.into()));
                 }
                 if let Some(content) = &request.input.content {
-                    inputs.insert(ANSWER_CONTENT.into(), alondra_domain_rules::InputValue::Form(content.clone()));
+                    inputs.insert(ANSWER_CONTENT.into(), alondra_domain_model::InputValue::Form(content.clone()));
                 }
             }
             Some((Command::AnswerQuestion {
@@ -1567,7 +1567,7 @@ fn map_action(
             let (InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. }) = &interaction.payload else { return None; };
             if state.holds.contains_key(&interaction.id) { return None; }
             let note = request.input.text.as_deref().unwrap_or_default().trim();
-            let inputs = std::collections::BTreeMap::from([("text".to_owned(), alondra_domain_rules::InputValue::Text(context_request(note)))]);
+            let inputs = std::collections::BTreeMap::from([("text".to_owned(), alondra_domain_model::InputValue::Text(context_request(note)))]);
             Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id: String::new(),
                 inputs, attachments: vec![] }, stamp("Context requested", "Contexto solicitado")))
         }
@@ -1583,7 +1583,7 @@ fn map_action(
                 let text = request.input.text.as_deref().unwrap_or_default().trim();
                 if text.is_empty() && (attachments.is_empty() || !option_id.is_empty()) { return None; }
                 let inputs = if text.is_empty() { Default::default() } else {
-                    std::collections::BTreeMap::from([(ANSWER_TEXT.to_owned(), alondra_domain_rules::InputValue::Text(text.into()))])
+                    std::collections::BTreeMap::from([(ANSWER_TEXT.to_owned(), alondra_domain_model::InputValue::Text(text.into()))])
                 };
                 return Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id: option_id.into(),
                     inputs, attachments: attachments.to_vec() }, if text.is_empty() { stamp("You answered", "Respondiste") } else { answered_with(text) }));
@@ -1599,7 +1599,7 @@ fn map_action(
                 stamp("Reply sent", "Respuesta enviada")))
         }
         Verb::AskPr | Verb::Conflicts => {
-            let pr = state.pull_requests.get(&alondra_domain_rules::PrId(action.subject.clone()))?;
+            let pr = state.pull_requests.get(&alondra_domain_model::PrId(action.subject.clone()))?;
             let presentation = pr_presentation(state, pr)?;
             let InteractionPayload::Delivery { .. } = &presentation.payload else { return None; };
             let (body, attachments, instruction, stamp) = if action.verb == Verb::AskPr {
@@ -1611,7 +1611,7 @@ fn map_action(
                     Instruction::Conflicts, stamp("Conflicts requested", "Conflictos comunicados"))
             };
             Some((Command::SubmitFeedback { presentation_id: presentation.id.clone(),
-                targets: vec![alondra_domain_rules::DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: pr.head.clone() }],
+                targets: vec![alondra_domain_model::DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: pr.head.clone() }],
                 body, attachments, instruction, merge_failure: None }, stamp))
         }
         Verb::Retake => {
@@ -1626,7 +1626,7 @@ fn map_action(
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
             let reason = match request.option_id.as_deref().filter(|id| !id.is_empty()) {
                 Some(name) => alondra_view_model::action_id::clarification_reason(name)?,
-                None => alondra_domain_rules::ClarificationReason::Unclear,
+                None => alondra_domain_model::ClarificationReason::Unclear,
             };
             let text = request.input.text.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned);
             Some((Command::RequestClarification { interaction_id: interaction.id.clone(), reason, text },
@@ -1653,8 +1653,8 @@ fn map_action(
             Some((Command::AcceptDelivery { presentation_id: interaction.id.clone(), targets: targets.clone() }, done))
         }
         Verb::Changes => {
-            let (interaction, pr_head) = if state.pull_requests.contains_key(&alondra_domain_rules::PrId(action.subject.clone())) {
-                let pr = state.pull_requests.get(&alondra_domain_rules::PrId(action.subject.clone()))?;
+            let (interaction, pr_head) = if state.pull_requests.contains_key(&alondra_domain_model::PrId(action.subject.clone())) {
+                let pr = state.pull_requests.get(&alondra_domain_model::PrId(action.subject.clone()))?;
                 (pr_presentation(state, pr)?, Some(pr.head.clone()))
             } else {
                 (current_delivery(state, state.interactions.get(&InteractionId(action.subject.clone()))?), None)
@@ -1670,18 +1670,18 @@ fn map_action(
             if let InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. } = &interaction.payload {
                 let option_id = if held_plan(state, interaction) {
                     Hold::REQUEST_CHANGES.to_owned()
-                } else if matches!(interaction.subject, Some(alondra_domain_rules::InteractionSubject::DocumentReview { .. })) {
+                } else if matches!(interaction.subject, Some(alondra_domain_model::InteractionSubject::DocumentReview { .. })) {
                     String::new()
                 } else {
                     return None;
                 };
-                let inputs = std::collections::BTreeMap::from([(Hold::NOTE.to_owned(), alondra_domain_rules::InputValue::Text(body))]);
+                let inputs = std::collections::BTreeMap::from([(Hold::NOTE.to_owned(), alondra_domain_model::InputValue::Text(body))]);
                 return Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id,
                     inputs, attachments: attachments.to_vec() }, stamp("Changes requested", "Cambios solicitados")));
             }
             let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
             let submitted = if let Some(head) = pr_head {
-                let target = alondra_domain_rules::DeliveryTarget::PullRequest { pr_id: action.subject.clone().into(), head };
+                let target = alondra_domain_model::DeliveryTarget::PullRequest { pr_id: action.subject.clone().into(), head };
                 if !targets.contains(&target) { return None; }
                 vec![target]
             } else { targets.clone() };
@@ -1689,16 +1689,16 @@ fn map_action(
                 attachments: attachments.to_vec(), instruction: Instruction::Changes, merge_failure: None }, stamp("Changes requested", "Cambios solicitados")))
         }
         Verb::Withdraw => {
-            if !state.requests.get(&alondra_domain_rules::RequestId(action.subject.clone()))?.closed {
+            if !state.requests.get(&alondra_domain_model::RequestId(action.subject.clone()))?.closed {
                 Some((Command::CloseRequest { covered_by: vec![], outcome: None, request_id: action.subject.clone().into(), answer: None, withdrawn: true, title: None, headline: None, folded_into: None }, stamp("Withdrawn", "Retirada")))
             } else { None }
         }
         Verb::SetPriority => {
             let task = state.tasks.get(&TaskId(action.subject.clone())).filter(|task| !task.over())?;
             let priority = match request.option_id.as_deref()? {
-                "high" => alondra_domain_rules::TaskPriority::High,
-                "normal" => alondra_domain_rules::TaskPriority::Normal,
-                "low" => alondra_domain_rules::TaskPriority::Low,
+                "high" => alondra_domain_model::TaskPriority::High,
+                "normal" => alondra_domain_model::TaskPriority::Normal,
+                "low" => alondra_domain_model::TaskPriority::Low,
                 _ => return None,
             };
             Some((Command::SetPriority { task_id: task.id.clone(), priority }, stamp("Priority changed", "Prioridad cambiada")))
@@ -1708,7 +1708,7 @@ fn map_action(
             Some((Command::SetMergeMethod { method }, stamp("Merge method changed", "Modo de merge cambiado")))
         }
         Verb::SetBranchUpdate => {
-            let update = alondra_domain_rules::BranchUpdate::parse(request.option_id.as_deref()?)?;
+            let update = alondra_domain_model::BranchUpdate::parse(request.option_id.as_deref()?)?;
             Some((Command::SetBranchUpdate { update }, stamp("Branch update changed", "Modo de actualizar la rama cambiado")))
         }
         Verb::DetachPr => {
@@ -1737,25 +1737,25 @@ fn map_action(
 
 /// Resolve conflicts is Alondra's own request, whether the user tapped it or Alondra noticed:
 /// one per PR head, so a second one for the same head changes nothing.
-pub(crate) fn conflicts_command_id(pr: &alondra_domain_rules::PullRequest) -> CommandId {
+pub(crate) fn conflicts_command_id(pr: &alondra_domain_model::PullRequest) -> CommandId {
     CommandId(format!("conflicts-{}-{}", pr.slug(), pr.head))
 }
 
 pub(crate) use alondra_view_model::pr_presentation;
 
-fn held_plan(state: &alondra_domain_rules::DomainState, interaction: &alondra_domain_rules::Interaction) -> bool {
+fn held_plan(state: &alondra_domain_model::DomainState, interaction: &alondra_domain_model::Interaction) -> bool {
     state.holds.get(&interaction.id) == Some(&Hold::Plan)
 }
 
 /// "Request changes" from a card whose PR got new commits since: ask before sending, with the same
 /// action pointed at the new head. Merging never asks: it is refused when what was shown is stale.
 fn changed_pr_head(
-    state: &alondra_domain_rules::DomainState,
+    state: &alondra_domain_model::DomainState,
     action: &ActionId,
     lang: Lang,
 ) -> Option<Value> {
     if action.verb != Verb::Changes { return None; }
-    let pr_id = alondra_domain_rules::PrId(action.subject.clone());
+    let pr_id = alondra_domain_model::PrId(action.subject.clone());
     let old_prefix = action.extra.as_deref()?;
     let pr = state.pull_requests.get(&pr_id)?;
     let new_prefix = head_prefix(&pr.head);
@@ -1771,12 +1771,12 @@ fn changed_pr_head(
 
 /// Feedback written on a document delivery the node has since presented again with a newer
 /// revision says which version it was written on.
-fn older_version(state: &alondra_domain_rules::DomainState, read: &alondra_domain_rules::Interaction,
-    current: &alondra_domain_rules::Interaction) -> Option<String> {
+fn older_version(state: &alondra_domain_model::DomainState, read: &alondra_domain_model::Interaction,
+    current: &alondra_domain_model::Interaction) -> Option<String> {
     if read.id == current.id { return None; }
-    let revisions = |interaction: &alondra_domain_rules::Interaction| match &interaction.payload {
+    let revisions = |interaction: &alondra_domain_model::Interaction| match &interaction.payload {
         InteractionPayload::Delivery { targets, .. } => targets.iter().filter_map(|target| match target {
-            alondra_domain_rules::DeliveryTarget::DocumentRevision { document_id, revision_id } => Some((document_id.clone(), revision_id.clone())),
+            alondra_domain_model::DeliveryTarget::DocumentRevision { document_id, revision_id } => Some((document_id.clone(), revision_id.clone())),
             _ => None,
         }).collect::<Vec<_>>(),
         _ => vec![],
@@ -1785,7 +1785,7 @@ fn older_version(state: &alondra_domain_rules::DomainState, read: &alondra_domai
     let (document, read_revision) = revisions(read).into_iter()
         .find(|(document, revision)| now.iter().any(|(other, newer)| other == document && newer != revision))?;
     let (_, newer) = now.iter().find(|(other, _)| *other == document)?;
-    let number = |revision| state.document_revisions.get(revision).map_or(0, |revision: &alondra_domain_rules::DocumentRevision| revision.number);
+    let number = |revision| state.document_revisions.get(revision).map_or(0, |revision: &alondra_domain_model::DocumentRevision| revision.number);
     let title = state.documents.get(&document).map_or_else(|| document.0.clone(), |document| document.title.clone());
     Some(format!("These comments are on version {} of “{title}”, which the user was reading; you have since presented version {}.",
         number(&read_revision), number(newer)))
@@ -1793,12 +1793,12 @@ fn older_version(state: &alondra_domain_rules::DomainState, read: &alondra_domai
 
 /// Comments on a document review whose card its node replaced, usually to ask about a newer
 /// revision, are offered to that newer review instead of being lost.
-fn newer_document_review(state: &alondra_domain_rules::DomainState, action: &ActionId, lang: Lang) -> Option<Value> {
-    use alondra_domain_rules::InteractionSubject;
+fn newer_document_review(state: &alondra_domain_model::DomainState, action: &ActionId, lang: Lang) -> Option<Value> {
+    use alondra_domain_model::InteractionSubject;
     if action.verb != Verb::Changes { return None; }
     let read = state.interactions.get(&InteractionId(action.subject.clone()))?;
     let Some(InteractionSubject::DocumentReview { document_id, revision_id: read_revision }) = &read.subject else { return None; };
-    let open = |interaction: &alondra_domain_rules::Interaction| !interaction.withdrawn
+    let open = |interaction: &alondra_domain_model::Interaction| !interaction.withdrawn
         && matches!(interaction.payload, InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. });
     if open(read) { return None; }
     let newer = state.interactions.values()
@@ -1807,7 +1807,7 @@ fn newer_document_review(state: &alondra_domain_rules::DomainState, action: &Act
         .max_by_key(|candidate| candidate.order)?;
     let fresh = ActionId::new(Verb::Changes, newer.id.0.clone(), newer.revision, None).ok()?.to_string();
     let title = state.documents.get(document_id).map_or_else(|| document_id.0.clone(), |document| document.title.clone());
-    let number = |revision: &alondra_domain_rules::DocumentRevisionId| state.document_revisions.get(revision).map_or(0, |revision| revision.number);
+    let number = |revision: &alondra_domain_model::DocumentRevisionId| state.document_revisions.get(revision).map_or(0, |revision| revision.number);
     let newer_revision = match &newer.subject { Some(InteractionSubject::DocumentReview { revision_id, .. }) => number(revision_id), _ => 0 };
     let read_revision = number(read_revision);
     let (message, detail, button) = match (lang, newer_revision == read_revision) {
@@ -1893,7 +1893,7 @@ fn device_not_approved_value(lang: Lang) -> Value {
     value
 }
 
-fn node_unreachable_value(state: &alondra_domain_rules::DomainState, agent: &alondra_domain_rules::AgentId, lang: Lang) -> Value {
+fn node_unreachable_value(state: &alondra_domain_model::DomainState, agent: &alondra_domain_model::AgentId, lang: Lang) -> Value {
     let node = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent) && !task.archived).map(|task| task.title.clone())
         .or_else(|| state.agents.get(agent).map(|agent| agent.name.clone()))
         .unwrap_or_else(|| agent.0.chars().take(8).collect());
@@ -1904,8 +1904,8 @@ fn node_unreachable_value(state: &alondra_domain_rules::DomainState, agent: &alo
 
 /// A node that is not connected, when a message to it says so.
 fn unreachable_reply(
-    state: &alondra_domain_rules::DomainState,
-    agent: &alondra_domain_rules::AgentId,
+    state: &alondra_domain_model::DomainState,
+    agent: &alondra_domain_model::AgentId,
     reply: &Value,
     lang: Lang,
 ) -> Option<Value> {
@@ -1921,8 +1921,8 @@ fn domain_refusal_value(error: &DomainError, lang: Lang) -> Value {
 }
 
 /// A delivery the user only reads: no pull request to merge and no document to approve.
-fn only_text(targets: &[alondra_domain_rules::DeliveryTarget]) -> bool {
-    targets.iter().all(|target| matches!(target, alondra_domain_rules::DeliveryTarget::Text { .. }))
+fn only_text(targets: &[alondra_domain_model::DeliveryTarget]) -> bool {
+    targets.iter().all(|target| matches!(target, alondra_domain_model::DeliveryTarget::Text { .. }))
 }
 
 /// What an accept verb is accepting, read before the action changes the card.
@@ -1936,7 +1936,7 @@ enum Accepted {
 }
 
 impl Accepted {
-    fn of(state: &alondra_domain_rules::DomainState, action: &ActionId) -> Self {
+    fn of(state: &alondra_domain_model::DomainState, action: &ActionId) -> Self {
         let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone())) else { return Self::Result; };
         if held_plan(state, interaction) {
             return Self::Plan;
@@ -1947,8 +1947,8 @@ impl Accepted {
         match &interaction.payload {
             InteractionPayload::Delivery { targets, .. } if only_text(targets) => Self::Report,
             InteractionPayload::Delivery { targets, .. } if !targets.is_empty()
-                && targets.iter().all(|target| matches!(target, alondra_domain_rules::DeliveryTarget::DocumentRevision { .. })) => Self::Document,
-            InteractionPayload::Question { .. } if matches!(interaction.subject, Some(alondra_domain_rules::InteractionSubject::DocumentReview { .. })) => Self::Document,
+                && targets.iter().all(|target| matches!(target, alondra_domain_model::DeliveryTarget::DocumentRevision { .. })) => Self::Document,
+            InteractionPayload::Question { .. } if matches!(interaction.subject, Some(alondra_domain_model::InteractionSubject::DocumentReview { .. })) => Self::Document,
             _ => Self::Result,
         }
     }
@@ -2040,7 +2040,7 @@ fn with_result(mut reply: Value, lang: Lang, action: Option<&ActionId>, accepted
 fn resolve_attachments(
     home: &std::path::Path,
     ids: &[String],
-) -> anyhow::Result<Vec<alondra_domain_rules::AttachmentRef>> {
+) -> anyhow::Result<Vec<alondra_domain_model::AttachmentRef>> {
     let plain_ids: Vec<String> = ids.iter()
         .map(|id| id.strip_prefix("att:").unwrap_or(id).to_owned())
         .collect();
@@ -2293,10 +2293,10 @@ mod tests {
     }
 
     fn mapped(
-        state: &alondra_domain_rules::DomainState,
+        state: &alondra_domain_model::DomainState,
         action: &ActionId,
         request: &ActionRequest,
-        attachments: &[alondra_domain_rules::AttachmentRef],
+        attachments: &[alondra_domain_model::AttachmentRef],
         lang: Lang,
     ) -> Option<(Command, String)> {
         map_domain_action(state, action, request, attachments, lang).ok()
@@ -2325,7 +2325,7 @@ mod tests {
 
     #[test]
     fn schedule_draft_drops_old_project_options_when_project_changes() {
-        let schedule: alondra_domain_rules::Schedule = serde_json::from_value(json!({
+        let schedule: alondra_domain_model::Schedule = serde_json::from_value(json!({
             "id":"schedule-1", "title":"Morning", "text":"Review work",
             "project":"Old", "options":{"old_option":"old_value"},
             "disallowed_tools":[], "frequency":"daily", "hour":9, "minute":0,
@@ -2363,7 +2363,7 @@ mod tests {
         connection.query_row("SELECT count(*) FROM semantic_receipts", [], |row| row.get(0)).unwrap()
     }
 
-    fn pacing_request(state: &alondra_domain_rules::DomainState, verb: Verb, subject: &str, option: &str, lang: &str) -> ActionRequest {
+    fn pacing_request(state: &alondra_domain_model::DomainState, verb: Verb, subject: &str, option: &str, lang: &str) -> ActionRequest {
         ActionRequest {
             protocol: VIEWS_PROTOCOL,
             command_id: format!("5f0c2d9e-8d0b-4c71-9b0e-{}", crate::auth::random_hex(6)),
@@ -2434,7 +2434,7 @@ mod tests {
         });
         apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: None,
-            review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", directory.to_string_lossy().into_owned())),
+            review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", directory.to_string_lossy().into_owned())),
         });
         let key = p256::ecdsa::SigningKey::from_slice(&[22u8; 32]).unwrap();
         let public_key = STANDARD.encode(key.verifying_key().to_sec1_bytes());
@@ -2474,7 +2474,7 @@ mod tests {
             let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20).await.unwrap();
             let reply: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(reply["outcome"], "applied", "{reply}");
-            assert_eq!(domain.state().unwrap().tasks[&"task".into()].priority, alondra_domain_rules::TaskPriority::High);
+            assert_eq!(domain.state().unwrap().tasks[&"task".into()].priority, alondra_domain_model::TaskPriority::High);
             assert_eq!(domain.external_work.available(), 0, "both slow jobs are still physically held");
             drop(releases);
             for holder in holders { holder.await.unwrap(); }
@@ -2585,13 +2585,13 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Work".into(),
             agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         let state = domain.state().unwrap();
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetPriority, "task-a", "high", "es"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         let task = &domain.state().unwrap().tasks[&TaskId("task-a".into())];
-        assert_eq!(task.priority, alondra_domain_rules::TaskPriority::High);
+        assert_eq!(task.priority, alondra_domain_model::TaskPriority::High);
 
         let state = domain.state().unwrap();
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetMergeMethod, "merge_method", "rebase", "es"), None, || Ok(())).await.unwrap();
@@ -2602,7 +2602,7 @@ for line in sys.stdin:
         assert_ne!(reply["outcome"], "applied", "{reply}");
         assert_eq!(domain.state().unwrap().merge_method, MergeMethod::Rebase);
 
-        use alondra_domain_rules::BranchUpdate;
+        use alondra_domain_model::BranchUpdate;
         let state = domain.state().unwrap();
         assert_eq!(state.branch_update, BranchUpdate::Rebase, "nodes rebase until the user picks otherwise");
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetBranchUpdate, "branch_update", "merge", "es"), None, || Ok(())).await.unwrap();
@@ -2616,7 +2616,7 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn clear_completed_applies_one_command_and_repeating_it_changes_nothing() {
-        use alondra_domain_rules::DeliveryTarget;
+        use alondra_domain_model::DeliveryTarget;
         use std::{fs, path::PathBuf};
 
         struct TestHome(PathBuf);
@@ -2647,21 +2647,21 @@ for line in sys.stdin:
                 task_id: task_id.into(), request_id: "request".into(), title: task_id.into(),
                 agent_id: Some(agent.clone().into()), review_prs: false,
                 dependencies: Default::default(), stack: None,
-                launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+                launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
             });
             let delivery_id = format!("delivery-{task_id}");
             apply_seed_command(&domain, Actor::Agent { agent_id: agent.clone().into() }, &format!("present-{task_id}"), Command::PresentResult {
                 checklist: Vec::new(),
                 attachments: vec![], task_id: task_id.into(), interaction_id: delivery_id.clone().into(),
                 body: "Complete".into(), targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
-                is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+                is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
             });
             apply_seed_command(&domain, Actor::User { user_id: "user".into() }, &format!("accept-{task_id}"), Command::AcceptDelivery {
                 presentation_id: delivery_id.clone().into(),
                 targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
             });
             apply_seed_command(&domain, Actor::System, &format!("end-{task_id}"), Command::RecordNodeEnd {
-                task_id: task_id.into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: None,
+                task_id: task_id.into(), end: alondra_domain_model::NodeEnd::Closed, agent_id: None,
             });
         }
 
@@ -2826,8 +2826,8 @@ for line in sys.stdin:
 
     #[test]
     fn free_text_question_maps_to_empty_option_and_text_input() {
-        use alondra_domain_rules::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue, QuestionOption};
-        let mut state = alondra_domain_rules::DomainState::new("epoch");
+        use alondra_domain_model::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue, QuestionOption};
+        let mut state = alondra_domain_model::DomainState::new("epoch");
         state.interactions.insert("q-1".into(), Interaction { system_card: None,
             attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::System, recipient: Recipient::User, body: "Pick one or explain".into(),
@@ -2835,7 +2835,7 @@ for line in sys.stdin:
                 options: vec![QuestionOption {
                     id: "yes".into(), label: "Yes".into(), description: None,
                 }], answer: None,
-            }, revision: 1, order: 1, withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            }, revision: 1, order: 1, withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         });
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -2861,14 +2861,14 @@ for line in sys.stdin:
 
     #[test]
     fn an_option_answers_at_once_and_carries_what_the_user_wrote_on_the_card() {
-        use alondra_domain_rules::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue, QuestionOption};
-        let mut state = alondra_domain_rules::DomainState::new("epoch");
+        use alondra_domain_model::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue, QuestionOption};
+        let mut state = alondra_domain_model::DomainState::new("epoch");
         let options = ["done", "cannot"].map(|id| QuestionOption { id: id.into(), label: id.into(), description: None }).to_vec();
         state.interactions.insert("q-1".into(), Interaction { system_card: None,
             attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::Agent { agent_id: "a-1".into() }, recipient: Recipient::User, body: "Rotate the key".into(),
             blocking: true, subject: None, payload: InteractionPayload::ActionRequest { options, answer: None },
-            revision: 1, order: 1, withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Do, "Rotate the key"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            revision: 1, order: 1, withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Do, "Rotate the key"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         });
         let pressed = |text: Option<&str>| ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -2891,7 +2891,7 @@ for line in sys.stdin:
 
     #[test]
     fn words_alone_on_a_held_card_answer_it_as_claude_code_would() {
-        use alondra_domain_rules::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue};
+        use alondra_domain_model::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue};
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
             data_epoch: "epoch".into(), client: "tui".into(), lang: "en".into(),
@@ -2900,12 +2900,12 @@ for line in sys.stdin:
         };
         for (hold, expected) in [(Hold::Permission, Hold::DENY), (Hold::Plan, Hold::REQUEST_CHANGES),
             (Hold::Elicitation, Hold::ACCEPT), (Hold::Question, "")] {
-            let mut state = alondra_domain_rules::DomainState::new("epoch");
+            let mut state = alondra_domain_model::DomainState::new("epoch");
             state.interactions.insert("hold-1".into(), Interaction { system_card: None,
                 attachments: vec![], id: "hold-1".into(), scope: Scope::Task { task_id: "t-1".into() },
                 author: Author::System, recipient: Recipient::User, body: "Run it?".into(), blocking: true, subject: None,
                 payload: InteractionPayload::Question { options: hold.options(), answer: None },
-                revision: 1, order: 1, withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Authorize, "Run it?"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+                revision: 1, order: 1, withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Authorize, "Run it?"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             });
             state.holds.insert("hold-1".into(), hold);
             let reply = ActionId::new(Verb::Reply, "hold-1", 1, None).unwrap();
@@ -2918,8 +2918,8 @@ for line in sys.stdin:
 
     #[test]
     fn requesting_changes_on_a_document_question_answers_it_with_the_block_comments() {
-        use alondra_domain_rules::{Author, InputValue, Interaction, InteractionSubject, QuestionOption, Recipient, Scope};
-        let mut state = alondra_domain_rules::DomainState::new("epoch");
+        use alondra_domain_model::{Author, InputValue, Interaction, InteractionSubject, QuestionOption, Recipient, Scope};
+        let mut state = alondra_domain_model::DomainState::new("epoch");
         state.interactions.insert("q-1".into(), Interaction { system_card: None,
             attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::Agent { agent_id: "a-1".into() }, recipient: Recipient::User, body: "Approve the plan?".into(),
@@ -2928,7 +2928,7 @@ for line in sys.stdin:
             payload: InteractionPayload::Question {
                 options: vec![QuestionOption { id: "approve".into(), label: "Approve".into(), description: None }],
                 answer: None,
-            }, revision: 1, order: 1, withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            }, revision: 1, order: 1, withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         });
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -2951,14 +2951,14 @@ for line in sys.stdin:
 
     #[test]
     fn a_held_plan_is_approved_or_sent_back_with_the_comments_on_its_blocks() {
-        use alondra_domain_rules::{Author, InputValue, Interaction, Recipient, Scope};
-        let mut state = alondra_domain_rules::DomainState::new("epoch");
+        use alondra_domain_model::{Author, InputValue, Interaction, Recipient, Scope};
+        let mut state = alondra_domain_model::DomainState::new("epoch");
         state.interactions.insert("hold-1".into(), Interaction { system_card: None,
             attachments: vec![], id: "hold-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::System, recipient: Recipient::User, body: "# Plan\n\n1. Split the lexer".into(),
             blocking: true, subject: None,
             payload: InteractionPayload::Question { options: Hold::Plan.options(), answer: None },
-            revision: 1, order: 1, withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            revision: 1, order: 1, withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         });
         state.holds.insert("hold-1".into(), Hold::Plan);
         let request = ActionRequest {
@@ -2991,9 +2991,9 @@ for line in sys.stdin:
         assert!(mapped(&state, &changes, &request, &[], Lang::En).is_none());
     }
 
-    fn accepting_card(id: &str, targets: Option<Vec<alondra_domain_rules::DeliveryTarget>>) -> alondra_domain_rules::DomainState {
-        use alondra_domain_rules::{Author, Interaction, Recipient, Scope};
-        let mut state = alondra_domain_rules::DomainState::new("epoch");
+    fn accepting_card(id: &str, targets: Option<Vec<alondra_domain_model::DeliveryTarget>>) -> alondra_domain_model::DomainState {
+        use alondra_domain_model::{Author, Interaction, Recipient, Scope};
+        let mut state = alondra_domain_model::DomainState::new("epoch");
         let payload = match targets {
             Some(targets) => InteractionPayload::Delivery { targets, is_final: true, acceptance: None, feedback: vec![] },
             None => {
@@ -3005,23 +3005,23 @@ for line in sys.stdin:
             attachments: vec![], id: id.into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::System, recipient: Recipient::User, body: "Body".into(),
             blocking: true, subject: None, payload,
-            revision: 1, order: 1, withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            revision: 1, order: 1, withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         });
         state
     }
 
-    fn accept_title(state: &alondra_domain_rules::DomainState, id: &str, lang: Lang) -> String {
+    fn accept_title(state: &alondra_domain_model::DomainState, id: &str, lang: Lang) -> String {
         let accept = ActionId::new(Verb::Accept, id, 1, None).unwrap();
         let reply = json!({"outcome": "applied", "stamp": "Approved"});
         with_result(reply, lang, Some(&accept), Accepted::of(state, &accept))["result"]["title"].as_str().unwrap().to_owned()
     }
 
-    fn document_targets() -> Vec<alondra_domain_rules::DeliveryTarget> {
-        vec![alondra_domain_rules::DeliveryTarget::DocumentRevision { document_id: "doc".into(), revision_id: "doc-r1".into() }]
+    fn document_targets() -> Vec<alondra_domain_model::DeliveryTarget> {
+        vec![alondra_domain_model::DeliveryTarget::DocumentRevision { document_id: "doc".into(), revision_id: "doc-r1".into() }]
     }
 
-    fn pull_request_targets() -> Vec<alondra_domain_rules::DeliveryTarget> {
-        vec![alondra_domain_rules::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "abc".into() }]
+    fn pull_request_targets() -> Vec<alondra_domain_model::DeliveryTarget> {
+        vec![alondra_domain_model::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "abc".into() }]
     }
 
     #[test]
@@ -3049,7 +3049,7 @@ for line in sys.stdin:
     // its Seen button answered "You already answered this." while the card stayed open.
     #[test]
     fn a_result_whose_acceptance_was_taken_back_is_accepted_again_and_only_a_standing_one_is_answered() {
-        use alondra_domain_rules::{Acceptance, DeliveryTarget};
+        use alondra_domain_model::{Acceptance, DeliveryTarget};
         let mut state = accepting_card("result", Some(vec![DeliveryTarget::Text { text: "The report".into() }]));
         let accept = ActionId::new(Verb::Accept, "result", 1, None).unwrap();
         let request = ActionRequest {
@@ -3148,7 +3148,7 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Work".into(),
             agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         apply_seed_command(&domain, Actor::System, "unrelated-node", Command::RegisterAgent {
             agent_id: "task-a".into(), name: "Unrelated node".into(), at: 0,
@@ -3169,7 +3169,7 @@ for line in sys.stdin:
         let task = TaskId("task-a".into());
         assert!(state.tasks[&task].agent_id.is_none(), "a message starts no node");
         let told: Vec<&str> = state.lifecycle_journal[&task].iter().filter_map(|record| match record {
-            alondra_domain_rules::LifecycleRecord::Told { text: Some(text), .. } => Some(text.as_str()),
+            alondra_domain_model::LifecycleRecord::Told { text: Some(text), .. } => Some(text.as_str()),
             _ => None,
         }).collect();
         assert_eq!(told.len(), 2, "{told:?}");
@@ -3316,13 +3316,13 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id:"task".into(), request_id:"request".into(), title:"Work".into(), agent_id:Some("agent-a".into()),
             review_prs:false, dependencies:Default::default(), stack:None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         alondra_daemon_engine::domain_store::admit_through_sdk_with_host(&domain, &"task".into(), "agent-a", "alondra-sdk");
         apply_seed_command(&domain, Actor::System, "info", Command::PublishInformation {
-            attachments:vec![], interaction_id:"info".into(), scope:alondra_domain_rules::Scope::Task { task_id:"task".into() },
-            recipient:alondra_domain_rules::Recipient::User, body:"Update".into(),
-            card:alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
+            attachments:vec![], interaction_id:"info".into(), scope:alondra_domain_model::Scope::Task { task_id:"task".into() },
+            recipient:alondra_domain_model::Recipient::User, body:"Update".into(),
+            card:alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"),
         });
         let state = domain.state().unwrap();
         let mut request = pacing_request(&state, Verb::Reply, "info", "", "en");
@@ -3333,13 +3333,13 @@ for line in sys.stdin:
         let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
         assert_eq!(body["outcome"], "applied", "{body}");
         let after = domain.state().unwrap();
-        let pending = after.tasks[&alondra_domain_rules::TaskId::from("task")].pending_user_inputs.clone();
+        let pending = after.tasks[&alondra_domain_model::TaskId::from("task")].pending_user_inputs.clone();
         assert_eq!(pending.len(), 1);
-        assert!(alondra_domain_rules::ReadIndex::build(&after).waiting_card(&"info".into()).is_none(), "the reply read the update");
+        assert!(alondra_domain_model::ReadIndex::build(&after).waiting_card(&"info".into()).is_none(), "the reply read the update");
         let reply = execute(&domain, &client, &home.0, "test-device", other, None, || Ok(())).await;
         let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
         assert_eq!(body["outcome"], "no_longer_available");
-        assert_eq!(domain.state().unwrap().tasks[&alondra_domain_rules::TaskId::from("task")].pending_user_inputs, pending);
+        assert_eq!(domain.state().unwrap().tasks[&alondra_domain_model::TaskId::from("task")].pending_user_inputs, pending);
     }
 
     struct HeldClose {
@@ -3512,14 +3512,14 @@ for line in sys.stdin:
     impl crate::client_routes::Github for HeldPrClose {
         fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
         fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
-        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a alondra_domain_rules::ProviderPrKey, _: &'a str) -> crate::node_close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a alondra_domain_model::ProviderPrKey, _: &'a str) -> crate::node_close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
             Box::pin(async move {
                 self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.release.acquire().await.unwrap().forget();
                 Ok(())
             })
         }
-        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
+        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_model::PrState, String>> {
             Box::pin(async { Err("not used".into()) })
         }
     }
@@ -3592,7 +3592,7 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn an_answered_question_is_no_longer_available() {
-        use alondra_domain_rules::{Recipient, Scope, QuestionOption};
+        use alondra_domain_model::{Recipient, Scope, QuestionOption};
         let (home, domain, client) = action_home();
         let user = Actor::User { user_id: "user".into() };
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
@@ -3604,12 +3604,12 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Ship it?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state().unwrap();
         let revision = state.interactions[&"question".into()].revision;
@@ -3626,7 +3626,7 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn a_superseded_question_ends_repeated_answers_without_new_work_or_duplicate_cards() {
-        use alondra_domain_rules::{Recipient, Scope, QuestionOption, CardSpec, CardKind, ReadIndex};
+        use alondra_domain_model::{Recipient, Scope, QuestionOption, CardSpec, CardKind, ReadIndex};
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0,
@@ -3637,7 +3637,7 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(),
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic/repository")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/synthetic/repository")),
         });
         let ask = |id: &str, replaces: Option<&str>| {
             let mut card = CardSpec::new(CardKind::Decide, "Choose the name").why("The release needs a name");
@@ -3675,14 +3675,14 @@ for line in sys.stdin:
         let state = domain.state().unwrap();
         for pr in state.pull_requests.values().filter(|pr| pr.is_tracked() && pr.identity.is_unverified()) {
             apply_seed_command(domain, Actor::System, &format!("checked-{}", pr.id), Command::ObservePrAddress { pr_id: pr.id.clone(),
-                read: alondra_domain_rules::PrRead::Address { repository: pr.repository.clone() }, read_started_at: 1_000,
-                verdict: alondra_domain_rules::PrAddressVerdict::Confirmed { key: crate::domain_merges::fake_key(pr.number),
-                    locator: alondra_domain_rules::ProviderLocator(format!("PR_{}", pr.number)), current_repository: pr.repository.clone() } });
+                read: alondra_domain_model::PrRead::Address { repository: pr.repository.clone() }, read_started_at: 1_000,
+                verdict: alondra_domain_model::PrAddressVerdict::Confirmed { key: crate::domain_merges::fake_key(pr.number),
+                    locator: alondra_domain_model::ProviderLocator(format!("PR_{}", pr.number)), current_repository: pr.repository.clone() } });
         }
     }
 
     fn presented_pr(domain: &crate::domain_runtime::DomainRuntime) {
-        use alondra_domain_rules::DeliveryTarget;
+        use alondra_domain_model::DeliveryTarget;
         let user = Actor::User { user_id: "user".into() };
         let agent = Actor::Agent { agent_id: "agent-a".into() };
         apply_seed_command(domain, Actor::System, "register-agent", Command::RegisterAgent {
@@ -3694,7 +3694,7 @@ for line in sys.stdin:
         apply_seed_command(domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         apply_seed_command(domain, agent.clone(), "register-pr", Command::RegisterPr {
             task_id: "task".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(),
@@ -3704,11 +3704,11 @@ for line in sys.stdin:
             checklist: Vec::new(),
             attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Ready".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
-            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
         });
         checked_on_github(domain);
         apply_seed_command(domain, Actor::System, "merge-verdict", Command::ObserveMergeVerdict {
-            pr_id: "pr".into(), head: "0123456789abcdef".into(), verdict: alondra_domain_rules::MergeVerdict::mergeable(),
+            pr_id: "pr".into(), head: "0123456789abcdef".into(), verdict: alondra_domain_model::MergeVerdict::mergeable(),
         });
     }
 
@@ -3738,7 +3738,7 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn resolving_conflicts_or_asking_about_a_presented_pr_hands_it_back_to_its_node() {
-        use alondra_domain_rules::{Feedback, Instruction};
+        use alondra_domain_model::{Feedback, Instruction};
         for (verb, text, author, instruction) in [(Verb::Conflicts, None, Feedback::ALONDRA, Instruction::Conflicts),
             (Verb::AskPr, Some("Why a new table?"), "device:test-device", Instruction::Question)] {
             let (home, domain, client) = action_home();
@@ -3759,13 +3759,13 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn asking_for_more_context_answers_the_question_so_its_card_leaves() {
-        use alondra_domain_rules::{Recipient, Scope, QuestionOption};
+        use alondra_domain_model::{Recipient, Scope, QuestionOption};
         let (home, domain, client) = action_home();
         presented_pr(&domain);
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which API?".into(), blocking: true,
-            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
         let revision = domain.state().unwrap().interactions[&"question".into()].revision;
         let action = ActionId::new(Verb::Ctx, "question", revision, None).unwrap().to_string();
@@ -3775,15 +3775,15 @@ for line in sys.stdin:
         assert_eq!((applied["outcome"].as_str(), applied["stamp"].as_str()), (Some("applied"), Some("Context requested")), "{applied}");
         let state = domain.state().unwrap();
         let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"question".into()].payload else { unreachable!() };
-        assert_eq!(answer.inputs["text"], alondra_domain_rules::InputValue::Text(context_request("the cost")));
-        assert!(alondra_domain_rules::ReadIndex::build(&state).waiting_card(&"question".into()).is_none());
+        assert_eq!(answer.inputs["text"], alondra_domain_model::InputValue::Text(context_request("the cost")));
+        assert!(alondra_domain_model::ReadIndex::build(&state).waiting_card(&"question".into()).is_none());
     }
 
     #[test]
     fn a_moved_pr_head_answers_changed_with_a_fresh_id() {
-        use alondra_domain_rules::{PrState, PullRequest};
+        use alondra_domain_model::{PrState, PullRequest};
         let id = "github.com/bitomule/alondra#154";
-        let mut state = alondra_domain_rules::DomainState::new("epoch");
+        let mut state = alondra_domain_model::DomainState::new("epoch");
         state.pull_requests.insert(id.into(), PullRequest {
             id: id.into(), task_id: "t-1".into(), host: "github.com".into(),
             repository: "bitomule/alondra".into(), number: 154,
@@ -3838,7 +3838,7 @@ for line in sys.stdin:
     }
 
     /// Closes PRs with their comment, or fails with the error in `.1`; `.3` is the state GitHub then reports, `None` when it does not answer.
-    struct ClosesPrs(std::sync::Mutex<Vec<(u64, String)>>, Option<&'static str>, Option<Box<dyn Fn() + Send + Sync>>, Option<alondra_domain_rules::PrState>);
+    struct ClosesPrs(std::sync::Mutex<Vec<(u64, String)>>, Option<&'static str>, Option<Box<dyn Fn() + Send + Sync>>, Option<alondra_domain_model::PrState>);
     impl crate::client_routes::Github for ClosesPrs {
         fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> {
             Box::pin(async { Err("not used".into()) })
@@ -3846,7 +3846,7 @@ for line in sys.stdin:
         fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> {
             Box::pin(async { Err("not used".into()) })
         }
-        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64, _: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str) -> crate::node_close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64, _: &'a alondra_domain_model::ProviderPrKey, comment: &'a str) -> crate::node_close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
             Box::pin(async move {
                 if let Some(error) = self.1 { return Err(error.into()); }
                 if let Some(during) = &self.2 { during(); }
@@ -3854,7 +3854,7 @@ for line in sys.stdin:
                 Ok(())
             })
         }
-        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
+        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_model::PrState, String>> {
             Box::pin(async move { self.3.ok_or_else(|| "GitHub did not answer".to_owned()) })
         }
     }
@@ -3877,17 +3877,17 @@ for line in sys.stdin:
     }
 
     fn present_again(domain: &crate::domain_runtime::DomainRuntime, interaction: &str) {
-        use alondra_domain_rules::DeliveryTarget;
+        use alondra_domain_model::DeliveryTarget;
         apply_seed_command(domain, Actor::Agent { agent_id: "agent-a".into() }, interaction, Command::PresentResult {
             checklist: Vec::new(),
             attachments: vec![], task_id: "task".into(), interaction_id: interaction.into(), body: "Ready again".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
-            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
         });
     }
 
     fn presented_plan(domain: &crate::domain_runtime::DomainRuntime) {
-        use alondra_domain_rules::DeliveryTarget;
+        use alondra_domain_model::DeliveryTarget;
         apply_seed_command(domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 });
         apply_seed_command(domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "How do others index the library?".into(), auto_merge: false, maintenance: false, message: false,
@@ -3895,12 +3895,12 @@ for line in sys.stdin:
         apply_seed_command(domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Library index research".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         let targets = vec![DeliveryTarget::Text { text: "Report".into() }];
         apply_seed_command(domain, Actor::Agent { agent_id: "agent-a".into() }, "present", Command::PresentResult {
             checklist: Vec::new(), attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Viable".into(),
-            card: alondra_domain_rules::CardSpec::delivery("Read the report", &targets, true).plan("- [ ] Index the library\n"),
+            card: alondra_domain_model::CardSpec::delivery("Read the report", &targets, true).plan("- [ ] Index the library\n"),
             targets, is_final: true, nothing_to_review: false,
         });
     }
@@ -3965,25 +3965,25 @@ for line in sys.stdin:
         apply_seed_command(domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         for (id, repository, number, head) in [("app", "me/app", 7, "0123456789abcdef"), ("site", "me/site", 6, "fedcba9876543210")] {
             apply_seed_command(domain, agent.clone(), id, Command::RegisterPr {
-                task_id: "task".into(), pr_id: alondra_domain_rules::hosted_pr_id("github.com", repository, number), host: "github.com".into(), repository: repository.into(),
+                task_id: "task".into(), pr_id: alondra_domain_model::hosted_pr_id("github.com", repository, number), host: "github.com".into(), repository: repository.into(),
                 number, head: head.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
             });
         }
-        let site = alondra_domain_rules::hosted_pr_id("github.com", "me/site", 6);
+        let site = alondra_domain_model::hosted_pr_id("github.com", "me/site", 6);
         apply_seed_command(domain, agent, "present", Command::PresentResult {
             checklist: Vec::new(), attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Ready".into(),
-            targets: vec![alondra_domain_rules::DeliveryTarget::PullRequest { pr_id: site.clone(), head: "fedcba9876543210".into() }],
-            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+            targets: vec![alondra_domain_model::DeliveryTarget::PullRequest { pr_id: site.clone(), head: "fedcba9876543210".into() }],
+            is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
         });
         checked_on_github(domain);
         apply_seed_command(domain, Actor::System, "merge-verdict", Command::ObserveMergeVerdict {
-            pr_id: site.clone(), head: "fedcba9876543210".into(), verdict: alondra_domain_rules::MergeVerdict::mergeable(),
+            pr_id: site.clone(), head: "fedcba9876543210".into(), verdict: alondra_domain_model::MergeVerdict::mergeable(),
         });
-        (alondra_domain_rules::hosted_pr_id("github.com", "me/app", 7), site)
+        (alondra_domain_model::hosted_pr_id("github.com", "me/app", 7), site)
     }
 
     #[tokio::test]
@@ -4024,7 +4024,7 @@ for line in sys.stdin:
     fn a_final_delivery_of_three_prs_reaches_the_inbox_as_three_cards_and_one_notice() {
         let (_home, domain, _client) = action_home();
         let (app, site) = presented_two_prs(&domain);
-        let docs = alondra_domain_rules::hosted_pr_id("github.com", "me/docs", 3);
+        let docs = alondra_domain_model::hosted_pr_id("github.com", "me/docs", 3);
         let agent = Actor::Agent { agent_id: "agent-a".into() };
         apply_seed_command(&domain, agent.clone(), "docs", Command::RegisterPr {
             task_id: "task".into(), pr_id: docs.clone(), host: "github.com".into(), repository: "me/docs".into(),
@@ -4032,12 +4032,12 @@ for line in sys.stdin:
         });
         apply_seed_command(&domain, agent, "present-again", Command::PresentResult {
             checklist: Vec::new(), attachments: vec![], task_id: "task".into(), interaction_id: "result-2".into(), body: "Ready".into(),
-            targets: vec![alondra_domain_rules::DeliveryTarget::PullRequest { pr_id: app.clone(), head: String::new() }],
-            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+            targets: vec![alondra_domain_model::DeliveryTarget::PullRequest { pr_id: app.clone(), head: String::new() }],
+            is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
         });
         let read = domain.read();
         let cards: Vec<Option<PrId>> = read.index().cards().iter().map(|item| {
-            let alondra_domain_rules::InboxSubject::Interaction { pr_id, .. } = &item.subject;
+            let alondra_domain_model::InboxSubject::Interaction { pr_id, .. } = &item.subject;
             pr_id.clone()
         }).collect();
         assert_eq!(cards, [Some(app), Some(site), Some(docs)], "one card per PR, each naming its PR");
@@ -4056,8 +4056,8 @@ for line in sys.stdin:
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert_eq!(reply["result"]["title"], "PR #6 cerrada sin hacer merge.");
         let state = domain.state().unwrap();
-        assert_eq!(state.pull_requests[&site].state, alondra_domain_rules::PrState::Closed, "recorded at once, before the watcher's round");
-        assert_eq!(state.pull_requests[&app].state, alondra_domain_rules::PrState::Open);
+        assert_eq!(state.pull_requests[&site].state, alondra_domain_model::PrState::Closed, "recorded at once, before the watcher's round");
+        assert_eq!(state.pull_requests[&app].state, alondra_domain_model::PrState::Open);
         assert!(!state.tasks[&"task".into()].over(), "the other PR still waits on its card");
         assert_eq!(github.0.lock().unwrap().iter().map(|(number, _)| *number).collect::<Vec<_>>(), [6]);
 
@@ -4067,8 +4067,8 @@ for line in sys.stdin:
     }
 
     /// The domain state alone, as the commands leave it: what storage cannot keep yet is still there.
-    fn state_after(commands: Vec<(Actor, Command)>) -> alondra_domain_rules::DomainState {
-        let mut state = alondra_domain_rules::DomainState::new("epoch");
+    fn state_after(commands: Vec<(Actor, Command)>) -> alondra_domain_model::DomainState {
+        let mut state = alondra_domain_model::DomainState::new("epoch");
         for (actor, command) in commands {
             let shown = format!("{command:?}");
             state.execute(&actor, &CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(),
@@ -4079,7 +4079,7 @@ for line in sys.stdin:
     }
 
     fn task_with_prs(prs: &[(&PrId, &str, u64)]) -> Vec<(Actor, Command)> {
-        use alondra_domain_rules::DeliveryTarget;
+        use alondra_domain_model::DeliveryTarget;
         let agent = Actor::Agent { agent_id: "agent-a".into() };
         let mut commands = vec![
             (Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 }),
@@ -4088,7 +4088,7 @@ for line in sys.stdin:
             (Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
                 agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
-                launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) }),
+                launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")) }),
         ];
         for (pr, repository, number) in prs {
             commands.push((agent.clone(), Command::RegisterPr {
@@ -4098,29 +4098,29 @@ for line in sys.stdin:
         commands.push((agent, Command::PresentResult {
             checklist: Vec::new(), attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Ready".into(),
             targets: prs.iter().map(|(pr, _, _)| DeliveryTarget::PullRequest { pr_id: (*pr).clone(), head: "0123456789abcdef".into() }).collect(),
-            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) }));
+            is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true) }));
         commands
     }
 
-    fn observed(pr: &PrId, via: &str, verdict: alondra_domain_rules::PrAddressVerdict) -> (Actor, Command) {
+    fn observed(pr: &PrId, via: &str, verdict: alondra_domain_model::PrAddressVerdict) -> (Actor, Command) {
         (Actor::System, Command::ObservePrAddress { pr_id: pr.clone(),
-            read: alondra_domain_rules::PrRead::Address { repository: via.into() }, read_started_at: 1_000, verdict })
+            read: alondra_domain_model::PrRead::Address { repository: via.into() }, read_started_at: 1_000, verdict })
     }
 
     /// `ana/lumo` moved to `lumo-org/lumo`: the task delivered its PR at both addresses, and a read
     /// at the old one confirmed it lives at the new one, so the copy at the new address joined it.
-    fn joined_copy() -> (alondra_domain_rules::DomainState, PrId, PrId) {
-        use alondra_domain_rules::{PrAddressVerdict, ProviderLocator, ProviderPrKey};
-        let (kept, copy) = (alondra_domain_rules::hosted_pr_id("github.com", "ana/lumo", 42), alondra_domain_rules::hosted_pr_id("github.com", "lumo-org/lumo", 42));
+    fn joined_copy() -> (alondra_domain_model::DomainState, PrId, PrId) {
+        use alondra_domain_model::{PrAddressVerdict, ProviderLocator, ProviderPrKey};
+        let (kept, copy) = (alondra_domain_model::hosted_pr_id("github.com", "ana/lumo", 42), alondra_domain_model::hosted_pr_id("github.com", "lumo-org/lumo", 42));
         let mut commands = task_with_prs(&[(&kept, "ana/lumo", 42), (&copy, "lumo-org/lumo", 42)]);
         commands.push(observed(&kept, "ana/lumo", PrAddressVerdict::Confirmed { key: ProviderPrKey("key-a".into()),
             locator: ProviderLocator("locator-a".into()), current_repository: "lumo-org/lumo".into() }));
         let state = state_after(commands);
-        assert_eq!(state.pull_requests[&copy].tracking, alondra_domain_rules::PrTracking::Superseded { by: kept.clone() });
+        assert_eq!(state.pull_requests[&copy].tracking, alondra_domain_model::PrTracking::Superseded { by: kept.clone() });
         (state, kept, copy)
     }
 
-    fn request_for(state: &alondra_domain_rules::DomainState, action: &ActionId, lang: &str) -> ActionRequest {
+    fn request_for(state: &alondra_domain_model::DomainState, action: &ActionId, lang: &str) -> ActionRequest {
         ActionRequest { protocol: VIEWS_PROTOCOL, command_id: FIRST.into(), data_epoch: state.data_epoch.0.clone(), client: "ios".into(),
             lang: lang.into(), action_id: action.to_string(), option_id: Some("squash".into()), input: ActionInput::default() }
     }
@@ -4128,7 +4128,7 @@ for line in sys.stdin:
     #[tokio::test]
     async fn an_action_on_a_joined_card_is_refused_and_touches_nothing() {
         let (state, _, copy) = joined_copy();
-        let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_rules::PrState::Open));
+        let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_model::PrState::Open));
         for (lang, said) in [(Lang::En, "This card was another copy of the same pull request; use the one that remains"),
             (Lang::Es, "Esta tarjeta era otra copia del mismo PR; usa la que queda")] {
             let refused = close_on_github(&state, &github, &copy.0, lang, &|_| {}).await.unwrap_err();
@@ -4147,12 +4147,12 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn an_unresolvable_pr_offers_only_removal_and_removal_touches_nothing() {
-        let pr = alondra_domain_rules::hosted_pr_id("github.com", "me/app", 7);
+        let pr = alondra_domain_model::hosted_pr_id("github.com", "me/app", 7);
         let mut commands = task_with_prs(&[(&pr, "me/app", 7)]);
-        commands.push(observed(&pr, "me/app", alondra_domain_rules::PrAddressVerdict::NamesAnotherPr));
+        commands.push(observed(&pr, "me/app", alondra_domain_model::PrAddressVerdict::NamesAnotherPr));
         let mut state = state_after(commands);
         assert!(state.pull_requests[&pr].identity.is_unresolvable());
-        let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_rules::PrState::Open));
+        let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_model::PrState::Open));
         for subject in [pr.0.as_str(), "result"] {
             let refused = close_on_github(&state, &github, subject, Lang::Es, &|_| {}).await.unwrap_err();
             assert_eq!(refused["outcome"], "rejected", "{refused}");
@@ -4166,9 +4166,9 @@ for line in sys.stdin:
         assert_eq!(applied_outcome(Verb::DetachPr, Lang::Es, &stamp, Accepted::Result).title, "Quitado de Alondra. El PR sigue como estaba en GitHub.");
         let outcome = state.execute(&Actor::User { user_id: "device:phone".into() }, &CommandEnvelope { protocol_version: 2,
             data_epoch: state.data_epoch.clone(), command_id: "detach".into(), expected_revision: detach.revision as Revision, command }).unwrap();
-        assert!(outcome.effects.iter().all(|effect| !matches!(effect, alondra_domain_rules::DomainEffect::Relocate { .. })), "{:?}", outcome.effects);
-        assert!(matches!(state.pull_requests[&pr].tracking, alondra_domain_rules::PrTracking::Detached { .. }));
-        assert_eq!(state.pull_requests[&pr].state, alondra_domain_rules::PrState::Open, "the PR stays as it is on GitHub");
+        assert!(outcome.effects.iter().all(|effect| !matches!(effect, alondra_domain_model::DomainEffect::Relocate { .. })), "{:?}", outcome.effects);
+        assert!(matches!(state.pull_requests[&pr].tracking, alondra_domain_model::PrTracking::Detached { .. }));
+        assert_eq!(state.pull_requests[&pr].state, alondra_domain_model::PrState::Open, "the PR stays as it is on GitHub");
         assert!(state.tasks[&"task".into()].cancelled(), "a delivery of only that PR ends as when the PR closes unmerged");
         assert_eq!(map_domain_action(&state, &detach, &request_for(&state, &detach, "es"), &[], Lang::Es).unwrap_err(), Refusal::PrDetached);
         assert!(github.0.lock().unwrap().is_empty(), "nothing reached GitHub");
@@ -4179,13 +4179,13 @@ for line in sys.stdin:
     impl crate::client_routes::Github for AnotherPrThere {
         fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
         fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
-        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64, _: &'a alondra_domain_rules::ProviderPrKey, _: &'a str)
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64, _: &'a alondra_domain_model::ProviderPrKey, _: &'a str)
             -> crate::node_close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
             self.0.lock().unwrap().push(number);
             Box::pin(async { Err(crate::domain_github::GhFailure::IdentityMismatch("another pull request".into())) })
         }
-        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
-            Box::pin(async { Ok(alondra_domain_rules::PrState::Open) })
+        fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<alondra_domain_model::PrState, String>> {
+            Box::pin(async { Ok(alondra_domain_model::PrState::Open) })
         }
     }
 
@@ -4195,14 +4195,14 @@ for line in sys.stdin:
     /// address answers with another pull request is left open and looked for by its locator.
     #[tokio::test]
     async fn close_without_merging_needs_the_pull_request_a_read_confirmed() {
-        let pr = alondra_domain_rules::hosted_pr_id("github.com", "me/app", 7);
+        let pr = alondra_domain_model::hosted_pr_id("github.com", "me/app", 7);
         let unread = state_after(task_with_prs(&[(&pr, "me/app", 7)]));
-        let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_rules::PrState::Open));
+        let github = ClosesPrs(Default::default(), None, None, Some(alondra_domain_model::PrState::Open));
         let closing = close_on_github(&unread, &github, pr.0.as_str(), Lang::En, &|_| panic!("nothing to look for")).await.unwrap_or_else(|refused| panic!("{refused}"));
         assert!((closing.deferred, closing.was_open) == (true, true) && closing.pr.id == pr, "accepted, to be closed when a read says which PR it is");
         assert!(github.0.lock().unwrap().is_empty(), "nothing reached GitHub");
 
-        let other = alondra_domain_rules::hosted_pr_id("github.com", "me/app", 8);
+        let other = alondra_domain_model::hosted_pr_id("github.com", "me/app", 8);
         let two = state_after(task_with_prs(&[(&pr, "me/app", 7), (&other, "me/app", 8)]));
         for (lang, said) in [(Lang::En, "Alondra is still checking on GitHub which pull request this is. Nothing was changed; this unlocks when GitHub confirms it."),
             (Lang::Es, "Alondra aún está comprobando en GitHub qué PR es. No se cambió nada; se activará cuando GitHub lo confirme.")] {
@@ -4212,8 +4212,8 @@ for line in sys.stdin:
         assert!(github.0.lock().unwrap().is_empty(), "nothing reached GitHub");
 
         let mut commands = task_with_prs(&[(&pr, "me/app", 7)]);
-        commands.push(observed(&pr, "me/app", alondra_domain_rules::PrAddressVerdict::Confirmed { key: alondra_domain_rules::ProviderPrKey("key-a".into()),
-            locator: alondra_domain_rules::ProviderLocator("locator-a".into()), current_repository: "me/app".into() }));
+        commands.push(observed(&pr, "me/app", alondra_domain_model::PrAddressVerdict::Confirmed { key: alondra_domain_model::ProviderPrKey("key-a".into()),
+            locator: alondra_domain_model::ProviderLocator("locator-a".into()), current_repository: "me/app".into() }));
         let read = state_after(commands);
         let elsewhere = AnotherPrThere(Default::default());
         let looked_for = std::sync::Mutex::new(Vec::new());
@@ -4247,7 +4247,7 @@ for line in sys.stdin:
         let accept = ActionId::new(Verb::Accept, "result", revision, None).unwrap();
         assert_eq!(act(&home, &domain, &client, FIRST, accept, None, None).await["outcome"], "applied");
         let state = domain.state().unwrap();
-        assert_eq!(state.tasks[&"task".into()].state, alondra_domain_rules::TaskState::WaitingDependency);
+        assert_eq!(state.tasks[&"task".into()].state, alondra_domain_model::TaskState::WaitingDependency);
         assert!(crate::domain_merges::due(&state).iter().any(|item| item.pr.id.0 == "pr" && item.method == MergeMethod::Squash),
             "accepting already queued the merge");
         // Alondra has not claimed it yet (it waits for the checks): pressing again makes it look now.
@@ -4295,13 +4295,13 @@ for line in sys.stdin:
         let moved = "fedcba9876543210";
         apply_seed_command(&domain, Actor::System, "observed", Command::ObservePrState {
             pr_id: "pr".into(), head: moved.into(), base: "main".into(),
-            state: alondra_domain_rules::PrState::Open, merged_head: None,
+            state: alondra_domain_model::PrState::Open, merged_head: None,
         });
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "present-moved", Command::PresentResult {
             checklist: Vec::new(),
             attachments: vec![], task_id: "task".into(), interaction_id: "result-2".into(), body: "Pushed again".into(),
-            targets: vec![alondra_domain_rules::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: moved.into() }],
-            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+            targets: vec![alondra_domain_model::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: moved.into() }],
+            is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
         });
         let revision = domain.state().unwrap().revision;
         let reply = act(&home, &domain, &client, FIRST, old_card, Some("squash"), None).await;
@@ -4314,7 +4314,7 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn a_close_github_refuses_is_decided_by_the_state_github_reports_not_by_its_words() {
-        use alondra_domain_rules::PrState;
+        use alondra_domain_model::PrState;
         for (error, state, cancelled, title) in [
             ("unexpected wording", PrState::Closed, true, "La PR #7 ya estaba cerrada. Tarea cancelada."),
             ("unexpected wording", PrState::Merged, false, "La PR #7 ya estaba mergeada, así que no se puede cerrar sin hacer merge."),
@@ -4334,14 +4334,14 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn replying_to_a_question_answers_it_with_its_own_words() {
-        use alondra_domain_rules::{Recipient, Scope, QuestionOption};
+        use alondra_domain_model::{Recipient, Scope, QuestionOption};
         let (home, domain, client) = action_home();
         presented_pr(&domain);
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which API?".into(), blocking: true,
             options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None }],
-            card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+            card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
         let revision = domain.state().unwrap().interactions[&"question".into()].revision;
         let reply = ActionId::new(Verb::Reply, "question", revision, None).unwrap();
@@ -4351,15 +4351,15 @@ for line in sys.stdin:
         let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"question".into()].payload else {
             panic!("the reply answered the question: {applied}")
         };
-        assert_eq!(answer.inputs["text"], alondra_domain_rules::InputValue::Text("Neither: keep the old one".into()));
-        assert!(alondra_domain_rules::ReadIndex::build(&state).waiting_card(&"question".into()).is_none());
+        assert_eq!(answer.inputs["text"], alondra_domain_model::InputValue::Text("Neither: keep the old one".into()));
+        assert!(alondra_domain_model::ReadIndex::build(&state).waiting_card(&"question".into()).is_none());
     }
 
     /// A reply to the orchestrator's information reaches the orchestrator with the card it is about
     /// and reads the card, which leaves the inbox like any answered card.
     #[tokio::test]
     async fn a_reply_to_the_orchestrators_information_reads_it_and_reaches_the_orchestrator() {
-        use alondra_domain_rules::{CardKind, CardSpec, Recipient, Scope};
+        use alondra_domain_model::{CardKind, CardSpec, Recipient, Scope};
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "notice", Command::PublishInformation {
             attachments: vec![], interaction_id: "notice".into(), scope: Scope::Orchestrator { request_id: None },
@@ -4367,13 +4367,13 @@ for line in sys.stdin:
             card: CardSpec::derived(CardKind::Know, "Read the weekly report"),
         });
         let state = domain.state().unwrap();
-        assert!(alondra_domain_rules::ReadIndex::build(&state).waiting_card(&"notice".into()).is_some());
+        assert!(alondra_domain_model::ReadIndex::build(&state).waiting_card(&"notice".into()).is_some());
         let reply = ActionId::new(Verb::Reply, "notice", state.interactions[&"notice".into()].revision, None).unwrap();
         assert!(alondra_view_model::resolves_card(&state, &reply), "the client takes the card out as it sends the reply");
         let applied = act(&home, &domain, &client, FIRST, reply, None, Some("Why so late?")).await;
         assert_eq!(applied["outcome"], "applied", "{applied}");
         let state = domain.state().unwrap();
-        assert!(alondra_domain_rules::ReadIndex::build(&state).waiting_card(&"notice".into()).is_none(), "the reply read the notice");
+        assert!(alondra_domain_model::ReadIndex::build(&state).waiting_card(&"notice".into()).is_none(), "the reply read the notice");
         let request = state.requests.values().find(|request| request.reply_to.is_some()).expect("the reply is a request to the orchestrator");
         assert_eq!(request.body, "Why so late?");
         assert_eq!(request.reply_to.as_ref().unwrap().interaction_id, "notice".into());
@@ -4383,7 +4383,7 @@ for line in sys.stdin:
     /// never a loose request.
     #[tokio::test]
     async fn words_under_a_decide_card_answer_it_and_reach_whoever_asked_with_its_id() {
-        use alondra_domain_rules::{CardKind, CardSpec, Recipient, Scope, QuestionOption};
+        use alondra_domain_model::{CardKind, CardSpec, Recipient, Scope, QuestionOption};
         let option = |id: &str| QuestionOption { id: id.into(), label: id.into(), description: None };
         for (asker, scope, recipient_kind) in [
             (Actor::Orchestrator { generation: 0 }, Scope::Orchestrator { request_id: None }, "orchestrator"),
@@ -4407,7 +4407,7 @@ for line in sys.stdin:
             let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"decide".into()].payload else {
                 panic!("{recipient_kind}: the words answered the card: {applied}")
             };
-            assert_eq!(answer.inputs["text"], alondra_domain_rules::InputValue::Text("Hazlo tú".into()));
+            assert_eq!(answer.inputs["text"], alondra_domain_model::InputValue::Text("Hazlo tú".into()));
             assert_eq!(state.requests.len(), requests, "{recipient_kind}: no loose request");
             let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
                 .find(|message| message.interaction_id.as_deref() == Some("decide") && message.recipient_kind == recipient_kind)
@@ -4438,7 +4438,7 @@ for line in sys.stdin:
     /// where it went.
     #[tokio::test]
     async fn a_secret_goes_to_its_file_and_never_to_the_domain_or_the_node() {
-        use alondra_domain_rules::{CardKind, CardSpec, QuestionOption, Recipient, Scope, WorktreeOrigin};
+        use alondra_domain_model::{CardKind, CardSpec, QuestionOption, Recipient, Scope, WorktreeOrigin};
         use alondra_core::secret_destination::SecretDestination;
         const SECRET: &str = "sk_live_never_in_the_domain_42";
         let (home, domain, client) = action_home();
@@ -4473,7 +4473,7 @@ for line in sys.stdin:
         }
         let state = domain.state().unwrap();
         let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"secret".into()].payload else { panic!("unanswered") };
-        assert_eq!(answer.inputs["text"], alondra_domain_rules::InputValue::Text("STRIPE_KEY written to .env".into()));
+        assert_eq!(answer.inputs["text"], alondra_domain_model::InputValue::Text("STRIPE_KEY written to .env".into()));
         let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("secret")).expect("the node is told");
         let told = crate::domain_transport::render(&state, &message);
@@ -4553,7 +4553,7 @@ for line in sys.stdin:
     /// stays open.
     #[tokio::test]
     async fn a_secret_whose_file_git_no_longer_ignores_is_refused_and_written_nowhere() {
-        use alondra_domain_rules::{CardKind, CardSpec, Recipient, Scope, WorktreeOrigin};
+        use alondra_domain_model::{CardKind, CardSpec, Recipient, Scope, WorktreeOrigin};
         let (home, domain, client) = action_home();
         presented_pr(&domain);
         let root = crate::test_support::Directory::new();
@@ -4564,7 +4564,7 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-secret", Command::AskQuestion {
             attachments: vec![], interaction_id: "secret".into(), scope: Scope::Task { task_id: "task".into() }, recipient: Recipient::User,
             body: "Send the Stripe key".into(), blocking: false,
-            options: vec![alondra_domain_rules::QuestionOption { id: "skip".into(), label: "I can't provide it".into(), description: None }],
+            options: vec![alondra_domain_model::QuestionOption { id: "skip".into(), label: "I can't provide it".into(), description: None }],
             card: CardSpec { secret_destination: Some(destination), ..CardSpec::new(CardKind::Provide, "Send the Stripe key").why("The payments test needs it") },
         });
         let revision = domain.state().unwrap().interactions[&"secret".into()].revision;
@@ -4623,7 +4623,7 @@ for line in sys.stdin:
         presented_pr(&domain);
         apply_seed_command(&domain, Actor::System, "closed-on-github", Command::ObservePrState {
             pr_id: "pr".into(), head: "0123456789abcdef".into(), base: "main".into(),
-            state: alondra_domain_rules::PrState::Closed, merged_head: None,
+            state: alondra_domain_model::PrState::Closed, merged_head: None,
         });
         assert!(domain.state().unwrap().tasks[&"task".into()].cancelled(), "nothing is left to review");
         assert!(domain.read().index().cards().is_empty());
@@ -4686,15 +4686,15 @@ for line in sys.stdin:
 
     #[test]
     fn the_stamp_of_an_answer_names_the_option_by_its_translated_label_never_its_id() {
-        use alondra_domain_rules::{Author, Hold, Interaction, QuestionOption, Recipient, Scope};
+        use alondra_domain_model::{Author, Hold, Interaction, QuestionOption, Recipient, Scope};
         let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
-        let mut state = alondra_domain_rules::DomainState::new("epoch");
+        let mut state = alondra_domain_model::DomainState::new("epoch");
         let mut ask = |id: &str, options: Vec<QuestionOption>, hold: Option<Hold>| {
             state.interactions.insert(id.into(), Interaction { system_card: None,
                 attachments: vec![], id: id.into(), scope: Scope::Task { task_id: "t-1".into() }, author: Author::System,
                 recipient: Recipient::User, body: "Ask".into(), blocking: true, subject: None,
                 payload: InteractionPayload::Question { options, answer: None }, revision: 1, order: 1, withdrawn: false,
-                card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+                card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             });
             if let Some(hold) = hold { state.holds.insert(id.into(), hold); }
         };
@@ -4725,7 +4725,7 @@ for line in sys.stdin:
 // Insert inside crates/daemon-server/src/views/actions.rs::tests.
 #[tokio::test]
 async fn replaying_changes_from_an_older_pr_card_applies_once_to_the_current_delivery() {
-    use alondra_domain_rules::{CardSpec, DeliveryTarget, InboxSubject, ReadIndex};
+    use alondra_domain_model::{CardSpec, DeliveryTarget, InboxSubject, ReadIndex};
     use alondra_view_model::{Client, Input, Item, LiveSnapshot, Outcome, OutcomeKind, RenderContext, Transport};
 
     fn painted_reply(domain: &crate::domain_runtime::DomainRuntime, interaction: &str) -> String {
@@ -4756,7 +4756,7 @@ async fn replaying_changes_from_an_older_pr_card_applies_once_to_the_current_del
     apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(),
         task_id: "task".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
         review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic/repository")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/synthetic/repository")),
     });
     let head = "1".repeat(40);
     apply_seed_command(&domain, node.clone(), "register-pr", Command::RegisterPr {

@@ -1,5 +1,5 @@
 use crate::{Client, ClientCapabilities, Item, Lang, Link, LiveSnapshot, LocalLink, RenderContext, Transport, View};
-use alondra_domain_rules::{DomainState, ReadSnapshot};
+use alondra_domain_model::{DomainState, ReadSnapshot};
 use std::sync::Arc;
 
 #[test]

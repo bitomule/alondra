@@ -10,7 +10,7 @@ use crate::http::{PHONE_SECRET, Phone};
 use crate::timing::{self, Timings};
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, Launcher};
 use crate::claude_host::{ApiError, ClaudeEdge};
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION, Recipient, Scope,
     StackDependency, StageChoice,
 };
@@ -541,8 +541,8 @@ impl Context<'_> {
     }
 
     /// The id the daemon gives the scenario's PR `number`: its host, repository and number.
-    fn pr_id(&self, number: u64) -> alondra_domain_rules::PrId {
-        alondra_domain_rules::hosted_pr_id(REPOSITORY_HOST, &self.scenario.world.repository, number)
+    fn pr_id(&self, number: u64) -> alondra_domain_model::PrId {
+        alondra_domain_model::hosted_pr_id(REPOSITORY_HOST, &self.scenario.world.repository, number)
     }
 
     /// The subject a case names a card by: `pr7` stands for the card of the scenario's PR 7.
@@ -627,7 +627,7 @@ impl Context<'_> {
                 let repository = repository.clone().unwrap_or_else(|| self.scenario.world.repository.clone());
                 self.node_command(index, task, &format!("/tasks/{task}/pull-requests"), None, Command::RegisterPr {
                     task_id: task.clone().into(),
-                    pr_id: alondra_domain_rules::hosted_pr_id(REPOSITORY_HOST, &repository, *number),
+                    pr_id: alondra_domain_model::hosted_pr_id(REPOSITORY_HOST, &repository, *number),
                     host: REPOSITORY_HOST.into(),
                     repository,
                     number: *number,
@@ -693,8 +693,8 @@ impl Context<'_> {
                     self.github.open_pr_in(repository, *number, head, base);
                 }
                 GithubChange::RequireReview { number } => self.github.set_verdict(*number,
-                    alondra_domain_rules::MergeVerdict::Blocked { blockers: vec![alondra_domain_rules::MergeBlocker::ReviewRequired] }),
-                GithubChange::ApproveReview { number } => self.github.set_verdict(*number, alondra_domain_rules::MergeVerdict::mergeable()),
+                    alondra_domain_model::MergeVerdict::Blocked { blockers: vec![alondra_domain_model::MergeBlocker::ReviewRequired] }),
+                GithubChange::ApproveReview { number } => self.github.set_verdict(*number, alondra_domain_model::MergeVerdict::mergeable()),
             },
             Step::Press { presentation, action, text, screen } => self.press(index, presentation, action, text.as_deref(), screen.as_deref().unwrap_or("home")).await?,
             Step::Answer { card, option, text } => self.answer(index, card, option, text.as_deref()).await?,
@@ -711,7 +711,7 @@ impl Context<'_> {
                 self.refusable(index, orchestrator(), refused.as_deref(), Command::RequestAction {
                     attachments: Vec::new(), interaction_id: card.clone().into(), scope: Scope::Task { task_id: task.clone().into() },
                     recipient: Recipient::User, body: title.clone(), blocking: false,
-                    options: vec![alondra_domain_rules::QuestionOption { id: "done".into(), label: "Done".into(), description: None }], card: spec,
+                    options: vec![alondra_domain_model::QuestionOption { id: "done".into(), label: "Done".into(), description: None }], card: spec,
                 })?;
                 self.settle().await?;
             }
@@ -729,14 +729,14 @@ impl Context<'_> {
             Step::Worktree { task, from: Some(other), .. } => {
                 let path = self.worktrees.get(other).cloned().ok_or_else(|| Self::failed(index, format!("task {other} has no worktree")))?;
                 self.command(index, Actor::System, Command::RecordTaskWorktree {
-                    task_id: task.clone().into(), path: path.display().to_string(), origin: alondra_domain_rules::WorktreeOrigin::Entered, branch: None,
+                    task_id: task.clone().into(), path: path.display().to_string(), origin: alondra_domain_model::WorktreeOrigin::Entered, branch: None,
                 })?;
                 self.worktrees.insert(task.clone(), path);
             }
             Step::Worktree { task, files, outside_link, from: None, base } => self.worktree(index, task, files, outside_link.as_deref(), base)?,
             Step::ProposeSpecs { task, level, files, refused } => {
-                let level = alondra_domain_rules::SpecLevel::parse(level).ok_or_else(|| Self::failed(index, format!("{level} is not a level")))?;
-                let files = files.iter().map(|file| alondra_domain_rules::SpecFile { path: file.path.clone(), text: file.text.clone() }).collect();
+                let level = alondra_domain_model::SpecLevel::parse(level).ok_or_else(|| Self::failed(index, format!("{level} is not a level")))?;
+                let files = files.iter().map(|file| alondra_domain_model::SpecFile { path: file.path.clone(), text: file.text.clone() }).collect();
                 self.node_command(index, task, &format!("/tasks/{task}/specs"), refused.as_deref(), Command::ProposeSpecs {
                     task_id: task.clone().into(), level, files, check: Default::default(),
                 }).await?;
@@ -1072,7 +1072,7 @@ impl Context<'_> {
         }
         let top = top.canonicalize().map_err(|e| failed(&e))?;
         self.command(index, Actor::System, Command::RecordTaskWorktree {
-            task_id: task.to_owned().into(), path: top.display().to_string(), origin: alondra_domain_rules::WorktreeOrigin::Task, branch: Some(branch),
+            task_id: task.to_owned().into(), path: top.display().to_string(), origin: alondra_domain_model::WorktreeOrigin::Task, branch: Some(branch),
         })?;
         self.worktrees.insert(task.to_owned(), top);
         Ok(())
@@ -1199,7 +1199,7 @@ impl Context<'_> {
     /// them before the task's first node starts, from what the user chose for the task.
     fn record_stages(&self, index: usize, task: &str, chosen: &alondra_core::model_selection::TaskSelection) -> Result<(), ScenarioError> {
         use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
-        let task_id = alondra_domain_rules::TaskId::from(task.to_owned());
+        let task_id = alondra_domain_model::TaskId::from(task.to_owned());
         let plan = self.daemon().domain.stored_launch_plan(&task_id).map_err(|e| Self::failed(index, format!("{e:#}")))?;
         let choice = plan.and_then(|plan| plan.stages).ok_or_else(|| Self::failed(index, format!("the launch plan of {task} chose no stages")))?;
         alondra_daemon_engine::domain_orchestrator_tools::record_stages(&*self.daemon().domain, &task_id, &choice, chosen)
@@ -1525,9 +1525,9 @@ impl Context<'_> {
                 if cards == 0 || waiting < 2 {
                     return Err(failed("multiple unstarted tasks and nonempty card history".into(), format!("waiting={waiting}, cards={cards}")));
                 }
-                let before = alondra_domain_rules::measure::cards_read();
-                std::hint::black_box(alondra_domain_rules::ReadIndex::build(&state));
-                let reads = alondra_domain_rules::measure::cards_read() - before;
+                let before = alondra_domain_model::measure::cards_read();
+                std::hint::black_box(alondra_domain_model::ReadIndex::build(&state));
+                let reads = alondra_domain_model::measure::cards_read() - before;
                 let limit = max_passes.saturating_mul(cards);
                 if reads > limit {
                     return Err(failed(format!("at most {limit} card reads to build the read index"),
@@ -1550,7 +1550,7 @@ impl Context<'_> {
                 let mut screens = vec!["tasks".to_owned()];
                 for task in &waiting {
                     let situation = read.index().task(&task.id).map(|reading| reading.situation);
-                    if situation != Some(alondra_domain_rules::Situation::Waiting(alondra_domain_rules::WaitsFor::Slot)) {
+                    if situation != Some(alondra_domain_model::Situation::Waiting(alondra_domain_model::WaitsFor::Slot)) {
                         return Err(failed(format!("unstarted task {} waits for a slot", task.id), format!("{situation:?}")));
                     }
                     live.start_waits.insert(task.id.0.clone(), LiveStartWait::Room);
@@ -1561,9 +1561,9 @@ impl Context<'_> {
                         for screen in &screens {
                             let context = RenderContext { domain: state, index: read.index(), live: &live,
                                 client, lang, transport: Transport::Relay, cursor: "scenario", rendered_at: "" };
-                            let before = alondra_domain_rules::measure::cards_read();
+                            let before = alondra_domain_model::measure::cards_read();
                             let view = std::hint::black_box(alondra_views::build(screen, context));
-                            let reads = alondra_domain_rules::measure::cards_read() - before;
+                            let reads = alondra_domain_model::measure::cards_read() - before;
                             view.map_err(|error| failed(format!("{screen} renders for {client:?} in {lang:?}"), format!("{error:?}")))?;
                             if reads > *max_reads {
                                 return Err(failed(format!("at most {max_reads} card reads to render {screen} for {client:?} in {lang:?}"),
@@ -1581,12 +1581,12 @@ impl Context<'_> {
                     return Err(failed("multiple open tasks and nonempty card history".into(), format!("{tasks} tasks, {cards} cards")));
                 }
                 let rest = self.daemon().domain.orchestrator_rests.load(std::sync::atomic::Ordering::Relaxed);
-                let before = alondra_domain_rules::measure::cards_read();
+                let before = alondra_domain_model::measure::cards_read();
                 std::hint::black_box(alondra_engine_orchestrator::orchestrator_inbox::replans(&state, rest));
-                let replans = alondra_domain_rules::measure::cards_read() - before;
-                let before = alondra_domain_rules::measure::cards_read();
+                let replans = alondra_domain_model::measure::cards_read() - before;
+                let before = alondra_domain_model::measure::cards_read();
                 std::hint::black_box(state.react(&Default::default()));
-                let reactions = alondra_domain_rules::measure::cards_read() - before;
+                let reactions = alondra_domain_model::measure::cards_read() - before;
                 let limit = max_passes.saturating_mul(cards);
                 if replans > limit || reactions > limit {
                     return Err(failed(format!("at most {limit} card reads per start-problem pass"),

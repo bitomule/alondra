@@ -7,7 +7,7 @@ use crate::locks::Poisonable as _;
 use crate::live::Relaunch;
 use alondra_engine_ports::Runtime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use alondra_domain_rules::{DomainState, NodeFact, Start, StartFacts, TaskId};
+use alondra_domain_model::{DomainState, NodeFact, Start, StartFacts, TaskId};
 use anyhow::Result;
 use std::collections::BTreeMap;
 pub use alondra_engine_kernel::start_failures::{ended, failed, plan_changed, problem_of, raise};

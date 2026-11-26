@@ -12,11 +12,11 @@ fn the_over_pace_card_has_the_numbers_and_two_options_and_reads_in_each_devices_
     raise_over_pace_card(&*domain, now_millis());
     let card = the_card(&*domain, "over-pace-").expect("a card for the day");
     assert_eq!(card.id.0, format!("over-pace-{}", alondra_daemon_engine_model::local_day(now_millis())));
-    assert_eq!(card.card.kind, alondra_domain_rules::CardKind::Decide);
-    assert_eq!(card.author, alondra_domain_rules::Author::System);
+    assert_eq!(card.card.kind, alondra_domain_model::CardKind::Decide);
+    assert_eq!(card.author, alondra_domain_model::Author::System);
     assert!(!card.blocking);
     assert_eq!(card.card.recommended.as_deref(), Some("keep_going"));
-    let alondra_domain_rules::InteractionPayload::Question { options, .. } = &card.payload else { panic!("a question") };
+    let alondra_domain_model::InteractionPayload::Question { options, .. } = &card.payload else { panic!("a question") };
     assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["pause_until_tomorrow", "keep_going"]);
 
     let read = domain.read();

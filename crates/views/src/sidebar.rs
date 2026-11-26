@@ -3,7 +3,7 @@ use super::{
     text::{t, tf},
 };
 use super::task_state::StateLabel;
-use alondra_domain_rules::Task;
+use alondra_domain_model::Task;
 use std::collections::BTreeMap;
 
 fn task_subtitle(task: &Task, fact: Option<&str>) -> Option<String> {

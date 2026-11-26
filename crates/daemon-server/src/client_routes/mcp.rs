@@ -5,7 +5,7 @@
 //! one-time code: it is handed to Claude in memory and never kept, logged or echoed back.
 use super::{Client, Reply};
 use crate::mcp_waits::Opened;
-use alondra_domain_rules::{Actor, Command, CommandEnvelope, DomainError, InteractionId, MCP_GO_ON_WITHOUT, PROTOCOL_VERSION};
+use alondra_domain_model::{Actor, Command, CommandEnvelope, DomainError, InteractionId, MCP_GO_ON_WITHOUT, PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::{Value, json};
 

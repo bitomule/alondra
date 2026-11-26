@@ -3,8 +3,8 @@
 //! read the result; a problem goes back next to the field it is about.
 use super::actions::ActionRequest;
 use alondra_core::text::Lang;
-use alondra_domain_rules::specs::{self, DecisionFields, SpecEdit, SpecEditError, SpecFile, SpecLevel};
-use alondra_domain_rules::{Actor, Command, CommandEnvelope, DataEpoch, DomainError, DomainState, TaskId};
+use alondra_domain_model::specs::{self, DecisionFields, SpecEdit, SpecEditError, SpecFile, SpecLevel};
+use alondra_domain_model::{Actor, Command, CommandEnvelope, DataEpoch, DomainError, DomainState, TaskId};
 use alondra_view_model::action_id::ActionId;
 use serde_json::{json, Value};
 

@@ -1,8 +1,8 @@
-use alondra_domain_rules::TaskId;
+use alondra_domain_model::TaskId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub use alondra_domain_rules::LaunchPlan;
+pub use alondra_domain_model::LaunchPlan;
 pub use alondra_engine_ports::launch::{Failed, LaunchOptions};
 
 /// Where a launch keeps its options: beside the execution's host.
@@ -60,7 +60,7 @@ pub struct LaunchBody {
     pub _over_pace_ok: bool,
     /// Whether the task goes in stages, and why; its stored launch plan says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stages: Option<alondra_domain_rules::StageChoice>,
+    pub stages: Option<alondra_domain_model::StageChoice>,
 }
 
 impl LaunchBody {
@@ -75,9 +75,9 @@ impl LaunchBody {
             model: plan.model.clone(),
             provider: None,
             profile: plan.role.map(|role| match role {
-                alondra_domain_rules::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
-                alondra_domain_rules::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
-                alondra_domain_rules::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
+                alondra_domain_model::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
+                alondra_domain_model::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
+                alondra_domain_model::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
             }),
             effort: plan.effort.clone(),
             approach: plan.approach,
@@ -123,9 +123,9 @@ impl LaunchBody {
         self.approach = self.approach.or(plan.approach);
         self.tags = self.tags.or_else(|| plan.tags.clone());
         self.profile = self.profile.or_else(|| plan.role.map(|role| match role {
-            alondra_domain_rules::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
-            alondra_domain_rules::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
-            alondra_domain_rules::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
+            alondra_domain_model::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
+            alondra_domain_model::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
+            alondra_domain_model::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
         }));
         self.stages = self.stages.or_else(|| plan.stages.clone());
         if self.relaunch_model.is_none() {

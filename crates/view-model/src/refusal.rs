@@ -1,7 +1,7 @@
 //! The words of every refusal, in one catalog whose `match` has no fallback: a variant without
 //! text in both languages does not compile.
 use crate::text::{t, t as tr, tf, Lang};
-use alondra_domain_rules::{MergeBlocker, MergeMethod, MergeNote, Refusal};
+use alondra_domain_model::{MergeBlocker, MergeMethod, MergeNote, Refusal};
 
 fn methods(methods: &[MergeMethod]) -> String {
     methods

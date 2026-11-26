@@ -48,7 +48,7 @@ crate.from_cargo(
     manifests = [
         "//:Cargo.toml",
         "//crates/core:Cargo.toml",
-        "//crates/domain-rules:Cargo.toml",
+        "//crates/domain-model:Cargo.toml",
         "//crates/view-model:Cargo.toml",
         "//crates/views:Cargo.toml",
         "//crates/foundation:Cargo.toml",

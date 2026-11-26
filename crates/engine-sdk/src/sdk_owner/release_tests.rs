@@ -251,7 +251,7 @@ async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_o
     });
     slice.domain.join_retakes();
 
-    let lost = open_card(&slice.domain, alondra_domain_rules::HOST_LOST_PREFIX);
+    let lost = open_card(&slice.domain, alondra_domain_model::HOST_LOST_PREFIX);
     assert!(lost.is_none(), "no card tells the user the session could not be resumed: {lost:?}");
     assert!(slice.domain.owns_sdk_host(&agent), "one host runs the finished task so it can clean up");
     until_last_prompt_ends_with(&slice.domain, &slice.hosts, "Clean up and call cleanup_done.").await;
@@ -832,7 +832,7 @@ async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_cor
         let open = slice.domain.store.lock_or_exit("the domain store").provider_transition(&task).unwrap().is_some();
         let pending = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].pending_selection.is_some();
         if !open && !pending && slice.prompts().last().is_some_and(|prompt| prompt.ends_with("Now the changelog.")) { break }
-        if let Some(lost) = open_card(&slice.domain, alondra_domain_rules::HOST_LOST_PREFIX) {
+        if let Some(lost) = open_card(&slice.domain, alondra_domain_model::HOST_LOST_PREFIX) {
             panic!("the message never reached Claude, its host was lost: {:?}; prompts {:?}", lost.card.content.map(|content| content.body), slice.prompts());
         }
         if open {

@@ -50,7 +50,7 @@ pub mod batch_effects;
 mod batch_recovery;
 pub mod retention;
 
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -1737,14 +1737,14 @@ impl DomainStore {
         ids: &[i64],
         run: &str,
         session: &str,
-        epoch: alondra_domain_rules::DataEpoch,
+        epoch: alondra_domain_model::DataEpoch,
     ) -> Result<(Vec<DeliveryClaim>, BatchOwner)> {
         self.claim_selected_orchestrator_batch(ids, run, session, epoch, None)
     }
 
     pub fn claim_selected_orchestrator_batch(
         &mut self, ids: &[i64], run: &str, session: &str,
-        epoch: alondra_domain_rules::DataEpoch,
+        epoch: alondra_domain_model::DataEpoch,
         selection: Option<&alondra_daemon_engine_model::BatchSelection>,
     ) -> Result<(Vec<DeliveryClaim>, BatchOwner)> {
         self.orchestrator_write_fault("claim")?;

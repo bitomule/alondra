@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 alondra-core.workspace = true
-alondra-domain-rules.workspace = true
+alondra-domain-model.workspace = true
 alondra-view-model.workspace = true
 anyhow.workspace = true
 base64 = "0.23.1"

@@ -2,7 +2,7 @@
 //! for the terminal, the way the owner sees them.
 
 use super::*;
-use alondra_domain_rules::{Agent, DomainState, Request, Task, TaskId, TaskState};
+use alondra_domain_model::{Agent, DomainState, Request, Task, TaskId, TaskState};
 use alondra_views::{self as views, Client, Lang, LiveNode, LiveSnapshot, RenderContext, Transport};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -90,7 +90,7 @@ fn task(id: &str, request: &str, agent: Option<&str>, title: &str, state: TaskSt
 
 /// The journal of a task whose node runs a turn through the Agent SDK.
 fn turn_runs(domain: &mut DomainState, task: &str, agent: &str) {
-    use alondra_domain_rules::{ExecutionIdentity, LifecycleRecord};
+    use alondra_domain_model::{ExecutionIdentity, LifecycleRecord};
     domain.lifecycle_journal.insert(task.into(), vec![
         LifecycleRecord::Planned { input: format!("input:{task}:1") },
         LifecycleRecord::Admitted {
@@ -124,8 +124,8 @@ pub(super) fn busy() -> (DomainState, LiveSnapshot) {
         domain.agents.insert(
             agent.as_str().into(),
             Agent { id: agent.as_str().into(), name: title.into(), since: 0, phase: match state {
-                TaskState::Done => alondra_domain_rules::NodePhase::Closed,
-                _ => alondra_domain_rules::NodePhase::ThroughSdk,
+                TaskState::Done => alondra_domain_model::NodePhase::Closed,
+                _ => alondra_domain_model::NodePhase::ThroughSdk,
             } },
         );
         domain
@@ -158,7 +158,7 @@ pub(super) fn build(domain: &DomainState, live: &LiveSnapshot, key: &str) -> vie
         key,
         RenderContext {
             domain,
-            index: &alondra_domain_rules::ReadIndex::build(&domain),
+            index: &alondra_domain_model::ReadIndex::build(&domain),
             live,
             client: Client::Tui,
             lang: Lang::Es,
@@ -241,7 +241,7 @@ fn split_group_list() -> (DomainState, LiveSnapshot) {
         let title = task.title.clone();
         domain.agents.insert(id.as_str().into(), Agent {
             id: id.as_str().into(), name: title, since: 0,
-            phase: alondra_domain_rules::NodePhase::ThroughSdk,
+            phase: alondra_domain_model::NodePhase::ThroughSdk,
         });
         turn_runs(&mut domain, &task_id.0, &id);
         live.nodes.push(LiveNode { agent_id: id, working: true, ..LiveNode::default() });
@@ -379,7 +379,7 @@ fn a_task_in_review_without_a_card_is_not_for_you_in_tasks() {
     domain.tasks.get_mut(&"t-3".into()).unwrap().state = TaskState::ForYourReview;
     domain.lifecycle_journal.remove(&"t-3".into());
     live.nodes.iter_mut().for_each(|node| node.working = false);
-    assert!(alondra_domain_rules::ReadIndex::build(&domain).waiting().is_empty(), "no card waits");
+    assert!(alondra_domain_model::ReadIndex::build(&domain).waiting().is_empty(), "no card waits");
     let mut tasks = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
     let screen = rendered(&mut tasks, 120, 30);
     dump("tasks (in review, no card)", &screen);
@@ -422,7 +422,7 @@ fn a_task_closed_because_its_node_kept_stopping_says_so_with_its_result() {
     let (mut domain, live) = busy();
     domain.requests.insert("r-stop".into(), Request::new("r-stop".into(), "Renombrar el saludo".into()));
     let mut stopped = task("t-stop", "r-stop", None, "Renombrar el saludo", TaskState::Cancelled);
-    stopped.stall_closing = Some(alondra_domain_rules::StallClosing::Settled { result: "Se leyó greeting.txt; no se renombró nada.".into() });
+    stopped.stall_closing = Some(alondra_domain_model::StallClosing::Settled { result: "Se leyó greeting.txt; no se renombró nada.".into() });
     domain.tasks.insert("t-stop".into(), stopped);
     let mut app = task_screen(&domain, &live, "r-stop", "t-stop");
     let screen = rendered(&mut app, 130, 30);
@@ -579,8 +579,8 @@ fn blocked_pr() -> views::View {
     })
 }
 
-fn held_card(hold: alondra_domain_rules::Hold, spec: alondra_domain_rules::CardSpec) -> views::View {
-    use alondra_domain_rules::*;
+fn held_card(hold: alondra_domain_model::Hold, spec: alondra_domain_model::CardSpec) -> views::View {
+    use alondra_domain_model::*;
     let mut state = DomainState::new("e");
     let mut run = |actor: Actor, command: Command| {
         let envelope = CommandEnvelope {
@@ -598,7 +598,7 @@ fn held_card(hold: alondra_domain_rules::Hold, spec: alondra_domain_rules::CardS
     run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "t".into(), request_id: "r".into(), title: "Release".into(),
         agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
     });
     run(Actor::System, Command::HoldHook {
         interaction_id: "hold-1".into(), task_id: "t".into(), agent_id: "agent-a".into(),
@@ -637,7 +637,7 @@ fn inbox_lists_one_row_per_card_with_its_kind_glyph_and_meta_on_the_right() {
 
 #[test]
 fn list_glyphs_are_coloured_by_card_type() {
-    use alondra_domain_rules::CardKind::*;
+    use alondra_domain_model::CardKind::*;
     let kinds = [Decide, Review, Authorize, Know, Provide, Test, Do, Problem, Propose];
     let colors: Vec<_> = kinds.into_iter().map(view_render::kind_color).collect();
     assert_eq!(colors[1], colors[5], "Review and Test share the green of the board");
@@ -808,7 +808,7 @@ fn text(line: &ratatui::text::Line) -> String {
 
 #[test]
 fn authorize_detail_has_a_risk_button_and_the_command_to_run() {
-    use alondra_domain_rules::{CardKind, CardSpec, ContentKind, Hold};
+    use alondra_domain_model::{CardKind, CardSpec, ContentKind, Hold};
     let spec = CardSpec::new(CardKind::Authorize, "Allow publishing Brew 0.2.36")
         .why("Restarts the daemon for a few seconds.")
         .content(ContentKind::Command, "alondra update");

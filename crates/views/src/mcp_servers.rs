@@ -5,7 +5,7 @@
 use super::action_id::Verb;
 use super::text::{t, tf};
 use super::{common, Action, Icon, Item, Label, Lang, Link, LocalLink, RenderContext, Role, Style, Tone, View};
-use alondra_domain_rules::{McpServerKey, McpServerState, McpStatus, TaskId};
+use alondra_domain_model::{McpServerKey, McpServerState, McpStatus, TaskId};
 use alondra_foundation::{McpConnect, McpOrigin, McpScope};
 use std::collections::BTreeMap;
 pub use alondra_view_model::mcp::project_target;
@@ -233,7 +233,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> View {
     for node in context.index.mcp_nodes() {
         let project = project_of(&node.task, context).unwrap_or_else(|| other.clone());
         let removed = |server: &McpServerState| context.live.mcp_removed.iter().any(|removal| removal.hides(&node.agent.0, node.generation, server));
-        for server in node.servers.iter().filter(|server| server.name != alondra_domain_rules::ALONDRA_MCP_SERVER && !removed(server)) {
+        for server in node.servers.iter().filter(|server| server.name != alondra_domain_model::ALONDRA_MCP_SERVER && !removed(server)) {
             let used = if personal(server) { &mut yours } else { projects.entry(project.clone()).or_default() };
             let key = McpServerKey::of(server);
             let open = node.signing_in.contains(&server.name);
@@ -247,7 +247,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> View {
     for server in context.live.mcp_probes.values().flat_map(|probe| match probe {
         super::LiveMcpProbe::Checked { servers, .. } => servers.as_slice(),
         _ => &[],
-    }).filter(|server| personal(server) && server.name != alondra_domain_rules::ALONDRA_MCP_SERVER) {
+    }).filter(|server| personal(server) && server.name != alondra_domain_model::ALONDRA_MCP_SERVER) {
         let listed = yours.iter().any(|used| used.key.names(server))
             || checked.iter().any(|item| matches!(item, Item::Row(row) if row.title == server.name));
         if !listed {
@@ -283,7 +283,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> View {
             Some(super::LiveMcpProbe::Checked { servers, at }) => {
                 let time = at.get(11..16).unwrap_or_default();
                 let servers: Vec<&McpServerState> = servers.iter()
-                    .filter(|server| !personal(server) && server.name != alondra_domain_rules::ALONDRA_MCP_SERVER).collect();
+                    .filter(|server| !personal(server) && server.name != alondra_domain_model::ALONDRA_MCP_SERVER).collect();
                 let found = if servers.is_empty() {
                     tf!(lang, "No servers of its own · checked at {time}", "Sin servidores propios · comprobado a las {time}")
                 } else {

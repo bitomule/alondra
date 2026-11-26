@@ -3,7 +3,7 @@ use alondra_store_sqlite::AsSqlite as _;
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine::domain_transport::fixtures::*;
 use alondra_daemon_engine::domain_transport::*;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use serde_json::{Value, json};
 use tokio::net::UnixStream;
 

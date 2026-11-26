@@ -6,7 +6,7 @@
 //! new host says what starting it wrote to the cache.
 use crate::locks::AfterPanic as _;
 use alondra_core::Millis;
-use alondra_domain_rules::TaskId;
+use alondra_domain_model::TaskId;
 use alondra_foundation::changes::{Changes, Cursor, Delta};
 pub use alondra_provider_claude::ContextEvent;
 use alondra_provider_claude::Cached;

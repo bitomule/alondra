@@ -202,12 +202,12 @@ class GuardTest(unittest.TestCase):
         self.assertOne("timer IN_FLIGHT is declared")
 
     def test_a_state_enum_of_no_machine_is_named(self):
-        self.write("crates/domain-rules/src/x.rs", "pub(crate) enum HoldPhase { A, B }\n")
+        self.write("crates/domain-model/src/x.rs", "pub(crate) enum HoldPhase { A, B }\n")
         self.assertOne("enum HoldPhase is part of no machine")
 
     def test_an_exemption_with_its_reason_passes(self):
-        self.write("crates/domain-rules/src/x.rs", "enum ReportStatus { A }\n")
-        self.write("tools/state_inventory_exempt.tsv", "enum\tcrates/domain-rules/src/x.rs::ReportStatus\tonly formats a report\n")
+        self.write("crates/domain-model/src/x.rs", "enum ReportStatus { A }\n")
+        self.write("tools/state_inventory_exempt.tsv", "enum\tcrates/domain-model/src/x.rs::ReportStatus\tonly formats a report\n")
         self.assertEqual(self.problems(), [])
 
     def test_a_known_defect_passes_until_it_is_fixed_and_then_must_go(self):

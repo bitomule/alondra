@@ -1,5 +1,5 @@
 use super::{Lang, LiveNode, RunState, text::{t, tf}};
-use alondra_domain_rules::Doing;
+use alondra_domain_model::Doing;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NowFact {

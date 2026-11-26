@@ -2,7 +2,7 @@
 use crate::client::Client;
 pub use alondra_client_port::delivery::{command_prefix, response_notice, state_text};
 use alondra_core::delivery::State;
-use alondra_domain_rules::{DataEpoch, PROTOCOL_VERSION};
+use alondra_domain_model::{DataEpoch, PROTOCOL_VERSION};
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Subcommand};
 use serde::Deserialize;

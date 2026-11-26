@@ -6,8 +6,8 @@
 //! card comes back saying why.
 use alondra_core::clock;
 use alondra_daemon_support::reports::{self, HeldReport};
-use alondra_domain_rules::report_held_card::{Held, KEEP_OPTION, REPORT_HELD_PREFIX, ReportHeldCard, SEND_OPTION};
-use alondra_domain_rules::{InteractionId, InteractionPayload, SystemCard};
+use alondra_domain_model::report_held_card::{Held, KEEP_OPTION, REPORT_HELD_PREFIX, ReportHeldCard, SEND_OPTION};
+use alondra_domain_model::{InteractionId, InteractionPayload, SystemCard};
 use alondra_engine_ports::agent_host::{AgentHost, ProbeRun};
 use alondra_view_model::Lang;
 use std::collections::BTreeSet;

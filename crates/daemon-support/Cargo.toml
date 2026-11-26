@@ -9,7 +9,7 @@ publish.workspace = true
 alondra-foundation.workspace = true
 alondra-core.workspace = true
 alondra-host.workspace = true
-alondra-domain-rules.workspace = true
+alondra-domain-model.workspace = true
 alondra-view-model.workspace = true
 alondra-e2e = { path = "../e2e" }
 alondra-process-group.workspace = true

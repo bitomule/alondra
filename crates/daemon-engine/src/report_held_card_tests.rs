@@ -1,6 +1,6 @@
 use crate::domain_runtime::DomainRuntime;
 use super::*;
-use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
+use alondra_domain_model::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
 use serde_json::{Value, json};
 use std::sync::Mutex;
 

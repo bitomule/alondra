@@ -1,7 +1,7 @@
 //! The aggregate rules: for a task with a journal, nothing but a lifecycle decision moves its
 //! state, node, start or ending; a cancellation or a completion ends only with its receipts; and
 //! a DTO edited by hand is refused, never repaired.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_views as views;
 use crate::inbox_items;
 use std::collections::{BTreeMap, BTreeSet};

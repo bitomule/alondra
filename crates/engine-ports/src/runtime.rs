@@ -9,7 +9,7 @@ use crate::journal::{Journal, ReadTransaction, RequestLaunch, StoreError, Transp
 use alondra_store::{AuthorityScope, Committed, ContextPage, ContextRef};
 use alondra_foundation::principal::{Capability, Principal};
 use std::time::Duration;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_foundation::runtime_mutex::RuntimeMutex;
 use std::any::Any;
 use std::path::Path;

@@ -4,7 +4,7 @@
 //! keeps the credential; Alondra records only that the sign-in is no longer open. The request
 //! itself goes through the `SignInReturns` port.
 use crate::domain_runtime::DomainRuntime;
-use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION, TaskId};
+use alondra_domain_model::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION, TaskId};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SignInError {

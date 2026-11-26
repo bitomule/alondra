@@ -1,5 +1,5 @@
 use alondra_core::clock;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION,
     QuestionOption, Recipient, Scope,
 };

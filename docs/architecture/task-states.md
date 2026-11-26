@@ -28,7 +28,7 @@ deadlines that each say why they exist, and tests that prove no task is left sta
 | Finished | Completed | — |
 | Cancelled | Cancelled by you, or closed by Alondra with the reason | — |
 
-Precedence, first match wins (`situation_with` in `crates/domain-rules/src/situation.rs`):
+Precedence, first match wins (`situation_with` in `crates/domain-model/src/situation.rs`):
 ended; a card of yours the inbox lists; a closed node, which reads as waiting for a slot before
 the lifecycle is read; a delivery whose node is closing, which reads as delivered (closing) even
 while its last turn runs; a live turn or work; your pause; a card of yours the inbox does not list
@@ -43,7 +43,7 @@ is open (the domain reopens it when one starts again). Only an ended task leaves
 `every_open_task_is_in_exactly_one_block_whatever_its_request_says` enumerates every task state against
 every request flag.
 
-`Situation` (`crates/domain-rules/src/situation.rs`) is that state, computed once per task in the
+`Situation` (`crates/domain-model/src/situation.rs`) is that state, computed once per task in the
 `ReadIndex` from the lifecycle, the task's row (a closed node, a cancellation winding down) and the
 cards the inbox lists. Labels, icons, detail lines, blocks, counters, the Live Activity and the
 gate's slots all read it (`classify` in `crates/views/src/task_state.rs`, `Tally` for blocks and
@@ -69,7 +69,7 @@ or cancel it. The task's detail lists the role, model and cost of each of its ag
 
 `TaskLifecycle::obligation()` names, for every live task, exactly one party and what it owes.
 `Situation` and the clock read it through `DomainState::obligation_of`
-(`crates/domain-rules/src/ownership.rs`), which changes it in two cases the lifecycle does not know: a delivery the user sent back while its
+(`crates/domain-model/src/ownership.rs`), which changes it in two cases the lifecycle does not know: a delivery the user sent back while its
 node waits on the orchestrator owes `Answer`, and a task no node runs that the orchestrator has to
 re-plan owes `Replan`.
 
@@ -95,7 +95,7 @@ Only a finished or cancelled task owes nothing.
 A deadline is a last resort. A state that an event of the provider ends carries none, and a
 deadline never ends work by itself: it triggers a closed outcome (the turn goes back to the node,
 the input goes back to the queue, or the task reads a factual state). It never opens a card for
-the user. `obligation_policy` (`crates/domain-rules/src/obligation_policy.rs`) holds every deadline
+the user. `obligation_policy` (`crates/domain-model/src/obligation_policy.rs`) holds every deadline
 on what a task owes, and one clock in the daemon (`obligation_watch`) applies them. `enforced` says
 which are acted on: `HandInput` and `Wake`. What the orchestrator owes has none since #516: it is
 settled by state, each time a turn of the orchestrator ends handled.
@@ -143,7 +143,7 @@ Each rule is held by a type or by a property test.
    block, a count or a slot.
 2. **Every state has an owner.** `obligation()` is total over live tasks.
 3. **A fact of the provider about the current execution is applied or reconciled.** In production
-   the guard is the execution's generation (`current_sdk` in `crates/domain-rules/src/lifecycle.rs`),
+   the guard is the execution's generation (`current_sdk` in `crates/domain-model/src/lifecycle.rs`),
    the store's cursor and `turn_end_recorded`: a fact about another execution or one already
    recorded is turned down there, before the aggregate. The aggregate itself refuses the facts that
    contradict its state, each with its reason: a repeated or unasked takeover, a lost connection
@@ -153,7 +153,7 @@ Each rule is held by a type or by a property test.
 4. **The machine decides.** Empty turns are counted in one place, the aggregate. Two callers still
    ask the aggregate before they choose an event: the end of a pause tries `EndPause` and records
    `Resumed` when it would be refused or leave the task stranded (`end_of_pause` in
-   `crates/domain-rules/src/node_machine.rs`), and a host's end checks that the resume it would
+   `crates/domain-model/src/node_machine.rs`), and a host's end checks that the resume it would
    send is accepted before it records `HostEnded` with it (`record_host_ended`).
 5. **An acknowledged command had an effect.** It changed the state, or it repeats a command already
    recorded, or it is refused with the reason.
@@ -234,7 +234,7 @@ request. Where a phase differs from the plan, it is listed below the table.
 | 6 | An empty turn goes back to its node at once, up to three times in a row | `crates/domain`, `crates/core` | #162 | Merged |
 | 7 | `HandInput` and `Wake` deadlines | `obligation_watch` | #164 | Merged; `HandInput` became the hung-process last resort in the delivery with certainty phases (#185 and its second phase) |
 | 8 | `Answer` deadline | `orchestrator_inbox` | #167 | Merged; removed by #516: what the orchestrator owes is settled by state when a turn of it ends handled |
-| 9 | `Situation` | `crates/domain-rules/src/situation.rs` | #157 | Merged |
+| 9 | `Situation` | `crates/domain-model/src/situation.rs` | #157 | Merged |
 | 10 | Seven state labels | `crates/views/src/task_state.rs` | #163 | Merged |
 | 11 | One count of work and of slots | `crates/core`, `admission` | #160 | Merged |
 | 12 | A present fact on every working row | `crates/views/src` (`NowFact`) | #169 | Merged |

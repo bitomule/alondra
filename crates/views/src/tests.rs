@@ -1,5 +1,5 @@
 use super::*;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     NodePhase, PauseReason, TaskId,
     Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
     InteractionSubject, PrState, PullRequest, QuestionOption, Recipient, Request, RequestOrigin, Scope, Task,
@@ -16,11 +16,11 @@ mod merge_message_tests;
 mod spec_view_tests;
 
 fn inbox_badge(state: &DomainState) -> u32 {
-    super::inbox_badge(&alondra_domain_rules::ReadIndex::build(state))
+    super::inbox_badge(&alondra_domain_model::ReadIndex::build(state))
 }
 
 fn push_content(state: &DomainState, card_id: &str, lang: Lang) -> Result<PushContent, BuildError> {
-    super::push_content(&alondra_domain_rules::ReadSnapshot::build(std::sync::Arc::new(state.clone())), card_id, lang)
+    super::push_content(&alondra_domain_model::ReadSnapshot::build(std::sync::Arc::new(state.clone())), card_id, lang)
 }
 
 fn push_actions(state: &DomainState, card_id: &str, lang: Lang) -> Result<Vec<PushAction>, BuildError> {
@@ -105,7 +105,7 @@ fn fixture() -> DomainState {
                 payload,
                 revision: 1,
                 order: index as u64 + 1,
-                withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+                withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             },
         );
     }
@@ -126,7 +126,7 @@ fn fixture() -> DomainState {
             },
             revision: 1,
             order: 4,
-            withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         },
     );
     state
@@ -134,7 +134,7 @@ fn fixture() -> DomainState {
 /// The placeholder card these fixtures were written with becomes the card its payload would
 /// carry, so a question reads as a decision and a final delivery as a review.
 fn with_cards(domain: &DomainState) -> DomainState {
-    use alondra_domain_rules::{CardKind, CardSpec, Hold};
+    use alondra_domain_model::{CardKind, CardSpec, Hold};
     let mut state = domain.clone();
     let holds = state.holds.clone();
     for interaction in state.interactions.values_mut() {
@@ -184,7 +184,7 @@ fn render_in(
     let unregistered: Vec<_> = domain.tasks.values().filter_map(|task| task.agent_id.clone())
         .filter(|agent| !domain.agents.contains_key(agent)).collect();
     for agent in unregistered {
-        domain.agents.insert(agent.clone(), alondra_domain_rules::Agent { name: agent.0.clone(), id: agent, phase: NodePhase::ThroughSdk, since: 0 });
+        domain.agents.insert(agent.clone(), alondra_domain_model::Agent { name: agent.0.clone(), id: agent, phase: NodePhase::ThroughSdk, since: 0 });
     }
     for node in live.nodes.iter().filter(|node| node.disconnected) {
         if let Some(agent) = domain.agents.get_mut(&node.agent_id.as_str().into()) {
@@ -201,20 +201,20 @@ fn render_in(
     }
     for paused in live.pacing.iter().flat_map(|pacing| &pacing.paused).filter(|paused| paused.session.is_some()) {
         let reason = match paused.reason {
-            LivePauseReason::User => alondra_domain_rules::PauseReason::ByUser,
-            LivePauseReason::Usage => alondra_domain_rules::PauseReason::Usage,
-            LivePauseReason::Memory => alondra_domain_rules::PauseReason::Memory,
-            LivePauseReason::Machine => alondra_domain_rules::PauseReason::Declared { reason: paused.waits_for.clone().unwrap_or_default() },
+            LivePauseReason::User => alondra_domain_model::PauseReason::ByUser,
+            LivePauseReason::Usage => alondra_domain_model::PauseReason::Usage,
+            LivePauseReason::Memory => alondra_domain_model::PauseReason::Memory,
+            LivePauseReason::Machine => alondra_domain_model::PauseReason::Declared { reason: paused.waits_for.clone().unwrap_or_default() },
             LivePauseReason::ApiError | LivePauseReason::ApiOutage => continue,
         };
-        let task = alondra_domain_rules::TaskId::from(paused.task_id.as_str());
+        let task = alondra_domain_model::TaskId::from(paused.task_id.as_str());
         let Some(agent) = domain.tasks.get(&task).filter(|task| !task.state.terminal()).and_then(|task| task.agent_id.clone()) else { continue };
         if domain.node_phase(&agent) != Some(&NodePhase::ThroughSdk) || domain.node_pause(&agent).is_some() {
             continue;
         }
         hold_pause(&mut domain, &task.0, &agent.0, reason);
     }
-    let mut index = alondra_domain_rules::ReadIndex::build(&domain);
+    let mut index = alondra_domain_model::ReadIndex::build(&domain);
     if let Some(state) = in_state {
         index.put_live(&"t-1".into(), state.clone());
     }
@@ -292,7 +292,7 @@ fn a_huge_inbox_stays_under_the_budget_and_reports_more() {
                 },
                 revision: 1,
                 order: index + 10,
-                withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+                withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             },
         );
     }
@@ -445,7 +445,7 @@ fn a_question_about_a_pr_is_its_own_card_and_no_card_holds_another() {
             },
             revision: 1,
             order: 5,
-            withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         },
     );
     let live = LiveSnapshot::default();
@@ -478,7 +478,7 @@ fn a_question_about_a_pr_is_its_own_card_and_no_card_holds_another() {
 fn deliver_pr(state: &mut DomainState, pr_id: &str) {
     let head = state.pull_requests[&pr_id.into()].head.clone();
     if let InteractionPayload::Delivery { targets, .. } = &mut state.interactions.get_mut(&"i-3".into()).unwrap().payload {
-        *targets = vec![alondra_domain_rules::DeliveryTarget::PullRequest { pr_id: pr_id.into(), head }];
+        *targets = vec![alondra_domain_model::DeliveryTarget::PullRequest { pr_id: pr_id.into(), head }];
     }
 }
 
@@ -521,7 +521,7 @@ fn pr_fixture() -> DomainState {
             },
             revision: 1,
             order: 5,
-            withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         },
     );
     state.interactions.insert(
@@ -546,7 +546,7 @@ fn pr_fixture() -> DomainState {
             },
             revision: 1,
             order: 6,
-            withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+            withdrawn: false, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
         },
     );
     deliver_pr(&mut state, "pr-1");
@@ -630,7 +630,7 @@ fn golden_fixture() -> DomainState {
         }
         if let InteractionPayload::Delivery { targets, .. } = &mut interaction.payload {
             for target in targets {
-                if let alondra_domain_rules::DeliveryTarget::PullRequest { pr_id: id, .. } = target {
+                if let alondra_domain_model::DeliveryTarget::PullRequest { pr_id: id, .. } = target {
                     if id.0 == "pr-1" { *id = pr_id.into(); }
                 }
             }
@@ -674,11 +674,11 @@ fn golden_fixture() -> DomainState {
         .max()
         .unwrap_or(state.revision);
     if let Some(pr) = state.pull_requests.get_mut(&pr_id.into()) {
-        pr.allowed_methods = vec![alondra_domain_rules::MergeMethod::Squash, alondra_domain_rules::MergeMethod::Merge];
+        pr.allowed_methods = vec![alondra_domain_model::MergeMethod::Squash, alondra_domain_model::MergeMethod::Merge];
     }
     {
-        use alondra_domain_rules::{CardKind, CardTarget, ContentKind as Content};
-        let mut card = |id: &str, card: alondra_domain_rules::CardSpec| {
+        use alondra_domain_model::{CardKind, CardTarget, ContentKind as Content};
+        let mut card = |id: &str, card: alondra_domain_model::CardSpec| {
             state.interactions.get_mut(&id.into()).unwrap().card = card;
         };
         let mut welcome = spec(CardKind::Decide, "Choose the welcome copy",
@@ -813,7 +813,7 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
 }
 
 fn scheduled_run(state: &mut DomainState, request: &str, task: &str) {
-    use alondra_domain_rules::{ScheduleRun, ScheduleRunOrigin, ScheduleRunState};
+    use alondra_domain_model::{ScheduleRun, ScheduleRunOrigin, ScheduleRunState};
     let id = format!("run-{task}");
     state.schedule.runs.insert(id.clone().into(), ScheduleRun {
         id: id.into(), schedule_id: "0789f185-0000".into(), origin: ScheduleRunOrigin::Due,
@@ -1047,10 +1047,10 @@ fn a_task_shows_the_same_title_folder_cost_model_and_state_with_its_node_gone_cl
     let task = base.tasks.get_mut(&"t-1".into()).unwrap();
     task.model = Some(TaskModel { model: "opus".into(), chosen_by: ModelChooser::Orchestrator });
     task.project = Some("Alondra".into());
-    task.worktrees.insert("/work/alondra/.claude/worktrees/subagent".into(), alondra_domain_rules::TaskWorktree {
-        origin: alondra_domain_rules::WorktreeOrigin::Subagent, branch: None, discard: false, end: None });
-    task.worktrees.insert("/work/alondra/.claude/worktrees/t-1".into(), alondra_domain_rules::TaskWorktree {
-        origin: alondra_domain_rules::WorktreeOrigin::Task, branch: None, discard: false, end: None });
+    task.worktrees.insert("/work/alondra/.claude/worktrees/subagent".into(), alondra_domain_model::TaskWorktree {
+        origin: alondra_domain_model::WorktreeOrigin::Subagent, branch: None, discard: false, end: None });
+    task.worktrees.insert("/work/alondra/.claude/worktrees/t-1".into(), alondra_domain_model::TaskWorktree {
+        origin: alondra_domain_model::WorktreeOrigin::Task, branch: None, discard: false, end: None });
     let mut live = LiveSnapshot::default();
     live.task_costs.insert("t-1".into(), 4_200);
     let node = |agent: &str, disconnected: bool| LiveNode {
@@ -1109,7 +1109,7 @@ fn settled_fixture() -> DomainState {
     let mut state = golden_fixture();
     let question = state.interactions.get_mut(&SETTLED_CARD.into()).unwrap();
     let InteractionPayload::Question { options, answer } = &mut question.payload else { panic!("the golden question") };
-    *answer = Some(alondra_domain_rules::Answer {
+    *answer = Some(alondra_domain_model::Answer {
         attachments: vec![], option_id: options[0].id.clone(), inputs: Default::default(), responder: "device:2".into(), at_revision: 1, decision: None,
     });
     state
@@ -1121,7 +1121,7 @@ const NODE_CLOSED_TASK: &str = "t-651c38484cd2f34e74d5107ba05f7f15";
 /// The golden task after its node was closed by the user: freed, with nothing left open.
 fn node_closed_fixture() -> (DomainState, LiveSnapshot) {
     let mut state = golden_fixture();
-    let id: alondra_domain_rules::TaskId = NODE_CLOSED_TASK.into();
+    let id: alondra_domain_model::TaskId = NODE_CLOSED_TASK.into();
     state.interactions.retain(|_, interaction| interaction.scope != Scope::Task { task_id: id.clone() });
     state.holds.retain(|interaction, _| state.interactions.contains_key(interaction));
     let task = state.tasks.get_mut(&id).unwrap();
@@ -1266,7 +1266,7 @@ fn invalid_generated_pr_action_id_is_omitted_while_the_card_renders() {
         "a valid action after the invalid action should still render");
     let result = build(&format!("card:{pr_id}"), RenderContext {
         domain: &state,
-        index: &alondra_domain_rules::ReadIndex::build(&state),
+        index: &alondra_domain_model::ReadIndex::build(&state),
         live: &live,
         client: Client::Ios,
         lang: Lang::En,
@@ -1353,7 +1353,7 @@ fn view_keys_are_addressable_and_bound_to_epoch() {
             "sidebar",
             RenderContext {
                 domain: &state,
-                index: &alondra_domain_rules::ReadIndex::build(&state),
+                index: &alondra_domain_model::ReadIndex::build(&state),
                 live: &live,
                 client: Client::Ios,
                 lang: Lang::En,
@@ -1558,7 +1558,7 @@ fn document_review_card_exposes_revision_content_and_review_actions() {
     });
     let interaction = state.interactions.get_mut(&"i-3".into()).unwrap();
     if let InteractionPayload::Delivery { targets, .. } = &mut interaction.payload {
-        *targets = vec![alondra_domain_rules::DeliveryTarget::DocumentRevision {
+        *targets = vec![alondra_domain_model::DeliveryTarget::DocumentRevision {
             document_id: "document-1".into(), revision_id: "revision-1".into(),
         }];
     } else { panic!("delivery fixture") }
@@ -1659,7 +1659,7 @@ fn decidable_card(state: &DomainState, lang: Lang, interaction: &str) -> Card {
         action.enabled = true;
         action.disabled_reason = None;
     }
-    let index = alondra_domain_rules::ReadIndex::build(&domain);
+    let index = alondra_domain_model::ReadIndex::build(&domain);
     let context = RenderContext { domain: &domain, index: &index, live: &live, client: Client::Ios, lang, transport: Transport::Loopback,
         cursor: "cursor-1", rendered_at: "" };
     card::from_item(&item, &context, true).unwrap()
@@ -1687,7 +1687,7 @@ fn attach_document(state: &mut DomainState) {
         content_digest: "b".repeat(64), content_reference: "stored/design".into(),
     });
     if let InteractionPayload::Delivery { targets, .. } = &mut state.interactions.get_mut(&"i-3".into()).unwrap().payload {
-        *targets = vec![alondra_domain_rules::DeliveryTarget::DocumentRevision {
+        *targets = vec![alondra_domain_model::DeliveryTarget::DocumentRevision {
             document_id: "document-1".into(), revision_id: "revision-1".into(),
         }];
     }
@@ -1698,7 +1698,7 @@ fn a_final_report_alone_offers_mark_as_done_and_request_changes_with_a_reply_to_
     let mut state = fixture();
     state.interactions.get_mut(&"i-3".into()).unwrap().author = Author::Agent { agent_id: "a-1".into() };
     let card = decidable_card(&state, Lang::En, "i-3");
-    assert_eq!(card.kind, Some(alondra_domain_rules::CardKind::Review));
+    assert_eq!(card.kind, Some(alondra_domain_model::CardKind::Review));
     let done = card.actions.iter().find(|action| action.label == "Mark as done").expect("accepting it closes the task, and says so");
     assert_eq!((done.style, done.role), (Style::Primary, Some(Role::Advance)));
     assert_eq!(done.stamp.as_deref(), Some("Done"));
@@ -1790,7 +1790,7 @@ fn a_card_writes_only_in_its_own_field_and_every_option_is_a_button_that_answers
     let view = render(&golden_fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En,
         "card:a98d034b-249e-4487-a89b-57de38c26372", "");
     let Item::Card(card) = &view.sections[0].items[0] else { panic!("decision card") };
-    assert_eq!(card.kind, Some(alondra_domain_rules::CardKind::Decide));
+    assert_eq!(card.kind, Some(alondra_domain_model::CardKind::Decide));
     assert_eq!(card.actions.iter().map(|a| a.option_id.as_deref()).collect::<Vec<_>>(), [Some("clear"), Some("warm")]);
     assert!(card.actions.iter().chain(&card.more).filter(|action| action.id.starts_with("ans:"))
         .all(|action| action.input == Input::None && !action.attachments));
@@ -1806,7 +1806,7 @@ fn an_open_card_whose_options_asked_for_text_shows_them_as_buttons_that_answer_a
         {"id": "other", "label": "Other", "inputs": [{"id": "which", "kind": "text", "required": true}]},
     ])).unwrap();
     let question = state.interactions.get_mut(&"i-1".into()).unwrap();
-    question.card = spec(alondra_domain_rules::CardKind::Do, "Rotate the key", "The old one leaked.");
+    question.card = spec(alondra_domain_model::CardKind::Do, "Rotate the key", "The old one leaked.");
     question.payload = InteractionPayload::ActionRequest { options: legacy, answer: None };
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-1", "");
@@ -1932,7 +1932,7 @@ fn with_usage_out_the_banner_and_the_queue_still_name_the_quota_and_its_time() {
 /// waits for a slot or for Alondra.
 #[test]
 fn a_task_waiting_for_a_cancelled_one_says_the_orchestrator_decides_what_happens_to_it() {
-    use alondra_domain_rules::{Actor, Command, LaunchPlan};
+    use alondra_domain_model::{Actor, Command, LaunchPlan};
     let mut state = DomainState::new("test-epoch");
     let orchestrator = Actor::Orchestrator { generation: 0 };
     execute(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
@@ -1957,7 +1957,7 @@ fn a_task_waiting_for_a_cancelled_one_says_the_orchestrator_decides_what_happens
 /// for it, and the task says what it waits for.
 #[test]
 fn a_refused_plan_stays_out_of_the_users_inbox_and_its_task_waits_for_the_fix() {
-    use alondra_domain_rules::{Actor, Command, Recipient, StartProblem};
+    use alondra_domain_model::{Actor, Command, Recipient, StartProblem};
     let mut state = failed_launch_fixture("Choose a model before its native reasoning effort\n");
     while let Some(other) = state.open_user_card(&"t-1".into()).map(|card| card.id.clone()) {
         execute(&mut state, Actor::System, Command::Withdraw { interaction_id: other });
@@ -2106,8 +2106,8 @@ fn node_in(state: &mut DomainState, phase: NodePhase) {
 
 /// The journal of `task` whose node `agent` the gate admitted through the Agent SDK and that runs
 /// its first turn.
-fn sdk_turn(task: &str, agent: &str) -> Vec<alondra_domain_rules::LifecycleRecord> {
-    use alondra_domain_rules::{ExecutionIdentity, LifecycleRecord};
+fn sdk_turn(task: &str, agent: &str) -> Vec<alondra_domain_model::LifecycleRecord> {
+    use alondra_domain_model::{ExecutionIdentity, LifecycleRecord};
     vec![
         LifecycleRecord::Planned { input: format!("input:{task}:1") },
         LifecycleRecord::Admitted {
@@ -2123,7 +2123,7 @@ fn sdk_turn(task: &str, agent: &str) -> Vec<alondra_domain_rules::LifecycleRecor
 /// the lifecycle records the pause behind its card, after the turn `sdk_turn` starts when it has
 /// no journal yet.
 fn hold_pause(state: &mut DomainState, task: &str, agent: &str, reason: PauseReason) {
-    use alondra_domain_rules::{CardKind, CardSpec, LifecycleRecord, NodePauseKind, PauseOwner, SystemCard};
+    use alondra_domain_model::{CardKind, CardSpec, LifecycleRecord, NodePauseKind, PauseOwner, SystemCard};
     let (kind, owner, pause) = match reason {
         PauseReason::ByUser => ("user", PauseOwner::User, NodePauseKind::User),
         PauseReason::Declared { .. } | PauseReason::Memory => ("machine", PauseOwner::Machine, NodePauseKind::Machine),
@@ -2131,11 +2131,11 @@ fn hold_pause(state: &mut DomainState, task: &str, agent: &str, reason: PauseRea
         PauseReason::Disk => ("disk", PauseOwner::Disk, NodePauseKind::Disk),
         PauseReason::ApiError(_) => panic!("the lifecycle holds a Claude API error, never the gate"),
     };
-    let card = alondra_domain_rules::InteractionId::from(format!("{}{kind}-0-{task}", alondra_domain_rules::NODE_PAUSE_PREFIX));
+    let card = alondra_domain_model::InteractionId::from(format!("{}{kind}-0-{task}", alondra_domain_model::NODE_PAUSE_PREFIX));
     if !state.lifecycle_journal.contains_key(&task.into()) {
         state.lifecycle_journal.insert(task.into(), sdk_turn(task, agent));
     }
-    let mut journal = state.lifecycle_journal[&alondra_domain_rules::TaskId::from(task)].to_vec();
+    let mut journal = state.lifecycle_journal[&alondra_domain_model::TaskId::from(task)].to_vec();
     journal.push(LifecycleRecord::Paused { card: card.clone(), owner: Some(owner) });
     state.lifecycle_journal.insert(task.into(), journal);
     state.interactions.insert(card.clone(), Interaction { shortened: false,
@@ -2147,8 +2147,8 @@ fn hold_pause(state: &mut DomainState, task: &str, agent: &str, reason: PauseRea
 }
 
 /// `sdk_turn`, once that turn ended behind work of its own that still runs.
-fn sdk_own_work(task: &str, agent: &str) -> Vec<alondra_domain_rules::LifecycleRecord> {
-    use alondra_domain_rules::LifecycleRecord;
+fn sdk_own_work(task: &str, agent: &str) -> Vec<alondra_domain_model::LifecycleRecord> {
+    use alondra_domain_model::LifecycleRecord;
     let mut journal = sdk_turn(task, agent);
     journal.extend([
         LifecycleRecord::WorkStarted { turn: "turn".into(), work: format!("claude-task:{task}") },
@@ -2158,9 +2158,9 @@ fn sdk_own_work(task: &str, agent: &str) -> Vec<alondra_domain_rules::LifecycleR
 }
 
 /// `sdk_turn`, once that turn ended with nothing left to do.
-fn sdk_turn_ended(task: &str, agent: &str) -> Vec<alondra_domain_rules::LifecycleRecord> {
+fn sdk_turn_ended(task: &str, agent: &str) -> Vec<alondra_domain_model::LifecycleRecord> {
     let mut journal = sdk_turn(task, agent);
-    journal.push(alondra_domain_rules::LifecycleRecord::TurnEnded {
+    journal.push(alondra_domain_model::LifecycleRecord::TurnEnded {
         turn: "turn".into(), unheard_card: format!("unheard-{task}").into(), wake: None, text: None, awaits: None, stalled: false,
     });
     journal
@@ -2409,7 +2409,7 @@ fn rows_count_cards_from_the_render_index_without_reading_the_inbox_again() {
     let mut state = with_cards(&fixture());
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
     let live = LiveSnapshot::default();
-    let counted = |index: &alondra_domain_rules::ReadIndex, key: &str| {
+    let counted = |index: &alondra_domain_model::ReadIndex, key: &str| {
         let view = build(key, RenderContext {
             domain: &state, index, live: &live, client: Client::Ios, lang: Lang::En,
             transport: Transport::Loopback, cursor: "cursor-1", rendered_at: "",
@@ -2421,8 +2421,8 @@ fn rows_count_cards_from_the_render_index_without_reading_the_inbox_again() {
         view.sections.iter().flat_map(|section| &section.items)
             .map(|item| if let Item::Row(row) = item { count(row) } else { 0 }).sum::<u32>()
     };
-    assert!(counted(&alondra_domain_rules::ReadIndex::build(&state), "tasks") > 0, "the fixture has a card waiting on its task");
-    let nothing_waiting = alondra_domain_rules::ReadIndex::build(&DomainState::new("test-epoch"));
+    assert!(counted(&alondra_domain_model::ReadIndex::build(&state), "tasks") > 0, "the fixture has a card waiting on its task");
+    let nothing_waiting = alondra_domain_model::ReadIndex::build(&DomainState::new("test-epoch"));
     assert_eq!(counted(&nothing_waiting, "tasks"), 0);
 }
 
@@ -2497,7 +2497,7 @@ fn tasks_hide_zero_scheduled_count_and_clear_completed_until_completed_work_exis
 fn the_archived_page_of_tasks_no_longer_exists() {
     let state = fixture();
     let live = LiveSnapshot::default();
-    let index = alondra_domain_rules::ReadIndex::build(&state);
+    let index = alondra_domain_model::ReadIndex::build(&state);
     let context = |key| build(key, RenderContext { domain: &state, index: &index, live: &live, client: Client::Tui, lang: Lang::En,
         transport: Transport::Loopback, cursor: "cursor-1", rendered_at: "2026-09-30T10:00:00Z" });
     assert!(context("tasks?section=finished&after=0").is_ok());
@@ -2689,7 +2689,7 @@ fn only_the_iphone_gets_no_link_to_the_request_view() {
 #[test]
 fn schedule_editor_resets_old_options_when_project_changes() {
     let mut state = fixture();
-    let schedule: alondra_domain_rules::Schedule = serde_json::from_value(serde_json::json!({
+    let schedule: alondra_domain_model::Schedule = serde_json::from_value(serde_json::json!({
         "id":"schedule-1", "title":"Morning", "text":"Review work",
         "project":"Old", "options":{"run_checks":false},
         "disallowed_tools":[], "frequency":"daily", "hour":9, "minute":0,
@@ -2856,7 +2856,7 @@ fn card_variants_match_goldens() {
 /// The orchestrator's Decide card the user answered in words on 13 October: its reply field is the
 /// answer to it, so every client takes it out on send.
 fn orchestrator_decide_fixture() -> DomainState {
-    use alondra_domain_rules::{CardKind, ContentKind as Content, QuestionOption};
+    use alondra_domain_model::{CardKind, ContentKind as Content, QuestionOption};
     let mut state = golden_fixture();
     let option = |id: &str, label: &str, description: &str| QuestionOption {
         id: id.into(), label: label.into(), description: Some(description.into()),
@@ -2897,7 +2897,7 @@ fn an_orchestrator_decide_card_matches_its_golden() {
 /// The beta candidate delivered against the plan its node had approved: every point with what
 /// proves it, the commit linked to the PR's repository.
 fn checklist_delivery_fixture() -> DomainState {
-    use alondra_domain_rules::{Checklist, ChecklistItem, ChecklistMark, Evidence, EvidenceKind, InteractionId};
+    use alondra_domain_model::{Checklist, ChecklistItem, ChecklistMark, Evidence, EvidenceKind, InteractionId};
     let mut state = golden_fixture();
     let delivery = InteractionId::from("hf-weekly-2026-09-30");
     let task_id = state.interactions[&delivery].scope.clone();
@@ -2906,10 +2906,10 @@ fn checklist_delivery_fixture() -> DomainState {
     let plan = InteractionId::from("hold-plan-1");
     let mut held = state.interactions[&delivery].clone();
     held.id = plan.clone();
-    held.recipient = alondra_domain_rules::Recipient::Orchestrator;
-    held.payload = alondra_domain_rules::InteractionPayload::Question { options: vec![], answer: None };
+    held.recipient = alondra_domain_model::Recipient::Orchestrator;
+    held.payload = alondra_domain_model::InteractionPayload::Question { options: vec![], answer: None };
     state.interactions.insert(plan.clone(), held);
-    state.holds.insert(plan, alondra_domain_rules::Hold::Plan);
+    state.holds.insert(plan, alondra_domain_model::Hold::Plan);
     state.checklists.insert(task_id, Checklist { plan: "hold-plan-1".into(), items: vec![
         point("1", "Restore the native review layouts"),
         point("2", "Verify the ARM simulator build"),
@@ -3016,9 +3016,9 @@ fn merge_buttons_of(state: &DomainState, client: Client, lang: Lang) -> Vec<serd
 
 #[test]
 fn a_merge_github_does_not_allow_yet_shows_the_merge_disabled_and_says_why_on_every_client() {
-    use alondra_domain_rules::{MergeBlocker, MergeVerdict, ObservedVerdict};
+    use alondra_domain_model::{MergeBlocker, MergeVerdict, ObservedVerdict};
     let mut state = golden_fixture();
-    let open: Vec<(alondra_domain_rules::PrId, String)> = state.pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
+    let open: Vec<(alondra_domain_model::PrId, String)> = state.pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
     let set = |state: &mut DomainState, verdict: Option<MergeVerdict>| for (pr_id, head) in &open {
         match &verdict {
             Some(verdict) => { state.merge_verdicts.insert(pr_id.clone(), ObservedVerdict { head: head.clone(), verdict: verdict.clone() }); }
@@ -3041,7 +3041,7 @@ fn a_merge_github_does_not_allow_yet_shows_the_merge_disabled_and_says_why_on_ev
     let unknown = merge_buttons_of(&state, Client::Ios, Lang::En);
     assert_eq!((unknown.len(), &unknown[0]["enabled"]), (1, &serde_json::Value::Bool(false)));
     assert!(card(&state, Client::Ios, Lang::En).contains("Checking with GitHub whether PR #12 can merge"));
-    set(&mut state, Some(MergeVerdict::Mergeable { notes: vec![alondra_domain_rules::MergeNote::CheckFailingNotRequired { name: "lint".into() }] }));
+    set(&mut state, Some(MergeVerdict::Mergeable { notes: vec![alondra_domain_model::MergeNote::CheckFailingNotRequired { name: "lint".into() }] }));
     let allowed = merge_buttons_of(&state, Client::Ios, Lang::En);
     assert_eq!(allowed.len(), 1);
     assert_eq!(allowed[0]["enabled"], true);
@@ -3050,9 +3050,9 @@ fn a_merge_github_does_not_allow_yet_shows_the_merge_disabled_and_says_why_on_ev
 
 #[test]
 fn a_pr_github_has_not_confirmed_shows_the_merge_disabled_and_offers_no_close_and_says_what_enables_it() {
-    use alondra_domain_rules::{MergeVerdict, ObservedVerdict, PrIdentity};
+    use alondra_domain_model::{MergeVerdict, ObservedVerdict, PrIdentity};
     let mut state = golden_fixture();
-    let open: Vec<(alondra_domain_rules::PrId, String)> = state.pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
+    let open: Vec<(alondra_domain_model::PrId, String)> = state.pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
     for (pr_id, head) in &open {
         state.merge_verdicts.insert(pr_id.clone(), ObservedVerdict { head: head.clone(), verdict: MergeVerdict::mergeable() });
     }
@@ -3079,9 +3079,9 @@ fn a_pr_github_has_not_confirmed_shows_the_merge_disabled_and_offers_no_close_an
 }
 
 fn blocked_merge_fixture() -> DomainState {
-    use alondra_domain_rules::{MergeBlocker, MergeVerdict, ObservedVerdict};
+    use alondra_domain_model::{MergeBlocker, MergeVerdict, ObservedVerdict};
     let mut state = golden_fixture();
-    let open: Vec<(alondra_domain_rules::PrId, String)> = state.pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
+    let open: Vec<(alondra_domain_model::PrId, String)> = state.pull_requests.values().filter(|pr| pr.state == PrState::Open).map(|pr| (pr.id.clone(), pr.head.clone())).collect();
     for (pr_id, head) in open {
         let verdict = MergeVerdict::Blocked { blockers: vec![MergeBlocker::ReviewRequired, MergeBlocker::RequiredCheckFailing { name: "build".into() }] };
         state.merge_verdicts.insert(pr_id, ObservedVerdict { head, verdict });
@@ -3129,17 +3129,17 @@ fn each_pr_of_a_delivery_matches_the_goldens_of_its_own_card_in_every_apple_clie
 }
 
 /// The golden PR card once Alondra cannot tell which pull request it is.
-fn uncheckable_fixture(reason: alondra_domain_rules::UnresolvableReason) -> DomainState {
+fn uncheckable_fixture(reason: alondra_domain_model::UnresolvableReason) -> DomainState {
     let mut state = golden_fixture();
     state.pull_requests.get_mut(&"github.com/example/repo#12".into()).unwrap().identity =
-        alondra_domain_rules::PrIdentity::Unresolvable { key: None, locator: None, reason, since: 0 };
+        alondra_domain_model::PrIdentity::Unresolvable { key: None, locator: None, reason, since: 0 };
     state
 }
 
 #[test]
 fn an_unresolvable_pr_offers_only_removal_and_removal_touches_nothing() {
     use action_id::{ActionId, Verb};
-    use alondra_domain_rules::UnresolvableReason;
+    use alondra_domain_model::UnresolvableReason;
     let live = golden_live();
     let key = "card:github.com/example/repo#12";
     for (reason, en, es) in [
@@ -3255,20 +3255,20 @@ fn mac_views_match_goldens() {
 /// terminal: its last words wait for the user in a card.
 fn unheard_fixture() -> (DomainState, LiveSnapshot, String) {
     let mut state = golden_fixture();
-    let task = alondra_domain_rules::TaskId::from("t-651c38484cd2f34e74d5107ba05f7f15");
-    let agent = alondra_domain_rules::AgentId::from("d887a34b-249e-4487-a89b-57de38c26372");
+    let task = alondra_domain_model::TaskId::from("t-651c38484cd2f34e74d5107ba05f7f15");
+    let agent = alondra_domain_model::AgentId::from("d887a34b-249e-4487-a89b-57de38c26372");
     state.tasks.get_mut(&task).unwrap().agent_id = Some(agent.clone());
     let said = "Han llegado las dos tandas, pero no sirven: el fallo estaba en mi montaje, no en tu red. Repite la tanda en móvil.";
     let mut card = state.interactions.values().find(|i| matches!(i.payload, InteractionPayload::Question { answer: None, .. })
         && i.recipient == Recipient::User && !i.withdrawn).expect("the fixture asks the user something").clone();
-    let id = format!("{}{task}-90", alondra_domain_rules::UNHEARD_PREFIX);
+    let id = format!("{}{task}-90", alondra_domain_model::UNHEARD_PREFIX);
     (card.id, card.scope, card.author, card.body) = (id.as_str().into(), Scope::Task { task_id: task.clone() }, Author::Agent { agent_id: agent.clone() }, said.into());
     card.payload = InteractionPayload::Question {
-        options: vec![QuestionOption { id: alondra_domain_rules::CARRY_ON.into(), label: alondra_domain_rules::CARRY_ON_LABEL.into(), description: None }],
+        options: vec![QuestionOption { id: alondra_domain_model::CARRY_ON.into(), label: alondra_domain_model::CARRY_ON_LABEL.into(), description: None }],
         answer: None,
     };
-    card.card = alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Decide, "stopped and wrote to you").why(said);
-    card.system_card = Some(alondra_domain_rules::SystemCard::Unheard);
+    card.card = alondra_domain_model::CardSpec::new(alondra_domain_model::CardKind::Decide, "stopped and wrote to you").why(said);
+    card.system_card = Some(alondra_domain_model::SystemCard::Unheard);
     (card.subject, card.blocking) = (None, false);
     state.interactions.retain(|_, i| !(i.recipient == Recipient::User && matches!(i.scope, Scope::Task { ref task_id } if *task_id == task)));
     state.interactions.insert(card.id.clone(), card);
@@ -3649,12 +3649,12 @@ fn orchestrator_waiting(can_retry: bool) -> LiveSnapshot {
 
 #[test]
 fn a_machine_card_offers_its_fix_and_no_reply_to_the_orchestrator_on_any_client() {
-    use alondra_domain_rules::CardKind;
+    use alondra_domain_model::CardKind;
     use alondra_core::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, MachineCard, MachineCause};
     let mut state = fixture();
     let disk = MachineCard { cause: MachineCause::Disk, disk_free: 3_000_000_000, nodes: vec![], reason: None, resource: None, minutes: None, still: false, purgeable: 0 };
     let (need, why) = disk.text(Lang::En);
-    state.interactions.insert("machine-1000".into(), Interaction { system_card: Some(alondra_domain_rules::SystemCard::Machine),
+    state.interactions.insert("machine-1000".into(), Interaction { system_card: Some(alondra_domain_model::SystemCard::Machine),
         attachments: vec![], id: "machine-1000".into(), scope: Scope::Orchestrator { request_id: None },
         author: Author::System, recipient: Recipient::User, body: disk.to_body(),
         blocking: false, subject: None,
@@ -3679,10 +3679,10 @@ fn a_machine_card_offers_its_fix_and_no_reply_to_the_orchestrator_on_any_client(
 
 #[test]
 fn an_orchestrator_problem_is_a_card_like_any_other_and_comes_first() {
-    use alondra_domain_rules::{CardKind, ContentKind as Content};
+    use alondra_domain_model::{CardKind, ContentKind as Content};
     let mut state = fixture();
     let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
-    state.interactions.insert("problem-orchestrator-run-1".into(), Interaction { system_card: Some(alondra_domain_rules::SystemCard::BatchProblem { run: "run-1".into() }),
+    state.interactions.insert("problem-orchestrator-run-1".into(), Interaction { system_card: Some(alondra_domain_model::SystemCard::BatchProblem { run: "run-1".into() }),
         attachments: vec![], id: "problem-orchestrator-run-1".into(), scope: Scope::Orchestrator { request_id: None },
         author: Author::System, recipient: Recipient::User, body: "Claude exited without a successful terminal result".into(),
         blocking: false, subject: None,
@@ -3722,8 +3722,8 @@ fn an_orchestrator_problem_is_a_card_like_any_other_and_comes_first() {
 
 #[test]
 fn a_batch_that_stopped_halfway_reads_in_spanish_with_what_it_did_and_how_to_choose() {
-    use alondra_domain_rules::CardKind;
-    use alondra_domain_rules::orchestrator_batch::*;
+    use alondra_domain_model::CardKind;
+    use alondra_domain_model::orchestrator_batch::*;
     let mut state = fixture();
     let problem = BatchProblem {
         stop: BatchStop::Interrupted, calls: vec!["create_task".into()],
@@ -3733,7 +3733,7 @@ fn a_batch_that_stopped_halfway_reads_in_spanish_with_what_it_did_and_how_to_cho
     let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
     let mut card = spec(CardKind::Problem, &need, &why);
     card.recommended = Some(BATCH_CONTINUE.into());
-    state.interactions.insert("problem-orchestrator-run-1".into(), Interaction { system_card: Some(alondra_domain_rules::SystemCard::BatchProblem { run: "run-1".into() }),
+    state.interactions.insert("problem-orchestrator-run-1".into(), Interaction { system_card: Some(alondra_domain_model::SystemCard::BatchProblem { run: "run-1".into() }),
         attachments: vec![], id: "problem-orchestrator-run-1".into(), scope: Scope::Orchestrator { request_id: None },
         author: Author::System, recipient: Recipient::User, body: problem.to_body(),
         blocking: false, subject: None,
@@ -3818,7 +3818,7 @@ fn no_card_offers_to_ask_for_a_clarification() {
 
 #[test]
 fn stacked_pr_merge_names_upstream_number_and_keeps_canonical_link() {
-    use alondra_domain_rules::{DeliveryTarget, MergeMethod};
+    use alondra_domain_model::{DeliveryTarget, MergeMethod};
     let mut state = pr_fixture();
     state.pull_requests.get_mut(&"pr-1".into()).unwrap().base = "upstream-head".into();
     state
@@ -4141,7 +4141,7 @@ fn task_working_fixture() -> (DomainState, LiveSnapshot) {
     live.task_costs.insert("t-1".into(), 120);
     live.task_since.insert("t-1".into(), "2026-09-30T09:30:00Z".into());
     state.tasks.get_mut(&"t-1".into()).unwrap().worktrees.insert("/work/alondra/.claude/worktrees/t-1".into(),
-        alondra_domain_rules::TaskWorktree { origin: alondra_domain_rules::WorktreeOrigin::Task, branch: None, discard: false, end: None });
+        alondra_domain_model::TaskWorktree { origin: alondra_domain_model::WorktreeOrigin::Task, branch: None, discard: false, end: None });
     live.activity.insert("a-1".into(), vec![LiveActivity { agent_id: None, agent_type: None, task: None,
         tool: Some("Edit".into()), summary: Some("Editing views/tasks.rs".into()), since: "2026-09-30T09:59:00Z".into() }]);
     (state, live)
@@ -4283,7 +4283,7 @@ fn a_task_detail_says_what_its_node_still_does_after_the_merge() {
     node_in(&mut state, NodePhase::ThroughSdk);
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Closing;
     state.tasks.get_mut(&"t-1".into()).unwrap().wrap_up.post_merge_work =
-        Some(alondra_domain_rules::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1, turn_since: false });
+        Some(alondra_domain_model::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1, turn_since: false });
     let now = |lang| {
         let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, "task:t-1", "");
         node_work_rows(&view, "now").first().map(|row| row.title.clone())
@@ -4401,10 +4401,10 @@ fn a_task_waiting_on_a_question_says_so_in_its_state_and_its_row_without_a_pr_ah
     let mut state = golden_fixture();
     let question = "8fa4034b-249e-4487-a89b-57de38c26372";
     state.interactions.get_mut(&question.into()).unwrap().card.blocks =
-        vec![alondra_domain_rules::CardTarget::PullRequest { pr_id: "github.com/example/repo#12".into() }];
+        vec![alondra_domain_model::CardTarget::PullRequest { pr_id: "github.com/example/repo#12".into() }];
     let task = state.pull_requests[&"github.com/example/repo#12".into()].task_id.clone();
     state.tasks.get_mut(&task).unwrap().state = TaskState::WaitingDependency;
-    assert!(matches!(state.attention(&state.tasks[&task]), alondra_domain_rules::Attention::Wait(alondra_domain_rules::WaitReason::Answer { .. })));
+    assert!(matches!(state.attention(&state.tasks[&task]), alondra_domain_model::Attention::Wait(alondra_domain_model::WaitReason::Answer { .. })));
     for (lang, expected) in [
         (Lang::En, "Waits for your answer to “Ship the compact schedule editor with this beta?”"),
         (Lang::Es, "Espera tu respuesta a «Ship the compact schedule editor with this beta?»"),
@@ -4431,7 +4431,7 @@ fn no_card_of_any_fixture_carries_an_action_the_domain_says_is_not_available() {
         let live = golden_live();
         for client in [Client::Ios, Client::Mac, Client::Tui] {
             for lang in [Lang::En, Lang::Es] {
-                let index = alondra_domain_rules::ReadIndex::build(&domain);
+                let index = alondra_domain_model::ReadIndex::build(&domain);
                 let context = RenderContext { domain: &domain, index: &index, live: &live, client, lang, transport: Transport::Loopback,
                     cursor: "cursor-1", rendered_at: "" };
                 for item in inbox_items(&domain) {
@@ -4476,7 +4476,7 @@ fn every_card_can_be_replied_to_in_text_with_attachments() {
         let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, &format!("card:{id}"), "2026-09-30T10:00:00Z");
         let Item::Card(card) = &view.sections[0].items[0] else { panic!("card") };
         let reply = card.reply.as_ref().unwrap_or_else(|| panic!("{id} has a reply"));
-        let file_alone = card.kind == Some(alondra_domain_rules::CardKind::Provide);
+        let file_alone = card.kind == Some(alondra_domain_model::CardKind::Provide);
         assert!(matches!(&reply.input, Input::Text { required, multiline: true, .. } if *required != file_alone),
             "{id}: a Provide card is answered with a file alone too");
         assert!(reply.attachments, "{id}");
@@ -4495,7 +4495,7 @@ fn every_card_can_be_replied_to_in_text_with_attachments() {
 
 #[test]
 fn words_under_an_orchestrator_decide_answer_it_on_every_client() {
-    use alondra_domain_rules::{CardKind, QuestionOption};
+    use alondra_domain_model::{CardKind, QuestionOption};
     let mut state = fixture();
     let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
     let decide = state.interactions.get_mut(&"i-4".into()).unwrap();
@@ -4510,13 +4510,13 @@ fn words_under_an_orchestrator_decide_answer_it_on_every_client() {
         assert!(reply.resolves_card, "{client:?}");
         assert_eq!(reply.stamp.as_deref(), Some("Respondiste"), "{client:?}");
     }
-    state.holds.insert("i-4".into(), alondra_domain_rules::Hold::Permission);
+    state.holds.insert("i-4".into(), alondra_domain_model::Hold::Permission);
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
     let Item::Card(held) = &view.sections[0].items[0] else { panic!("card") };
     assert!(held.reply.as_ref().unwrap().id.starts_with("reply:i-4@"), "words under a held question answer it too");
     state.holds.clear();
     let InteractionPayload::Question { answer, .. } = &mut state.interactions.get_mut(&"i-4".into()).unwrap().payload else { unreachable!() };
-    *answer = Some(alondra_domain_rules::Answer { option_id: "mine".into(), inputs: Default::default(), attachments: vec![], responder: "u".into(), at_revision: Default::default(), decision: None });
+    *answer = Some(alondra_domain_model::Answer { option_id: "mine".into(), inputs: Default::default(), attachments: vec![], responder: "u".into(), at_revision: Default::default(), decision: None });
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
     if let Some(Item::Card(answered)) = view.sections.first().and_then(|section| section.items.first()) {
         assert!(answered.reply.as_ref().is_none_or(|reply| reply.id.starts_with("msg:view@")), "an answered question is not answered twice");
@@ -4847,7 +4847,7 @@ fn scheduled_run_fixture(with_run: bool) -> DomainState {
     state.agents.get_mut(&"a-1".into()).unwrap().name = raw.into();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
     if with_run {
-        let run: alondra_domain_rules::ScheduleRun = serde_json::from_value(serde_json::json!({
+        let run: alondra_domain_model::ScheduleRun = serde_json::from_value(serde_json::json!({
             "id":"run-7e2035e8e1d7c5e3f9431b9087d457e3", "schedule_id":"0789f185-0000",
             "origin":"due", "due_at":100, "claimed_at":105, "claim_revision":2,
             "finished_at":110, "state":"sent", "request_id":"r-1", "task_id":"t-1",
@@ -4921,12 +4921,12 @@ fn a_pull_request_detail_has_no_diff_and_folds_the_description_and_drops_the_tab
 fn alondras_delivery_of_an_open_pr_explains_itself_in_the_readers_language() {
     let mut domain = golden_fixture();
     let card = domain.interactions.values_mut().find(|i| matches!(&i.payload, InteractionPayload::Delivery { targets, .. }
-        if targets.iter().any(|t| matches!(t, alondra_domain_rules::DeliveryTarget::PullRequest { pr_id, .. } if pr_id.0 == "github.com/example/repo#12"))))
+        if targets.iter().any(|t| matches!(t, alondra_domain_model::DeliveryTarget::PullRequest { pr_id, .. } if pr_id.0 == "github.com/example/repo#12"))))
         .expect("the delivery of PR #12");
     card.author = Author::System;
-    card.system_card = Some(alondra_domain_rules::SystemCard::OpenPrDelivery);
-    card.body = alondra_domain_rules::open_pr_delivery::OpenPrDelivery { title: "Validate the ignored parent folder".into(), repository: "example/repo".into(),
-        number: 12, readiness: alondra_domain_rules::open_pr_delivery::PrReadiness::Ready, result: Some("The fix is in.".into()) }.to_body();
+    card.system_card = Some(alondra_domain_model::SystemCard::OpenPrDelivery);
+    card.body = alondra_domain_model::open_pr_delivery::OpenPrDelivery { title: "Validate the ignored parent folder".into(), repository: "example/repo".into(),
+        number: 12, readiness: alondra_domain_model::open_pr_delivery::PrReadiness::Ready, result: Some("The fix is in.".into()) }.to_body();
     for (lang, start) in [(Lang::En, "Its task was closed"), (Lang::Es, "Su tarea se cerró")] {
         let view = render(&domain, &golden_live(), Client::Tui, lang, "card:github.com/example/repo#12", "");
         let description = section_of(&view, "description").unwrap();
@@ -4941,7 +4941,7 @@ fn a_pull_request_delivery_carries_checks_and_branch_but_no_change_size_in_its_d
     let state = golden_fixture();
     let view = render(&state, &golden_live(), Client::Ios, Lang::En, card_key, "");
     let card = card_of(&view);
-    assert_eq!(card.kind, Some(alondra_domain_rules::CardKind::Review));
+    assert_eq!(card.kind, Some(alondra_domain_model::CardKind::Review));
     assert_eq!(card.eyebrow.as_ref().unwrap().text, "Review · PR #12");
     assert_eq!(card.icon, Icon::PullRequest);
     assert_eq!(card.need.as_deref(), Some("Review the result"));
@@ -4969,13 +4969,13 @@ fn a_pull_request_delivery_carries_checks_and_branch_but_no_change_size_in_its_d
     );
 }
 
-fn reviewed_fixture(verdict: alondra_domain_rules::Verdict) -> DomainState {
+fn reviewed_fixture(verdict: alondra_domain_model::Verdict) -> DomainState {
     reviewed_fixture_after(verdict, true)
 }
 
 /// `saw_this_delivery` false puts the reviewer's result before the card's delivery, as when the
 /// reviewed task delivered again after the review.
-fn reviewed_fixture_after(verdict: alondra_domain_rules::Verdict, saw_this_delivery: bool) -> DomainState {
+fn reviewed_fixture_after(verdict: alondra_domain_model::Verdict, saw_this_delivery: bool) -> DomainState {
     let mut state = golden_fixture();
     let delivery = state.interactions[&"hf-weekly-2026-09-30".into()].clone();
     let mut result = delivery.clone();
@@ -5003,20 +5003,20 @@ fn context_texts(state: &DomainState, lang: Lang) -> Vec<String> {
 
 #[test]
 fn the_card_of_a_reviewed_task_carries_the_line_of_its_reviewer() {
-    let state = reviewed_fixture(alondra_domain_rules::Verdict::Approved { summary: "4 fixed".into(), open_issues: false, serious_findings: 0 });
+    let state = reviewed_fixture(alondra_domain_model::Verdict::Approved { summary: "4 fixed".into(), open_issues: false, serious_findings: 0 });
     assert!(context_texts(&state, Lang::En).contains(&"Reviewed by “Review the editor”: 4 fixed".to_owned()));
     assert!(context_texts(&state, Lang::Es).contains(&"Revisado por «Review the editor»: 4 fixed".to_owned()));
 }
 
 #[test]
 fn a_new_delivery_after_the_review_carries_no_line_of_that_review() {
-    let state = reviewed_fixture_after(alondra_domain_rules::Verdict::Approved { summary: "4 fixed".into(), open_issues: false, serious_findings: 0 }, false);
+    let state = reviewed_fixture_after(alondra_domain_model::Verdict::Approved { summary: "4 fixed".into(), open_issues: false, serious_findings: 0 }, false);
     assert!(!context_texts(&state, Lang::En).iter().any(|line| line.starts_with("Reviewed by")), "the review saw an older delivery");
 }
 
 #[test]
 fn one_failure_left_is_said_in_the_singular_in_both_languages() {
-    let state = reviewed_fixture(alondra_domain_rules::Verdict::Approved { summary: "Empty list crashes".into(), open_issues: true, serious_findings: 0 });
+    let state = reviewed_fixture(alondra_domain_model::Verdict::Approved { summary: "Empty list crashes".into(), open_issues: true, serious_findings: 0 });
     assert!(context_texts(&state, Lang::En).contains(&"Reviewed by “Review the editor”: 1 failure left after 3 rounds".to_owned()));
     assert!(context_texts(&state, Lang::Es).contains(&"Revisado por «Review the editor»: queda 1 fallo tras 3 vueltas".to_owned()));
 }
@@ -5026,7 +5026,7 @@ fn a_delivery_held_by_a_question_is_grouped_and_counted_as_waiting_never_as_in_r
     let mut state = golden_fixture();
     let question = "8fa4034b-249e-4487-a89b-57de38c26372";
     let asked = state.interactions.get_mut(&question.into()).unwrap();
-    asked.card.blocks = vec![alondra_domain_rules::CardTarget::PullRequest { pr_id: "github.com/example/repo#12".into() }];
+    asked.card.blocks = vec![alondra_domain_model::CardTarget::PullRequest { pr_id: "github.com/example/repo#12".into() }];
     asked.blocking = false;
     for other in state.interactions.values_mut() {
         other.blocking = false;
@@ -5050,7 +5050,7 @@ fn a_delivery_held_by_a_question_is_grouped_and_counted_as_waiting_never_as_in_r
 
 #[test]
 fn a_review_that_ran_out_of_rounds_says_how_many_failures_are_left_and_lists_them() {
-    let state = reviewed_fixture(alondra_domain_rules::Verdict::Approved { summary: "Empty list crashes\nWrong total".into(), open_issues: true, serious_findings: 0 });
+    let state = reviewed_fixture(alondra_domain_model::Verdict::Approved { summary: "Empty list crashes\nWrong total".into(), open_issues: true, serious_findings: 0 });
     let en = context_texts(&state, Lang::En);
     assert!(en.contains(&"Reviewed by “Review the editor”: 2 failures left after 3 rounds".to_owned()), "{en:?}");
     assert!(en.contains(&"Empty list crashes\nWrong total".to_owned()), "the failures are in the detail: {en:?}");
@@ -5086,9 +5086,9 @@ fn the_task_whose_node_resolves_conflicts_says_so_with_its_pr_in_both_languages(
     state.tasks.get_mut(&"t-651c38484cd2f34e74d5107ba05f7f15".into()).unwrap().agent_id = Some(agent);
     let delivery = state.interactions.get_mut(&"hf-weekly-2026-09-30".into()).unwrap();
     if let InteractionPayload::Delivery { feedback, .. } = &mut delivery.payload {
-        feedback.push(alondra_domain_rules::Feedback { target: Default::default(), reply_window_start: None, merge_failure: None,
-            attachments: vec![], user_id: alondra_domain_rules::Feedback::ALONDRA.into(), body: "Conflicts".into(),
-            at_revision: 99, instruction: alondra_domain_rules::Instruction::Conflicts,
+        feedback.push(alondra_domain_model::Feedback { target: Default::default(), reply_window_start: None, merge_failure: None,
+            attachments: vec![], user_id: alondra_domain_model::Feedback::ALONDRA.into(), body: "Conflicts".into(),
+            at_revision: 99, instruction: alondra_domain_model::Instruction::Conflicts,
         });
     }
     for (lang, expected) in [(Lang::En, "“Alondra · iOS” is resolving the conflicts on PR #12"), (Lang::Es, "«Alondra · iOS» está resolviendo los conflictos de la PR #12")] {
@@ -5129,8 +5129,8 @@ fn a_pull_request_description_repeats_neither_the_report_nor_the_link_to_the_pr(
     let report = "PR: https://github.com/example/repo/pull/12 (rebased)\n\nReplaces the long schedule form with a compact editor.";
     for interaction in state.interactions.values_mut() {
         if interaction.card.effective_title() == "Review the beta candidate" {
-            interaction.card.content = Some(alondra_domain_rules::CardContent {
-                kind: alondra_domain_rules::ContentKind::Report,
+            interaction.card.content = Some(alondra_domain_model::CardContent {
+                kind: alondra_domain_model::ContentKind::Report,
                 summary: None,
                 body: report.into(),
             });
@@ -5181,7 +5181,7 @@ fn merge_is_not_offered_until_the_card_that_blocks_it_is_answered() {
     let key = "card:hf-weekly-2026-09-30";
     let question = "8fa4034b-249e-4487-a89b-57de38c26372";
     state.interactions.get_mut(&question.into()).unwrap().card.blocks =
-        vec![alondra_domain_rules::CardTarget::PullRequest { pr_id: "github.com/example/repo#12".into() }];
+        vec![alondra_domain_model::CardTarget::PullRequest { pr_id: "github.com/example/repo#12".into() }];
     let view = render(&state, &golden_live(), Client::Ios, Lang::En, key, "");
     let card = card_of(&view);
     assert!(!card.actions.iter().any(|action| action.id.starts_with("merge:")), "a blocked merge is not a button");
@@ -5198,7 +5198,7 @@ fn merge_is_not_offered_until_the_card_that_blocks_it_is_answered() {
     assert_eq!((chip.id.as_str(), chip.label.as_str()), ("hf-weekly-2026-09-30", "blocks PR #12"));
 
     if let InteractionPayload::Question { answer, .. } = &mut state.interactions.get_mut(&question.into()).unwrap().payload {
-        *answer = Some(alondra_domain_rules::Answer {
+        *answer = Some(alondra_domain_model::Answer {
             attachments: vec![], option_id: "ship".into(), inputs: BTreeMap::new(), responder: "u".into(), at_revision: 1, decision: None,
         });
     }
@@ -5210,7 +5210,7 @@ fn merge_is_not_offered_until_the_card_that_blocks_it_is_answered() {
 
 #[test]
 fn every_content_kind_has_a_one_line_row_and_the_card_has_no_body() {
-    use alondra_domain_rules::{CardKind, ContentKind as Content};
+    use alondra_domain_model::{CardKind, ContentKind as Content};
     let row = |content: Option<(Content, &str)>, attachments: usize, options: usize| {
         let mut state = fixture();
         let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
@@ -5224,7 +5224,7 @@ fn every_content_kind_has_a_one_line_row_and_the_card_has_no_body() {
         }
         interaction.body = card.why.clone();
         interaction.card = card;
-        interaction.attachments = (0..attachments).map(|n| alondra_domain_rules::AttachmentRef {
+        interaction.attachments = (0..attachments).map(|n| alondra_domain_model::AttachmentRef {
             id: format!("a{n}"), name: format!("shot{n}.png"), content_digest: "d".repeat(64), content_reference: format!("stored/{n}"), bytes: 10,
         }).collect();
         let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
@@ -5279,7 +5279,7 @@ fn card_task_line_links_to_the_task_with_its_state_next_to_the_project() {
 
 #[test]
 fn a_command_is_a_code_block_in_the_detail_that_survives_backticks() {
-    use alondra_domain_rules::{CardKind, ContentKind as Content};
+    use alondra_domain_model::{CardKind, ContentKind as Content};
     let mut state = fixture();
     let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = InteractionPayload::ActionRequest { options: vec![], answer: None };
@@ -5298,7 +5298,7 @@ fn task_detail_names_its_folder_and_what_its_node_is_doing_right_now() {
     let key = "task:t-651c38484cd2f34e74d5107ba05f7f15";
     let mut in_turn = golden_in_progress();
     in_turn.tasks.get_mut(&key["task:".len()..].into()).unwrap().worktrees.insert("/demo/Demo Garden/ios".into(),
-        alondra_domain_rules::TaskWorktree { origin: alondra_domain_rules::WorktreeOrigin::Inherited, branch: None, discard: false, end: None });
+        alondra_domain_model::TaskWorktree { origin: alondra_domain_model::WorktreeOrigin::Inherited, branch: None, discard: false, end: None });
     let mut stopped = golden_in_progress();
     stopped.lifecycle_journal.insert(key["task:".len()..].into(), sdk_turn_ended(&key["task:".len()..], agent));
     let stopped = render(&stopped, &golden_live(), Client::Ios, Lang::En, key, "");
@@ -5370,7 +5370,7 @@ fn request_option_values_keep_their_description_in_both_languages() {
     assert_eq!(effort[2].as_deref(), Some("Trabajo normal con los perfiles de tarea configurados"));
 }
 
-fn held_fixture(hold: alondra_domain_rules::Hold, card: alondra_domain_rules::CardSpec) -> DomainState {
+fn held_fixture(hold: alondra_domain_model::Hold, card: alondra_domain_model::CardSpec) -> DomainState {
     let mut state = fixture();
     let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = InteractionPayload::Question { options: hold.options(), answer: None };
@@ -5380,8 +5380,8 @@ fn held_fixture(hold: alondra_domain_rules::Hold, card: alondra_domain_rules::Ca
     state
 }
 
-fn spec(kind: alondra_domain_rules::CardKind, need: &str, why: &str) -> alondra_domain_rules::CardSpec {
-    alondra_domain_rules::CardSpec::new(kind, need).why(why)
+fn spec(kind: alondra_domain_model::CardKind, need: &str, why: &str) -> alondra_domain_model::CardSpec {
+    alondra_domain_model::CardSpec::new(kind, need).why(why)
 }
 
 fn answers(card: &Card) -> Vec<&CardAction> {
@@ -5390,7 +5390,7 @@ fn answers(card: &Card) -> Vec<&CardAction> {
 
 #[test]
 fn a_held_permission_card_shows_what_it_would_run_with_allow_and_deny() {
-    use alondra_domain_rules::{CardKind, ContentKind as Content, Hold};
+    use alondra_domain_model::{CardKind, ContentKind as Content, Hold};
     let card_spec = spec(CardKind::Authorize, "Allow cleaning the build", "Deletes the build folder.")
         .content(Content::Command, "rm -rf build\nls");
     let state = held_fixture(Hold::Permission, card_spec);
@@ -5417,7 +5417,7 @@ fn a_held_permission_card_shows_what_it_would_run_with_allow_and_deny() {
 
 #[test]
 fn a_held_plan_card_shows_the_plan_with_approve_and_request_changes() {
-    use alondra_domain_rules::{CardKind, ContentKind as Content, Hold};
+    use alondra_domain_model::{CardKind, ContentKind as Content, Hold};
     let card_spec = spec(CardKind::Review, "Ship the parser", "Two steps, tests first.")
         .content(Content::Plan, "1. Split the lexer\n2. Add tests");
     let state = held_fixture(Hold::Plan, card_spec);
@@ -5448,7 +5448,7 @@ fn fixed_options() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
 
 fn fixed_answers(options: &[(&str, &str)]) -> InteractionPayload {
     InteractionPayload::Question {
-        options: options.iter().map(|(id, label)| alondra_domain_rules::QuestionOption { id: (*id).into(), label: (*label).into(), description: None }).collect(),
+        options: options.iter().map(|(id, label)| alondra_domain_model::QuestionOption { id: (*id).into(), label: (*label).into(), description: None }).collect(),
         answer: None,
     }
 }
@@ -5457,7 +5457,7 @@ fn option_labels(options: &[(&str, &str)], lang: Lang) -> Vec<String> {
     let mut state = fixture();
     let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = fixed_answers(options);
-    interaction.card = spec(alondra_domain_rules::CardKind::Decide, "Fix it", "Because.");
+    interaction.card = spec(alondra_domain_model::CardKind::Decide, "Fix it", "Because.");
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, "card:i-1", "");
     answers(card_of(&view)).iter().map(|action| action.label.clone()).collect()
 }
@@ -5481,7 +5481,7 @@ fn markdown_items(view: &View) -> Vec<&Markdown> {
 
 #[test]
 fn the_text_of_a_held_plan_can_be_commented_block_by_block_and_other_text_cannot() {
-    use alondra_domain_rules::{CardKind, ContentKind as Content, Hold};
+    use alondra_domain_model::{CardKind, ContentKind as Content, Hold};
     let plan = "1. Split the lexer\n2. Add tests";
     let held = held_fixture(Hold::Plan, spec(CardKind::Review, "Ship the parser", "Two steps.").content(Content::Report, plan));
     let view = render(&held, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
@@ -5493,7 +5493,7 @@ fn the_text_of_a_held_plan_can_be_commented_block_by_block_and_other_text_cannot
 
 #[test]
 fn a_held_plan_is_reviewed_with_block_comments_request_changes_and_approve() {
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     let state = held_fixture(Hold::Plan, spec(CardKind::Review, "Ship the parser", "Two steps."));
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
     let card = card_of(&view);
@@ -5512,7 +5512,7 @@ fn a_held_plan_is_reviewed_with_block_comments_request_changes_and_approve() {
 #[test]
 fn a_permission_card_that_can_stop_asking_offers_allow_always_saying_exactly_what_stops_asking() {
     use alondra_core::allow_always::AllowAlways;
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     let mut state = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow building", ""));
     let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = InteractionPayload::Question { options: Hold::Permission.options_offering(true), answer: None };
@@ -5538,7 +5538,7 @@ fn a_permission_card_that_can_stop_asking_offers_allow_always_saying_exactly_wha
 #[test]
 fn a_permission_card_without_allow_always_says_why_in_one_line() {
     use alondra_core::allow_always::{Refusal, Why};
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     let mut state = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow building", ""));
     state.interactions.get_mut(&"i-1".into()).unwrap().card.allow_always = Some(Refusal::new("rm -rf out", Why::Deletes).into());
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
@@ -5559,10 +5559,10 @@ fn a_permission_card_without_allow_always_says_why_in_one_line() {
 }
 
 fn held_for_task(offer: alondra_core::allow_for_task::AllowForTask) -> DomainState {
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     let mut state = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow the reset", ""));
-    state.tasks.get_mut(&"t-1".into()).unwrap().worktrees.insert("/repo/.claude/worktrees/t-1".into(), alondra_domain_rules::TaskWorktree {
-        origin: alondra_domain_rules::WorktreeOrigin::Task, branch: None, discard: false, end: None });
+    state.tasks.get_mut(&"t-1".into()).unwrap().worktrees.insert("/repo/.claude/worktrees/t-1".into(), alondra_domain_model::TaskWorktree {
+        origin: alondra_domain_model::WorktreeOrigin::Task, branch: None, discard: false, end: None });
     let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = InteractionPayload::Question { options: Hold::Permission.permission_offering(false, offer.offered()), answer: None };
     interaction.card.allow_for_task = Some(offer);
@@ -5572,7 +5572,7 @@ fn held_for_task(offer: alondra_core::allow_for_task::AllowForTask) -> DomainSta
 #[test]
 fn a_permission_card_offers_allow_in_this_task_saying_exactly_what_stays_allowed_and_where() {
     use alondra_core::allow_for_task::AllowForTask;
-    use alondra_domain_rules::Hold;
+    use alondra_domain_model::Hold;
     let exact = held_for_task(AllowForTask::Exact { command: "git reset --hard origin/main".into(), cwd: "/repo/.claude/worktrees/t-1".into() });
     let view = render(&exact, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
     let card = card_of(&view);
@@ -5606,7 +5606,7 @@ fn a_permission_card_without_allow_in_this_task_says_why_in_one_line() {
 #[test]
 fn the_task_screen_lists_what_was_allowed_in_the_task_with_a_revoke_button() {
     use alondra_core::allow_for_task::AllowForTask;
-    use alondra_domain_rules::TaskGrant;
+    use alondra_domain_model::TaskGrant;
     let mut state = held_for_task(AllowForTask::Refused { why: alondra_core::allow_for_task::NotForTask::NoFolder, part: String::new(), cwd: String::new() });
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();
     task.allowed.insert("decision-t-1-1-1".into(), TaskGrant {
@@ -5632,7 +5632,7 @@ fn the_task_screen_lists_what_was_allowed_in_the_task_with_a_revoke_button() {
 #[test]
 fn a_question_card_never_shows_an_allow_always_a_node_slipped_into_it() {
     use alondra_core::allow_always::AllowAlways;
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     let mut state = held_fixture(Hold::Question, spec(CardKind::Decide, "Which database?", ""));
     let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = InteractionPayload::Question { options: vec![QuestionOption { id: Hold::ALWAYS.into(),
@@ -5660,7 +5660,7 @@ fn this_macs_settings_list_the_rules_allowed_always_with_a_remove_button() {
 
 #[test]
 fn a_held_ask_user_question_card_shows_the_question_and_its_options() {
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     let mut state = held_fixture(Hold::Question, spec(CardKind::Decide, "Which database?", "The migration depends on it."));
     let options = ["Postgres", "SQLite"].iter().enumerate().map(|(index, label)| QuestionOption {
         id: format!("o{index}"), label: (*label).into(), description: None }).collect();
@@ -5680,7 +5680,7 @@ fn a_held_ask_user_question_card_shows_the_question_and_its_options() {
 /// The question Claude asked through AskUserQuestion on 19 October, with the words it put under
 /// each option.
 fn described_question_fixture() -> DomainState {
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     let mut state = held_fixture(Hold::Question, spec(CardKind::Decide, "Which format should the notes use?", ""));
     let options = [("Markdown", "Headings and lists"), ("Plain text", "No markup at all")].iter().enumerate()
         .map(|(index, (label, description))| QuestionOption {
@@ -5772,7 +5772,7 @@ fn a_held_question_keeps_its_authors_labels_in_both_viewer_languages() {
 
 #[test]
 fn a_held_elicitation_card_accepts_with_the_form_values_or_declines() {
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     let mut state = held_fixture(Hold::Elicitation, spec(CardKind::Provide, "Which repository?", "The server asks."));
     if let InteractionPayload::Question { options, .. } = &mut state.interactions.get_mut(&"i-1".into()).unwrap().payload {
         options[0].description = Some("Write the Repository".into());
@@ -5795,7 +5795,7 @@ fn a_held_elicitation_card_accepts_with_the_form_values_or_declines() {
 /// screen draws one control per field instead of reading the hint.
 #[test]
 fn a_held_elicitation_card_carries_its_typed_form_until_it_is_answered() {
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     use alondra_core::requested_form::RequestedForm;
     let form = RequestedForm::from_schema(&serde_json::json!({"type": "object", "properties": {
         "remember": {"type": "boolean", "title": "Remember me"}, "minutes": {"type": "integer", "minimum": 1}}, "required": ["remember"]})).unwrap();
@@ -5813,7 +5813,7 @@ fn a_held_elicitation_card_carries_its_typed_form_until_it_is_answered() {
     assert_golden("card-elicitation-form-ios.json", &render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "2026-09-30T10:00:00Z"),
         include_str!("../../../fixtures/views/cards/card-elicitation-form-ios.json"));
     if let InteractionPayload::Question { answer, .. } = &mut state.interactions.get_mut(&"i-1".into()).unwrap().payload {
-        *answer = Some(alondra_domain_rules::Answer { attachments: vec![], option_id: Hold::ACCEPT.into(), inputs: Default::default(),
+        *answer = Some(alondra_domain_model::Answer { attachments: vec![], option_id: Hold::ACCEPT.into(), inputs: Default::default(),
             responder: "u".into(), at_revision: state.revision, decision: None });
     }
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
@@ -5821,7 +5821,7 @@ fn a_held_elicitation_card_carries_its_typed_form_until_it_is_answered() {
 }
 
 fn presented_pr() -> DomainState {
-    use alondra_domain_rules::{Actor, Command, DeliveryTarget, MergeMethod};
+    use alondra_domain_model::{Actor, Command, DeliveryTarget, MergeMethod};
     let mut state = DomainState::new("test-epoch");
     let agent = Actor::Agent { agent_id: "a".into() };
     let user = Actor::User { user_id: "u".into() };
@@ -5830,7 +5830,7 @@ fn presented_pr() -> DomainState {
         (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false, maintenance: false, message: false }),
         (Actor::Orchestrator { generation: 0 }.clone(), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Fix it".into(),
             agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), }),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), }),
     ] {
         execute(&mut state, actor, command);
     }
@@ -5841,7 +5841,7 @@ fn presented_pr() -> DomainState {
             allowed_methods: vec![MergeMethod::Squash] }),
         (agent, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "d".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
-            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) }),
+            is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true) }),
     ] {
         execute(&mut state, actor, command);
     }
@@ -5849,8 +5849,8 @@ fn presented_pr() -> DomainState {
     state
 }
 
-fn execute(state: &mut DomainState, actor: alondra_domain_rules::Actor, command: alondra_domain_rules::Command) {
-    let envelope = alondra_domain_rules::CommandEnvelope {
+fn execute(state: &mut DomainState, actor: alondra_domain_model::Actor, command: alondra_domain_model::Command) {
+    let envelope = alondra_domain_model::CommandEnvelope {
         protocol_version: 2, data_epoch: state.data_epoch.clone(),
         command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command,
     };
@@ -5860,7 +5860,7 @@ fn execute(state: &mut DomainState, actor: alondra_domain_rules::Actor, command:
 
 /// The gate admits the node `agent` of `task` through the Agent SDK, which starts its first turn.
 fn admit_sdk(state: &mut DomainState, task: &str, agent: &str) {
-    execute(state, alondra_domain_rules::Actor::System, alondra_domain_rules::Command::AdmitExecution {
+    execute(state, alondra_domain_model::Actor::System, alondra_domain_model::Command::AdmitExecution {
         provider: Default::default(), task_id: task.into(), agent_id: agent.into(), conversation: format!("conversation-{task}"),
         instance: format!("instance-{task}"), host: "sdk-host".into(), model: None, account: None, leaves_limit: None,
     });
@@ -5870,19 +5870,19 @@ fn admit_sdk(state: &mut DomainState, task: &str, agent: &str) {
 /// The SDK execution of `task` starts a turn on the first input it was handed.
 /// Alondra tells the SDK execution of `task` `text`, and a turn starts on it.
 fn sdk_told(state: &mut DomainState, task: &str, text: String) {
-    execute(state, alondra_domain_rules::Actor::System, alondra_domain_rules::Command::TellNode { task_id: task.into(), text, from_user: false, answers: None });
+    execute(state, alondra_domain_model::Actor::System, alondra_domain_model::Command::TellNode { task_id: task.into(), text, from_user: false, answers: None });
     sdk_turn_starts(state, task);
 }
 
 fn sdk_turn_starts(state: &mut DomainState, task: &str) {
-    use alondra_domain_rules::RuntimeObservation;
+    use alondra_domain_model::RuntimeObservation;
     let lifecycle = state.lifecycle_of(&task.into()).unwrap();
     let input = lifecycle.pending_inputs()[0].as_str().to_owned();
     let generation = lifecycle.execution().unwrap().generation();
     let available = lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available);
     let turn = RuntimeObservation::TurnStarted { turn: format!("turn-{}", state.revision), input };
     let facts = if available { vec![turn] } else { vec![RuntimeObservation::ResourceAvailable, turn] };
-    execute(state, alondra_domain_rules::Actor::System, alondra_domain_rules::Command::RecordRuntimeFacts { task_id: task.into(), generation, facts });
+    execute(state, alondra_domain_model::Actor::System, alondra_domain_model::Command::RecordRuntimeFacts { task_id: task.into(), generation, facts });
 }
 
 /// The turn the SDK execution of `task` runs ends.
@@ -5890,12 +5890,12 @@ fn sdk_turn_ends(state: &mut DomainState, task: &str) {
     let lifecycle = state.lifecycle_of(&task.into()).unwrap();
     let turn = lifecycle.turn().unwrap().as_str().to_owned();
     let generation = lifecycle.execution().unwrap().generation();
-    execute(state, alondra_domain_rules::Actor::System, alondra_domain_rules::Command::RecordTurnBoundary { task_id: task.into(), generation, turn, failure: None, failed: None });
+    execute(state, alondra_domain_model::Actor::System, alondra_domain_model::Command::RecordTurnBoundary { task_id: task.into(), generation, turn, failure: None, failed: None });
 }
 
 #[test]
 fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() {
-    use alondra_domain_rules::{Actor, Command, DeliveryTarget, Instruction};
+    use alondra_domain_model::{Actor, Command, DeliveryTarget, Instruction};
     let live = LiveSnapshot::default();
     let home = |state: &DomainState| render(state, &live, Client::Ios, Lang::En, "home", "").sections[0].card_ids.clone();
     let task = |state: &DomainState, lang| serde_json::to_string(&render(state, &live, Client::Tui, lang, "task:t", "")).unwrap();
@@ -5919,9 +5919,9 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
         assert!(task(&state, Lang::Es).contains(spanish), "{instruction:?}");
     }
     let mut state = presented.clone();
-    let failed = alondra_domain_rules::merge_failed_text(12, "https://github.com/example/repo/pull/12", "main", "its checks failed (lint)");
+    let failed = alondra_domain_model::merge_failed_text(12, "https://github.com/example/repo/pull/12", "main", "its checks failed (lint)");
     execute(&mut state, Actor::System, Command::SubmitFeedback {
-        merge_failure: Some(alondra_domain_rules::MergeFailure { number: 12, reason: "its checks failed (lint)".into() }),
+        merge_failure: Some(alondra_domain_model::MergeFailure { number: 12, reason: "its checks failed (lint)".into() }),
         attachments: vec![], presentation_id: "d".into(), instruction: Instruction::Conflicts, body: failed.clone(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
     });
@@ -5948,7 +5948,7 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
 /// reply was taken for lost. The card says the reply arrived and what it waits for.
 #[test]
 fn a_reply_to_a_result_whose_node_is_paused_shows_on_its_card_until_the_node_takes_it() {
-    use alondra_domain_rules::{Actor, Command, DeliveryTarget, Instruction};
+    use alondra_domain_model::{Actor, Command, DeliveryTarget, Instruction};
     let live = LiveSnapshot::default();
     let why = |state: &DomainState, client, lang| card_of(&render(state, &live, client, lang, "card:d", "")).why.clone().unwrap_or_default();
     let mut state = presented_pr();
@@ -5974,9 +5974,9 @@ fn a_reply_to_a_result_whose_node_is_paused_shows_on_its_card_until_the_node_tak
     ] {
         assert_golden(filename, &render(&state, &live, Client::Mac, lang, "card:d", ""), expected);
     }
-    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: alondra_domain_rules::NodeEvent::Resumed});
-    assert!(state.pending_reply(&state.interactions[&alondra_domain_rules::InteractionId::from("d")],
-        &alondra_domain_rules::FeedbackTarget::Delivery), "resuming alone does not answer the user");
+    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: alondra_domain_model::NodeEvent::Resumed});
+    assert!(state.pending_reply(&state.interactions[&alondra_domain_model::InteractionId::from("d")],
+        &alondra_domain_model::FeedbackTarget::Delivery), "resuming alone does not answer the user");
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let view = serde_json::to_string(&render(&state, &live, client, Lang::En, "card:d", "")).unwrap();
         assert!(!view.contains("Your reply arrived"), "{client:?}: the node has the reply now: {view}");
@@ -5984,9 +5984,9 @@ fn a_reply_to_a_result_whose_node_is_paused_shows_on_its_card_until_the_node_tak
 }
 
 fn pause_for_memory(state: &mut DomainState) {
-    let pause = alondra_domain_rules::Pause { reason: alondra_domain_rules::PauseReason::Memory, since: 2, cut: None, turn_since: Some(1),
+    let pause = alondra_domain_model::Pause { reason: alondra_domain_model::PauseReason::Memory, since: 2, cut: None, turn_since: Some(1),
         cleanup: Default::default(), released: false };
-    execute(state, alondra_domain_rules::Actor::System, alondra_domain_rules::Command::MoveNode { agent_id: "a".into(), event: alondra_domain_rules::NodeEvent::Paused { pause }});
+    execute(state, alondra_domain_model::Actor::System, alondra_domain_model::Command::MoveNode { agent_id: "a".into(), event: alondra_domain_model::NodeEvent::Paused { pause }});
 }
 
 /// t-redraft-blurry-mode, 14 October: replies on its results reached the node, but the result
@@ -5995,7 +5995,7 @@ fn pause_for_memory(state: &mut DomainState) {
 /// reply takes the delivery away on every client while the node acts on it; the pause brings it back.
 #[test]
 fn a_reply_on_a_presented_pr_leaves_waiting_for_you_on_every_client_and_a_pause_brings_it_back() {
-    use alondra_domain_rules::{Actor, Command, DeliveryTarget, Instruction};
+    use alondra_domain_model::{Actor, Command, DeliveryTarget, Instruction};
     let live = LiveSnapshot::default();
     let waiting = |state: &DomainState, client| match client {
         Client::Ios => render(state, &live, client, Lang::Es, "home", "").sections[0].card_ids == ["d"],
@@ -6034,31 +6034,31 @@ fn a_reply_on_a_presented_pr_leaves_waiting_for_you_on_every_client_and_a_pause_
         assert!(card.reply.as_ref().is_some_and(|reply| reply.enabled && reply.id.starts_with("changes:")),
             "{client:?}: the user can still write to the result");
     }
-    let index = alondra_domain_rules::ReadIndex::build(&state);
+    let index = alondra_domain_model::ReadIndex::build(&state);
     let authorization = index.cards().iter().flat_map(|card| &card.available_actions)
         .find(|action| action.kind == "authorize_merge").expect("merge availability is decided by the domain");
     assert!(authorization.enabled, "the user may merge anyway, once they confirm");
-    let presentation = &state.interactions[&alondra_domain_rules::InteractionId::from("d")];
-    let alondra_domain_rules::InteractionPayload::Delivery { feedback, .. } = &presentation.payload else { panic!("a delivery") };
+    let presentation = &state.interactions[&alondra_domain_model::InteractionId::from("d")];
+    let alondra_domain_model::InteractionPayload::Delivery { feedback, .. } = &presentation.payload else { panic!("a delivery") };
     assert_eq!(feedback.len(), 1);
     assert_eq!(feedback[0].body, "te he pedido cambios pero este card no se va");
     let mut attempted = state.clone();
-    let error = attempted.execute(&Actor::User { user_id: "u".into() }, &alondra_domain_rules::CommandEnvelope {
-        protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+    let error = attempted.execute(&Actor::User { user_id: "u".into() }, &alondra_domain_model::CommandEnvelope {
+        protocol_version: alondra_domain_model::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
         command_id: "pending-reply-merge".into(), expected_revision: state.revision,
         command: Command::AuthorizeMerge {
             authorization_id: "pending-reply-authorization".into(), presentation_id: "d".into(), pr_id: "pr".into(),
-            expected_head: "head1".into(), method: alondra_domain_rules::MergeMethod::Squash, despite_pending_message: false,
+            expected_head: "head1".into(), method: alondra_domain_model::MergeMethod::Squash, despite_pending_message: false,
         },
     }).unwrap_err();
     assert_eq!(error.code, "unanswered_message");
-    assert_eq!(error.why(), alondra_domain_rules::Refusal::UnansweredMessage);
+    assert_eq!(error.why(), alondra_domain_model::Refusal::UnansweredMessage);
     assert_eq!(attempted, state, "a merge the user did not confirm leaves the pending reply intact");
 }
 
 #[test]
 fn a_task_whose_node_is_paused_says_what_it_owes_the_user_never_no_connection() {
-    use alondra_domain_rules::{Actor, Command, DeliveryTarget, Instruction};
+    use alondra_domain_model::{Actor, Command, DeliveryTarget, Instruction};
     let live = LiveSnapshot::default();
     for (instruction, english, spanish) in [
         (Instruction::Changes, "has your changes pending", "tiene pendientes tus cambios"),
@@ -6087,10 +6087,10 @@ fn a_task_whose_node_works_after_the_merge_says_what_it_does() {
     let held = state.tasks.get_mut(&task).unwrap();
     held.agent_id = Some("a-1".into());
     held.state = TaskState::Closing;
-    state.agents.get_mut(&"a-1".into()).unwrap().phase = alondra_domain_rules::NodePhase::ThroughSdk;
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = alondra_domain_model::NodePhase::ThroughSdk;
     let detail = |state: &DomainState, lang| serde_json::to_string(&render(state, &LiveSnapshot::default(), Client::Ios, lang, &format!("task:{task}"), "")).unwrap();
     assert!(!detail(&state, Lang::En).contains("finishing after the merge"));
-    state.tasks.get_mut(&task).unwrap().wrap_up.post_merge_work = Some(alondra_domain_rules::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1, turn_since: false });
+    state.tasks.get_mut(&task).unwrap().wrap_up.post_merge_work = Some(alondra_domain_model::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1, turn_since: false });
     let english = detail(&state, Lang::En);
     assert!(english.contains("finishing after the merge: release.sh publishes 0.2.54"), "{english}");
     let spanish = detail(&state, Lang::Es);
@@ -6099,7 +6099,7 @@ fn a_task_whose_node_works_after_the_merge_says_what_it_does() {
 
 #[test]
 fn a_push_shows_what_the_card_needs_over_why() {
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     let alert = |state: &DomainState| push_content(state, "i-1", Lang::En).unwrap().alert.unwrap();
     let state = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow publishing Brew 0.2.36", "Restarts the daemon for a few seconds."));
     assert_eq!(alert(&state), PushAlert {
@@ -6119,7 +6119,7 @@ fn a_push_shows_what_the_card_needs_over_why() {
 
 #[test]
 fn a_push_interrupts_by_what_the_card_holds_back_and_groups_by_task_then_request() {
-    use alondra_domain_rules::{CardKind::*, Hold};
+    use alondra_domain_model::{CardKind::*, Hold};
     let level = |kind, blocking: bool| {
         let mut state = held_fixture(Hold::Permission, spec(kind, "Do it", "Because."));
         state.interactions.get_mut(&"i-1".into()).unwrap().blocking = blocking;
@@ -6195,7 +6195,7 @@ fn every_tui_action_a_screen_offers_has_its_own_key() {
 /// Task t-1 of a scheduled run whose launch failed, reached through the domain's own commands so
 /// the state is one the daemon could hold.
 fn failed_launch_fixture(error: &str) -> DomainState {
-    use alondra_domain_rules::{
+    use alondra_domain_model::{
         Actor, Command, CommandEnvelope, Schedule, ScheduleFrequency, ScheduleLaunchIntent, ScheduleRunOrigin,
     };
     let mut state = fixture();
@@ -6203,7 +6203,7 @@ fn failed_launch_fixture(error: &str) -> DomainState {
     state.tasks.clear();
     state.requests.clear();
     let run = |state: &mut DomainState, command| {
-        state.execute(&Actor::System, &alondra_domain_rules::CommandEnvelope {
+        state.execute(&Actor::System, &alondra_domain_model::CommandEnvelope {
             protocol_version: 2,
             data_epoch: state.data_epoch.clone(),
             command_id: format!("c-{}", state.revision).into(),
@@ -6321,9 +6321,9 @@ fn the_tui_cancels_a_task_with_x() {
     assert_eq!(cancel.key.as_deref(), Some("x"));
 }
 fn answered_and_closed_request() -> DomainState {
-    use alondra_domain_rules::{Actor, Command, CommandEnvelope, DomainEffect, PROTOCOL_VERSION};
+    use alondra_domain_model::{Actor, Command, CommandEnvelope, DomainEffect, PROTOCOL_VERSION};
     let run = |state: &mut DomainState, actor: Actor, command: Command| {
-        state.execute(&actor, &alondra_domain_rules::CommandEnvelope {
+        state.execute(&actor, &alondra_domain_model::CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
             command_id: format!("c-{}", state.revision).into(),
@@ -6336,7 +6336,7 @@ fn answered_and_closed_request() -> DomainState {
     run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
         request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false, message: false,
     });
-    let closed = run(&mut state, orchestrator, Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::Answered),
+    let closed = run(&mut state, orchestrator, Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_model::CloseOutcome::Answered),
         request_id: "a7efd99d".into(),
         answer: Some("Sí: se cifran en el cliente antes de subirlas a R2".into()),
         withdrawn: false,
@@ -6379,7 +6379,7 @@ fn an_answer_waits_in_every_inbox_after_its_request_closes() {
 
 /// Three questions asked together, the ones listed in `answered` (0-based) already answered.
 fn group_state(answered: &[usize]) -> DomainState {
-    use alondra_domain_rules::{CardKind, QuestionGroup};
+    use alondra_domain_model::{CardKind, QuestionGroup};
     let mut state = fixture();
     let base = state.interactions.remove(&"i-1".into()).unwrap();
     for (at, need) in ["Which name?", "Ship it today?", "Which channel?"].into_iter().enumerate() {
@@ -6394,7 +6394,7 @@ fn group_state(answered: &[usize]) -> DomainState {
             QuestionOption { id: "o0".into(), label: "First".into(), description: None },
             QuestionOption { id: "o1".into(), label: "Second".into(), description: None },
         ];
-        let answer = answered.contains(&at).then(|| alondra_domain_rules::Answer {
+        let answer = answered.contains(&at).then(|| alondra_domain_model::Answer {
             attachments: vec![], option_id: "o1".into(), inputs: BTreeMap::new(), responder: "u".into(), at_revision: 1, decision: None,
         });
         one.payload = InteractionPayload::Question { options, answer };
@@ -6611,7 +6611,7 @@ fn a_cancelling_task_says_what_alondra_still_removes() {
     let mut state = fixture();
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();
     task.state = TaskState::Closing;
-    task.ending = Some(alondra_domain_rules::TaskEnding::Cancelling);
+    task.ending = Some(alondra_domain_model::TaskEnding::Cancelling);
     task.agent_id = Some("a-1".into());
     assert_eq!(now_title(&state, Lang::En).unwrap(), "cancelled; Alondra closes its node");
     assert_eq!(now_title(&state, Lang::Es).unwrap(), "cancelada; Alondra cierra su nodo");
@@ -6633,7 +6633,7 @@ fn a_closing_task_says_whether_it_waits_for_its_merge_or_its_nodes_cleanup() {
 
 #[test]
 fn a_finished_task_says_what_became_of_its_node() {
-    use alondra_domain_rules::NodeEnd;
+    use alondra_domain_model::NodeEnd;
     let mut state = fixture();
     let lines = [
         (NodeEnd::Closed, "node closed", "nodo cerrado"),
@@ -6657,8 +6657,8 @@ fn opt(id: &str) -> QuestionOption {
     QuestionOption { id: id.into(), label: format!("Option {id}"), description: None }
 }
 
-fn answer_to(option_id: &str) -> alondra_domain_rules::Answer {
-    alondra_domain_rules::Answer { attachments: vec![], option_id: option_id.into(), inputs: Default::default(), responder: "device:1".into(), at_revision: 1, decision: None }
+fn answer_to(option_id: &str) -> alondra_domain_model::Answer {
+    alondra_domain_model::Answer { attachments: vec![], option_id: option_id.into(), inputs: Default::default(), responder: "device:1".into(), at_revision: 1, decision: None }
 }
 
 /// What a card key renders: the card, or only why a settled one went.
@@ -6675,7 +6675,7 @@ fn card_or_notice(view: &View) -> Result<&Card, &str> {
 
 #[test]
 fn every_open_card_with_options_or_input_can_be_answered_and_a_settled_one_is_never_shown_in_any_client() {
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     let option_sets = [vec![], vec![opt("retry"), opt("later")], vec![opt("a"), opt("b"), opt("c")]];
     let kinds = [CardKind::Decide, CardKind::Problem, CardKind::Propose, CardKind::Do, CardKind::Provide, CardKind::Test];
     let holds = [None, Some(Hold::Question), Some(Hold::Permission), Some(Hold::Elicitation)];
@@ -6743,7 +6743,7 @@ fn every_open_card_with_options_or_input_can_be_answered_and_a_settled_one_is_ne
 
 #[test]
 fn an_open_text_delivery_can_be_accepted_or_sent_back_and_an_accepted_one_is_never_shown_in_any_client() {
-    use alondra_domain_rules::{Acceptance, DeliveryTarget};
+    use alondra_domain_model::{Acceptance, DeliveryTarget};
     let mut open = 0;
     let cases = [(TaskState::ForYourReview, false), (TaskState::NeedsYou, false), (TaskState::Running, false), (TaskState::Closing, true), (TaskState::Done, true)];
     for (task_state, accepted) in cases {
@@ -6787,7 +6787,7 @@ fn an_open_text_delivery_can_be_accepted_or_sent_back_and_an_accepted_one_is_nev
 
 #[test]
 fn a_settled_card_says_only_why_it_went_in_english_and_spanish() {
-    use alondra_domain_rules::{CardKind, Feedback, Instruction};
+    use alondra_domain_model::{CardKind, Feedback, Instruction};
     let notice = |state: &DomainState, key: &str, lang| {
         card_or_notice(&render(state, &LiveSnapshot::default(), Client::Ios, lang, key, "")).err().map(str::to_owned)
     };
@@ -6827,7 +6827,7 @@ fn a_settled_card_says_only_why_it_went_in_english_and_spanish() {
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
     let delivery = state.interactions.get_mut(&"i-3".into()).unwrap();
     delivery.payload = InteractionPayload::Delivery {
-        targets: vec![alondra_domain_rules::DeliveryTarget::Text { text: "No hay reservas acumuladas.".into() }],
+        targets: vec![alondra_domain_model::DeliveryTarget::Text { text: "No hay reservas acumuladas.".into() }],
         is_final: true,
         acceptance: None,
         feedback: vec![Feedback { target: Default::default(), reply_window_start: None, merge_failure: None, attachments: vec![], user_id: "device:1".into(), body: "Falta el caso vacío".into(), at_revision: 9, instruction: Instruction::Changes }],
@@ -6878,7 +6878,7 @@ fn the_waiting_header_counts_exactly_the_cards_the_inbox_lists_and_each_one_open
             assert_eq!(home.status.badge as usize, queue.card_waits.iter().filter(|wait| *wait != "read").count(), "{name}");
             for id in &queue.card_ids {
                 let domain = with_cards(state);
-                let index = alondra_domain_rules::ReadIndex::build(&domain);
+                let index = alondra_domain_model::ReadIndex::build(&domain);
                 let card = build(&format!("card:{id}"), RenderContext {
                     domain: &domain, index: &index, live: &live, client: Client::Ios, lang,
                     transport: Transport::Loopback, cursor: "cursor-1", rendered_at: "2026-09-30T10:00:00Z",
@@ -6894,7 +6894,7 @@ const TRUST_COMMAND_BODY: &str = "Ejecútalo una vez en el terminal del Mac. Hac
 fn know_notice(state: &mut DomainState, need: &str, why: &str, body: &str) {
     let interaction = state.interactions.get_mut(&"i-4".into()).unwrap();
     interaction.payload = InteractionPayload::Information { read_by: BTreeSet::new() };
-    interaction.card = spec(alondra_domain_rules::CardKind::Know, need, why).needing(need);
+    interaction.card = spec(alondra_domain_model::CardKind::Know, need, why).needing(need);
     interaction.card.title = None;
     interaction.body = body.into();
 }
@@ -6944,7 +6944,7 @@ const ALLOWED_CASES: [(&str, &str, Client, Lang); 6] = [
 /// already allows a branch deletion and its tests.
 fn allowed_state() -> DomainState {
     use alondra_core::allow_for_task::AllowForTask;
-    use alondra_domain_rules::{CardKind, ContentKind as Content, Hold, TaskGrant, TaskWorktree, WorktreeOrigin};
+    use alondra_domain_model::{CardKind, ContentKind as Content, Hold, TaskGrant, TaskWorktree, WorktreeOrigin};
     let mut state = golden_fixture();
     let task = state.tasks.get_mut(&ALLOWED_TASK.into()).unwrap();
     task.worktrees.insert(ALLOWED_WORKTREE.into(), TaskWorktree { origin: WorktreeOrigin::Task, branch: None, discard: false, end: None });
@@ -7003,7 +7003,7 @@ const STAGES_CASES: [(&str, Client, Lang); 6] = [
 /// The demo task went in stages: its author planned it on one model and, once the plan was
 /// approved, its implementer took it over on another and is working, with what each spent.
 fn stages_state() -> (DomainState, LiveSnapshot) {
-    use alondra_domain_rules::{ExecutionRole, TaskRun, TaskStages};
+    use alondra_domain_model::{ExecutionRole, TaskRun, TaskStages};
     let mut state = golden_fixture();
     let model = |name: &str| Some(TaskModel { model: name.into(), chosen_by: ModelChooser::Orchestrator });
     let run = |generation: u64, agent: &str, role, name: &str| TaskRun { generation, agent: agent.into(), role: Some(role), provider: Default::default(), account: None, model: model(name) };
@@ -7028,7 +7028,7 @@ fn a_task_in_stages_shows_the_role_model_and_cost_of_each_agent_and_matches_gold
         assert!(shown.contains(text), "{text} in {shown}");
     }
     let mut plain = golden_fixture();
-    plain.tasks.get_mut(&ALLOWED_TASK.into()).unwrap().stages = alondra_domain_rules::TaskStages::default();
+    plain.tasks.get_mut(&ALLOWED_TASK.into()).unwrap().stages = alondra_domain_model::TaskStages::default();
     assert!(stages(&render(&plain, &golden_live(), Client::Tui, Lang::En, &format!("task:{ALLOWED_TASK}"), "2026-09-30T10:00:00Z")).is_none(),
         "a task that ran once without stages shows no stages");
     for ((filename, client, lang), expected) in STAGES_CASES.into_iter().zip([
@@ -7085,7 +7085,7 @@ const KNOW_COMMAND_CASES: [(&str, Client, Lang); 3] = [
 fn know_command_state() -> DomainState {
     let mut state = golden_fixture();
     let interaction = state.interactions.get_mut(&KNOW_COMMAND_CARD.into()).unwrap();
-    interaction.card = spec(alondra_domain_rules::CardKind::Know, "Pega este comando en el terminal: confía en todos los repos de ~/Projects", "").needing("Pega este comando en el terminal: confía en todos los repos de ~/Projects");
+    interaction.card = spec(alondra_domain_model::CardKind::Know, "Pega este comando en el terminal: confía en todos los repos de ~/Projects", "").needing("Pega este comando en el terminal: confía en todos los repos de ~/Projects");
     interaction.card.title = None;
     interaction.body = TRUST_COMMAND_BODY.into();
     state
@@ -7119,7 +7119,7 @@ fn generate_know_command_goldens() {
 fn a_queued_task_says_its_place_and_why_in_its_task() {
     let mut state = fixture();
     state.interactions.clear();
-    let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
+    let task = state.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
     let live = LiveSnapshot {
         pacing: Some(LivePacing {
@@ -7143,7 +7143,7 @@ fn a_task_held_for_the_disk_waits_for_capacity_with_the_free_space_and_what_is_n
     let held = LiveQueued { node: None, pausable: true, task_id: "t-1".into(), position: 1, of: 2, hold: LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000 } };
     let mut unstarted = fixture();
     unstarted.interactions.clear();
-    let task = unstarted.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
+    let task = unstarted.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
     let live = pacing_live(vec![held.clone()], vec![], None);
     for (state, in_state) in [(&unstarted, None), (&sdk_task(), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Machine)))] {
@@ -7167,7 +7167,7 @@ fn a_task_held_for_the_disk_waits_for_capacity_with_the_free_space_and_what_is_n
 
 #[test]
 fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
-    use alondra_domain_rules::{Actor, CardKind, CardSpec, Command, ContentKind, Hold, InputValue};
+    use alondra_domain_model::{Actor, CardKind, CardSpec, Command, ContentKind, Hold, InputValue};
     let mut state = DomainState::new("test-epoch");
     let user = Actor::User { user_id: "u".into() };
     let plan = |id: &str, title: &str| Command::HoldHook {
@@ -7179,7 +7179,7 @@ fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
     execute(&mut state, user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Weekly cycle".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut state, Actor::Orchestrator { generation: 0 }.clone(), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Weekly cycle".into(),
         agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
     execute(&mut state, Actor::System, plan("p1", "First weekly plan"));
     execute(&mut state, user, Command::AnswerQuestion { attachments: vec![], interaction_id: "p1".into(), option_id: Hold::REQUEST_CHANGES.into(),
         inputs: [("text".to_owned(), InputValue::Text("Drop the plates idea".into()))].into() });
@@ -7197,7 +7197,7 @@ fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
 fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() {
     let mut state = fixture();
     state.interactions.clear();
-    let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
+    let task = state.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("agent-1".into()));
     let memory = LivePaused { task_id: "t-1".into(), session: Some("agent-1".into()), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None, retry: None };
     let live = LiveSnapshot {
@@ -7283,7 +7283,7 @@ fn the_limit_shows_and_changes_in_this_macs_settings_never_in_the_tasks() {
 #[test]
 fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_in_its_task() {
     let mut state = fixture();
-    let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
+    let task = state.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
     let queued = LiveQueued { node: None, pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
     let live = pacing_live(vec![queued], vec![], None);
@@ -7306,7 +7306,7 @@ fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_in_its_task() {
 #[test]
 fn a_queued_scheduled_run_the_user_cannot_take_out_of_the_queue_offers_no_pause() {
     let mut state = fixture();
-    let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
+    let task = state.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
     let queued = LiveQueued { node: None, pausable: false, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
     let live = pacing_live(vec![queued], vec![], None);
@@ -7341,7 +7341,7 @@ fn a_node_waiting_in_the_queue_to_come_back_offers_pause_by_its_session_in_the_l
 fn a_working_node_offers_pause_with_a_warning_and_a_paused_node_offers_resume_by_its_session() {
     let mut state = fixture();
     state.interactions.clear();
-    let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
+    let task = state.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
     let mut live = pacing_live(vec![], vec![], None);
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), working: true, ..LiveNode::default() });
@@ -7362,15 +7362,15 @@ fn a_working_node_offers_pause_with_a_warning_and_a_paused_node_offers_resume_by
 #[test]
 fn a_task_detail_shows_its_priority_and_offers_the_three_levels() {
     let mut state = fixture();
-    let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
-    (task.state, task.final_presentation, task.priority) = (TaskState::NotStarted, None, alondra_domain_rules::TaskPriority::High);
+    let task = state.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap();
+    (task.state, task.final_presentation, task.priority) = (TaskState::NotStarted, None, alondra_domain_model::TaskPriority::High);
     let detail = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
     let text = serde_json::to_string(&detail).unwrap();
     assert!(text.contains("\"label\":\"Prioridad\",\"value\":\"Alta\""), "{text}");
     let priority = find_action(&detail, "set_priority:t-1").expect("priority is changed from the task's detail");
     let options: Vec<(&str, &str)> = priority.options.iter().map(|option| (option.id.as_str(), option.label.as_str())).collect();
     assert_eq!(options, [("high", "Alta · ahora"), ("normal", "Normal"), ("low", "Baja")]);
-    let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
+    let task = state.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap();
     task.state = TaskState::Done;
     let done = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
     assert!(find_action(&done, "set_priority:").is_none(), "a finished task has no priority to change");
@@ -7390,9 +7390,9 @@ fn pacing_fixture() -> (DomainState, LiveSnapshot) {
     let (mut state, mut live) = nodes_fixture();
     let template = state.tasks[&"t-zeta-worker".into()].clone();
     for (id, title, priority) in [
-        ("t-queued-next", "Fix the crash when the schedule list is empty", alondra_domain_rules::TaskPriority::High),
-        ("t-queued-later", "Translate the onboarding into Spanish", alondra_domain_rules::TaskPriority::Normal),
-        ("t-held", "Refresh the App Store screenshots", alondra_domain_rules::TaskPriority::Low),
+        ("t-queued-next", "Fix the crash when the schedule list is empty", alondra_domain_model::TaskPriority::High),
+        ("t-queued-later", "Translate the onboarding into Spanish", alondra_domain_model::TaskPriority::Normal),
+        ("t-held", "Refresh the App Store screenshots", alondra_domain_model::TaskPriority::Low),
     ] {
         let mut task = template.clone();
         (task.id, task.title, task.state, task.agent_id, task.priority) = (id.into(), title.into(), TaskState::NotStarted, None, priority);
@@ -7550,7 +7550,7 @@ fn a_request_has_a_header_only_when_it_is_not_a_message_to_the_orchestrator() {
     state.tasks.clear();
     for id in ["t-a", "t-b"] {
         task_in(&mut state, id, "r-1", TaskState::Running);
-        let agent = alondra_domain_rules::AgentId(format!("a-{id}"));
+        let agent = alondra_domain_model::AgentId(format!("a-{id}"));
         state.agents.insert(agent.clone(), Agent { id: agent.clone(), name: id.into(), phase: NodePhase::ThroughSdk, since: 0 });
         state.tasks.get_mut(&id.into()).unwrap().agent_id = Some(agent);
     }
@@ -7647,16 +7647,16 @@ fn what_a_working_task_said_last_is_only_on_its_own_screen_with_its_time() {
 /// says what it does, and it offers no reply because no node is behind it.
 #[test]
 fn an_untrusted_folder_card_speaks_the_users_language_and_offers_no_reply() {
-    use alondra_domain_rules::{Actor, Command, CommandEnvelope, StartProblem};
+    use alondra_domain_model::{Actor, Command, CommandEnvelope, StartProblem};
     let mut state = failed_launch_fixture("Workspace not trusted.\n");
     let raise = |state: &mut DomainState, problem: StartProblem| {
-        state.execute(&alondra_domain_rules::Actor::System, &alondra_domain_rules::CommandEnvelope {
+        state.execute(&alondra_domain_model::Actor::System, &alondra_domain_model::CommandEnvelope {
             protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: format!("c-{}", state.revision).into(),
             expected_revision: state.revision, command: Command::RaiseStartProblem { task_id: "t-1".into(), problem },
         }).unwrap();
     };
     raise(&mut state, StartProblem::Untrusted { folder: "/Users/someone/Projects/indie-apps".into(), error: None });
-    let id = state.interactions.keys().find(|id| id.0.starts_with(alondra_domain_rules::START_PROBLEM_PREFIX)).unwrap().0.clone();
+    let id = state.interactions.keys().find(|id| id.0.starts_with(alondra_domain_model::START_PROBLEM_PREFIX)).unwrap().0.clone();
 
     let spanish = decidable_card(&state, Lang::Es, &id);
     assert_eq!(spanish.title, "Confía en indie-apps para que «Build a feature» arranque");
@@ -7675,7 +7675,7 @@ fn an_untrusted_folder_card_speaks_the_users_language_and_offers_no_reply() {
 
 #[test]
 fn a_folder_alondra_could_not_trust_says_why_on_its_card() {
-    use alondra_domain_rules::{Actor, Command, CommandEnvelope, StartProblem};
+    use alondra_domain_model::{Actor, Command, CommandEnvelope, StartProblem};
     let mut state = failed_launch_fixture("Workspace not trusted.\n");
     state.execute(&Actor::System, &CommandEnvelope {
         protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: "c-1".into(), expected_revision: state.revision,
@@ -7683,7 +7683,7 @@ fn a_folder_alondra_could_not_trust_says_why_on_its_card() {
             folder: "/Users/someone/Projects/indie-apps".into(), error: Some("another Claude Code session kept ~/.claude.json locked".into()),
         } },
     }).unwrap();
-    let id = state.interactions.keys().find(|id| id.0.starts_with(alondra_domain_rules::START_PROBLEM_PREFIX)).unwrap().0.clone();
+    let id = state.interactions.keys().find(|id| id.0.starts_with(alondra_domain_model::START_PROBLEM_PREFIX)).unwrap().0.clone();
 
     let card = decidable_card(&state, Lang::Es, &id);
     assert_eq!(card.why.as_deref(), Some("Elegiste confiar en ella, pero Alondra no pudo guardarlo en los ajustes de Claude Code."));
@@ -7725,7 +7725,7 @@ fn every_card_action_says_whether_it_takes_its_card_out() {
     assert_eq!(resolving(&group, "card:g-q2"), owned(&[
         ("ans:g-q2", true), ("ans:g-q2", true), ("reply:g-q2", true),
     ]), "a question of a group is answered alone");
-    group.holds.insert("g-q2".into(), alondra_domain_rules::Hold::Question);
+    group.holds.insert("g-q2".into(), alondra_domain_model::Hold::Question);
     let held = resolving(&group, "card:g-q2");
     assert!(held.contains(&("reply:g-q2".to_owned(), true)), "words written on a held question answer it in its session: {held:?}");
 }
@@ -7817,7 +7817,7 @@ fn no_screen_shows_the_orchestrator() {
 /// both were accepted and its node had gone, yet an app said there was something to review with
 /// no card in the inbox nor in the task. What says a task waits for the user, and every count of
 /// it, comes from the cards the inbox shows.
-fn release_delivered_twice(published: Option<alondra_domain_rules::Acceptance>) -> DomainState {
+fn release_delivered_twice(published: Option<alondra_domain_model::Acceptance>) -> DomainState {
     let mut state = fixture();
     let delivery = state.interactions[&"i-3".into()].clone();
     state.interactions.clear();
@@ -7825,7 +7825,7 @@ fn release_delivered_twice(published: Option<alondra_domain_rules::Acceptance>) 
     task.title = "Release the daemon with the memory pause fix".into();
     task.agent_id = Some("a-1".into());
     task.final_presentation = Some("published-1".into());
-    let version_pr = Some(alondra_domain_rules::Acceptance { user_id: "phone".into(), at_revision: 2, valid: false });
+    let version_pr = Some(alondra_domain_model::Acceptance { user_id: "phone".into(), at_revision: 2, valid: false });
     for (order, (id, accepted)) in [("pr-1", version_pr), ("published-1", published)].into_iter().enumerate() {
         let mut card = delivery.clone();
         card.id = id.into();
@@ -7883,7 +7883,7 @@ fn says_nothing_waits(state: &DomainState) {
 
 #[test]
 fn a_release_whose_two_deliveries_were_accepted_says_nothing_waits_for_you_on_any_client() {
-    says_nothing_waits(&release_delivered_twice(Some(alondra_domain_rules::Acceptance { user_id: "phone".into(), at_revision: 4, valid: true })));
+    says_nothing_waits(&release_delivered_twice(Some(alondra_domain_model::Acceptance { user_id: "phone".into(), at_revision: 4, valid: true })));
 }
 
 #[test]
@@ -7923,7 +7923,7 @@ fn a_release_whose_published_delivery_is_open_shows_its_card_wherever_it_says_it
 #[test]
 fn every_card_button_leaves_the_server_ready_to_paint() {
     use alondra_core::allow_always::AllowAlways;
-    use alondra_domain_rules::{CardKind, Hold};
+    use alondra_domain_model::{CardKind, Hold};
     let mut permission = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow building", ""));
     let interaction = permission.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = InteractionPayload::Question { options: Hold::Permission.options_offering(true), answer: None };
@@ -7964,7 +7964,7 @@ fn every_card_button_leaves_the_server_ready_to_paint() {
 }
 
 fn proposed_plan_fixture() -> DomainState {
-    use alondra_domain_rules::{Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind as Content, DeliveryTarget, LaunchPlan};
+    use alondra_domain_model::{Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind as Content, DeliveryTarget, LaunchPlan};
     let mut state = DomainState::new("epoch");
     let mut run = |state: &mut DomainState, actor: Actor, command: Command| {
         let envelope = CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(),
@@ -8022,7 +8022,7 @@ fn a_result_that_proposes_a_plan_is_a_plan_card_with_its_report_as_a_document() 
 
 #[test]
 fn a_report_alone_closes_its_task_with_mark_as_done() {
-    use alondra_domain_rules::{Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind as Content, DeliveryTarget};
+    use alondra_domain_model::{Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind as Content, DeliveryTarget};
     let mut state = proposed_plan_fixture();
     sdk_told(&mut state, "t-1", "Deliver the report alone".into());
     let envelope = CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: "report".into(),
@@ -8051,7 +8051,7 @@ fn a_report_alone_closes_its_task_with_mark_as_done() {
 /// A result with a report, a design document of the task, a plan it proposes and two Markdown
 /// files its words cite: four documents around a short report.
 fn documents_fixture() -> DomainState {
-    use alondra_domain_rules::{Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind as Content, DeliveryTarget, LaunchPlan};
+    use alondra_domain_model::{Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind as Content, DeliveryTarget, LaunchPlan};
     let mut state = DomainState::new("epoch");
     let mut run = |state: &mut DomainState, actor: Actor, command: Command| {
         let envelope = CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(),
@@ -8068,12 +8068,12 @@ fn documents_fixture() -> DomainState {
     run(&mut state, Actor::Agent { agent_id: "a-1".into() }, Command::CreateDocument { task_id: "t-1".into(), document_id: "design".into(),
         title: "Library index design".into(), revision_id: "design-r1".into(), content_digest: "d".repeat(64),
         content_reference: "files/design.md".into(), role: "result".into() });
-    let report = alondra_domain_rules::include_files(
+    let report = alondra_domain_model::include_files(
         "## Summary\n\n- **Viable.** Every photo keeps a 360 px copy on the iPhone.\n- How other apps do it: docs/research/competitors.md",
         &["docs/research/competitors.md".to_owned()],
         |path| (path == "docs/research/competitors.md").then(|| "# How other apps index a library\n\n## Photos\n\nIndexes overnight while charging.\n\n## Lightroom\n\nIndexes on import.".to_owned()),
     ).unwrap();
-    let plan = alondra_domain_rules::include_files(
+    let plan = alondra_domain_model::include_files(
         "# Index the whole library\n\nMeasurements in docs/measurements.md\n\n- [ ] Store each photo's feature print in Core Data\n- [ ] Index changes in the background\n- [ ] Show indexing progress on the home screen",
         &["docs/measurements.md".to_owned()],
         |path| (path == "docs/measurements.md").then(|| "# Measurements\n\n| Library | Time |\n|---|---|\n| 10 000 photos | 4 min |".to_owned()),
@@ -8132,7 +8132,7 @@ fn a_cards_documents_are_links_in_their_own_section_and_never_part_of_its_text()
     assert!(!markdown_of("document:result-1.report").contains("Indexes overnight"), "the report's own file is a document of its own");
     assert!(markdown_of("document:result-1.file-2").contains("10 000 photos"));
     let missing = build("document:result-1.file-3", RenderContext {
-        domain: &state, index: &alondra_domain_rules::ReadIndex::build(&state), live: &live, client: Client::Ios, lang: Lang::Es,
+        domain: &state, index: &alondra_domain_model::ReadIndex::build(&state), live: &live, client: Client::Ios, lang: Lang::Es,
         transport: Transport::Loopback, cursor: "test", rendered_at: "",
     });
     assert_eq!(missing.err(), Some(BuildError::NotFound));
@@ -8215,7 +8215,7 @@ fn a_new_cursor_alone_leaves_home_unchanged() {
     let state = golden_fixture();
     let live = golden_live();
     let at = |cursor: &str| build("home", RenderContext {
-        domain: &state, index: &alondra_domain_rules::ReadIndex::build(&state), live: &live, client: Client::Ios,
+        domain: &state, index: &alondra_domain_model::ReadIndex::build(&state), live: &live, client: Client::Ios,
         lang: Lang::Es, transport: Transport::Loopback, cursor, rendered_at: "",
     }).unwrap();
     let (first, second) = (at("cursor-1"), at("cursor-2"));
@@ -8228,7 +8228,7 @@ fn a_new_cursor_alone_leaves_home_unchanged() {
 /// the orchestrator says so, and never puts its last words in a card for the user.
 #[test]
 fn a_task_whose_node_waits_for_the_orchestrator_says_so_and_puts_no_card_in_front_of_the_user() {
-    use alondra_domain_rules::{Actor, CardKind, CardSpec, Command, LaunchPlan, UNHEARD_PREFIX};
+    use alondra_domain_model::{Actor, CardKind, CardSpec, Command, LaunchPlan, UNHEARD_PREFIX};
     let node = || Actor::Agent { agent_id: "a-1".into() };
     let mut state = DomainState::new("epoch");
     execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a-1".into(), name: "Node One".into(), at: 0 });
@@ -8247,7 +8247,7 @@ fn a_task_whose_node_waits_for_the_orchestrator_says_so_and_puts_no_card_in_fron
     });
     sdk_turn_ends(&mut state, "t-1");
     assert!(!state.interactions.keys().any(|id| id.0.starts_with(UNHEARD_PREFIX)), "no card with the node's last words");
-    assert_eq!(crate::inbox_badge(&alondra_domain_rules::ReadIndex::build(&state)), 0);
+    assert_eq!(crate::inbox_badge(&alondra_domain_model::ReadIndex::build(&state)), 0);
     let live = LiveSnapshot::default();
     assert_eq!(task_state_text(&state, &live, Lang::Es), "En espera");
     let detail = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
@@ -8263,7 +8263,7 @@ fn a_task_whose_node_waits_for_the_orchestrator_says_so_and_puts_no_card_in_fron
 /// plans written for the 360 px copy. A dependent held for the orchestrator's review says so.
 #[test]
 fn a_dependent_held_by_the_users_decision_reads_plan_review_pending_until_it_is_settled() {
-    use alondra_domain_rules::{Actor, CardKind, CardSpec, Command, LaunchPlan, PlanReviewOutcome};
+    use alondra_domain_model::{Actor, CardKind, CardSpec, Command, LaunchPlan, PlanReviewOutcome};
     let mut state = DomainState::new("epoch");
     execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a-b".into(), name: "Node B".into(), at: 0 });
     execute(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
@@ -8296,10 +8296,10 @@ fn a_dependent_held_by_the_users_decision_reads_plan_review_pending_until_it_is_
 
 #[test]
 fn a_node_that_runs_through_the_sdk_offers_pause_while_its_execution_works() {
-    use alondra_domain_rules::{ExecutionIdentity, LifecycleRecord};
+    use alondra_domain_model::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();
     state.interactions.clear();
-    let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
+    let task = state.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
     let mut live = pacing_live(vec![], vec![], None);
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), working: true, ..LiveNode::default() });
@@ -8314,7 +8314,7 @@ fn a_node_that_runs_through_the_sdk_offers_pause_while_its_execution_works() {
         let view = render(&state, &live, client, Lang::En, "task:t-1", "");
         assert!(!action_ids(&view).iter().any(|id| id.starts_with("pause:")), "{client:?} offers pause to an SDK node that runs nothing: {:?}", action_ids(&view));
     }
-    state.lifecycle_journal.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap().extend([
+    state.lifecycle_journal.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap().extend([
         LifecycleRecord::ResourceAvailable,
         LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
     ]);
@@ -8329,7 +8329,7 @@ fn a_node_that_runs_through_the_sdk_offers_pause_while_its_execution_works() {
 /// its execution works and Resume once the user paused it, on every client.
 #[test]
 fn the_screen_of_a_task_whose_node_runs_through_the_sdk_offers_pause_or_resume_by_its_state() {
-    use alondra_domain_rules::{ExecutionIdentity, LifecycleRecord};
+    use alondra_domain_model::{ExecutionIdentity, LifecycleRecord};
     let admitted = vec![
         LifecycleRecord::Planned { input: "input:t-1:1".into() },
         LifecycleRecord::Admitted {
@@ -8343,7 +8343,7 @@ fn the_screen_of_a_task_whose_node_runs_through_the_sdk_offers_pause_or_resume_b
     ]].concat();
     let paused = LivePaused { task_id: "t-1".into(), session: Some("a-1".into()), at: "16:05".into(), reason: LivePauseReason::User,
         fine_minutes: None, next: false, waits_for: None, retry: None };
-    let lost = [working.clone(), vec![LifecycleRecord::Paused { card: "host-lost-t-1-9".into(), owner: Some(alondra_domain_rules::PauseOwner::User) }]].concat();
+    let lost = [working.clone(), vec![LifecycleRecord::Paused { card: "host-lost-t-1-9".into(), owner: Some(alondra_domain_model::PauseOwner::User) }]].concat();
     let cases = [
         ("working", TaskState::Running, working.clone(), vec![], Some("pause:a-1")),
         ("held by the card of its lost host", TaskState::Running, lost, vec![], None),
@@ -8375,7 +8375,7 @@ fn the_screen_of_a_task_whose_node_runs_through_the_sdk_offers_pause_or_resume_b
 /// turn runs, also once it presented its delivery, and ready for review once that turn ended.
 #[test]
 fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_something() {
-    use alondra_domain_rules::{ExecutionIdentity, LifecycleRecord};
+    use alondra_domain_model::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();
     node_in(&mut state, NodePhase::ThroughSdk);
     let answering = vec![
@@ -8404,7 +8404,7 @@ fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_som
 /// reads that Claude has not started, and still offers Interrupt.
 #[test]
 fn a_message_claude_has_not_started_reads_waiting_for_claude() {
-    use alondra_domain_rules::{ExecutionIdentity, LifecycleRecord};
+    use alondra_domain_model::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();
     node_in(&mut state, NodePhase::ThroughSdk);
     state.tasks.get_mut(&"t-1".into()).unwrap().final_presentation = Some("d".into());
@@ -8434,10 +8434,10 @@ fn a_message_claude_has_not_started_reads_waiting_for_claude() {
 
 #[test]
 fn the_task_of_a_node_that_runs_through_the_sdk_offers_interrupt_but_no_close() {
-    use alondra_domain_rules::{ExecutionIdentity, LifecycleRecord};
+    use alondra_domain_model::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();
     state.interactions.clear();
-    let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
+    let task = state.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
     let live = pacing_live(vec![], vec![], None);
     for client in [Client::Tui, Client::Ios] {
@@ -8467,7 +8467,7 @@ fn the_task_of_a_node_that_runs_through_the_sdk_offers_interrupt_but_no_close() 
 /// Interrupt and Pause on every client, as a turn does; a resting node offers neither.
 #[test]
 fn the_task_of_an_sdk_node_that_waits_for_its_background_work_or_its_input_offers_interrupt_and_pause() {
-    use alondra_domain_rules::{ExecutionIdentity, LifecycleRecord};
+    use alondra_domain_model::{ExecutionIdentity, LifecycleRecord};
     let handed = vec![
         LifecycleRecord::Planned { input: "input:t-1:1".into() },
         LifecycleRecord::Admitted {
@@ -8542,7 +8542,7 @@ fn one_card_signs_in_to_a_server_however_many_tasks_wait_for_it() {
     let wait = state.mcp_waiting()[0].card.0.clone();
     assert!(matches!(&card.actions[0].link, Some(Link::Local { local: LocalLink::McpSignIn { card, server } }) if *card == wait && server == "linear"));
     assert!(matches!(&card.actions[2].link, Some(Link::Local { local: LocalLink::McpReconnect { card } }) if *card == wait));
-    assert_eq!(card.actions[1].option_id.as_deref(), Some(alondra_domain_rules::MCP_GO_ON_WITHOUT));
+    assert_eq!(card.actions[1].option_id.as_deref(), Some(alondra_domain_model::MCP_GO_ON_WITHOUT));
     assert_eq!(card.actions[1].stamp.as_deref(), Some("Las tareas siguen sin linear"));
     assert!(card.reply.is_none(), "nothing written on the card would send the tasks on");
     for client in [Client::Ios, Client::Mac] {
@@ -8552,7 +8552,7 @@ fn one_card_signs_in_to_a_server_however_many_tasks_wait_for_it() {
         assert!(matches!(&app.actions[0].link, Some(Link::Local { local: LocalLink::McpSignIn { card, server } }) if *card == wait && server == "linear"));
     }
     let waiting: Vec<String> = inbox_items(&state).into_iter().filter(|item| item.pending).map(|item| item.id).collect();
-    assert_eq!(waiting.iter().filter(|id| id.contains(alondra_domain_rules::MCP_WAIT_PREFIX)).count(), 1, "{waiting:?}");
+    assert_eq!(waiting.iter().filter(|id| id.contains(alondra_domain_model::MCP_WAIT_PREFIX)).count(), 1, "{waiting:?}");
     let task = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "task:u", "");
     assert!(serde_json::to_string(&task).unwrap().contains("Espera a que inicies sesión en linear"));
 }
@@ -8569,7 +8569,7 @@ const MCP_SERVERS_GOLDENS: [(&str, Client, Lang); 3] = [
 /// Blurcamera never was. Lumo was
 /// checked without a node and Blurcamera never was.
 fn mcp_servers_fixture() -> (DomainState, LiveSnapshot) {
-    use alondra_domain_rules::{McpServerState, McpStatus, NodeMcp, OpenSignIn};
+    use alondra_domain_model::{McpServerState, McpStatus, NodeMcp, OpenSignIn};
     let (mut state, mut live) = nodes_fixture();
     use alondra_foundation::{McpConnect, McpOrigin, McpScope, McpTraits};
     let server = |name: &str, status: McpStatus, transport: &str, source: &str, url: Option<&str>, error: Option<&str>| {
@@ -8596,7 +8596,7 @@ fn mcp_servers_fixture() -> (DomainState, LiveSnapshot) {
             server("notion", McpStatus::NeedsAuth, "http", "user", Some("https://mcp.notion.com/mcp"), None),
             server("files", McpStatus::Connected, "stdio", "project", None, None),
             server("claude.ai Gmail", McpStatus::Connected, "claudeai-proxy", "claudeai", None, None),
-            server(alondra_domain_rules::ALONDRA_MCP_SERVER, McpStatus::Connected, "stdio", "plugin", None, None),
+            server(alondra_domain_model::ALONDRA_MCP_SERVER, McpStatus::Connected, "stdio", "plugin", None, None),
         ],
         sign_ins: [
             ("sentry".to_owned(), OpenSignIn { url: "https://sentry.io/oauth/authorize".into(), callback_port: Some(49200), state: Some("s".into()) }),
@@ -8609,7 +8609,7 @@ fn mcp_servers_fixture() -> (DomainState, LiveSnapshot) {
         server("db", McpStatus::Connected, "stdio", "local", None, None),
     ], ..NodeMcp::default() });
     for (task, project) in [("t-zeta-worker", "alondra"), ("t-queued", "quill")] {
-        state.tasks.get_mut(&alondra_domain_rules::TaskId::from(task)).unwrap().project = Some(project.into());
+        state.tasks.get_mut(&alondra_domain_model::TaskId::from(task)).unwrap().project = Some(project.into());
     }
     live.projects = ["alondra", "quill", "lumo", "blurcamera"].into_iter().map(|name| alondra_core::options::ProjectEntry {
         name: name.into(), path: format!("/Users/someone/Projects/{name}").into(), last_used: None, nodes: 0,
@@ -8643,7 +8643,7 @@ fn mcp_servers_views_match_goldens() {
 
 #[test]
 fn the_mcp_servers_screen_offers_what_each_server_needs_per_project() {
-    use alondra_domain_rules::McpServerKey;
+    use alondra_domain_model::McpServerKey;
     let (state, live) = mcp_servers_fixture();
     let view = render(&state, &live, Client::Ios, Lang::Es, "mcp_servers", "");
     assert_eq!(view.title.as_deref(), Some("Servidores MCP"));
@@ -8715,7 +8715,7 @@ fn the_mcp_servers_screen_offers_what_each_server_needs_per_project() {
 
 #[test]
 fn only_a_server_in_the_user_s_own_settings_offers_delete_and_says_what_it_deletes() {
-    use alondra_domain_rules::McpServerKey;
+    use alondra_domain_model::McpServerKey;
     let (state, live) = mcp_servers_fixture();
     let view = render(&state, &live, Client::Ios, Lang::Es, "mcp_servers", "");
     let rows: Vec<&Row> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item { Item::Row(row) => Some(row), _ => None }).collect();
@@ -8746,7 +8746,7 @@ fn only_a_server_in_the_user_s_own_settings_offers_delete_and_says_what_it_delet
 
 #[test]
 fn a_deleted_server_leaves_the_screen_until_a_node_that_starts_again_reports_it() {
-    use alondra_domain_rules::McpServerKey;
+    use alondra_domain_model::McpServerKey;
     use crate::LiveMcpRemoval;
     let (mut state, mut live) = mcp_servers_fixture();
     let github = McpServerKey { name: "github".into(), url: Some("https://api.githubcopilot.com/mcp".into()) };
@@ -8757,7 +8757,7 @@ fn a_deleted_server_leaves_the_screen_until_a_node_that_starts_again_reports_it(
             .filter_map(|item| match item { Item::Row(row) => Some(row.title.clone()), _ => None }).collect()
     };
     assert!(!titles(&state, &live).contains(&"github".to_owned()), "the node that still has it loaded no longer lists it");
-    state.mcp.get_mut(&alondra_domain_rules::AgentId::from("queued")).unwrap().generation = 2;
+    state.mcp.get_mut(&alondra_domain_model::AgentId::from("queued")).unwrap().generation = 2;
     assert!(titles(&state, &live).contains(&"github".to_owned()), "its agent started again and still has it: it was added back");
 }
 
@@ -8872,7 +8872,7 @@ fn the_accounts_screen_shows_each_account_and_offers_only_what_its_rules_allow()
 
 #[test]
 fn the_merge_button_says_the_method_set_in_settings_and_merges_with_one_press() {
-    use alondra_domain_rules::{Actor, Command, MergeMethod};
+    use alondra_domain_model::{Actor, Command, MergeMethod};
     let live = LiveSnapshot::default();
     let mut state = presented_pr();
     state.pull_requests.get_mut(&"pr".into()).unwrap().allowed_methods = vec![MergeMethod::Squash, MergeMethod::Merge, MergeMethod::Rebase];
@@ -8912,7 +8912,7 @@ fn the_merge_button_says_the_method_set_in_settings_and_merges_with_one_press() 
 
 #[test]
 fn the_merge_method_is_picked_in_this_macs_settings_above_the_node_limit() {
-    use alondra_domain_rules::MergeMethod;
+    use alondra_domain_model::MergeMethod;
     let mut state = fixture();
     let machine = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "machine", "");
     let settings = machine.sections.iter().find(|section| section.id == "settings").expect("this Mac's settings");
@@ -8944,7 +8944,7 @@ fn the_merge_method_is_picked_in_this_macs_settings_above_the_node_limit() {
 
 #[test]
 fn how_a_prs_branch_is_updated_with_main_is_picked_in_settings_below_the_merge_method_and_rebases_by_default() {
-    use alondra_domain_rules::BranchUpdate;
+    use alondra_domain_model::BranchUpdate;
     let mut state = fixture();
     assert_eq!(state.branch_update, BranchUpdate::Rebase);
     let machine = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "machine", "");
@@ -9091,12 +9091,12 @@ fn live_states() -> Vec<alondra_domain::LiveState> {
         LiveState::Working(Worker::Alondra(Step::Starting)), LiveState::Working(Worker::Alondra(Step::Delivering)),
         LiveState::Working(Worker::Alondra(Step::Waking)), LiveState::Working(Worker::Alondra(Step::Answering)),
         LiveState::Working(Worker::Alondra(Step::Merging)), LiveState::Working(Worker::Alondra(Step::Finishing)),
-        LiveState::WaitingUser(Several::new([alondra_domain_rules::InteractionId::from("delivery-t-1")]).unwrap()),
-        LiveState::WaitingUser(Several::new([alondra_domain_rules::InteractionId::from("claude-signed-out-t-1")]).unwrap()),
-        LiveState::WaitingUser(Several::new([alondra_domain_rules::InteractionId::from(format!("{}user-0-t-1", alondra_domain_rules::NODE_PAUSE_PREFIX))]).unwrap()),
+        LiveState::WaitingUser(Several::new([alondra_domain_model::InteractionId::from("delivery-t-1")]).unwrap()),
+        LiveState::WaitingUser(Several::new([alondra_domain_model::InteractionId::from("claude-signed-out-t-1")]).unwrap()),
+        LiveState::WaitingUser(Several::new([alondra_domain_model::InteractionId::from(format!("{}user-0-t-1", alondra_domain_model::NODE_PAUSE_PREFIX))]).unwrap()),
         LiveState::WaitingCapacity(Capacity::Gate), LiveState::WaitingCapacity(Capacity::Machine), LiveState::WaitingCapacity(Capacity::Disk),
         LiveState::WaitingCapacity(Capacity::Usage), LiveState::WaitingCapacity(Capacity::ClaudeApi),
-        LiveState::WaitingTask(Several::new([alondra_domain_rules::TaskId::from("t-2")]).unwrap()),
+        LiveState::WaitingTask(Several::new([alondra_domain_model::TaskId::from("t-2")]).unwrap()),
     ];
     for state in &states {
         match state {
@@ -9155,7 +9155,7 @@ fn a_waiting_task_says_its_real_place_and_current_reason_whatever_was_refused_be
 fn a_task_screen_never_shows_where_the_mac_keeps_its_folder() {
     let mut state = fixture();
     state.tasks.get_mut(&"t-1".into()).unwrap().worktrees.insert("/Users/example/Projects/app/.claude/worktrees/t-x".into(),
-        alondra_domain_rules::TaskWorktree { origin: alondra_domain_rules::WorktreeOrigin::Task, branch: None, discard: false, end: None });
+        alondra_domain_model::TaskWorktree { origin: alondra_domain_model::WorktreeOrigin::Task, branch: None, discard: false, end: None });
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let view = render(&state, &LiveSnapshot::default(), client, Lang::En, "task:t-1", "");
         assert!(header_facts(&view).iter().any(|fact| fact.label == "Folder" && fact.value == "t-x"), "{client:?}");
@@ -9165,7 +9165,7 @@ fn a_task_screen_never_shows_where_the_mac_keeps_its_folder() {
 }
 
 fn sdk_task() -> DomainState {
-    use alondra_domain_rules::{ExecutionIdentity, LifecycleRecord};
+    use alondra_domain_model::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();
     node_in(&mut state, NodePhase::ThroughSdk);
     state.tasks.get_mut(&"t-1".into()).unwrap().final_presentation = Some("delivery-t-1".into());
@@ -9188,13 +9188,13 @@ fn sdk_task() -> DomainState {
 #[test]
 fn each_live_state_reads_one_way_on_every_client() {
     let mut state = sdk_task();
-    let pause = alondra_domain_rules::InteractionId::from(format!("{}user-0-t-1", alondra_domain_rules::NODE_PAUSE_PREFIX));
+    let pause = alondra_domain_model::InteractionId::from(format!("{}user-0-t-1", alondra_domain_model::NODE_PAUSE_PREFIX));
     state.interactions.insert(pause.clone(), Interaction { shortened: false,
         attachments: vec![], id: pause, scope: Scope::Task { task_id: "t-1".into() }, author: Author::System, recipient: Recipient::User,
         body: "Resume".into(), blocking: false, subject: None, payload: InteractionPayload::Question { options: vec![], answer: None },
         revision: 1, order: 1, withdrawn: false, card: spec(CardKind::Decide, "Resume", ""), clarification: None, snoozed_until: None,
         resurfaced_at_revision: None,
-        system_card: Some(alondra_domain_rules::SystemCard::NodePause { pause: alondra_domain_rules::NodePauseKind::User, since: 0 }),
+        system_card: Some(alondra_domain_model::SystemCard::NodePause { pause: alondra_domain_model::NodePauseKind::User, since: 0 }),
     });
     let live = LiveSnapshot::default();
     let mut shown = vec![];
@@ -9473,7 +9473,7 @@ fn a_finished_task_shows_how_long_it_took_frozen() {
 /// and the task's screen, and once the turn ends it is back to «Ready for review».
 #[test]
 fn a_task_in_review_reads_working_while_its_node_takes_up_a_message_and_in_review_once_it_ends() {
-    use alondra_domain_rules::{ExecutionIdentity, LifecycleRecord};
+    use alondra_domain_model::{ExecutionIdentity, LifecycleRecord};
     let mut state = release_delivered_twice(None);
     let delivered = vec![
         LifecycleRecord::Planned { input: "input:t-1:1".into() },
@@ -9829,7 +9829,7 @@ fn codex_hold_cards_use_qualified_account_names_and_native_sign_in_guidance() {
     state.interactions.clear();
     interaction.id = "claude-signed-out-t-1".into();
     interaction.author = Author::System;
-    interaction.system_card = Some(alondra_domain_rules::SystemCard::ClaudeSignedOut);
+    interaction.system_card = Some(alondra_domain_model::SystemCard::ClaudeSignedOut);
     state.interactions.insert(interaction.id.clone(), interaction);
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         for lang in [Lang::En, Lang::Es] {
@@ -9968,7 +9968,7 @@ const OUTCOME_CASES: [(&str, &str, Client, Lang); 18] = [
 /// Two requests of the user as they ended: one answered without tasks, one whose three tasks are
 /// over, two of them done with their PRs and one cancelled. A third just got its three tasks.
 fn outcome_state() -> DomainState {
-    use alondra_domain_rules::{Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION};
+    use alondra_domain_model::{Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION};
     fn run(state: &mut DomainState, actor: Actor, command: Command) {
         state.seed_mergeable_for_presented(&command);
         state.execute(&actor, &CommandEnvelope {
@@ -9985,7 +9985,7 @@ fn outcome_state() -> DomainState {
     run(&mut state, user.clone(), Command::CreateRequest {
         request_id: "r-encrypt".into(), body: "¿Podemos cifrar las imágenes antes de subirlas a R2?".into(), auto_merge: false, maintenance: false, message: false,
     });
-    run(&mut state, orchestrator.clone(), Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::Answered),
+    run(&mut state, orchestrator.clone(), Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_model::CloseOutcome::Answered),
         request_id: "r-encrypt".into(),
         answer: Some("Para el cifrado una imagen son bytes como cualquier otro: el iPhone la cifra con la clave del usuario antes de subirla, y R2 solo guarda bytes cifrados.\n\nYa se hace así desde la versión 0.3.0, así que no hace falta ninguna tarea.".into()),
         withdrawn: false,
@@ -10016,7 +10016,7 @@ fn outcome_state() -> DomainState {
         });
         run(&mut state, user.clone(), Command::AcceptDelivery { presentation_id: result.as_str().into(), targets: text.clone() });
         run(&mut state, Actor::System, Command::RecordNodeEnd { task_id: task.into(), end: NodeEnd::Closed, agent_id: None });
-        let id = alondra_domain_rules::PrId::from(format!("pr-{number}"));
+        let id = alondra_domain_model::PrId::from(format!("pr-{number}"));
         state.pull_requests.insert(id.clone(), PullRequest {
             id: id.clone(), task_id: task.into(), host: "github.com".into(), repository: "owner/alondra".into(), number,
             head: "head1".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()),
@@ -10025,7 +10025,7 @@ fn outcome_state() -> DomainState {
         state.tasks.get_mut(&task.into()).unwrap().pr_id = Some(id);
     }
     run(&mut state, user, Command::CancelTask { task_id: "t-docs".into(), reason: None });
-    run(&mut state, orchestrator, Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::TasksEnded),
+    run(&mut state, orchestrator, Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_model::CloseOutcome::TasksEnded),
         request_id: "r-accounts".into(),
         answer: Some("Ya puedes guardar dos cuentas de Claude y cambiar entre ellas en Ajustes. La documentación se dejó para más adelante.".into()),
         withdrawn: false, title: None, headline: None, folded_into: None });
@@ -10038,12 +10038,12 @@ fn outcome_state() -> DomainState {
         ("t-ios", "Sincronizar desde el iPhone", vec!["t-model"]), ("t-mac", "Sincronizar desde el Mac", vec!["t-model"])] {
         run(&mut state, orchestrator.clone(), Command::CreateTask { priority: Default::default(),
             plan_items: None, continues: None, task_id: task.into(), request_id: "r-sync".into(), title: title.into(), agent_id: None,
-            review_prs: false, dependencies: after.into_iter().map(alondra_domain_rules::TaskId::from).collect(), stack: None,
+            review_prs: false, dependencies: after.into_iter().map(alondra_domain_model::TaskId::from).collect(), stack: None,
             launch: Some(LaunchPlan::new("node", "/tmp/project")),
         });
     }
-    run(&mut state, orchestrator.clone(), Command::SetPriority { task_id: "t-model".into(), priority: alondra_domain_rules::TaskPriority::High });
-    run(&mut state, orchestrator, Command::SetPriority { task_id: "t-mac".into(), priority: alondra_domain_rules::TaskPriority::Low });
+    run(&mut state, orchestrator.clone(), Command::SetPriority { task_id: "t-model".into(), priority: alondra_domain_model::TaskPriority::High });
+    run(&mut state, orchestrator, Command::SetPriority { task_id: "t-mac".into(), priority: alondra_domain_model::TaskPriority::Low });
     run(&mut state, Actor::System, Command::AnnounceRequestTasks);
     state
 }
@@ -10125,7 +10125,7 @@ fn a_tasks_card_lists_the_tasks_in_order_each_opening_its_screen() {
 /// with no attachments.
 #[test]
 fn a_secret_card_says_where_the_value_goes_and_types_it_hidden() {
-    use alondra_domain_rules::{Actor, CardKind, CardSpec, Command, CommandEnvelope, LaunchPlan, QuestionOption, Recipient, Scope};
+    use alondra_domain_model::{Actor, CardKind, CardSpec, Command, CommandEnvelope, LaunchPlan, QuestionOption, Recipient, Scope};
     let mut state = DomainState::new("epoch");
     let mut run = |state: &mut DomainState, actor: Actor, command: Command| {
         let envelope = CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(),
@@ -10212,8 +10212,8 @@ fn a_report_that_repeats_the_description_shows_its_images_too() {
     let mut state = golden_fixture();
     for interaction in state.interactions.values_mut() {
         if interaction.card.effective_title() == "Review the beta candidate" {
-            interaction.card.content = Some(alondra_domain_rules::CardContent {
-                kind: alondra_domain_rules::ContentKind::Report,
+            interaction.card.content = Some(alondra_domain_model::CardContent {
+                kind: alondra_domain_model::ContentKind::Report,
                 summary: None,
                 body: format!("What changed.\n\n{IMAGES_BODY}"),
             });
@@ -10232,7 +10232,7 @@ fn a_report_that_repeats_the_description_shows_its_images_too() {
 #[test]
 fn attachments_expose_typed_download_routes_without_disk_paths() {
     let mut state = fixture();
-    let attachment = |id: &str, name: &str, reference: &str| alondra_domain_rules::AttachmentRef {
+    let attachment = |id: &str, name: &str, reference: &str| alondra_domain_model::AttachmentRef {
         id: id.into(), name: name.into(), content_digest: "d".repeat(64), content_reference: reference.into(), bytes: 10,
     };
     state.interactions.get_mut(&"i-1".into()).unwrap().attachments = vec![
@@ -10259,7 +10259,7 @@ fn attachments_expose_typed_download_routes_without_disk_paths() {
 /// Task t-1 whose PR #… waits for the review, its node of the Agent SDK in the turn that presented
 /// it, or with that turn ended.
 fn presented_in_a_turn(ended: bool) -> DomainState {
-    use alondra_domain_rules::{ExecutionIdentity, LifecycleRecord};
+    use alondra_domain_model::{ExecutionIdentity, LifecycleRecord};
     let mut state = release_delivered_twice(None);
     let mut journal = vec![
         LifecycleRecord::Planned { input: "input:t-1:1".into() },
@@ -10381,7 +10381,7 @@ fn a_signed_out_account_names_the_providers_own_command_and_nothing_signs_it_in(
 #[test]
 fn every_card_numbers_its_options_from_its_main_one_and_keeps_each_letter_for_one_meaning() {
     use alondra_core::allow_always::AllowAlways;
-    use alondra_domain_rules::{CardKind, Hold, QuestionOption};
+    use alondra_domain_model::{CardKind, Hold, QuestionOption};
     use action_id::{ActionId, Verb};
     let mut permission = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow building", ""));
     let held = permission.interactions.get_mut(&"i-1".into()).unwrap();
@@ -10396,7 +10396,7 @@ fn every_card_numbers_its_options_from_its_main_one_and_keeps_each_letter_for_on
     let mut over = pace.interactions.remove(&"i-1".into()).unwrap();
     over.id = format!("{}2026-10-30", alondra_core::usage::OVER_PACE_PREFIX).into();
     over.author = Author::System;
-    over.system_card = Some(alondra_domain_rules::SystemCard::OverPace { day: "2026-10-30".into() });
+    over.system_card = Some(alondra_domain_model::SystemCard::OverPace { day: "2026-10-30".into() });
     over.payload = fixed_answers(&[(alondra_core::usage::OVER_PACE_PAUSE_OPTION, "Pause until tomorrow"), (alondra_core::usage::OVER_PACE_KEEP_OPTION, "Keep going")]);
     over.card = spec(CardKind::Decide, "Usage is ahead of today's pace", "");
     pace.interactions.insert(over.id.clone(), over);
@@ -10418,7 +10418,7 @@ fn every_card_numbers_its_options_from_its_main_one_and_keeps_each_letter_for_on
     let mut problems = vec![];
     for state in &states {
         let domain = with_cards(state);
-        let index = alondra_domain_rules::ReadIndex::build(&domain);
+        let index = alondra_domain_model::ReadIndex::build(&domain);
         let live = golden_live();
         for client in [Client::Mac, Client::Tui] {
             for lang in [Lang::En, Lang::Es] {
@@ -10527,7 +10527,7 @@ fn client_text_contracts_account_move_is_only_offered_to_rescue_a_stuck_task() {
     state.accounts = vec![account(Provider::Claude, "default", "Personal", AccountState::SignedIn), account(Provider::Codex, "default", "Work", AccountState::SignedIn), account(Provider::Claude, "old", "Old", AccountState::Disabled)];
     state.model_catalogs = state.accounts.iter().map(|account| AccountModelCatalog { account: alondra_core::accounts::AccountKey::new(account.provider, account.id.clone()), revision: "catalog".into(), measured_at: 1, native_default: Some("model".into()),
         models: vec![CatalogModel { model: "model".into(), display_name: "Model".into(), reasoning_efforts: vec![], default_reasoning_effort: None, context_window: None, input_modalities: vec![], is_default: true, hidden: false }] }).collect();
-    let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
+    let task = state.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap();
     task.selection = Some({ let mut pinned = alondra_core::model_selection::TaskSelection::automatic(alondra_core::model_selection::ModelProfile::Implementation); pinned.account = Some(alondra_core::accounts::AccountKey::native(Provider::Claude)); pinned.native_tool_denials = Some(vec![]); pinned });
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let detail = render(&state, &LiveSnapshot::default(), client, Lang::Es, "task:t-1", "");
@@ -10545,7 +10545,7 @@ fn client_text_contracts_account_move_is_only_offered_to_rescue_a_stuck_task() {
     state.account_usage.clear();
     let recovery = state.interactions.get_mut(&"i-1".into()).unwrap();
     recovery.author = Author::System;
-    recovery.system_card = Some(alondra_domain_rules::SystemCard::HostLost { signed_out: false });
+    recovery.system_card = Some(alondra_domain_model::SystemCard::HostLost { signed_out: false });
     let detail = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
     let moving = find_action(&detail, "move_task:t-1").expect("the task's detail offers to move it");
     assert_eq!(moving.label, "Mover a Codex · Work", "a single destination is named on the button");
@@ -10561,17 +10561,17 @@ fn client_text_contracts_account_move_is_only_offered_to_rescue_a_stuck_task() {
     let several = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
     let moving = find_action(&several, "move_task:t-1").unwrap();
     assert_eq!((moving.label.as_str(), moving.options.len()), ("Mover a…", 2), "several destinations are a menu");
-    state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap().state = TaskState::Done;
+    state.tasks.get_mut(&alondra_domain_model::TaskId::from("t-1")).unwrap().state = TaskState::Done;
     let done = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
     assert!(find_action(&done, "move_task:").is_none(), "a finished task does not move");
 }
 
 #[test]
 fn card_title_contract_details_have_separate_fields_and_no_content_label() {
-    use alondra_domain_rules::{CardKind, ContentKind as Content};
+    use alondra_domain_model::{CardKind, ContentKind as Content};
     let body = "# Release design\n\nKeep this heading literally.";
     for title in ["Release design", "Review the plan"] {
-        let state = held_fixture(alondra_domain_rules::Hold::Plan,
+        let state = held_fixture(alondra_domain_model::Hold::Plan,
             spec(CardKind::Review, "Review the plan", "The release needs a design.")
                 .titled(title).needing("Review the plan").content(Content::Plan, body));
         for client in [Client::Ios, Client::Mac, Client::Tui] {
@@ -10650,7 +10650,7 @@ fn the_three_blocks_follow_the_situation() {
 #[test]
 fn a_task_that_needs_you_shows_its_card_in_the_inbox_view() {
     let state = golden_fixture();
-    let index = alondra_domain_rules::ReadIndex::build(&state);
+    let index = alondra_domain_model::ReadIndex::build(&state);
     let mut needing = 0;
     for client in [Client::Ios, Client::Tui] {
         let list = render(&state, &golden_live(), client, Lang::En, "tasks", "2026-09-30T10:00:00Z");
@@ -10707,10 +10707,10 @@ proptest::proptest! {
         node.last_message = message.then(|| "The checks passed.".into());
         node.last_message_at = Some("15:31".into());
         if !has_node { live.nodes.clear(); }
-        let doing = match doing { 0 => alondra_domain_rules::Doing::Turn, 1 => alondra_domain_rules::Doing::OwnWork, _ => alondra_domain_rules::Doing::AfterMerge };
+        let doing = match doing { 0 => alondra_domain_model::Doing::Turn, 1 => alondra_domain_model::Doing::OwnWork, _ => alondra_domain_model::Doing::AfterMerge };
         for client in [Client::Ios, Client::Mac, Client::Tui] {
             for lang in [Lang::En, Lang::Es] {
-                let index = alondra_domain_rules::ReadIndex::build(&state);
+                let index = alondra_domain_model::ReadIndex::build(&state);
                 let context = RenderContext { domain: &state, index: &index, live: &live, client, lang,
                     transport: Transport::Loopback, cursor: "", rendered_at: "2026-11-11T16:00:00+01:00" };
                 let presentation = task_state::working(&state.tasks[&"t-1".into()], doing, &context)
@@ -10816,7 +10816,7 @@ fn a_session_without_read_receipts_does_not_block_scheduled_followup_messages() 
 
 #[test]
 fn host_recovery_cards_use_plain_localized_content_in_the_list_and_detail() {
-    use alondra_domain_rules::{Actor, Command, SystemCard};
+    use alondra_domain_model::{Actor, Command, SystemCard};
     for legacy in [false, true] {
         let mut state = presented_pr();
         if legacy {
@@ -10830,7 +10830,7 @@ fn host_recovery_cards_use_plain_localized_content_in_the_list_and_detail() {
         execute(&mut state, Actor::System, Command::RecordHostLost {
             task_id: "t".into(), reason: "StaleOwner: the provider rejected the execution token".into(), quiet: false, signed_out: false,
         });
-        let id = state.interactions.values().find(|i| alondra_domain_rules::retakes(i)).unwrap().id.clone();
+        let id = state.interactions.values().find(|i| alondra_domain_model::retakes(i)).unwrap().id.clone();
         assert_eq!(state.interactions[&id].system_card, Some(if legacy { SystemCard::SessionEnded } else { SystemCard::HostLost { signed_out: false } }));
         let live = LiveSnapshot::default();
         for client in [Client::Tui, Client::Mac, Client::Ios] {
@@ -10850,7 +10850,7 @@ fn host_recovery_cards_use_plain_localized_content_in_the_list_and_detail() {
 }
 
 fn start_problem_read_fixture() -> DomainState {
-    use alondra_domain_rules::{Actor, Command, LaunchPlan, CardSpec, CardKind, StartProblem};
+    use alondra_domain_model::{Actor, Command, LaunchPlan, CardSpec, CardKind, StartProblem};
     let mut state = DomainState::new("test-epoch");
     execute(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
         request_id: "r".into(), body: "Export the report".into(), auto_merge: false, maintenance: false, message: false,
@@ -10879,7 +10879,7 @@ fn start_problem_read_fixture() -> DomainState {
 
 #[test]
 fn task_presentations_read_start_problems_from_the_committed_index() {
-    use alondra_domain_rules::{ReadSnapshot, Situation, WaitsFor, AlondraStep};
+    use alondra_domain_model::{ReadSnapshot, Situation, WaitsFor, AlondraStep};
     let read = ReadSnapshot::build(std::sync::Arc::new(start_problem_read_fixture()));
     for id in ["refused", "dependent"] {
         assert_eq!(read.index().task(&id.into()).unwrap().situation,
@@ -10897,13 +10897,13 @@ fn task_presentations_read_start_problems_from_the_committed_index() {
         for client in [Client::Ios, Client::Mac, Client::Tui] {
             let context = RenderContext { domain: read.state(), index: read.index(), live: &live,
                 client, lang, transport: Transport::Relay, cursor: "test", rendered_at: "" };
-            let before = alondra_domain_rules::measure::cards_read();
+            let before = alondra_domain_model::measure::cards_read();
             for (id, expected) in ["refused", "dependent", "queued"].into_iter().zip(expected) {
                 let task = &read.state().tasks[&id.into()];
                 let presentation = task_state::present(task, &context);
                 assert_eq!(presentation.fact(), Some(expected), "{id} {client:?} {lang:?}");
             }
-            assert_eq!(alondra_domain_rules::measure::cards_read() - before, 0,
+            assert_eq!(alondra_domain_model::measure::cards_read() - before, 0,
                 "presenting tasks must not scan start-problem history");
         }
     }
@@ -10915,7 +10915,7 @@ fn task_presentations_read_start_problems_from_the_committed_index() {
 #[test]
 fn an_answer_on_its_way_to_the_node_reads_as_the_users_answer() {
     let state = crate::domain_fixtures::answered_while_its_turn_waits();
-    let index = alondra_domain_rules::ReadIndex::build(&state);
+    let index = alondra_domain_model::ReadIndex::build(&state);
     assert!(!index.waiting().iter().any(|item| item.id.contains("where")), "the answered card left the inbox");
     let live = LiveSnapshot::default();
     let line = |lang| {
@@ -10951,7 +10951,7 @@ fn every_open_task_is_in_exactly_one_block_whatever_its_request_says() {
             task.agent_id = Some("a-1".into());
             task.final_presentation = None;
             task.archived = archived;
-            task.ending = ending.then_some(alondra_domain_rules::TaskEnding::Cancelling);
+            task.ending = ending.then_some(alondra_domain_model::TaskEnding::Cancelling);
             let request = state.requests.get_mut(&"r-1".into()).unwrap();
             (request.closed, request.cleared, request.message) = (closed, cleared, message);
             if orphan { state.requests.clear(); }

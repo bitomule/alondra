@@ -15,7 +15,7 @@ use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use alondra_engine_ports::Runtime;
 use crate::domain_store::{Handover, HandoverProcess, HandoverStep};
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use serde::Serialize;
 use std::sync::Arc;
 

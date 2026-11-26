@@ -1,5 +1,5 @@
 //! How the card of a decision Claude asks for is built, which the journal does not know.
-use alondra_domain_rules::{DecisionPrompt, Hold, McpServerOrigin};
+use alondra_domain_model::{DecisionPrompt, Hold, McpServerOrigin};
 use alondra_provider_contract::DecisionKind;
 use serde_json::Value;
 use std::path::Path;

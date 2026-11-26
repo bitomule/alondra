@@ -11,7 +11,7 @@ DEPS = all_crate_deps(normal = True) + [
     "//crates/agent-runtime:agent_runtime",
     "//crates/alondrad:alondrad_lib",
     "//crates/provider-claude:claude_host_model",
-    "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/view-model:view_model", "//crates/views:views",
+    "//crates/core:alondra_core", "//crates/domain-model:domain_model", "//crates/view-model:view_model", "//crates/views:views",
     "//crates/daemon-engine:daemon_engine",
     "//crates/daemon-support:daemon_support",
     "//crates/engine-admission:engine_admission",

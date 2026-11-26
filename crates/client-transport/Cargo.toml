@@ -26,5 +26,5 @@ url = "2.5.7"
 
 [dev-dependencies]
 tempfile.workspace = true
-alondra-domain-rules.workspace = true
+alondra-domain-model.workspace = true
 alondra-view-model.workspace = true

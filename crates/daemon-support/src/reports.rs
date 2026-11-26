@@ -3,7 +3,7 @@
 //! each one whose next try is due, in silence. A report held for the user to decide on is read
 //! here too; its card lives in the daemon engine.
 use alondra_core::clock;
-use alondra_domain_rules::report_held_card::Held;
+use alondra_domain_model::report_held_card::Held;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

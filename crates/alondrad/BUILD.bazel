@@ -100,7 +100,7 @@ low_opt_rust_test(
         "//crates/daemon-engine:daemon_engine",
         "//crates/daemon-server:daemon_server",
         "//crates/daemon-support:daemon_support",
-        "//crates/domain-rules:domain_rules",
+        "//crates/domain-model:domain_model",
         "//crates/engine-doubles:engine_doubles",
         "//crates/engine-admission:engine_admission",
         "//crates/engine-ports:engine_ports",
@@ -140,7 +140,7 @@ low_opt_rust_test(
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondrad": "$(rootpath :alondrad)"},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + ["//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/views:views"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + ["//crates/core:alondra_core", "//crates/domain-model:domain_model", "//crates/views:views"],
 )
 
 low_opt_rust_test(
@@ -183,7 +183,7 @@ low_opt_rust_test(
         "//crates/core:alondra_core",
         "//crates/daemon-engine:daemon_engine",
         "//crates/daemon-server:daemon_server",
-        "//crates/domain-rules:domain_rules",
+        "//crates/domain-model:domain_model",
         "//crates/engine-admission:engine_admission",
         "//crates/engine-doubles:engine_doubles",
         "//crates/engine-ports:engine_ports",
@@ -249,7 +249,7 @@ low_opt_rust_test(
         "//crates/daemon-engine:daemon_engine",
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
-        "//crates/domain-rules:domain_rules",
+        "//crates/domain-model:domain_model",
         "//crates/engine-kernel:engine_kernel",
         "//crates/engine-ports:engine_ports",
         "//crates/engine-admission:engine_admission",

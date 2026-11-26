@@ -8,8 +8,8 @@ pub use alondra_engine_ports::gate::{Gate, GateOf};
 pub struct PauseResume;
 
 impl crate::domain_runtime::CommitObserver for PauseResume {
-    fn carries_out<'a>(&'a self, domain: &'a dyn Runtime, actor: &alondra_domain_rules::Actor, command: &alondra_domain_rules::Command) -> Option<crate::domain_runtime::Carried<'a>> {
-        use alondra_domain_rules::{Actor, Command, Scope, NODE_PAUSE_RESUME};
+    fn carries_out<'a>(&'a self, domain: &'a dyn Runtime, actor: &alondra_domain_model::Actor, command: &alondra_domain_model::Command) -> Option<crate::domain_runtime::Carried<'a>> {
+        use alondra_domain_model::{Actor, Command, Scope, NODE_PAUSE_RESUME};
         let (Actor::User { .. }, Command::AnswerQuestion { interaction_id, option_id, .. }) = (actor, command) else { return None };
         if option_id != NODE_PAUSE_RESUME {
             return None;
@@ -20,10 +20,10 @@ impl crate::domain_runtime::CommitObserver for PauseResume {
         let agent = state.tasks.get(task_id)?.agent_id.clone()?;
         Some(Box::new(move || {
             if !domain.gate().resume_now(&agent.0, alondra_core::now_millis()) {
-                return Err(crate::domain_store::StoreError::Domain(alondra_domain_rules::DomainError::new("conflict", "The node is no longer paused")));
+                return Err(crate::domain_store::StoreError::Domain(alondra_domain_model::DomainError::new("conflict", "The node is no longer paused")));
             }
             let revision = domain.state().revision;
-            Ok(alondra_domain_rules::CommandOutcome { revision, changed: false, effects: vec![], created_ids: vec![], superseded_acceptances: vec![],
+            Ok(alondra_domain_model::CommandOutcome { revision, changed: false, effects: vec![], created_ids: vec![], superseded_acceptances: vec![],
                 effect: vec!["The paused node resumes now.".into()] })
         }))
     }

@@ -740,7 +740,7 @@ impl Service {
         authorize: impl Fn() -> Result<()> + Send + Sync,
     ) -> Result<Value> {
         if authorize().is_err() {
-            return Ok(json!({"status":403, "body":alondra_domain_rules::DomainError::new("forbidden", "device approval was revoked")}));
+            return Ok(json!({"status":403, "body":alondra_domain_model::DomainError::new("forbidden", "device approval was revoked")}));
         }
         let result = if crate::views::actions::approved_path(&request.method, &request.path) {
             let routes = routes.as_ref().context("client routes unavailable")?;
@@ -2241,7 +2241,7 @@ fn domain_read_route(request: &LocalRequest) -> bool {
 }
 
 /// The agent a relayed `POST /agents/{id}/messages` writes to.
-fn agent_message(path: &str) -> Option<alondra_domain_rules::AgentId> {
+fn agent_message(path: &str) -> Option<alondra_domain_model::AgentId> {
     path.strip_prefix("/agents/")?
         .strip_suffix("/messages")
         .filter(|id| domain_read_id(id))
@@ -6368,13 +6368,13 @@ agreement_key = "{}"
         let state = domain.state().unwrap();
         domain
             .execute(
-                &alondra_domain_rules::Actor::System,
-                &alondra_domain_rules::CommandEnvelope {
-                    protocol_version: alondra_domain_rules::PROTOCOL_VERSION,
+                &alondra_domain_model::Actor::System,
+                &alondra_domain_model::CommandEnvelope {
+                    protocol_version: alondra_domain_model::PROTOCOL_VERSION,
                     data_epoch: state.data_epoch.clone(),
                     command_id: "agent".into(),
                     expected_revision: state.revision,
-                    command: alondra_domain_rules::Command::RegisterAgent {
+                    command: alondra_domain_model::Command::RegisterAgent {
                         agent_id: "agent-a".into(),
                         name: "Instance A".into(), at: 0
                     },
@@ -6548,7 +6548,7 @@ agreement_key = "{}"
             .await
             .unwrap();
         assert_eq!(finished["status"], 200, "{finished}");
-        let attachment: alondra_domain_rules::AttachmentRef =
+        let attachment: alondra_domain_model::AttachmentRef =
             serde_json::from_value(finished["body"]["attachment"].clone()).unwrap();
         assert_eq!(
             (

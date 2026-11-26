@@ -1,9 +1,9 @@
 //! The launch plans alondrad's API accepts for a new task, resolved by the engine.
 use alondra_daemon_engine::launch_plans::*;
 use crate::domain_runtime::DomainRuntime;
-use alondra_domain_rules::LaunchPlan;
+use alondra_domain_model::LaunchPlan;
 use crate::domain_api::{check_launch_plan, check_launch_shape};
-use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
+use alondra_domain_model::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
 use serde_json::json;
 
 struct World {
@@ -93,7 +93,7 @@ fn a_suggestion_that_becomes_a_task_has_its_plan_checked_like_any_new_task() {
     let w = world();
     let settle = |launch: LaunchPlan| Command::SettleSuggestion {
         interaction_id: "p".into(),
-        decision: alondra_domain_rules::SuggestionDecision::NewTask {
+        decision: alondra_domain_model::SuggestionDecision::NewTask {
             task_id: "readme".into(), request_id: "r-readme".into(), title: "README".into(), launch,
             dependencies: Default::default(), note: None,
         },
@@ -108,7 +108,7 @@ fn a_suggestion_that_becomes_a_task_has_its_plan_checked_like_any_new_task() {
 fn a_launch_plan_needs_model_and_reason_with_auto_effort_and_an_existing_folder() {
     super::wired();
     let w = world();
-    let request = alondra_domain_rules::RequestId::from("r");
+    let request = alondra_domain_model::RequestId::from("r");
     validate(&w.domain, &w.home, &request, &plan(&w, json!({}))).unwrap();
     let without_model = validate(&w.domain, &w.home, &request, &plan(&w, json!({"model": null}))).unwrap_err();
     assert_eq!(without_model.message, "effort is auto for this request: the launch plan needs model and reason");

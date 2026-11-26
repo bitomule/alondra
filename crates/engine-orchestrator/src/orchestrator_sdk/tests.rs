@@ -5,8 +5,8 @@ use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use super::*;
 use crate::domain_orchestrator::testing::{Fixture, fixture};
 use crate::domain_orchestrator::{Failure, Run, Runtime, load, save};
-use alondra_domain_rules::*;
-use alondra_domain_rules::orchestrator_cards::{UNSETTLED_NOTICE_PREFIX, UNSPLIT_NOTICE_PREFIX, UNSPLIT_PROBLEM_PREFIX};
+use alondra_domain_model::*;
+use alondra_domain_model::orchestrator_cards::{UNSETTLED_NOTICE_PREFIX, UNSPLIT_NOTICE_PREFIX, UNSPLIT_PROBLEM_PREFIX};
 use alondra_provider_contract::Handoff;
 use std::collections::BTreeSet;
 
@@ -286,7 +286,7 @@ async fn every_request_of_a_handled_batch_ends_with_a_task_an_answer_or_a_questi
         task_id: "t-2".into(), request_id: "r-2".into(), title: "Task".into(), agent_id: Some("a".into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
-    f.run(Actor::Orchestrator { generation: 0 }, "answer", Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::Answered), request_id: "r-3".into(), withdrawn: false, answer: Some("Already done".into()), title: None, headline: None, folded_into: None });
+    f.run(Actor::Orchestrator { generation: 0 }, "answer", Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_model::CloseOutcome::Answered), request_id: "r-3".into(), withdrawn: false, answer: Some("Already done".into()), title: None, headline: None, folded_into: None });
     f.run(Actor::Agent { agent_id: "a".into() }, "start", Command::StartTask { task_id: "t-2".into() });
     f.run(Actor::Agent { agent_id: "a".into() }, "suggest", Command::AskQuestion {
         attachments: vec![], interaction_id: "s-1".into(), scope: Scope::Task { task_id: "t-2".into() },
@@ -389,7 +389,7 @@ async fn a_turn_cancelled_after_claude_answered_without_changing_anything_is_set
 
 #[tokio::test]
 async fn a_no_effect_cancellation_retires_its_remembered_logical_stop() {
-    use alondra_domain_rules::orchestrator_batch::{BatchProblem, BatchStop};
+    use alondra_domain_model::orchestrator_batch::{BatchProblem, BatchStop};
     let f = fixture();
     f.tell("cancelled-stop", "Cancel this batch without repeating its decision");
     f.mark_once("fixture:quiet-hold");
@@ -441,7 +441,7 @@ async fn a_turn_cancelled_after_a_change_the_run_never_read_is_the_users_call() 
     let cards = f.cards("problem-orchestrator-");
     assert_eq!(cards.len(), 1);
     let body = &f.domain().state().unwrap().interactions[&cards[0].clone().into()].body;
-    assert_eq!(alondra_domain_rules::orchestrator_batch::BatchProblem::from_body(body).unwrap().calls, ["create_request"]);
+    assert_eq!(alondra_domain_model::orchestrator_batch::BatchProblem::from_body(body).unwrap().calls, ["create_request"]);
 }
 
 fn fixture_selection() -> alondra_daemon_engine_model::BatchSelection {

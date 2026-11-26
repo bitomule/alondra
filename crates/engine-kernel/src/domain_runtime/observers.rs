@@ -2,7 +2,7 @@
 //! registers a [`CommitObserver`] when the engine opens the runtime, and every commit tells them
 //! in that order.
 use crate::domain_store::StoreError;
-use alondra_domain_rules::{Actor, Command, CommandOutcome, DomainState};
+use alondra_domain_model::{Actor, Command, CommandOutcome, DomainState};
 
 /// What carries out a command in place of the store, once the runtime authorized it.
 pub type Carried<'a> = Box<dyn FnOnce() -> Result<CommandOutcome, StoreError> + 'a>;

@@ -7,10 +7,10 @@ use super::{
     text::{t, tf},
     Action, ActionOption, ActionBar, BuildError, Confirm, Field, FieldKind, Form, Icon, Input, Item, Markdown, Notice, Presentation, RenderContext, Section, Style, Tone, View,
 };
-use alondra_domain_rules::spec_card;
-use alondra_domain_rules::specs::{self, SpecDraft, SpecFileKind, SpecLevel, SpecMode};
-use alondra_domain_rules::{Hold, Interaction, InteractionPayload, Scope, Task, TaskId};
-use alondra_domain_rules::specs::engine;
+use alondra_domain_model::spec_card;
+use alondra_domain_model::specs::{self, SpecDraft, SpecFileKind, SpecLevel, SpecMode};
+use alondra_domain_model::{Hold, Interaction, InteractionPayload, Scope, Task, TaskId};
+use alondra_domain_model::specs::engine;
 use serde_json::json;
 
 pub(super) const EDITOR: &str = "task_specs";
@@ -172,7 +172,7 @@ fn fence(text: &str) -> String {
     format!("{fence}\n{}\n{fence}", text.trim_end())
 }
 
-use alondra_domain_rules::specs::{file_of, handle, scenario_handle, scenario_of};
+use alondra_domain_model::specs::{file_of, handle, scenario_handle, scenario_of};
 
 fn edit_action(task: &TaskId, draft: &SpecDraft, extra: &str, label: &str, style: Style) -> Option<Action> {
     let mut action = common::action(Verb::SpecEdit, &task.0, draft.revision, label, style)?;
@@ -435,7 +435,7 @@ fn decision_form(id: &str, h: &str, context: &RenderContext<'_>) -> Result<View,
 /// What the task's detail says of its specs: whether the settings can be read, the proposal, what
 /// is approved and written, and each change or decision that waits for the user.
 pub(super) fn task_facts(task: &Task, context: &RenderContext<'_>) -> Vec<super::Fact> {
-    use alondra_domain_rules::AmendmentState;
+    use alondra_domain_model::AmendmentState;
     let lang = context.lang;
     let specs = &task.specs;
     let fact = |label: &str, value: String, tone: Option<Tone>| super::Fact { kind: None, label: label.into(), value, tone, link: None };
@@ -463,15 +463,15 @@ pub(super) fn task_facts(task: &Task, context: &RenderContext<'_>) -> Vec<super:
             AmendmentState::Rejected => t!(lang, "rejected", "rechazado"),
         };
         let tone = (amendment.state == AmendmentState::Proposed).then_some(Tone::YourTurn);
-        facts.push(fact(t!(lang, "Change", "Cambio"), format!("{} · {state}", alondra_domain_rules::clip(&amendment.reason, 120)), tone));
+        facts.push(fact(t!(lang, "Change", "Cambio"), format!("{} · {state}", alondra_domain_model::clip(&amendment.reason, 120)), tone));
     }
     for proposed in &specs.proposed_decisions {
         facts.push(fact(t!(lang, "Decision", "Decisión"), tf!(lang, "{title} · waits for you", "{title} · te espera", title = proposed.title), Some(Tone::YourTurn)));
     }
     for answer in &specs.decisions {
         let verdict = match answer.verdict {
-            alondra_domain_rules::DecisionVerdict::Accepted => t!(lang, "accepted", "aceptada"),
-            alondra_domain_rules::DecisionVerdict::Rejected => t!(lang, "rejected", "rechazada"),
+            alondra_domain_model::DecisionVerdict::Accepted => t!(lang, "accepted", "aceptada"),
+            alondra_domain_model::DecisionVerdict::Rejected => t!(lang, "rejected", "rechazada"),
         };
         let words = answer.words.as_deref().map(|words| format!(" · «{words}»")).unwrap_or_default();
         facts.push(fact(t!(lang, "Decision", "Decisión"), format!("`{}` · {verdict}{words}", answer.id), None));

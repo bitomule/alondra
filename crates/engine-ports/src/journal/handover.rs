@@ -1,5 +1,5 @@
 //! A node's move from `claude --bg` to the Agent SDK, step by step, as the journal keeps it.
-use alondra_domain_rules::{AgentId, TaskId};
+use alondra_domain_model::{AgentId, TaskId};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;

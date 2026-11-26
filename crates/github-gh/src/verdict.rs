@@ -2,7 +2,7 @@
 //!
 //! GitHub stays the judge: `mergeStateStatus` says whether the merge is allowed, and only when it
 //! says the merge is blocked or behind do the review decision and the required checks explain why.
-use alondra_domain_rules::{MergeBlocker, MergeNote, MergeVerdict};
+use alondra_domain_model::{MergeBlocker, MergeNote, MergeVerdict};
 use serde_json::Value;
 
 /// `mergeable` and `mergeStateStatus` as the verdict needs them.

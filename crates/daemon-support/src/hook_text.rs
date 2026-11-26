@@ -103,7 +103,7 @@ pub fn permission_detail(input: &Value, summary: Option<&str>) -> Option<String>
 }
 
 pub fn card_subject(metadata: &str) -> String {
-    alondra_domain_rules::clip(&metadata.split_whitespace().collect::<Vec<_>>().join(" "), alondra_domain_rules::CardSpec::TITLE_MAX)
+    alondra_domain_model::clip(&metadata.split_whitespace().collect::<Vec<_>>().join(" "), alondra_domain_model::CardSpec::TITLE_MAX)
 }
 
 pub fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOption>) {
@@ -139,7 +139,7 @@ mod tests {
         let server = format!("{}\nserver", "a".repeat(200));
         let message = "# Original message\n\nPreserve every word.";
         let (title, detail, _) = elicitation_card(&json!({"mcp_server_name":server,"message":message}));
-        assert!(title.chars().count() <= alondra_domain_rules::CardSpec::TITLE_MAX);
+        assert!(title.chars().count() <= alondra_domain_model::CardSpec::TITLE_MAX);
         assert!(!title.contains(['\n', '\r']));
         assert!(detail.unwrap().contains(message));
     }

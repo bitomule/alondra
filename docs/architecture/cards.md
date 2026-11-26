@@ -2,7 +2,7 @@
 
 Every card Alondra puts in front of the user, the orchestrator or a node has a type, and every
 type has a contract. The domain checks a new card against its contract before the card exists
-(`crates/domain-rules/src/card_contract.rs`): a node's or the orchestrator's card through the MCP,
+(`crates/domain-model/src/card_contract.rs`): a node's or the orchestrator's card through the MCP,
 a hook's held card, and each of Alondra's own cards. A card that breaks it is refused with code
 `card_contract` (or the code of the field check that caught it) and a typed `contract` field in
 the error: the card type, the rule it broke and the field.

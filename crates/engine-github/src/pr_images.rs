@@ -100,7 +100,7 @@ fn source(target: &Target<'_>, url: &str) -> Option<Source> {
     let host = host.to_ascii_lowercase();
     let path = path.split(['?', '#']).next()?;
     let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let pr_host = alondra_domain_rules::normalize_pr_host(target.host);
+    let pr_host = alondra_domain_model::normalize_pr_host(target.host);
     if host == SIGNED_IMAGE_HOST {
         let name = parts.last()?;
         let stem = name.split('.').next()?;
@@ -209,7 +209,7 @@ fn keep(home: &Path, bytes: &[u8]) -> Result<String, ImageProblem> {
 fn unavailable(target: &Target<'_>, url: &str, source: &Source, problem: ImageProblem) -> Shown {
     let link = match source {
         Source::File { repository, segments, relative: true } => {
-            format!("https://{}/{repository}/blob/{}/{}", alondra_domain_rules::normalize_pr_host(target.host), target.head, encoded_path(&segments.join("/")))
+            format!("https://{}/{repository}/blob/{}/{}", alondra_domain_model::normalize_pr_host(target.host), target.head, encoded_path(&segments.join("/")))
         }
         _ => url.to_owned(),
     };

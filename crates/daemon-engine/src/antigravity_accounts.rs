@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use alondra_core::accounts::{AccountKey, AccountState, AccountStatus, AccountsConfig, Provider};
 use alondra_core::antigravity_account::{self as antigravity, Check, CheckReport, Probe, Secret, Settings, Unavailable, UsageOutcome};
 use alondra_core::model_selection::AccountModelCatalog;
-use alondra_domain_rules::Command;
+use alondra_domain_model::Command;
 use alondra_engine_ports::accounts::Accounts;
 use sha2::{Digest, Sha256};
 

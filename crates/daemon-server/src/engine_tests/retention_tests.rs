@@ -3,7 +3,7 @@
 use crate::domain_runtime::DomainRuntime;
 use alondra_store_sqlite::retention_fixtures::ended_task;
 use alondra_store_sqlite::testing::Fixture;
-use alondra_domain_rules::{DomainState, ReadIndex};
+use alondra_domain_model::{DomainState, ReadIndex};
 
 #[test]
 fn compacting_an_ended_task_leaves_what_the_apps_show_the_same() {

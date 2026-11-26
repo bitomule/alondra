@@ -1,7 +1,7 @@
 //! A runtime that is not the kernel's: it hands every call to the runtime it wraps. A test runs a
 //! piece of the engine on it to show the piece needs only the `Runtime` context, never the
 //! runtime's own type.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_engine_ports::journal::OwnerJournal;
 use alondra_engine_ports::journal::owner::StagedOutcome;
 use alondra_engine_ports::journal::{Journal, ReadTransaction, RequestLaunch, StoreError, TransportIdentity};

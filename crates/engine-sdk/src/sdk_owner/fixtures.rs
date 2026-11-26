@@ -12,7 +12,7 @@ use alondra_engine_sdk::domain_runtime::DomainRuntime;
 use alondra_engine_sdk::domain_store::StoreError;
 use alondra_daemon_engine_model::LaunchPlan;
 use alondra_domain::ActivityView;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_provider_contract::Capability;
 use alondra_engine_admission::AdmissionOf as _;
 use crate::test_support::Directory;
@@ -109,7 +109,7 @@ pub(crate) fn rests_on(task: &str, card: &InteractionId) -> bool {
 }
 
 pub fn not_wakes(prompts: impl Iterator<Item = String>) -> Vec<String> {
-    prompts.filter(|prompt| !prompt.starts_with(alondra_domain_rules::WAKE_INSTRUCTION)).collect()
+    prompts.filter(|prompt| !prompt.starts_with(alondra_domain_model::WAKE_INSTRUCTION)).collect()
 }
 
 impl Drop for SdkLaunches {
@@ -978,7 +978,7 @@ pub fn assert_cancelled_from_its_card<H: Hosts>(slice: &Slice<H>, reply: &serde_
     assert!(state.tasks[&TaskId::from(TASK)].cancelled(), "the task is cancelled");
     let cards: Vec<_> = state.interactions.values()
         .filter(|card| card.id.0.starts_with(&format!("{TURN_ENDED_PREFIX}{TASK}-")))
-        .map(|card| (matches!(&card.payload, InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == alondra_domain_rules::CANCEL_TASK), card.withdrawn))
+        .map(|card| (matches!(&card.payload, InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == alondra_domain_model::CANCEL_TASK), card.withdrawn))
         .collect();
     assert!(cards.contains(&(true, false)), "the card keeps the user's choice: {cards:?}");
 }

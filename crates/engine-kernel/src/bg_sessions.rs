@@ -5,7 +5,7 @@ use crate::Runtime;
 use crate::domain_store::{Handover, HandoverProcess, HandoverStep};
 use crate::locks::Poisonable as _;
 use alondra_core::clock;
-use alondra_domain_rules::{AgentId, TaskId};
+use alondra_domain_model::{AgentId, TaskId};
 use alondra_engine_ports::node_close::{Answer, Ran, agents_args, listing};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;

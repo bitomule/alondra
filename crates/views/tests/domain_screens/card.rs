@@ -1,5 +1,5 @@
 //! The card rules R1–R22 of the card redesign, one test each, named as on the design board.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_views as views;
 use crate::inbox_items;
 use std::collections::BTreeSet;
@@ -153,7 +153,7 @@ fn task(s: &mut DomainState, id: &str, agent: &str) {
     ok(s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: Some(agent.into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
     });
 }
 
@@ -170,7 +170,7 @@ fn sdk_fixture() -> DomainState {
     ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "t".into(), request_id: "r".into(), title: "Task t".into(), agent_id: None,
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
     });
     ok(&mut s, Actor::System, Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: "t".into(), agent_id: "a".into(),
         conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });

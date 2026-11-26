@@ -6,7 +6,7 @@ use crate::locks::Poisonable as _;
 use super::close::Answer;
 use super::{Client, Reply};
 use crate::domain_store::{RequestLaunch, TransportIdentity};
-use alondra_domain_rules::{Actor, AttachmentRef, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
+use alondra_domain_model::{Actor, AttachmentRef, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
 use alondra_core::options::{Choice, OptionsFile};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -22,10 +22,10 @@ pub(crate) trait Github: Send + Sync + 'static {
     /// Closes the PR on GitHub with `comment`, the way Alondra closes every PR it closes, only
     /// while the address still has the pull request `expected`: another one there closes nothing
     /// and answers `IdentityMismatch`.
-    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str)
+    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_model::ProviderPrKey, comment: &'a str)
         -> Answer<'a, Result<(), crate::domain_github::GhFailure>>;
     /// Whether GitHub has the PR open, closed or merged now.
-    fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_rules::PrState, String>>;
+    fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_model::PrState, String>>;
 }
 
 /// GitHub as the root registered it.
@@ -40,19 +40,19 @@ impl Github for Ported {
         self.0.reads.issue_view(repo, number)
     }
 
-    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str)
+    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_model::ProviderPrKey, comment: &'a str)
         -> Answer<'a, Result<(), crate::domain_github::GhFailure>> {
         Box::pin(alondra_engine_ports::github::close_checked(&self.0.observer, host, repository, number, expected, comment))
     }
 
-    fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_rules::PrState, String>> {
+    fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_model::PrState, String>> {
         Box::pin(async move {
             let url = crate::domain_github::pr_url(host, repository, number);
             let view = self.0.reads.view(&url).await.ok_or("GitHub did not report the pull request")?;
             match view["state"].as_str() {
-                Some("OPEN") => Ok(alondra_domain_rules::PrState::Open),
-                Some("CLOSED") => Ok(alondra_domain_rules::PrState::Closed),
-                Some("MERGED") => Ok(alondra_domain_rules::PrState::Merged),
+                Some("OPEN") => Ok(alondra_domain_model::PrState::Open),
+                Some("CLOSED") => Ok(alondra_domain_model::PrState::Closed),
+                Some("MERGED") => Ok(alondra_domain_model::PrState::Merged),
                 other => Err(format!("gh reported an unknown PR state {other:?}")),
             }
         })

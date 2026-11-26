@@ -14,7 +14,7 @@ WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
     "//crates/host:host",
     "//crates/domain:domain",
-    "//crates/domain-rules:domain_rules",
+    "//crates/domain-model:domain_model",
     "//crates/e2e:alondra_e2e",
     "//crates/engine-ports:engine_ports",
     "//crates/view-model:view_model",
@@ -41,7 +41,7 @@ adapter_in_crate(
 TEST_COMPILE_DATA = [
     "//crates/core:fixtures/ctrl_trivial_2.jsonl",
     "//crates/core:fixtures/quill.jsonl",
-    "//crates/domain-rules:src/tests.rs",
+    "//crates/domain-model:src/tests.rs",
     "//crates/store-sqlite:src/schedule_acceptance_tests.rs",
     "//crates/store-sqlite:src/tests.rs",
     "//crates/daemon-support:src/domain_authority.rs",

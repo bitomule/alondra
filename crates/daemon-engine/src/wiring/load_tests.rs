@@ -4,7 +4,7 @@ use super::owner_fixtures::{running, scope_of};
 use alondra_store_sqlite::testing::Fixture;
 use alondra_store_sqlite::DomainStore;
 use crate::domain_store::*;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use rusqlite::Connection;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

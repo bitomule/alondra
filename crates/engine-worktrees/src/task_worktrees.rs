@@ -2,7 +2,7 @@
 //! launched: recorded from what Claude Code says it made, and settled when the task closes.
 use std::path::Path;
 
-use alondra_domain_rules::{AgentId, Command, DomainState, Task, TaskId, WorktreeEnd, WorktreeOrigin};
+use alondra_domain_model::{AgentId, Command, DomainState, Task, TaskId, WorktreeEnd, WorktreeOrigin};
 use alondra_engine_ports::worktrees::{Conversations, TaskWorktree};
 use anyhow::{Context, Result};
 use serde_json::Value;

@@ -1,7 +1,7 @@
 //! What Alondra reads and writes of the spec files in a task's worktrees. The rules about them are
-//! the domain's (`alondra_domain_rules::specs`); this port only hands it the files.
-use alondra_domain_rules::specs::{Files, SpecFiles};
-use alondra_domain_rules::{DomainState, TaskId};
+//! the domain's (`alondra_domain_model::specs`); this port only hands it the files.
+use alondra_domain_model::specs::{Files, SpecFiles};
+use alondra_domain_model::{DomainState, TaskId};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use alondra_engine_ports::agent_host::{AgentHost, ProbeRun, VerifiedArtifact};
 use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Policy, Provider};
-use alondra_domain_rules::{Actor, Command as DomainCommand, CommandEnvelope, DomainState, PROTOCOL_VERSION};
+use alondra_domain_model::{Actor, Command as DomainCommand, CommandEnvelope, DomainState, PROTOCOL_VERSION};
 use alondra_core::usage::{AccountUsage, Share, UsageReading, WindowKind, WindowReading};
 use alondra_core::{Millis, now_millis};
 use serde::Deserialize;

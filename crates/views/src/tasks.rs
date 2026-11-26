@@ -3,7 +3,7 @@ use super::{
     BuildError, Confirm, Fact, FactKind, Facts, Icon, Item, Markdown, Notice, RenderContext,
     Style, Tone, Trailing, View, action_id::Verb, common, text::{t, t as tr, tf},
 };
-use alondra_domain_rules::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Tally, Task, TaskId, TaskState};
+use alondra_domain_model::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Tally, Task, TaskId, TaskState};
 use alondra_core::model_label::model_family;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,7 +32,7 @@ fn relaunch_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Ac
 }
 
 /// The open tasks a live node is working on now, each with that node.
-pub(super) fn in_progress<'a>(context: &'a RenderContext<'_>) -> impl Iterator<Item = (&'a Task, &'a alondra_domain_rules::Agent)> {
+pub(super) fn in_progress<'a>(context: &'a RenderContext<'_>) -> impl Iterator<Item = (&'a Task, &'a alondra_domain_model::Agent)> {
     context.domain.agents.values()
         .filter(|agent| super::task_node::on_open_task(agent, context))
         .filter_map(|agent| common::current_task(context, &agent.id)
@@ -785,8 +785,8 @@ fn clear_completed(context: &RenderContext<'_>) -> Option<super::Action> {
 }
 
 /// What a task that has no card waits for, as a sentence.
-fn wait_text(reason: &alondra_domain_rules::WaitReason, context: &RenderContext<'_>) -> String {
-    use alondra_domain_rules::WaitReason as W;
+fn wait_text(reason: &alondra_domain_model::WaitReason, context: &RenderContext<'_>) -> String {
+    use alondra_domain_model::WaitReason as W;
     let lang = context.lang;
     match reason {
         W::BlockedBy { task } => {
@@ -807,7 +807,7 @@ fn wait_text(reason: &alondra_domain_rules::WaitReason, context: &RenderContext<
 /// The sentence under a task's state that says what it waits for or what comes next. It reads the task's
 /// `Situation`, so it never says something the state beside it contradicts.
 fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
-    use alondra_domain_rules::{Delivery, Doing, Situation, WaitReason, WaitsFor};
+    use alondra_domain_model::{Delivery, Doing, Situation, WaitReason, WaitsFor};
     let lang = context.lang;
     let situation = task_state::situation(task, context);
     let line = |text: String, link: Option<super::Link>| {
@@ -816,7 +816,7 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
         Some(row)
     };
     let wait = match context.attention(task) {
-        alondra_domain_rules::Attention::Wait(reason) => Some(reason),
+        alondra_domain_model::Attention::Wait(reason) => Some(reason),
         _ => None,
     };
     if let Some(reason) = wait.as_ref().filter(|reason| matches!(reason,
@@ -887,7 +887,7 @@ fn crash_report_action(task: &Task, context: &RenderContext<'_>) -> Option<super
 /// The folder the task works in: the worktree Alondra made for it, else one its node took over or
 /// entered; never a subagent's.
 fn folder(task: &Task) -> Option<&String> {
-    use alondra_domain_rules::WorktreeOrigin;
+    use alondra_domain_model::WorktreeOrigin;
     let rank = |origin: WorktreeOrigin| match origin {
         WorktreeOrigin::Task => Some(0),
         WorktreeOrigin::Inherited => Some(1),
@@ -1169,7 +1169,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let mut actions = vec![];
     let node = task.agent_id.as_ref().filter(|id| context.domain.agents.contains_key(*id));
     let open = !task.state.terminal() && task.ending.is_none();
-    let addressee = if request.is_some_and(|request| request.origin == alondra_domain_rules::RequestOrigin::Schedule) {
+    let addressee = if request.is_some_and(|request| request.origin == alondra_domain_model::RequestOrigin::Schedule) {
         Some((Verb::TaskMsg, task.id.0.as_str(), None,
             tr!(context.lang, "Write a message: this creates a separate task…", "Escribe un mensaje: se creará una tarea independiente…")))
     } else { match node {
@@ -1249,13 +1249,13 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
 fn move_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Action> {
     let read = context.reading(&task.id)?;
     let recovery = context.live.observed_at.is_some_and(|now| context.domain.out_of_quota(&task.id, now))
-        || matches!(read.situation, alondra_domain_rules::Situation::Waiting(alondra_domain_rules::WaitsFor::Usage | alondra_domain_rules::WaitsFor::ProviderApi))
+        || matches!(read.situation, alondra_domain_model::Situation::Waiting(alondra_domain_model::WaitsFor::Usage | alondra_domain_model::WaitsFor::ProviderApi))
         || read.waiting.iter().filter_map(|id| context.domain.interactions.get(id)).any(|card| {
-            card.author == alondra_domain_rules::Author::System && matches!(card.system_card,
-                Some(alondra_domain_rules::SystemCard::HostLost { .. } | alondra_domain_rules::SystemCard::SessionEnded
-                    | alondra_domain_rules::SystemCard::StartProblem | alondra_domain_rules::SystemCard::Stalled
-                    | alondra_domain_rules::SystemCard::ClaudeUsage { .. } | alondra_domain_rules::SystemCard::ClaudeSignedOut
-                    | alondra_domain_rules::SystemCard::ClaudeOutage { .. }))
+            card.author == alondra_domain_model::Author::System && matches!(card.system_card,
+                Some(alondra_domain_model::SystemCard::HostLost { .. } | alondra_domain_model::SystemCard::SessionEnded
+                    | alondra_domain_model::SystemCard::StartProblem | alondra_domain_model::SystemCard::Stalled
+                    | alondra_domain_model::SystemCard::ClaudeUsage { .. } | alondra_domain_model::SystemCard::ClaudeSignedOut
+                    | alondra_domain_model::SystemCard::ClaudeOutage { .. }))
         });
     if !recovery { return None; }
     let lang = context.lang;
@@ -1300,7 +1300,7 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
     let request = context
         .domain
         .requests
-        .get(&alondra_domain_rules::RequestId(id.into()))
+        .get(&alondra_domain_model::RequestId(id.into()))
         .ok_or(BuildError::NotFound)?;
     let mut view = common::view(
         "request",
@@ -1384,7 +1384,7 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
 
 /// The account the task's node runs on, by the name the user gave it, once there is more than one
 /// to tell apart. A task admitted before accounts were recorded runs on the default one.
-fn account_text(task: &alondra_domain_rules::Task, context: &RenderContext<'_>) -> Option<String> {
+fn account_text(task: &alondra_domain_model::Task, context: &RenderContext<'_>) -> Option<String> {
     let accounts = context.index.accounts();
     let account = task.account.as_ref()?;
     if accounts.len() < 2 && account.is_default() {
@@ -1481,8 +1481,8 @@ fn task_model_presentation(task: &TaskId, context: &RenderContext<'_>) -> Option
     })
 }
 
-fn role_label(role: Option<alondra_domain_rules::ExecutionRole>, lang: super::Lang) -> &'static str {
-    use alondra_domain_rules::ExecutionRole;
+fn role_label(role: Option<alondra_domain_model::ExecutionRole>, lang: super::Lang) -> &'static str {
+    use alondra_domain_model::ExecutionRole;
     match role {
         Some(ExecutionRole::Author) => t!(lang, "Author", "Autor"),
         Some(ExecutionRole::Implementer) => t!(lang, "Implementer", "Implementador"),

@@ -1,7 +1,7 @@
 //! The root's binaries against what they front: `alondrad --preflight` says what the daemon's own
 //! preflight says, and the real `alondra` CLI, run as a node's mod, a hook and Claude run it, speaks
 //! to a daemon put together as the root puts it.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_store_sqlite::DomainStore;
 use alondra_store_sqlite::testing::*;
 use std::fs;

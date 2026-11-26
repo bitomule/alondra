@@ -10,7 +10,7 @@ load("//bazel/rules:rust_sources.bzl", "production_sources")
 _DEPS = all_crate_deps(normal = True) + [
     "//crates/core:alondra_core",
     "//crates/domain:domain",
-    "//crates/domain-rules:domain_rules",
+    "//crates/domain-model:domain_model",
     "//crates/engine-ports:engine_ports",
     "//crates/foundation:foundation",
     "//crates/process-group:process_group",

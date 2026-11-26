@@ -5,7 +5,7 @@ use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_server::auth;
 use alondra_daemon_server::domain_bootstrap::{DomainDaemon, router};
 use alondra_daemon_server::domain_runtime::DomainRuntime;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -359,7 +359,7 @@ async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_
         assert!(request.message, "{name} ({lang}, reply {reply}): it is a message, so the Tasks list leaves it out until it makes tasks");
         if reply { continue; }
         let id = request.id.clone();
-        daemon.execute(Actor::Orchestrator { generation: state.orchestrator_generation }, &format!("close-{name}-{lang}"), Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_rules::CloseOutcome::Answered),
+        daemon.execute(Actor::Orchestrator { generation: state.orchestrator_generation }, &format!("close-{name}-{lang}"), Command::CloseRequest { covered_by: vec![], outcome: Some(alondra_domain_model::CloseOutcome::Answered),
             request_id: id.clone(), answer: Some("Hecho".into()), withdrawn: false, title: None, headline: None, folded_into: None });
         let state = daemon.domain.state().unwrap();
         assert!(state.requests[&id].closed);

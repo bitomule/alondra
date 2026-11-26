@@ -3,7 +3,7 @@
 pub use alondra_engine_ports::journal::metrics::{RecordedStart, SessionStarted, Spent};
 use super::DomainStore;
 use alondra_core::Millis;
-use alondra_domain_rules::Feedback;
+use alondra_domain_model::Feedback;
 use alondra_core::metrics::fold::{Decision, DecisionKind, TaskFacts, fold_task};
 use alondra_core::metrics::steps::StepCounts;
 use alondra_core::metrics::{Role, Usage};

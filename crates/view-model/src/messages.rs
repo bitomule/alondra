@@ -4,7 +4,7 @@
 
 use crate::text::{t, t as tr};
 use crate::{CardAction, Lang};
-use alondra_domain_rules::Refusal;
+use alondra_domain_model::Refusal;
 use serde::{Deserialize, Serialize};
 pub use crate::refusal::{note_text, refusal_text};
 
@@ -129,7 +129,7 @@ pub fn unknown_outcome(reason: crate::action_outcome::UnknownReason, lang: Lang)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_domain_rules::MergeMethod;
+    use alondra_domain_model::MergeMethod;
 
     #[test]
     fn a_method_the_pr_does_not_allow_says_which_ones_it_does() {
@@ -144,7 +144,7 @@ mod tests {
             Refusal::BlockedByQuestion { need: "q".into() }, Refusal::BlockedByTask { title: "t".into() }, Refusal::WaitsForTask { title: "t".into() },
             Refusal::UpstreamPrOpen { number: 1 }, Refusal::MethodNotAllowed { method: MergeMethod::Merge, allowed: vec![] },
             Refusal::NoMethodChosen { number: 1 }, Refusal::StaleHead { number: 1 }, Refusal::ResultBehindPr { number: 1 }, Refusal::MergeInProgress { number: 1 },
-            Refusal::MergeBlocked { number: 1, blockers: vec![alondra_domain_rules::MergeBlocker::ReviewRequired] }, Refusal::MergeVerdictUnknown { number: 1 },
+            Refusal::MergeBlocked { number: 1, blockers: vec![alondra_domain_model::MergeBlocker::ReviewRequired] }, Refusal::MergeVerdictUnknown { number: 1 },
             Refusal::PrClosed { number: 1 }, Refusal::PrAlreadyMerged { number: 1 }, Refusal::PrSuperseded, Refusal::PrDetached, Refusal::PrUncheckable, Refusal::PrNotCheckedYet, Refusal::NewerResult, Refusal::UnansweredMessage, Refusal::PendingUserMessage, Refusal::UserMessageUnavailable, Refusal::AlreadyAnswered, Refusal::Withdrawn,
             Refusal::ClarificationPending, Refusal::TaskNotActive, Refusal::TaskClosing, Refusal::Changed, Refusal::NotForYou,
             Refusal::NodeUnreachable { node: "n".into() }, Refusal::NothingToInterrupt, Refusal::DeviceNotApproved, Refusal::StorageUnavailable,

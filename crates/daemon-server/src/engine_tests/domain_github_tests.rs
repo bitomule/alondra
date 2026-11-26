@@ -1,6 +1,6 @@
 //! The notice an auto-merged pull request gives its node, which alondrad's API words.
 use crate::domain_runtime::DomainRuntime;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use std::collections::BTreeSet;
 
 const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";

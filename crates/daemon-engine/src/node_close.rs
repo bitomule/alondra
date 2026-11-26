@@ -4,7 +4,7 @@
 //! Shared by the close route and by Alondra closing the node of a finished task.
 use crate::live::LiveOf as _;
 use alondra_engine_ports::Runtime;
-use alondra_domain_rules::AgentId;
+use alondra_domain_model::AgentId;
 use axum::http::StatusCode;
 use serde_json::Value;
 use std::path::{Path, PathBuf};

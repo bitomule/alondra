@@ -604,7 +604,7 @@ fn antigravity_accounts_are_checked_with_their_models_and_usage_only_when_due_an
         {"id": "claude-opus-max", "remaining_fraction": 0, "reset_time": "2030-01-02T00:00:00Z"}]}]})).unwrap();
     doubles.answer_antigravity_usage(None, Ok(UsageOutcome::Read(usage)));
 
-    let status = |state: &alondra_domain_rules::DomainState, key: &AccountKey| state.accounts.iter().find(|status| status.provider == key.provider && status.id == key.account).cloned().unwrap();
+    let status = |state: &alondra_domain_model::DomainState, key: &AccountKey| state.accounts.iter().find(|status| status.provider == key.provider && status.id == key.account).cloned().unwrap();
     let studio_probes = |probes: &[alondra_core::antigravity_account::Probe]| probes.iter().filter(|probe| probe.launch.environment.get("GEMINI_HOME").map(PathBuf::from) == Some(folder.clone())).count();
     begin_initial_check(&*domain);
     assert_eq!(check_current(&*domain, &f.home), crate::native_probe::Outcome::Finished);

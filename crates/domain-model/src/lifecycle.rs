@@ -185,7 +185,7 @@ pub enum DecisionReason {
 /// yields no lifecycle either, whatever it was deserialized from:
 ///
 /// ```compile_fail,E0277
-/// let task: alondra_domain_rules::Task = serde_json::from_str("{}").unwrap();
+/// let task: alondra_domain_model::Task = serde_json::from_str("{}").unwrap();
 /// let lifecycle: alondra_domain::TaskLifecycle = task.into();
 /// ```
 /// Who an SDK execution runs as. An execution of the `claude --bg` backend has none of its own:
@@ -536,12 +536,12 @@ impl LifecycleRecord {
 ///
 /// ```compile_fail,E0277
 /// fn duplicate<T: Clone>() {}
-/// duplicate::<alondra_domain_rules::Lifecycles>();
+/// duplicate::<alondra_domain_model::Lifecycles>();
 /// ```
 ///
 /// ```compile_fail,E0277
 /// fn restore<T: serde::de::DeserializeOwned>() {}
-/// restore::<alondra_domain_rules::Lifecycles>();
+/// restore::<alondra_domain_model::Lifecycles>();
 /// ```
 #[derive(Debug)]
 pub struct Lifecycles {

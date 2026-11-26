@@ -4,7 +4,7 @@ use alondra_core::metrics::steps::StepCounts;
 use alondra_core::metrics::{Role, Usage};
 use alondra_core::options::Approach;
 use alondra_core::task_tags::TaskTags;
-use alondra_domain_rules::ModelChooser;
+use alondra_domain_model::ModelChooser;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecisionKind {

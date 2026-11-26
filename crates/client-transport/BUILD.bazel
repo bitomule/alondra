@@ -36,7 +36,7 @@ low_opt_rust_test(
     edition = "2024",
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/domain-rules:domain_rules",
+        "//crates/domain-model:domain_model",
         "//crates/view-model:view_model",
     ],
 )

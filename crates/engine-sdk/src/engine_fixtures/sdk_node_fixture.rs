@@ -1,7 +1,7 @@
 //! A node of the Agent SDK driven step by step, for the tests of pauses here and of what the
 //! screens show of it in `daemon-server`.
 use alondra_engine_sdk::domain_runtime::DomainRuntime;
-use alondra_domain_rules::{DomainState, TaskState};
+use alondra_domain_model::{DomainState, TaskState};
 use alondra_core::Millis;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -14,7 +14,7 @@ use alondra_daemon_engine::machine_state::NoRoom;
 use alondra_daemon_engine::node_push::testing::Node;
 use alondra_daemon_engine::node_reports::{Envelope, Report};
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure};
-use alondra_domain_rules::{API_RETRIES, Actor, AgentId, ApiRetry, Command, CommandEnvelope, NodePhase, OUTAGE_PROBE, PROTOCOL_VERSION, Pause, PauseReason, TaskId, TaskPriority};
+use alondra_domain_model::{API_RETRIES, Actor, AgentId, ApiRetry, Command, CommandEnvelope, NodePhase, OUTAGE_PROBE, PROTOCOL_VERSION, Pause, PauseReason, TaskId, TaskPriority};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -96,7 +96,7 @@ impl SdkNode {
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Release notes".into() });
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: SDK_TASK.into(), request_id: "r".into(), title: "Write the release notes".into(), agent_id: None, review_prs: false,
-            dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())) });
+            dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", worktree.to_str().unwrap())) });
         let driver = alondra_engine_sdk::sdk_owner::start(domain.clone(), &backend, alondra_engine_sdk::sdk_owner::Launch {
             task: SDK_TASK.into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
             prompt: prompt.into(), plugin: home.join("plugin"), options: Default::default(),
@@ -129,7 +129,7 @@ impl SdkNode {
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         run(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: task.into(), request_id: "r".into(), title: format!("Task {task}"), agent_id: None, review_prs: false,
-            dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())) });
+            dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", worktree.to_str().unwrap())) });
         let driver = alondra_engine_sdk::sdk_owner::start(self.domain.clone(), &self.backend, alondra_engine_sdk::sdk_owner::Launch {
             task: task.into(), name: format!("Task {task}"), directory: worktree.to_str().unwrap().into(),
             prompt: prompt.into(), plugin: self.home.join("plugin"), options: Default::default(),
@@ -156,7 +156,7 @@ impl SdkNode {
         self.gate().queue.into_iter().filter_map(|waiting| match waiting.key { Key::Turn(task) => Some(task.0), _ => None }).collect()
     }
 
-    pub fn cards(&self) -> Vec<alondra_domain_rules::InteractionId> {
+    pub fn cards(&self) -> Vec<alondra_domain_model::InteractionId> {
         self.domain.state().unwrap().interactions.keys().cloned().collect()
     }
 
@@ -166,7 +166,7 @@ impl SdkNode {
 
     pub fn lifecycle(&self) -> alondra_domain::TaskLifecycle {
         let read = self.domain.read();
-        alondra_domain_rules::replay(&SDK_TASK.into(), &read.state().lifecycle_journal[&TaskId::from(SDK_TASK)]).unwrap()
+        alondra_domain_model::replay(&SDK_TASK.into(), &read.state().lifecycle_journal[&TaskId::from(SDK_TASK)]).unwrap()
     }
 
     pub fn agent(&self) -> String {
@@ -210,7 +210,7 @@ impl SdkNode {
 
     pub fn turn_ended(&self) -> bool {
         self.domain.read().state().lifecycle_journal[&TaskId::from(SDK_TASK)].iter()
-            .any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TurnEnded { .. }))
+            .any(|record| matches!(record, alondra_domain_model::LifecycleRecord::TurnEnded { .. }))
     }
 
     /// One look of the gate, which lets the node go on once it has a slot.
@@ -244,19 +244,19 @@ impl SdkNode {
     pub fn deliver(&self) {
         run(&self.domain, Actor::Agent { agent_id: self.driver.agent().clone() }, Command::PresentResult {
             attachments: vec![], task_id: SDK_TASK.into(), interaction_id: "result".into(), body: "Done".into(), is_final: true, nothing_to_review: false,
-            targets: vec![alondra_domain_rules::DeliveryTarget::Text { text: "Done".into() }], checklist: vec![],
-            card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) });
+            targets: vec![alondra_domain_model::DeliveryTarget::Text { text: "Done".into() }], checklist: vec![],
+            card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true) });
     }
 
     /// The user sends the delivery back with changes.
     pub fn get_it_back(&self) {
         run(&self.domain, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "result".into(),
-            targets: vec![alondra_domain_rules::DeliveryTarget::Text { text: "Done".into() }], body: "Pass the MCP variables too".into(),
-            instruction: alondra_domain_rules::Instruction::Changes });
+            targets: vec![alondra_domain_model::DeliveryTarget::Text { text: "Done".into() }], body: "Pass the MCP variables too".into(),
+            instruction: alondra_domain_model::Instruction::Changes });
     }
 
-    pub fn host_lost_card(&self) -> Option<alondra_domain_rules::Interaction> {
-        super::owner::open_card(&self.domain, alondra_domain_rules::HOST_LOST_PREFIX)
+    pub fn host_lost_card(&self) -> Option<alondra_domain_model::Interaction> {
+        super::owner::open_card(&self.domain, alondra_domain_model::HOST_LOST_PREFIX)
     }
 }
 
@@ -266,12 +266,12 @@ impl<H: Hosts> Drop for SdkNode<H> {
     }
 }
 
-pub fn node_pause_card(domain: &DomainRuntime) -> Option<alondra_domain_rules::InteractionId> {
+pub fn node_pause_card(domain: &DomainRuntime) -> Option<alondra_domain_model::InteractionId> {
     let state = domain.state().unwrap();
     state.interactions.values().find(|card| state.node_pause_card(&card.id) && state.open(card)).map(|card| card.id.clone())
 }
 
-pub fn answer_resume(domain: &DomainRuntime, card: &alondra_domain_rules::InteractionId) -> Result<(), String> {
+pub fn answer_resume(domain: &DomainRuntime, card: &alondra_domain_model::InteractionId) -> Result<(), String> {
     let state = domain.state().unwrap();
     domain.execute(&user(), &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: alondra_daemon_support::auth::random_hex(8).into(),

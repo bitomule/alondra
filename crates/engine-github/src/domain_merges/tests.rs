@@ -1,7 +1,7 @@
 use alondra_store_sqlite::AsSqlite as _;
 use super::*;
 use alondra_github_gh::GhCli;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 
@@ -67,15 +67,15 @@ fn presented_unread(_tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, 
     command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
     });
     command(&domain, Actor::Agent { agent_id: "a".into() }, "pr", Command::RegisterPr {
         task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
         number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash, MergeMethod::Merge],
     });
     command(&domain, Actor::System, "checked", Command::ObservePrAddress { pr_id: "pr".into(),
-        read: alondra_domain_rules::PrRead::Address { repository: "owner/repo".into() }, read_started_at: 1_000,
-        verdict: alondra_domain_rules::PrAddressVerdict::Confirmed { key: fake_key(7), locator: alondra_domain_rules::ProviderLocator("PR_7".into()),
+        read: alondra_domain_model::PrRead::Address { repository: "owner/repo".into() }, read_started_at: 1_000,
+        verdict: alondra_domain_model::PrAddressVerdict::Confirmed { key: fake_key(7), locator: alondra_domain_model::ProviderLocator("PR_7".into()),
             current_repository: "owner/repo".into() } });
     command(&domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
         checklist: Vec::new(),
@@ -211,7 +211,7 @@ async fn a_task_that_waited_on_another_to_start_has_its_accepted_pr_merged() {
     command(&domain, Actor::Orchestrator { generation: 0 }, "fix", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "fix".into(), request_id: "r".into(), title: "Fix main".into(), agent_id: None,
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
     });
     command(&domain, Actor::Orchestrator { generation: 0 }, "wait", Command::SetDependencies {
         task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None, reason: None,});
@@ -231,7 +231,7 @@ async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_app
     command(&domain, Actor::Orchestrator { generation: 0 }, "reviewer", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "review".into(), request_id: "r".into(), title: "Review".into(), agent_id: Some("rev".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
     });
     command(&domain, user(), "relations", Command::SetRelations {
         task_id: "review".into(), delivered_dependencies: BTreeSet::from(["t".into()]), blocks: BTreeSet::from(["t".into()]),
@@ -977,7 +977,7 @@ async fn work_after_the_merge_that_waits_on_another_tasks_pr_wakes_when_alondra_
     command(&domain, Actor::Orchestrator { generation: 0 }, "fix", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "fix".into(), request_id: "r".into(), title: "Fix the Mac package".into(), agent_id: Some("b".into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
     });
     command(&domain, node("b"), "fix-pr", Command::RegisterPr {
         task_id: "fix".into(), pr_id: "fix-pr".into(), host: "github.com".into(), repository: "owner/repo".into(),

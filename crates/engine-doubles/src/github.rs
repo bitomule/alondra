@@ -1,6 +1,6 @@
 //! PR reads in memory, every request scoped to a URL and head changes explicit, and a GitHub no
 //! test reaches.
-use alondra_domain_rules::{MergeMethod, MergeVerdict, ProviderLocator, ProviderPrKey, PullRequest};
+use alondra_domain_model::{MergeMethod, MergeVerdict, ProviderLocator, ProviderPrKey, PullRequest};
 use alondra_engine_ports::Registry;
 use alondra_engine_ports::github::{
     Closed, DiffError, Failure, Fetch, Gh, GhFailure, GitHub, GitHubImages, HeadError, Located, Observed, Pending, PrDiff, PrMerger,

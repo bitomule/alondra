@@ -3,12 +3,12 @@
 //! through, withdrawn as soon as a check finds it allowed. "I've allowed it" checks again at once
 //! and, if macOS still denies it, opens a card that says so.
 use alondra_core::clock;
-use alondra_domain_rules::SystemCard;
+use alondra_domain_model::SystemCard;
 use std::sync::Arc;
 use std::time::Duration;
 
-use alondra_domain_rules::{InteractionId, InteractionPayload, QuestionOption};
-use alondra_domain_rules::local_network_card::{
+use alondra_domain_model::{InteractionId, InteractionPayload, QuestionOption};
+use alondra_domain_model::local_network_card::{
     LOCAL_NETWORK_ALLOWED_LABEL, LOCAL_NETWORK_ALLOWED_OPTION, LOCAL_NETWORK_CAUSE, LOCAL_NETWORK_PREFIX, LocalNetworkCard,
 };
 use alondra_view_model::Lang;
@@ -125,7 +125,7 @@ async fn watch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
+    use alondra_domain_model::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
     use std::sync::Mutex;
 
     #[test]
@@ -163,7 +163,7 @@ mod tests {
         (Home(home), domain)
     }
 
-    fn cards(domain: &DomainRuntime) -> Vec<alondra_domain_rules::Interaction> {
+    fn cards(domain: &DomainRuntime) -> Vec<alondra_domain_model::Interaction> {
         let state = domain.state().unwrap();
         let mut open: Vec<_> = state.interactions.values().filter(|card| card.system_card == Some(SystemCard::LocalNetwork) && !card.withdrawn
             && matches!(card.payload, InteractionPayload::Question { answer: None, .. })).cloned().collect();

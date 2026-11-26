@@ -9,12 +9,12 @@ use crate::locks::Poisonable as _;
 use alondra_engine_ports::Runtime;
 use crate::domain_store::StoreError;
 use alondra_engine_ports::worktrees::Workplace;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, Command, CommandEnvelope, CommandOutcome, DomainState, PROTOCOL_VERSION,
     Request, RequestId, ScheduleLaunchState, ScheduleRunOrigin, ScheduleRunState, Task,
     TaskId, TaskState,
 };
-use alondra_domain_rules::{
+use alondra_domain_model::{
     ScheduleDefinitionSnapshot, ScheduleFrequency, ScheduleId, ScheduleLaunchIntent, ScheduleRunId,
 };
 use alondra_core::options::Resolved;
@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(crate) fn next_after(schedule: &alondra_domain_rules::Schedule, now: i64) -> Option<i64> {
+pub(crate) fn next_after(schedule: &alondra_domain_model::Schedule, now: i64) -> Option<i64> {
     if !schedule.enabled {
         return None;
     }
@@ -113,8 +113,8 @@ async fn prepare_sdk(
     task: &TaskId,
     disallowed_tools: &[String],
     home: &Path,
-) -> Result<Prepared, alondra_domain_rules::DomainError> {
-    let mut resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|why| alondra_domain_rules::DomainError::new("invalid_input", why.to_string()))?;
+) -> Result<Prepared, alondra_domain_model::DomainError> {
+    let mut resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|why| alondra_domain_model::DomainError::new("invalid_input", why.to_string()))?;
     let account = if let Some(intent) = resolved.selection.clone() {
         let decision = domain.engine().select_account(home, &intent, disallowed_tools, alondra_core::now_millis())?;
         let mut intent = intent;
@@ -125,13 +125,13 @@ async fn prepare_sdk(
         decision.account
     } else {
         let id = domain.engine().choose_account(home, alondra_core::now_millis())
-            .ok_or_else(|| alondra_domain_rules::DomainError::new("account_unavailable", if domain.engine().waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }))?;
+            .ok_or_else(|| alondra_domain_model::DomainError::new("account_unavailable", if domain.engine().waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }))?;
         alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Claude, id)
     };
     domain.engine().log_account_choice("scheduled run", &account, alondra_core::now_millis());
     let profile = alondra_core::accounts::provider_folder(home, &account);
     let mut selected_launch = launch.clone();
-    selected_launch.options_json = serde_json::to_string(&resolved).map_err(|why| alondra_domain_rules::DomainError::new("invalid_input", why.to_string()))?;
+    selected_launch.options_json = serde_json::to_string(&resolved).map_err(|why| alondra_domain_model::DomainError::new("invalid_input", why.to_string()))?;
     let (workplace, plugin, resolved) = prepare_claimed(domain, &selected_launch, task, home, profile.as_deref()).await?;
     alondra_engine_kernel::launches::own_worktree(domain, task, &workplace).await?;
     Ok(Prepared { workplace, plugin, resolved, account })
@@ -191,8 +191,8 @@ async fn prepare_claimed(
     task: &TaskId,
     home: &Path,
     profile: Option<&Path>,
-) -> Result<(Workplace, PathBuf, Resolved), alondra_domain_rules::DomainError> {
-    let storage_error = |why: String| alondra_domain_rules::DomainError::new("worktrees_unavailable", why);
+) -> Result<(Workplace, PathBuf, Resolved), alondra_domain_model::DomainError> {
+    let storage_error = |why: String| alondra_domain_model::DomainError::new("worktrees_unavailable", why);
     let known = domain.task_worktree(task).map_err(|why| storage_error(why.to_string()))?;
     let recorded = match &known {
         Some(path) => {
@@ -202,23 +202,23 @@ async fn prepare_claimed(
         None => None,
     };
     if !Path::new(&launch.cwd).is_dir() {
-        return Err(alondra_domain_rules::DomainError::new("invalid_input", "schedule project directory does not exist"));
+        return Err(alondra_domain_model::DomainError::new("invalid_input", "schedule project directory does not exist"));
     }
-    let resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|error| alondra_domain_rules::DomainError::new("invalid_input", error.to_string()))?;
+    let resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|error| alondra_domain_model::DomainError::new("invalid_input", error.to_string()))?;
     let projects_root = options_at(home).ok().map(|file| file.projects_root(&alondra_daemon_engine_model::options::user_home()));
     if let Some(repository) = (resolved.selected_provider() == Some(alondra_core::accounts::Provider::Claude)).then(|| domain.ports().accounts().ensure_trusted(profile, Path::new(&launch.cwd), projects_root.as_deref())).flatten() {
-        return Err(alondra_domain_rules::DomainError::new("workspace_untrusted", alondra_daemon_engine_model::claude_trust::instructions(&repository)));
+        return Err(alondra_domain_model::DomainError::new("workspace_untrusted", alondra_daemon_engine_model::claude_trust::instructions(&repository)));
     }
-    let file = options_at(home).map_err(|why| alondra_domain_rules::DomainError::new("invalid_input", why.to_string()))?;
+    let file = options_at(home).map_err(|why| alondra_domain_model::DomainError::new("invalid_input", why.to_string()))?;
     let root = recorded.map(|record| record.root).or(file.worktrees_root);
     let workplace = domain.ports().worktrees().isolate(Path::new(&launch.cwd), &alondra_engine_ports::worktrees::slug(&task.0), known.as_deref().map(Path::new), None, root.as_ref())
         .await
         .map_err(|why| {
             let code = match &why { alondra_engine_ports::worktrees::LaunchError::Storage(_) => "worktrees_unavailable", _ => "main_checkout" };
-            alondra_domain_rules::DomainError::new(code, why.to_string())
+            alondra_domain_model::DomainError::new(code, why.to_string())
         })?;
     let Some(plugin) = domain.ports().plugins().node(home) else {
-        return Err(alondra_domain_rules::DomainError::new("unavailable", "Alondra's Claude plugin is unavailable"));
+        return Err(alondra_domain_model::DomainError::new("unavailable", "Alondra's Claude plugin is unavailable"));
     };
     Ok((workplace, plugin, resolved))
 }
@@ -547,7 +547,7 @@ fn recover_uncertain(domain: &dyn Runtime, run_id: &ScheduleRunId) -> Result<()>
 }
 
 /// The node an open task was admitted with: its scheduled launch started, whatever its run says.
-fn started_node<'a>(state: &'a DomainState, task: &TaskId) -> Option<&'a alondra_domain_rules::AgentId> {
+fn started_node<'a>(state: &'a DomainState, task: &TaskId) -> Option<&'a alondra_domain_model::AgentId> {
     state.tasks.get(task).filter(|task| !task.over()).and_then(|task| task.agent_id.as_ref())
 }
 
@@ -556,7 +556,7 @@ fn started_node<'a>(state: &'a DomainState, task: &TaskId) -> Option<&'a alondra
 /// either way the failed run's Task never started and is cancelled, so it does not wait forever.
 /// A Task that has a node did start after all: the answer leaves it and its schedule alone.
 fn answer_failed_launches(domain: &dyn Runtime, home: &Path) -> Result<()> {
-    use alondra_domain_rules::{InteractionPayload, LAUNCH_RETRY_OPTION, SystemCard};
+    use alondra_domain_model::{InteractionPayload, LAUNCH_RETRY_OPTION, SystemCard};
     let state = domain.state();
     for (id, interaction) in &state.interactions {
         let Some(SystemCard::LaunchProblem { run: failed }) = &interaction.system_card else { continue };
@@ -603,7 +603,7 @@ fn retry_launch(
     home: &Path,
     state: &DomainState,
     failed: &str,
-    run: &alondra_domain_rules::ScheduleRun,
+    run: &alondra_domain_model::ScheduleRun,
 ) -> Option<bool> {
     let retry: ScheduleRunId = format!("retry-{failed}").into();
     if state.schedule.runs.contains_key(&retry) {
@@ -771,7 +771,7 @@ fn rebased_schedules(
     launching: &BTreeSet<ScheduleId>,
     now: i64,
     include_due: bool,
-) -> Vec<alondra_domain_rules::Schedule> {
+) -> Vec<alondra_domain_model::Schedule> {
     state
         .schedule
         .schedules
@@ -805,7 +805,7 @@ enum WakeReason {
 
 async fn wait_for_next_run(
     deadline: Option<i64>,
-    schedules: &mut tokio::sync::watch::Receiver<alondra_domain_rules::Revision>,
+    schedules: &mut tokio::sync::watch::Receiver<alondra_domain_model::Revision>,
     usage: &mut tokio::sync::watch::Receiver<Option<alondra_engine_ports::orchestrator::Exhausted>>,
     clock_changes: &mut tokio::sync::watch::Receiver<crate::schedule_clock::ClockChange>,
     turn: &mut tokio::sync::watch::Receiver<u64>,
@@ -874,7 +874,7 @@ mod tests {
     use crate::sdk_owner::SdkOwners as _;
     use super::*;
     use crate::model_fixture::SdkLaunches;
-    use alondra_domain_rules::{InteractionId, InteractionPayload, Schedule, ScheduleFrequency};
+    use alondra_domain_model::{InteractionId, InteractionPayload, Schedule, ScheduleFrequency};
     use std::collections::BTreeMap;
     use crate::domain_runtime::DomainRuntime;
 
@@ -1297,7 +1297,7 @@ mod tests {
         let run = &state.schedule.runs[&ScheduleRunId::from("sdk-run")];
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
         let task = state.tasks.values().next().unwrap();
-        let lifecycle = alondra_domain_rules::replay(&task.id, &state.lifecycle_journal[&task.id]).unwrap();
+        let lifecycle = alondra_domain_model::replay(&task.id, &state.lifecycle_journal[&task.id]).unwrap();
         assert_eq!(lifecycle.execution().map(|stamp| stamp.host().as_str().to_owned()).as_deref(), Some("alondra-sdk"));
         assert!(task.agent_id.as_ref().is_some_and(|agent| fixture.domain.owns_sdk_host(agent)), "the host's owner runs its node");
     }
@@ -1434,7 +1434,7 @@ mod tests {
         let run = &restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("cancelled")];
         assert_eq!(run.state, ScheduleRunState::Failed);
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
-        assert_eq!(run.error.as_deref(), Some(alondra_domain_rules::SCHEDULED_TASK_CANCELLED));
+        assert_eq!(run.error.as_deref(), Some(alondra_domain_model::SCHEDULED_TASK_CANCELLED));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1474,13 +1474,13 @@ mod tests {
         let original = state.schedule.runs[&ScheduleRunId::from("lost")].task_id.as_ref().unwrap();
         assert_eq!(
             state.tasks[original].state,
-            alondra_domain_rules::TaskState::Cancelled,
+            alondra_domain_model::TaskState::Cancelled,
             "the failed run's never-started Task does not wait forever"
         );
         assert_ne!(retried.task_id.as_ref(), Some(original));
         assert_ne!(
             state.tasks[retried.task_id.as_ref().unwrap()].state,
-            alondra_domain_rules::TaskState::Cancelled
+            alondra_domain_model::TaskState::Cancelled
         );
     }
 

@@ -6,7 +6,7 @@
 use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
 use alondra_core::metrics::fold::Outcome;
 use alondra_core::metrics::report::{DayRow, MetricsInputs, Release, Spend, Sums, TaskRow, Tokens, WeekRow};
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, DeliveryTarget, DomainState, InteractionId, LaunchPlan,
     LifecycleRecord, McpServerState, McpStatus, MergeMethod, PROTOCOL_VERSION, PrState, QuestionOption, Recipient,
     RuntimeObservation, Schedule, ScheduleFrequency, Scope, replay,
@@ -128,7 +128,7 @@ pub fn unit(shape: Shape) -> DomainState {
         }
         seed.run(Actor::System, Command::RecordMcpServers { task_id: task.as_str().into(), generation: 1, servers: vec![McpServerState {
             name: "linear".into(), status: McpStatus::NeedsAuth, error: None, source: Some("user".into()),
-            transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()), traits: alondra_domain_rules::McpTraits { scope: alondra_domain_rules::McpScope::User, origin: alondra_domain_rules::McpOrigin::UserSettings, connect: alondra_domain_rules::McpConnect::SignIn, reconnect: true, sign_out: true, remove: true },
+            transport: Some("http".into()), url: Some("https://mcp.linear.app/mcp".into()), traits: alondra_domain_model::McpTraits { scope: alondra_domain_model::McpScope::User, origin: alondra_domain_model::McpOrigin::UserSettings, connect: alondra_domain_model::McpConnect::SignIn, reconnect: true, sign_out: true, remove: true },
         }] });
         seed.run(node, Command::WaitForMcp { task_id: task.as_str().into(), server: "linear".into() });
         return seed.0;
@@ -203,7 +203,7 @@ pub fn unit(shape: Shape) -> DomainState {
                 });
             }
             seed.run(Actor::System, Command::CompleteTask { task_id: task.as_str().into(), presentation_id: delivery.as_str().into() });
-            seed.run(Actor::System, Command::RecordNodeEnd { task_id: task.as_str().into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: None });
+            seed.run(Actor::System, Command::RecordNodeEnd { task_id: task.as_str().into(), end: alondra_domain_model::NodeEnd::Closed, agent_id: None });
         }
         Shape::Cancelled => seed.run(user(), Command::CancelTask { task_id: task.as_str().into(), reason: None }),
         _ => {}
@@ -224,7 +224,7 @@ pub fn absorb(into:&mut DomainState, unit: &DomainState, number: usize) {
     let mut pull_requests = pull_requests;
     for pr in pull_requests.values_mut() {
         let id = pr.id.0.clone();
-        if let alondra_domain_rules::PrIdentity::Verified { key, locator } = &mut pr.identity {
+        if let alondra_domain_model::PrIdentity::Verified { key, locator } = &mut pr.identity {
             key.0 = format!("{}@{id}", key.0);
             locator.0 = format!("{}@{id}", locator.0);
         }
@@ -332,8 +332,8 @@ fn model_controls_fixture(state: &mut DomainState) {
     task.selection = Some(selection);
     let feature = "@spec:billing.partial\nFeature: Partial refunds\n  Any amount up to what is left comes back.\n\n  @id:part\n  Scenario: Part of an order\n    Given a paid order of 30 EUR\n    When 10 EUR are refunded\n    Then the customer receives 10 EUR\n";
     let files = [("specs/billing/partial.feature".to_owned(), Some(feature.to_owned()))].into();
-    let check = alondra_domain_rules::SpecCheck { mode: alondra_domain_rules::SpecMode::Committed, ..Default::default() };
-    task.specs.draft = Some(alondra_domain_rules::SpecDraft { level: alondra_domain_rules::SpecLevel::Light, files, check, revision: 1, edited: false });
+    let check = alondra_domain_model::SpecCheck { mode: alondra_domain_model::SpecMode::Committed, ..Default::default() };
+    task.specs.draft = Some(alondra_domain_model::SpecDraft { level: alondra_domain_model::SpecLevel::Light, files, check, revision: 1, edited: false });
 }
 
 /// The domain as the daemon opens it: each journal replayed once and handed to the domain with it.

@@ -3,7 +3,7 @@
 //! usage limit, the orchestrator and the clock. It only assumes what the providers document: a
 //! session that runs ends with its result or its process dies where Alondra sees it, and a fact the
 //! daemon did not take is sent again.
-use alondra_domain_rules::{RuntimeObservation, TaskId};
+use alondra_domain_model::{RuntimeObservation, TaskId};
 use alondra_foundation::Millis;
 use proptest::prelude::*;
 use std::collections::{BTreeMap, VecDeque};

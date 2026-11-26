@@ -93,14 +93,14 @@ pub(super) fn folder_name(path: &str) -> String {
 }
 
 /// The place in the gate's queue of a task that waits there, whether it has a node or not.
-pub(super) fn gate_queued<'a>(task: &alondra_domain_rules::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
+pub(super) fn gate_queued<'a>(task: &alondra_domain_model::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
     context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)
 }
 
 /// The free space and what one more build needs, when the gate holds the task's start or its
 /// node's return for room on the disk: the task then reads `WaitingCapacity(Disk)`, whatever its
 /// lifecycle says.
-pub(super) fn held_for_disk(task: &alondra_domain_rules::Task, context: &RenderContext<'_>) -> Option<(u64, u64)> {
+pub(super) fn held_for_disk(task: &alondra_domain_model::Task, context: &RenderContext<'_>) -> Option<(u64, u64)> {
     match &gate_queued(task, context)?.hold {
         super::LiveHold::Disk { free, needed } => Some((*free, *needed)),
         _ => None,
@@ -116,7 +116,7 @@ pub(super) fn disk_room_fact(free: u64, needed: u64, lang: super::Lang) -> Strin
 
 /// What the task of a node that runs through the Agent SDK does, from its lifecycle; `None` for a
 /// node of `claude --bg`, whose phase says it.
-pub(super) fn sdk_live<'a>(agent: &alondra_domain_rules::AgentId, context: &'a RenderContext<'_>) -> Option<Option<&'a alondra_domain::LiveState>> {
+pub(super) fn sdk_live<'a>(agent: &alondra_domain_model::AgentId, context: &'a RenderContext<'_>) -> Option<Option<&'a alondra_domain::LiveState>> {
     let node = context.index.node(agent).filter(|node| node.through_sdk)?;
     Some(node.task.as_ref().and_then(|task| context.reading(task)).and_then(|read| read.live.as_ref()))
 }
@@ -139,13 +139,13 @@ pub(super) fn ordinal(position: usize, lang: super::Lang) -> String {
 
 /// The node's turn is running, as its task's lifecycle says.
 pub(super) fn working(agent: &str, context: &RenderContext<'_>) -> bool {
-    let agent = alondra_domain_rules::AgentId(agent.into());
+    let agent = alondra_domain_model::AgentId(agent.into());
     matches!(sdk_live(&agent, context), Some(Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn))))
 }
 
 /// The task's pause, if its node is paused.
 
-pub(super) fn paused<'a>(task: &alondra_domain_rules::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LivePaused> {
+pub(super) fn paused<'a>(task: &alondra_domain_model::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LivePaused> {
     if task.state.terminal() { return None; }
     let paused = context.live.pacing.as_ref()?.paused.iter().find(|paused| paused.task_id == task.id.0)?;
     let node_paused = || task.agent_id.as_ref().is_some_and(|agent| context.domain.node_pause(agent).is_some());
@@ -160,7 +160,7 @@ pub(super) fn api_wait_label(paused: &super::LivePaused, lang: super::Lang) -> S
         LivePauseReason::ApiOutage => tf!(lang, "Waiting for the Claude service since {at}", "Esperando al servicio de Claude desde las {at}"),
         _ => tf!(lang, "Claude API error at {at}", "Error de la API de Claude a las {at}"),
     };
-    let of = alondra_domain_rules::API_RETRIES.len();
+    let of = alondra_domain_model::API_RETRIES.len();
     match (&paused.retry, paused.reason) {
         (Some(retry), LivePauseReason::ApiError) => {
             let (when, attempt) = (&retry.at, retry.attempt);
@@ -175,13 +175,13 @@ pub(super) fn api_wait_label(paused: &super::LivePaused, lang: super::Lang) -> S
 }
 
 /// The error of the scheduled launch that should have started this task and did not.
-pub(super) fn failed_launch<'a>(task: &alondra_domain_rules::Task, context: &'a RenderContext<'_>) -> Option<&'a str> {
-    if task.state != alondra_domain_rules::TaskState::NotStarted || task.agent_id.is_some() { return None; }
+pub(super) fn failed_launch<'a>(task: &alondra_domain_model::Task, context: &'a RenderContext<'_>) -> Option<&'a str> {
+    if task.state != alondra_domain_model::TaskState::NotStarted || task.agent_id.is_some() { return None; }
     context.index.failed_launch(&task.id)
 }
 
 /// "Scheduled" on a task a scheduled run created, so it reads apart from the work the user asked for.
-pub(super) fn scheduled_mark(task: &alondra_domain_rules::Task, context: &RenderContext<'_>) -> Option<super::Label> {
+pub(super) fn scheduled_mark(task: &alondra_domain_model::Task, context: &RenderContext<'_>) -> Option<super::Label> {
     let lang = context.lang;
     context.index.scheduled(&task.id).then(|| super::Label {
         text: super::text::t!(lang, "Scheduled", "Programada").into(),
@@ -193,7 +193,7 @@ pub(super) fn scheduled_mark(task: &alondra_domain_rules::Task, context: &Render
 /// How long the task has been running since it first started, for the client to count, or how long it took once over.
 /// Clients that do not count it read the text: "running since 10:05", "took 1 h 05 min", or "since 10:05", "1 h 05 min"
 /// when the row already `named` what it measures.
-pub(super) fn elapsed_mark(task: &alondra_domain_rules::Task, named: bool, context: &RenderContext<'_>) -> Option<super::Label> {
+pub(super) fn elapsed_mark(task: &alondra_domain_model::Task, named: bool, context: &RenderContext<'_>) -> Option<super::Label> {
     use super::text::tf;
     let start = context.live.task_started.get(&task.id.0)?;
     let lang = context.lang;
@@ -215,8 +215,8 @@ pub(super) fn elapsed_mark(task: &alondra_domain_rules::Task, named: bool, conte
 }
 
 /// A task whose node the user closed and nobody took over yet.
-pub(super) fn node_closed(task: &alondra_domain_rules::Task, context: &super::RenderContext<'_>) -> bool {
-    task.state == alondra_domain_rules::TaskState::NotStarted && task.agent_id.is_none() && !task.archived
+pub(super) fn node_closed(task: &alondra_domain_model::Task, context: &super::RenderContext<'_>) -> bool {
+    task.state == alondra_domain_model::TaskState::NotStarted && task.agent_id.is_none() && !task.archived
         && context.live.closed_tasks.contains(&task.id.0)
 }
 
@@ -362,11 +362,11 @@ mod tests {
 
 /// The Task a node is on: its open one, else the last it had. A node works on one Task at a time;
 /// state saved before that rule may still give it several open ones, and the newest stands for it.
-pub(super) fn current_task<'a>(context: &'a RenderContext<'_>, agent_id: &alondra_domain_rules::AgentId) -> Option<&'a alondra_domain_rules::Task> {
+pub(super) fn current_task<'a>(context: &'a RenderContext<'_>, agent_id: &alondra_domain_model::AgentId) -> Option<&'a alondra_domain_model::Task> {
     context.node_task(agent_id)
 }
 
-pub(super) fn agent_label(agent_id: &alondra_domain_rules::AgentId, context: &RenderContext<'_>) -> String {
+pub(super) fn agent_label(agent_id: &alondra_domain_model::AgentId, context: &RenderContext<'_>) -> String {
     let domain = context.domain;
     let name = domain.agents.get(agent_id).map(|agent| agent.name.as_str());
     if name.is_some_and(|name| !name.starts_with("scheduled/")) {

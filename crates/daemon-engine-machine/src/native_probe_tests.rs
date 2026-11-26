@@ -34,7 +34,7 @@ async fn stale_probe_storms_back_off_and_success_starts_a_fresh_retry_sequence()
 #[tokio::test]
 async fn ordinary_errors_do_not_trigger_rapid_retries() {
     use crate::domain_store::StoreError;
-    use alondra_domain_rules::DomainError;
+    use alondra_domain_model::DomainError;
     for error in [StoreError::Domain(DomainError::new("denied", "stale_probe")), StoreError::Storage(anyhow::anyhow!("stale_probe"))] {
         let mut attempts = 0;
         retry_with(

@@ -5,7 +5,7 @@ use crate::Runtime;
 #[cfg(test)]
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
-use alondra_domain_rules::{Actor, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
+use alondra_domain_model::{Actor, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
 use anyhow::Result;
 use std::path::Path;
 
@@ -19,7 +19,7 @@ pub fn apply(domain: &dyn Runtime, home: &Path, actor: &Actor, command: CommandE
 
 #[allow(clippy::too_many_arguments)]
 pub fn apply_authorized(domain: &dyn Runtime, home: &Path, actor: &Actor, command: CommandEnvelope, previous: Option<String>, target: String, recorded: Vec<Command>,
-    authorize: impl Fn() -> anyhow::Result<()>, prepare_accounts: impl FnOnce(&alondra_domain_rules::DomainState) -> Result<(), StoreError>) -> Result<(), StoreError>
+    authorize: impl Fn() -> anyhow::Result<()>, prepare_accounts: impl FnOnce(&alondra_domain_model::DomainState) -> Result<(), StoreError>) -> Result<(), StoreError>
 {
     recover(domain, home)?;
     let identity = ProjectionIdentity::new(actor, &command, previous.as_deref(), &target)?;

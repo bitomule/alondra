@@ -3,7 +3,7 @@
 
 use super::parity::view_fixture;
 use super::*;
-use alondra_domain_rules::Refusal;
+use alondra_domain_model::Refusal;
 use alondra_views::Lang as ViewLang;
 use ratatui::style::{Color, Modifier};
 
@@ -177,10 +177,10 @@ fn tui_shots() {
         }
         let html = page(&mut crash_report_refused(lang));
         std::fs::write(out.join(format!("12-crash-report-refused-{name}.html")), html).unwrap();
-        let review = alondra_domain_rules::Refusal::MergeBlocked { number: 12, blockers: vec![alondra_domain_rules::MergeBlocker::ReviewRequired] };
+        let review = alondra_domain_model::Refusal::MergeBlocked { number: 12, blockers: vec![alondra_domain_model::MergeBlocker::ReviewRequired] };
         let html = page(&mut merge_waits(lang, &review));
         std::fs::write(out.join(format!("13-merge-waits-for-review-{name}.html")), html).unwrap();
-        let html = page(&mut merge_waits(lang, &alondra_domain_rules::Refusal::PrNotCheckedYet));
+        let html = page(&mut merge_waits(lang, &alondra_domain_model::Refusal::PrNotCheckedYet));
         std::fs::write(out.join(format!("14-merge-waits-for-identity-{name}.html")), html).unwrap();
         let html = page(&mut task_on_another_model(lang));
         std::fs::write(out.join(format!("9-task-model-{name}.html")), html).unwrap();
@@ -193,7 +193,7 @@ fn tui_shots() {
 }
 
 /// The PR card while GitHub requires a review before the PR can merge: no merge is offered and the card says why.
-fn merge_waits(lang: crate::i18n::Lang, because: &alondra_domain_rules::Refusal) -> App {
+fn merge_waits(lang: crate::i18n::Lang, because: &alondra_domain_model::Refusal) -> App {
     let mut app = app_with_the_pr_card(lang);
     let mut card = view_fixture("card-pr.json");
     card["key"] = format!("card:{CARD}").into();
@@ -205,7 +205,7 @@ fn merge_waits(lang: crate::i18n::Lang, because: &alondra_domain_rules::Refusal)
     let merge = item["actions"].as_array_mut().unwrap().iter_mut().find(|action| action["id"].as_str().is_some_and(|id| id.starts_with("merge:"))).unwrap();
     merge["enabled"] = false.into();
     merge["disabled_reason"] = waits.into();
-    if *because == alondra_domain_rules::Refusal::PrNotCheckedYet {
+    if *because == alondra_domain_model::Refusal::PrNotCheckedYet {
         item["more"] = serde_json::json!([]);
     }
     app.on_msg(Msg::ViewCard { key: format!("card:{CARD}"), result: Ok(serde_json::from_value(card).unwrap()) });

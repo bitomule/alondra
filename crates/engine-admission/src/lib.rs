@@ -27,7 +27,7 @@ pub mod pauses;
 
 use admission::{Admission, Hold, Key, Waiting};
 use alondra_core::Millis;
-use alondra_domain_rules::{DomainState, TaskId};
+use alondra_domain_model::{DomainState, TaskId};
 use alondra_engine_ports::admission::AdmissionGate;
 use alondra_engine_ports::{AsRuntime as _, Registry, Runtime};
 use machine_watch::MachineWatch;

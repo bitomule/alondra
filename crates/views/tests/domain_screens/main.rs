@@ -12,7 +12,7 @@ mod stall;
 mod turn_end_wait;
 mod domain;
 
-use alondra_domain_rules::{DomainState, InboxItem, ReadIndex};
+use alondra_domain_model::{DomainState, InboxItem, ReadIndex};
 
 /// The inbox as the index lists it, each card with its buttons.
 pub(crate) fn inbox_items(state: &DomainState) -> Vec<InboxItem> {

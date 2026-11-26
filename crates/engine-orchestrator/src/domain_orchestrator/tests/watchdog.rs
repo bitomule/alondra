@@ -441,7 +441,7 @@ fn usage(f: &crate::domain_orchestrator::testing::Fixture) -> &alondra_engine_do
 #[test]
 fn account_usage_and_explicit_user_waits_do_not_trigger_the_watchdog() {
     use crate::domain_orchestrator::testing::fixture;
-    use alondra_domain_rules::{CardKind, CardSpec};
+    use alondra_domain_model::{CardKind, CardSpec};
     let f = fixture();
     f.tell("pending", "A request awaiting a legitimate dependency");
     let start = Instant::now();

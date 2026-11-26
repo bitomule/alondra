@@ -1,6 +1,6 @@
 use crate::domain_authority::Principal;
 use alondra_engine_ports::Runtime;
-use alondra_domain_rules::{AgentId, DomainError, TaskId};
+use alondra_domain_model::{AgentId, DomainError, TaskId};
 use alondra_store::ContextRef;
 use serde::Deserialize;
 use serde_json::Value;
@@ -40,7 +40,7 @@ fn read_after_check(domain: &dyn Runtime, bearer: &str, query: Query, after_chec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_domain_rules::*;
+    use alondra_domain_model::*;
     use crate::test_support::Directory;
 
     #[test]

@@ -12,7 +12,7 @@ use alondra_engine_ports::Runtime;
 use crate::sdk_backend::SdkBackend;
 use alondra_core::accounts::Provider;
 use alondra_daemon_engine_model::NativeAccountIdentity;
-use alondra_domain_rules::{AgentId, DomainState, LifecycleRecord, Task, TaskId};
+use alondra_domain_model::{AgentId, DomainState, LifecycleRecord, Task, TaskId};
 use alondra_store::AuthorityScope;
 use alondra_engine_ports::agent_host::{AgentHost, Preparing, Retained};
 use std::cell::RefCell;
@@ -341,7 +341,7 @@ mod tests {
         }
         let admitted = |node: &str, instance: &str| LifecycleRecord::Admitted {
             node: AgentId(node.into()),
-            execution: Some(alondra_domain_rules::ExecutionIdentity { conversation: "c".into(), instance: instance.into(), host: "alondra-sdk".into() }),
+            execution: Some(alondra_domain_model::ExecutionIdentity { conversation: "c".into(), instance: instance.into(), host: "alondra-sdk".into() }),
         };
         state.lifecycle_journal.insert("t-closed".into(), vec![admitted("sdk-first", "sdk-first"), admitted("sdk-shared", "sdk-shared"), admitted("sdk-last", "sdk-last")]);
         let mut root = Root::new();

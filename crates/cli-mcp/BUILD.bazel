@@ -9,7 +9,7 @@ load("//:version.bzl", "VERSION")
 WORKSPACE_DEPS = [
     "//crates/client-port:client_port",
     "//crates/core:alondra_core",
-    "//crates/domain-rules:domain_rules",
+    "//crates/domain-model:domain_model",
 ]
 
 SKILLS = [

@@ -96,7 +96,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
                 BatchReport{kind:"process_exited".into(),input_consumed:consumed,turn_completed:output.stream.result,native_turn:None,failure:output.stream.error.clone(),public_result:output.stream.note.as_ref().map(|text|bounded(text.clone())),..Default::default()}
             }
         };
-        if output.stream.denied { report.stop = Some(alondra_domain_rules::orchestrator_batch::BatchStop::Denied); }
+        if output.stream.denied { report.stop = Some(alondra_domain_model::orchestrator_batch::BatchStop::Denied); }
         if let Err(error)=batch.domain.publish_batch_report(&run,pending.cursor,&pending.evidence,&report){
             output.stream.storage_failure=true;
             output.stream.error=Some(bounded(format!("The batch report was not committed; its host evidence remains unacknowledged: {error:#}")));break;

@@ -1,6 +1,6 @@
 //! What the journal keeps of the orchestrator's batches: their effects, reports and the ones left unfinished.
 use super::DeliveryEvidence;
-use alondra_domain_rules::DomainError;
+use alondra_domain_model::DomainError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +38,7 @@ pub struct BatchReport {
     pub failure: Option<String>,
     pub public_result: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stop: Option<alondra_domain_rules::orchestrator_batch::BatchStop>,
+    pub stop: Option<alondra_domain_model::orchestrator_batch::BatchStop>,
 }
 
 pub struct UnfinishedBatch {
@@ -58,7 +58,7 @@ pub const TOOL_REFUSALS: &[&str] = &[
 /// The domain's rules refuse before they commit, so such a call is settled and nothing is left to
 /// reconcile, except `delivery_uncertain`. Any code not known here leaves its effects unknown.
 pub fn refused_before_any_effect(code: Option<&str>) -> bool {
-    code.is_some_and(|code| code != "delivery_uncertain" && (alondra_domain_rules::INTERNAL_CODES.contains(&code) || TOOL_REFUSALS.contains(&code)))
+    code.is_some_and(|code| code != "delivery_uncertain" && (alondra_domain_model::INTERNAL_CODES.contains(&code) || TOOL_REFUSALS.contains(&code)))
 }
 
 fn error_code(error: Option<&str>) -> Option<String> {

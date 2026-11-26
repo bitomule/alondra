@@ -6,7 +6,7 @@ use alondra_engine_ports::github::PrMerger;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::clock;
-use alondra_domain_rules::{Command, DeliveryTarget, DomainState, InteractionPayload, MergeVerdict, PrState, PullRequest};
+use alondra_domain_model::{Command, DeliveryTarget, DomainState, InteractionPayload, MergeVerdict, PrState, PullRequest};
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;

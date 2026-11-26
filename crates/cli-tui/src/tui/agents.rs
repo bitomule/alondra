@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use alondra_domain_rules::{Agent, AgentId, Task};
+use alondra_domain_model::{Agent, AgentId, Task};
 use alondra_core::now_millis;
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;

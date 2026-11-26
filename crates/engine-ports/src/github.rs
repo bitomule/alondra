@@ -1,7 +1,7 @@
 //! GitHub as the engine sees it: observing, merging and reading pull requests, and the images their
 //! descriptions cite. `github-gh` implements it with the Mac's `gh`; a scenario registers a GitHub
 //! of its own in its place.
-use alondra_domain_rules::{MergeMethod, MergeVerdict, OpenPrStatus, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey, PullRequest};
+use alondra_domain_model::{MergeMethod, MergeVerdict, OpenPrStatus, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey, PullRequest};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -257,7 +257,7 @@ impl HttpAnswer {
 }
 
 pub fn pr_url(host: &str, repository: &str, number: u64) -> String {
-    format!("https://{}/{repository}/pull/{number}", alondra_domain_rules::normalize_pr_host(host))
+    format!("https://{}/{repository}/pull/{number}", alondra_domain_model::normalize_pr_host(host))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

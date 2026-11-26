@@ -1,6 +1,6 @@
 //! A Task that waits for another takes no plan: its node's plan is denied without a card, a plan
 //! already open is not approved, and only the orchestrator ends the wait.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_views as views;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};

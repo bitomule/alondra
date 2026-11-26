@@ -3,7 +3,7 @@
 use crate::Runtime;
 use crate::launch::{Failed, LaunchOptions};
 use alondra_core::accounts::{AccountId, Provider};
-use alondra_domain_rules::{AgentId, DomainError, DomainState, TaskId, TaskModel};
+use alondra_domain_model::{AgentId, DomainError, DomainState, TaskId, TaskModel};
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::future::Future;

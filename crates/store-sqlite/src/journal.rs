@@ -92,7 +92,7 @@ impl Journal for DomainStore {
     fn batch_outcomes(&self, run: &str, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value> { DomainStore::batch_outcomes(self, run, epoch, after, limit) }
     fn batch_run_manifest(&self, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value> { DomainStore::batch_run_manifest(self, epoch, after, limit) }
     fn batch_selection(&self, run: &str) -> Result<Option<records::BatchSelection>> { DomainStore::batch_selection(self, run) }
-    fn batch_stop(&self, run: &str) -> Result<Option<(alondra_domain_rules::orchestrator_batch::BatchStop, String)>> { DomainStore::batch_stop(self, run) }
+    fn batch_stop(&self, run: &str) -> Result<Option<(alondra_domain_model::orchestrator_batch::BatchStop, String)>> { DomainStore::batch_stop(self, run) }
     fn begin_task_closing(&mut self, task_id: &TaskId, now: i64) -> Result<TaskClosing> { DomainStore::begin_task_closing(self, task_id, now) }
     fn begin_tool_operation(&mut self, run: &str, call: &str, kind: &str, request: &Value) -> Result<Option<(String,Option<String>,Option<String>)>> { DomainStore::begin_tool_operation(self, run, call, kind, request) }
     fn bind_batch_effects(&mut self, run: &str, epoch: &DataEpoch) -> Result<()> { DomainStore::bind_batch_effects(self, run, epoch) }
@@ -100,8 +100,8 @@ impl Journal for DomainStore {
     fn change_launch_plan(&mut self, task_id: &TaskId, plan: &LaunchPlan, changes: Option<&serde_json::Value>, now: i64) -> Result<()> { DomainStore::change_launch_plan(self, task_id, plan, changes, now) }
     fn claim_auto_launch(&mut self, task_id: &TaskId, now: i64, retry: bool) -> Result<bool> { DomainStore::claim_auto_launch(self, task_id, now, retry) }
     fn claim_message(&mut self, id: i64) -> Result<Option<DeliveryClaim>> { DomainStore::claim_message(self, id) }
-    fn claim_orchestrator_batch(&mut self, ids: &[i64], run: &str, session: &str, epoch: alondra_domain_rules::DataEpoch) -> Result<(Vec<DeliveryClaim>, BatchOwner)> { DomainStore::claim_orchestrator_batch(self, ids, run, session, epoch) }
-    fn claim_selected_orchestrator_batch(&mut self, ids: &[i64], run: &str, session: &str, epoch: alondra_domain_rules::DataEpoch, selection: Option<&records::BatchSelection>) -> Result<(Vec<DeliveryClaim>, BatchOwner)> { DomainStore::claim_selected_orchestrator_batch(self, ids, run, session, epoch, selection) }
+    fn claim_orchestrator_batch(&mut self, ids: &[i64], run: &str, session: &str, epoch: alondra_domain_model::DataEpoch) -> Result<(Vec<DeliveryClaim>, BatchOwner)> { DomainStore::claim_orchestrator_batch(self, ids, run, session, epoch) }
+    fn claim_selected_orchestrator_batch(&mut self, ids: &[i64], run: &str, session: &str, epoch: alondra_domain_model::DataEpoch, selection: Option<&records::BatchSelection>) -> Result<(Vec<DeliveryClaim>, BatchOwner)> { DomainStore::claim_selected_orchestrator_batch(self, ids, run, session, epoch, selection) }
     fn claim_task_removal(&mut self, task_id: &TaskId, now: i64) -> Result<bool> { DomainStore::claim_task_removal(self, task_id, now) }
     fn complete_tool_operation(&mut self, run: &str, call: &str, answer: &std::result::Result<Value,DomainError>) -> Result<()> { DomainStore::complete_tool_operation(self, run, call, answer) }
     fn conversation_directory(&self, task: &TaskId, conversation: &str) -> Result<Option<String>> { DomainStore::conversation_directory(self, task, conversation) }
@@ -283,6 +283,6 @@ impl OwnerJournal for OwnerTransaction<'_> {
     fn unrecorded(&self) -> &[String] { OwnerTransaction::unrecorded(self) }
     fn validate_selection_binding(&mut self, plan:&TransitionPlan) ->std::result::Result<(),StoreError> { OwnerTransaction::validate_selection_binding(self, plan) }
     fn validate_selection_source(&mut self, plan:&TransitionPlan) ->std::result::Result<(),StoreError> { OwnerTransaction::validate_selection_source(self, plan) }
-    fn work_is_over(&self, task: &alondra_domain_rules::TaskId) -> bool { OwnerTransaction::work_is_over(self, task) }
+    fn work_is_over(&self, task: &alondra_domain_model::TaskId) -> bool { OwnerTransaction::work_is_over(self, task) }
 }
 

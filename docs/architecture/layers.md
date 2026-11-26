@@ -28,7 +28,7 @@ the application: they talk through ports, and the roots wire them together.
 | Layer | Packages |
 |---|---|
 | foundation | `foundation` (with the clock, the daemon's log, its locks and atomic saves), `process-group`, `host` (Bonjour, the Claude Code install and its updater, the record of failed starts, the Homebrew install and the user the process runs as: what the CLI, the server and the clients reach by themselves), `e2e`, `scenarios-transcript`, `spec-engine` (specs, boundaries, decisions and what is validated, read from the files its caller hands it) |
-| domain | `domain`, `domain-rules`, `core` (mixed: its config, options and home lock still read and write Alondra's home) |
+| domain | `domain`, `domain-model`, `core` (mixed: its config, options and home lock still read and write Alondra's home) |
 | ports | `engine-ports`, `provider-contract`, `view-model`, `client-port`, `store`, `agent-application` |
 | application | `engine-kernel`, `daemon-engine`, `daemon-engine-model`, `daemon-engine-machine`, `engine-admission`, `engine-orchestrator`, `engine-sdk`, `engine-github`, `engine-live`, `engine-mcp`, `engine-worktrees`, `daemon-support` (mixed: most of it goes to the `system` adapter), `views` |
 | adapter-in | `daemon-server` (the daemon's routes, transports, pushes and screens' cache), `cli`, `cli-tui`, `cli-mcp`, `cli-report`, `client-transport` |

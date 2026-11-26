@@ -1,5 +1,5 @@
 use crate::action_id::{ActionId, Verb};
-use alondra_domain_rules::{DeliveryTarget, DomainState, Interaction, InteractionId, InteractionPayload, PrId, PrState, PullRequest, Scope};
+use alondra_domain_model::{DeliveryTarget, DomainState, Interaction, InteractionId, InteractionPayload, PrId, PrState, PullRequest, Scope};
 
 /// Whether an action, applied now, takes its card out of the queue. The clients hide the card the
 /// moment it is sent when this is true, and leave it in place otherwise: they never work it out

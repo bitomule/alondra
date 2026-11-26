@@ -44,7 +44,7 @@ TRACKED = [
     "crates/engine-admission/src/admission.rs",
     "crates/engine-orchestrator/src/domain_orchestrator.rs",
     "crates/engine-live/src/node_reports.rs",
-    "crates/domain-rules/src/rules.rs",
+    "crates/domain-model/src/rules.rs",
     "crates/github-gh/src/cli.rs",
     "crates/engine-sdk/src/sdk_owner.rs",
     "crates/alondrad/src/assemble.rs",

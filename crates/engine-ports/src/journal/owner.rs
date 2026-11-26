@@ -1,10 +1,10 @@
 //! The values of an owner transaction: what it stages, commits and takes over.
 use super::{Commit, StoreError};
 use alondra_agent_application::{InputMetadata};
-use alondra_domain_rules::{Command, CommandId, CommandOutcome, DomainState};
+use alondra_domain_model::{Command, CommandId, CommandOutcome, DomainState};
 use alondra_foundation::ExecutionStamp;
 use alondra_provider_contract::{AdapterError, PreparedCommand};
-use alondra_domain_rules::ReadSnapshot;
+use alondra_domain_model::ReadSnapshot;
 use alondra_store::{Committed, DispatchAttempt, UnresolvedCommand, UnresolvedControl};
 use std::sync::Arc;
 

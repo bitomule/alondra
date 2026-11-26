@@ -1,4 +1,4 @@
-use alondra_domain_rules::DomainState;
+use alondra_domain_model::DomainState;
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, Transaction, params};
 

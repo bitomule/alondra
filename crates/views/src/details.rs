@@ -2,7 +2,7 @@ use super::{
     BuildError, ContentKind, ContentRef, Fact, Facts, Item, Markdown, Notice, RenderContext, Tone, View,
     common, text::t,
 };
-use alondra_domain_rules::{DocumentRevisionId, InteractionId, PrId, PrState};
+use alondra_domain_model::{DocumentRevisionId, InteractionId, PrId, PrState};
 
 pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
@@ -99,7 +99,7 @@ fn card_document(card: &str, part: &str, context: &RenderContext<'_>) -> Result<
     let markdown = document.markdown.ok_or(BuildError::NotFound)?;
     let mut view = common::view("document", &key, Some(document.title.clone()), context, vec![]);
     let mut facts = vec![Fact { kind: None, label: document.label, value: document.title, tone: None, link: None }];
-    if let alondra_domain_rules::Scope::Task { task_id } = &interaction.scope
+    if let alondra_domain_model::Scope::Task { task_id } = &interaction.scope
         && let Some(task) = context.domain.tasks.get(task_id)
     {
         facts.push(Fact {

@@ -1,5 +1,5 @@
 //! The identity of a settings change the journal commits with the options file.
-use alondra_domain_rules::{Actor, CommandEnvelope};
+use alondra_domain_model::{Actor, CommandEnvelope};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

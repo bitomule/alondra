@@ -1,7 +1,7 @@
 //! The screens port: what a client renders, asked of whichever crate the root registered.
 use crate::text::{t, Lang};
 use crate::{ClientCapabilities, LiveSnapshot, ProtocolRange, Service, View, Client, Transport, mcp, metrics};
-use alondra_domain_rules::{ActivityCounts, DomainState, InboxItem, Interaction, QuestionOption, ReadIndex, ReadSnapshot, Task, TaskId, TaskReading};
+use alondra_domain_model::{ActivityCounts, DomainState, InboxItem, Interaction, QuestionOption, ReadIndex, ReadSnapshot, Task, TaskId, TaskReading};
 use sha2::{Digest, Sha256};
 
 /// Everything a client sees, rendered from the committed domain and the live snapshot. Only the
@@ -89,8 +89,8 @@ impl RenderContext<'_> {
     pub fn reading(&self, task: &TaskId) -> Option<&TaskReading> {
         self.index.task(task)
     }
-    pub fn attention(&self, task: &Task) -> alondra_domain_rules::Attention {
-        self.reading(&task.id).map_or(alondra_domain_rules::Attention::Idle, |read| read.attention.clone())
+    pub fn attention(&self, task: &Task) -> alondra_domain_model::Attention {
+        self.reading(&task.id).map_or(alondra_domain_model::Attention::Idle, |read| read.attention.clone())
     }
     pub fn waits_for_review(&self, task: &TaskId) -> bool {
         self.reading(task).is_some_and(|read| read.waits_for_review)
@@ -103,11 +103,11 @@ impl RenderContext<'_> {
         })
     }
     /// The task a node works for: its latest open one, or else its latest.
-    pub fn node_task(&self, agent: &alondra_domain_rules::AgentId) -> Option<&Task> {
+    pub fn node_task(&self, agent: &alondra_domain_model::AgentId) -> Option<&Task> {
         self.index.task_of_node(agent).and_then(|id| self.domain.tasks.get(id))
     }
     /// The orchestrator has neither split the request into tasks nor closed it.
-    pub fn is_defining(&self, request: &alondra_domain_rules::Request) -> bool {
+    pub fn is_defining(&self, request: &alondra_domain_model::Request) -> bool {
         !request.closed && self.index.tasks_of_request(&request.id).is_empty()
     }
 }

@@ -1,6 +1,6 @@
 //! Decisions Claude asks for through a task's SDK execution: what Alondra decides by itself, the
 //! cards the user decides the rest on, and what each answer tells Claude.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_views as views;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};

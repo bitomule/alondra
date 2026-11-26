@@ -9,7 +9,7 @@ use alondra_daemon_support::locks::Poisonable as _;
 use crate::domain_github::{Closed, GhFailure, Located, Observed, PrFacts, PrObserver, ReadIdentity};
 use crate::domain_merges::{Checks, MergeState, Pending, PrMerger, Status};
 use crate::pr_images::{Failure, Fetch, GitHubImages};
-use alondra_domain_rules::{MergeMethod, MergeVerdict, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey, PullRequest, normalize_pr_repository};
+use alondra_domain_model::{MergeMethod, MergeVerdict, PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey, PullRequest, normalize_pr_repository};
 use alondra_engine_ports::github::{AuthoredPr, Gh, Read};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agent-protocol", "crates/antigravity-protocol", "crates/codex-protocol", "crates/foundation", "crates/spec-engine", "crates/daemon-support", "crates/system", "crates/daemon-engine", "crates/daemon-engine-model", "crates/store-sqlite", "crates/daemon-engine-machine", "crates/engine-kernel", "crates/engine-ports", "crates/engine-doubles", "crates/engine-github", "crates/github-gh", "crates/engine-live", "crates/engine-mcp", "crates/engine-worktrees", "crates/engine-orchestrator", "crates/engine-admission", "crates/engine-sdk", "crates/domain", "crates/store", "crates/provider-contract", "crates/agent-application", "crates/process-group", "crates/host", "crates/agent-runtime", "crates/provider-antigravity", "crates/provider-claude", "crates/provider-codex", "crates/provider-conformance", "crates/core", "crates/domain-rules", "crates/view-model", "crates/views", "crates/alondrad", "crates/alondra", "crates/e2e", "crates/relay", "crates/scenarios-transcript", "crates/scenarios", "crates/daemon-server", "crates/client-port", "crates/client-transport", "crates/cli", "crates/cli-tui", "crates/cli-mcp", "crates/cli-report"]
+members = ["crates/agent-protocol", "crates/antigravity-protocol", "crates/codex-protocol", "crates/foundation", "crates/spec-engine", "crates/daemon-support", "crates/system", "crates/daemon-engine", "crates/daemon-engine-model", "crates/store-sqlite", "crates/daemon-engine-machine", "crates/engine-kernel", "crates/engine-ports", "crates/engine-doubles", "crates/engine-github", "crates/github-gh", "crates/engine-live", "crates/engine-mcp", "crates/engine-worktrees", "crates/engine-orchestrator", "crates/engine-admission", "crates/engine-sdk", "crates/domain", "crates/store", "crates/provider-contract", "crates/agent-application", "crates/process-group", "crates/host", "crates/agent-runtime", "crates/provider-antigravity", "crates/provider-claude", "crates/provider-codex", "crates/provider-conformance", "crates/core", "crates/domain-model", "crates/view-model", "crates/views", "crates/alondrad", "crates/alondra", "crates/e2e", "crates/relay", "crates/scenarios-transcript", "crates/scenarios", "crates/daemon-server", "crates/client-port", "crates/client-transport", "crates/cli", "crates/cli-tui", "crates/cli-mcp", "crates/cli-report"]
 
 [workspace.package]
 version = "0.3.69"
@@ -27,7 +27,7 @@ alondra-provider-codex = { path = "crates/provider-codex" }
 alondra-provider-conformance = { path = "crates/provider-conformance" }
 alondra-engine-doubles = { path = "crates/engine-doubles" }
 alondra-core = { path = "crates/core" }
-alondra-domain-rules = { path = "crates/domain-rules" }
+alondra-domain-model = { path = "crates/domain-model" }
 alondra-view-model = { path = "crates/view-model" }
 alondra-views = { path = "crates/views" }
 alondra-daemon-server = { path = "crates/daemon-server" }

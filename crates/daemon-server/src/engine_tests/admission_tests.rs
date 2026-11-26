@@ -11,7 +11,7 @@ use alondra_engine_admission::admission::{FILE, Key, PREVIOUS_FILE, Tuning};
 use alondra_engine_admission::pauses::Reason;
 use alondra_engine_admission::machine_watch;
 use alondra_core::{Machine, Millis};
-use alondra_domain_rules::{Actor, AgentId, Command, CommandEnvelope, PROTOCOL_VERSION, RuntimeObservation};
+use alondra_domain_model::{Actor, AgentId, Command, CommandEnvelope, PROTOCOL_VERSION, RuntimeObservation};
 use crate::domain_runtime::DomainRuntime;
 use serde_json::json;
 use std::sync::Arc;
@@ -104,7 +104,7 @@ fn create(domain: &DomainRuntime, id: &str) {
     run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
     });
 }
 
@@ -176,7 +176,7 @@ fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
         assert_eq!((pacing.fixed, pacing.auto, pacing.limit, pacing.most), (None, auto, auto, most), "{cost} bytes a node");
 
         let state = domain.state().unwrap();
-        let index = alondra_domain_rules::ReadIndex::build(&state);
+        let index = alondra_domain_model::ReadIndex::build(&state);
         let live = alondra_view_model::LiveSnapshot { pacing: Some(pacing), ..Default::default() };
         let context = alondra_views::RenderContext { domain: &state, index: &index, live: &live, client: alondra_view_model::Client::Ios,
             lang: alondra_view_model::Lang::En, transport: alondra_view_model::Transport::Loopback, cursor: "c", rendered_at: "" };

@@ -1,5 +1,5 @@
 use super::*;
-use alondra_domain_rules::{AgentId, McpStatus, TaskId};
+use alondra_domain_model::{AgentId, McpStatus, TaskId};
 use alondra_view_model::Lang;
 use std::os::unix::fs::PermissionsExt;
 

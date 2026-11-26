@@ -29,7 +29,7 @@ pub(crate) use crate::domain_runtime::seals::{self, Seals};
 use crate::domain_store::{Attached, Preparer, StoreError};
 use alondra_agent_application::InputMetadata;
 use alondra_engine_ports::agent_host::{EndedHost, HostStop, VerifiedArtifact};
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_domain::ActivityView;
 use alondra_foundation::InputId;
 use alondra_provider_claude::{ClaudeConfiguration, ClaudeWorker, Retained, WorkerProfile, answered_by_event, answered_control, context_event, native_exited};
@@ -832,7 +832,7 @@ pub(crate) async fn launch_prepared(domain: &dyn Runtime, launch: Launch, reopen
         .await
         .map_err(|error| DomainError::new("launch_failed", format!("the SDK launch stopped: {error}")))?
         .map_err(|Failed { why, refusal, .. }| match refusal {
-            Some(refusal) if refusal.code == alondra_domain_rules::capability_capacity_card::CAPABILITY_CAPACITY_CODE => refusal,
+            Some(refusal) if refusal.code == alondra_domain_model::capability_capacity_card::CAPABILITY_CAPACITY_CODE => refusal,
             _ => DomainError::new("launch_failed", format!("the task did not start through the Agent SDK: {why}")),
         })?;
     let agent = driver.agent().clone();
@@ -2781,7 +2781,7 @@ pub(crate) fn commit_observation<N: alondra_agent_application::ObservationNormal
         .own(scope.clone(), |owner| {
             let acceptance = owner.stage_observation_with_identity(binding, generation, batch, normalizer, home, probe,identity.map(|identity| identity as &dyn crate::domain_store::KnownIdentity))?;
             if probe && !owner.unrecorded().is_empty() && owner.work_is_over(batch.execution.task()) {
-                return Err(StoreError::Domain(alondra_domain_rules::DomainError::new("work_is_over", owner.unrecorded().join("; "))));
+                return Err(StoreError::Domain(alondra_domain_model::DomainError::new("work_is_over", owner.unrecorded().join("; "))));
             }
             Ok((acceptance, owner.unrecorded().to_vec()))
         })
@@ -3455,7 +3455,7 @@ impl crate::domain_runtime::CommitObserver for Retakes {
 /// committed as its answer: the daemon takes the execution over again.
 fn retake_lost(domain: &dyn Runtime, command: &Command, state: &DomainState) {
     let Command::AnswerQuestion { interaction_id, option_id, .. } = command else { return };
-    if option_id != alondra_domain_rules::RETAKE {
+    if option_id != alondra_domain_model::RETAKE {
         return;
     }
     let Some(Scope::Task { task_id }) = state.interactions.get(interaction_id).map(|card| &card.scope) else { return };

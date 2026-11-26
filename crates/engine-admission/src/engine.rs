@@ -2,7 +2,7 @@
 //! the SDK hosts (`SdkHosts`) and the engine (`AdmissionEngine`), each bound to the runtime the gate
 //! runs in.
 use alondra_core::Millis;
-use alondra_domain_rules::{AgentId, DomainError, DomainState, NodeEvent, TaskId};
+use alondra_domain_model::{AgentId, DomainError, DomainState, NodeEvent, TaskId};
 use alondra_engine_ports::Runtime;
 use alondra_engine_ports::admission::{AdmissionEngine, NodeReport};
 use alondra_engine_ports::api::ApiWatch;

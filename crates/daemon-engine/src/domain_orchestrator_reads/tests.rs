@@ -1,7 +1,7 @@
 use crate::domain_runtime::DomainRuntime;
 use crate::live::LiveOf as _;
 use super::*;
-use alondra_domain_rules::{Actor, Command, CommandEnvelope, QuestionOption, Scope, TaskId, PROTOCOL_VERSION};
+use alondra_domain_model::{Actor, Command, CommandEnvelope, QuestionOption, Scope, TaskId, PROTOCOL_VERSION};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -29,7 +29,7 @@ fn agent_a() -> Actor {
 fn ask(domain: &DomainRuntime, id: &str, recipient: Recipient, scope: Scope, actor: Actor) {
     run(domain, actor, Command::AskQuestion { attachments: vec![], interaction_id: id.into(), scope, recipient,
         body: format!("Question {id}\nwith detail"), blocking: false,
-        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question") });
+        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question") });
 }
 
 /// Agent A runs Task t1 in App; t2 builds on t1 and nobody has it yet.
@@ -45,7 +45,7 @@ fn world() -> Fixture {
     let task = |id: &str, agent: Option<&str>, deps: &[&str]| Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: id.into(), request_id: "r".into(),
         title: format!("Title {id}"), agent_id: agent.map(Into::into), review_prs: false,
         dependencies: deps.iter().map(|d| TaskId::from(*d)).collect::<BTreeSet<_>>(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), };
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), };
     run(&domain, Actor::Orchestrator { generation: 0 }, task("t1", Some("agent-a"), &[]));
     run(&domain, Actor::Orchestrator { generation: 0 }, task("t2", None, &["t1"]));
     domain.live().observe(&json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
@@ -74,7 +74,7 @@ fn tasks_in_progress_lists_live_agents_what_waits_on_someone_and_the_requests() 
     run(&f.1, agent_a(), Command::Withdraw { interaction_id: "q-gone".into() });
     ask(&f.1, "q-orch", Recipient::Orchestrator, task_scope.clone(), agent_a());
     run(&f.1, Actor::System, Command::PublishInformation { attachments: vec![], interaction_id: "info".into(), scope: task_scope,
-        recipient: Recipient::User, body: "Found the colour table".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update") });
+        recipient: Recipient::User, body: "Found the colour table".into(), card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update") });
     let answer = tasks_in_progress(&f.1, json!({"cpus": 10}), json!(null)).unwrap();
     let nodes = answer["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 1, "only sessions the domain knows as Agents: {nodes:?}");
@@ -98,7 +98,7 @@ fn tasks_in_progress_shows_the_orchestrator_the_relations_the_verdict_and_the_ro
     let f = world();
     run(&f.1, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t3".into(), request_id: "r".into(), title: "Review".into(), agent_id: Some("agent-b".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
     run(&f.1, user(), Command::SetRelations {
         task_id: "t3".into(), delivered_dependencies: BTreeSet::from(["t1".into()]), blocks: BTreeSet::from(["t1".into()]),
     });
@@ -138,13 +138,13 @@ fn apply(state: &mut DomainState, actor: Actor, command: Command) {
 /// the orchestrator is listed, and no card asks the user.
 #[test]
 fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_its_case_once_nothing_explains_the_stop() {
-    use alondra_domain_rules::{LifecycleRecord, RuntimeObservation, TURN_ENDED_PREFIX, stalled_card_id};
+    use alondra_domain_model::{LifecycleRecord, RuntimeObservation, TURN_ENDED_PREFIX, stalled_card_id};
     let mut state = DomainState::new("epoch");
     apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into(), at: 0 });
     apply(&mut state, user(), Command::CreateRequest { request_id: "r".into(), body: "Keyboard".into(), auto_merge: false, maintenance: false, message: false });
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Keyboard".into() });
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t3".into(), request_id: "r".into(), title: "Keyboard".into(),
-        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
+        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")) });
     apply(&mut state, Actor::System, Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: "t3".into(), agent_id: "agent-b".into(), conversation: "conversation-t3".into(),
         instance: "instance-t3".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
     let LifecycleRecord::Planned { input } = state.lifecycle_journal[&TaskId::from("t3")][0].clone() else { panic!("planned first") };
@@ -155,7 +155,7 @@ fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_its
         scope: Scope::Task { task_id: "t3".into() }, recipient: Recipient::User, body: "Close without changes in simpool?".into(), blocking: true,
         options: vec![QuestionOption { id: "close".into(), label: "Close".into(), description: None },
             QuestionOption { id: "reset".into(), label: "Reset the keyboard".into(), description: None }],
-        card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Decide, "Choose what simpool does with the keyboard") });
+        card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Decide, "Choose what simpool does with the keyboard") });
     apply(&mut state, Actor::System, Command::RecordTurnBoundary { task_id: "t3".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert!(!state.interactions.contains_key(&format!("{TURN_ENDED_PREFIX}t3-1-turn-1").as_str().into()), "the turn waits on the question: no card says it stopped");
     let open = |state: &DomainState| -> Vec<String> { open_questions(state).iter().map(|q| q["id"].as_str().unwrap().to_owned()).collect() };
@@ -187,13 +187,13 @@ fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_its
 /// `starting` and, as soon as a card opened, `waiting_user`.
 #[test]
 fn the_orchestrator_reads_a_node_of_the_agent_sdk_from_its_task_s_lifecycle() {
-    use alondra_domain_rules::{LifecycleRecord, NodeEvent, Pause, PauseCleanup, PauseReason, RuntimeObservation};
+    use alondra_domain_model::{LifecycleRecord, NodeEvent, Pause, PauseCleanup, PauseReason, RuntimeObservation};
     let mut state = DomainState::new("epoch");
     apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent-s".into(), name: "Instance S".into(), at: 0 });
     apply(&mut state, user(), Command::CreateRequest { request_id: "r".into(), body: "Notes".into(), auto_merge: false, maintenance: false, message: false });
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Notes".into() });
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t4".into(), request_id: "r".into(), title: "Notes".into(),
-        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
+        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")) });
     apply(&mut state, Actor::System, Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: "t4".into(), agent_id: "agent-s".into(), conversation: "conversation-t4".into(),
         instance: "instance-t4".into(), host: crate::sdk_live::HOST.into(), model: None, account: None, leaves_limit: None });
     let read = |state: &DomainState| {

@@ -1,7 +1,7 @@
 //! The admission gate of a runtime that tests no admission: it holds nothing back and keeps no
 //! pause.
 use alondra_core::Millis;
-use alondra_domain_rules::{DomainState, TaskId};
+use alondra_domain_model::{DomainState, TaskId};
 use alondra_engine_ports::Runtime;
 use alondra_engine_ports::admission::{AdmissionGate, Hold, Key, Paused, Pauses, Reason, Waiting};
 use std::path::Path;

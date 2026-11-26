@@ -10,7 +10,7 @@ load("//bazel/rules:rust_sources.bzl", "production_sources")
 # that wires them sees it.
 WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
-    "//crates/domain-rules:domain_rules",
+    "//crates/domain-model:domain_model",
     "//crates/engine-ports:engine_ports",
     "//crates/foundation:foundation",
     "//crates/provider-claude:provider_claude",

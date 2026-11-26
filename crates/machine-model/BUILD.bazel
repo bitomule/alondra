@@ -18,7 +18,7 @@ low_opt_rust_test(
     version = VERSION,
     deps = [
         "//crates/core:alondra_core",
-        "//crates/domain-rules:domain_rules",
+        "//crates/domain-model:domain_model",
         "//crates/daemon-engine:daemon_engine",
         "//crates/engine-admission:engine_admission",
         "//crates/engine-orchestrator:engine_orchestrator",

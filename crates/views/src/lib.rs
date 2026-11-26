@@ -43,7 +43,7 @@ pub use resolves::{pr_presentation, resolves_card};
 pub use live::*;
 pub use text::Lang;
 pub use alondra_view_model::screens::*;
-use alondra_domain_rules::{DomainState, ReadIndex};
+use alondra_domain_model::{DomainState, ReadIndex};
 use std::sync::Arc;
 
 /// The screens this crate renders, as the port the rest of Alondra asks for them.
@@ -56,16 +56,16 @@ impl Screens for Views {
     fn inbox_badge(&self, index: &ReadIndex) -> u32 {
         inbox_badge(index)
     }
-    fn activity_counts(&self, context: &RenderContext<'_>) -> alondra_domain_rules::ActivityCounts {
+    fn activity_counts(&self, context: &RenderContext<'_>) -> alondra_domain_model::ActivityCounts {
         activity_counts(context)
     }
     fn waiting_cards(&self, index: &ReadIndex) -> Vec<String> {
         waiting_cards(index)
     }
-    fn push_content(&self, read: &alondra_domain_rules::ReadSnapshot, card_id: &str, lang: Lang) -> Result<PushContent, BuildError> {
+    fn push_content(&self, read: &alondra_domain_model::ReadSnapshot, card_id: &str, lang: Lang) -> Result<PushContent, BuildError> {
         push_content(read, card_id, lang)
     }
-    fn answer_label(&self, state: &DomainState, interaction: &alondra_domain_rules::Interaction, option: &alondra_domain_rules::QuestionOption, lang: Lang) -> String {
+    fn answer_label(&self, state: &DomainState, interaction: &alondra_domain_model::Interaction, option: &alondra_domain_model::QuestionOption, lang: Lang) -> String {
         answer_label(state, interaction, option, lang)
     }
 }
@@ -77,23 +77,23 @@ pub fn wire(registry: &alondra_engine_ports::Registry) {
 
 /// The app icon badge: the cards of the Waiting for You queue that ask the user for something, as
 /// `Status::badge` counts them; a card that is only read never counts.
-pub fn inbox_badge(index: &alondra_domain_rules::ReadIndex) -> u32 {
+pub fn inbox_badge(index: &alondra_domain_model::ReadIndex) -> u32 {
     index.cards().iter().filter(|item| home::asks(item)).count() as u32
 }
 /// The counts the status header and the phone's Live Activity show, so they never differ: the index's, with a paused
 /// task the gate queues counted as queued, as the list says it.
-pub fn activity_counts(context: &RenderContext<'_>) -> alondra_domain_rules::ActivityCounts {
+pub fn activity_counts(context: &RenderContext<'_>) -> alondra_domain_model::ActivityCounts {
     let mut counts = context.index.activity();
     let queued = context.domain.tasks.values()
-        .filter(|task| task_state::tally(task, context) == Some(alondra_domain_rules::Tally::Queued)
-            && context.reading(&task.id).and_then(alondra_domain_rules::TaskReading::tally) == Some(alondra_domain_rules::Tally::Paused))
+        .filter(|task| task_state::tally(task, context) == Some(alondra_domain_model::Tally::Queued)
+            && context.reading(&task.id).and_then(alondra_domain_model::TaskReading::tally) == Some(alondra_domain_model::Tally::Paused))
         .count() as u32;
     counts.paused -= queued;
     counts.queued += queued;
     counts
 }
 /// The cards of the Waiting for You queue, by the id a push names them with (`alondra.card`).
-pub fn waiting_cards(index: &alondra_domain_rules::ReadIndex) -> Vec<String> {
+pub fn waiting_cards(index: &alondra_domain_model::ReadIndex) -> Vec<String> {
     index.waiting().iter().map(|item| card::public_id(item).to_owned()).collect()
 }
 
@@ -127,7 +127,7 @@ pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> 
 }
 
 pub fn push_actions(
-    read: &alondra_domain_rules::ReadSnapshot,
+    read: &alondra_domain_model::ReadSnapshot,
     card_id: &str,
     lang: Lang,
 ) -> Result<Vec<PushAction>, BuildError> {
@@ -136,8 +136,8 @@ pub fn push_actions(
 
 /// How loudly a card interrupts: a problem, or a blocking permission or manual step, now; a
 /// decision, review, test or input when the user looks; a notice or a proposal quietly.
-fn push_level(kind: alondra_domain_rules::CardKind, blocking: bool) -> &'static str {
-    use alondra_domain_rules::CardKind::*;
+fn push_level(kind: alondra_domain_model::CardKind, blocking: bool) -> &'static str {
+    use alondra_domain_model::CardKind::*;
     match kind {
         Problem => "time-sensitive",
         Authorize | Do if blocking => "time-sensitive",
@@ -150,7 +150,7 @@ fn push_level(kind: alondra_domain_rules::CardKind, blocking: bool) -> &'static 
 const PUSHED_ANSWERS: usize = 3;
 
 pub fn push_content(
-    read: &alondra_domain_rules::ReadSnapshot,
+    read: &alondra_domain_model::ReadSnapshot,
     card_id: &str,
     lang: Lang,
 ) -> Result<PushContent, BuildError> {
@@ -160,15 +160,15 @@ pub fn push_content(
         domain, index: read.index(), live: &live, client: Client::Ios, lang, transport: Transport::Relay,
         cursor: "push", rendered_at: "",
     })?;
-    let interaction = domain.interactions.get(&alondra_domain_rules::InteractionId(card_id.into()));
+    let interaction = domain.interactions.get(&alondra_domain_model::InteractionId(card_id.into()));
     let interruption_level = interaction.map_or("active", |i| {
-        let quiet = i.author == alondra_domain_rules::Author::System && !i.blocking && i.card.kind == alondra_domain_rules::CardKind::Decide;
+        let quiet = i.author == alondra_domain_model::Author::System && !i.blocking && i.card.kind == alondra_domain_model::CardKind::Decide;
         if quiet { "passive" } else { push_level(i.card.kind, i.blocking) }
     });
     let thread = interaction.map(|i| match &i.scope {
-        alondra_domain_rules::Scope::Task { task_id } => task_id.0.clone(),
-        alondra_domain_rules::Scope::Orchestrator { request_id: Some(request_id) } => request_id.0.clone(),
-        alondra_domain_rules::Scope::Orchestrator { request_id: None } => "orchestrator".to_owned(),
+        alondra_domain_model::Scope::Task { task_id } => task_id.0.clone(),
+        alondra_domain_model::Scope::Orchestrator { request_id: Some(request_id) } => request_id.0.clone(),
+        alondra_domain_model::Scope::Orchestrator { request_id: None } => "orchestrator".to_owned(),
     });
     let Some(card) = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Card(card) = item { Some(card) } else { None }
@@ -216,7 +216,7 @@ fn one_line(text: &str, limit: usize) -> Option<String> {
 
 /// An option is a button, so any of them can be pressed from a notification.
 fn push_supported_option(domain: &DomainState, action: &Action) -> bool {
-    use alondra_domain_rules::{InteractionId, InteractionPayload};
+    use alondra_domain_model::{InteractionId, InteractionPayload};
     let Ok(id) = action_id::ActionId::parse(&action.id) else { return false };
     if id.verb != action_id::Verb::Ans { return true; }
     let Some(option_id) = action.option_id.as_deref() else { return false };

@@ -4,7 +4,7 @@
 //!
 //! This crate holds only what is measured and compiles from scratch at the build's opt-level on
 //! every edit below it, so the domain it measures and every JSON live in `budget_fixture`.
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, DeliveryTarget, DomainState, InteractionId, PROTOCOL_VERSION,
     ReadSnapshot, Recipient, Scope,
 };
@@ -143,7 +143,7 @@ fn actions(state: &mut DomainState) -> Vec<(&'static str, Actor, Command)> {
             instruction: Default::default(), merge_failure: None,
         }),
         ("message", Actor::System, Command::TellNode { task_id: "t-running-u000".into(), text: "Also check the tests".into(), from_user: true, answers: None }),
-        ("priority", user(), Command::SetPriority { task_id: "t-running-u000".into(), priority: alondra_domain_rules::TaskPriority::High }),
+        ("priority", user(), Command::SetPriority { task_id: "t-running-u000".into(), priority: alondra_domain_model::TaskPriority::High }),
         ("cancel", user(), Command::CancelTask { task_id: "t-running-u001".into(), reason: None }),
         ("reopen", user(), Command::ReopenTask { task_id: "t-done-u000".into() }),
     ]

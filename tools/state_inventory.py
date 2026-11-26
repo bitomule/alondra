@@ -35,7 +35,7 @@ EXEMPT = "tools/state_inventory_exempt.tsv"
 KNOWN = "tools/state_inventory_known.tsv"
 
 NOT_SCANNED = {"e2e", "engine-doubles", "machine-model", "provider-conformance", "scenarios", "scenarios-transcript"}
-ENGINE = re.compile(r"^(?:domain|domain-rules|core|engine-[\w-]+|daemon-[\w-]+|alondrad|store|store-sqlite|agent-[\w-]+|provider-[\w-]+|host|system)$")
+ENGINE = re.compile(r"^(?:domain|domain-model|domain-rules|core|engine-[\w-]+|daemon-[\w-]+|alondrad|store|store-sqlite|agent-[\w-]+|provider-[\w-]+|host|system)$")
 STATE_FILE = re.compile(r"^(?:[\w-]+/)*[\w-][\w.-]*\.(?:json|toml|pending)$")
 SECTION = re.compile(r"^### (M-[A-Z]+-[A-Z0-9-]+) ·", re.M)
 FENCE = re.compile(r"^```toml (state-machine|state-files|timers)\n(.*?)^```$", re.M | re.S)

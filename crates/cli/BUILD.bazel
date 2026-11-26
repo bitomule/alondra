@@ -11,7 +11,7 @@ WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
     "//crates/host:host",
     "//crates/spec-engine:spec_engine",
-    "//crates/domain-rules:domain_rules",
+    "//crates/domain-model:domain_model",
     "//crates/e2e:alondra_e2e",
     "//crates/view-model:view_model",
 ]

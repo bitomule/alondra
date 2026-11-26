@@ -1,7 +1,7 @@
 //! A node that stops with nothing explaining its next step is Alondra's to fix, never the user's:
 //! its first three stops in a row go back to it at once, the next one is a case the orchestrator
 //! settles with a closed outcome, and past the limit the only outcome is a task closed with a result.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_views as views;
 use alondra_domain::EMPTY_TURN_WAKES;
 use proptest::prelude::*;

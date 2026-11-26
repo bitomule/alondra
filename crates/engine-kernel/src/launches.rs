@@ -3,7 +3,7 @@
 //! the worktree it owns from the start.
 use crate::Runtime;
 use crate::domain_runtime::RuntimeRecords as _;
-use alondra_domain_rules::{Command, DomainError, DomainState, TaskId, WorktreeOrigin};
+use alondra_domain_model::{Command, DomainError, DomainState, TaskId, WorktreeOrigin};
 use alondra_engine_ports::worktrees::Workplace;
 
 pub fn validate_request_selection(domain: &dyn Runtime, resolved: &alondra_core::options::Resolved) -> Result<(), DomainError> {
@@ -72,8 +72,8 @@ pub struct CanonicalTaskContext {
 /// What a task's next node must know to carry on, whole: its request, plan, every input the user
 /// and Alondra gave it, decisions, documents and the work it builds on. A source Alondra no longer
 /// has is missing; whether the whole fits the next model is for the handoff to decide.
-pub fn canonical_task_context(state: &DomainState, task: &alondra_domain_rules::Task) -> CanonicalTaskContext {
-    use alondra_domain_rules::{InteractionPayload, Recipient, Scope};
+pub fn canonical_task_context(state: &DomainState, task: &alondra_domain_model::Task) -> CanonicalTaskContext {
+    use alondra_domain_model::{InteractionPayload, Recipient, Scope};
     let mut text = format!("Task {}: {}\nRequest: {}", task.id, task.title, task.request_id);
     let mut missing_sources = vec![];
     let mut add = |part: String| {
@@ -87,9 +87,9 @@ pub fn canonical_task_context(state: &DomainState, task: &alondra_domain_rules::
     let mut included_inputs = std::collections::BTreeSet::new();
     for record in state.lifecycle_journal.get(&task.id).into_iter().flat_map(|journal| journal.iter()) {
         let (input, said) = match record {
-            alondra_domain_rules::LifecycleRecord::Told { input, text, .. }
-            | alondra_domain_rules::LifecycleRecord::Answered { input, text, .. }
-            | alondra_domain_rules::LifecycleRecord::HandedBack { input, text, .. } => (input, text),
+            alondra_domain_model::LifecycleRecord::Told { input, text, .. }
+            | alondra_domain_model::LifecycleRecord::Answered { input, text, .. }
+            | alondra_domain_model::LifecycleRecord::HandedBack { input, text, .. } => (input, text),
             _ => continue,
         };
         if !included_inputs.insert(input) { continue; }
@@ -98,12 +98,12 @@ pub fn canonical_task_context(state: &DomainState, task: &alondra_domain_rules::
             None => missing_sources.push(format!("task:{}:input:{input}", task.id)),
         }
     }
-    add(alondra_domain_rules::asked_changes(state, task));
+    add(alondra_domain_model::asked_changes(state, task));
     let mut public: Vec<_> = state.interactions.values().filter(|interaction| interaction.scope == (Scope::Task { task_id: task.id.clone() }) && interaction.recipient == Recipient::User).collect();
     public.sort_by_key(|interaction| interaction.order);
     for interaction in public {
         if let InteractionPayload::Question { answer: Some(answer), .. } | InteractionPayload::ActionRequest { answer: Some(answer), .. } = &interaction.payload {
-            let said = alondra_domain_rules::answer_said(interaction).unwrap_or_default();
+            let said = alondra_domain_model::answer_said(interaction).unwrap_or_default();
             add(format!("Public user decision {}: {said} (revision {})", interaction.id, answer.at_revision));
         }
     }
@@ -132,8 +132,8 @@ pub fn canonical_task_context(state: &DomainState, task: &alondra_domain_rules::
 
 /// The approved plan this node needs to implement, including its predecessor's own plan when
 /// the task reopens, with only this task's points assigned when the plan is in phases.
-pub fn approved_plan(state: &DomainState, task: &alondra_domain_rules::Task) -> String {
-    use alondra_domain_rules::{checklist_items, InteractionPayload, Scope};
+pub fn approved_plan(state: &DomainState, task: &alondra_domain_model::Task) -> String {
+    use alondra_domain_model::{checklist_items, InteractionPayload, Scope};
     let Some(checklist) = state.checklists.get(&task.id) else { return String::new() };
     let Some(source) = state.interactions.get(&checklist.plan) else { return String::new() };
     if source.scope == (Scope::Task { task_id: task.id.clone() }) && state.pending_reopening(&task.id).is_none() {
@@ -164,8 +164,8 @@ This task goes in stages, and you are its author. Plan it through plan mode: ask
 /// What a new execution of a staged task starts from, written by Alondra instead of the
 /// conversation of the execution before it: the task's whole record, its approved plan, where its
 /// work is, and what its role does.
-pub fn stage_packet(state: &DomainState, task: &alondra_domain_rules::Task, role: alondra_domain_rules::ExecutionRole, worktree: &str, branch: Option<&str>) -> Result<String, Vec<String>> {
-    use alondra_domain_rules::ExecutionRole;
+pub fn stage_packet(state: &DomainState, task: &alondra_domain_model::Task, role: alondra_domain_model::ExecutionRole, worktree: &str, branch: Option<&str>) -> Result<String, Vec<String>> {
+    use alondra_domain_model::ExecutionRole;
     let canonical = canonical_task_context(state, task);
     if !canonical.missing_sources.is_empty() {
         return Err(canonical.missing_sources);
@@ -205,8 +205,8 @@ pub fn stage_packet(state: &DomainState, task: &alondra_domain_rules::Task, role
 
 /// What a new execution of a staged task is told of its specs: the approved ones, which win over
 /// any other text, and the change of them its role has to draft or wait for.
-pub fn spec_packet(task: &alondra_domain_rules::Task, role: alondra_domain_rules::ExecutionRole) -> String {
-    use alondra_domain_rules::{spec_card, AmendmentState, ExecutionRole, SpecMode};
+pub fn spec_packet(task: &alondra_domain_model::Task, role: alondra_domain_model::ExecutionRole) -> String {
+    use alondra_domain_model::{spec_card, AmendmentState, ExecutionRole, SpecMode};
     use alondra_core::text::Lang;
     let Some(approved) = &task.specs.approved else { return String::new() };
     let mut out = vec!["## The approved specs".to_owned(), String::new(),
@@ -234,8 +234,8 @@ pub fn spec_packet(task: &alondra_domain_rules::Task, role: alondra_domain_rules
 }
 
 /// The plan the user approved for the task, whoever wrote it.
-fn stage_plan(state: &DomainState, task: &alondra_domain_rules::Task) -> String {
-    use alondra_domain_rules::InteractionPayload;
+fn stage_plan(state: &DomainState, task: &alondra_domain_model::Task) -> String {
+    use alondra_domain_model::InteractionPayload;
     let Some(source) = state.checklists.get(&task.id).and_then(|checklist| state.interactions.get(&checklist.plan)) else { return String::new() };
     match &source.payload {
         InteractionPayload::Delivery { .. } => source.card.plan.as_deref().unwrap_or_default(),

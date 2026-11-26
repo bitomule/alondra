@@ -105,13 +105,13 @@ pub struct LiveSnapshot {
 /// until their agent starts again: `loaded` holds each one's execution then, by agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveMcpRemoval {
-    pub key: alondra_domain_rules::McpServerKey,
+    pub key: alondra_domain_model::McpServerKey,
     pub loaded: BTreeMap<String, u64>,
 }
 
 impl LiveMcpRemoval {
     /// Whether the node `agent` reported `server` at `generation` from before it was deleted.
-    pub fn hides(&self, agent: &str, generation: u64, server: &alondra_domain_rules::McpServerState) -> bool {
+    pub fn hides(&self, agent: &str, generation: u64, server: &alondra_domain_model::McpServerState) -> bool {
         self.loaded.get(agent) == Some(&generation) && self.key.names(server)
     }
 }
@@ -122,7 +122,7 @@ impl LiveMcpRemoval {
 pub enum LiveMcpProbe {
     Checking,
     /// As Claude listed them, at this local ISO time.
-    Checked { at: String, servers: Vec<alondra_domain_rules::McpServerState> },
+    Checked { at: String, servers: Vec<alondra_domain_model::McpServerState> },
     Failed { at: String, error: String },
 }
 

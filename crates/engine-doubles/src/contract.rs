@@ -9,7 +9,7 @@ use alondra_engine_ports::agent_host::{AdoptedEndpoint, AgentHost, EndedHost, Ho
 use alondra_engine_ports::disk::Disk;
 use alondra_engine_ports::machine::MachineProbe;
 use alondra_core::secret_destination::SecretDestination;
-use alondra_domain_rules::{Actor, Command, CommandEnvelope, DomainState, LaunchPlan, PROTOCOL_VERSION, TaskId, WorktreeOrigin};
+use alondra_domain_model::{Actor, Command, CommandEnvelope, DomainState, LaunchPlan, PROTOCOL_VERSION, TaskId, WorktreeOrigin};
 use alondra_engine_ports::worktrees::{LaunchError, Protected, TaskWorktree, Workplace, Worktrees, CHECK_LIMIT};
 use std::cell::RefCell;
 use std::collections::BTreeMap;

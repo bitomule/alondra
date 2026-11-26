@@ -1,5 +1,5 @@
 use alondra_core::accounts::Provider;
-use alondra_domain_rules::{DomainState, TaskId};
+use alondra_domain_model::{DomainState, TaskId};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -81,7 +81,7 @@ pub(super) fn load(c: &Connection, state: &mut DomainState) -> Result<()> {
         let mut statement = c.prepare("SELECT schedule_id,account FROM schedule_paid_accounts")?;
         for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
             let (id, account) = row?;
-            state.schedule.schedules.get_mut(&alondra_domain_rules::ScheduleId(id)).context("paid grant schedule missing")?.paid_account_grant = Some(serde_json::from_str(&account)?);
+            state.schedule.schedules.get_mut(&alondra_domain_model::ScheduleId(id)).context("paid grant schedule missing")?.paid_account_grant = Some(serde_json::from_str(&account)?);
         }
     }
     if exists("account_logins")? && let Some(logins) = c.query_row("SELECT logins FROM account_logins WHERE singleton=1", [], |row| row.get::<_, String>(0)).optional()? {
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn codex_login_presentation_survives_restart_without_persisting_credentials() {
-        use alondra_domain_rules::{AccountLogin, AccountLoginPhase};
+        use alondra_domain_model::{AccountLogin, AccountLoginPhase};
         let c = Connection::open_in_memory().unwrap(); c.execute_batch(SCHEMA).unwrap();
         let before = DomainState::new("fixture"); let mut after = before.clone();
         after.account_logins.push(AccountLogin { account: AccountKey::native(Provider::Codex), attempt: "fixture".into(), started_at: 1,

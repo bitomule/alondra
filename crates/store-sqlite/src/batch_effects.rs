@@ -46,7 +46,7 @@ impl DomainStore {
         Ok(completed.unwrap_or(false))
     }
 
-    pub fn batch_stop(&self, run: &str) -> Result<Option<(alondra_domain_rules::orchestrator_batch::BatchStop, String)>> {
+    pub fn batch_stop(&self, run: &str) -> Result<Option<(alondra_domain_model::orchestrator_batch::BatchStop, String)>> {
         let report: Option<String> = self.conn.query_row("SELECT report FROM orchestrator_batch_reports WHERE run=?1 AND json_extract(report,'$.kind')!='diagnostic' ORDER BY cursor DESC LIMIT 1", [run], |row| row.get(0)).optional()?;
         let report = report.as_deref().map(serde_json::from_str::<BatchReport>).transpose()?;
         Ok(report.and_then(|report| report.stop.map(|stop| (stop, report.failure.unwrap_or_else(|| "The interrupted native batch requires reconciliation before retrying".into())))))
@@ -87,9 +87,9 @@ impl DomainStore {
     /// create one more is refused before it changes anything; one any turn already committed, as a
     /// turn that carries on an interrupted one replays, is answered with its receipt as it was.
     fn within_task_limit(&mut self, run: &str, envelope: &CommandEnvelope) -> std::result::Result<(), StoreError> {
-        use alondra_domain_rules::orchestrator_batch::{TURN_TASK_LIMIT, TURN_TASK_LIMIT_CODE};
+        use alondra_domain_model::orchestrator_batch::{TURN_TASK_LIMIT, TURN_TASK_LIMIT_CODE};
         let creates = matches!(&envelope.command, Command::CreateTask { .. }
-            | Command::SettleSuggestion { decision: alondra_domain_rules::SuggestionDecision::NewTask { .. }, .. });
+            | Command::SettleSuggestion { decision: alondra_domain_model::SuggestionDecision::NewTask { .. }, .. });
         if !creates {
             return Ok(());
         }
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn every_refusal_of_the_domain_rules_settles_its_call() {
-        let refusals = alondra_domain_rules::INTERNAL_CODES.iter().filter(|code| **code != "delivery_uncertain");
+        let refusals = alondra_domain_model::INTERNAL_CODES.iter().filter(|code| **code != "delivery_uncertain");
         for code in refusals.chain(TOOL_REFUSALS) {
             assert!(!is_unconfirmed(&uncertain(code)), "{code} changed nothing");
         }

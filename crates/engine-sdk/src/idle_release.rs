@@ -13,7 +13,7 @@ use alondra_engine_kernel::sdk_backend::SdkOf as _;
 use crate::sdk_owner::SdkOwners as _;
 use alondra_core::clock;
 use alondra_engine_ports::Runtime;
-use alondra_domain_rules::{DomainState, TaskId};
+use alondra_domain_model::{DomainState, TaskId};
 use alondra_core::{Millis, now_millis};
 use std::collections::BTreeMap;
 use std::sync::Arc;

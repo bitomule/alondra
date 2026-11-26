@@ -6,7 +6,7 @@ use alondra_engine_sdk::auto_launch::*;
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine_model::LaunchPlan;
 use crate::engine_tests::SdkLaunches;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, StartProblem,
     Command, CommandEnvelope, DeliveryTarget, InteractionId, MergeMethod, NodeEnd, PROTOCOL_VERSION, PrState, TaskId,
 };
@@ -83,7 +83,7 @@ pub fn create(f: &Fixture, id: &str, after: &[&str], plan: Option<&LaunchPlan>) 
     create_with_priority(f, id, after, plan, Default::default());
 }
 
-pub fn create_with_priority(f: &Fixture, id: &str, after: &[&str], plan: Option<&LaunchPlan>, priority: alondra_domain_rules::TaskPriority) {
+pub fn create_with_priority(f: &Fixture, id: &str, after: &[&str], plan: Option<&LaunchPlan>, priority: alondra_domain_model::TaskPriority) {
     let bearer = f.domain.bind_orchestrator(&format!("execution-{id}")).unwrap().expose_for_child_environment().to_owned();
     let state = f.domain.state().unwrap();
     let envelope = CommandEnvelope {
@@ -102,7 +102,7 @@ pub fn open_task(f: &Fixture, id: &str) {
     command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: format!("seed-{id}").into(), name: format!("Seed {id}").into(), at: 0 });
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"),
         agent_id: Some(format!("seed-{id}").into()), review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
 }
 
 /// How many nodes Alondra started through the SDK.
@@ -115,6 +115,6 @@ pub fn told(f: &Fixture) -> Vec<String> {
 }
 
 
-pub fn problem(f: &Fixture, task: &str) -> Option<alondra_domain_rules::Interaction> {
+pub fn problem(f: &Fixture, task: &str) -> Option<alondra_domain_model::Interaction> {
     f.domain.state().unwrap().open_start_problem(&task.into()).cloned()
 }

@@ -10,7 +10,7 @@ pub(crate) struct ProviderOwner(pub(crate) BatchOwner);
 
 impl alondra_provider_claude::HostOwner for ProviderOwner {
     fn owner_generation(&self) -> u64 { 1 }
-    fn epoch(&self) -> &alondra_domain_rules::DataEpoch { self.0.epoch() }
+    fn epoch(&self) -> &alondra_domain_model::DataEpoch { self.0.epoch() }
     fn host(&self) -> &str { self.0.host_name() }
     fn wire_execution(&self) -> alondra_provider_claude::Execution {
         alondra_provider_claude::Execution::Orchestrator(alondra_provider_claude::OrchestratorExecution {
@@ -22,7 +22,7 @@ impl alondra_provider_claude::HostOwner for ProviderOwner {
 
 impl alondra_provider_codex::HostOwner for ProviderOwner {
     fn owner_generation(&self) -> u64 { 1 }
-    fn epoch(&self) -> &alondra_domain_rules::DataEpoch { self.0.epoch() }
+    fn epoch(&self) -> &alondra_domain_model::DataEpoch { self.0.epoch() }
     fn host(&self) -> &str { self.0.host_name() }
     fn wire_execution(&self) -> alondra_provider_codex::Execution {
         alondra_provider_codex::Execution::Orchestrator(alondra_provider_codex::OrchestratorExecution {
@@ -57,7 +57,7 @@ pub(crate) struct Batch {
     pub(crate) selection: BatchSelection,
 }
 
-pub(crate) fn selection(domain: &crate::domain_runtime::DomainRuntime, home: &std::path::Path, now: alondra_core::Millis) -> Result<BatchSelection, alondra_domain_rules::DomainError> {
+pub(crate) fn selection(domain: &crate::domain_runtime::DomainRuntime, home: &std::path::Path, now: alondra_core::Millis) -> Result<BatchSelection, alondra_domain_model::DomainError> {
     use alondra_core::model_selection::{TaskSelection, ModelProfile};
     let before = domain.read();
     let policy_revision = format!("{}:{}", before.state().account_config_version, before.state().model_profiles_version);
@@ -65,7 +65,7 @@ pub(crate) fn selection(domain: &crate::domain_runtime::DomainRuntime, home: &st
     let decision = domain.engine().select_account(home, &TaskSelection::automatic(ModelProfile::Orchestrator), now)?;
     let read = domain.read();
     if policy_revision != format!("{}:{}",read.state().account_config_version,read.state().model_profiles_version) {
-        return Err(alondra_domain_rules::DomainError::new("stale_configuration","Account/model policy changed during selection"));
+        return Err(alondra_domain_model::DomainError::new("stale_configuration","Account/model policy changed during selection"));
     }
     let account_status = read.state().accounts.iter().find(|status| status.provider == decision.account.provider && status.id == decision.account.account).cloned();
     Ok(BatchSelection { account_status, account: decision.account, model: decision.selection, reason: decision.reason, rejected_candidates: decision.rejected_candidates, policy_revision })
@@ -82,7 +82,7 @@ pub(crate) async fn execute(batch: Batch, spawned: impl FnOnce() -> anyhow::Resu
 
 
 pub(crate) fn record_limit(domain: &crate::domain_runtime::DomainRuntime, selection: &BatchSelection, until: Option<alondra_core::Millis>, now: alondra_core::Millis) {
-    use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
+    use alondra_domain_model::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
     use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
     let account = &selection.account;
     let Some(source) = selection.account_status.as_ref() else { return };
@@ -113,7 +113,7 @@ pub(crate) fn record_limit(domain: &crate::domain_runtime::DomainRuntime, select
 /// The provider refused the account's native policy before any work: it takes no new work until
 /// the account itself changes. Nothing is recorded when the account already changed during the batch.
 pub(crate) fn record_policy_refused(domain: &crate::domain_runtime::DomainRuntime, selection: &BatchSelection, now: alondra_core::Millis) {
-    use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
+    use alondra_domain_model::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
     let account = &selection.account;
     let Some(source) = selection.account_status.as_ref() else { return };
     let read = domain.read();
@@ -141,7 +141,7 @@ pub(crate) fn record_policy_refused(domain: &crate::domain_runtime::DomainRuntim
 mod tests {
     use super::*;
     use alondra_core::accounts::{AccountId, AccountState, AccountStatus, Provider};
-    use alondra_domain_rules::{Command, CommandEnvelope, PROTOCOL_VERSION};
+    use alondra_domain_model::{Command, CommandEnvelope, PROTOCOL_VERSION};
     use alondra_core::model_selection::ModelKey;
 
     #[test]

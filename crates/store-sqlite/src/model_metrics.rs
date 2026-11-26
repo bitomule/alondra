@@ -3,7 +3,7 @@
 pub use alondra_engine_ports::journal::metrics::{Decision, DecisionKind};
 use super::DomainStore;
 use alondra_core::Millis;
-use alondra_domain_rules::ModelChooser;
+use alondra_domain_model::ModelChooser;
 use alondra_core::options::Approach;
 use alondra_core::task_tags::TaskTags;
 use anyhow::Result;

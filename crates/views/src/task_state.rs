@@ -7,11 +7,11 @@ use super::{
     now_fact::{NowFact, now_fact},
 };
 use alondra_domain::LiveState;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Attention, Delivery, Doing, Tally, TaskReading, Instruction, InteractionId, PrState, Situation, StallClosing, Task,
     TaskEnding, TaskPriority, WaitReason, WaitsFor,
 };
-use alondra_domain_rules::AlondraStep as Step;
+use alondra_domain_model::AlondraStep as Step;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Block {
@@ -512,10 +512,10 @@ fn tasks_fact(task: &Task, context: &RenderContext<'_>) -> String {
 fn sign_in_fact(task: &Task, context: &RenderContext<'_>) -> Option<String> {
     let lang = context.lang;
     let held = context.index.cards_of_task(&task.id).iter().rev().find_map(|id| {
-        let card = context.domain.interactions.get(id).filter(|card| card.author == alondra_domain_rules::Author::System && context.domain.open(card))?;
-        alondra_domain_rules::ClaudeHold::of(card)
+        let card = context.domain.interactions.get(id).filter(|card| card.author == alondra_domain_model::Author::System && context.domain.open(card))?;
+        alondra_domain_model::ClaudeHold::of(card)
     });
-    if held == Some(alondra_domain_rules::ClaudeHold::SignedOut) {
+    if held == Some(alondra_domain_model::ClaudeHold::SignedOut) {
         return Some(t!(lang, "Waiting for you to sign in to Claude", "Espera a que inicies sesión en Claude").into());
     }
     let waiting = context.index.mcp_wait_of_task(&task.id)?;
@@ -531,7 +531,7 @@ fn open_questions(task: &Task, context: &RenderContext<'_>) -> Option<String> {
         [] => None,
         [one] if !one.card.effective_title().trim().is_empty() => {
             let interaction = one.id.strip_prefix("interaction:").and_then(|id| context.domain.interactions.get(&InteractionId(id.into())));
-            if interaction.is_some_and(|interaction| context.domain.holds.get(&interaction.id) == Some(&alondra_domain_rules::Hold::Plan)) {
+            if interaction.is_some_and(|interaction| context.domain.holds.get(&interaction.id) == Some(&alondra_domain_model::Hold::Plan)) {
                 return Some(t!(lang, "Review the plan", "Revisa el plan").into());
             }
             if let Some(said) = interaction.and_then(super::card::node_words) {

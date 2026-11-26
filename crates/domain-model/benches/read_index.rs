@@ -1,4 +1,4 @@
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use std::time::Instant;
 
 const UNITS: usize = 280;

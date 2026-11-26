@@ -1,7 +1,7 @@
 //! The shared domain v2 acceptance catalog against the tests of every crate that gives evidence for
 //! it: the store's runners, the support crate's cutover, alondrad's API and parity tests, and the
 //! domain's. Only alondrad sees all of them.
-use alondra_domain_rules::acceptance_cases::{CASES, SCHEDULE_CASES};
+use alondra_domain_model::acceptance_cases::{CASES, SCHEDULE_CASES};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -35,7 +35,7 @@ fn catalog_execution_status_is_explicit_and_evidenced() {
         include_str!("../../../daemon-support/src/domain_authority.rs"),
         include_str!("../domain_api.rs"),
         include_str!("../service/domain_parity_tests.rs"),
-        include_str!("../../../domain-rules/src/tests.rs"),
+        include_str!("../../../domain-model/src/tests.rs"),
     ];
     let mut runner = BTreeSet::new();
     let mut schedule_runner = BTreeSet::new();

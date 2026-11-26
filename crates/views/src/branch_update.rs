@@ -6,7 +6,7 @@ use super::{
     common,
     text::{t, tf},
 };
-use alondra_domain_rules::BranchUpdate;
+use alondra_domain_model::BranchUpdate;
 
 fn setting_label(update: BranchUpdate) -> &'static str {
     match update {

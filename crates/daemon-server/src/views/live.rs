@@ -8,7 +8,7 @@ use super::observation::{Observation, Metric, Cause, Stage};
 use alondra_core::Millis;
 use alondra_core::accounts::Provider;
 use alondra_core::usage::{self, AccountLine, AccountStand, ProviderUsage, UsageState};
-use alondra_domain_rules::{DomainState, NodePhase, PrState, PullRequest, TaskId, TaskState};
+use alondra_domain_model::{DomainState, NodePhase, PrState, PullRequest, TaskId, TaskState};
 use alondra_view_model::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
     LiveRun, LiveSnapshot, LiveStep, Notice, StepState, Tone,
@@ -151,11 +151,11 @@ pub(crate) struct LiveSnapshots {
 #[derive(Clone)]
 struct Facts {
     epoch: String,
-    revision: alondra_domain_rules::Revision,
+    revision: alondra_domain_model::Revision,
     store_rows: u64,
     pull_requests: u64,
     contexts: u64,
-    snapshot: alondra_domain_rules::NodeChangeCursor,
+    snapshot: alondra_domain_model::NodeChangeCursor,
     domain: watch::Receiver<u64>,
     hooks: watch::Receiver<()>,
     reports: watch::Receiver<()>,
@@ -167,7 +167,7 @@ struct Facts {
 impl Facts {
     /// None when the store already holds a newer revision than `state`: a snapshot read now
     /// would mix the two.
-    fn observe(client: &crate::client_routes::Client, read: &alondra_domain_rules::ReadSnapshot) -> Option<Self> {
+    fn observe(client: &crate::client_routes::Client, read: &alondra_domain_model::ReadSnapshot) -> Option<Self> {
         let state = read.state();
         let live = client.domain.live();
         let domain = client.domain.subscribe_snapshots();
@@ -238,7 +238,7 @@ impl LiveSnapshots {
         match previous { Some(previous) => fresh.reuse_components(&previous, &fresh_observation), None => fresh }
     }
 
-    fn get(&self, client: &crate::client_routes::Client, key: &str, read: &alondra_domain_rules::ReadSnapshot, observed_at: Option<Millis>) -> Option<Snapshot> {
+    fn get(&self, client: &crate::client_routes::Client, key: &str, read: &alondra_domain_model::ReadSnapshot, observed_at: Option<Millis>) -> Option<Snapshot> {
         let state = read.state();
         let marks = Marks::now(client);
         let mut entries = cache(&self.entries);
@@ -279,9 +279,9 @@ fn reads_unwatched_sources(key: &str) -> bool {
 /// The project a node was launched for, which a restart cannot lose: its task's request, or the
 /// project its name starts with.
 fn launched_project(
-    mine: &[&alondra_domain_rules::Task],
-    agent: &alondra_domain_rules::Agent,
-    launches: &BTreeMap<alondra_domain_rules::RequestId, (Option<String>, Option<String>)>,
+    mine: &[&alondra_domain_model::Task],
+    agent: &alondra_domain_model::Agent,
+    launches: &BTreeMap<alondra_domain_model::RequestId, (Option<String>, Option<String>)>,
 ) -> Option<String> {
     mine.iter()
         .filter(|task| !task.archived)
@@ -304,7 +304,7 @@ fn node_label(key: &str, lang: Lang) -> String {
 
 pub(crate) async fn gather(
     client: &crate::client_routes::Client,
-    read: &std::sync::Arc<alondra_domain_rules::ReadSnapshot>,
+    read: &std::sync::Arc<alondra_domain_model::ReadSnapshot>,
     lang: Lang,
     keys: &[String],
     allow_issue_refresh: bool,
@@ -315,7 +315,7 @@ pub(crate) async fn gather(
 
 async fn gather_now(
     client: &crate::client_routes::Client,
-    read: &std::sync::Arc<alondra_domain_rules::ReadSnapshot>,
+    read: &std::sync::Arc<alondra_domain_model::ReadSnapshot>,
     lang: Lang,
     keys: &[String],
     allow_issue_refresh: bool,
@@ -401,7 +401,7 @@ async fn keyed_at(
 
 async fn gather_at(
     client: &crate::client_routes::Client,
-    read: &std::sync::Arc<alondra_domain_rules::ReadSnapshot>,
+    read: &std::sync::Arc<alondra_domain_model::ReadSnapshot>,
     lang: Lang,
     keys: &[String],
     allow_issue_refresh: bool,
@@ -433,13 +433,13 @@ async fn issue_data(client: &crate::client_routes::Client, keys: &[String], refr
 struct Stored {
     boundary: Option<alondra_engine_ports::journal::ReadCursor>,
     launches_ok: bool,
-    launches: BTreeMap<alondra_domain_rules::RequestId, (Option<String>, Option<String>)>,
+    launches: BTreeMap<alondra_domain_model::RequestId, (Option<String>, Option<String>)>,
     refusals: Vec<(TaskId, String, Option<String>)>,
     retries: BTreeMap<TaskId, (u8, i64)>,
     /// Unreadable launch history counts every waiting task as launched, so none is offered a slot.
     launched: anyhow::Result<std::collections::BTreeSet<TaskId>>,
-    revision_times: anyhow::Result<BTreeMap<alondra_domain_rules::Revision, i64>>,
-    request_times: BTreeMap<alondra_domain_rules::RequestId, i64>,
+    revision_times: anyhow::Result<BTreeMap<alondra_domain_model::Revision, i64>>,
+    request_times: BTreeMap<alondra_domain_model::RequestId, i64>,
     task_state_times: BTreeMap<TaskId, i64>,
     task_started_times: BTreeMap<TaskId, i64>,
     cancel_reasons: BTreeMap<TaskId, String>,
@@ -447,7 +447,7 @@ struct Stored {
 }
 
 impl Stored {
-    fn read(client: &crate::client_routes::Client, state: &DomainState, waiting: &[&alondra_domain_rules::Task], keys: &[String], clock_only: bool) -> Self {
+    fn read(client: &crate::client_routes::Client, state: &DomainState, waiting: &[&alondra_domain_model::Task], keys: &[String], clock_only: bool) -> Self {
         let store = client.domain.live_read();
         let launched = if waiting.is_empty() { Ok(Default::default()) } else { store.launched_tasks(waiting.iter().map(|task| &task.id)) };
         let boundary = store.read_cursor().ok();
@@ -477,7 +477,7 @@ impl Stored {
 
 /// The tasks not started that no node holds and no closed node had: those a launch may still be
 /// owed to.
-fn waiting_to_start<'a>(client: &crate::client_routes::Client, state: &'a DomainState) -> Vec<&'a alondra_domain_rules::Task> {
+fn waiting_to_start<'a>(client: &crate::client_routes::Client, state: &'a DomainState) -> Vec<&'a alondra_domain_model::Task> {
     state.tasks.values()
         .inspect(|_| client.view_observation.add(Metric::WaitingTaskRows, 1))
         .filter(|task| task.state == TaskState::NotStarted && !task.archived && task.agent_id.is_none())
@@ -487,7 +487,7 @@ fn waiting_to_start<'a>(client: &crate::client_routes::Client, state: &'a Domain
 
 async fn gather_inner(
     client: &crate::client_routes::Client,
-    snapshot: &alondra_domain_rules::ReadSnapshot,
+    snapshot: &alondra_domain_model::ReadSnapshot,
     lang: Lang,
     keys: &[String],
     issue_data: Option<Value>,
@@ -698,9 +698,9 @@ async fn gather_inner(
     Snapshot::from_components(parts, &client.view_observation)
 }
 
-pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_domain_rules::ReadSnapshot,
-    id: &alondra_domain_rules::AgentId, lang: Lang,
-    launches: &BTreeMap<alondra_domain_rules::RequestId, (Option<String>, Option<String>)>,
+pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_domain_model::ReadSnapshot,
+    id: &alondra_domain_model::AgentId, lang: Lang,
+    launches: &BTreeMap<alondra_domain_model::RequestId, (Option<String>, Option<String>)>,
     exhausted: &Option<crate::usage_pause::Exhausted>, now: Millis) -> Option<LiveNode> {
     client.view_observation.add(Metric::AgentRows, 1);
     let state = read.state();
@@ -847,7 +847,7 @@ pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_dom
 
 /// What each execution of the task spent, in cents, by the agent that ran it: its session's last
 /// report, or the running one's own reading when it is ahead of it.
-fn run_cost_cents(task: &alondra_domain_rules::Task, sessions: &BTreeMap<String, i64>, live: Option<(&str, u64)>) -> BTreeMap<String, u64> {
+fn run_cost_cents(task: &alondra_domain_model::Task, sessions: &BTreeMap<String, i64>, live: Option<(&str, u64)>) -> BTreeMap<String, u64> {
     task.stages.runs.iter().filter_map(|run| {
         let stored = sessions.get(&run.agent.0).map(|micros| ((*micros).max(0) as u64 + 5_000) / 10_000);
         let running = live.filter(|(agent, _)| *agent == run.agent.0).map(|(_, cents)| cents);
@@ -1093,7 +1093,7 @@ async fn read_live_json(
 fn search_source_revision(client: &crate::client_routes::Client, state: &DomainState) -> String {
     let nodes = client.domain.live().nodes();
     let nodes_by_session: BTreeMap<&str, &alondra_core::Node> = nodes.iter().map(|node| (node.session_id.as_str(), node)).collect();
-    let node_tasks = alondra_domain_rules::NodeTasks::new(state);
+    let node_tasks = alondra_domain_model::NodeTasks::new(state);
     let candidates: Vec<_> = state.agents.values().map(|agent| {
         let node = nodes_by_session.get(agent.id.0.as_str()).copied();
         let tasks: Vec<&str> = node_tasks.of(&agent.id).iter().map(|task| task.title.as_str()).collect();
@@ -1113,7 +1113,7 @@ fn activity_agents(state: &DomainState, keys: &[String]) -> BTreeSet<String> {
             let task = state.tasks.get(&TaskId(key.strip_prefix("task:")?.to_owned()))?;
             task.agent_id.as_ref().filter(|_| !task.state.terminal()).map(|agent| agent.0.clone())
         })
-        .filter(|id| !matches!(state.resolve_target(id), alondra_domain_rules::Target::Orchestrator(_)))
+        .filter(|id| !matches!(state.resolve_target(id), alondra_domain_model::Target::Orchestrator(_)))
         .collect()
 }
 
@@ -1168,13 +1168,13 @@ fn digest_hex(bytes: &[u8]) -> String {
 mod cache_tests {
     use alondra_store_sqlite::AsSqlite as _;
     use super::*;
-    use alondra_domain_rules::{Actor, Command, CommandEnvelope};
+    use alondra_domain_model::{Actor, Command, CommandEnvelope};
     use std::{fs, sync::Arc};
 
     fn execute(domain: &crate::domain_runtime::DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
-            protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
+            protocol_version: alondra_domain_model::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
             expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap();
     }
@@ -1204,7 +1204,7 @@ mod cache_tests {
             execute(&domain, Actor::Orchestrator { generation: 0 }, id, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: id.into(), request_id: "request".into(), title: id.into(), agent_id: None,
                 review_prs: true, dependencies: Default::default(), stack: None,
-                launch: Some(alondra_domain_rules::LaunchPlan::new("node", home.to_str().unwrap())),
+                launch: Some(alondra_domain_model::LaunchPlan::new("node", home.to_str().unwrap())),
             });
         }
         (home, domain, client)
@@ -1401,7 +1401,7 @@ mod cache_tests {
             "usedPercent":10,"windowDurationMins":300,"resetsAt":now/1000+7200}}}), None).unwrap();
         state.account_usage = vec![alondra_core::usage::record(None, Provider::Codex, &account, &reading, now, "2026-11-13")];
         let state = Arc::new(state);
-        let read = Arc::new(alondra_domain_rules::ReadSnapshot::build(state.clone()));
+        let read = Arc::new(alondra_domain_model::ReadSnapshot::build(state.clone()));
         gather_now(&client, &read, Lang::En, &["home".into()], false, false, now).await;
         for key in ["accounts", "new_request", "new_request?project=fixture", "task:room"] {
             let keys = [key.into()];
@@ -1542,13 +1542,13 @@ mod cache_tests {
             execute(&domain, Actor::Orchestrator { generation: 0 }, "pr-task", Command::CreateTask { priority: Default::default(),
                 task_id: "pr-task".into(), request_id: "request".into(), title: "Export report".into(),
                 agent_id: Some("pr-agent".into()), review_prs: true, dependencies: Default::default(),
-                stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/work")),
+                stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/work")),
                 plan_items: None, continues: None,
             });
             execute(&domain, Actor::Agent { agent_id: "pr-agent".into() }, "register-pr", Command::RegisterPr {
                 task_id: "pr-task".into(), pr_id: "pr".into(), host: "github.com".into(),
                 repository: "demo/reports".into(), number: 7, head: "export-report".into(),
-                base: "main".into(), allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
+                base: "main".into(), allowed_methods: vec![alondra_domain_model::MergeMethod::Squash],
             });
             let read = domain.read();
             let state = read.state();
@@ -1766,7 +1766,7 @@ mod cache_tests {
 
     #[tokio::test]
     async fn live_store_reads_refresh_launch_retry_and_close_side_state_with_the_same_domain_snapshot() {
-        use alondra_domain_rules::ModelChooser;
+        use alondra_domain_model::ModelChooser;
         use alondra_view_model::LiveStartWait;
         use crate::domain_store::model_metrics::{Decision, DecisionKind};
         let (_home, domain, client) = wait_fixture();
@@ -1831,14 +1831,14 @@ mod cache_tests {
         for id in ["connected", "reported", "assigned", "hidden"] {
             execute(&domain, Actor::System, id, Command::RegisterAgent { agent_id: id.into(), name: id.into(), at: 0 });
         }
-        execute(&domain, Actor::System, "hide", Command::MoveNode { agent_id: "hidden".into(), event: alondra_domain_rules::NodeEvent::SessionClosed});
+        execute(&domain, Actor::System, "hide", Command::MoveNode { agent_id: "hidden".into(), event: alondra_domain_model::NodeEvent::SessionClosed});
         execute(&domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
         execute(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: Some("assigned".into()),
             review_prs: true, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", home.to_str().unwrap())),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", home.to_str().unwrap())),
         });
         report(&domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
         let read = domain.read();
@@ -2024,14 +2024,14 @@ mod cache_tests {
             let agent = format!("agent-{id}");
             execute(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: id.into(), request_id: "request".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
-                dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+                dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
             });
             execute(&domain, Actor::System, &format!("register-{id}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone(), at: 0 });
             alondra_daemon_engine::domain_store::admit_through_sdk(&domain, &id.into(), &agent);
             let input = domain.state().unwrap().lifecycle_of(&id.into()).unwrap().pending_inputs()[0].as_str().to_owned();
             execute(&domain, Actor::System, &format!("turn-{id}"), Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
-                alondra_domain_rules::RuntimeObservation::ResourceAvailable,
-                alondra_domain_rules::RuntimeObservation::TurnStarted { turn: format!("turn-{id}"), input },
+                alondra_domain_model::RuntimeObservation::ResourceAvailable,
+                alondra_domain_model::RuntimeObservation::TurnStarted { turn: format!("turn-{id}"), input },
             ] });
             domain.report(Envelope { session_id: agent, report: Report::TurnStart }, now);
         }
@@ -2094,7 +2094,7 @@ mod cache_tests {
 
     #[tokio::test]
     async fn inbox_times_follow_server_order_and_committed_revision_times_in_both_languages() {
-        use alondra_domain_rules::{Recipient, Scope};
+        use alondra_domain_model::{Recipient, Scope};
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
@@ -2109,7 +2109,7 @@ mod cache_tests {
                 command: Command::PublishInformation {
                     attachments: vec![], interaction_id: id.into(),
                     scope: Scope::Orchestrator { request_id: None }, recipient: Recipient::User,
-                    body: id.into(), card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Know, "Read the update"),
+                    body: id.into(), card: alondra_domain_model::CardSpec::new(alondra_domain_model::CardKind::Know, "Read the update"),
                 },
             }, None, || Ok(())).unwrap();
             orders.push(domain.state().unwrap().revision);
@@ -2558,7 +2558,7 @@ fn timestamp(millis: i64) -> String {
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
-    use alondra_domain_rules::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
+    use alondra_domain_model::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
 
     fn run(domain: &std::sync::Arc<crate::domain_runtime::DomainRuntime>, actor: Actor, id: &str, command: Command) {
         let read = domain.read();
@@ -2588,10 +2588,10 @@ mod tests {
         let client = crate::client_routes::Client::open(domain.clone(), &fixture.0, Default::default());
         let read = domain.read();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let before = alondra_domain_rules::measure::tasks_read();
+        let before = alondra_domain_model::measure::tasks_read();
         let live = runtime.block_on(gather_inner(&client, &read, Lang::En, &[], None, false, alondra_core::now_millis()));
         assert_eq!(live.nodes.len(), nodes, "every node is gathered");
-        alondra_domain_rules::measure::tasks_read() - before
+        alondra_domain_model::measure::tasks_read() - before
     }
 
     // The live data of every node is what every screen refreshes on each commit: finding each node's
@@ -2619,7 +2619,7 @@ mod tests {
 
     fn pr(id: &str, number: u64, head: &str, base: &str) -> PullRequest {
         PullRequest {
-            id: alondra_domain_rules::PrId(id.into()),
+            id: alondra_domain_model::PrId(id.into()),
             task_id: TaskId("task".into()),
             host: "github.com".into(),
             repository: "bitomule/alondra".into(),

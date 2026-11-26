@@ -5,7 +5,7 @@
 //! (`crate::contract::worktrees`), which `crates/system` passes with git itself.
 use alondra_core::options::WorktreesRoot;
 use alondra_core::secret_destination::SecretDestination;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Author, ChecklistMark, DeliveryTarget, DomainError, DomainState, EvidenceKind, Interaction, Scope, TaskId,
 };
 use alondra_engine_ports::worktrees::{
@@ -142,7 +142,7 @@ impl Worktrees {
         self.worktree_of(session_id).or_else(|| {
             let task = state.tasks.get(task)?;
             task.open_worktrees()
-                .find(|(_, worktree)| worktree.origin == alondra_domain_rules::WorktreeOrigin::Task)
+                .find(|(_, worktree)| worktree.origin == alondra_domain_model::WorktreeOrigin::Task)
                 .map(|(path, _)| PathBuf::from(path))
         })
     }

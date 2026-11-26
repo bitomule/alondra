@@ -8,7 +8,7 @@ use super::{
     CheckState, Label, Lang, LiveCheck, LivePullRequest, Tone,
     text::{t, tf},
 };
-use alondra_domain_rules::{PrState, PullRequest};
+use alondra_domain_model::{PrState, PullRequest};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrStatus {
@@ -110,7 +110,7 @@ pub fn ordered(checks: &[LiveCheck]) -> Vec<LiveCheck> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_domain_rules::{PrId, TaskId};
+    use alondra_domain_model::{PrId, TaskId};
 
     fn pr(state: PrState) -> PullRequest {
         PullRequest {
