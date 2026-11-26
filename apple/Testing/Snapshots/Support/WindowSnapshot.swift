@@ -1,6 +1,7 @@
 import SnapshotTesting
 import SwiftUI
 import UIKit
+import XCTest
 
 extension Snapshotting where Value == AnyView, Format == UIImage {
     /// `.image(drawHierarchyInKeyWindow: true)` with the navigation bar's Liquid Glass in its final
@@ -21,11 +22,12 @@ extension Snapshotting where Value == AnyView, Format == UIImage {
 
 /// Draws the view in the test host's key window the way swift-snapshot-testing does: placed and laid
 /// out on screen, then moved off it so no safe area applies, then captured. `placed` runs once the
-/// view is laid out in the window.
+/// view is laid out in the window, and `drawn` once it has been moved off it, right before the capture.
 @MainActor
 func drawInKeyWindow(
     _ view: AnyView, size fixedSize: CGSize?, traits: UITraitCollection,
-    placed: () -> Void = {}
+    placed: () -> Void = {},
+    drawn: (UIView) -> Void = { _ in }
 ) -> UIImage {
     let host = UIHostingController(rootView: view)
     let size: CGSize
@@ -66,8 +68,11 @@ func drawInKeyWindow(
     host.view.layoutIfNeeded()
     placed()
     settleGlass(host)
+    let placedContent = contentSafeAreas(in: host.view)
     host.view.frame.origin = CGPoint(x: 10_000, y: 10_000)
+    keepContent(placedContent, in: host)
     advanceAnimationClock(host.view.layer)
+    drawn(host.view)
 
     defer {
         host.view.layer.speed = 1
@@ -92,6 +97,54 @@ func drawInKeyWindow(
     return renderer.image { _ in
         host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
     }
+}
+
+/// What a navigation controller gave its content as top safe area while the screen was on the screen.
+private typealias PlacedContent = (controller: UINavigationController, inset: CGFloat)
+
+@MainActor
+private func contentSafeAreas(in view: UIView) -> [PlacedContent] {
+    navigationControllers(in: view).compactMap { controller in
+        controller.topViewController.map { (controller, $0.view.safeAreaInsets.top) }
+    }
+}
+
+/// Moving the host off the screen takes its safe area away, and the navigation bar moves up with it
+/// as soon as the bars are laid out. The content under the bar is told so one turn of the run loop
+/// later: the controller then hands it the new bottom edge of the bar, and a screen laid out with the
+/// inset it had on the screen is laid out again with one ~50 pt smaller. The baselines were drawn
+/// before that turn, and which side of the capture it falls on depends on the machine. Adding the
+/// difference to the content's own safe area makes the turn hand it the inset it already has, so
+/// the screen is drawn as it was placed whenever the turn comes, and the wait below makes it come
+/// before the capture rather than during it.
+@MainActor
+private func keepContent(_ placed: [PlacedContent], in host: UIViewController) {
+    host.view.layoutIfNeeded()
+    var held: [(content: UIViewController, inset: CGFloat)] = []
+    for (controller, inset) in placed {
+        guard let content = controller.topViewController else { continue }
+        let difference = inset - controller.navigationBar.frame.maxY
+        guard abs(difference) > 0.5 else { continue }
+        content.additionalSafeAreaInsets.top += difference
+        held.append((content, inset))
+    }
+    host.view.layoutIfNeeded()
+    for _ in 0..<400 where held.contains(where: { abs($0.content.view.safeAreaInsets.top - $0.inset) > 0.5 }) {
+        RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.005))
+    }
+    if let stale = held.first(where: { abs($0.content.view.safeAreaInsets.top - $0.inset) > 0.5 }) {
+        XCTFail("the navigation controller never handed its content the top safe area of \(stale.inset) it was placed with")
+    }
+}
+
+private func navigationControllers(in view: UIView) -> [UINavigationController] {
+    var found: [UINavigationController] = []
+    for bar in navigationBars(in: view) {
+        var responder: UIResponder? = bar
+        while let current = responder, !(current is UINavigationController) { responder = current.next }
+        if let controller = responder as? UINavigationController, !found.contains(controller) { found.append(controller) }
+    }
+    return found
 }
 
 /// Core Animation's clock stands still under `layer`: an animation added from here on starts at the
