@@ -178,7 +178,6 @@ INVENTORY_SURFACES = (
     "deploy/brew/alondra.rb.in",
     "deploy/brew/release.py",
     "deploy/brew/package-cli.sh",
-    "deploy/brew/sign-package.sh",
     "deploy/brew/release.sh",
     "launchd/alondra.plist.in",
     ".claude-plugin/marketplace.json",
