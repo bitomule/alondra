@@ -216,7 +216,7 @@ async fn eventually(what: &str, condition: impl Fn() -> bool) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liveness() {
     let scratch_directory = alondra_daemon_engine::test_support::Directory::new();
-    let root = scratch_directory.parent().unwrap().join(format!("alondra-mods-{}", auth::random_hex(8)));
+    let root = scratch_directory.parent().unwrap().join(format!("alondra-mods-{}", alondra_foundation::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let daemon = Daemon::start(&home).await;
@@ -286,7 +286,7 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_id_the_mod_has_not_seen() {
     let scratch_directory = alondra_daemon_engine::test_support::Directory::new();
-    let root = scratch_directory.parent().unwrap().join(format!("alondra-restart-{}", auth::random_hex(8)));
+    let root = scratch_directory.parent().unwrap().join(format!("alondra-restart-{}", alondra_foundation::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let patience = std::time::Duration::from_secs(10);
@@ -334,7 +334,7 @@ fn alondra_as_claude(home: &Path, port: u16, lang: &str, args: &[&str]) -> std::
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_card() {
     let scratch_directory = alondra_daemon_engine::test_support::Directory::new();
-    let root = scratch_directory.parent().unwrap().join(format!("alondra-claude-send-{}", auth::random_hex(8)));
+    let root = scratch_directory.parent().unwrap().join(format!("alondra-claude-send-{}", alondra_foundation::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let daemon = Daemon::start(&home).await;
@@ -443,7 +443,7 @@ impl App {
 }
 
 fn uuid_v4() -> String {
-    let hex = auth::random_hex(16);
+    let hex = alondra_foundation::random_hex(16);
     format!("{}-{}-4{}-8{}-{}", &hex[0..8], &hex[8..12], &hex[13..16], &hex[17..20], &hex[20..32])
 }
 
@@ -486,7 +486,7 @@ const COMMENTS: &str = r#"[
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn comments_sent_on_a_document_review_reach_the_node_even_when_it_moves_on_to_a_newer_revision() {
     let scratch_directory = alondra_daemon_engine::test_support::Directory::new();
-    let root = scratch_directory.parent().unwrap().join(format!("alondra-review-{}", auth::random_hex(8)));
+    let root = scratch_directory.parent().unwrap().join(format!("alondra-review-{}", alondra_foundation::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(root.join("projects")).unwrap();
     std::fs::create_dir_all(&home).unwrap();
@@ -641,7 +641,7 @@ impl App {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_returns() {
     let scratch_directory = alondra_daemon_engine::test_support::Directory::new();
-    let root = scratch_directory.parent().unwrap().join(format!("alondra-cards-{}", auth::random_hex(8)));
+    let root = scratch_directory.parent().unwrap().join(format!("alondra-cards-{}", alondra_foundation::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(root.join("projects")).unwrap();
     std::fs::create_dir_all(&home).unwrap();

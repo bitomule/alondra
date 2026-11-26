@@ -825,7 +825,7 @@ fn tell_to_go_on(domain: &dyn Runtime, session: &str, text: &str) -> bool {
         if waiting_input(domain, &task) {
             return true;
         }
-        let command = format!("resume-{session}-{}", crate::auth::random_hex(8));
+        let command = format!("resume-{session}-{}", alondra_foundation::random_hex(8));
         return domain.engine().tell_node(&task, text, &command);
     }
     domain.engine().tell_session(session, text)
@@ -1286,7 +1286,7 @@ fn system_command(domain: &dyn Runtime, command: alondra_domain_model::Command) 
     domain.system_command(alondra_domain_model::CommandEnvelope {
         protocol_version: alondra_domain_model::PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
-        command_id: format!("queue-pause-{}", crate::auth::random_hex(8)).into(),
+        command_id: format!("queue-pause-{}", alondra_foundation::random_hex(8)).into(),
         expected_revision: state.revision,
         command,
     }).map(|_| ())

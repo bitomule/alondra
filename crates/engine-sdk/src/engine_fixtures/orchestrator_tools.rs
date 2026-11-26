@@ -44,14 +44,14 @@ pub fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
     for (n, observation) in domain.state().unwrap().mergeable_observations(&command).into_iter().enumerate() {
         let seen = domain.state().unwrap();
         domain.execute(&Actor::System, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: seen.data_epoch.clone(), command_id: format!("{}-merge-verdict-{n}", alondra_daemon_support::auth::random_hex(8)).into(),
+            protocol_version: PROTOCOL_VERSION, data_epoch: seen.data_epoch.clone(), command_id: format!("{}-merge-verdict-{n}", alondra_foundation::random_hex(8)).into(),
             expected_revision: seen.revision, command: observation,
         }, None, || Ok(())).unwrap();
     }
     let state = domain.state().unwrap();
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
-        command_id: format!("test-{}", alondra_daemon_support::auth::random_hex(8)).into(), expected_revision: state.revision, command,
+        command_id: format!("test-{}", alondra_foundation::random_hex(8)).into(), expected_revision: state.revision, command,
     };
     domain.execute(&actor, &envelope, None, || Ok(())).unwrap();
 }

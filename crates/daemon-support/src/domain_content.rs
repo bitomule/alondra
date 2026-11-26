@@ -138,7 +138,7 @@ fn is_digest(digest: &str) -> bool {
 
 /// The file a stored reference names: inside Alondra's files folder, or inside one of `roots`.
 fn open_source(home: &Path, path: &Path, roots: &[PathBuf]) -> Result<File> {
-    if let Ok(file) = crate::service_files::open_stored_file(home, path) {
+    if let Ok(file) = crate::stored_files::open_stored_file(home, path) {
         return Ok(file);
     }
     let canonical = path.canonicalize()?;
@@ -179,7 +179,7 @@ fn store_verified(home: &Path, reference: &str, digest: &str, source_roots: &[Pa
         source.metadata()?.is_file(),
         "document source is not a file"
     );
-    let temporary = CString::new(format!(".{}", crate::auth::random_hex(16)))?;
+    let temporary = CString::new(format!(".{}", alondra_foundation::random_hex(16)))?;
     let mut output = open_at(
         &folder,
         &temporary,
@@ -326,7 +326,7 @@ mod tests {
     fn rejected_copy_cannot_remove_a_second_runtime_admission() {
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!(
-            "alondra-domain-copy-lease-{}", crate::auth::random_hex(16)));
+            "alondra-domain-copy-lease-{}", alondra_foundation::random_hex(16)));
         std::fs::create_dir_all(home.join("files")).unwrap();
         let body = b"A reviewed document";
         std::fs::write(home.join("files/source"), body).unwrap();

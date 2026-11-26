@@ -1688,3 +1688,35 @@ Phase 7b takes the application of commands and the decisions on cards out of it 
 the guards stay in `domain-model`, because every screen computes its buttons with the same guard as the
 command they send (`read-side.md`). A rules edit then reopens the tests that apply commands, not the
 about 95 test targets of today's 131 that only read the model.
+
+## The server without `daemon-support` (phase 7e, 2026-11-26, main at a00966012)
+
+`daemon-server` no longer depends on `daemon-support`, and its `LAYER_EXCEPTIONS` entry on it is
+gone (`EXCEPTION_CEILING` 53 → 52).
+
+- **Into the server**, the 14 modules only it used (`card_language`, `classify`, `device_usage`,
+  `open_files`, `pr_heads`, `pr_ids`, `push`, `relaunch`, `result_files`, `revoked_devices`,
+  `scoped_reads`, `start_guard`, `updates`, `workflow_state`) and `auth`, the devices' sign-in: the
+  engine only took `random_hex` and `uuid` from it. The upload transfers of `service_files` and
+  `refuse_legacy_home` (`legacy_home`) came too: they open SQLite, which nothing below the server
+  needs for them.
+- **Into `foundation`**: `blocking_work` and `uuid`, which reads the system's entropy with
+  `getentropy` instead of linking `ring`.
+- **Into `engine-ports`**, what the engine shares with the server and reads or writes on disk:
+  `approval_lease`, `domain_cutover` (the marker), `files_retention`, `job_state`, `local_network`,
+  `reports`, `stored_files` (the runtime's cache of stored copies and the safe opening of a stored
+  path), `uploads` and `watcher`. `local_network` takes the probe it sends with from the root
+  (`watch(probe)`); the probe, which finds the router with `netwatch`, is the `system` adapter's.
+  `daemon-support` re-exports them, so the engine's imports did not change.
+
+What an edit reopens (`edit_bench --query-only`). An edit of `daemon-support` reopens the same
+targets as before this change, so its row is also what editing one of these modules there cost:
+
+| Edit | Crates reopened | Test targets reopened |
+|---|---:|---:|
+| A module of `daemon-support` (`hook_text.rs`; before, also `updates.rs`, `push.rs`, `auth.rs`, …) | 23 | 90 |
+| `daemon-server/src/updates.rs` (any module the server took) | 10 | 49 |
+| `engine-ports/src/uploads.rs` (any module moved down to `engine-ports`) | 36 | 123 |
+
+The modules the server took were edited 55 times in the 60 days before this change, the ones moved
+to `engine-ports` 25 times: the first now reopen 41 test targets fewer each, the second 33 more.

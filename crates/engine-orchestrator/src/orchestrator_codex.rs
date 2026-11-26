@@ -342,7 +342,7 @@ fn configuration(batch: &Batch) -> anyhow::Result<(CodexConfiguration, alondra_e
     let backend = batch.backend.for_provider(alondra_core::accounts::Provider::Codex, &batch.home)?.for_start()?
         .for_account_provider(&batch.home, batch.selection.account.provider, &batch.selection.account.account, &batch.domain.engine().registered_accounts(&batch.home, batch.selection.account.provider))?;
     std::fs::create_dir_all(&backend.state_root)?;
-    let state_directory = backend.state_root.join(format!("orchestrator-{}", crate::auth::random_hex(8)));
+    let state_directory = backend.state_root.join(format!("orchestrator-{}", alondra_foundation::random_hex(8)));
     let preparing = alondra_engine_ports::agent_host::Preparing::hold(&state_directory);
     std::fs::DirBuilder::new().mode(0o700).create(&state_directory)?;
     let mut native_environment = backend.native_environment.clone();

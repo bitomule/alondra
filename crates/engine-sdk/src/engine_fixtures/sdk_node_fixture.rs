@@ -31,7 +31,7 @@ impl Drop for Home {
 pub fn run(domain: &DomainRuntime, actor: Actor, command: Command) {
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: alondra_daemon_support::auth::random_hex(8).into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: alondra_foundation::random_hex(8).into(),
         expected_revision: state.revision, command,
     }, None, || Ok(())).unwrap();
 }
@@ -274,7 +274,7 @@ pub fn node_pause_card(domain: &DomainRuntime) -> Option<alondra_domain_model::I
 pub fn answer_resume(domain: &DomainRuntime, card: &alondra_domain_model::InteractionId) -> Result<(), String> {
     let state = domain.state().unwrap();
     domain.execute(&user(), &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: alondra_daemon_support::auth::random_hex(8).into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: alondra_foundation::random_hex(8).into(),
         expected_revision: state.revision,
         command: Command::AnswerQuestion { interaction_id: card.clone(), option_id: "resume".into(), inputs: Default::default(), attachments: vec![] },
     }, None, || Ok(())).map(drop).map_err(|error| format!("{error:?}"))

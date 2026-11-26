@@ -163,7 +163,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
             launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         },
     );
-    let video: Vec<u8> = (0..(crate::service_files::CHUNK * 2 + 7)).map(|n| (n % 251) as u8).collect();
+    let video: Vec<u8> = (0..(crate::stored_files::CHUNK * 2 + 7)).map(|n| (n % 251) as u8).collect();
     std::fs::create_dir_all(home.join("files")).unwrap();
     std::fs::write(home.join("files/clip.mp4"), &video).unwrap();
     let video_digest = Sha256::digest(&video).iter().map(|byte| format!("{byte:02x}")).collect::<String>();

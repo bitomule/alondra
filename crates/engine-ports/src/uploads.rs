@@ -59,7 +59,7 @@ pub fn store(home: &Path, raw_name: &str, bytes: &[u8]) -> anyhow::Result<(Strin
 
 /// Stable service transfer IDs prevent a retried upload after daemon restart from
 /// creating a second attachment. Existing directories are never overwritten.
-pub(crate) fn store_identified(home: &Path, raw_name: &str, bytes: &[u8], id: &str) -> anyhow::Result<(String, Attachment)> {
+pub fn store_identified(home: &Path, raw_name: &str, bytes: &[u8], id: &str) -> anyhow::Result<(String, Attachment)> {
     anyhow::ensure!(valid_id(id), "invalid upload ID");
     anyhow::ensure!(!bytes.is_empty(), "the file is empty");
     anyhow::ensure!(bytes.len() <= MAX_UPLOAD_BYTES, "the file is over {} MB", MAX_UPLOAD_BYTES / (1024 * 1024));

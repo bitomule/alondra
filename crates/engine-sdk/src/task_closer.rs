@@ -711,7 +711,7 @@ fn count_failure(domain: &dyn Runtime, task: &Task, mut row: TaskClosing, stop: 
 /// its connection otherwise.
 fn tell_node(domain: &dyn Runtime, state: &DomainState, task: &Task, agent: &AgentId, text: &str) {
     if crate::sdk_owner::runs_through_sdk(state, agent) {
-        let id = format!("closer-{}-{}", task.id, crate::auth::random_hex(8));
+        let id = format!("closer-{}-{}", task.id, alondra_foundation::random_hex(8));
         if let Err(error) = domain.engine().tell_node(&task.id, text, &id) {
             log!("could not tell the node of {} why its task does not close: {error}", task.id);
         }
@@ -733,7 +733,7 @@ orchestrator about it (ask with recipient orchestrator). Then call cleanup_done 
 }
 
 fn raise_card(domain: &dyn Runtime, task: &Task, stop: CloseStop, detail: &str, cleanup: bool) -> Option<String> {
-    let id = format!("{CLOSE_PROBLEM_PREFIX}{}-{}", task.id, crate::auth::random_hex(6));
+    let id = format!("{CLOSE_PROBLEM_PREFIX}{}-{}", task.id, alondra_foundation::random_hex(6));
     let scope = if cleanup {
         Scope::Task { task_id: task.id.clone() }
     } else {

@@ -8,27 +8,18 @@ publish.workspace = true
 [dependencies]
 alondra-foundation.workspace = true
 alondra-core.workspace = true
-alondra-host.workspace = true
 alondra-domain-model.workspace = true
-alondra-view-model.workspace = true
-alondra-e2e = { path = "../e2e" }
-alondra-process-group.workspace = true
+alondra-engine-ports.workspace = true
 alondra-provider-claude.workspace = true
-alondra-store.workspace = true
 anyhow.workspace = true
-axum.workspace = true
-base64 = "0.23.1"
 libc.workspace = true
-netwatch = "0.19.3"
-p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "http2", "json"] }
 ring = "0.17.14"
-rusqlite.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11.0"
-tempfile.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"

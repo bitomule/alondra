@@ -3,7 +3,7 @@
 pub use alondra_engine_ports::journal::{generation_provider, schedule_command, Attached, AutoLaunch, AutoLaunchReason, AutoLaunchState, BatchOwner, Commit, DeliveryClaim, DeliveryEvidence, DeliveryEvidenceItem, HistoryStep, PostMergeCheck, QueuedLaunch, RequestLaunch, StoreError, TaskClosing, TransportIdentity, UserPushHistory};
 #[macro_use]
 extern crate alondra_foundation;
-use alondra_daemon_support::{auth, locks, save};
+use alondra_daemon_support::{locks, save};
 use alondra_daemon_engine_model::options;
 #[cfg(test)]
 #[path = "../../test_support.rs"]
@@ -662,7 +662,7 @@ impl DomainStore {
                 "refusing nonempty unversioned domain database"
             );
             tx.execute_batch(SCHEMA)?;
-            tx.execute("INSERT INTO domain_meta(singleton,data_epoch,revision,orchestrator_generation) VALUES(1,?1,0,0)",[crate::auth::random_hex(32)])?;
+            tx.execute("INSERT INTO domain_meta(singleton,data_epoch,revision,orchestrator_generation) VALUES(1,?1,0,0)",[alondra_foundation::random_hex(32)])?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             alondra_store::LifecycleTransaction::install(&mut tx)?;
         } else {

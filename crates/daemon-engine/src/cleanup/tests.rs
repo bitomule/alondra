@@ -68,7 +68,7 @@ fn user() -> Actor {
 }
 
 fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
-    command_as(domain, actor, &format!("c-{}", crate::auth::random_hex(8)), command);
+    command_as(domain, actor, &format!("c-{}", alondra_foundation::random_hex(8)), command);
 }
 
 fn command_as(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {

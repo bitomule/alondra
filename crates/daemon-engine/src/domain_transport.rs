@@ -568,7 +568,7 @@ fn start_assigned(domain: &dyn Runtime, agent_id: &AgentId) -> Result<()> {
     for task in waiting {
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
-            command_id: format!("start-{}", crate::auth::random_hex(16)).into(),
+            command_id: format!("start-{}", alondra_foundation::random_hex(16)).into(),
             expected_revision: state.revision, command: Command::StartTask { task_id: task.id.clone() },
         };
         let actor = Actor::Agent { agent_id: agent_id.clone() };

@@ -348,7 +348,7 @@ fn commit_probe<T>(domain: &dyn Runtime, home: &Path, fence: ProbeFence, command
         }
         for command in commands {
             let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: fence.state.data_epoch.clone(),
-                command_id: format!("provider-probe-{}", crate::auth::random_hex(16)).into(), expected_revision: 0, command };
+                command_id: format!("provider-probe-{}", alondra_foundation::random_hex(16)).into(), expected_revision: 0, command };
             let stale = match &envelope.command {
                 Command::RecordAccountUsage { provider, account, at, .. } => transaction.domain_state().account_usage.iter()
                     .filter(|usage| usage.provider == *provider && usage.account == *account).filter_map(|usage| usage.measured_at()).any(|measured| measured > *at),
@@ -456,7 +456,7 @@ pub fn probe_current_codex(domain: &dyn Runtime, task_id: &alondra_domain_model:
             .min_by_key(|held| transaction.state().interactions.get(&held.card).map(|card| card.order));
         if candidate.as_ref().is_none_or(|candidate| candidate.task != *task_id) { return Ok(Ok(false)); }
         let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: transaction.state().data_epoch.clone(),
-            command_id: format!("current-codex-probe-{}", crate::auth::random_hex(16)).into(), expected_revision: 0,
+            command_id: format!("current-codex-probe-{}", alondra_foundation::random_hex(16)).into(), expected_revision: 0,
             command: Command::ProbeClaudeAccess { provider: key.provider, hold, account: Some(key.account.clone()) } };
         transaction.stage_command(&Actor::System, &envelope, Attached::None)?;
         Ok(Ok(true))
@@ -473,7 +473,7 @@ pub fn record_distribution(domain: &dyn Runtime, policy: Policy, move_when_exhau
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.state().data_epoch.clone(),
-        command_id: format!("account-policy-{}", crate::auth::random_hex(16)).into(),
+        command_id: format!("account-policy-{}", alondra_foundation::random_hex(16)).into(),
         expected_revision: 0,
         command: Command::RecordDistribution { policy, move_when_exhausted },
     };
@@ -695,7 +695,7 @@ pub(crate) fn migrate_legacy_settings(domain: &dyn Runtime, home: &Path) -> Resu
             .unwrap_or(AccountStatus { antigravity: None, provider: key.provider, id: key.account, name: account.name, state: if account.enabled { AccountState::Unchecked } else { AccountState::Disabled },
                 native_identity: None, email: None, plan: None, billing: account.billing, sign_ins: 0, profile: None })
     }).collect();
-    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(), command_id: format!("provider-settings-migration-{}", crate::auth::random_hex(16)).into(),
+    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(), command_id: format!("provider-settings-migration-{}", alondra_foundation::random_hex(16)).into(),
         expected_revision: 0, command: Command::RecordAccounts { accounts: statuses, reserve: alondra_core::usage::Share::of(file.accounts.distribution.reserve) } };
     drop(read);
     let recorded = vec![Command::RecordAccountConfiguration { order: file.accounts.ordered_accounts().into_iter().map(|(key, _)| key).collect(), version: version(&file.accounts) },
@@ -721,7 +721,7 @@ pub fn set_credential_authorized(domain: &dyn Runtime, home: &Path, actor: &Acto
     if let Some(problem) = secret.as_ref().and_then(|secret| alondra_core::antigravity_account::key_problem(secret.expose())) { return Err(refuse("invalid_input", problem)); }
     let read = domain.read();
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(),
-        command_id: format!("account-credential-{}", crate::auth::random_hex(16)).into(), expected_revision: 0,
+        command_id: format!("account-credential-{}", alondra_foundation::random_hex(16)).into(), expected_revision: 0,
         command: Command::RecordAccountCredential { account: key.clone(), set: secret.is_some() } };
     if !read.state().accounts.iter().any(|status| status.provider == key.provider && status.id == key.account && status.antigravity.is_some()) {
         return Err(refuse("not_found", "The account is no longer listed"));
@@ -806,7 +806,7 @@ pub(crate) fn replace_configuration_authorized(domain: &dyn Runtime, home: &Path
     }
     let state = domain.read();
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.state().data_epoch.clone(),
-        command_id: format!("account-configuration-{}", crate::auth::random_hex(16)).into(), expected_revision: 0,
+        command_id: format!("account-configuration-{}", alondra_foundation::random_hex(16)).into(), expected_revision: 0,
         command: Command::ReplaceAccountConfiguration { accounts: next.to_toml(), expected_config_version: seen.into() } };
     drop(state);
     let claude = (current.is_connected(Provider::Claude) || next.is_connected(Provider::Claude)).then(|| Claude::of(domain)).flatten();
@@ -870,7 +870,7 @@ pub fn set_model_profile_authorized(domain: &dyn Runtime, home: &Path, actor: &A
 #[allow(clippy::too_many_arguments)]
 fn apply_settings_authorized(domain: &dyn Runtime, home: &Path, actor: &Actor, command: Command, previous: Option<String>, target: String, recorded: Vec<Command>, authorize: impl Fn() -> anyhow::Result<()>) -> Result<(), ChangeRefused> {
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: domain.read().state().data_epoch.clone(),
-        command_id: format!("provider-settings-{}", crate::auth::random_hex(16)).into(), expected_revision: 0, command };
+        command_id: format!("provider-settings-{}", alondra_foundation::random_hex(16)).into(), expected_revision: 0, command };
     crate::settings_projection::apply_authorized(domain, home, actor, envelope, previous, target, recorded, authorize, |_| Ok(())).map_err(|why| match why {
         crate::domain_store::StoreError::Domain(why) => ChangeRefused::Domain(why),
         why => ChangeRefused::Store(Refused::Folder(why.to_string())),
@@ -914,7 +914,7 @@ pub fn end_abandoned_sign_ins(domain: &dyn Runtime) {
             error: Some("Sign-in was interrupted; the previous session was preserved".into()), ..login };
         let read = domain.read();
         let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(),
-            command_id: format!("account-login-{}", crate::auth::random_hex(16)).into(), expected_revision: read.state().revision, command: Command::RecordAccountLogin { login: ended } };
+            command_id: format!("account-login-{}", alondra_foundation::random_hex(16)).into(), expected_revision: read.state().revision, command: Command::RecordAccountLogin { login: ended } };
         drop(read);
         if let Err(why) = domain.execute_as_system(envelope) { log!("could not close an unfinished Codex sign-in: {why}"); }
     }

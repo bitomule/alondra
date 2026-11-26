@@ -123,7 +123,6 @@ LAYER_EXCEPTIONS = {
     # The server reaches the engine directly until phase 4 puts the application behind ports.
     "crates/daemon-server": [
         "crates/daemon-engine",
-        "crates/daemon-support",
         "crates/engine-admission",
         "crates/engine-orchestrator",
         "crates/engine-sdk",

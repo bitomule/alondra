@@ -2048,7 +2048,7 @@ fn resolve_attachments(
         .map_err(|error| anyhow::anyhow!(error))?;
     plain_ids.into_iter().zip(files).map(|(id, file)| {
         let path = file.stored_path.ok_or_else(|| anyhow::anyhow!("missing stored attachment"))?;
-        crate::service_files::attachment_ref(home, id, file.name, std::path::Path::new(&path))
+        crate::stored_files::attachment_ref(home, id, file.name, std::path::Path::new(&path))
     }).collect()
 }
 

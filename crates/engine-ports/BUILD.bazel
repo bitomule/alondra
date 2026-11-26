@@ -35,11 +35,16 @@ low_opt_rust_test(
     crate_name = "alondra_engine_ports",
     crate_root = "src/lib.rs",
     edition = "2024",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {"HOME": ".", "TEST_EXECS": "/usr/bin/sips"},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# Evidence the server's check of the domain v2 acceptance catalog finds tests in.
+exports_files(["src/domain_cutover.rs"], visibility = ["//crates/daemon-server:__pkg__"])
 
 # The crate's production sources: the crash report's log catalog reads them, and fails on a test
 # file among them.

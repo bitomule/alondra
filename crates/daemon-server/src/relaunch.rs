@@ -249,6 +249,7 @@ pub fn every() -> Duration {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
     use std::cell::Cell;

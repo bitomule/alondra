@@ -10,9 +10,8 @@
 //! change the reachability watch sees, when Bonjour is refused, and whenever someone reads it.
 use alondra_core::clock;
 use alondra_core::clock::Instant;
-use crate::locks::Poisonable as _;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
-use std::sync::Mutex;
+use alondra_foundation::locks::Poisonable as _;
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -64,6 +63,10 @@ impl Tracker {
 /// panicking probe leaves them as they were.
 static TRACKER: Mutex<Tracker> = Mutex::new(Tracker::new());
 static WATCHING: AtomicBool = AtomicBool::new(false);
+static PROBE: OnceLock<Probe> = OnceLock::new();
+
+/// One try at the local network: `allowed`, `denied` or `unknown`, and why a send failed.
+pub type Probe = fn() -> (&'static str, String);
 
 fn tracker() -> std::sync::MutexGuard<'static, Tracker> {
     TRACKER.lock_or_recover("the local network status")
@@ -94,27 +97,8 @@ pub fn denied_for() -> Option<Duration> {
     tracker().denied_for(clock::instant())
 }
 
-/// `allowed`, `denied`, or `unknown` when there is no router to try or the send failed otherwise.
-pub fn classify(sent: std::io::Result<usize>) -> &'static str {
-    match sent {
-        Ok(_) => "allowed",
-        Err(error) if error.raw_os_error() == Some(libc::EHOSTUNREACH) => "denied",
-        Err(_) => "unknown",
-    }
-}
-
-fn send_to(gateway: IpAddr) -> std::io::Result<usize> {
-    let unspecified: IpAddr = if gateway.is_ipv4() { Ipv4Addr::UNSPECIFIED.into() } else { Ipv6Addr::UNSPECIFIED.into() };
-    UdpSocket::bind(SocketAddr::new(unspecified, 0))?.send_to(&[0], SocketAddr::new(gateway, 9))
-}
-
 fn probe() -> (&'static str, String) {
-    let Some(router) = netwatch::interfaces::HomeRouter::new() else {
-        return ("unknown", "no router found".into());
-    };
-    let sent = send_to(router.gateway);
-    let failure = sent.as_ref().err().map(ToString::to_string).unwrap_or_default();
-    (classify(sent), failure)
+    PROBE.get().map_or(("unknown", "the daemon does not watch the local network".into()), |probe| probe())
 }
 
 /// Checks now and records the answer; a change is logged.
@@ -128,9 +112,9 @@ pub fn check() -> &'static str {
 
 fn log_change(found: &str, failure: &str) {
     match found {
-        "allowed" => log!("local network: allowed"),
-        "denied" => log!("local network: denied; allow Local Network for Alondra (alondrad) in System Settings, Privacy & Security"),
-        _ => log!("local network: unknown ({failure})"),
+        "allowed" => alondra_foundation::log!("local network: allowed"),
+        "denied" => alondra_foundation::log!("local network: denied; allow Local Network for Alondra (alondrad) in System Settings, Privacy & Security"),
+        _ => alondra_foundation::log!("local network: unknown ({failure})"),
     }
 }
 
@@ -139,16 +123,20 @@ pub(crate) async fn check_soon() -> &'static str {
     alondra_core::clock::spawn_blocking(check).await.unwrap_or("unknown")
 }
 
-/// Checks at start and again on `AFTER_START` until it is allowed; from then on the readers and
-/// the reachability watch keep it current.
-pub async fn watch() {
+/// Checks with `probe` at start and again on `AFTER_START` until it is allowed; from then on the
+/// readers and the reachability watch keep it current. The probe is in place once this returns,
+/// before the first check runs.
+pub fn watch(probe: Probe) -> impl std::future::Future<Output = ()> {
+    let _ = PROBE.set(probe);
     WATCHING.store(true, Ordering::SeqCst);
-    let mut waited = Duration::ZERO;
-    for at in AFTER_START {
-        clock::sleep(at.saturating_sub(waited)).await;
-        waited = at;
-        if check_soon().await == "allowed" {
-            return;
+    async {
+        let mut waited = Duration::ZERO;
+        for at in AFTER_START {
+            clock::sleep(at.saturating_sub(waited)).await;
+            waited = at;
+            if check_soon().await == "allowed" {
+                return;
+            }
         }
     }
 }
@@ -156,14 +144,6 @@ pub async fn watch() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_refused_send_means_denied_and_other_failures_stay_unknown() {
-        assert_eq!(classify(Ok(1)), "allowed");
-        assert_eq!(classify(Err(std::io::Error::from_raw_os_error(libc::EHOSTUNREACH))), "denied");
-        assert_eq!(classify(Err(std::io::Error::from_raw_os_error(libc::ENETUNREACH))), "unknown");
-        assert_eq!(classify(Err(std::io::ErrorKind::PermissionDenied.into())), "unknown");
-    }
 
     #[test]
     fn a_later_allowed_replaces_the_denied_found_at_start() {
@@ -195,6 +175,13 @@ mod tests {
         assert_eq!(found, "allowed");
         let unchecked = read(&mut tracker, true, start + Duration::from_secs(4), || panic!("checked again within FRESH"));
         assert_eq!(unchecked, "allowed");
+    }
+
+    #[test]
+    fn a_check_tries_the_network_with_the_probe_the_daemon_watches_with() {
+        drop(watch(|| ("denied", "No route to host".into())));
+        assert_eq!(check(), "denied");
+        assert_eq!(status(), "denied");
     }
 
     #[test]

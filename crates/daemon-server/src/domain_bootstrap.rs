@@ -1012,9 +1012,9 @@ async fn read_role_skill(
     let principal = match state.domain.resolve_bearer(bearer) { Ok(principal) => principal, Err(_) => return crate::domain_api::domain_error(DomainError::new("forbidden", "A current role capability is required")) };
     let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid skill request")); };
     let (root, name) = match (principal, query.name.as_str()) {
-        (crate::domain_authority::Principal::Agent { .. }, "alondra") => (state.domain.ports().plugins().node(&state.home), "alondra"),
-        (crate::domain_authority::Principal::Agent { .. }, "spec-design") => (state.domain.ports().plugins().node(&state.home), "spec-design"),
-        (crate::domain_authority::Principal::Orchestrator { .. }, "alondra-orchestrator") => (state.domain.ports().plugins().orchestrator(&state.home), "alondra-orchestrator"),
+        (crate::principal::Principal::Agent { .. }, "alondra") => (state.domain.ports().plugins().node(&state.home), "alondra"),
+        (crate::principal::Principal::Agent { .. }, "spec-design") => (state.domain.ports().plugins().node(&state.home), "spec-design"),
+        (crate::principal::Principal::Orchestrator { .. }, "alondra-orchestrator") => (state.domain.ports().plugins().orchestrator(&state.home), "alondra-orchestrator"),
         _ => return crate::domain_api::domain_error(DomainError::new("forbidden", "Only the current role's installed skill may be read")),
     };
     let Some(root) = root else { return crate::domain_api::domain_error(DomainError::new("not_found", "The role's Alondra integration assets are not installed")); };
@@ -1264,7 +1264,7 @@ async fn agent_waiting_machine(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
     let session_id = match bearer.map(|token| state.domain.resolve_bearer(token)) {
-        Some(Ok(crate::domain_authority::Principal::Agent { session_id, .. })) => session_id,
+        Some(Ok(crate::principal::Principal::Agent { session_id, .. })) => session_id,
         _ => return forbidden("an Agent's capability is required"),
     };
     let Ok(Json(body)) = body else {
@@ -1306,10 +1306,10 @@ async fn open_cards(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
     let (reader, bound) = match bearer.map(|token| state.domain.resolve_bearer(token)) {
-        Some(Ok(crate::domain_authority::Principal::Agent { session_id, task_binding, .. })) => {
+        Some(Ok(crate::principal::Principal::Agent { session_id, task_binding, .. })) => {
             (alondra_domain_model::Actor::Agent { agent_id: session_id.into() }, task_binding)
         }
-        Some(Ok(crate::domain_authority::Principal::Orchestrator { generation, .. })) => {
+        Some(Ok(crate::principal::Principal::Orchestrator { generation, .. })) => {
             (alondra_domain_model::Actor::Orchestrator { generation }, None)
         }
         _ => return forbidden("an Agent's or the orchestrator's capability is required"),
@@ -1416,7 +1416,7 @@ fn attachment_ref(home: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<Attac
         .stored_path
         .as_deref()
         .context("upload has no stored copy")?;
-    crate::service_files::attachment_ref(home, id, attachment.name, Path::new(stored))
+    crate::stored_files::attachment_ref(home, id, attachment.name, Path::new(stored))
 }
 
 #[derive(Deserialize)]
@@ -1441,7 +1441,7 @@ async fn file(
     };
     let home = state.home.clone();
     let opened = alondra_core::clock::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-        let mut file = crate::service_files::open_stored_file(&home, &path)?;
+        let mut file = crate::stored_files::open_stored_file(&home, &path)?;
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut file, &mut bytes)?;
         Ok(bytes)
@@ -2091,7 +2091,7 @@ mod tests {
         let domain = state.domain();
         let auth = state.auth();
         let capability = domain
-            .issue(crate::domain_authority::Principal::Agent {
+            .issue(crate::principal::Principal::Agent {
                 session_id: "test-agent".into(),
                 task_binding: None,
                 provider_agent_id: None,
@@ -2718,7 +2718,7 @@ mod tests {
         // Producers use the same Request resource with the flat, typed command
         // fields. The HTTP adapter supplies the CommandEnvelope metadata itself.
         let producer = domain
-            .issue(crate::domain_authority::Principal::Orchestrator {
+            .issue(crate::principal::Principal::Orchestrator {
                 generation: 0,
                 execution_id: "exec-1".into(),
             })

@@ -13,6 +13,7 @@ alondra-foundation.workspace = true
 alondra-process-group.workspace = true
 anyhow.workspace = true
 libc.workspace = true
+netwatch = "0.19.3"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11.0"

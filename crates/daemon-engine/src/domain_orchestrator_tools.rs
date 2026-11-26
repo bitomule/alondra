@@ -408,7 +408,7 @@ fn tell_replace_failed(domain: &dyn Runtime, task: &TaskId, error: &DomainError)
     }
     let title = task_title(domain, task);
     let text = format!("The replacement of the node of “{title}” ({task}) did not finish: {}", error.message);
-    if let Err(error) = domain.tell_orchestrator(&format!("replaced-{task}-{}", crate::auth::random_hex(4)), None, text) {
+    if let Err(error) = domain.tell_orchestrator(&format!("replaced-{task}-{}", alondra_foundation::random_hex(4)), None, text) {
         log!("could not tell the orchestrator how the replacement of {task}'s node ended: {error:?}");
     }
 }

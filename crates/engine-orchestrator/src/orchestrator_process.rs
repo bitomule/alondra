@@ -1,5 +1,5 @@
 //! Claude's print protocol and owned process. No terminal or background-agent transport.
-pub use crate::auth::uuid;
+pub use alondra_foundation::uuid;
 use std::path::Path;
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;

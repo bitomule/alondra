@@ -228,7 +228,7 @@ pub fn execute_system(domain: &dyn Runtime, command: Command) -> Result<CommandO
     domain.execute_as_system(CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
-        command_id: format!("schedule-worker-{}", crate::auth::random_hex(16)).into(),
+        command_id: format!("schedule-worker-{}", alondra_foundation::random_hex(16)).into(),
         expected_revision: 0,
         command,
     })
@@ -259,7 +259,7 @@ fn scheduled_task_name(title: &str, at: i64) -> Result<String> {
         anyhow::bail!("scheduled task date is outside the supported calendar");
     }
     let date = format!("{:04}-{:02}-{:02}", date.tm_year + 1900, date.tm_mon + 1, date.tm_mday);
-    let suffix = crate::auth::random_hex(16);
+    let suffix = alondra_foundation::random_hex(16);
     let title = alondra_engine_ports::worktrees::slug(title);
     // Reserve the complete identity suffix before the worktree's 64-byte limit.
     let budget = 64_usize.saturating_sub(4 + date.len() + suffix.len());
@@ -268,7 +268,7 @@ fn scheduled_task_name(title: &str, at: i64) -> Result<String> {
 }
 
 fn request_task(snapshot: &ScheduleDefinitionSnapshot, at: i64) -> Result<(Request, Task)> {
-    let request_id: RequestId = format!("r-{}", crate::auth::random_hex(16)).into();
+    let request_id: RequestId = format!("r-{}", alondra_foundation::random_hex(16)).into();
     let request = Request::new(request_id.clone(), snapshot.text.clone());
     let task = Task {
         provider: Default::default(), selection: None, pending_selection: None, move_refused: None,
@@ -693,7 +693,7 @@ pub async fn run_cycle(
             .cloned()
             .collect();
         for schedule in due {
-            let run_id: ScheduleRunId = format!("run-{}", crate::auth::random_hex(16)).into();
+            let run_id: ScheduleRunId = format!("run-{}", alondra_foundation::random_hex(16)).into();
             let claim = execute_system(
                 domain,
                 Command::ClaimScheduleRun {

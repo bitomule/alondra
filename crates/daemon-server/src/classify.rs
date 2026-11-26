@@ -27,6 +27,7 @@ pub fn search(query: &str, candidates: Vec<(String, String)>) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

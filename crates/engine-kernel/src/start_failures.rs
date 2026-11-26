@@ -101,7 +101,7 @@ pub fn raise(domain: &dyn Runtime, task: &TaskId, problem: StartProblem) -> Resu
     let state = domain.state();
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
-        command_id: format!("start-problem-{}-{}", task.0, crate::auth::random_hex(8)).into(), expected_revision: state.revision,
+        command_id: format!("start-problem-{}-{}", task.0, alondra_foundation::random_hex(8)).into(), expected_revision: state.revision,
         command: Command::RaiseStartProblem { task_id: task.clone(), problem },
     };
     domain.execute_as_system(envelope).map_err(|error| anyhow::anyhow!("{error:?}"))?;

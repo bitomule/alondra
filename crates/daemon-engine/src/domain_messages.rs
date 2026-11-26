@@ -192,7 +192,7 @@ fn tell_through_sdk(domain: &dyn Runtime, state: &alondra_domain_model::DomainSt
     })?;
     let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
     let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
-    let command_id = format!("tell-{}", crate::auth::random_hex(16));
+    let command_id = format!("tell-{}", alondra_foundation::random_hex(16));
     if as_user && tell_about_pr(domain, state, user, task, &body, &text, &command_id)? {
         return Ok(read_after(domain, user, &body, json!({"delivery_state":State::Dispatching})));
     }
@@ -373,20 +373,20 @@ fn keep_for_task(domain: &dyn Runtime, home: &Path, user: &Actor, name: &str, ta
     let state = domain.state();
     let task = state.tasks.get(task).ok_or_else(|| refused("not_found", "task does not exist"))?;
     let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
-    if tell_about_pr(domain, &state, user, task, &body, &text, &format!("tell-{}", crate::auth::random_hex(16)))? {
+    if tell_about_pr(domain, &state, user, task, &body, &text, &format!("tell-{}", alondra_foundation::random_hex(16)))? {
         return Ok(read_after(domain, user, &body, json!({"delivery_state":State::Dispatching})));
     }
     if state.is_scheduled_task(&task.id) {
         let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
         let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
-        return tell_scheduled(domain, user, &body, task, &author, &text, &format!("tell-{}", crate::auth::random_hex(16)));
+        return tell_scheduled(domain, user, &body, task, &author, &text, &format!("tell-{}", alondra_foundation::random_hex(16)));
     }
     if task.state.terminal() || task.ending.is_some() {
         return Err(refused("task_not_active", "the task has ended or is closing"));
     }
     let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
     let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
-    tell_sdk_node(domain, &task.id, &author, &text, &format!("tell-{}", crate::auth::random_hex(16)), true)?;
+    tell_sdk_node(domain, &task.id, &author, &text, &format!("tell-{}", alondra_foundation::random_hex(16)), true)?;
     let lifecycle = domain.read().state().lifecycle_of(&task.id)?;
     Ok(read_after(domain, user, &body, json!({"delivery_state": State::Dispatching, "reaches": reaches(&lifecycle)})))
 }
@@ -404,7 +404,7 @@ fn mark_read(domain: &dyn Runtime, user: &Actor, interaction_id: InteractionId) 
     let state = domain.state();
     let envelope = CommandEnvelope {
         protocol_version: alondra_domain_model::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
-        command_id: format!("mark-read-{}", crate::auth::random_hex(8)).into(), expected_revision: state.revision,
+        command_id: format!("mark-read-{}", alondra_foundation::random_hex(8)).into(), expected_revision: state.revision,
         command: Command::MarkRead { interaction_id },
     };
     domain.execute(user, &envelope, None, || Ok(())).map(|_| ()).map_err(|error| error.into_domain_error(&envelope))

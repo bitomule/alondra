@@ -266,6 +266,7 @@ fn read_tail(path: &Path, limit: u64) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

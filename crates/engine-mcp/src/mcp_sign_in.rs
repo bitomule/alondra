@@ -45,7 +45,7 @@ pub fn complete(domain: &DomainRuntime, task: &TaskId, server: &str, address: &s
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
-        command_id: format!("mcp-sign-in-{}", crate::auth::random_hex(16)).into(),
+        command_id: format!("mcp-sign-in-{}", alondra_foundation::random_hex(16)).into(),
         expected_revision: state.revision,
         command: Command::CompleteMcpSignIn { task_id: task.clone(), server: server.into(), state: back.state.clone() },
     };

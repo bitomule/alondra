@@ -76,7 +76,7 @@ pub(crate) fn hold_elicitation(domain: &dyn Runtime, payload: &Value, background
     }
     let Some(session_id) = str_field(payload, "session_id") else { return Ok(None) };
     let input = payload.get("requested_schema").cloned().unwrap_or(Value::Null);
-    let id = InteractionId(format!("hold-{}", crate::auth::random_hex(16)));
+    let id = InteractionId(format!("hold-{}", alondra_foundation::random_hex(16)));
     open(domain, &session_id, id, Hold::Elicitation, None, input, None, Some(payload))
 }
 
@@ -421,7 +421,7 @@ pub(crate) fn ask(domain: &dyn Runtime, session_id: &str, body: String, options:
     let Some(task) = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent_id) && !task.over()) else {
         return Ok(None);
     };
-    let id = InteractionId(format!("hold-{}", crate::auth::random_hex(16)));
+    let id = InteractionId(format!("hold-{}", alondra_foundation::random_hex(16)));
     let (options, recommended) = recommending(options);
     let card = hold_card(Hold::Question, &body, &options, recommended, None);
     execute(domain, &state, Command::HoldHook {
@@ -512,7 +512,7 @@ pub(crate) fn release_session(domain: &dyn Runtime, session_id: &str) -> Result<
 fn execute(domain: &dyn Runtime, state: &DomainState, command: Command) -> Result<()> {
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
-        command_id: format!("hold-{}", crate::auth::random_hex(16)).into(),
+        command_id: format!("hold-{}", alondra_foundation::random_hex(16)).into(),
         expected_revision: state.revision, command,
     };
     domain.execute_as_system(envelope).map(|_| ()).map_err(|error| anyhow::anyhow!("{error:?}"))

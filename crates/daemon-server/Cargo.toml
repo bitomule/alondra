@@ -15,7 +15,6 @@ alondra-core.workspace = true
 alondra-host.workspace = true
 alondra-domain-model.workspace = true
 alondra-view-model.workspace = true
-alondra-daemon-support.workspace = true
 alondra-daemon-engine.workspace = true
 alondra-engine-admission.workspace = true
 alondra-engine-orchestrator.workspace = true

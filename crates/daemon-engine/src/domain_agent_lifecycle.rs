@@ -52,9 +52,9 @@ pub(crate) fn new_identity() -> Result<ManagedIdentity, StoreError> {
     Ok(ManagedIdentity {
         agent_id: AgentId(format!(
             "agent-{}",
-            crate::auth::uuid().map_err(StoreError::Storage)?
+            alondra_foundation::uuid().map_err(|error| StoreError::Storage(error.into()))?
         )),
-        claude_session_id: crate::auth::uuid().map_err(StoreError::Storage)?,
+        claude_session_id: alondra_foundation::uuid().map_err(|error| StoreError::Storage(error.into()))?,
     })
 }
 
@@ -97,7 +97,7 @@ pub fn node_event(domain: &dyn Runtime, agent_id: &AgentId, happened: NodeEvent)
     if !matches!(state.node_next(agent_id, &happened), Ok(Some(_))) {
         return Ok(false);
     }
-    let id = format!("{}-{}-{}", happened.key(), agent_id.0, crate::auth::random_hex(8));
+    let id = format!("{}-{}-{}", happened.key(), agent_id.0, alondra_foundation::random_hex(8));
     submit_on_current(domain, "agent-move", &id, &state, Command::MoveNode { agent_id: agent_id.clone(), event: happened })
 }
 
@@ -108,7 +108,7 @@ pub(crate) fn record_last_words(domain: &dyn Runtime, agent_id: &AgentId, text: 
     if text.trim().is_empty() || state.last_words.get(agent_id).is_some_and(|kept| kept == text.trim()) {
         return Ok(false);
     }
-    let id = format!("last-words-{}-{}", agent_id.0, crate::auth::random_hex(8));
+    let id = format!("last-words-{}-{}", agent_id.0, alondra_foundation::random_hex(8));
     submit_on_current(domain, "agent-last-words", &id, &state, Command::RecordLastWords { agent_id: agent_id.clone(), text: text.to_owned() })
 }
 

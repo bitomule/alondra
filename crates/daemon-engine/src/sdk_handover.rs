@@ -55,7 +55,7 @@ fn follow(domain: &dyn Runtime, handover: Handover, text: String) {
         loop {
             match handover_of(&*runtime, &node) {
                 Some(Handover { step: HandoverStep::Done, task, .. }) => {
-                    let command = format!("tell-moved-{}", crate::auth::random_hex(16));
+                    let command = format!("tell-moved-{}", alondra_foundation::random_hex(16));
                     if let Err(error) = crate::domain_messages::tell_sdk_node(&*runtime, &task, crate::node_push::ALONDRA, &text, &command, false) {
                         log!("what was said to {node} while it moved did not reach its SDK node: {}", error.message);
                     }

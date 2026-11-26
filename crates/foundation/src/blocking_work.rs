@@ -26,7 +26,7 @@ impl BlockingWork {
     ) -> Result<R, tokio::task::JoinError> {
         let permit = self.0.clone().acquire_owned().await.expect("blocking work closed");
             let hook = self.1.lock_or_recover("the blocking work's start hook").clone();
-        alondra_core::clock::spawn_blocking(move || {
+        crate::clock::spawn_blocking(move || {
                     if let Some(hook) = hook { hook(); }
             let _permit = permit;
             work()

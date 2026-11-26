@@ -4,7 +4,7 @@
 enum	crates/agent-protocol/src/correlation.rs::CommandStatus	only tells a caller whether a command was new or a duplicate; holds no state
 enum	crates/agent-protocol/src/correlation.rs::SequenceStatus	only tells whether an event cursor was the next or a duplicate; holds no state
 enum	crates/daemon-server/src/direct/pairing.rs::Status	response projection of the pairing State plus Expired; holds no state of its own
-enum	crates/daemon-support/src/job_state.rs::Phase	read of what Claude Code reports about a job; Alondra never keeps or changes it
+enum	crates/engine-ports/src/job_state.rs::Phase	read of what Claude Code reports about a job; Alondra never keeps or changes it
 enum	crates/domain-model/src/mcp.rs::McpStatus	how Claude reports an MCP server, parsed on read; not kept by a machine
 enum	crates/engine-sdk/src/sdk_owner.rs::NativeRecoveryStatus	result of one lookup of a recoverable native session; holds no state
 file	antigravity-cli/settings.json	the user's own Antigravity settings, linked read-only from ~/.gemini into a named account's folder; Alondra never owns its state
@@ -65,7 +65,7 @@ timer	crates/daemon-engine-machine/src/swap_disk.rs::MINUTE	unit: milliseconds i
 timer	crates/daemon-server/src/device_expiry.rs::DAY_MS	unit: milliseconds in a day, not a limit
 timer	crates/daemon-server/src/views/actions.rs::SCHEDULE_DATE_LIMIT_MILLIS	latest date a schedule accepts (year 2100), not a duration
 timer	crates/daemon-server/src/views/reset_time.rs::FIVE_HOURS	length of the 5-hour usage window, used only to format a reset time
-timer	crates/daemon-support/src/files_retention.rs::DAY	unit: one day as a duration, not a limit
+timer	crates/engine-ports/src/files_retention.rs::DAY	unit: one day as a duration, not a limit
 timer	crates/engine-sdk/src/model_fixture/launch_fixture.rs::TURNS_DEADLINE	how long a test waits for a task's turns before it fails; test fixture, not a limit of the engine
 timer	crates/engine-sdk/src/sdk_owner/session_refresh.rs::AT_MS	fixed timestamp of a test fixture, not a limit
 timer	crates/engine-sdk/src/sdk_owner/session_refresh.rs::HOUR	test-only unit: one hour

@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(parse(&file("crashed", ""), SESSION), None, "a crash is not a stop");
         assert_eq!(parse(&file("working", "").replace("\"updatedAt\"", "\"touchedAt\""), SESSION), None, "no update time");
         assert_eq!(parse(&file("working", "").replace(SESSION, "another-session"), SESSION), None, "another session's file");
-        let home = scratch_directory.parent().unwrap().join(format!("alondra-jobs-{}", crate::auth::random_hex(8)));
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-jobs-{}", alondra_foundation::random_hex(8)));
         assert_eq!(locate(&home, SESSION), None, "no jobs folder");
         std::fs::create_dir_all(home.join("jobs/8f89f635")).unwrap();
         assert_eq!(locate(&home, SESSION), None, "no state file");
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn the_job_is_found_by_the_session_id_when_its_folder_is_not_named_after_it() {
         let scratch_directory = crate::test_support::Directory::new();
-        let home = scratch_directory.parent().unwrap().join(format!("alondra-jobs-{}", crate::auth::random_hex(8)));
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-jobs-{}", alondra_foundation::random_hex(8)));
         std::fs::create_dir_all(home.join("jobs/elsewhere")).unwrap();
         std::fs::write(home.join("jobs/elsewhere/state.json"), file("idle", "")).unwrap();
         let dir = locate(&home, SESSION).unwrap();

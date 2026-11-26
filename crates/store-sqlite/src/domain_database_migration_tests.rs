@@ -393,7 +393,7 @@ fn staging_database_with_a_mismatched_owner_record_is_preserved() {
     fs::write(
         &owner,
         serde_json::to_vec(&StageOwner {
-            stage_id: alondra_daemon_support::auth::random_hex(12),
+            stage_id: alondra_foundation::random_hex(12),
             source_digest: marker.source_digest.clone(),
             source_content_digest: marker.source_content_digest.clone(),
         })

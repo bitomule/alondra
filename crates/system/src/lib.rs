@@ -18,6 +18,7 @@ pub mod codex_credentials;
 pub mod disk;
 pub mod hook_socket;
 pub mod launch_worktree;
+pub mod local_network;
 pub mod machine;
 pub mod plugins;
 pub mod rehearsal;

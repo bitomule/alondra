@@ -208,6 +208,7 @@ pub fn in_quiet_hours(start: Option<&str>, end: Option<&str>, now: u32) -> bool 
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
 

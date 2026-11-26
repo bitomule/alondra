@@ -40,7 +40,7 @@ pub fn run(config: &Config, files: &dyn JournalFiles, open: Opener, wire: fn(&al
 
 /// `run` for a user whose HOME is `user_home`, where a production SDK backend runs Claude.
 fn run_for(config: &Config, user_home: &Path, files: &dyn JournalFiles, open: Opener, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
-    crate::domain_cutover::refuse_legacy_home(&config.home)?;
+    crate::legacy_home::refuse_legacy_home(&config.home)?;
     alondra_core::home_lock::ensure_ready(&config.home)?;
     let backend = alondra_daemon_engine::sdk_backend::load(&config.home, config.sandbox, user_home)
         .context("the SDK backend configuration is not one this build admits")?;
@@ -199,7 +199,7 @@ impl Drop for Scratch {
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
     fn machine_doubles(ports: &alondra_engine_ports::Registry) {
-        alondra_engine_doubles::machine::wire(ports, alondra_daemon_support::watcher::claude_home);
+        alondra_engine_doubles::machine::wire(ports, alondra_engine_ports::watcher::claude_home);
     }
 
     use super::*;

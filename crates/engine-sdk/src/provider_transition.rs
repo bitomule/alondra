@@ -54,7 +54,7 @@ pub fn request(domain:&dyn Runtime,actor:&Actor,task:&TaskId,target_account:Acco
     let (backend,_)=domain.sdk().ok_or_else(||failure("The provider runtime is unavailable"))?;
     let selected=backend.for_provider(held.provider,domain.home()).map_err(failure)?;
     let host_directory=selected.state_root.join(execution.instance().as_str());
-    let id=format!("selection-{}",crate::auth::random_hex(16));
+    let id=format!("selection-{}",alondra_foundation::random_hex(16));
     let pending=PendingTaskSelection{account:target_account.clone(),model:target_model.clone(),reason:reason.into()};
     let command=envelope(domain,&id,Command::RequestTaskSelection{task_id:task.clone(),expected_selection:expected_selection.into(),selection:intent.clone(),pending});
     let ((),_)=domain.own(scope(domain)?,|owner|{
@@ -78,7 +78,7 @@ pub fn request(domain:&dyn Runtime,actor:&Actor,task:&TaskId,target_account:Acco
 pub fn request_move(domain:&dyn Runtime,actor:&Actor,task:&TaskId,account:AccountKey,expected_selection:&str,authorize:impl FnOnce()->Result<(),DomainError>)->Result<Value,DomainError>{
     let initial=domain.state();
     let (intent,pending)=initial.moved_selection(actor,task,&account)?;
-    let id=format!("move-{}",crate::auth::random_hex(16));
+    let id=format!("move-{}",alondra_foundation::random_hex(16));
     let command=envelope(domain,&id,Command::MoveTask{task_id:task.clone(),expected_selection:expected_selection.into(),account:account.clone()});
     let Some(pending)=pending else{
         domain.own(scope(domain)?,|owner|{authorize()?;owner.stage_command(actor,&command,Attached::None).map(drop)}).map_err(store_failure)?;
@@ -284,7 +284,7 @@ pub(crate) fn request_stage(domain:&Arc<dyn Runtime>,task:&TaskId)->Result<bool,
     let host_directory=selected.state_root.join(execution.instance().as_str());
     let denied=alondra_daemon_engine_model::LaunchOptions::load(&host_directory).map(|options|options.disallowed_tools).map_err(failure)?;
     let decision=domain.engine().select_account(domain.home(),&intent,&denied,alondra_core::now_millis())?;
-    let id=format!("stage-{}",crate::auth::random_hex(16));
+    let id=format!("stage-{}",alondra_foundation::random_hex(16));
     let reason=format!("The {} takes the task over. {}",handover.to.as_str(),decision.reason).chars().take(1900).collect::<String>();
     let pending=PendingTaskSelection{account:decision.account.clone(),model:decision.selection.clone(),reason:reason.clone()};
     let expected_selection=initial.task_selection_stamp(task).unwrap_or_default();
@@ -302,7 +302,7 @@ pub(crate) fn request_stage(domain:&Arc<dyn Runtime>,task:&TaskId)->Result<bool,
 /// it waits for the user. A task has one open start problem at a time, so it waits while another
 /// one is open.
 fn refuse_stage_without_execution(domain:&dyn Runtime,task:&TaskId,handover:&StageHandover)->Result<(),DomainError>{
-    let id=format!("stage-{}",crate::auth::random_hex(16));
+    let id=format!("stage-{}",alondra_foundation::random_hex(16));
     domain.own(scope(domain)?,|owner|{
         let due=owner.state().tasks.get(task).is_some_and(|held|held.stages.handover.as_ref()==Some(handover));
         if !due || owner.state().open_start_problem(task).is_some() || owner.state().lifecycle_of(task)?.execution().is_some(){return Ok(())}
@@ -348,7 +348,7 @@ pub(crate) fn request_refresh(owner:&mut dyn OwnerJournal,task:&TaskId,host_dire
     let source=owner.selection_source(task,host_directory)?;
     let intent=source.selection.clone().ok_or_else(||failure("The task has no model selection"))?;
     let target_model=intent.effective.clone().ok_or_else(||failure("The execution's model is unknown"))?;
-    let plan=Plan{id:format!("refresh-{}",crate::auth::random_hex(16)),kind:Kind::Refresh,task:task.clone(),expected_selection:owner.state().task_selection_stamp(task).unwrap_or_default(),
+    let plan=Plan{id:format!("refresh-{}",alondra_foundation::random_hex(16)),kind:Kind::Refresh,task:task.clone(),expected_selection:owner.state().task_selection_stamp(task).unwrap_or_default(),
         target_account:source.account.clone(),target_model,intent,reason:"The prompt cache of the conversation expired".into(),conversation_file:Some(conversation_file),role:None,source};
     handoff(owner,&plan)?;
     owner.validate_selection_source(&plan)?;

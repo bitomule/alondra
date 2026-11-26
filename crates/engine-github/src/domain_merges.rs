@@ -702,7 +702,7 @@ fn raise_trouble(domain: &DomainRuntime, pr: &PullRequest, failure: &GhFailure, 
     if trouble.card.is_some() || (trouble.count < NON_TRANSIENT_FAILURES_BEFORE_CARD && alondra_core::clock::since(trouble.since) < give_up) {
         return;
     }
-    let id = format!("problem-merge-{}-{}", pr.slug(), crate::auth::random_hex(6));
+    let id = format!("problem-merge-{}-{}", pr.slug(), alondra_foundation::random_hex(6));
     let need = clip(&format!("Alondra can't merge PR #{}: {}", pr.number, reason.trim()), CardSpec::NEED_MAX);
     let why = clip(&format!("GitHub keeps failing when Alondra reads or merges PR #{}, so it stays unmerged until this is fixed.", pr.number),
         CardSpec::WHY_MAX);
@@ -728,7 +728,7 @@ impl Merger {
         if self.action.contains_key(&pr.id) {
             return;
         }
-        let id = format!("problem-checks-{}-{}", pr.slug(), crate::auth::random_hex(6));
+        let id = format!("problem-checks-{}-{}", pr.slug(), alondra_foundation::random_hex(6));
         let need = clip(&format!("Act on the checks of PR #{} on GitHub", pr.number), CardSpec::NEED_MAX);
         let why = clip(&format!("GitHub says {} need someone to act before Alondra can merge PR #{}.", names.join(", "), pr.number),
             CardSpec::WHY_MAX);
@@ -745,7 +745,7 @@ impl Merger {
         if self.review.contains_key(&pr.id) {
             return;
         }
-        let id = format!("problem-review-{}-{}", pr.slug(), crate::auth::random_hex(6));
+        let id = format!("problem-review-{}-{}", pr.slug(), alondra_foundation::random_hex(6));
         let need = clip(&format!("Get PR #{} approved on GitHub", pr.number), CardSpec::NEED_MAX);
         let why = clip(&format!("GitHub requires an approving review before PR #{} can be merged; Alondra merges it once it is approved.", pr.number),
             CardSpec::WHY_MAX);

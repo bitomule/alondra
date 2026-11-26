@@ -11,7 +11,7 @@ pub mod test_support;
 #[macro_use]
 extern crate alondra_foundation;
 
-use alondra_daemon_support::{auth, locks, node_cost, runtime_mutex, save};
+use alondra_daemon_support::{locks, node_cost, runtime_mutex, save};
 pub mod process_watch;
 
 pub mod disk_peaks;

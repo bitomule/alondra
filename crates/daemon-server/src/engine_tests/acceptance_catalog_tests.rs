@@ -31,7 +31,8 @@ fn catalog_execution_status_is_explicit_and_evidenced() {
     let sources = [
         include_str!("../../../store-sqlite/src/tests.rs"),
         include_str!("../../../store-sqlite/src/schedule_acceptance_tests.rs"),
-        include_str!("../../../daemon-support/src/domain_cutover.rs"),
+        include_str!("../../../engine-ports/src/domain_cutover.rs"),
+        include_str!("../legacy_home.rs"),
         include_str!("../../../daemon-support/src/domain_authority.rs"),
         include_str!("../domain_api.rs"),
         include_str!("../service/domain_parity_tests.rs"),

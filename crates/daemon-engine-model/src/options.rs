@@ -75,7 +75,7 @@ pub fn read_optional(path: &Path) -> Result<Option<String>> {
 }
 
 fn temporary(path: &Path) -> PathBuf {
-    path.with_file_name(format!(".{}.{}.next", path.file_name().expect("settings file name").to_string_lossy(), alondra_daemon_support::auth::random_hex(16)))
+    path.with_file_name(format!(".{}.{}.next", path.file_name().expect("settings file name").to_string_lossy(), alondra_foundation::random_hex(16)))
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<PathBuf> {

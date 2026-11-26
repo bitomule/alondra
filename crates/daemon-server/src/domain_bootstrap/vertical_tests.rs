@@ -3,7 +3,7 @@
 use super::*;
 use crate::auth::Auth;
 use crate::domain_api::DomainHost as _;
-use crate::domain_authority::Principal;
+use crate::principal::Principal;
 use axum::http::StatusCode;
 use std::net::SocketAddr;
 use alondra_domain_model::{Actor, Command, CommandEnvelope, DeliveryTarget, InteractionPayload, PrId, PROTOCOL_VERSION, TaskState};

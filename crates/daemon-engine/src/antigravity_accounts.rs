@@ -87,7 +87,7 @@ impl Scratch {
     fn new(home: &Path) -> Result<Self, String> {
         use std::os::unix::fs::DirBuilderExt as _;
         let root = home.join(alondra_core::accounts::MANAGED_PROVIDER_FOLDER).join("antigravity-probes");
-        let folder = root.join(crate::auth::random_hex(8));
+        let folder = root.join(alondra_foundation::random_hex(8));
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(folder.join("tmp")).map_err(|error| error.to_string())?;
         std::fs::DirBuilder::new().mode(0o700).create(folder.join("work")).map_err(|error| error.to_string())?;
         Ok(Self(folder))

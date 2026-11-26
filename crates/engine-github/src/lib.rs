@@ -8,7 +8,6 @@ mod test_support;
 #[macro_use]
 extern crate alondra_foundation;
 
-use alondra_daemon_support::auth;
 
 use alondra_daemon_engine_model::options;
 use alondra_engine_kernel::{domain_runtime, domain_store};
