@@ -12,7 +12,7 @@ adapter_out_crate(
     name = "agent_runtime",
     srcs = production_sources(),
     crate_name = "alondra_agent_runtime",
-    test_visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/provider-claude:__pkg__", "//crates/daemon-server:__pkg__"],
+    test_visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/provider-claude:__pkg__", "//crates/provider-codex:__pkg__", "//crates/daemon-server:__pkg__"],
     version = "0.1.0",
     deps = RUNTIME_DEPS,
 )

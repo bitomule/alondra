@@ -4273,7 +4273,7 @@ readers = ["crates/daemon-server/src/preflight.rs"]
 machine = "M-ORCH-1"
 [[file]]
 name = "owner.json"
-writer = "crates/engine-orchestrator/src/orchestrator_process.rs"
+writer = "crates/process-group/src/owner.rs"
 readers = ["crates/engine-orchestrator/src/orchestrator_codex.rs", "crates/engine-orchestrator/src/orchestrator_sdk.rs"]
 machine = "M-ORCH-1"
 [[file]]

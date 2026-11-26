@@ -179,8 +179,11 @@ visibility on both).
 - Its tests are `//crates/engine-orchestrator:engine_orchestrator_test`, on the doubled hosts the
   orchestrator model of `//crates/provider-claude:claude_host_model` plays as the fake orchestrator
   Claude plays them, and `//crates/provider-codex:codex_host_model` as the Codex host and fake Codex
-  play a Codex batch, with no program run, and `engine_orchestrator_host_test` (the feature
-  `real-hosts`), with only the real processes of the child the orchestrator owns. They
+  play a Codex batch, with no program run. It is the crate's only test target: the record of the
+  child the orchestrator owns, which needs real processes, lives in `process-group` (`owner.rs`).
+  Each model is held to its real host by a case both run: `provider-claude`'s
+  `host_cases/orchestrator_tests.rs` (`sdk_worker_test` and `claude_host_model_test`) and
+  `provider-codex`'s `host_cases_tests.rs` (`codex_host_test` and `provider_codex_test`). They
   link neither `daemon-engine` nor `engine-sdk`: they
   open a runtime with the doubles of `engine-doubles` registered for the ports they do not test. The
   tests that need the whole engine are in `alondrad` (`engine_tests/orchestrator_*_tests.rs`).

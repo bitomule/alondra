@@ -2,6 +2,8 @@
 //! who is still in the group, which process is at the other end of a Unix socket, and a wait for
 //! processes to exit that reaps nothing. The supervisor decides; this only asks.
 #![deny(unsafe_op_in_unsafe_fn)]
+pub mod owner;
+
 use std::collections::BTreeSet;
 use std::ffi::{c_int, c_void};
 use std::io;

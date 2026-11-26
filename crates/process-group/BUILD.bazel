@@ -6,16 +6,16 @@ load("//bazel/rules:rust_sources.bzl", "production_sources")
 
 foundation_crate(
     name = "process_group",
-    srcs = ["src/lib.rs"],
+    srcs = ["src/lib.rs", "src/owner.rs"],
     crate_name = "alondra_process_group",
     version = "0.1.0",
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(normal = True) + ["//crates/foundation:foundation"],
     test_visibility = ["//crates/engine-doubles:__pkg__"],
 )
 
 low_opt_rust_test(
     name = "process_group_test",
-    env = {"TEST_EXECS": "/bin/cat /bin/sh /bin/sleep"},
+    env = {"TEST_EXECS": "/bin/cat /bin/sh /bin/sleep /usr/bin/true"},
     size = "small",
     crate = ":process_group",
     edition = "2024",
