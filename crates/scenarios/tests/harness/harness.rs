@@ -1,7 +1,8 @@
 //! The harness tests itself: it sees a failure and names it, it runs a scenario twice to the same
 //! bytes, and nothing it runs reaches a real service.
 
-use crate::{Outcome, Scenario, ScenarioError, checkpoint, run, run_with};
+use crate::test_support;
+use alondra_scenarios::{Outcome, Scenario, ScenarioError, checkpoint, run, run_with};
 
 const SMALL: &str = r#"
 name = "a request and its task"
@@ -337,7 +338,7 @@ name = "after-the-rest"
 screens = ["task:t2"]
 "#;
     let at_once = run(&scenario(text), None).expect("the scenario runs");
-    let slowly = crate::runner::run_with_slow_host_exits(&scenario(text), std::time::Duration::from_millis(400)).expect("the scenario runs");
+    let slowly = alondra_scenarios::runner::run_with_slow_host_exits(&scenario(text), std::time::Duration::from_millis(400)).expect("the scenario runs");
     assert_eq!(at_once.checkpoints, slowly.checkpoints);
 }
 
@@ -383,7 +384,7 @@ name = "after-the-rest"
 screens = ["task:t2"]
 "#;
     let at_once = run(&scenario(text), None).expect("the scenario runs");
-    let slowly = crate::runner::run_with_slow_probes(&scenario(text), std::time::Duration::from_millis(1500)).expect("the scenario runs");
+    let slowly = alondra_scenarios::runner::run_with_slow_probes(&scenario(text), std::time::Duration::from_millis(1500)).expect("the scenario runs");
     assert_eq!(at_once.checkpoints, slowly.checkpoints);
 }
 
@@ -430,7 +431,7 @@ name = "after-the-rest"
 screens = ["task:t2"]
 "#;
     let at_once = run(&scenario(text), None).expect("the scenario runs");
-    let late = crate::runner::run_with_late_probes(&scenario(text), std::time::Duration::from_millis(1500)).expect("the scenario runs");
+    let late = alondra_scenarios::runner::run_with_late_probes(&scenario(text), std::time::Duration::from_millis(1500)).expect("the scenario runs");
     assert_eq!(at_once.checkpoints, late.checkpoints);
 }
 
@@ -460,6 +461,6 @@ name = "started"
 screens = ["task:t1"]
 "#;
     let at_once = run(&scenario(text), None).expect("the scenario runs");
-    let late = crate::runner::run_with_slow_host_starts(&scenario(text), std::time::Duration::from_millis(1_500), 1).expect("a host that starts late starts its node");
+    let late = alondra_scenarios::runner::run_with_slow_host_starts(&scenario(text), std::time::Duration::from_millis(1_500), 1).expect("a host that starts late starts its node");
     assert_eq!(at_once.checkpoints, late.checkpoints);
 }

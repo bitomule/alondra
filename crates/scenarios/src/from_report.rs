@@ -102,7 +102,7 @@ pub fn read_package(dir: &Path) -> Result<(Package, Vec<String>), Refusal> {
 }
 
 /// The values the report replaced, from its table of pseudonyms: they must not show anywhere.
-fn pseudonym_originals(table: &str) -> Vec<String> {
+pub fn pseudonym_originals(table: &str) -> Vec<String> {
     let Ok(table) = serde_json::from_str::<Value>(table) else { return Vec::new() };
     table["by_value"]
         .as_object()
@@ -301,7 +301,3 @@ pub fn convert(package: &Path, name: &str, out: &Path, literals: &[String], chec
     write(out, &draft).map_err(|error| Refusal::Unreadable(error.to_string()))?;
     Ok(draft)
 }
-
-#[cfg(test)]
-#[path = "from_report_tests.rs"]
-mod tests;

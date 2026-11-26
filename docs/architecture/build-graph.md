@@ -1586,3 +1586,91 @@ rebased on it (load average 18 to 35):
   `views_budget_test`, a CPU budget, under it). The plan's estimate (edit + test of `rules.rs` from
   188 s to about 150 s) counted the decision tests leaving the host test, which the first phase
   already did; this phase adds no measurable cut to that edit.
+
+## The view budgets and the harness tests without their fixtures (2026-11-26, main at c5518b711)
+
+After the server's test crates became incremental, an edit of the domain or of the screens still
+waited for two one-purpose test crates that compiled from scratch.
+
+- **`//crates/views:views_budget_test`** compiles at the build's opt-level, since it measures speed.
+  About 450 of its 738 lines measured nothing: they build a synthetic domain and copy it through
+  JSON, so the crate generated the code that reads and writes the whole domain. Of its 24,173
+  generated functions (`-Zprint-mono-items`), 70% were `serde`'s, and 17 of the 20 s of one compile
+  went to LLVM (`-Ztime-passes`).
+- **`//crates/scenarios:scenarios_harness_test`** compiled every source of the `scenarios` library a
+  second time, from scratch; the same edit already builds that library incrementally. It also sits
+  at the end of the chain of libraries, because a scenario runs the whole daemon.
+
+What changed:
+
+- **The budgets' fixture is a test-only library**, `//crates/views:budget_fixture`: the domain, what
+  the daemon reads live and every JSON the budgets write or read. It is incremental like every
+  library here. The measuring crate holds the same 6 tests and limits and still compiles from
+  scratch at `-c opt`. What a limit covers (rendering a view, applying an action and indexing the
+  result) did not move. The first-card test serializes its view in the fixture; it prints that time
+  and sets no limit on it.
+- **The harness's tests are an integration test crate** (`crates/scenarios/tests/harness`) over the
+  `scenarios` library, every test it had: 47 when this was measured, 48 with the one `main` added
+  before the merge. What they use of it is public now; the library is test-only.
+
+The levers were compared by compiling each crate by hand with Bazel's own `rustc` command, after a
+one-line edit of a function body, on the shared Mac (load average 6 to 30):
+
+| `views_budget_test` | Wall | CPU | Disk per checkout |
+|---|---:|---:|---:|
+| As before, from scratch | 11-17 s | 41-47 s | 0 |
+| The same crate, incremental | 0.7-1.7 s | 1.0-1.3 s | ~0.1 GB |
+| Fixture apart (adopted): test crate, plus ~0.6 CPU s of the fixture | 1.9-5.3 s | 5.5-8.5 s | ~0.1 GB |
+
+| `scenarios_harness_test` | Wall | CPU | Disk per checkout |
+|---|---:|---:|---:|
+| As before, from scratch | 7-22 s | 15-23 s | 0 |
+| The same crate, incremental | 2.6-5.7 s | 3.7-5.0 s | 0.4 GB |
+| Over the library (adopted; the prototype held 20 of the 47 tests) | 1.2-1.8 s | 2.6-2.8 s | 0 |
+
+The incremental budget crate costs less CPU than the fixture library, and either one takes it off the
+critical path. The library was adopted because the crate that measures keeps compiling the same way
+here, in CI and in a release, and stays cacheable.
+
+`edit_bench --build-only --profile` on both edits, one run of each on the shared Mac (load average
+about 17 at the end of the run before, 11 at the end of the run after). The two crates are their
+compile actions in the build:
+
+| Edit | Build: critical path, before → after | `bazel build`, before → after | `views_budget_test` | `scenarios_harness_test` |
+|---|---:|---:|---:|---:|
+| `domain-rules/src/rules.rs` | 68 → 48 s | 103 → 87 s | 54 → 8 s (+ `budget_fixture` 1 s) | 17 → 3 s |
+| `views/src/task_state.rs` | 29 → 26 s | 39 → 36 s | 26 → 8 s (+ `budget_fixture` 1 s) | 18 → 5 s |
+
+- What leads the build now: on `domain-rules`, `domain_rules` 13 s → 9 libraries →
+  `engine_sdk_engine_test` 24 s; on `views`, `views` 4 s → `daemon_server_test` 22 s.
+- The harness now waits for the `scenarios` library (4 to 6 s, built before as well, beside it). The
+  whole chain to `scenarios_harness_test` on `domain-rules` read 41 s before and 45 s after: its
+  libraries took longer in the second run (`daemon_server` 3 → 11 s, `domain_rules` 11 → 13 s). Its
+  own part went from 17 s to 7 s.
+- **The budgets measure the same.** The old and new test binaries, built against the same
+  libraries, ran 6 times each in turns at load 8 to 10, all passing: every action 58 to 61 ms of CPU
+  on both (limit 120), the 37 view medians adding up to 8.3 ms before and 8.0 ms after. The budgets
+  count instructions since #681, which this change was rebased on; one run of the test of `main`
+  at 6a23342c1 and of this one agreed within 2.5% on every action (614 to 627M against 618 to 637M,
+  limit 1,000M) and on every view over 1M, the 37 views adding up to 117.7M and 118.4M.
+- **The disk.** The fixture's incremental state took 115 MB, Clippy's included. The harness adds none.
+- **The other test crates were left as they are.** The longest chain of compiles in each profile of
+  `domain-rules` was recomputed with every `rust_test` compiling in no time, the libraries as
+  measured. After this change it falls from 48 to 44 s: the chain of libraries to the root and the
+  scenario runner (`domain_rules` 13 s … `daemon_server` 11 s … `scenarios` 4 s) is already that
+  long. With the faster libraries of the run before, the same floor is 32 s, but the three longest
+  test crates after `views_budget_test` only take the path from 53 to 49 s, and six to 46 s: about
+  fifteen of them end within 20 s of each other. The one lever that does not move their tests,
+  incremental compilation, does not take a crate near zero (`daemon_server_test`, incremental, took
+  22 s in the build after this change), and every test crate incremental takes 8 GB more per checkout
+  ("The disk it takes", above).
+
+**Guards**, each broken by hand and put back:
+
+- `//crates/views:budget_inputs_test` fails when `views_budget_test` depends on `serde_json` again
+  (`Rustc must not depend directly on these crates … got "["serde_json"]"`), and when it compiles
+  the fixture's source (`views_budget_fixture.rs must have test-only presence False`).
+- `//crates/scenarios:harness_inputs_test` fails when `scenarios_harness_test` takes the library's
+  sources again, naming each one.
+- `//tools:low_opt_rust_tests_test` is unchanged: the budgets stay the one `rust_test` at the build's
+  opt-level.

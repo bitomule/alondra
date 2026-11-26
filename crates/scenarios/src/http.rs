@@ -97,7 +97,7 @@ pub async fn node_post(addr: SocketAddr, capability: &str, path: &str, body: &Va
     parse(&raw)
 }
 
-fn parse(raw: &[u8]) -> std::io::Result<Response> {
+pub fn parse(raw: &[u8]) -> std::io::Result<Response> {
     let malformed = || std::io::Error::other("the daemon answered something that is not HTTP");
     let split = raw.windows(4).position(|window| window == b"\r\n\r\n").ok_or_else(malformed)?;
     let head = String::from_utf8_lossy(&raw[..split]).to_string();
@@ -122,17 +122,5 @@ fn unchunk(mut body: &[u8]) -> Option<Vec<u8>> {
         }
         out.extend_from_slice(body.get(..size)?);
         body = body.get(size + 2..)?;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_chunked_body_is_put_back_together() {
-        let raw = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n";
-        let response = parse(raw).unwrap();
-        assert_eq!((response.status, response.body.as_str()), (200, "abcde"));
     }
 }

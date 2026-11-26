@@ -11,8 +11,6 @@
 pub use alondra_claude_host_model::{ApiError, ClaudeModel, Host, MODEL, Trouble, assistant_errors};
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, ProbeOutput, ProbeRun};
 use serde::Deserialize;
-#[cfg(test)]
-use serde_json::{Value, json};
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -208,7 +206,3 @@ impl HostLauncher for ClaudeEdge {
         self.0.probe_after(&run, probe)
     }
 }
-
-#[cfg(test)]
-#[path = "claude_host_tests.rs"]
-mod tests;

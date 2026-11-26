@@ -115,7 +115,7 @@ impl Activity {
         *self.0.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn tick(&self) {
+    pub fn tick(&self) {
         *self.0.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
         self.0.1.notify_all();
     }
@@ -160,7 +160,7 @@ fn steps(transcript: &Transcript) -> VecDeque<Step> {
 /// Whether the frame the daemon sent is the one the transcript expected. The prompt of an offer is
 /// the mission the daemon wrote around the task, so the transcript names the part of it that
 /// matters and the offer has to contain it.
-fn is_expected(ids: &mut FrameComparator, expected: &Value, received: &Value) -> bool {
+pub fn is_expected(ids: &mut FrameComparator, expected: &Value, received: &Value) -> bool {
     let prompt = |frame: &Value| frame.pointer("/body/action/prompt").and_then(Value::as_str).map(str::to_owned);
     let (mut expected, mut received) = (expected.clone(), received.clone());
     if let (Some(wanted), Some(sent)) = (prompt(&expected), prompt(&received)) {
@@ -279,7 +279,7 @@ fn handshake(
         .map_err(wire)
 }
 
-fn decode_secret(hex: &str) -> Option<[u8; 32]> {
+pub fn decode_secret(hex: &str) -> Option<[u8; 32]> {
     if hex.len() != 64 {
         return None;
     }
@@ -467,7 +467,3 @@ impl HostLauncher for PeerLauncher {
         Ok(child)
     }
 }
-
-#[cfg(test)]
-#[path = "claude_peer_tests.rs"]
-mod tests;

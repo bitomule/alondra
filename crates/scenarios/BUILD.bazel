@@ -3,6 +3,7 @@ load("//bazel/rules:tree.bzl", "repo_tree")
 load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//bazel/rules:rust.bzl", "rust_binary", "rust_library")
+load("//bazel/rules:rust_inputs_test.bzl", "rust_inputs_test")
 load("//:version.bzl", "VERSION")
 
 DEPS = all_crate_deps(normal = True) + [
@@ -56,31 +57,33 @@ RELAY_ENV = {"SCENARIO_HOST_RELAY": "$(rootpath :host_relay)"}
 low_opt_rust_test(
     name = "scenarios_harness_test",
     size = "medium",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/*.rs"]) + ["//crates:test_support.rs"],
-    compile_data = ["//crates/agent-protocol:fixtures/sdk-errors.json"],
-    crate_name = "alondra_scenarios",
-    crate_root = "src/lib.rs",
+    srcs = glob(["tests/harness/*.rs"]) + ["//crates:test_support.rs"],
+    crate_root = "tests/harness/main.rs",
     data = [":host_relay"],
     edition = "2024",
     env = {"HOME": ".", "TEST_EXECS": "$(rootpath :host_relay) /bin/sleep /usr/bin/id", "TZ": "UTC"} | RELAY_ENV,
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + [
+        ":scenarios",
         "//crates/agent-protocol:agent_protocol",
         "//crates/agent-runtime:agent_runtime",
-        "//crates/alondrad:alondrad_lib",
-        "//crates/provider-claude:claude_host_model",
-        "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/view-model:view_model", "//crates/views:views",
+        "//crates/core:alondra_core",
         "//crates/daemon-engine:daemon_engine",
-        "//crates/daemon-support:daemon_support",
-        "//crates/engine-admission:engine_admission",
-        "//crates/engine-doubles:engine_doubles",
-    "//crates/engine-kernel:engine_kernel",
-    "//crates/engine-ports:engine_ports",
-    "//crates/store-sqlite:store_sqlite",
-        "//crates/engine-sdk:engine_sdk",
-        "//crates/engine-orchestrator:engine_orchestrator",
         "//crates/scenarios-transcript:scenarios_transcript",
     ],
+)
+
+# The harness's tests link the library: with one of its sources among their own they would compile
+# it a second time, from scratch, on every edit of a crate below it.
+rust_inputs_test(
+    name = "harness_inputs_test",
+    size = "small",
+    fixture_sources = ["crates/test_support.rs"],
+    required_sources = ["crates/scenarios/tests/harness/main.rs"],
+    source_dir = "crates/scenarios/src/",
+    target_under_test = ":scenarios_harness_test",
+    test_only_sources = ["crates/scenarios/" + source for source in glob(["src/**/*.rs"])],
+    test_sources = False,
 )
 
 # Every case of `cases/`, one after another, each with its name. Bazel's rust_test always runs the
