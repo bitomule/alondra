@@ -12,6 +12,7 @@ use crate::machine::MachineProbe;
 use crate::orchestrator::OrchestratorEngine;
 use crate::plugins::Plugins;
 use crate::processes::Processes;
+use crate::schedule_clock::ScheduleClock;
 use crate::sdk::SdkEngine;
 use crate::sign_in_returns::SignInReturns;
 use alondra_view_model::Screens;
@@ -86,6 +87,11 @@ impl Registry {
         self.port::<dyn MachineProbe>().expect("the root gives the registry the Mac's gauges")
     }
 
+    /// The wall clock the schedule runner waits on.
+    pub fn schedule_clock(&self) -> Arc<dyn ScheduleClock> {
+        self.port::<dyn ScheduleClock>().expect("the root gives the registry the Mac's wall clock")
+    }
+
     /// The ports nothing implements yet, by name.
     pub fn missing(&self) -> Vec<&'static str> {
         let mut missing: Vec<&'static str> = {
@@ -103,7 +109,7 @@ impl Registry {
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 21] {
+fn every_port() -> [(TypeId, &'static str); 22] {
     [
         (TypeId::of::<dyn Accounts>(), "Accounts"),
         (TypeId::of::<AgentProviders>(), "AgentProviders"),
@@ -119,6 +125,7 @@ fn every_port() -> [(TypeId, &'static str); 21] {
         (TypeId::of::<dyn Plugins>(), "Plugins"),
         (TypeId::of::<dyn Processes>(), "Processes"),
         (TypeId::of::<dyn RuntimeApi>(), "RuntimeApi"),
+        (TypeId::of::<dyn ScheduleClock>(), "ScheduleClock"),
         (TypeId::of::<dyn SdkApi>(), "SdkApi"),
         (TypeId::of::<dyn SdkEngine>(), "SdkEngine"),
         (TypeId::of::<dyn SdkHosts>(), "SdkHosts"),
@@ -156,7 +163,7 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["Accounts", "AgentProviders", "AgentHost", "AdmissionEngine", "AdmissionGate", "AdmissionApi", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "OrchestratorApi", "Plugins", "Processes", "RuntimeApi", "SdkApi", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "Worktrees"]);
+        assert_eq!(registry.missing(), ["Accounts", "AgentProviders", "AgentHost", "AdmissionEngine", "AdmissionGate", "AdmissionApi", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "OrchestratorApi", "Plugins", "Processes", "RuntimeApi", "ScheduleClock", "SdkApi", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "Worktrees"]);
         struct Greeter;
         impl Greets for Greeter {
             fn greet(&self) -> &'static str {
@@ -164,6 +171,6 @@ mod tests {
             }
         }
         registry.provide::<dyn Greets>(Arc::new(Greeter));
-        assert_eq!(registry.missing().len(), 21, "a port outside the required ones never counts");
+        assert_eq!(registry.missing().len(), 22, "a port outside the required ones never counts");
     }
 }

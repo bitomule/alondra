@@ -783,14 +783,10 @@ impl Service {
                 &authorize,
             )?
         } else if let Some(agent) = agent_message(&request.path) {
-            crate::domain_messages::relayed(
-                &*domain,
-                &home,
-                &sender,
-                agent,
-                request.body.as_ref(),
+            crate::reply::Reply::answer(
+                crate::domain_messages::relayed(&*domain, &home, &sender, agent, request.body.as_ref()).await,
             )
-            .await
+            .into_value()
         } else if let Some(decision) = alondra_engine_ports::orchestrator::decision_route(&request.path)
         {
             api.orchestrator.decide(domain.clone(), &home, decision, request.body.as_ref())

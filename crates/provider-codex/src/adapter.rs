@@ -115,7 +115,7 @@ fn respond_action(epoch: u64, request: &DecisionRequest, decision: &Decision) ->
         }
         (Decision::Deny { message }, DecisionKind::Permission | DecisionKind::Question | DecisionKind::Plan) => WireDecision::Deny { message: message.clone() },
         (Decision::Accept { text, content }, DecisionKind::Elicitation) => WireDecision::Accept {
-            content: Some(crate::elicitation::elicitation_content(payload.pointer("/native/requestedSchema").unwrap_or(&serde_json::Value::Null), text, content.as_ref())),
+            content: Some(alondra_core::model::elicitation::elicitation_content(payload.pointer("/native/requestedSchema").unwrap_or(&serde_json::Value::Null), text, content.as_ref())),
         },
         (Decision::Decline, DecisionKind::Elicitation) => WireDecision::Decline {},
         (Decision::Superseded | Decision::HandedOver, DecisionKind::Plan) => WireDecision::Superseded {},

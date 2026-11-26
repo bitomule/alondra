@@ -339,28 +339,20 @@ pub fn conflicts_text(name: &str, pr: &alondra_domain_model::PullRequest, update
 }
 
 /// The same message relayed from a paired device, answered as a local response.
-pub async fn relayed(domain: &dyn Runtime, home: &Path, sender: &str, agent: AgentId, body: Option<&Value>) -> Value {
-    let Some(body) = body.cloned().and_then(|body| serde_json::from_value::<MessageBody>(body).ok()) else {
-        return json!({"status": 422, "body": refused("invalid_input", "invalid message")});
-    };
+pub async fn relayed(domain: &dyn Runtime, home: &Path, sender: &str, agent: AgentId, body: Option<&Value>) -> Result<Value, DomainError> {
+    let body = body.cloned().and_then(|body| serde_json::from_value::<MessageBody>(body).ok())
+        .ok_or_else(|| refused("invalid_input", "invalid message"))?;
     let user = Actor::User { user_id: format!("device:{sender}") };
-    match deliver(domain, home, &user, &user_name(), &agent, body, true).await {
-        Ok(answer) => json!({"status": 200, "body": answer}),
-        Err(error) => json!({"status": crate::reply::status_for(&error).as_u16(), "body": error}),
-    }
+    deliver(domain, home, &user, &user_name(), &agent, body, true).await
 }
 
 /// A message relayed from a paired device to a task no node runs: kept on the task, it reaches
 /// the node that starts it, after what the task was told before.
-pub fn relayed_to_task(domain: &dyn Runtime, home: &Path, sender: &str, task: &TaskId, body: Option<&Value>) -> Value {
-    let Some(body) = body.cloned().and_then(|body| serde_json::from_value::<MessageBody>(body).ok()) else {
-        return json!({"status": 422, "body": refused("invalid_input", "invalid message")});
-    };
+pub fn relayed_to_task(domain: &dyn Runtime, home: &Path, sender: &str, task: &TaskId, body: Option<&Value>) -> Result<Value, DomainError> {
+    let body = body.cloned().and_then(|body| serde_json::from_value::<MessageBody>(body).ok())
+        .ok_or_else(|| refused("invalid_input", "invalid message"))?;
     let user = Actor::User { user_id: format!("device:{sender}") };
-    match keep_for_task(domain, home, &user, &user_name(), task, body) {
-        Ok(answer) => json!({"status": 200, "body": answer}),
-        Err(error) => json!({"status": crate::reply::status_for(&error).as_u16(), "body": error}),
-    }
+    keep_for_task(domain, home, &user, &user_name(), task, body)
 }
 
 fn keep_for_task(domain: &dyn Runtime, home: &Path, user: &Actor, name: &str, task: &TaskId, body: MessageBody) -> Result<Value, DomainError> {
@@ -487,10 +479,9 @@ mod tests {
         let original = domain.state().unwrap().lifecycle_of(&"weekly-task".into()).unwrap();
         let answer = relayed_to_task(&*domain, &fixture.0, "phone", &"weekly-task".into(), Some(&json!({
             "text":"Prepare a follow-up", "attachments":[attachment.clone()],
-        })));
-        assert_eq!(answer["status"], 200, "{answer}");
-        assert_eq!(answer["body"]["reaches"], "task");
-        let id: TaskId = serde_json::from_value(answer["body"]["task_id"].clone()).unwrap();
+        }))).unwrap();
+        assert_eq!(answer["reaches"], "task");
+        let id: TaskId = serde_json::from_value(answer["task_id"].clone()).unwrap();
         let mut reopened = alondra_store_sqlite::DomainStore::open(&fixture.0.join("domain.db"), &alondra_domain_rules::Rules).unwrap();
         let state = reopened.load().unwrap();
         let followup = &state.tasks[&id];
@@ -814,12 +805,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_relayed_message_answers_with_the_local_status() {
+    async fn a_relayed_message_answers_with_the_local_refusal() {
         let (fixture, domain) = world();
-        let invalid = relayed(&*domain, &fixture.0, "phone", "agent-a".into(), Some(&json!({"txt": "hi"}))).await;
-        assert_eq!((invalid["status"].as_u64(), invalid["body"]["code"].as_str()), (Some(422), Some("invalid_input")));
-        let unknown = relayed(&*domain, &fixture.0, "phone", "agent-z".into(), Some(&json!({"text": "hi"}))).await;
-        assert_eq!((unknown["status"].as_u64(), unknown["body"]["code"].as_str()), (Some(404), Some("not_found")));
+        let invalid = relayed(&*domain, &fixture.0, "phone", "agent-a".into(), Some(&json!({"txt": "hi"}))).await.unwrap_err();
+        assert_eq!(invalid.code, "invalid_input");
+        let unknown = relayed(&*domain, &fixture.0, "phone", "agent-z".into(), Some(&json!({"text": "hi"}))).await.unwrap_err();
+        assert_eq!(unknown.code, "not_found");
     }
 
     #[test]

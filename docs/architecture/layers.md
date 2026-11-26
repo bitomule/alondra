@@ -31,10 +31,10 @@ the application: they talk through ports, and the roots wire them together.
 | foundation | `foundation` (with the clock, the daemon's log, its locks and atomic saves), `process-group`, `host` (Bonjour, the Claude Code install and its updater, the record of failed starts, the Homebrew install and the user the process runs as: what the CLI, the server and the clients reach by themselves), `e2e`, `scenarios-transcript`, `spec-engine` (specs, boundaries, decisions and what is validated, read from the files its caller hands it) |
 | domain | `domain`, `domain-model` (the domain's state, its reads and the guards the screens share), `core` (mixed: its config, options and home lock still read and write Alondra's home) |
 | domain-rules | `domain-rules` (what each command changes, behind the model's `DomainRules` port: the root hands it to the store when it opens it) |
-| ports | `engine-ports`, `provider-contract`, `view-model`, `client-port`, `store`, `agent-application` |
-| application | `engine-kernel`, `daemon-engine`, `daemon-engine-model`, `daemon-engine-machine`, `engine-admission`, `engine-orchestrator`, `engine-sdk`, `engine-github`, `engine-live`, `engine-mcp`, `engine-worktrees`, `daemon-support` (mixed: most of it goes to the `system` adapter), `views` |
+| ports | `engine-ports`, `provider-contract`, `view-model`, `client-port`, `store`, `agent-application`, `daemon-engine-model` (the launch data, options and replies the engine and its adapters share), `daemon-support` (the domain's authority, its content files, the hook texts and the schedules the engine and its adapters share) |
+| application | `engine-kernel`, `daemon-engine`, `daemon-engine-machine`, `engine-admission`, `engine-orchestrator`, `engine-sdk`, `engine-github`, `engine-live`, `engine-mcp`, `engine-worktrees`, `views` |
 | adapter-in | `daemon-server` (the daemon's routes, transports, pushes and screens' cache), `cli`, `cli-tui`, `cli-mcp`, `cli-report`, `client-transport` |
-| adapter-out | `github-gh`, `provider-antigravity`, `provider-claude`, `provider-codex`, `store-sqlite`, `agent-runtime`, `system` (git, the task worktrees, the disks, the provider accounts, the processes, Alondra's plugins and the MCP sign-in listeners, behind the `Worktrees`, `Disk`, `Accounts`, `Processes`, `Plugins` and `SignInReturns` ports) |
+| adapter-out | `github-gh`, `provider-antigravity`, `provider-claude`, `provider-codex`, `store-sqlite`, `agent-runtime`, `system` (git, the task worktrees, the disks, the provider accounts, the processes, Alondra's plugins, the MCP sign-in listeners and the wall clock, behind the `Worktrees`, `Disk`, `Accounts`, `Processes`, `Plugins`, `SignInReturns` and `ScheduleClock` ports) |
 | adapter-private | `agent-protocol` (of `provider-claude`), `antigravity-protocol` (of `provider-antigravity`), `codex-protocol` (of `provider-codex`) |
 | root | `alondrad`, `alondra`, `relay`, `scenarios`, `tools/sandbox` |
 
@@ -129,5 +129,16 @@ down from 52 to 49). The adapter of the SDK's hosts is `agent-runtime`, behind `
 `sdk-host` crate was needed. Nothing else of the engine names the Antigravity crates: `engine-sdk`
 passes agy's messages to the live view through `SdkEngine::feed_antigravity`, so `engine-live` and
 `daemon-engine` read plain JSON. The Claude and Codex providers are still reached directly by
-`daemon-engine`, `daemon-support`, `engine-live`, `engine-mcp`, `engine-orchestrator` and
-`store-sqlite`.
+`daemon-engine`, `engine-live`, `engine-mcp`, `engine-orchestrator` and `store-sqlite`.
+
+Phase 2 of the plan to empty the list put the data the engine shares with its adapters in the
+`ports` layer, the criterion phase 7e used for `uploads`, `stored_files` and `watcher`:
+`daemon-support` and `daemon-engine-model` are ports now, and the 21 entries of the crates that
+depended on them went with it (the ceiling down from 46 to 25). Before the move each lost what tied
+it to a layer above: the elicitation helpers the hook texts and both providers use live in `core`
+(`model::elicitation`), so `daemon-support` no longer depends on `provider-claude`, and Codex lost
+its copy; the wall-clock timers of the schedule runner are the `system` adapter's, behind the
+`ScheduleClock` port of `engine-ports` the runner asks the registry for; the HTTP side of a reply
+(its response and the status of each domain refusal) is `daemon-server`'s, and the model keeps only
+the `Reply` value; and the model takes `locks` and `save` from `foundation`. They are not part of
+`engine-ports` because an edit there reopens far more of the build than an edit of either of them.

@@ -10,20 +10,11 @@ alondra-foundation.workspace = true
 alondra-core.workspace = true
 alondra-domain-model.workspace = true
 alondra-engine-ports.workspace = true
-alondra-provider-claude.workspace = true
 anyhow.workspace = true
 libc.workspace = true
 ring = "0.17.14"
 serde_json.workspace = true
 sha2 = "0.11.0"
-tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-
-[target.'cfg(target_os = "macos")'.dependencies]
-block2 = "0.6.2"
-dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "libc", "objc2"] }
-objc2 = "0.6.4"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSDate", "NSError", "NSTimeZone", "NSNotification", "NSString", "NSOperation", "NSURL", "NSValue", "block2"] }
-

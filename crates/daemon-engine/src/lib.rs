@@ -30,8 +30,6 @@ use alondra_daemon_support::{
     uploads,
     watcher,
 };
-#[cfg(target_os = "macos")]
-use alondra_daemon_support::schedule_clock;
 
 pub use alondra_engine_kernel::TEST_JOURNAL;
 pub use alondra_engine_kernel::{

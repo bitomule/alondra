@@ -16,7 +16,7 @@ import sys
 import xml.etree.ElementTree as ElementTree
 
 # The number of entries in LAYER_EXCEPTIONS. It only goes down: lower it with every entry removed.
-EXCEPTION_CEILING = 46
+EXCEPTION_CEILING = 25
 
 # The number of packages in ROOT_TEST_CONSUMERS, which only goes down too.
 ROOT_TEST_CONSUMER_CEILING = 2

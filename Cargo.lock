@@ -374,13 +374,12 @@ name = "alondra-daemon-engine-model"
 version = "0.3.69"
 dependencies = [
  "alondra-core",
- "alondra-daemon-support",
  "alondra-domain-model",
  "alondra-engine-ports",
  "alondra-foundation",
  "alondra-store",
  "anyhow",
- "axum",
+ "http",
  "libc",
  "rusqlite",
  "serde",
@@ -448,18 +447,12 @@ dependencies = [
  "alondra-domain-model",
  "alondra-engine-ports",
  "alondra-foundation",
- "alondra-provider-claude",
  "anyhow",
- "block2",
- "dispatch2",
  "libc",
- "objc2",
- "objc2-foundation",
  "ring",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -867,6 +860,7 @@ dependencies = [
  "alondra-agent-application",
  "alondra-agent-protocol",
  "alondra-agent-runtime",
+ "alondra-core",
  "alondra-domain",
  "alondra-engine-ports",
  "alondra-foundation",
@@ -888,6 +882,7 @@ version = "0.3.69"
 dependencies = [
  "alondra-agent-application",
  "alondra-codex-protocol",
+ "alondra-core",
  "alondra-domain",
  "alondra-engine-ports",
  "alondra-foundation",
@@ -1060,6 +1055,8 @@ dependencies = [
  "alondra-foundation",
  "alondra-process-group",
  "anyhow",
+ "block2",
+ "dispatch2",
  "libc",
  "netwatch",
  "objc2",
