@@ -1,5 +1,5 @@
 use super::*;
-use alondra_domain_rules::{CardKind, CardSpec, CardType, InboxCard, NodePauseKind, Reader, SystemCard, SystemCardKind};
+use alondra_domain_model::{CardKind, CardSpec, CardType, InboxCard, NodePauseKind, Reader, SystemCard, SystemCardKind};
 
 /// Data the system actually keeps in these cards; prose belongs to the final view.
 fn system_fixture(kind: SystemCardKind) -> DomainState {
@@ -16,12 +16,12 @@ fn system_fixture(kind: SystemCardKind) -> DomainState {
             cause: alondra_core::machine_incident::MachineCause::Disk, disk_free: 1_000_000_000, nodes: vec![], reason: None,
             resource: None, minutes: None, still: false, purgeable: 0,
         }.to_body()),
-        K::LocalNetwork => (SystemCard::LocalNetwork, alondra_domain_rules::local_network_card::LocalNetworkCard { launcher: true, still: false }.to_body()),
-        K::ReportHeld => (SystemCard::ReportHeld { report: "r-20261120-1a2b3c4d".into() }, alondra_domain_rules::report_held_card::ReportHeldCard {
+        K::LocalNetwork => (SystemCard::LocalNetwork, alondra_domain_model::local_network_card::LocalNetworkCard { launcher: true, still: false }.to_body()),
+        K::ReportHeld => (SystemCard::ReportHeld { report: "r-20261120-1a2b3c4d".into() }, alondra_domain_model::report_held_card::ReportHeldCard {
             report: "r-20261120-1a2b3c4d".into(), saved: "ana/informes".into(), current: "ana/otros".into(), refused: None,
         }.to_body()),
-        K::CapabilityCapacity => (SystemCard::CapabilityCapacity, alondra_domain_rules::capability_capacity_card::CapabilityCapacityCard { live: 4096, limit: 4096 }.to_body()),
-        K::McpWait => (SystemCard::McpWait, serde_json::to_string(&alondra_domain_rules::McpServerKey { name: "example".into(), url: None }).unwrap()),
+        K::CapabilityCapacity => (SystemCard::CapabilityCapacity, alondra_domain_model::capability_capacity_card::CapabilityCapacityCard { live: 4096, limit: 4096 }.to_body()),
+        K::McpWait => (SystemCard::McpWait, serde_json::to_string(&alondra_domain_model::McpServerKey { name: "example".into(), url: None }).unwrap()),
         K::ClaudeSignedOut => (SystemCard::ClaudeSignedOut, String::new()),
         K::ClaudeOutage => (SystemCard::ClaudeOutage { quiet: false, detail: None, said: None }, String::new()),
         K::ClaudeUsage => (SystemCard::ClaudeUsage { resets_at: None }, String::new()),
@@ -39,41 +39,41 @@ fn system_fixture(kind: SystemCardKind) -> DomainState {
             state.interactions.insert(question.id.clone(), question);
             (SystemCard::EndedUnanswered { question: "earlier".into() }, String::new())
         }
-        K::StartProblem => (SystemCard::StartProblem, serde_json::to_string(&alondra_domain_rules::StartProblem::NodeClosed).unwrap()),
+        K::StartProblem => (SystemCard::StartProblem, serde_json::to_string(&alondra_domain_model::StartProblem::NodeClosed).unwrap()),
         K::PostMergeProblem => (SystemCard::PostMergeProblem, "Sigue publicando".into()),
-        K::CloseProblem => (SystemCard::CloseProblem, alondra_domain_rules::close_problem::CloseProblem {
-            title: "Publicar la versión".into(), cancelled: false, stop: alondra_domain_rules::close_problem::CloseStop::Working, detail: String::new(),
+        K::CloseProblem => (SystemCard::CloseProblem, alondra_domain_model::close_problem::CloseProblem {
+            title: "Publicar la versión".into(), cancelled: false, stop: alondra_domain_model::close_problem::CloseStop::Working, detail: String::new(),
         }.to_body()),
-        K::DiscardWorktrees => (SystemCard::DiscardWorktrees, alondra_domain_rules::discard_worktrees::DiscardWorktrees { tasks: vec![
-            alondra_domain_rules::discard_worktrees::CancelledWorktree { task_id: "t-1".into(), title: "Publicar la versión".into(), files: 1, paths: vec!["src/main.rs".into()] },
+        K::DiscardWorktrees => (SystemCard::DiscardWorktrees, alondra_domain_model::discard_worktrees::DiscardWorktrees { tasks: vec![
+            alondra_domain_model::discard_worktrees::CancelledWorktree { task_id: "t-1".into(), title: "Publicar la versión".into(), files: 1, paths: vec!["src/main.rs".into()] },
         ] }.to_body()),
-        K::OpenPrDelivery => (SystemCard::OpenPrDelivery, alondra_domain_rules::open_pr_delivery::OpenPrDelivery {
+        K::OpenPrDelivery => (SystemCard::OpenPrDelivery, alondra_domain_model::open_pr_delivery::OpenPrDelivery {
             title: "Publicar la versión".into(), repository: "example/repo".into(), number: 12,
-            readiness: alondra_domain_rules::open_pr_delivery::PrReadiness::Ready, result: None,
+            readiness: alondra_domain_model::open_pr_delivery::PrReadiness::Ready, result: None,
         }.to_body()),
         K::LaunchProblem => (SystemCard::LaunchProblem { run: "run".into() }, "No se pudo abrir la carpeta de trabajo".into()),
-        K::BatchProblem => (SystemCard::BatchProblem { run: "run".into() }, alondra_domain_rules::orchestrator_batch::BatchProblem {
-            stop: alondra_domain_rules::orchestrator_batch::BatchStop::Interrupted, calls: vec![], subjects: vec![], error: String::new(),
+        K::BatchProblem => (SystemCard::BatchProblem { run: "run".into() }, alondra_domain_model::orchestrator_batch::BatchProblem {
+            stop: alondra_domain_model::orchestrator_batch::BatchStop::Interrupted, calls: vec![], subjects: vec![], error: String::new(),
         }.to_body()),
-        K::StuckProblem => (SystemCard::StuckProblem, alondra_domain_rules::orchestrator_cards::StuckProblem { failures: 3, error: String::new() }.to_body()),
-        K::RequestDone => (SystemCard::RequestDone, alondra_domain_rules::request_outcome::DoneCard {
+        K::StuckProblem => (SystemCard::StuckProblem, alondra_domain_model::orchestrator_cards::StuckProblem { failures: 3, error: String::new() }.to_body()),
+        K::RequestDone => (SystemCard::RequestDone, alondra_domain_model::request_outcome::DoneCard {
             request_id: "r-1".into(), summary: Some("Publicada la versión 1.2, build 34, en TestFlight".into()), tasks: vec![],
         }.to_body()),
-        K::RequestTasks => (SystemCard::RequestTasks, alondra_domain_rules::request_outcome::TasksCard {
-            request_id: "r-1".into(), more: false, tasks: vec![alondra_domain_rules::request_outcome::AnnouncedTask {
+        K::RequestTasks => (SystemCard::RequestTasks, alondra_domain_model::request_outcome::TasksCard {
+            request_id: "r-1".into(), more: false, tasks: vec![alondra_domain_model::request_outcome::AnnouncedTask {
                 id: "t-1".into(), title: "Publicar la versión".into(), priority: Default::default(), after: vec![],
             }],
         }.to_body()),
         K::Inbox => (SystemCard::Inbox { about: InboxCard::UnsplitProblem, subject: "r-1".into(), number: 1 },
-            alondra_domain_rules::orchestrator_cards::UnsplitProblem { request_id: "r-1".into(), title: "Publicar la versión".into() }.to_body()),
-        K::SpecChange => (SystemCard::SpecChange, alondra_domain_rules::spec_card::SpecCard::Decision { task: "t-1".into(), id: "keep".into() }.to_body()),
+            alondra_domain_model::orchestrator_cards::UnsplitProblem { request_id: "r-1".into(), title: "Publicar la versión".into() }.to_body()),
+        K::SpecChange => (SystemCard::SpecChange, alondra_domain_model::spec_card::SpecCard::Decision { task: "t-1".into(), id: "keep".into() }.to_body()),
         K::Stalled | K::RefusedCards | K::Unknown => panic!("{kind:?} is not a client card"),
     };
     interaction.author = Author::System;
     interaction.system_card = Some(system);
     interaction.body = body;
     interaction.card = CardSpec::new(CardType::System(kind).contract().kinds[0], stored_title(kind));
-    interaction.payload = if CardType::System(kind).contract().response == alondra_domain_rules::Response::Reads {
+    interaction.payload = if CardType::System(kind).contract().response == alondra_domain_model::Response::Reads {
         InteractionPayload::Information { read_by: BTreeSet::new() }
     } else {
         InteractionPayload::Question { options: fixture_options(kind, &interaction.body), answer: None }
@@ -81,19 +81,19 @@ fn system_fixture(kind: SystemCardKind) -> DomainState {
     interaction.blocking = !matches!(&interaction.payload, InteractionPayload::Information { .. });
     if kind == K::HostLost {
         interaction.payload = InteractionPayload::Question { options: vec![QuestionOption {
-            id: alondra_domain_rules::RETAKE.into(), label: alondra_domain_rules::RETAKE_LABEL.into(), description: None,
+            id: alondra_domain_model::RETAKE.into(), label: alondra_domain_model::RETAKE_LABEL.into(), description: None,
         }], answer: None };
     }
     if kind == K::Unheard { interaction.body = interaction.card.need.clone(); }
     if kind == K::PostMergeProblem {
         interaction.card = CardSpec::new(CardKind::Problem, "Decide whether to close the session")
             .why("Its node says it still works after the merge and does not answer.")
-            .content(alondra_domain_rules::ContentKind::Diagnosis, &interaction.body);
+            .content(alondra_domain_model::ContentKind::Diagnosis, &interaction.body);
     }
     if kind == K::LaunchProblem {
         interaction.card = CardSpec::new(CardKind::Problem, "Scheduled task \"Publicar la versión\" could not start")
             .why("No se pudo abrir la carpeta de trabajo")
-            .content(alondra_domain_rules::ContentKind::Diagnosis, &interaction.body);
+            .content(alondra_domain_model::ContentKind::Diagnosis, &interaction.body);
     }
     if kind == K::OpenPrDelivery {
         interaction.payload = InteractionPayload::Delivery {
@@ -112,26 +112,26 @@ fn fixture_options(kind: SystemCardKind, body: &str) -> Vec<QuestionOption> {
     use SystemCardKind::*;
     let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
     match kind {
-        NodePause => vec![option(alondra_domain_rules::NODE_PAUSE_RESUME, "Resume")],
+        NodePause => vec![option(alondra_domain_model::NODE_PAUSE_RESUME, "Resume")],
         OverPace => vec![option("pause_until_tomorrow", "Pause until tomorrow"), option("keep_going", "Keep going")],
         PaceResume => vec![option("resume_now", "Resume now"), option("stay_paused", "Stay paused")],
         Machine => vec![option(alondra_core::machine_incident::MACHINE_FIXED_OPTION, alondra_core::machine_incident::MACHINE_FIXED_LABEL)],
-        LocalNetwork => vec![option(alondra_domain_rules::local_network_card::LOCAL_NETWORK_ALLOWED_OPTION, alondra_domain_rules::local_network_card::LOCAL_NETWORK_ALLOWED_LABEL)],
-        ReportHeld => alondra_domain_rules::report_held_card::ReportHeldCard::from_body(body).unwrap().options(),
-        CapabilityCapacity => vec![option(alondra_domain_rules::capability_capacity_card::CHECK_AGAIN_OPTION, alondra_domain_rules::capability_capacity_card::CHECK_AGAIN_LABEL)],
-        McpWait => vec![option(alondra_domain_rules::MCP_GO_ON_WITHOUT, "Go on without example")],
-        ClaudeSignedOut => vec![option(alondra_domain_rules::SIGNED_IN, alondra_domain_rules::SIGNED_IN_LABEL)],
-        ClaudeOutage | ClaudeUsage => vec![option(alondra_domain_rules::TRY_NOW, alondra_domain_rules::TRY_NOW_LABEL)],
-        PostMergeProblem => vec![option(alondra_domain_rules::POST_MERGE_CLOSE, "Close the node"), option(alondra_domain_rules::POST_MERGE_LEAVE, "Leave it")],
-        LaunchProblem => vec![option(alondra_domain_rules::LAUNCH_RETRY_OPTION, "Try again"), option("seen", "Skip it")],
-        StartProblem => alondra_domain_rules::start_problem::options(&alondra_domain_rules::start_problem::from_body(body).unwrap(), Lang::En),
-        CloseProblem => alondra_domain_rules::close_problem::CloseProblem::from_body(body).unwrap().options().0,
-        DiscardWorktrees => alondra_domain_rules::discard_worktrees::DiscardWorktrees::from_body(body).unwrap().options().0,
-        BatchProblem => vec![option(alondra_domain_rules::orchestrator_batch::BATCH_CONTINUE, alondra_domain_rules::orchestrator_batch::BATCH_CONTINUE_LABEL), option(alondra_domain_rules::orchestrator_batch::BATCH_RETRY, alondra_domain_rules::orchestrator_batch::BATCH_RETRY_LABEL)],
-        StuckProblem => vec![option(alondra_domain_rules::orchestrator_cards::STUCK_RETRY, alondra_domain_rules::orchestrator_cards::STUCK_RETRY_LABEL)],
-        Inbox => vec![option(alondra_domain_rules::orchestrator_cards::UNSPLIT_RETRY, alondra_domain_rules::orchestrator_cards::UNSPLIT_RETRY_LABEL)],
-        SpecChange => alondra_domain_rules::spec_card::SpecCard::from_body(body).unwrap().options(Lang::En),
-        _ => vec![option(alondra_domain_rules::CARRY_ON, alondra_domain_rules::CARRY_ON_LABEL)],
+        LocalNetwork => vec![option(alondra_domain_model::local_network_card::LOCAL_NETWORK_ALLOWED_OPTION, alondra_domain_model::local_network_card::LOCAL_NETWORK_ALLOWED_LABEL)],
+        ReportHeld => alondra_domain_model::report_held_card::ReportHeldCard::from_body(body).unwrap().options(),
+        CapabilityCapacity => vec![option(alondra_domain_model::capability_capacity_card::CHECK_AGAIN_OPTION, alondra_domain_model::capability_capacity_card::CHECK_AGAIN_LABEL)],
+        McpWait => vec![option(alondra_domain_model::MCP_GO_ON_WITHOUT, "Go on without example")],
+        ClaudeSignedOut => vec![option(alondra_domain_model::SIGNED_IN, alondra_domain_model::SIGNED_IN_LABEL)],
+        ClaudeOutage | ClaudeUsage => vec![option(alondra_domain_model::TRY_NOW, alondra_domain_model::TRY_NOW_LABEL)],
+        PostMergeProblem => vec![option(alondra_domain_model::POST_MERGE_CLOSE, "Close the node"), option(alondra_domain_model::POST_MERGE_LEAVE, "Leave it")],
+        LaunchProblem => vec![option(alondra_domain_model::LAUNCH_RETRY_OPTION, "Try again"), option("seen", "Skip it")],
+        StartProblem => alondra_domain_model::start_problem::options(&alondra_domain_model::start_problem::from_body(body).unwrap(), Lang::En),
+        CloseProblem => alondra_domain_model::close_problem::CloseProblem::from_body(body).unwrap().options().0,
+        DiscardWorktrees => alondra_domain_model::discard_worktrees::DiscardWorktrees::from_body(body).unwrap().options().0,
+        BatchProblem => vec![option(alondra_domain_model::orchestrator_batch::BATCH_CONTINUE, alondra_domain_model::orchestrator_batch::BATCH_CONTINUE_LABEL), option(alondra_domain_model::orchestrator_batch::BATCH_RETRY, alondra_domain_model::orchestrator_batch::BATCH_RETRY_LABEL)],
+        StuckProblem => vec![option(alondra_domain_model::orchestrator_cards::STUCK_RETRY, alondra_domain_model::orchestrator_cards::STUCK_RETRY_LABEL)],
+        Inbox => vec![option(alondra_domain_model::orchestrator_cards::UNSPLIT_RETRY, alondra_domain_model::orchestrator_cards::UNSPLIT_RETRY_LABEL)],
+        SpecChange => alondra_domain_model::spec_card::SpecCard::from_body(body).unwrap().options(Lang::En),
+        _ => vec![option(alondra_domain_model::CARRY_ON, alondra_domain_model::CARRY_ON_LABEL)],
     }
 }
 
@@ -210,7 +210,7 @@ fn every_client_visible_system_card_is_worded_in_the_viewers_language() {
         if !CardType::System(kind).contract().readers.contains(&Reader::User) { continue; }
         let state = system_fixture(kind);
         if kind == SystemCardKind::NodePause {
-            let index = alondra_domain_rules::ReadIndex::build(&state);
+            let index = alondra_domain_model::ReadIndex::build(&state);
             assert!(index.waiting().iter().all(|item| item.id != "interaction:i-1"), "the task row carries the pause; its backing card never waits for the user");
             continue;
         }

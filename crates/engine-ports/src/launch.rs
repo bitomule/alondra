@@ -31,7 +31,7 @@ pub struct Failed {
     /// A write it needed found the disk full: once there is space it can go on as it was.
     pub no_space: bool,
     /// The domain's refusal, when the domain refused it.
-    pub refusal: Option<alondra_domain_rules::DomainError>,
+    pub refusal: Option<alondra_domain_model::DomainError>,
 }
 
 impl Failed {
@@ -48,8 +48,8 @@ impl std::fmt::Display for Failed {
 
 /// A task the automatic launch may start: not started, with no node, its request open, no plan review
 /// pending and no schedule run behind it.
-pub fn candidate(state: &alondra_domain_rules::DomainState, task: &alondra_domain_rules::Task) -> bool {
-    task.state == alondra_domain_rules::TaskState::NotStarted
+pub fn candidate(state: &alondra_domain_model::DomainState, task: &alondra_domain_model::Task) -> bool {
+    task.state == alondra_domain_model::TaskState::NotStarted
         && !task.started
         && task.agent_id.is_none()
         && !task.archived

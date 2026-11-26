@@ -5,7 +5,7 @@ use super::{
     ActionOption, Confirm, Input, LivePacing, LivePaused, Presentation, RenderContext, Style, action_id::Verb, common,
     text::{t, tf},
 };
-use alondra_domain_rules::{AgentId, Task, TaskPriority};
+use alondra_domain_model::{AgentId, Task, TaskPriority};
 
 fn option(id: String, label: String, description: Option<String>) -> ActionOption {
     ActionOption { id, label, description, style: Style::Secondary, input: Input::None, key: None }

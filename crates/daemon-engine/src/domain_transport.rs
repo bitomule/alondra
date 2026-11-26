@@ -17,7 +17,7 @@ use crate::domain_store::OutboxMessage;
 use crate::node_reports::Report;
 use alondra_core::delivery::State;
 use alondra_core::node_guard::forbidden_for_nodes;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, AgentId, Author, Command, CommandEnvelope, DomainState, InputValue, InteractionId, InteractionPayload,
     PROTOCOL_VERSION, Recipient, Scope, ScheduleLaunchState, SuggestionDecision, Task, TaskId, TaskState,
 };
@@ -274,10 +274,10 @@ async fn node_hold(mut stream: UnixStream, domain: &Arc<dyn Runtime>, card: Valu
                     let allow = interaction.and_then(|interaction| interaction.card.allow_always.as_ref());
                     let reply = crate::domain_holds::mod_reply(*hold, &card.input, allow, &answer, &crate::domain_messages::user_name());
                     if let Some(rules) = allow.and_then(alondra_core::allow_always::AllowAlways::rules)
-                        && answer.first().is_some_and(|answer| answer.option_id == alondra_domain_rules::Hold::ALWAYS)
+                        && answer.first().is_some_and(|answer| answer.option_id == alondra_domain_model::Hold::ALWAYS)
                     {
                         let task = interaction.and_then(|interaction| match &interaction.scope {
-                            alondra_domain_rules::Scope::Task { task_id } => Some(task_id.0.clone()),
+                            alondra_domain_model::Scope::Task { task_id } => Some(task_id.0.clone()),
                             _ => None,
                         });
                         written = Some((rules.to_vec(), task, id.0.clone()));
@@ -390,7 +390,7 @@ fn register_probe(domain: &dyn Runtime, session: &str) -> Result<()> {
             task_id: format!("sandbox-probe-{session}").into(), request_id: format!("sandbox-probe-{session}").into(),
             title: format!("Probe {short}"), agent_id: Some(session.into()), review_prs: false,
             dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new(format!("test/{short}"), domain.home().to_string_lossy())),
+            launch: Some(alondra_domain_model::LaunchPlan::new(format!("test/{short}"), domain.home().to_string_lossy())),
         }),
     ];
     for (actor, step, command) in steps {
@@ -475,7 +475,7 @@ enum Reply {
 }
 
 /// The reply to a held hook; a card that can no longer be answered lets Claude Code ask in its terminal.
-fn answered(held: &crate::domain_holds::Held, answer: Option<alondra_domain_rules::Answer>) -> Value {
+fn answered(held: &crate::domain_holds::Held, answer: Option<alondra_domain_model::Answer>) -> Value {
     answer.map_or_else(|| json!({}), |answer| crate::domain_holds::elicitation_decision(held, &answer))
 }
 
@@ -728,16 +728,16 @@ fn question_label(question: &str) -> String {
 
 /// What was answered to each of the cards asked together, in the order asked: the node is given
 /// them all at once, when the last is in, each naming its card.
-fn grouped_answers(state: &DomainState, interaction: &alondra_domain_rules::Interaction) -> String {
+fn grouped_answers(state: &DomainState, interaction: &alondra_domain_model::Interaction) -> String {
     let lines: Vec<String> = state.group_members(interaction).into_iter().enumerate().map(|(index, member)| {
-        let said = alondra_domain_rules::answer_said(member).unwrap_or_default();
+        let said = alondra_domain_model::answer_said(member).unwrap_or_default();
         format!("{}. {} (card {}) → {said}", index + 1, member.card.effective_title(), member.id)
     }).collect();
     format!("{} answered your {} cards:\n{}{}", answerer(interaction), lines.len(), lines.join("\n"), attribution(interaction))
 }
 
 /// Only a card's recipient can answer it, so the recipient says who did.
-fn answerer(interaction: &alondra_domain_rules::Interaction) -> &'static str {
+fn answerer(interaction: &alondra_domain_model::Interaction) -> &'static str {
     match interaction.recipient {
         Recipient::User => "The user",
         Recipient::Orchestrator => "The orchestrator",
@@ -747,7 +747,7 @@ fn answerer(interaction: &alondra_domain_rules::Interaction) -> &'static str {
 
 /// An orchestrator's answer may repeat what it believes the user decided; the node must not pass
 /// that on as a decision of the user.
-fn attribution(interaction: &alondra_domain_rules::Interaction) -> &'static str {
+fn attribution(interaction: &alondra_domain_model::Interaction) -> &'static str {
     match interaction.recipient {
         Recipient::Orchestrator => "\nThis is the orchestrator's answer, not a decision of the user: never present it as theirs.",
         Recipient::User | Recipient::Agent { .. } => "",
@@ -785,9 +785,9 @@ pub fn render(state: &DomainState, message: &OutboxMessage) -> String {
         if !labels.is_empty() {
             text.push_str(&format!("\nOptions: {}.", labels.join(", ")));
         }
-        if interaction.card.kind == alondra_domain_rules::CardKind::Propose {
+        if interaction.card.kind == alondra_domain_model::CardKind::Propose {
             text.push_str(&format!("\nSettle it with settle_suggestion(\"{}\", decision: new_task, current_task or discard).", interaction.id));
-        } else if matches!(interaction.recipient, Recipient::Agent { .. } | Recipient::Orchestrator) && !alondra_domain_rules::is_stall_case(interaction) {
+        } else if matches!(interaction.recipient, Recipient::Agent { .. } | Recipient::Orchestrator) && !alondra_domain_model::is_stall_case(interaction) {
             text.push_str(&format!("\nAnswer with answer_question(\"{}\", option: \"<option_id>\").", interaction.id));
         }
         return text;
@@ -798,7 +798,7 @@ pub fn render(state: &DomainState, message: &OutboxMessage) -> String {
     if interaction.card.group.is_some() {
         return grouped_answers(state, interaction);
     }
-    let said = alondra_domain_rules::answer_said(interaction).unwrap_or_default();
+    let said = alondra_domain_model::answer_said(interaction).unwrap_or_default();
     match &interaction.author {
         Author::Orchestrator { .. } => {
             let question = question_label(&interaction.body);
@@ -825,7 +825,7 @@ pub fn render(state: &DomainState, message: &OutboxMessage) -> String {
 /// The transport as tests here and in the crates above drive it.
 pub mod fixtures {
     use super::*;
-    use alondra_domain_rules::*;
+    use alondra_domain_model::*;
     use std::collections::BTreeMap;
 
 
@@ -903,7 +903,7 @@ pub mod fixtures {
     pub fn free_text_question(domain: &Arc<dyn Runtime>, id: &str, actor: Actor, scope: Scope, recipient: Recipient, body: &str) {
         command(domain, actor, &format!("ask-{id}"), Command::AskQuestion {
             attachments: vec![], interaction_id: id.into(), scope, recipient,
-            body: body.into(), blocking: false, options: vec![], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+            body: body.into(), blocking: false, options: vec![], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
     }
 
@@ -931,7 +931,7 @@ pub mod fixtures {
         command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
     }
 
@@ -993,7 +993,7 @@ pub mod fixtures {
         command(domain, Actor::Orchestrator { generation: 0 }, &format!("task-{agent}"), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
     }
 
@@ -1042,7 +1042,7 @@ pub mod fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_domain_rules::*;
+    use alondra_domain_model::*;
     use std::collections::BTreeMap;
     use super::fixtures::*;
 
@@ -1058,13 +1058,13 @@ mod tests {
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false,
             dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         command(domain, Actor::Agent { agent_id: agent.into() }, &format!("question-{agent}"), Command::AskQuestion {
             attachments: vec![], interaction_id: format!("question-{agent}").into(),
             scope: Scope::Task { task_id: format!("task-{agent}").into() }, recipient: Recipient::User,
             body: "Choose".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
         command(domain, Actor::User { user_id: "u".into() }, &format!("answer-{agent}"), Command::AnswerQuestion {
             attachments: vec![], interaction_id: format!("question-{agent}").into(),
@@ -1106,12 +1106,12 @@ mod tests {
         command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Widget".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::Orchestrator, body: "Which API should I use?".into(), blocking: true,
-            options: vec![QuestionOption { id: "new_api".into(), label: "New API".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "new_api".into(), label: "New API".into(), description: None }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state();
         let message = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
@@ -1143,7 +1143,7 @@ mod tests {
             attachments: vec![], interaction_id: "another-question".into(),
             scope: Scope::Task { task_id: "task-agent-a".into() }, recipient: Recipient::User,
             body: "Second choice?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state();
         let message = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
@@ -1154,7 +1154,7 @@ mod tests {
             attachments: vec![], interaction_id: "orchestrator-question".into(),
             scope: Scope::Orchestrator { request_id: Some("request-agent-a".into()) },
             recipient: Recipient::User, body: "Ship this?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "orchestrator-answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: "orchestrator-question".into(),
@@ -1180,12 +1180,12 @@ mod tests {
         command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which approach?".into(), blocking: true,
-            options: vec![QuestionOption { id: "new".into(), label: "New API".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "new".into(), label: "New API".into(), description: None }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: "question".into(), option_id: "new".into(),
@@ -1275,7 +1275,7 @@ mod tests {
             attachments: vec![], interaction_id: "options".into(), scope: task_scope(), recipient: Recipient::User,
             body: "Which name?".into(), blocking: false,
             options: vec![QuestionOption { id: "atlas".into(), label: "Atlas".into(), description: None }],
-            card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Pick a name"),
+            card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Pick a name"),
         });
         command(&domain, user_actor(), "answer-options", Command::AnswerQuestion {
             attachments: vec![], interaction_id: "options".into(), option_id: "atlas".into(), inputs: Default::default(),
@@ -1366,8 +1366,8 @@ mod tests {
     fn suggestion(domain: &Arc<dyn Runtime>, id: &str) {
         command(domain, agent_actor(), &format!("suggest-{id}"), Command::AskQuestion {
             attachments: vec![], interaction_id: id.into(), scope: task_scope(), recipient: Recipient::Orchestrator,
-            body: "README.md:12".into(), blocking: false, options: alondra_domain_rules::suggestion_options(),
-            card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Propose, "The README names the old flag")
+            body: "README.md:12".into(), blocking: false, options: alondra_domain_model::suggestion_options(),
+            card: alondra_domain_model::CardSpec::new(alondra_domain_model::CardKind::Propose, "The README names the old flag")
                 .why("This task only touches the CLI"),
         });
     }
@@ -1383,7 +1383,7 @@ mod tests {
             interaction_id: "p".into(),
             decision: SuggestionDecision::NewTask {
                 task_id: "t-readme".into(), request_id: "r-readme".into(), title: "Update the README flag".into(),
-                launch: alondra_domain_rules::LaunchPlan::new("readme", "/tmp"), dependencies: Default::default(), note: None,
+                launch: alondra_domain_model::LaunchPlan::new("readme", "/tmp"), dependencies: Default::default(), note: None,
             },
         });
         assert_eq!(rendered_for(&domain, "p", "agent"),
@@ -1538,7 +1538,7 @@ mod tests {
             checklist: Vec::new(),
             attachments: vec![], task_id: "task-session-a".into(), interaction_id: "delivery".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }],
-            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "delivery".into(), pr_id: "pr".into(),
@@ -1583,7 +1583,7 @@ mod tests {
             Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("session-a".into()), review_prs: false,
-            dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         let root = crate::test_support::Directory::new();
         let made = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "agent-a9e1782746c156d58");
@@ -1593,7 +1593,7 @@ mod tests {
             "tool_response": {"status": "completed", "agentId": "a9e1782746c156d58", "worktreePath": path, "worktreeBranch": "worktree-agent-a9e1782746c156d58"}}), Some(6)).await.1.unwrap();
         let worktrees = domain.state().tasks[&"task".into()].worktrees.clone();
         assert_eq!(worktrees.keys().collect::<Vec<_>>(), [path]);
-        assert_eq!(worktrees[path].origin, alondra_domain_rules::WorktreeOrigin::Subagent);
+        assert_eq!(worktrees[path].origin, alondra_domain_model::WorktreeOrigin::Subagent);
     }
 
     #[tokio::test]
@@ -1685,7 +1685,7 @@ mod tests {
         assert!(!reason.contains("task-") && !reason.contains("agent-a"), "no internal ids: {reason}");
     }
 
-    fn problems(domain: &Arc<dyn Runtime>) -> Vec<alondra_domain_rules::Interaction> {
+    fn problems(domain: &Arc<dyn Runtime>) -> Vec<alondra_domain_model::Interaction> {
         domain.state().interactions.values().cloned().filter(|card| card.card.kind == CardKind::Problem).collect()
     }
 
@@ -1835,7 +1835,7 @@ mod tests {
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
             body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true,
             nothing_to_review: false,
-            card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+            card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
         });
         let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop"});
         assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "in review");
@@ -1872,7 +1872,7 @@ mod tests {
         command(&domain, agent_actor(), "present", Command::PresentResult {
             checklist: Vec::new(),
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
-            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
         });
         let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await;
         assert_eq!(reply, json!({}), "a presented result already tells the user");
@@ -2294,7 +2294,7 @@ mod tests {
         let state = domain.state();
         let body = &state.interactions[&id].body;
         assert!(body.ends_with("## docs/design.md\n\n### Fast connection\n\n- ☐ Measure\n- ☐ Relay"), "{body}");
-        assert_eq!(alondra_domain_rules::checklist_items(body).len(), 1, "the file's checkboxes are not points of the plan");
+        assert_eq!(alondra_domain_model::checklist_items(body).len(), 1, "the file's checkboxes are not points of the plan");
     }
 
     #[test]
@@ -2559,7 +2559,7 @@ mod tests {
     async fn an_mcp_form_of_a_yes_or_no_field_takes_only_the_value_the_user_set() {
         let remember = |agent: &str| json!({"session_id": agent, "hook_event_name": "Elicitation", "mcp_server_name": "db", "message": "Remember this device?",
             "requested_schema": {"type": "object", "properties": {"remember": {"type": "boolean", "title": "Remember"}}, "required": ["remember"]}});
-        let filled = || BTreeMap::from([(alondra_domain_rules::ANSWER_CONTENT.to_owned(), InputValue::Form(json!({"remember": true}).as_object().unwrap().clone()))]);
+        let filled = || BTreeMap::from([(alondra_domain_model::ANSWER_CONTENT.to_owned(), InputValue::Form(json!({"remember": true}).as_object().unwrap().clone()))]);
         let said = || BTreeMap::from([(Hold::NOTE.to_owned(), InputValue::Text("vale".into()))]);
         for (inputs, content) in [(filled(), json!({"remember": true})), (said(), json!({}))] {
             let fixture = Fixture::new();

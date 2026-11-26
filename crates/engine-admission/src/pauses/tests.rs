@@ -11,7 +11,7 @@ fn a_pause_by_the_user_never_returns_by_itself_and_a_declared_wait_returns_witho
     assert!(!paused(Reason::Usage).returns(false, false, 0));
     let declared = paused(Reason::Declared { reason: "build queue".into() });
     assert!(declared.returns(true, false, 0), "the gate's measures alone say when it has room");
-    let retry = alondra_domain_rules::ApiRetry { error: "server_error".into(), detail: None, attempt: 1, at: 30_000, outage: false };
+    let retry = alondra_domain_model::ApiRetry { error: "server_error".into(), detail: None, attempt: 1, at: 30_000, outage: false };
     let failed = paused(Reason::ApiError(retry));
     assert!(!failed.returns(true, false, 29_999), "an API error waits for its retry");
     assert!(failed.returns(true, false, 30_000));

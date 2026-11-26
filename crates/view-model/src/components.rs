@@ -335,7 +335,7 @@ pub enum Item {
     Unknown,
 }
 /// What a card asks of the user; the stable string clients draw the label, colour and icon from.
-pub use alondra_domain_rules::CardKind;
+pub use alondra_domain_model::CardKind;
 pub use alondra_core::requested_form::{RequestedChoice, RequestedField, RequestedFieldKind, RequestedForm, TextFormat};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

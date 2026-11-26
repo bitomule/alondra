@@ -197,7 +197,7 @@ async fn a_staged_tasks_author_hands_over_to_a_new_implementer_once_it_rests() {
     assert!(prompt.contains("Change the fixture") && prompt.contains("Test the fixture"), "the implementer starts from the approved plan: {prompt}");
     assert!(prompt.contains("as its implementer"), "{prompt}");
     assert!(!prompt.contains("decide:plan"), "the author's own prompt stays in its conversation: {prompt}");
-    assert!(!prompt.contains(alondra_domain_rules::HANDED_OVER_PLAN), "what the author was told stays in its conversation: {prompt}");
+    assert!(!prompt.contains(alondra_domain_model::HANDED_OVER_PLAN), "what the author was told stays in its conversation: {prompt}");
     slice.domain.stop_sdk_owners();
 }
 
@@ -326,7 +326,7 @@ fn waits_for_the_user(domain: &Arc<DomainRuntime>, attempts: u8) {
     let handover = state.tasks[&task].stages.handover.clone().expect("the task still owes its implementer");
     assert_eq!((handover.refused, handover.attempts, handover.transition), (true, attempts, None));
     let card = state.open_start_problem(&task).expect("the user is asked");
-    assert!(matches!(alondra_domain_rules::start_problem::from_body(&card.body), Some(StartProblem::StageStartRefused { role: ExecutionRole::Implementer, .. })), "{}", card.body);
+    assert!(matches!(alondra_domain_model::start_problem::from_body(&card.body), Some(StartProblem::StageStartRefused { role: ExecutionRole::Implementer, .. })), "{}", card.body);
     assert!(matches!(&card.payload, InteractionPayload::Question { options, .. }
         if options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>() == [START_RETRY, START_CANCEL]), "{:?}", card.payload);
 }

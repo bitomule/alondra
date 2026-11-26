@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use alondra_domain_rules::{Command, InteractionId, InteractionPayload, QuestionOption, TaskId};
+use alondra_domain_model::{Command, InteractionId, InteractionPayload, QuestionOption, TaskId};
 use alondra_view_model::{Action, Item, View};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
@@ -351,7 +351,7 @@ mod tests {
         assert!(!format!("{error:#}").contains("did not answer"));
     }
 
-    use alondra_domain_rules::*;
+    use alondra_domain_model::*;
 
     fn world() -> DomainState {
         let mut s = DomainState::new("e");
@@ -363,12 +363,12 @@ mod tests {
         run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
         run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into(), at: 0 });
         run(Actor::System, Command::RegisterAgent { agent_id: "agent-ab".into(), name: "Instance AB".into(), at: 0 });
-        run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
+        run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")) });
         let options = vec![
             QuestionOption { id: "yes".into(), label: "Yes".into(), description: None },
             QuestionOption { id: "other".into(), label: "Other".into(), description: None },
         ];
-        run(Actor::Agent { agent_id: "agent-a".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Name?".into(), blocking: true, options, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question") });
+        run(Actor::Agent { agent_id: "agent-a".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Name?".into(), blocking: true, options, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question") });
         s
     }
 
@@ -411,7 +411,7 @@ mod tests {
     }
 
     fn task_view(s: &DomainState) -> Vec<u8> {
-        let index = alondra_domain_rules::ReadIndex::build(s);
+        let index = alondra_domain_model::ReadIndex::build(s);
         let live = alondra_view_model::LiveSnapshot::default();
         let context = alondra_view_model::RenderContext { domain: s, index: &index, live: &live, client: alondra_view_model::Client::Tui, lang: alondra_view_model::Lang::En, transport: alondra_view_model::Transport::Loopback, cursor: "c", rendered_at: "" };
         serde_json::to_vec(&alondra_views::build("task:t", context).unwrap()).unwrap()
@@ -445,7 +445,7 @@ mod tests {
         let q = s.interactions.get_mut(&InteractionId::from("q")).unwrap();
         let InteractionPayload::Question { options, .. } = &q.payload else { unreachable!() };
         q.card = CardSpec::question(&q.body, &options.clone());
-        let d = alondra_domain_rules::ReadIndex::build(&s);
+        let d = alondra_domain_model::ReadIndex::build(&s);
         let live = alondra_view_model::LiveSnapshot::default();
         let context = alondra_view_model::RenderContext { domain: &s, index: &d, live: &live, client: alondra_view_model::Client::Ios, lang: alondra_view_model::Lang::En, transport: alondra_view_model::Transport::Loopback, cursor: "c", rendered_at: "" };
         let view = alondra_views::build("card:q", context).unwrap();
@@ -467,7 +467,7 @@ mod tests {
     fn status_lists_what_waits_and_the_tasks_without_a_fleet() {
         crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
         let s = world();
-        let d = alondra_domain_rules::ReadIndex::build(&s);
+        let d = alondra_domain_model::ReadIndex::build(&s);
         let live = alondra_view_model::LiveSnapshot::default();
         let view = |key: &str| alondra_views::build(key, alondra_view_model::RenderContext { domain: &s, index: &d, live: &live, client: alondra_view_model::Client::Tui, lang: alondra_view_model::Lang::Es, transport: alondra_view_model::Transport::Loopback, cursor: "c", rendered_at: "" }).unwrap();
         let text = status_text(&view("home"), &view("tasks"));
@@ -479,7 +479,7 @@ mod tests {
     fn status_lists_the_selected_card_once() {
         crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
         let s = world();
-        let d = alondra_domain_rules::ReadIndex::build(&s);
+        let d = alondra_domain_model::ReadIndex::build(&s);
         let live = alondra_view_model::LiveSnapshot::default();
         let view = |key: &str| alondra_views::build(key, alondra_view_model::RenderContext { domain: &s, index: &d, live: &live, client: alondra_view_model::Client::Tui, lang: alondra_view_model::Lang::Es, transport: alondra_view_model::Transport::Loopback, cursor: "c", rendered_at: "" }).unwrap();
         let home = view("home");
@@ -504,9 +504,9 @@ mod tests {
             s.execute(&actor, &envelope).unwrap();
         };
         run(Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Build it".into() });
-        run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t-queued".into(), request_id: "r".into(), title: "Queued".into(), agent_id: None, review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
+        run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t-queued".into(), request_id: "r".into(), title: "Queued".into(), agent_id: None, review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")) });
         let message = |s: &DomainState| {
-            let d = alondra_domain_rules::ReadIndex::build(s);
+            let d = alondra_domain_model::ReadIndex::build(s);
             let live = alondra_view_model::LiveSnapshot::default();
             let context = alondra_view_model::RenderContext { domain: s, index: &d, live: &live, client: alondra_view_model::Client::Tui, lang: alondra_view_model::Lang::En, transport: alondra_view_model::Transport::Loopback, cursor: "c", rendered_at: "" };
             let view = alondra_views::build(&send_view_key("t-queued"), context).unwrap();
@@ -529,7 +529,7 @@ mod tests {
     fn the_node_limit_takes_only_what_this_macs_settings_offer() {
         crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
         let s = world();
-        let d = alondra_domain_rules::ReadIndex::build(&s);
+        let d = alondra_domain_model::ReadIndex::build(&s);
         let live = alondra_view_model::LiveSnapshot {
             pacing: Some(alondra_view_model::LivePacing { working: 2, limit: 11, fixed: None, auto: 11, most: 22, memory_free: Some(40), tight: false,
                 queued: vec![], paused: vec![] }),

@@ -5,7 +5,7 @@ enum	crates/agent-protocol/src/correlation.rs::CommandStatus	only tells a caller
 enum	crates/agent-protocol/src/correlation.rs::SequenceStatus	only tells whether an event cursor was the next or a duplicate; holds no state
 enum	crates/daemon-server/src/direct/pairing.rs::Status	response projection of the pairing State plus Expired; holds no state of its own
 enum	crates/daemon-support/src/job_state.rs::Phase	read of what Claude Code reports about a job; Alondra never keeps or changes it
-enum	crates/domain-rules/src/mcp.rs::McpStatus	how Claude reports an MCP server, parsed on read; not kept by a machine
+enum	crates/domain-model/src/mcp.rs::McpStatus	how Claude reports an MCP server, parsed on read; not kept by a machine
 enum	crates/engine-sdk/src/sdk_owner.rs::NativeRecoveryStatus	result of one lookup of a recoverable native session; holds no state
 file	antigravity-cli/settings.json	the user's own Antigravity settings, linked read-only from ~/.gemini into a named account's folder; Alondra never owns its state
 file	config/mcp_config.json	the user's own Antigravity MCP servers, linked read-only from ~/.gemini into a named account's folder; Alondra never owns its state

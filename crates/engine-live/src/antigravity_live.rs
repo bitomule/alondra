@@ -96,7 +96,7 @@ pub fn activity(session: &Reported) -> Option<Vec<Activity>> {
     Some(main.into_iter().collect())
 }
 
-pub fn feed(reports: &crate::node_reports::Reports, agent: &alondra_domain_rules::AgentId, message: &Value) {
+pub fn feed(reports: &crate::node_reports::Reports, agent: &alondra_domain_model::AgentId, message: &Value) {
     reports.apply_with(&agent.0, alondra_core::now_millis(), |session, now| observe(session, message, now));
 }
 

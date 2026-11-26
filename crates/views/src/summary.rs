@@ -4,7 +4,7 @@ use super::{
     Lang,
     text::{t, tf},
 };
-use alondra_domain_rules::{ContentKind, CardContent, clip};
+use alondra_domain_model::{ContentKind, CardContent, clip};
 
 fn items(count: usize, one: &str, many: &str) -> String {
     if count == 1 { format!("1 {one}") } else { format!("{count} {many}") }
@@ -93,7 +93,7 @@ pub(super) fn of_content(lang: Lang, content: &CardContent) -> Option<String> {
     if let Some(summary) = content.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         return Some(clip(summary, 60));
     }
-    let body = alondra_domain_rules::without_included_files(&content.body);
+    let body = alondra_domain_model::without_included_files(&content.body);
     let counted = body.lines().filter(|line| list_marker(line)).count();
     match content.kind {
         ContentKind::Plan => Some(match (counted, headings(body)) {
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(summary_of(ContentKind::Plan, "just words", Lang::En).as_deref(), Some("Plan"));
         assert_eq!(summary_of(ContentKind::Steps, "1. Open\n2. Press\n3. Wait\n4. Done", Lang::En).as_deref(), Some("4 steps"));
         assert_eq!(summary_of(ContentKind::Steps, "Open it", Lang::En).as_deref(), Some("1 step"));
-        let cited = alondra_domain_rules::include_linked_files("# Ship it\n\nSee [the plan](docs/design.md)\n\n- [ ] Split the lexer",
+        let cited = alondra_domain_model::include_linked_files("# Ship it\n\nSee [the plan](docs/design.md)\n\n- [ ] Split the lexer",
             |_| Some("- [ ] Measure\n- [ ] Relay\n- [ ] Daemon".into())).unwrap();
         assert_eq!(summary_of(ContentKind::Plan, &cited, Lang::En).as_deref(), Some("1 step"), "a file the plan links to adds no steps");
     }

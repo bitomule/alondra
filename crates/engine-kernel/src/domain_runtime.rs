@@ -4,7 +4,7 @@ use crate::locks::{Poisonable as _, PoisonableRw as _};
 use crate::domain_authority::{Authority, Capability, Principal};
 use crate::runtime_mutex::RuntimeMutex;
 use crate::domain_store::{schedule_command, Journal, JournalFiles, OwnerJournal, StagedOutcome, StoreError, TransportIdentity};
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_engine_ports::Runtime as _;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -177,7 +177,7 @@ impl alondra_engine_ports::Runtime for DomainRuntime {
         self.seals.ring_on(task, node, bell);
     }
 
-    fn launch_plan(&self, task: &alondra_domain_rules::TaskId) -> Option<alondra_domain_rules::LaunchPlan> {
+    fn launch_plan(&self, task: &alondra_domain_model::TaskId) -> Option<alondra_domain_model::LaunchPlan> {
         DomainRuntime::launch_plan(self, task).ok().flatten()
     }
 
@@ -781,8 +781,8 @@ impl DomainRuntime {
             if state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).map(|node| node.0.as_str()) != Some(session_id.as_str()) {
                 return Err(DomainError::new("not_assigned","Only the current assigned node requests plan mode").into());
             }
-            if let Some(role) = state.tasks.get(task).and_then(|task| task.stages.role()).filter(|role| !role.allows(alondra_domain_rules::RoleTool::RequestPlanMode)) {
-                return Err(DomainError::new(alondra_domain_rules::STAGE_REFUSED, role.refusal_fix(alondra_domain_rules::RoleTool::RequestPlanMode)).into());
+            if let Some(role) = state.tasks.get(task).and_then(|task| task.stages.role()).filter(|role| !role.allows(alondra_domain_model::RoleTool::RequestPlanMode)) {
+                return Err(DomainError::new(alondra_domain_model::STAGE_REFUSED, role.refusal_fix(alondra_domain_model::RoleTool::RequestPlanMode)).into());
             }
             let before_revision = state.revision;
             let already_requested = state.in_plan_mode(task);
@@ -1465,7 +1465,7 @@ mod snapshot_tests {
             if reload {
                 assert_eq!(before.state().agents[&AgentId::from("agent-a")].name, "agent-a");
                 assert_eq!(after.state().agents[&AgentId::from("agent-a")].name, "Renamed");
-                assert!(matches!(after.node_changes_since(&before.node_cursor()), alondra_domain_rules::NodeChanges::Reset { .. }));
+                assert!(matches!(after.node_changes_since(&before.node_cursor()), alondra_domain_model::NodeChanges::Reset { .. }));
                 assert_eq!(after.index().live_node(&AgentId::from("agent-a")).unwrap().name, "Renamed");
                 assert_eq!(before.index().live_node(&AgentId::from("agent-a")).unwrap().name, "agent-a");
                 assert!(!domain_changes.has_changed().unwrap(), "reload keeps the existing revision channel's contract");
@@ -1473,7 +1473,7 @@ mod snapshot_tests {
             } else {
                 assert!(!before.state().agents.contains_key(&AgentId::from("agent-b")));
                 assert!(after.state().agents.contains_key(&AgentId::from("agent-b")));
-                assert_eq!(after.node_changes_since(&before.node_cursor()), alondra_domain_rules::NodeChanges::Changed {
+                assert_eq!(after.node_changes_since(&before.node_cursor()), alondra_domain_model::NodeChanges::Changed {
                     cursor: after.node_cursor(), nodes: [AgentId::from("agent-b")].into_iter().collect(),
                 });
                 assert!(domain_changes.has_changed().unwrap());
@@ -1617,7 +1617,7 @@ mod producer_revision_tests {
                         review_prs: false,
                         dependencies: Default::default(),
                         stack: None,
-                        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+                        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
                     },
                 ),
                 None,
@@ -1643,7 +1643,7 @@ mod producer_revision_tests {
                     task_id: "task-a".into(),
                 },
                 recipient: Recipient::Orchestrator,
-                body: "Progress".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
+                body: "Progress".into(), card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"),
             },
         );
         let revision = runtime.state().unwrap().revision;

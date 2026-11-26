@@ -4,7 +4,7 @@
 use alondra_engine_ports::Runtime;
 use alondra_core::accounts::{AccountId, Provider};
 use alondra_daemon_engine_model::Failed;
-use alondra_domain_rules::{AgentId, DomainError, DomainState, TaskId};
+use alondra_domain_model::{AgentId, DomainError, DomainState, TaskId};
 pub use alondra_engine_ports::hosts::{Launch, Launched, Reopening, SdkHosts};
 use std::path::Path;
 use std::sync::Arc;

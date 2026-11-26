@@ -9,7 +9,7 @@ use crate::domain_store::{StoreError, TransportIdentity};
 use crate::domain_runtime::DomainRuntime;
 pub(crate) use alondra_daemon_engine::reply::status_for;
 use std::path::Path as FsPath;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use axum::extract::{ConnectInfo, Path, RawQuery, State, rejection::JsonRejection};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
@@ -734,10 +734,10 @@ fn adapt_legacy_card_fields(command: &mut serde_json::Map<String, Value>) {
     if let Some(card) = command.get_mut("card").and_then(Value::as_object_mut)
         && !card.contains_key("title")
         && let (Some(need), Some(kind)) = (card.get("need").and_then(Value::as_str), card.get("kind"))
-        && let Ok(kind) = serde_json::from_value::<alondra_domain_rules::CardKind>(kind.clone())
+        && let Ok(kind) = serde_json::from_value::<alondra_domain_model::CardKind>(kind.clone())
     {
         // A previous MCP process keeps its old catalog until its SDK host rests.
-        let adapted = alondra_domain_rules::CardSpec::new(kind, need);
+        let adapted = alondra_domain_model::CardSpec::new(kind, need);
         card.insert("title".into(), json!(adapted.title));
         card.insert("need".into(), json!(adapted.need));
         if card.get("content").is_none_or(Value::is_null)
@@ -1214,7 +1214,7 @@ pub(crate) fn check_launch_plan(domain: &DomainRuntime, home: &std::path::Path, 
         Command::CreateTask { request_id, launch: Some(plan), .. }
         | Command::SettleSuggestion { decision: SuggestionDecision::NewTask { request_id, launch: plan, .. }, .. } =>
             crate::launch_plans::validate(domain, home, request_id, plan),
-        Command::SettlePlanReview { task_id, outcome: alondra_domain_rules::PlanReviewOutcome::PlanChanged { launch: plan, .. }, .. } => {
+        Command::SettlePlanReview { task_id, outcome: alondra_domain_model::PlanReviewOutcome::PlanChanged { launch: plan, .. }, .. } => {
             let state = domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
             let task = state.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
             crate::launch_plans::validate(domain, home, &task.request_id, plan)
@@ -1764,7 +1764,7 @@ mod tests {
                     review_prs: true,
                     dependencies: BTreeSet::new(),
                     stack: None,
-                    launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+                    launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
                 },
             ),
             (
@@ -1777,7 +1777,7 @@ mod tests {
                     },
                     recipient: Recipient::User,
                     body: "Information".into(),
-                    attachments: vec![], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
+                    attachments: vec![], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"),
                 },
             ),
         ] {
@@ -1918,7 +1918,7 @@ mod tests {
         let second = envelope(&host, "info-b", Command::PublishInformation {
             interaction_id: "info-b".into(), scope: Scope::Task { task_id: "task-a".into() }, recipient: Recipient::User,
             body: "More information".into(), attachments: vec![],
-            card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the second update"),
+            card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the second update"),
         });
         host.domain.execute(&Actor::System, &second, None, || Ok(())).unwrap();
         let remote = envelope(

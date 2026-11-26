@@ -11,7 +11,7 @@ use crate::blocking_work::blocking;
 use crate::sdk_owner::SdkOwners as _;
 use crate::engine::EngineOf as _;
 use alondra_core::clock;
-use alondra_domain_rules::SystemCard;
+use alondra_domain_model::SystemCard;
 use crate::locks::Poisonable as _;
 use alondra_engine_github::domain_github::execute_system;
 use alondra_engine_ports::Runtime;
@@ -19,9 +19,9 @@ use crate::domain_store::TaskClosing;
 use alondra_engine_ports::node_close::{CloseOutcome, Sessions};
 use alondra_engine_ports::worktrees::Unreachable;
 use alondra_engine_ports::worktrees::TaskWorktree;
-use alondra_domain_rules::close_problem::{CLOSE_PROBLEM_PREFIX, CloseProblem, CloseStop};
+use alondra_domain_model::close_problem::{CLOSE_PROBLEM_PREFIX, CloseProblem, CloseStop};
 use alondra_view_model::Lang;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, AgentId, Command, CommandEnvelope, PROTOCOL_VERSION, DomainState, InteractionId, InteractionPayload, NodeEnd, Scope, Task, TaskId,
 };
 use anyhow::Result;
@@ -306,7 +306,7 @@ async fn close_one(domain: &dyn Runtime, sessions: &dyn Sessions, timing: &Timin
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
     let mut row = domain.store().lock_or_exit("the domain store").begin_task_closing(task_id, now)?;
     if matches!(kind, Due::Cleanup) && !task.cancelled()
-        && task.ending != Some(alondra_domain_rules::TaskEnding::Cancelling)
+        && task.ending != Some(alondra_domain_model::TaskEnding::Cancelling)
         && !state.unproved_checklist(task).is_empty()
     {
         if state.node_session_closed(task) {
@@ -608,7 +608,7 @@ async fn finish_with_worktree(
 fn refused_end(domain: &dyn Runtime, task: &Task, agent: &AgentId, end: NodeEnd) -> Option<String> {
     let mut probe = domain.state().as_ref().clone();
     for worktree in probe.tasks.get_mut(&task.id)?.worktrees.values_mut().filter(|worktree| worktree.end.is_none()) {
-        worktree.end = Some(alondra_domain_rules::WorktreeEnd::Removed);
+        worktree.end = Some(alondra_domain_model::WorktreeEnd::Removed);
     }
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: probe.data_epoch.clone(), command_id: "probe-node-end".into(),

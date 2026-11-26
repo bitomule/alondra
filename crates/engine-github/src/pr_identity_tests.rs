@@ -2,7 +2,7 @@ use super::*;
 use crate::domain_github::tests::{Fixture, open};
 use crate::domain_github::{ObservationFailures, reconcile};
 use crate::github_world::GithubWorld;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, CommandEnvelope, GONE_STRIKES, MergeMethod, PROTOCOL_VERSION, PrId, PrState, PrTracking, ProviderLocator, STRIKE_GAP, UnresolvableReason,
 };
 use std::time::Duration;
@@ -26,8 +26,8 @@ fn registered(tag: &str, head: &str) -> (Fixture, DomainRuntime, PrId) {
         auto_merge: false, maintenance: false, message: false });
     command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()), review_prs: true,
-        dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
-    let pr_id = alondra_domain_rules::hosted_pr_id("github.com", OLD, 42);
+        dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")) });
+    let pr_id = alondra_domain_model::hosted_pr_id("github.com", OLD, 42);
     command(&domain, Actor::Agent { agent_id: "a".into() }, "pr", Command::RegisterPr {
         task_id: "t".into(), pr_id: pr_id.clone(), host: "github.com".into(), repository: OLD.into(), number: 42,
         head: head.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],

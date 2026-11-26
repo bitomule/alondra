@@ -1,7 +1,7 @@
 //! Durable registry of issued producer capabilities. Only SHA-256 digests are
 //! written; a bearer token exists in the producer's environment alone.
 use crate::domain_authority::{Authority, Principal};
-use alondra_domain_rules::{DomainState, NodeEnd};
+use alondra_domain_model::{DomainState, NodeEnd};
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
@@ -141,7 +141,7 @@ mod tests {
     use super::*;
     use crate::domain_runtime::DomainRuntime;
     use crate::locks::Poisonable as _;
-    use alondra_domain_rules::*;
+    use alondra_domain_model::*;
 
     struct Fixture(crate::test_support::Directory);
     impl Fixture {
@@ -274,7 +274,7 @@ mod tests {
         let domain = fixture.open();
         for _ in 0..3 {
             let refused = domain.bind_agent("next").err().expect("no room");
-            assert!(matches!(&refused, crate::domain_store::StoreError::Domain(error) if error.code == alondra_domain_rules::capability_capacity_card::CAPABILITY_CAPACITY_CODE), "{refused}");
+            assert!(matches!(&refused, crate::domain_store::StoreError::Domain(error) if error.code == alondra_domain_model::capability_capacity_card::CAPABILITY_CAPACITY_CODE), "{refused}");
         }
         assert_eq!(open_capacity_cards(&domain), 1, "refused starts show one card, not one per try");
         domain.revoke_agent("working").unwrap();

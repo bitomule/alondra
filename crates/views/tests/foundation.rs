@@ -1,4 +1,4 @@
-use alondra_domain_rules as domain;
+use alondra_domain_model as domain;
 use alondra_views as views;
 use alondra_foundation as shared;
 

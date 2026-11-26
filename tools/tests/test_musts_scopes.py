@@ -214,7 +214,7 @@ INVENTORY_SURFACES = (
     "crates/core/src/config.rs",
     "crates/host/src/bonjour.rs",
     "crates/host/src/startup.rs",
-    "crates/domain-rules/src/cited_file.rs",
+    "crates/domain-model/src/cited_file.rs",
     "crates/core/src/issues.rs",
     "crates/core/src/claude_account.rs",
     "crates/core/src/codex_account.rs",

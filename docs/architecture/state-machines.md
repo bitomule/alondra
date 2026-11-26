@@ -30,7 +30,7 @@ test cannot make is the `state-machines-review` check of `MUSTS.yml`, with the q
   (new), M-PROV-4, M-PROV-9 and the timers table updated; F-ENGINE-1, F-ENGINE-5, F-STORE-3, F-STORE-4, F-GH-5,
   F-CARDS-1, F-ORCH-1, F-ORCH-2, F-ORCH-3, F-ORCH-6, F-PROV-2 and F-PROV-3 re-checked; H-ORCH-3 no longer reachable;
   new hypothesis H-ORCH-4; new evidence for the referred tasks. Text of this pass says "at `68770a298`".
-- **Scope**: domain (`crates/domain`, `crates/domain-rules`, `crates/core`), engine
+- **Scope**: domain (`crates/domain`, `crates/domain-model`, `crates/core`), engine
   (`crates/engine-*`, `crates/daemon-*`, `crates/alondrad`), persistence (`crates/store-sqlite`
   and the JSON state files of the Alondra home), providers and agent hosts (`agent-host/`,
   `crates/provider-*`, `crates/agent-*`, `crates/codex-protocol`), the relay (`crates/relay`),
@@ -192,7 +192,7 @@ Related: issue #323 (new evidence).
   node.
 - **Files**: `crates/daemon-engine/src/node_exit.rs`, `live.rs`, `crates/engine-sdk/src/task_closer.rs`,
   `auto_launch.rs`, `start_retries.rs`, `crates/daemon-engine/src/start_failures.rs`,
-  `crates/domain-rules/src/ownership.rs`, `rules.rs` (release and reopen), `crates/views/src/tasks.rs`.
+  `crates/domain-model/src/ownership.rs`, `rules.rs` (release and reopen), `crates/views/src/tasks.rs`.
 - **Tests**: a domain test that releases a task and checks the relaunch fact is in the same commit; an
   engine test that releases a task, drops the in-memory/JSON entry (simulated crash between the two
   writes) and checks the task is relaunched or asked about; a domain test for reopen with a kept SDK
@@ -217,7 +217,7 @@ Related: issue #323 (new evidence).
     launch queue with its seniority, and the gate's SDK start resumes the saved session (`pending_reopening`). The
     domain no longer records a `claude-bg` execution on reopen.
   - Evidence (tests, each ablated by hand; output in #552):
-    `domain-rules` `tests::a_released_task_keeps_who_starts_its_next_node_in_the_commit_that_releases_it`,
+    `domain-model` `tests::a_released_task_keeps_who_starts_its_next_node_in_the_commit_that_releases_it`,
     `ownership_tests::a_released_task_with_no_record_of_its_closed_node_is_put_to_the_user`,
     `sdk_node_tests::a_task_reopened_with_its_sdk_node_kept_by_the_user_waits_for_a_new_execution_that_is_heard`;
     `engine-sdk` `auto_launch::tests::a_node_alondra_closed_is_relaunched_by_itself_by_the_daemon_that_restarts_after_it`
@@ -351,8 +351,8 @@ changed and which test proved it; every new test was seen failing with its fix r
   auto-launch can wake. A task that waits for other tasks shows «waiting for tasks», never «queued»,
   because the aggregate records the dependency wait (default decision). «Clear completed» takes only what the list shows as completed: never a closed request one of whose tasks is still ending (F-CARDS-7). After a merge, a turn that
   ends idle without declaring post-merge work again ends that work (documented rule).
-- **Files**: `crates/domain-rules/src/rules.rs` (request closing, dependencies, post-merge),
-  `crates/domain-rules/src/situation.rs`, `crates/domain/src/lifecycle.rs`, the orchestrator inbox
+- **Files**: `crates/domain-model/src/rules.rs` (request closing, dependencies, post-merge),
+  `crates/domain-model/src/situation.rs`, `crates/domain/src/lifecycle.rs`, the orchestrator inbox
   (`orchestrator_inbox` steps/settle), `crates/engine-sdk/src/auto_launch.rs`.
 - **Tests**: domain tests for each rule (a request with all tasks ended and two unanswered reminders
   ends Done; a dependency on a cancelled task is refused; a dependent task's `Situation` is
@@ -363,7 +363,7 @@ changed and which test proved it; every new test was seen failing with its fix r
 
 Issue: #523 · Severity: S2 · Findings: F-CARDS-2, F-CARDS-3, F-CARDS-4, F-CARDS-5 · Depends
 on: none · Related: issue #317 · **Status**: fixed in #551 (commit `60d638a0e`). The four findings
-were reproduced on `main` at `10ebafced` by the tests of `crates/domain-rules/src/card_protocol_tests.rs`,
+were reproduced on `main` at `10ebafced` by the tests of `crates/domain-model/src/card_protocol_tests.rs`,
 which fail without the fix and pass with it (ablation in the pull request).
 
 - **Final behaviour**: replacing one question of a group is refused with `question_in_group`
@@ -376,7 +376,7 @@ which fail without the fix and pass with it (ablation in the pull request).
   document (`withdraw_deliveries_behind_their_targets`, the PR sweep extended to documents). A card
   that replaces the current final delivery hands it back as `Withdraw` does
   (`hand_back_replaced_deliveries`, default decision), and `presentation()` refuses a withdrawn delivery.
-- **Files**: `crates/domain-rules/src/rules.rs` (interactions, `replaces`, plan reviews, document
+- **Files**: `crates/domain-model/src/rules.rs` (interactions, `replaces`, plan reviews, document
   revisions), `card_contract.rs`, `decisions.rs`.
 - **Tests**: domain tests, one per rule, each with the exact sequence of its finding.
 
@@ -539,7 +539,7 @@ documents their final behaviour).
 - **Files**: `docs/architecture/task-states.md`, the hook transport docs, `crates/machine-model`.
 - **Status: fixed** in #624, checked against `main` at `b479c4f7c`, after G2 (#552), G4 (#556) and G5 (#553).
   `task-states.md` lists the two deadlines of `obligation_policy` and every engine timer outside it with why it
-  is not there (F-ENGINE-5), places `Situation` in `crates/domain-rules/src/situation.rs` with its real
+  is not there (F-ENGINE-5), places `Situation` in `crates/domain-model/src/situation.rs` with its real
   precedence, adds `Replan` and `obligation_of` to the obligation table, states rules 3 and 4 as the code holds
   them, and lists what the model test does not drive (interruptions, reopening, Codex and the rest of
   M-LIFE-14) instead of «no known gaps». The hook transport's unreachable held messages and capped-turn card are
@@ -564,7 +564,7 @@ parallel fix is planned here.
 | F-PROV-1 (variant) · usage readings an ended host's journal kept are committed on adoption with the commit time, so an old one can overwrite a newer reading | the provider adapters work: the host stamps each journal event with its time and the Claude and Codex adapters read it | Yes: `OrderedObservation` carries no event time; `store-sqlite/src/owner.rs` records `ObservedFact::Usage` with `at = now`. Referred by the user on 2026-11-24 |
 | H-GH-1, H-GH-2 · identity of moved pull requests | the stable pull request identity work | See the hypotheses in the GH area. #537 touches neither (`RegisterPr` and `ObservePrState` are unchanged at `68770a298`) |
 | H-GH-6 · a branch PR noted for a task and registered meanwhile by another live task blocks that task's final delivery for good | the stable pull request identity work | Yes, new at `68770a298` (see the hypothesis in the GH area) |
-| #537 · a PR enters a task only through `register_pr` or GitHub's open PR of one of its worktree branches at a final delivery | the stable pull request identity work | Yes: a PR the node opens from a checkout that is not one of its task's worktrees and does not register is never known to Alondra, and nothing asks about it any more (`AskToRegisterPr` is inert, `domain-rules/src/rules.rs:4855-4858` at `68770a298`); before, the output of `gh pr create` noted it or asked the node. A design choice of #537, listed so the identity work weighs it |
+| #537 · a PR enters a task only through `register_pr` or GitHub's open PR of one of its worktree branches at a final delivery | the stable pull request identity work | Yes: a PR the node opens from a checkout that is not one of its task's worktrees and does not register is never known to Alondra, and nothing asks about it any more (`AskToRegisterPr` is inert, `domain-model/src/rules.rs:4855-4858` at `68770a298`); before, the output of `gh pr create` noted it or asked the node. A design choice of #537, listed so the identity work weighs it |
 | F-STORE-2 (part) · `--preflight` does not exercise the JSON state files startup needs | the tests-by-layer work (host model), point 30 (binary smoke test) | Yes: the list of files startup refuses on |
 
 F-ENGINE-12 (two owners take the same host) is fixed in group G8 (#613) without changing `take_host`, the
@@ -617,7 +617,7 @@ with an outcome card; several Macs per client). Each can be changed in the revie
 
 ## Task and node lifecycle (`LIFE`)
 
-Scope: the task lifecycle aggregate and the node it runs on, and everything the visible state derives from them. Real paths (the the Bazel layers work phases moved files): the aggregate is in `crates/domain/src/lifecycle*.rs`; the bridge to the rest of the domain is `crates/domain-rules/src/lifecycle.rs`; `Situation` is in `crates/domain-rules/src/situation.rs` (not in `crates/core`, as the doc says); the inherited "node state" lives in `crates/core/src/{states.rs,tasks.rs,tasks/derive.rs}` and is used in memory by `crates/daemon-engine/src/live.rs`. Audited commit: `1567967b9`. Read-only audit: no build or test was run.
+Scope: the task lifecycle aggregate and the node it runs on, and everything the visible state derives from them. Real paths (the the Bazel layers work phases moved files): the aggregate is in `crates/domain/src/lifecycle*.rs`; the bridge to the rest of the domain is `crates/domain-model/src/lifecycle.rs`; `Situation` is in `crates/domain-model/src/situation.rs` (not in `crates/core`, as the doc says); the inherited "node state" lives in `crates/core/src/{states.rs,tasks.rs,tasks/derive.rs}` and is used in memory by `crates/daemon-engine/src/live.rs`. Audited commit: `1567967b9`. Read-only audit: no build or test was run.
 
 ### M-LIFE-1 · `TaskLifecycle`
 
@@ -633,7 +633,7 @@ transitions = ["Unstarted -> InProgress", "Unstarted -> Finishing", "InProgress 
 ```
 
 - **Kind**: explicit, composite. **Defined in**: `crates/domain/src/lifecycle.rs:1099-1196` (`Progress`, `DeliveryGate`, `Delivered`, `Finishing`, `State`, `TaskLifecycle`); transitions in `lifecycle/commands.rs:4-568` (`transition`) and `lifecycle/observations.rs:4-719` (`runtime_fact`); `advanced` in `lifecycle.rs:1668-1704` (copies, applies, bumps the revision, sets `owed_since`).
-- **Source of truth**: the task journal (`DomainState.lifecycle_journal: Vec<LifecycleRecord>`, persisted in `lifecycle_events`, `crates/store/src/schema.sql:13-19`). The aggregate is rebuilt by replay (`domain-rules/src/lifecycle.rs:1240-1247`, `lifecycle_of`) and cached in `DomainState.lifecycles` (Arc; used only if `revision+1 == journal.len()`).
+- **Source of truth**: the task journal (`DomainState.lifecycle_journal: Vec<LifecycleRecord>`, persisted in `lifecycle_events`, `crates/store/src/schema.sql:13-19`). The aggregate is rebuilt by replay (`domain-model/src/lifecycle.rs:1240-1247`, `lifecycle_of`) and cached in `DomainState.lifecycles` (Arc; used only if `revision+1 == journal.len()`).
 - **Copies and derivatives**: projections the store writes: `lifecycle_tasks.revision`, `lifecycle_current_execution`, `lifecycle_cards`, `lifecycle_dependencies`, `lifecycle_delivery` (`crates/store/src/persistence.rs:191-245`). Copies in the `tasks` row (see M-LIFE-6).
 - **States** (`State`):
 
@@ -651,10 +651,10 @@ transitions = ["Unstarted -> InProgress", "Unstarted -> Finishing", "InProgress 
 
 - **Composite state**: `State × Execution (M-LIFE-2) × plan_reviews × post_merge × doubts/settled × empty_turns/woken`. The fields outside `state` (`plan_reviews`, `post_merge`, `doubts`, `settled`, `cancelled_through_generation`) survive `Reopen`.
 - **Events** (`Event`, `lifecycle.rs:513-712`): Admit, Runtime{stamp,cursor,fact}, Ask, Answer, Decide, MoveCard, KeepQuestion, PlanApproved, HostReleased, HostRetaken, BlockDelivery, DeliveryUnblocked, Present, Accept, MergeObserved, HandBack, WaitForDependencies, Tell, DependenciesResolved, DependenciesLanded, Pause, Resume, EndPause, RecoveryEnded, Finish, DrainObserved, PostMergeDeclared, PostMergeEnded, RetireReleasedExecution, ExecutionReleased, ExecutionLeftForReview, Reopen, HoldForPlanReview, PlanReviewSettled, DoubtHandoff, ResendUntaken, ResendDoubtful, SettleHandoff, Discard, AwaitEnded, Unfinished, RequestControl, Compact.
-- **Events produced by `domain-rules`** (mapping `event()`, `domain-rules/src/lifecycle.rs:616-803`): all except `Ask`, `PlanApproved`, `BlockDelivery`, `DeliveryUnblocked`, `MergeObserved`, `Accept{merge:Some}`, `DependenciesResolved`, `RetireReleasedExecution`, and the facts `ConnectionLost`, `ResourceReleased`, `Notification`, `EffectAccepted`, `EffectObserved` (checked with `rg`: 0 occurrences in `domain-rules/src/{lifecycle.rs,rules.rs,rules/}`). These are aggregate branches that only its own tests exercise.
+- **Events produced by `domain-model`** (mapping `event()`, `domain-model/src/lifecycle.rs:616-803`): all except `Ask`, `PlanApproved`, `BlockDelivery`, `DeliveryUnblocked`, `MergeObserved`, `Accept{merge:Some}`, `DependenciesResolved`, `RetireReleasedExecution`, and the facts `ConnectionLost`, `ResourceReleased`, `Notification`, `EffectAccepted`, `EffectObserved` (checked with `rg`: 0 occurrences in `domain-model/src/{lifecycle.rs,rules.rs,rules/}`). These are aggregate branches that only its own tests exercise.
 - **`Compact` since #507** (at `3fc0370ea`): no command writes a new `Compacted` record any more
   (`Command::CompactConversation`, its guard and the idle-compaction loop were removed). The record and its event stay
-  so older journals replay: `LifecycleRecord::Compacted` (`domain-rules/src/lifecycle.rs:474-476`) still maps to
+  so older journals replay: `LifecycleRecord::Compacted` (`domain-model/src/lifecycle.rs:474-476`) still maps to
   `Event::Compact` (`:770`) and introduces the input `/compact` (`:851`); the aggregate branch is unchanged
   (`domain/src/lifecycle/commands.rs:546-566`: only `Waiting` or `Delivered`, resource `Available`, resting, no
   `Pause` card). A `Compacted` committed by an older release whose input was still pending keeps its staged dispatch
@@ -682,10 +682,10 @@ transitions = ["Unstarted -> InProgress", "Unstarted -> Finishing", "InProgress 
 | Completed/Cancelled | `AdoptOpenPr` (system) [its PR is open again and no live task has the branch] | Reopen and, in the same command, the PR is delivered again (`settle_open_pr`): Delivered{Review} for the user (`rules.rs:5474-5510`) |
 | Executing/Waiting/Dependency/Delivered with an execution | ExecutionReleased / ExecutionLeftForReview [no work, callbacks or effects] | Session::Absent with what was not consumed |
 
-- **Rejected**: every `Err(Refusal::…)` is typed; `apply` leaves the aggregate untouched (`lifecycle.rs:1662-1666`). In `domain-rules` a refusal becomes a `DomainError` (`refused`, `lifecycle.rs:3198`) and aborts the whole command. Facts on terminal states: `runtime_fact` returns `StaleExecution` because there is no session (`observations.rs:10`). In `Finishing`, every fact other than `HostEnded/HostStopped/TakenOver/TakeoverUnanswered` is taken "unchanged" (only the cursor advances, `observations.rs:21-24`).
+- **Rejected**: every `Err(Refusal::…)` is typed; `apply` leaves the aggregate untouched (`lifecycle.rs:1662-1666`). In `domain-model` a refusal becomes a `DomainError` (`refused`, `lifecycle.rs:3198`) and aborts the whole command. Facts on terminal states: `runtime_fact` returns `StaleExecution` because there is no session (`observations.rs:10`). In `Finishing`, every fact other than `HostEnded/HostStopped/TakenOver/TakeoverUnanswered` is taken "unchanged" (only the cursor advances, `observations.rs:21-24`).
 - **Terminals**: `Completed`/`Cancelled`. Only `Reopen` reopens them, and only two explicit commands emit it (`Command::ReopenTask`, `rules.rs:5296-5315`; adoption of the PR of a closed task, `rules.rs:5260-5294`). No late provider fact or answer reopens them: without a session `runtime_fact` refuses and `answer()` refuses (`commands.rs:684-698`). Since G2 (#552) `ReopenTask` never re-admits the old node: the reopened task has no node and no execution, and its next SDK execution comes from the gate.
 - **Invariants**: enforced by type: `Decisions` non-empty, `NonEmpty` in dependencies and drain, `Several` in `LiveState`, `ActiveExecution` (not `Resting`), `TaskLifecycle` without `Clone`/`Deserialize` (`compile_fail` doctest). Only assumed: that `Executing` never ends up with `Activity::Resting` (imposed by the `runtime_fact` paths and `ActiveExecution::new`, not by the type; `Tell` on `Executing` mutates `execution.0` without revalidating, `commands.rs:174`).
-- **Persistence and restart**: the journal is the truth; after a restart `load_journal` rebuilds, validates each task with `agrees` (`domain-rules/src/lifecycle.rs:1351-1480`), and loading fails if a row does not match. The aggregate's cursor is recomputed on replay (`event()` always uses `current cursor + 1`, `lifecycle.rs:617-620`): the domain journal stores neither the provider's cursor nor its stamp; deduplication of repeated facts lives upstream (cursor of `provider_observations`, see M-STORE-5) and in `turn_end_recorded` for turn ends.
+- **Persistence and restart**: the journal is the truth; after a restart `load_journal` rebuilds, validates each task with `agrees` (`domain-model/src/lifecycle.rs:1351-1480`), and loading fails if a row does not match. The aggregate's cursor is recomputed on replay (`event()` always uses `current cursor + 1`, `lifecycle.rs:617-620`): the domain journal stores neither the provider's cursor nor its stamp; deduplication of repeated facts lives upstream (cursor of `provider_observations`, see M-STORE-5) and in `turn_end_recorded` for turn ends.
 - **Concurrency**: the aggregate is pure; only `DomainState::decide` mutates it, inside a command, and the store serializes commands (out of scope, see STORE).
 
 ### M-LIFE-2 · Execution (`Execution`)
@@ -742,7 +742,7 @@ truth = ["derived"]
 ```
 
 - **Kind**: implicit. **Defined in**: `empty_turns: u8`, `woken: Option<InputId>` (`lifecycle.rs:1191-1194`); rises in `wake_with`, resets in `rest_wakes` except for the `keeps_wake` events (`lifecycle.rs:1707-1735`). Limit `EMPTY_TURN_WAKES = 3`.
-- Decides whether an empty turn end wakes the node or opens the orchestrator case (`hands_back_an_empty_turn`, `lifecycle.rs:1230-1242`; `domain-rules/src/lifecycle.rs:1598-1645`).
+- Decides whether an empty turn end wakes the node or opens the orchestrator case (`hands_back_an_empty_turn`, `lifecycle.rs:1230-1242`; `domain-model/src/lifecycle.rs:1598-1645`).
 - **Source of truth**: the aggregate alone (rule 4 of the doc holds for the count).
 
 ### M-LIFE-5 · Obligation (`obligation()`)
@@ -757,21 +757,21 @@ truth = ["derived", "sqlite:api_failures"]
 - **Total**: for every non-terminal state it returns `Some`: `Waiting` carries non-empty `Decisions` and `waits_on` covers the three `Owner`s; `Delivered` falls to `gate`; `Executing` falls to `by_activity` (which covers every `Activity`). `Completed/Cancelled` → `None`. Checked, no gaps.
 - **Adjustments outside the aggregate**: `DomainState::obligation_with` (`ownership.rs:329-342`) changes the obligation to `Answer` (returned delivery waiting for the orchestrator) or `Replan` (cancelled dependency / rejected plan): the aggregate never produces `Owed::Replan`.
 - **Deadlines**: `obligation_policy.rs` (`HAND_INPUT` 5 min, `WAKE` 2 min, `ANSWER` 10 min), applied by `obligation_watch` (out of scope: ENGINE).
-- **Since #516** (at `68770a298`): `ANSWER` is gone; only `HandInput` and `Wake` have a deadline and are enforced (`domain-rules/src/obligation_policy.rs:10-27`). `Owed::Answer` and `Owed::Replan` stay as obligations (the task still reads as waiting for the orchestrator) but no clock acts on them: what the orchestrator owes is settled by the end of its handled turns (M-ORCH-5).
+- **Since #516** (at `68770a298`): `ANSWER` is gone; only `HandInput` and `Wake` have a deadline and are enforced (`domain-model/src/obligation_policy.rs:10-27`). `Owed::Answer` and `Owed::Replan` stay as obligations (the task still reads as waiting for the orchestrator) but no clock acts on them: what the orchestrator owes is settled by the end of its handled turns (M-ORCH-5).
 
 ### M-LIFE-6 · Task row `tasks.state` and flags
 
 ```toml state-machine
 id = "M-LIFE-6"
-code = ["crates/domain-rules/src/model.rs::TaskState", "crates/domain-rules/src/rules.rs::derive_states", "crates/core/src/tasks.rs::TaskState"]
+code = ["crates/domain-model/src/model.rs::TaskState", "crates/domain-model/src/rules.rs::derive_states", "crates/core/src/tasks.rs::TaskState"]
 truth = ["sqlite:tasks", "sqlite:task_cancel_reason", "sqlite:task_history", "sqlite:task_projects"]
-states = "crates/domain-rules/src/model.rs::TaskState"
+states = "crates/domain-model/src/model.rs::TaskState"
 variants = ["NotStarted", "Running", "NeedsYou", "AwaitingBlocker", "ForYourReview", "WaitingDependency", "Closing", "Done", "Cancelled"]
 terminals = ["Done", "Cancelled"]
 ```
 
-- **Kind**: implicit, derived with validation. **Defined in**: `domain-rules/src/model.rs:123-145` (`TaskState` with 9 values), `Task` (`started`, `agent_id`, `final_presentation`, `ending`, `wrap_up`, `pending_user_inputs`, `waiting_for_tasks`, `dependencies`, …).
-- **How it is written**: (1) `materialize` after every lifecycle decision sets `agent_id`, `started`, `ending` and the phase's `TaskState` (`domain-rules/src/lifecycle.rs:1314-1336`); (2) `derive_states` / `state_within_phase` picks the attention state within the phase (`rules.rs:2614-2662`, `lifecycle.rs:2613-2650`); (3) `derive_loaded_states` keeps `WaitingDependency` on open (`rules.rs:2626-2636`).
+- **Kind**: implicit, derived with validation. **Defined in**: `domain-model/src/model.rs:123-145` (`TaskState` with 9 values), `Task` (`started`, `agent_id`, `final_presentation`, `ending`, `wrap_up`, `pending_user_inputs`, `waiting_for_tasks`, `dependencies`, …).
+- **How it is written**: (1) `materialize` after every lifecycle decision sets `agent_id`, `started`, `ending` and the phase's `TaskState` (`domain-model/src/lifecycle.rs:1314-1336`); (2) `derive_states` / `state_within_phase` picks the attention state within the phase (`rules.rs:2614-2662`, `lifecycle.rs:2613-2650`); (3) `derive_loaded_states` keeps `WaitingDependency` on open (`rules.rs:2626-2636`).
 - **Validation**: `agrees` (`lifecycle.rs:1413-1480`) for every task "touched" in the commit (`rules.rs:3012`) and on load: node/start/ending equal to the execution; phase ↔ state compatible; required cards actionable.
 - **Copies that can diverge**: `dependencies`/`waiting_for_tasks` (row) against `Progress::Dependency` (aggregate, dead) and `Await::Tasks` (aggregate, only after a turn): the dependency wait of a task no execution runs is `AwaitingTasks` in the aggregate, recorded from the row's relations by `record_start_waits` at the end of every command (F-LIFE-1, fixed). `wrap_up.post_merge_work` (row) against `post_merge` (aggregate): synchronized in `declare_post_merge`/`end_post_merge`/`adopt_declared_post_merge` (`lifecycle.rs:2441-2491`).
 - **Terminals**: `Done`/`Cancelled` only from the phase; `derive_states` does not touch terminal rows.
@@ -780,14 +780,14 @@ terminals = ["Done", "Cancelled"]
 
 ```toml state-machine
 id = "M-LIFE-7"
-code = ["crates/domain-rules/src/situation.rs::Situation", "crates/domain-rules/src/situation.rs::Tally"]
+code = ["crates/domain-model/src/situation.rs::Situation", "crates/domain-model/src/situation.rs::Tally"]
 truth = ["derived"]
-states = "crates/domain-rules/src/situation.rs::Situation"
+states = "crates/domain-model/src/situation.rs::Situation"
 variants = ["Working", "Waiting", "NeedsYou", "Paused", "Delivered", "Finished", "Cancelled"]
 terminals = ["Finished", "Cancelled"]
 ```
 
-- **Kind**: derived. **Defined in**: `domain-rules/src/situation.rs:7-226`; computed by `ReadIndex::build` per task (`read_index.rs:614`) with `StartProblems::situation` → `situation_with`.
+- **Kind**: derived. **Defined in**: `domain-model/src/situation.rs:7-226`; computed by `ReadIndex::build` per task (`read_index.rs:614`) with `StartProblems::situation` → `situation_with`.
 - **Reads**: `task.state` (terminals), the inbox listing, `task_activity` (closed node), `node_closing`, `obligation_of` (M-LIFE-5), cards and `awaits` of the aggregate, `answered_wait`, `task_handed_back`, `finishing_intent`. `Tally` decides block and counters (`situation.rs:68-82`, `read_index.rs:99`, `views/src/lib.rs:85-93`, `views/src/tasks.rs:530-540`; `:545-555` at `3fc0370ea`). Which tasks enter those blocks at all is M-CARDS-13 (since #536 every task that has not ended does).
 - **Real precedence**: terminal row → inbox `needs_you` → closed node (`Waiting(Slot)`) → delivered and node closing → turn/work → user pause or `Await::Instruction` → user cards → delivered phase → cancellation in progress → wait for an obligation.
 
@@ -795,22 +795,22 @@ terminals = ["Finished", "Cancelled"]
 
 ```toml state-machine
 id = "M-LIFE-8"
-code = ["crates/domain/src/lifecycle.rs::LiveState", "crates/domain-rules/src/node_machine.rs::TaskActivity", "crates/domain-rules/src/lifecycle.rs::live_state", "crates/core/src/model.rs::NodeState", "crates/core/src/model.rs::NodeStatus"]
+code = ["crates/domain/src/lifecycle.rs::LiveState", "crates/domain-model/src/node_machine.rs::TaskActivity", "crates/domain-model/src/lifecycle.rs::live_state", "crates/core/src/model.rs::NodeState", "crates/core/src/model.rs::NodeStatus"]
 truth = ["derived"]
 states = "crates/domain/src/lifecycle.rs::LiveState"
 variants = ["Paused", "Working", "WaitingUser", "WaitingCapacity", "WaitingTask"]
 ```
 
-- **Kind**: derived. **Defined in**: the aggregate's `LiveState` (`lifecycle.rs:1499-1530`), adjusted by `DomainState::live_state` (`domain-rules/src/lifecycle.rs:1848-1866`) and wrapped in `TaskActivity` (`node_machine.rs:226-270`).
+- **Kind**: derived. **Defined in**: the aggregate's `LiveState` (`lifecycle.rs:1499-1530`), adjusted by `DomainState::live_state` (`domain-model/src/lifecycle.rs:1848-1866`) and wrapped in `TaskActivity` (`node_machine.rs:226-270`).
 - **Copies and derivatives**: `ReadIndex` keeps `situation`, `activity` and `live` per task side by side (`read_index.rs:615-619`). `daemon-engine/src/live.rs:403-424` translates `sdk_live` into the inherited model's `NodeState`/`NodeStatus` for the node list: every `Working(Alondra(_))` (starting, delivering, waking, waiting for the orchestrator, merging, finishing) comes out as `Working`/`Busy`, while `Situation` treats it as waiting (see H-LIFE-3).
 
 ### M-LIFE-9 · Node phase (`NodePhase`) and node pause
 
 ```toml state-machine
 id = "M-LIFE-9"
-code = ["crates/domain-rules/src/node_machine.rs::NodePhase", "crates/domain-rules/src/node_machine.rs::Pause", "crates/domain-rules/src/node_machine.rs::node_next"]
+code = ["crates/domain-model/src/node_machine.rs::NodePhase", "crates/domain-model/src/node_machine.rs::Pause", "crates/domain-model/src/node_machine.rs::node_next"]
 truth = ["sqlite:agents", "sqlite:task_released_nodes"]
-states = "crates/domain-rules/src/node_machine.rs::NodePhase"
+states = "crates/domain-model/src/node_machine.rs::NodePhase"
 variants = ["ThroughSdk", "Closed"]
 terminals = ["Closed"]
 initial = ["ThroughSdk"]
@@ -826,7 +826,7 @@ transitions = ["ThroughSdk -> Closed"]
 
 ```toml state-machine
 id = "M-LIFE-10"
-code = ["crates/domain-rules/src/model.rs::WrapUp", "crates/domain-rules/src/model.rs::NodeEnd", "crates/domain-rules/src/rules.rs::node_closing"]
+code = ["crates/domain-model/src/model.rs::WrapUp", "crates/domain-model/src/model.rs::NodeEnd", "crates/domain-model/src/rules.rs::node_closing"]
 truth = ["sqlite:task_wrap_ups", "sqlite:node_last_words", "sqlite:task_stalls"]
 ```
 
@@ -903,7 +903,7 @@ truth = ["memory"]
 that the wait is a state of the task's machine, not something read beside it). A task no execution runs and whose
 dependencies have not landed is `AwaitingTasks{tasks, start}`: it owes `(Party::Tasks, Owed::Tasks)` (or the plan
 review's `Answer`) and `Admit` refuses it with `AwaitsTasks`, so no node takes it. `record_start_waits`
-(`domain-rules/src/lifecycle.rs`), at the end of every command, records `WaitsForTasks{tasks}` when the set of tasks it
+(`domain-model/src/lifecycle.rs`), at the end of every command, records `WaitsForTasks{tasks}` when the set of tasks it
 may not start before (`unmet_dependency_ids`) differs from the one its lifecycle waits for, and `TasksLanded` when that
 set is empty: the task enters the wait in the command that creates it, follows `SetDependencies`/`SetRelations`, leaves
 it in the command that lands its last dependency, enters it again when a dependency is reopened, and ends it with
@@ -917,11 +917,11 @@ the lifecycle in `obligation_with` is gone. Tests:
 and in `crates/domain/tests/lifecycle.rs` the three tests of `AwaitingTasks` plus the property tests that now
 generate `DependenciesLanded`.
 **Class**: CONFIRMED · **Severity**: S2 (wrong visible state and counters; nothing is lost) · **Probability**: high (every task created with `dependencies`, e.g. stacked phases, goes through this while its dependency has not landed) · **Overlap**: no task in the plans of related work and no open issue covers it (#323 is about the outcome of dependents when one is cancelled, not their visible state). `git log` of `situation.rs`: no related changes since #297. The evidence is new.
-**Status**: still holds at `3fc0370ea`. #536 only changes which tasks the Tasks list shows (every task that has not ended is in the active list, M-CARDS-13); the block each one goes to still comes from `Tally` of its `Situation`, which #536 does not touch. Refreshed refs at `3fc0370ea`: `LifecycleRecord` `domain-rules/src/lifecycle.rs:295-496`, `event()` `:617-803`, `plan_lifecycle` `:1277-1284`, `state_within_phase` `:2625-2626`, `waits_are_over` `rules.rs:1986-2002`, blocks `views/src/tasks.rs:545-555`.
+**Status**: still holds at `3fc0370ea`. #536 only changes which tasks the Tasks list shows (every task that has not ended is in the active list, M-CARDS-13); the block each one goes to still comes from `Tally` of its `Situation`, which #536 does not touch. Refreshed refs at `3fc0370ea`: `LifecycleRecord` `domain-model/src/lifecycle.rs:295-496`, `event()` `:617-803`, `plan_lifecycle` `:1277-1284`, `state_within_phase` `:2625-2626`, `waits_are_over` `rules.rs:1986-2002`, blocks `views/src/tasks.rs:545-555`.
 - **Invalid state/transition and broken invariant**: rule 1 of `task-states.md` ("`Situation` … nothing else decides a label, a block, a count") and the definition of `Tally::Waiting` ("It waits for something else: other tasks", `situation.rs:63-66`). There are two sources of truth for "waits for tasks": the row (`TaskState::WaitingDependency`, `dependencies`) and the aggregate. The aggregate does not know it before the first turn, so `Situation` says something different from the row.
 - **Evidence**:
-  1. `LifecycleRecord` has no variant for `WaitForDependencies`/`DependenciesResolved` (`domain-rules/src/lifecycle.rs:294-494`); `event()` cannot produce them (`:616-803`). `Progress::Dependency` (`domain/src/lifecycle.rs:1116-1121`) is unreachable in production.
-  2. Creating the task only records `Planned` (`plan_lifecycle`, `domain-rules/src/lifecycle.rs:1276-1283`) → `Unstarted`.
+  1. `LifecycleRecord` has no variant for `WaitForDependencies`/`DependenciesResolved` (`domain-model/src/lifecycle.rs:294-494`); `event()` cannot produce them (`:616-803`). `Progress::Dependency` (`domain/src/lifecycle.rs:1116-1121`) is unreachable in production.
+  2. Creating the task only records `Planned` (`plan_lifecycle`, `domain-model/src/lifecycle.rs:1276-1283`) → `Unstarted`.
   3. The row does become `WaitingDependency`: `state_within_phase` → `waits_are_over(t).is_err()` (`lifecycle.rs:2625-2626`, `rules.rs:1974-1990`).
   4. `owes()` for `Unstarted` without plan reviews → `Room(Gate)` (`domain/src/lifecycle/obligation.rs:62-66`); `obligation_with` changes it to `Replan` only if the dependency is cancelled or the plan was rejected (`ownership.rs:329-342`).
   5. `situation_with`: no cards, no node, not delivered → `Waiting(match Room(Gate) => WaitsFor::Slot)` (`situation.rs:205-226`).
@@ -929,30 +929,30 @@ generate `DependenciesLanded`.
   7. The detail does say "Waits for “X”" because `slot_fact` falls into `chained` (`views/src/task_state.rs:339-375`, `:588-604`): the row sits in the queue block with text about waiting for another task.
 - **Minimal sequence**: 1) `CreateTask{a}`; 2) `CreateTask{b, dependencies:[a]}`; 3) build `ReadIndex`: `b.situation == Waiting(Slot)`, `tally == Queued`, while `tasks[b].state == WaitingDependency`.
 - **Impact**: the "Queued" block and the "queued" number in the header/Live Activity include tasks that wait for another task, not for a slot; the "Waiting" block omits them. With several stacked phases the user sees a long queue that does not move when slots free up.
-- **Deterministic test and ablation**: a domain test in `crates/domain-rules/src/situation_tests.rs` (or `views/src/tests.rs` for block and counters) with two tasks created by commands, no clock: assert `Situation::Waiting(WaitsFor::Tasks)` and `Tally::Waiting` for `b`. Today it fails with `Waiting(Slot)`. Ablation: remove the fix and see the same failure.
-- **Expected fix and files**: the task-wait of an unstarted task must be known by the source `Situation` reads: either the aggregate (record `WaitForDependencies`/`DependenciesResolved` from `derive_states`/`ReviewWaits`, which also stops `Progress::Dependency` being dead code), or `obligation_with` returns `Owed::Tasks` when the row is `WaitingDependency` and unstarted. Files: `domain-rules/src/{ownership.rs,lifecycle.rs,rules.rs}`, new test.
+- **Deterministic test and ablation**: a domain test in `crates/domain-model/src/situation_tests.rs` (or `views/src/tests.rs` for block and counters) with two tasks created by commands, no clock: assert `Situation::Waiting(WaitsFor::Tasks)` and `Tally::Waiting` for `b`. Today it fails with `Waiting(Slot)`. Ablation: remove the fix and see the same failure.
+- **Expected fix and files**: the task-wait of an unstarted task must be known by the source `Situation` reads: either the aggregate (record `WaitForDependencies`/`DependenciesResolved` from `derive_states`/`ReviewWaits`, which also stops `Progress::Dependency` being dead code), or `obligation_with` returns `Owed::Tasks` when the row is `WaitingDependency` and unstarted. Files: `domain-model/src/{ownership.rs,lifecycle.rs,rules.rs}`, new test.
 
 #### F-LIFE-2 · Reopening a task whose SDK node the user left open creates a `claude --bg` execution nobody runs
 **Class**: CONFIRMED in the domain (the part of the engine that leaves the task idle is H-LIFE-4) · **Severity**: S2 (the task stays "Delivering message" with no host accepting its facts; cancelling it is the way out) · **Probability**: low (needs "Leave it open" on the closing card and then `ReopenTask`) · **Overlap**: none in the plans of related work or in issues. `git log -S` of that line: no changes since #297. The evidence is new.
-**Status**: still holds at `3fc0370ea`. #536's `reopen_requests_with_open_tasks` does not reach it: `ReopenTask` still requires the request to be open (`reopen_guard`, `guards.rs:432-438`), so the request is never closed at that point. Refreshed refs at `3fc0370ea`: `ReopenTask` `rules.rs:5308-5328` (kept node and synthetic execution `:5324-5327`), host stamp `claude-bg` `domain-rules/src/lifecycle.rs:624-629`, `current_sdk` `:2724-2732`.
+**Status**: still holds at `3fc0370ea`. #536's `reopen_requests_with_open_tasks` does not reach it: `ReopenTask` still requires the request to be open (`reopen_guard`, `guards.rs:432-438`), so the request is never closed at that point. Refreshed refs at `3fc0370ea`: `ReopenTask` `rules.rs:5308-5328` (kept node and synthetic execution `:5324-5327`), host stamp `claude-bg` `domain-model/src/lifecycle.rs:624-629`, `current_sdk` `:2724-2732`.
 - **Invalid state/transition and broken invariant**: "No node runs on `claude --bg` any more" (`engine-sdk/src/bg_handover.rs:1-3`): the domain still admits new `claude --bg` executions, and does so on a node that runs through the SDK, so the task's current execution and the node's real host diverge.
 - **Evidence**:
   1. The closer records `NodeEnd::KeptByUser` when the user chooses to leave the node (`engine-sdk/src/task_closer.rs:325`); neither that path nor `cleanup.rs:229` closes the session, so `agents[a].phase` stays `ThroughSdk` (alive).
   2. `ReopenTask` (`rules.rs:5296-5315`): `released` is false (node alive and no other task), `node_gone` only looks at `Closed|Gone`, so `kept = Some(a)` and `Admitted{node: a, execution: None}` + `ResourceAvailable` is decided.
-  3. `execution: None` becomes a host stamp `claude-bg` (`domain-rules/src/lifecycle.rs:623-628`).
+  3. `execution: None` becomes a host stamp `claude-bg` (`domain-model/src/lifecycle.rs:623-628`).
   4. From then on every SDK host fact of `a` is refused: `current_sdk` requires the current generation and a host other than `claude-bg` (`lifecycle.rs:2723-2731`), used by `record_runtime_facts`, `record_turn_boundary`, `record_host_ended`, … (`:1496`, `:1527`, `:1988`, `:2330`).
   5. `admitted_through_sdk` becomes false (`read_index.rs:906-911`), so the task does not pass through the gate (`node_machine.rs:400-411`); `task_activity` still reads it as `Live` because the node phase is `ThroughSdk` (`node_machine.rs:260-269`) → `Working(Alondra(Delivering))` → `Situation::Waiting(Step(Delivering))`.
   6. `ReopenTask` emits no `NotifyAgent`: nobody tells the node the task is back.
 - **Minimal sequence**: 1) an SDK task (`AdmitExecution`) delivers and is accepted; 2) closing: the user answers "Leave" → `RecordNodeEnd{KeptByUser}` → `Done`; 3) `ReopenTask` → `claude-bg` execution of generation g+1 in `InputPending`; 4) any `RecordRuntimeFacts{generation: g}` → `stale_execution`; with g+1 → `invalid_input`.
 - **Impact**: the row says "Delivering" forever; the node's facts are discarded; the `HandInput` deadline does not act (no recorded exit and no own host, `obligation_watch.rs:144`, `:263-266`).
-- **Deterministic test and ablation**: a domain test in `crates/domain-rules/src/tests.rs`, an SDK variant of `a_task_reopened_with_its_node_kept_by_the_user_keeps_working_with_it` (`tests.rs:4111-4121`, which today only covers `claude --bg`): admit through `AdmitExecution`, close with `KeptByUser`, reopen, and check that the current execution is not `claude-bg` (or that the task is left without a node, depending on the product decision) and that a `RecordRuntimeFacts` from the node is accepted. Today it fails on the host assert.
+- **Deterministic test and ablation**: a domain test in `crates/domain-model/src/tests.rs`, an SDK variant of `a_task_reopened_with_its_node_kept_by_the_user_keeps_working_with_it` (`tests.rs:4111-4121`, which today only covers `claude --bg`): admit through `AdmitExecution`, close with `KeptByUser`, reopen, and check that the current execution is not `claude-bg` (or that the task is left without a node, depending on the product decision) and that a `RecordRuntimeFacts` from the node is accepted. Today it fails on the host assert.
 - **Expected fix and files**: never admit `execution: None` for an SDK node. Either the reopened task is left without a node (as with `Closed|Gone`) and the gate starts a new SDK execution that resumes the session, or `AdmitExecution` is recorded with the SDK identity of the kept node. Files: `rules.rs` (`ReopenTask`), test.
 - **Status: fixed** in #552 (commit `56d796f26`) with the default decision: `ReopenTask` no longer keeps the node (every live node runs through the SDK, `NodePhase` has only `ThroughSdk` and `Closed`), so a reopened task waits with no node in the launch queue and the gate's start resumes the saved session. Tests: `sdk_node_tests::a_task_reopened_with_its_sdk_node_kept_by_the_user_waits_for_a_new_execution_that_is_heard` (replaces `reopening_with_the_original_node_kept_cannot_change_its_native_session_account`, which asserted the old behaviour) and `tests::a_task_reopened_with_its_node_kept_by_the_user_waits_for_a_new_node` (replaces `…_keeps_working_with_it`). Ablation: restoring the kept node makes both fail on the node assert.
 
 ### Hypotheses
 
 #### H-LIFE-1 · A repeated `TurnStarted` after its `TurnEnded` reopens the turn and its end is swallowed: "Working" with no turn
-What is claimed: the domain journal stores neither provider cursor nor stamp (`event()` always uses "current cursor + 1" and the current stamp, `domain-rules/src/lifecycle.rs:617-620`), so the aggregate cannot refuse a repeated fact. A `TurnStarted{X}` with the activity in `Resting/Awaiting` opens a new turn (`observations.rs:225-227`, `provider_turn_started`). The next `TurnEnded{X}` is ignored because `turn_end_recorded` already sees an end of X since the last `Admitted` (`lifecycle.rs:1560-1564`, `:1590-1592`). Result: `Activity::Turn` with no end → `Owed::Turn`, `Situation::Working(Turn)`, no deadline, until the host dies.
+What is claimed: the domain journal stores neither provider cursor nor stamp (`event()` always uses "current cursor + 1" and the current stamp, `domain-model/src/lifecycle.rs:617-620`), so the aggregate cannot refuse a repeated fact. A `TurnStarted{X}` with the activity in `Resting/Awaiting` opens a new turn (`observations.rs:225-227`, `provider_turn_started`). The next `TurnEnded{X}` is ignored because `turn_end_recorded` already sees an end of X since the last `Admitted` (`lifecycle.rs:1560-1564`, `:1590-1592`). Result: `Activity::Turn` with no end → `Owed::Turn`, `Situation::Working(Turn)`, no deadline, until the host dies.
 Missing to confirm: that a restart can re-deliver already-applied facts to the domain, that is, whether the `RecordRuntimeFacts` commit and the advance of the normalization checkpoint (`provider_normalization_checkpoints`) are atomic (STORE/ENGINE). The model (`machine-model/src/lib.rs:423-447`) deduplicates with its own cursor, which `restart` does not clear (`:383-395`), so it does not exercise this. Proposed test: a scenario with host doubles that re-emit the batch after a simulated restart between commit and checkpoint; or a domain test applying `TurnStarted{X}`, `TurnEnded{X}`, `TurnStarted{X}` and checking the task does not read `Working`. Overlap: scope of the stalled-node recovery work (phase 2, `StreamEndedMidTurn`/contradictions): new evidence for them, not a fix of its own.
 
 #### H-LIFE-2 · `finish_settled_deliveries` can refuse the command that settles a delivery with an open orchestrator case
@@ -968,9 +968,9 @@ Missing: confirm in the engine that no loop picks up a `claude-bg` execution in 
 
 ### Docs that differ from the code
 Differences between `docs/architecture/task-states.md` and the code:
-1. "`Situation` in `crates/core`": it is in `crates/domain-rules/src/situation.rs`.
+1. "`Situation` in `crates/core`": it is in `crates/domain-model/src/situation.rs`.
 2. Table "Who owes the next step": `Replan` is missing, and `obligation()` is not the only authority: `obligation_with` (`ownership.rs:329-342`) rewrites the obligation to `Answer`/`Replan` outside the aggregate.
-3. Rule 3 ("a fact of the provider is never refused … only another execution, a repeated fact or a gap"): the aggregate refuses facts with correct stamp and cursor (`RepeatedTakeover`, `TakeoverUnanswered` without `Pending`, `ConnectionLost` with `Released`, `Ask` with an invalid reason, `TurnEnded` with `awaits` that includes itself, card id collision; `observations.rs:83-85`, `:360-362`, `:472-482`, `:343`, `:588-592`), and `record_runtime_facts` aborts the whole batch on any of them or on `TakenOver` of a node that is closing (`domain-rules/src/lifecycle.rs:2329-2379`). Also, in production the aggregate never sees a foreign cursor or stamp: `event()` fabricates both, and the real protection is `current_sdk` (generation), the store's cursor and `turn_end_recorded`.
+3. Rule 3 ("a fact of the provider is never refused … only another execution, a repeated fact or a gap"): the aggregate refuses facts with correct stamp and cursor (`RepeatedTakeover`, `TakeoverUnanswered` without `Pending`, `ConnectionLost` with `Released`, `Ask` with an invalid reason, `TurnEnded` with `awaits` that includes itself, card id collision; `observations.rs:83-85`, `:360-362`, `:472-482`, `:343`, `:588-592`), and `record_runtime_facts` aborts the whole batch on any of them or on `TakenOver` of a node that is closing (`domain-model/src/lifecycle.rs:2329-2379`). Also, in production the aggregate never sees a foreign cursor or stamp: `event()` fabricates both, and the real protection is `current_sdk` (generation), the store's cursor and `turn_end_recorded`.
 4. Rule 4 ("a caller never tries one variant of an event and falls back to another when it is refused"): `end_of_pause` tries `EndPause` and falls back to `Resumed` if refused (`node_machine.rs:579-589`); `record_host_ended` tries `HostEnded` with `resume` through `sends()` before deciding (`lifecycle.rs:2021`, `:1305-1310`).
 5. `Situation` precedence: the code has two steps the doc does not list (closed node → `Waiting(Slot)` before the lifecycle; delivered with node closing → `Delivered(Closing)` before the live turn) and shows `Cancelled` while a cancellation is still draining (`situation.rs:153-159`, `:202-204`).
 6. Item 14 ("The model test … no known gaps"): the model does not cover interrupt/`ForceStop`, reopen, host release and recovery, `InputDropped`, `Unprompted` turns, held plan review, work after the merge, Codex (M-LIFE-14). F-LIFE-1 and F-LIFE-2 are outside what it checks.
@@ -978,7 +978,7 @@ Differences between `docs/architecture/task-states.md` and the code:
 8. The aggregate has branches production never reaches (`Progress::Dependency`, `DeliveryGate::Blocked/AwaitingMerge`, `RetireReleasedExecution`, `ConnectionLost`, `ResourceReleased`, `EffectAccepted/Observed`, `Notification`, `PlanApproved`, `Event::Ask`): the doc and the tests describe a bigger machine than the one that runs.
 
 **Status: fixed** in #624 (group G12), each checked again at `b479c4f7c` before the change, where all eight still held:
-1. `task-states.md` places `Situation` in `crates/domain-rules/src/situation.rs`, computed in the `ReadIndex` from the
+1. `task-states.md` places `Situation` in `crates/domain-model/src/situation.rs`, computed in the `ReadIndex` from the
    lifecycle, the row and the listed cards; icons, detail lines and header counts read it (`classify`,
    `activity_counts`), so the old note that some views still read the old state is gone.
 2. The obligation table has `Replan`, and says that `Situation` and the clock read `obligation_of`, which adds
@@ -1000,7 +1000,7 @@ Differences between `docs/architecture/task-states.md` and the code:
 
 ```toml state-machine
 id = "M-LIFE-15"
-code = ["crates/domain-rules/src/stages.rs::TaskStages", "crates/domain-rules/src/stage_rules.rs::begin_stage_handover", "crates/domain-rules/src/stage_rules.rs::record_plan_approval", "crates/engine-sdk/src/provider_transition.rs::request_stage"]
+code = ["crates/domain-model/src/stages.rs::TaskStages", "crates/domain-model/src/stage_rules.rs::begin_stage_handover", "crates/domain-model/src/stage_rules.rs::record_plan_approval", "crates/engine-sdk/src/provider_transition.rs::request_stage"]
 truth = ["sqlite:task_stages"]
 ```
 
@@ -1046,9 +1046,9 @@ truth = ["sqlite:task_stages"]
 
 ```toml state-machine
 id = "M-LIFE-16"
-code = ["crates/domain-rules/src/specs.rs::TaskSpecs", "crates/domain-rules/src/rules/spec_rules.rs::propose_specs", "crates/domain-rules/src/rules/spec_rules.rs::approve_plan_specs", "crates/domain-rules/src/rules/spec_rules.rs::record_specs_written", "crates/domain-rules/src/rules/spec_rules.rs::request_spec_change", "crates/domain-rules/src/rules/spec_rules.rs::propose_amendment", "crates/domain-rules/src/rules/spec_rules.rs::settle_spec_card", "crates/engine-sdk/src/spec_writes.rs::write_due"]
+code = ["crates/domain-model/src/specs.rs::TaskSpecs", "crates/domain-model/src/rules/spec_rules.rs::propose_specs", "crates/domain-model/src/rules/spec_rules.rs::approve_plan_specs", "crates/domain-model/src/rules/spec_rules.rs::record_specs_written", "crates/domain-model/src/rules/spec_rules.rs::request_spec_change", "crates/domain-model/src/rules/spec_rules.rs::propose_amendment", "crates/domain-model/src/rules/spec_rules.rs::settle_spec_card", "crates/engine-sdk/src/spec_writes.rs::write_due"]
 truth = ["sqlite:task_specs"]
-states = "crates/domain-rules/src/specs.rs::AmendmentState"
+states = "crates/domain-model/src/specs.rs::AmendmentState"
 variants = ["Requested", "Proposed", "Approved", "Rejected"]
 terminals = ["Approved", "Rejected"]
 initial = ["Requested"]
@@ -1095,7 +1095,7 @@ transitions = ["Requested -> Proposed", "Proposed -> Approved", "Proposed -> Rej
 
 ## Cards, plans, documents and requests (`CARDS`)
 
-Scope: the interaction machines and the work machines of the domain, outside the turn/node lifecycle. Code: `crates/domain-rules/src/` (mainly `rules.rs`, `guards.rs`, `model.rs`, `card_contract.rs`, `rules/plan_review.rs`, `rules/snooze.rs`, `rules/open_pr.rs`, `ownership.rs`, `projection.rs`, `attention.rs`), `crates/engine-orchestrator/src/orchestrator_inbox.rs` (only where it closes requests), `crates/store-sqlite/src/lib.rs` (schema) and `crates/store-sqlite/src/command.rs` (effect outbox). Audited commit: `1567967b9`.
+Scope: the interaction machines and the work machines of the domain, outside the turn/node lifecycle. Code: `crates/domain-model/src/` (mainly `rules.rs`, `guards.rs`, `model.rs`, `card_contract.rs`, `rules/plan_review.rs`, `rules/snooze.rs`, `rules/open_pr.rs`, `ownership.rs`, `projection.rs`, `attention.rs`), `crates/engine-orchestrator/src/orchestrator_inbox.rs` (only where it closes requests), `crates/store-sqlite/src/lib.rs` (schema) and `crates/store-sqlite/src/command.rs` (effect outbox). Audited commit: `1567967b9`.
 
 Execution model common to all machines in this area (stated once):
 
@@ -1110,7 +1110,7 @@ Execution model common to all machines in this area (stated once):
 
 ```toml state-machine
 id = "M-CARDS-1"
-code = ["crates/domain-rules/src/model.rs::Interaction", "crates/domain-rules/src/rules.rs::open", "crates/domain-rules/src/rules.rs::invalidate", "crates/domain-rules/src/rules.rs::retire"]
+code = ["crates/domain-model/src/model.rs::Interaction", "crates/domain-model/src/rules.rs::open", "crates/domain-model/src/rules.rs::invalidate", "crates/domain-model/src/rules.rs::retire"]
 truth = ["sqlite:interactions", "sqlite:interaction_attachments", "sqlite:interaction_holds", "sqlite:interaction_reads", "sqlite:interaction_subjects"]
 ```
 
@@ -1149,7 +1149,7 @@ truth = ["sqlite:interactions", "sqlite:interaction_attachments", "sqlite:intera
 
 ```toml state-machine
 id = "M-CARDS-2"
-code = ["crates/domain-rules/src/model.rs::Acceptance", "crates/domain-rules/src/model.rs::MergeAuthorization", "crates/domain-rules/src/model.rs::MergeAttemptState"]
+code = ["crates/domain-model/src/model.rs::Acceptance", "crates/domain-model/src/model.rs::MergeAuthorization", "crates/domain-model/src/model.rs::MergeAttemptState"]
 truth = ["sqlite:merge_authorizations", "sqlite:stack_readiness", "sqlite:delivery_feedback", "sqlite:delivery_targets", "sqlite:lifecycle_delivery", "sqlite:pr_decisions"]
 ```
 
@@ -1177,7 +1177,7 @@ truth = ["sqlite:merge_authorizations", "sqlite:stack_readiness", "sqlite:delive
 
 ```toml state-machine
 id = "M-CARDS-3"
-code = ["crates/domain-rules/src/model.rs::QuestionGroup", "crates/domain-rules/src/rules.rs::group_complete", "crates/core/src/model.rs::QuestionStatus"]
+code = ["crates/domain-model/src/model.rs::QuestionGroup", "crates/domain-model/src/rules.rs::group_complete", "crates/core/src/model.rs::QuestionStatus"]
 truth = ["sqlite:interactions"]
 ```
 
@@ -1189,7 +1189,7 @@ truth = ["sqlite:interactions"]
 
 ```toml state-machine
 id = "M-CARDS-4"
-code = ["crates/domain-rules/src/rules/snooze.rs::snooze_guard", "crates/domain-rules/src/rules/snooze.rs::resurface_card", "crates/domain-rules/src/rules/snooze.rs::reconcile_snoozed_cards"]
+code = ["crates/domain-model/src/rules/snooze.rs::snooze_guard", "crates/domain-model/src/rules/snooze.rs::resurface_card", "crates/domain-model/src/rules/snooze.rs::reconcile_snoozed_cards"]
 truth = ["sqlite:interactions"]
 ```
 
@@ -1201,7 +1201,7 @@ truth = ["sqlite:interactions"]
 
 ```toml state-machine
 id = "M-CARDS-5"
-code = ["crates/domain-rules/src/model.rs::Interaction"]
+code = ["crates/domain-model/src/model.rs::Interaction"]
 truth = ["sqlite:interactions"]
 ```
 
@@ -1211,9 +1211,9 @@ truth = ["sqlite:interactions"]
 
 ```toml state-machine
 id = "M-CARDS-6"
-code = ["crates/domain-rules/src/model.rs::CardSlot"]
+code = ["crates/domain-model/src/model.rs::CardSlot"]
 truth = ["derived"]
-states = "crates/domain-rules/src/model.rs::CardSlot"
+states = "crates/domain-model/src/model.rs::CardSlot"
 variants = ["Plan", "FinalResult", "Problem"]
 ```
 
@@ -1224,7 +1224,7 @@ variants = ["Plan", "FinalResult", "Problem"]
 
 ```toml state-machine
 id = "M-CARDS-7"
-code = ["crates/domain-rules/src/model.rs::PlanReview", "crates/domain-rules/src/rules/plan_review.rs::plan_review_pending"]
+code = ["crates/domain-model/src/model.rs::PlanReview", "crates/domain-model/src/rules/plan_review.rs::plan_review_pending"]
 truth = ["sqlite:plan_reviews"]
 ```
 
@@ -1236,7 +1236,7 @@ truth = ["sqlite:plan_reviews"]
 
 ```toml state-machine
 id = "M-CARDS-8"
-code = ["crates/domain-rules/src/checklist.rs::Checklist", "crates/domain-rules/src/checklist.rs::ChecklistMark", "crates/domain-rules/src/rules.rs::take_plan_items"]
+code = ["crates/domain-model/src/checklist.rs::Checklist", "crates/domain-model/src/checklist.rs::ChecklistMark", "crates/domain-model/src/rules.rs::take_plan_items"]
 truth = ["sqlite:task_checklists", "sqlite:delivery_checklists"]
 ```
 
@@ -1247,7 +1247,7 @@ truth = ["sqlite:task_checklists", "sqlite:delivery_checklists"]
 
 ```toml state-machine
 id = "M-CARDS-9"
-code = ["crates/domain-rules/src/model.rs::Document", "crates/domain-rules/src/model.rs::DocumentRevision", "crates/domain-rules/src/model.rs::DocumentReview"]
+code = ["crates/domain-model/src/model.rs::Document", "crates/domain-model/src/model.rs::DocumentRevision", "crates/domain-model/src/model.rs::DocumentReview"]
 truth = ["sqlite:documents", "sqlite:document_revisions", "sqlite:document_reviews", "sqlite:document_decisions", "sqlite:task_documents"]
 ```
 
@@ -1258,7 +1258,7 @@ truth = ["sqlite:documents", "sqlite:document_revisions", "sqlite:document_revie
 
 ```toml state-machine
 id = "M-CARDS-10"
-code = ["crates/domain-rules/src/model.rs::Request", "crates/domain-rules/src/request_outcome.rs", "crates/core/src/tasks.rs::RequestState"]
+code = ["crates/domain-model/src/model.rs::Request", "crates/domain-model/src/request_outcome.rs", "crates/core/src/tasks.rs::RequestState"]
 truth = ["sqlite:requests", "sqlite:cleared_requests", "sqlite:maintenance_requests", "sqlite:message_requests", "sqlite:request_card_replies", "sqlite:request_folds", "sqlite:request_launch", "sqlite:request_origins", "sqlite:request_plans"]
 ```
 
@@ -1273,7 +1273,7 @@ truth = ["sqlite:requests", "sqlite:cleared_requests", "sqlite:maintenance_reque
     `withdrawn = false`, `answer = None`, `cleared = false`. It is the same reset `AdoptOpenPr` already did
     (`:5290-5293`).
   - **Invariant it states**: a request is closed or cleared only while none of its tasks is open, "open" meaning
-    `!over()` (`over()` = terminal or `ending.is_some()`, `domain-rules/src/lifecycle.rs:1184-1186`). A task that is
+    `!over()` (`over()` = terminal or `ending.is_some()`, `domain-model/src/lifecycle.rs:1184-1186`). A task that is
     `Closing` (lifecycle `Finishing`) is over, so a closed or cleared request may still hold one: that is how
     `CloseRequest` (guard `!t.over()`, `rules.rs:3530-3536`) and `RequestTasksOver` (emitted when the last task becomes
     over, `:2974-2981`) already work, and `ClearCompleted` clears such a request on purpose
@@ -1298,7 +1298,7 @@ truth = ["sqlite:requests", "sqlite:cleared_requests", "sqlite:maintenance_reque
 
 ```toml state-machine
 id = "M-CARDS-11"
-code = ["crates/domain-rules/src/rules.rs::dependency_graph", "crates/domain-rules/src/rules.rs::blocks_graph"]
+code = ["crates/domain-model/src/rules.rs::dependency_graph", "crates/domain-model/src/rules.rs::blocks_graph"]
 truth = ["sqlite:task_dependencies", "sqlite:task_waits", "sqlite:lifecycle_dependencies", "sqlite:task_continuations", "sqlite:task_creations", "sqlite:task_launch_plans", "sqlite:task_relations"]
 ```
 
@@ -1311,7 +1311,7 @@ truth = ["sqlite:task_dependencies", "sqlite:task_waits", "sqlite:lifecycle_depe
 
 ```toml state-machine
 id = "M-CARDS-12"
-code = ["crates/domain-rules/src/model.rs::StackDependency", "crates/domain-rules/src/model.rs::StackReadiness", "crates/domain-rules/src/rules.rs::stack_ready"]
+code = ["crates/domain-model/src/model.rs::StackDependency", "crates/domain-model/src/model.rs::StackReadiness", "crates/domain-model/src/rules.rs::stack_ready"]
 truth = ["sqlite:stack_readiness", "sqlite:task_stacks"]
 ```
 
@@ -1358,7 +1358,7 @@ request until a reminder is on its way. Test:
 (without the fix: no reminder, and `unresolved` is empty).
 **Class**: CONFIRMED (that nothing claims it again). Whether the batch fails to close it depends on the model or on a cut, which is probabilistic. · **Severity**: S2 · **Probability**: medium (one omission by the model is enough; issue #353 observed it) · **Overlap**: issue #353 (NEW evidence: exact paths showing why there is no second chance). Related to F-ORCH-1 and F-STORE-3 (ways of losing the single message). `git log` of `orchestrator_inbox.rs`: no later fix.
 **Status**: still holds at `3fc0370ea`. #536 adds `reopen_requests_with_open_tasks` in the same post-processing (`rules.rs:2971`), but it only reopens requests that hold an open task; the request of this finding has every task over, so nothing changes for it. Refreshed refs at `3fc0370ea`: `RequestTasksOver` `rules.rs:2974-2981`, `close_delivered_plans` `:1380-1426`, `close_finished_messages` `:1321-1326`.
-Still holds at `68770a298`: #516 rewrote the orchestrator inbox, but `steps` and `unresolved` still skip every request that has a task (`orchestrator_inbox.rs:70-73`, `:152-153`), so a request whose tasks all ended is still neither reminded nor raised. #516 only makes the orchestrator's close of it carry the outcome `tasks_ended` (`check_close_outcome`, `domain-rules/src/rules.rs:1357-1387`).
+Still holds at `68770a298`: #516 rewrote the orchestrator inbox, but `steps` and `unresolved` still skip every request that has a task (`orchestrator_inbox.rs:70-73`, `:152-153`), so a request whose tasks all ended is still neither reminded nor raised. #516 only makes the orchestrator's close of it carry the outcome `tasks_ended` (`check_close_outcome`, `domain-model/src/rules.rs:1357-1387`).
 - **Invalid state/transition and broken invariant**: a user request open, with all its tasks ended, no Done/answer card and no owner. Breaks "Inbox is the channel" (every request ends with a result card) and the rule that every state has an owner.
 - **Evidence**:
   1. `RequestTasksOver` is only emitted in the commit in which the request **becomes** one with all tasks ended: `rules.rs:2961-2969` filters with `!ended_before.contains(id)`. The test `request_over_tests.rs:61` (`…hands_its_open_request_to_the_orchestrator_once`) fixes that "once".
@@ -1456,14 +1456,14 @@ commands are accepted).
 **Class**: CONFIRMED (at `3fc0370ea`) · **Severity**: S3 (nothing is lost; a request and its task vanish from the list without ever being shown as completed) · **Probability**: medium (the orchestrator closes a request as soon as its last task starts ending, and the node's cleanup takes minutes; any «Clear completed» in that window, offered whenever the Completed section has anything else) · **Overlap**: none in the referred tasks or the open issues. Introduced by #536, which moved such a request from Completed to the active list without changing what the clear takes.
 - **Invalid state/transition and broken invariant**: a request with `cleared = true` listed in the active part of the Tasks list, and a «Clear completed» that takes something the Completed section does not show. `clear_guard` says it takes "what the user saw" as completed (`guards.rs:495-497`); since #536 the list shows a closed request with a `Closing` task as active (M-CARDS-13).
 - **Evidence** (at `3fc0370ea`):
-  1. The last task T of request R starts ending (`Finishing`, row `Closing`, `domain-rules/src/lifecycle.rs:1328`; `over()` is true, `:1184-1186`). `RequestTasksOver` goes out in that commit (`rules.rs:2974-2981`) and the orchestrator's `CloseRequest` passes, since its guard only refuses tasks that are not over (`:3530-3536`). R is closed while T still ends.
+  1. The last task T of request R starts ending (`Finishing`, row `Closing`, `domain-model/src/lifecycle.rs:1328`; `over()` is true, `:1184-1186`). `RequestTasksOver` goes out in that commit (`rules.rs:2974-2981`) and the orchestrator's `CloseRequest` passes, since its guard only refuses tasks that are not over (`:3530-3536`). R is closed while T still ends.
   2. `clear_guard` takes R: `closed_with_tasks_still_ending` (`guards.rs:517-523`) is true for a closed, uncleared, non-message request whose tasks are all over and one of them not terminal; `ClearCompleted` sets `cleared` (`rules.rs:5735-5742`). The action is offered on the Completed section whenever it lists anything (`views/src/tasks.rs:744-746`, `projection.rs:125-126`).
   3. The list: `bucket(R)` is `Active` because T is not terminal (`views/src/tasks.rs:121-123`), and `task_bucket(T)` is `Active` (`:136-138`); R's header reads «Active» (`request_state`, `:348-366`). Before the clear R was already in the active list, not in Completed.
   4. When T reaches `Done`, `bucket(R)` becomes `Cleared` (`:124-125`) and `task_bucket(T)` too (`:139-140`): R and T leave every section without ever appearing in Completed.
 - **Minimal sequence**: 1) requests R (task T) and R2 (task T2, `Done`, so Completed has an entry); 2) T is accepted and starts its cleanup (`Finishing`); 3) the orchestrator closes R; 4) the user presses «Clear completed»: R2 and R are cleared; 5) the list still shows R and T as active; 6) T ends: R and T disappear.
 - **Impact**: the user cannot find the outcome of R in Completed; the clear acted on a row they saw as active.
-- **Deterministic test and ablation**: a pure domain test in `crates/domain-rules/src/tests.rs` (fixture with R closed and T `Closing`, plus a `Done` task in another request): `ClearCompleted { seen }` must leave R uncleared. Today R is cleared. A views test in `crates/views/src/tests.rs` next to `every_open_task_is_in_exactly_one_block_whatever_its_request_says` (`:10664`): after T is `Done`, R is in the Completed section. No clock. Ablation: restore `|| self.closed_with_tasks_still_ending(r)` and see both fail.
-- **Expected fix and files**: drop `closed_with_tasks_still_ending` from `clear_guard`: the request reaches Completed when its last task ends and the next clear takes it, which is what the list shows since #536. It also removes the usual way a request becomes cleared while it still holds a task (one entry of F-STORE-7). Files: `crates/domain-rules/src/guards.rs`, tests.
+- **Deterministic test and ablation**: a pure domain test in `crates/domain-model/src/tests.rs` (fixture with R closed and T `Closing`, plus a `Done` task in another request): `ClearCompleted { seen }` must leave R uncleared. Today R is cleared. A views test in `crates/views/src/tests.rs` next to `every_open_task_is_in_exactly_one_block_whatever_its_request_says` (`:10664`): after T is `Done`, R is in the Completed section. No clock. Ablation: restore `|| self.closed_with_tasks_still_ending(r)` and see both fail.
+- **Expected fix and files**: drop `closed_with_tasks_still_ending` from `clear_guard`: the request reaches Completed when its last task ends and the next clear takes it, which is what the list shows since #536. It also removes the usual way a request becomes cleared while it still holds a task (one entry of F-STORE-7). Files: `crates/domain-model/src/guards.rs`, tests.
 
 ### Hypotheses
 
@@ -1577,7 +1577,7 @@ truth = ["derived"]
 - **Kind**: explicit in the domain, with a mirror in the gate. **Defined in**: `Reason`
   (`engine-ports/src/admission.rs:48-67`), `Paused::returns` (`:101-109`), `Cleanup` (`:69-76`) and `pauses.rs`.
 - **Source of truth**: the domain (`NodeEvent::Paused/Resumed/PauseCleanup/PauseReleased`,
-  `domain-rules/src/node_machine.rs:340-352, 509-534`). The gate translates with `hand_pauses`
+  `domain-model/src/node_machine.rs:340-352, 509-534`). The gate translates with `hand_pauses`
   (`admission.rs:744-797`).
 - **States**:
   - `Memory` (legacy only), `Declared`, `Usage` (`--bg` nodes only), `ByUser`, `ApiError`, `Disk`;
@@ -1645,7 +1645,7 @@ truth = ["memory", "sqlite:provider_execution_owners"]
   code of `alondra/accountBlocked`, or of `alondra/inputRefused` before `agy` took the input
   (`provider-antigravity/src/context.rs::signed_out`), the `Driver` keeps `native_signed_out` for that host only
   (memory, recomputed from the host's next batch) and `lost_on` sends `RecordHostLost { signed_out: true }`. The rule
-  (`domain-rules/src/lifecycle.rs::record_host_lost`) marks the task's account signed out, so no new work starts on
+  (`domain-model/src/lifecycle.rs::record_host_lost`) marks the task's account signed out, so no new work starts on
   it, and words the host-lost card as a sign-in problem (`SystemCard::HostLost { signed_out: true }`); its way out
   is the same retake. A stored command or card without the field reads `false`.
 
@@ -1802,7 +1802,7 @@ truth = ["memory"]
 
 - **Kind**: implicit. **Defined in**: `obligation_watch.rs:46-56` (`Seen`), with `step`, `observe` and `enforce`.
 - **States per task**: `(party, owed, since, first_seen, clock, reported)`. The policy lives in
-  `domain-rules/src/obligation_policy.rs`.
+  `domain-model/src/obligation_policy.rs`.
 - **Persistence and restart**: everything is lost. Deadlines count again from the first observation, which is
   safe: it only delays.
 - `effective()` (`:96-101`) turns `HandInput`/`HandDecision` into `Room(Gate)` when the gate says
@@ -1880,7 +1880,7 @@ that fix the design), `crates/engine-admission/src/disk_peaks.rs`, `crates/engin
 `engine-admission/src/admission.rs` (`admit`, `snapshot_locked`, `working_tasks`, `reserving_tasks`,
 `hold_for_disk`), `engine-ports/src/disk.rs`, `system/src/disk.rs`, `daemon-engine-machine/src/{machine,swap_disk}.rs`,
 `engine-sdk/src/bg_handover.rs`, `store-sqlite/src/handover.rs`, `engine-ports/src/journal/handover.rs`,
-`engine-sdk/src/sdk_owner.rs` (`start_bound`), `domain-rules/src/rules.rs` (`AdmitExecution`, `RecordTaskWorktree`),
+`engine-sdk/src/sdk_owner.rs` (`start_bound`), `domain-model/src/rules.rs` (`AdmitExecution`, `RecordTaskWorktree`),
 `engine-kernel/src/domain_runtime.rs` (`set_task_worktree`, `changed`), `engine-worktrees/src/cancelled_worktrees.rs`,
 `daemon-server/src/domain_bootstrap.rs` (`agent_waiting_machine`), `alondrad/src/{lib,assemble}.rs`. Not audited:
 `machine_state.rs` (`MacState`, memory and swap) beyond its use. The `git log` of the four main files shows only crate
@@ -2295,43 +2295,43 @@ where = "crates/daemon-support/src/updates.rs"
 decides = "pace"
 [[timer]]
 name = "API_RETRIES"
-where = "crates/domain-rules/src/api_failure.rs"
+where = "crates/domain-model/src/api_failure.rs"
 decides = "state"
 machine = "M-LIFE-5"
 triggers = "sends a node back by itself after an API error once the wait ends"
 [[timer]]
 name = "FRESH_TURN"
-where = "crates/domain-rules/src/api_failure.rs"
+where = "crates/domain-model/src/api_failure.rs"
 decides = "state"
 machine = "M-LIFE-5"
 triggers = "a node that answered this long after an API error fails anew, not again"
 [[timer]]
 name = "OUTAGE_PROBE"
-where = "crates/domain-rules/src/api_failure.rs"
+where = "crates/domain-model/src/api_failure.rs"
 decides = "state"
 machine = "M-LIFE-5"
 triggers = "one node is sent back to probe a down API"
 [[timer]]
 name = "QUIET_RETRY"
-where = "crates/domain-rules/src/api_failure.rs"
+where = "crates/domain-model/src/api_failure.rs"
 decides = "state"
 machine = "M-LIFE-5"
 triggers = "a node past its retries is sent back without a card"
 [[timer]]
 name = "HAND_INPUT"
-where = "crates/domain-rules/src/obligation_policy.rs"
+where = "crates/domain-model/src/obligation_policy.rs"
 decides = "state"
 machine = "M-LIFE-5"
 triggers = "gives up a node's process holding a handed input as hung"
 [[timer]]
 name = "WAKE"
-where = "crates/domain-rules/src/obligation_policy.rs"
+where = "crates/domain-model/src/obligation_policy.rs"
 decides = "state"
 machine = "M-LIFE-5"
 triggers = "wakes a node that owes a wake"
 [[timer]]
 name = "STRIKE_GAP"
-where = "crates/domain-rules/src/pr_identity.rs"
+where = "crates/domain-model/src/pr_identity.rs"
 decides = "pace"
 [[timer]]
 name = "HOLD_LOG_EVERY"
@@ -3203,19 +3203,19 @@ truth = ["file:wait.json"]
 
 ```toml state-machine
 id = "M-ENGINE-28"
-code = ["crates/domain-rules/src/claude_access.rs::ClaudeHold", "crates/domain-rules/src/claude_access.rs::hold_on_claude", "crates/domain-rules/src/lifecycle.rs::hold_after_failure", "crates/daemon-engine/src/claude_access.rs::Schedule"]
+code = ["crates/domain-model/src/claude_access.rs::ClaudeHold", "crates/domain-model/src/claude_access.rs::hold_on_claude", "crates/domain-model/src/lifecycle.rs::hold_after_failure", "crates/daemon-engine/src/claude_access.rs::Schedule"]
 truth = ["derived"]
 ```
 
 At `68770a298`; this machine was outside the audited scope (M-ENGINE-9 pointed at it) and is described here because
 #540 changed it.
-- **Defined in**: `ClaudeHold { SignedOut, Outage, Usage }` (`domain-rules/src/claude_access.rs:42`, owners `:58-64`:
+- **Defined in**: `ClaudeHold { SignedOut, Outage, Usage }` (`domain-model/src/claude_access.rs:42`, owners `:58-64`:
   the user for a sign-in, `Capacity(ClaudeApi)` / `Capacity(Usage)` otherwise); the hold's card
   (`SystemCard::ClaudeSignedOut | ClaudeOutage { quiet, detail, said } | ClaudeUsage { resets_at }`,
   `system_card.rs:23-36`); the task's pause in the lifecycle (`Paused { card, owner }`); the schedule
   `daemon-engine/src/claude_access.rs:20-88` (`Schedule::due`, `run`). Failures come from the provider's turn end
   (`TurnOutcome::ApiFailed(ApiFailure { error, status, resets_at, detail, said })`, `provider-contract/src/lib.rs`)
-  through `hold_after_failure` (`domain-rules/src/lifecycle.rs:1544-1550`).
+  through `hold_after_failure` (`domain-model/src/lifecycle.rs:1544-1550`).
 - **States per task**: not held → held (last hold record of its journal is `Paused` on a hold card, its lifecycle
   still waits on that `Pause` card, and the card's credential cause is current: `claude_held`, `claude_access.rs:210-226`)
   → probing (the schedule or `claude_answered` resumed it: last hold record is `Resumed`, no `TurnEnded` since;
@@ -3331,7 +3331,7 @@ that loop, the `Admitted` guard should go in there. New evidence. No task in the
 the write of `admission.json` has to fail, for example with a full disk, a situation Alondra does live. ·
 **Overlap**: none in the related-coverage notes or the open-issues list. New evidence. It is the same class of state
 split between JSON and SQLite as F-STORE-4 (`closed-task-nodes.json`) and M-STORE-12.
-**Status**: FIXED in `e7b898c30` (G4, #521), with the default decision: the pause is the domain fact `Task::paused_in_queue` (`PauseQueuedTask`, `ResumeQueuedTask`). The launch keeps its `launch_queue` row, so nothing moves between two stores; closing the task clears the fact; `queued_launches`, `still_waits`, the slot count, `live()` and `start_failures::facts` read it. A pause an older daemon kept in `admission.json` is re-queued and handed to the domain once. Tests: `domain-rules` `queue_pause_tests::cancelling_a_task_paused_in_the_queue_ends_its_pause` (fails without the clear in `close_task`), `…::a_task_is_paused_in_the_queue_once_and_only_before_it_has_a_node`, `engine-admission` `admission::tests::a_queue_pause_an_older_daemon_kept_in_the_gates_file_becomes_the_domains`, and the updated `auto_launch` pause tests.
+**Status**: FIXED in `e7b898c30` (G4, #521), with the default decision: the pause is the domain fact `Task::paused_in_queue` (`PauseQueuedTask`, `ResumeQueuedTask`). The launch keeps its `launch_queue` row, so nothing moves between two stores; closing the task clears the fact; `queued_launches`, `still_waits`, the slot count, `live()` and `start_failures::facts` read it. A pause an older daemon kept in `admission.json` is re-queued and handed to the domain once. Tests: `domain-model` `queue_pause_tests::cancelling_a_task_paused_in_the_queue_ends_its_pause` (fails without the clear in `close_task`), `…::a_task_is_paused_in_the_queue_once_and_only_before_it_has_a_node`, `engine-admission` `admission::tests::a_queue_pause_an_older_daemon_kept_in_the_gates_file_becomes_the_domains`, and the updated `auto_launch` pause tests.
 - **Invalid state/transition and broken invariant**: a task is in the queue **or** paused, never in both and never
   in neither; nothing stays paused for a finished task.
 - **Evidence**:
@@ -3488,7 +3488,7 @@ new): `:130` → `:131`; `stale()` `:2488-2491` → `:2565-2568`, its uses `:176
   3. A reads `adapter_state` with g+1: `StaleOwner` (`:899`) → `Failed("reading the provider state")` →
      `not_taken` → `lost()` (`:1155-1157`).
   4. `lost()` sends `RecordHostLost` (`:1217-1224`), unless the task is paused (`:1212-1215`). The domain rule only
-     checks the task and the reason (`domain-rules/src/rules.rs:5540-5545`): it does not know B carries the host.
+     checks the task and the reason (`domain-model/src/rules.rs:5540-5545`): it does not know B carries the host.
      If B has not yet done `add_sdk_owner`, `lost()` also calls `host_ended(agent)` (`:1208-1211`), which revokes the
      agent's capability: this is the consequence described in H-ENGINE-8.
   5. B goes on: it adopts the host or relaunches it, and its `Owner` works with the host-lost card open.
@@ -3644,7 +3644,7 @@ fetch). · **Severity**: S3: an orphan worktree on disk until the next daemon st
   1. `own_worktree` first calls `domain.set_task_worktree` (`launches.rs:41-42`).
   2. `set_task_worktree` writes the store row and then runs `Command::RecordTaskWorktree`
      (`domain_runtime.rs:806-810`).
-  3. `RecordTaskWorktree` rejects a finished task with `task_not_active` (`domain-rules/src/rules.rs:5686-5688`).
+  3. `RecordTaskWorktree` rejects a finished task with `task_not_active` (`domain-model/src/rules.rs:5686-5688`).
   4. `own_worktree` turns that error into `storage_unavailable` and returns with `?` (`launches.rs:41-42`). It never
      reads the state nor reaches `release_recorded_worktree` (`:43-52`). That branch is only reached if the task ends
      in the instant between the command commit and `domain.state()`.
@@ -3938,10 +3938,10 @@ deliver). **Overlap**: H-ENGINE-1 / F-ENGINE-12. What is here is a new consequen
   `TellNode` or an interrupt committed in that window loses its permit, but the next commit that touches the task
   issues them again (`store/src/lib.rs:1539-1566`), and the freshly installed host confirms observations right away.
   It does not get stuck.
-- **`compact_ended_tasks` in an infinite loop**: `compacted()` is idempotent (`domain-rules/src/compaction.rs:113-139`),
+- **`compact_ended_tasks` in an infinite loop**: `compacted()` is idempotent (`domain-model/src/compaction.rs:113-139`),
   so a second pass sees nothing to change.
 - **`live_agents` withdraws the capability of a node that is still closing**: a task only becomes terminal after
-  draining its execution (`Drained::Execution`, `domain-rules/src/lifecycle.rs:38-46`), so no live host needs the
+  draining its execution (`Drained::Execution`, `domain-model/src/lifecycle.rs:38-46`), so no live host needs the
   credential.
 - **Retry of "Resume" with the answer lost (`PauseResume::carries_out` leaves no receipt)**: the server's action
   journal repeats the result by action id (M-STORE-7), so the app does not reach `carries_out` again.
@@ -4044,13 +4044,13 @@ truth = ["sqlite:command_audit", "sqlite:semantic_receipts", "sqlite:local_comma
 
 ```toml state-machine
 id = "M-STORE-3"
-code = ["crates/domain-rules/src/read_index.rs::ReadSnapshot", "crates/engine-kernel/src/domain_runtime.rs::publish"]
+code = ["crates/domain-model/src/read_index.rs::ReadSnapshot", "crates/engine-kernel/src/domain_runtime.rs::publish"]
 truth = ["derived"]
 ```
 
 - **Kind**: explicit (a state+index pair of one revision). **Defined in**:
   `crates/engine-kernel/src/domain_runtime.rs:417-437` (`publish`), `:880-942` (`commit`), `:368-389`
-  (`own_projected`), `crates/domain-rules/src/read_index.rs:457` (`pair`, `stale_revision`).
+  (`own_projected`), `crates/domain-model/src/read_index.rs:457` (`pair`, `stale_revision`).
 - **Source of truth**: SQLite; in-memory derivative `snapshot: RwLock<Arc<ReadSnapshot>>`; store cache
   (`Cached{state,data_version,total_changes}`).
 - **Transition**: SQLite commit → (under the store mutex) `publish` builds the index and replaces the `Arc`; readers
@@ -4538,7 +4538,7 @@ start again until `domain.db` is edited by hand) · **Probability**: low · **Ov
 - **Invalid state/transition and broken invariant**: a request open in memory and «cleared» in SQLite; `validate`
   refuses the loaded state («Cleared Request is still open»).
 - **Evidence**: the save only inserted into `cleared_requests` when `cleared` is true and never deleted
-  (`repository.rs`), while the load sets `cleared = true` for every row. `AdoptOpenPr` (`domain-rules/src/rules.rs`)
+  (`repository.rs`), while the load sets `cleared = true` for every row. `AdoptOpenPr` (`domain-model/src/rules.rs`)
   and, since #536, `reopen_requests_with_open_tasks` write `cleared = false`.
 - **Minimal sequence**: 1) a request is cleared while its last task is still ending; 2) the task ends with its pull
   request open; 3) the open-PR sweep runs `AdoptOpenPr`: in memory `closed = false`, `cleared = false`, the row stays;
@@ -4557,7 +4557,7 @@ deals with nodes that go silent, not with tasks without a node. Same class of JS
 The `git log` of `live.rs` shows only crate moves.
 - **Invalid state/transition and broken invariant**: an open task in `NotStarted`, with no agent and with a launch
   recorded, with no entry in `closed-task-nodes.json`. Broken invariant: "every open task is in someone's hands". The
-  domain itself declares it `Ownerless` ("its node is gone and nobody was asked", `domain-rules/src/ownership.rs:302`),
+  domain itself declares it `Ownerless` ("its node is gone and nobody was asked", `domain-model/src/ownership.rs:302`),
   but that check only runs in tests (`ownership_tests.rs:468`): no production code calls `holder()`.
 - **Who writes the entry, and in what order**:
   - `node_exit::take_out` (`daemon-engine/src/node_exit.rs:52-86`) commits `ReleaseTask` (`:62-67`) and then calls
@@ -4565,7 +4565,7 @@ The `git log` of `live.rs` shows only crate moves.
     `Relaunch::AskUser`), the orchestrator's replacement (`domain_orchestrator_tools.rs:678, 685`) and the aborted
     replacement (`node_exit.rs:42`), the last two with `ByItself`.
   - `task_closer::record_end` (`engine-sdk/src/task_closer.rs:259-282`) commits `RecordNodeEnd`. For a task that went
-    back to work, the rule releases it and deletes `wrap_up` (`domain-rules/src/rules.rs:5380-5386`). Then it calls
+    back to work, the rule releases it and deletes `wrap_up` (`domain-model/src/rules.rs:5380-5386`). Then it calls
     `remember_closed_task` with `ByItself` (`:278`).
   - `remember_closed_task` changes the in-memory map and calls `save` (`daemon-engine/src/live.rs:141-150`). `save` is
     write+rename without fsync, and a failure is only logged (`:22-30`).
@@ -4573,7 +4573,7 @@ The `git log` of `live.rs` shows only crate moves.
     without notice (`live.rs:107-113`).
 - **What the release leaves**: `ExecutionReleased` moves the lifecycle to `Queued`
   (`domain/src/lifecycle/commands.rs:1148-1168`), and `materialize` leaves `agent_id = None`, `started = false` and
-  `state = NotStarted` (`domain-rules/src/lifecycle.rs:1314-1328`). `needs_a_node_again` is false, because it had an
+  `state = NotStarted` (`domain-model/src/lifecycle.rs:1314-1328`). `needs_a_node_again` is false, because it had an
   agent before and was not terminal (`store-sqlite/src/command.rs:456-460`): it does not go back to `launch_queue`.
 - **Every exit requires the entry**:
   1. `auto_launch::pass`: without the entry, `relaunching = false`; `task_was_launched` is true and it does
@@ -4586,9 +4586,9 @@ The `git log` of `live.rs` shows only crate moves.
      `views/src/common.rs:221-224`).
   4. `start_failures::facts` gives `start = Launched` and `closed = false` (`daemon-engine/src/start_failures.rs:28-38`).
      With that, `DomainState::react` produces neither `Retry` nor `Ask(NodeClosed)`
-     (`domain-rules/src/ownership.rs:358-380`): no card.
+     (`domain-model/src/ownership.rs:358-380`): no card.
   5. No deadline rescues it: `obligation_watch` only enforces `HandInput`, `Wake` and `Answer`
-     (`domain-rules/src/obligation_policy.rs:15-27`), and a queued task owes none of them. Re-checked at `68770a298`:
+     (`domain-model/src/obligation_policy.rs:15-27`), and a queued task owes none of them. Re-checked at `68770a298`:
      since #516 it enforces only `HandInput` and `Wake` (`obligation_policy.rs:24-26`); the step still holds.
   6. SDK retakes (`to_take`/`unowned`) require `agent_id` (`engine-sdk/src/sdk_owner.rs:1520-1521`).
   - Only manual exit: the user cancels the task, or asks the orchestrator to launch it. Its `launch_task`
@@ -4625,7 +4625,7 @@ The `git log` of `live.rs` shows only crate moves.
   - as a safety net, the daemon checks the `holder()` invariant in production and turns an `Ownerless` into a card or
     a relaunch, instead of only in tests;
   - files: `daemon-engine/src/node_exit.rs`, `engine-sdk/src/task_closer.rs`, `daemon-engine/src/live.rs`,
-    `store-sqlite`, `domain-rules/src/ownership.rs`.
+    `store-sqlite`, `domain-model/src/ownership.rs`.
 - **Status: fixed** in #552 (commit `56d796f26`); confirmed on `main` at `10ebafced` before the change (the entry
   was still written by `remember_closed_task` after the commit, and `holder()` still had no production caller).
   The closed node is `Task.released`, written by the commit that releases the task (table `task_released_nodes`), and
@@ -4669,15 +4669,15 @@ the worktree and PR part of `crates/engine-sdk/src/task_closer.rs`, file retenti
 
 ```toml state-machine
 id = "M-GH-1"
-code = ["crates/domain-rules/src/model.rs::PrState", "crates/domain-rules/src/model.rs::PullRequest", "crates/core/src/pr.rs::CheckState", "crates/core/src/pr.rs::PrState"]
+code = ["crates/domain-model/src/model.rs::PrState", "crates/domain-model/src/model.rs::PullRequest", "crates/core/src/pr.rs::CheckState", "crates/core/src/pr.rs::PrState"]
 truth = ["sqlite:pull_requests", "sqlite:pull_request_tasks", "sqlite:pull_request_aliases", "sqlite:pr_notes_from_github", "sqlite:pull_request_reviews", "sqlite:merge_verdicts"]
-states = "crates/domain-rules/src/model.rs::PrState"
+states = "crates/domain-model/src/model.rs::PrState"
 variants = ["Open", "Closed", "Merged"]
 terminals = ["Merged"]
 ```
 
 - **Kind**: explicit (enum `PrState {Open, Closed, Merged}`) plus the fields `head`, `base`, `merged_head`,
-  `allowed_methods`, `review`. **Defined in**: `crates/domain-rules/src/model.rs:517-625`. Transitions in
+  `allowed_methods`, `review`. **Defined in**: `crates/domain-model/src/model.rs:517-625`. Transitions in
   `rules.rs:5095-5180` (`ObservePrState`), `rules.rs:4597-4727` (`RegisterPr`, including the move between tasks) and
   `rules.rs:4728-4760` (`NotePrOpened`/`RecordOpenedPr`).
 - **Source of truth**: GitHub. **Copies and derivatives**: `DomainState.pull_requests` (table `pull_requests`; owners in
@@ -4718,9 +4718,9 @@ terminals = ["Merged"]
 
 ```toml state-machine
 id = "M-GH-2"
-code = ["crates/domain-rules/src/model.rs::MergeAttemptState", "crates/domain-rules/src/model.rs::MergeAuthorization"]
+code = ["crates/domain-model/src/model.rs::MergeAttemptState", "crates/domain-model/src/model.rs::MergeAuthorization"]
 truth = ["sqlite:merge_authorizations", "sqlite:merge_method"]
-states = "crates/domain-rules/src/model.rs::MergeAttemptState"
+states = "crates/domain-model/src/model.rs::MergeAttemptState"
 variants = ["Unclaimed", "Claimed", "Uncertain", "Confirmed", "Failed"]
 terminals = ["Confirmed", "Failed"]
 initial = ["Unclaimed"]
@@ -4781,9 +4781,9 @@ truth = ["memory", "sqlite:branch_update"]
 
 ```toml state-machine
 id = "M-GH-4"
-code = ["crates/domain-rules/src/model.rs::OpenPrPending", "crates/domain-rules/src/rules/open_pr.rs", "crates/engine-github/src/domain_github.rs::reconcile"]
+code = ["crates/domain-model/src/model.rs::OpenPrPending", "crates/domain-model/src/rules/open_pr.rs", "crates/engine-github/src/domain_github.rs::reconcile"]
 truth = ["sqlite:task_open_prs"]
-states = "crates/domain-rules/src/model.rs::OpenPrPending"
+states = "crates/domain-model/src/model.rs::OpenPrPending"
 variants = ["Deliver", "Close"]
 ```
 
@@ -4805,7 +4805,7 @@ variants = ["Deliver", "Close"]
 
 ```toml state-machine
 id = "M-GH-5"
-code = ["crates/domain-rules/src/model.rs::Task"]
+code = ["crates/domain-model/src/model.rs::Task"]
 truth = ["derived"]
 ```
 
@@ -4816,7 +4816,7 @@ truth = ["derived"]
 - **Since #537** (at `68770a298`): the only writer of `NotePrOpened` is `catch_up_task` at a final delivery, which
   notes GitHub's open PR of each open worktree branch of the task (`engine-github/src/domain_github.rs:80-90`);
   `NotePrChanges` (a successful `gh pr close`) re-notes the task's open registered PRs for a fresh read
-  (`domain-rules/src/rules.rs:4800-4805`). The providers no longer read `gh pr create` or its output
+  (`domain-model/src/rules.rs:4800-4805`). The providers no longer read `gh pr create` or its output
   (`ObservedFact::PullRequestOpened`/`PullRequestNotNamed` and `runs_gh_pr_create` are gone), and
   `AskToRegisterPr` is kept only so older journals read and does nothing (`:4855-4858`). A one-time upgrade
   (`store-sqlite/src/repository.rs:1640-1652`, marker table `pr_notes_from_github`) drops every note that is not a
@@ -4829,7 +4829,7 @@ truth = ["derived"]
 
 ```toml state-machine
 id = "M-GH-6"
-code = ["crates/domain-rules/src/model.rs::StackDependency", "crates/domain-rules/src/model.rs::StackReadiness"]
+code = ["crates/domain-model/src/model.rs::StackDependency", "crates/domain-model/src/model.rs::StackReadiness"]
 truth = ["sqlite:task_stacks", "sqlite:stack_readiness"]
 ```
 
@@ -4861,7 +4861,7 @@ truth = ["derived"]
 
 ```toml state-machine
 id = "M-GH-8"
-code = ["crates/domain-rules/src/model.rs::TaskWorktree", "crates/engine-worktrees/src/task_worktrees.rs"]
+code = ["crates/domain-model/src/model.rs::TaskWorktree", "crates/engine-worktrees/src/task_worktrees.rs"]
 truth = ["sqlite:task_worktree_records", "sqlite:task_worktrees", "sqlite:worktree_storage"]
 ```
 
@@ -4927,7 +4927,7 @@ truth = ["derived"]
 
 ```toml state-machine
 id = "M-GH-11"
-code = ["crates/domain-rules/src/model.rs::WrapUp", "crates/domain-rules/src/model.rs::NodeEnd"]
+code = ["crates/domain-model/src/model.rs::WrapUp", "crates/domain-model/src/model.rs::NodeEnd"]
 truth = ["sqlite:task_wrap_ups", "sqlite:task_closings"]
 ```
 
@@ -4948,7 +4948,7 @@ truth = ["sqlite:task_wrap_ups", "sqlite:task_closings"]
 
 ```toml state-machine
 id = "M-GH-12"
-code = ["crates/domain-rules/src/lifecycle.rs::post_merge_owed", "crates/domain/src/lifecycle.rs::PostMergeFact"]
+code = ["crates/domain-model/src/lifecycle.rs::post_merge_owed", "crates/domain/src/lifecycle.rs::PostMergeFact"]
 truth = ["sqlite:task_post_merge_work", "sqlite:task_post_merge_turns", "sqlite:post_merge_checks"]
 ```
 
@@ -4991,9 +4991,9 @@ truth = ["derived"]
   the watcher closed it again within the next round; and a close GitHub accepted counted only once a read after it
   succeeded, so a failed read left the `Close` pending and a reopen before the next round was closed again. Now:
   `ClosePrOfCancelledTask` refuses (`open_pr_close`, field `pr_id`) a PR whose record is not `Open`
-  (`domain-rules/src/rules/open_pr.rs`), the sweep sends `AdoptOpenPr` for it, which delivers it to the user
+  (`domain-model/src/rules/open_pr.rs`), the sweep sends `AdoptOpenPr` for it, which delivers it to the user
   (`open_pr_sweep.rs`), and the watcher records a close GitHub accepted as `Closed` at once, without a read after it
-  (`domain_github.rs`). Tests: `domain-rules` `open_pr_close_tests::a_cancelled_tasks_pr_alondra_closed_once_and_someone_reopened_goes_to_the_user`;
+  (`domain_github.rs`). Tests: `domain-model` `open_pr_close_tests::a_cancelled_tasks_pr_alondra_closed_once_and_someone_reopened_goes_to_the_user`;
   `engine-github` `open_pr_sweep::tests::a_cancelled_tasks_pr_reopened_after_alondra_closed_it_goes_to_the_user_and_is_never_closed_again`
   and `domain_github::tests::a_close_github_accepted_is_recorded_even_when_the_read_after_it_fails`. Ablation in the PR.
   The tests that asserted the old re-close (`the_sweep_closes_the_open_pr_of_a_cancelled_task_once_…`, and the
@@ -5036,7 +5036,7 @@ truth = ["derived"]
      (`cancelled_worktrees.rs:78-104`).
   2. `apply_answers` runs at the start of every closer pass (`task_closer.rs:221-224`, every 30 s or on every commit) and
      goes over **all** answered, non-withdrawn cards (`cancelled_worktrees.rs:109-113`, `:121-124`). Nobody withdraws the
-     card and compaction keeps Alondra's cards (`domain-rules/src/compaction.rs:7`).
+     card and compaction keeps Alondra's cards (`domain-model/src/compaction.rs:7`).
   3. It does not check whether the task is still cancelled; only `in_use`, which **excludes the task itself**
      (`task_worktrees.rs:257-261`: `worktree_held_by_other(path, task)` and `other.id != task`).
   4. It deletes with `discard_worktree` = `release(dir, |_| true, give_up=true, ...)` (`system/src/worktree.rs:658-668`):
@@ -5127,7 +5127,7 @@ task. Tests: `answered_card_tests::after_the_merge_a_turn_that_ends_idle_without
   finished or cancelled state owes nothing; every step has an owner that gives it" (`docs/architecture/task-states.md`,
   "Who owes the next step") and the product rule that a task only waits for capacity or for the user.
 - **Evidence**:
-  1. Only a fact ends post-merge work (domain-rules `lifecycle.rs:2449-2472`; `task_closer.rs:4-6`).
+  1. Only a fact ends post-merge work (domain-model `lifecycle.rs:2449-2472`; `task_closer.rs:4-6`).
   2. The node's turn ends idle and there is no deadline for this in `obligation_policy` (only HandInput, Wake, Answer; since #516 only HandInput and Wake, `obligation_policy.rs:13-27` at `68770a298`: the step still holds).
   3. `can_release_host` is false while post-merge is owed (`domain/src/lifecycle.rs:1407`): `idle_release` does not close
      the host, so the "host end -> resumed session or card" (`observations.rs:681-701`) never arrives either.
@@ -5146,7 +5146,7 @@ task. Tests: `answered_card_tests::after_the_merge_a_turn_that_ends_idle_without
 - **Expected fix and files**: without a timer (product decision), treat "turn ended idle with `PostMerge` owed, no own work
   and no pending input" as a lifecycle contradiction: give the turn back to the node with the reminder (like `Wake`) and,
   if it happens again, raise a `PostMergeProblem` card to the user. Files: `crates/domain` (end-of-turn observations),
-  `domain-rules/src/lifecycle.rs`.
+  `domain-model/src/lifecycle.rs`.
 
 #### F-GH-6 · An attachment of a user message to an open task is deleted after 30 days even though the task is still open
 **Class**: CONFIRMED · **Severity**: S3 · **Probability**: low · **Overlap**: STORE (M-STORE-13) does not cover the files folder; new.
@@ -5250,7 +5250,7 @@ GitHub read, for both cases). Ablation in the PR.
 
 #### F-GH-10 · A «delete» answer about a launch folder the domain never recorded is applied again on every closer pass
 **Class**: CONFIRMED · **Severity**: S1 · **Probability**: low · **Overlap**: F-GH-2 (same card, the path without a record).
-**Status**: FIXED (review of PR #548). After deleting, `apply_answers` records the path `Removed` whether or not the task had a record of it: `ReleaseTaskWorktree { end: Removed }` on an ended task now inserts a `Removed` record (`origin: Task`) for a path it never recorded, and any other end is still `not_found` (`crates/domain-rules/src/rules.rs`, `crates/engine-worktrees/src/cancelled_worktrees.rs`). Tests: `a_delete_answer_about_a_folder_the_domain_never_recorded_is_applied_once` (`//crates/engine-sdk:engine_sdk_engine_test`), `an_ended_task_records_as_removed_a_launch_folder_it_never_recorded` (`//crates/domain-rules:domain_rules_test`). Ablation: with `apply_answers` releasing only recorded paths (as on `main`), the folder made there after the answer is deleted again and the engine test fails; restored, it passes.
+**Status**: FIXED (review of PR #548). After deleting, `apply_answers` records the path `Removed` whether or not the task had a record of it: `ReleaseTaskWorktree { end: Removed }` on an ended task now inserts a `Removed` record (`origin: Task`) for a path it never recorded, and any other end is still `not_found` (`crates/domain-model/src/rules.rs`, `crates/engine-worktrees/src/cancelled_worktrees.rs`). Tests: `a_delete_answer_about_a_folder_the_domain_never_recorded_is_applied_once` (`//crates/engine-sdk:engine_sdk_engine_test`), `an_ended_task_records_as_removed_a_launch_folder_it_never_recorded` (`//crates/domain-model:domain_model_test`). Ablation: with `apply_answers` releasing only recorded paths (as on `main`), the folder made there after the answer is deleted again and the engine test fails; restored, it passes.
 - **Evidence**: the folder the sweep or a cancellation lists can be only the task's launch folder (`task_worktrees`), with
   no record in `task.worktrees`. `apply_answers` lets `recorded == None` through and, after `discard_worktree`, recorded the
   end only `if recorded.is_some()` (`cancelled_worktrees.rs`, on `main` at `8d46b4783`). Nothing marks the answer applied,
@@ -5306,7 +5306,7 @@ Added at `68770a298` while re-checking #537 (the mechanism predates it; #537 mad
 noted). Owner: the stable pull request identity work (referred table); no fix group here.
 What is claimed: task A presents a final delivery; `catch_up_task` reads GitHub's open PR P of one of A's worktree
 branches and, since nobody registered P, notes it (`NotePrOpened`, `engine-github/src/domain_github.rs:84-90`;
-`domain-rules/src/rules.rs:4806-4814`). If task B registers P before A's note is read, every later
+`domain-model/src/rules.rs:4806-4814`). If task B registers P before A's note is read, every later
 `RecordOpenedPr { A, P }` is refused with `pr_owned_by_other_task` (`rules.rs:4823`); the refusal rolls back the
 removal of the note, so A keeps P in `opened_prs`. `read_opened` retries it every watcher round and only logs
 (`domain_github.rs:59-66`), and A's every presentation is refused with `pr_being_read` ("send the same result again in
@@ -5324,7 +5324,7 @@ Scope: `crates/engine-orchestrator` (executor, recovery, watchdog, inbox, provid
 `crates/daemon-engine/src/domain_orchestrator_tools.rs`, `crates/core/src/orchestrator.rs`, `orchestrator.json`,
 the `cancel|acknowledge|retry` subcommands of the orchestrator CLI, the `Answer` deadline
 (`daemon-engine/src/obligation_watch.rs` + `orchestrator_inbox::overdue`), and schedules
-(`domain-rules/src/schedule.rs`, `engine-sdk/src/domain_schedule_runner.rs`, `domain_schedule_api.rs`, tables
+(`domain-model/src/schedule.rs`, `engine-sdk/src/domain_schedule_runner.rs`, `domain_schedule_api.rs`, tables
 `schedules`, `schedule_runs`, `schedule_failed_launches`, `auto_launches`, `schedule_paid_accounts`). Audited at commit
 `1567967b9`, by reading only. Re-checked for #516 at `68770a298`: the `Answer` deadline and `orchestrator_inbox::overdue`
 no longer exist (M-ORCH-5, M-ORCH-6); `orchestrator_inbox.rs` was read whole at that commit.
@@ -5475,7 +5475,7 @@ truth = ["derived"]
   - **When it runs**: only at the end of a handled turn with nothing waiting (M-ORCH-1, `domain_orchestrator.rs:705-711`)
     and in an idle `tick` with nothing pending, no usage pause, an account to select and `last_error` None
     (`:491-497`). Never from a clock: `settle_overdue` now only steps what Alondra owes the nodes (`:428-430`).
-  - **Domain side**: `SettleSuggestion` accepts a discard from System (`domain-rules/src/rules.rs:897-906`,
+  - **Domain side**: `SettleSuggestion` accepts a discard from System (`domain-model/src/rules.rs:897-906`,
     responder `alondra`); `SettleStall(Unsettled)` of a task with an open PR and an unanswered user message now
     delivers the PR with `UNSETTLED_UNANSWERED` instead of being refused (`rules/stall.rs:182-187`).
   - **Consequence**: with no handled turn, nothing the orchestrator owes moves (see F-ORCH-3 and F-ORCH-1).
@@ -5510,7 +5510,7 @@ truth = ["derived"]
 ```
 
 - **Kind**: implicit. **Defined in**: `orchestrator_inbox.rs:97-118`, `:286-301`, `:334-360`; the obligation in
-  `domain-rules/src/ownership.rs:337-355`.
+  `domain-model/src/ownership.rs:337-355`.
 - A task that waits for a cancelled one, or whose launch plan was refused: at every "rest" (`rests`) of the orchestrator a
   letter `dependency-cancelled-<t>--<d>-<rest>` / `plan-refused-<card>-<rest>` is created, at most `REPLAN_REMINDERS` (3)
 per subject; a batch that carried only such letters (`Run.replans_only`) is no rest. No deadline. See F-ORCH-2 (fixed).
@@ -5523,12 +5523,12 @@ per subject; a batch that carried only such letters (`Run.replans_only`) is no r
 
 ```toml state-machine
 id = "M-ORCH-13"
-code = ["crates/domain-rules/src/orchestrator_batch.rs::TURN_TASK_LIMIT", "crates/store-sqlite/src/batch_effects.rs::within_task_limit", "crates/engine-orchestrator/src/domain_orchestrator.rs::go_on_after_the_task_limit"]
+code = ["crates/domain-model/src/orchestrator_batch.rs::TURN_TASK_LIMIT", "crates/store-sqlite/src/batch_effects.rs::within_task_limit", "crates/engine-orchestrator/src/domain_orchestrator.rs::go_on_after_the_task_limit"]
 truth = ["derived"]
 ```
 
 - **Kind**: implicit, counted from the store. **Defined in** (at `68770a298`): `TURN_TASK_LIMIT` = 10 and the code
-  `turn_task_limit` (`domain-rules/src/orchestrator_batch.rs:12-13`); `tasks_created_in` and `within_task_limit`
+  `turn_task_limit` (`domain-model/src/orchestrator_batch.rs:12-13`); `tasks_created_in` and `within_task_limit`
   (`store-sqlite/src/batch_effects.rs:75-104`), checked before each batch command (`:68`);
   `go_on_after_the_task_limit` (`engine-orchestrator/src/domain_orchestrator.rs:722-735`).
 - **States per batch**: under the limit → at the limit (10 tasks whose `created_revision` is the revision of a
@@ -5556,11 +5556,11 @@ truth = ["derived"]
 
 ```toml state-machine
 id = "M-ORCH-9"
-code = ["crates/domain-rules/src/schedule.rs::Schedule"]
+code = ["crates/domain-model/src/schedule.rs::Schedule"]
 truth = ["sqlite:schedules", "sqlite:schedule_paid_accounts", "sqlite:schedule_request_tools"]
 ```
 
-- **Kind**: explicit (a validated struct). **Defined in**: `domain-rules/src/schedule.rs:25-45`, `:186-259`.
+- **Kind**: explicit (a validated struct). **Defined in**: `domain-model/src/schedule.rs:25-45`, `:186-259`.
 - **Source of truth**: table `schedules` (+ `schedule_paid_accounts` for the paid-account grant,
   `store-sqlite/src/provider_accounts.rs:15-24`).
 - **States**: enabled with `next_run`; enabled without `next_run` (a consumed Once); disabled; deleted (tombstone).
@@ -5570,12 +5570,12 @@ truth = ["sqlite:schedules", "sqlite:schedule_paid_accounts", "sqlite:schedule_r
 
 ```toml state-machine
 id = "M-ORCH-10"
-code = ["crates/domain-rules/src/schedule.rs::ScheduleRun", "crates/domain-rules/src/schedule.rs::ScheduleLaunch", "crates/domain-rules/src/schedule.rs::claim_launch", "crates/engine-sdk/src/domain_schedule_runner.rs", "crates/domain-rules/src/schedule.rs::ScheduleLaunchState", "crates/domain-rules/src/schedule.rs::ScheduleRunState"]
+code = ["crates/domain-model/src/schedule.rs::ScheduleRun", "crates/domain-model/src/schedule.rs::ScheduleLaunch", "crates/domain-model/src/schedule.rs::claim_launch", "crates/engine-sdk/src/domain_schedule_runner.rs", "crates/domain-model/src/schedule.rs::ScheduleLaunchState", "crates/domain-model/src/schedule.rs::ScheduleRunState"]
 truth = ["derived", "sqlite:schedule_failed_launches", "sqlite:schedule_runs"]
 ```
 
 - **Kind**: explicit, composite. **Defined in**: `schedule.rs:88-176`, transitions `:396-660`, commands in
-  `domain-rules/src/rules.rs:3145-3311`, runner `engine-sdk/src/domain_schedule_runner.rs:303-690`.
+  `domain-model/src/rules.rs:3145-3311`, runner `engine-sdk/src/domain_schedule_runner.rs:303-690`.
 - **States**: run: Launching -> Sent | Failed | Interrupted. Launch: Pending -> Dispatching -> Handed | Failed;
   Dispatching -> Uncertain (when the store is opened, `store-sqlite/src/lib.rs:734-735`) -> Handed | Failed.
 - **Composite with**: the task (agent_id/started), the card `problem-launch-<run>` (`rules.rs:3264-3305`), the retry run
@@ -5691,7 +5691,7 @@ settle of everything else (`:705`). Refreshed refs: `rested` `:763-766`; the idl
   2. `replans(state, rest)` (`orchestrator_inbox.rs:102-110`): an id with the rest number, `inbox_card(..., rest as u32)`
      (`:343` cancelled dependency, `:288` refused plan); the new id does not exist -> `Step::Tell`.
   3. `carry_out` -> `PublishInformation` from System to Orchestrator (`engine-kernel/src/domain_runtime/problems.rs:205-213`)
-     -> effect `NotifyOrchestrator` (`domain-rules/src/rules.rs:3986-3991`) -> pending message.
+     -> effect `NotifyOrchestrator` (`domain-model/src/rules.rs:3986-3991`) -> pending message.
   4. `handled` sees the pending message and leaves (`domain_orchestrator.rs:700-702`); the `run` loop wakes on the change
      (`:1059-1063`) and `tick` claims a new batch (`:483-530`).
   5. Nothing limits it: the test at `orchestrator_inbox.rs:656-689` fixes "one more at each rest" and does not simulate the
@@ -5718,7 +5718,7 @@ In the "failed with no exit" state `tick` discards the expired messages (`domain
 nothing pending, hands the re-plans and skips `settle` because `last_error` is set (`:491-497`); no batch runs, so
 `handled` never settles either (`:705-711`). Before #516 the `Answer` deadline of `obligation_watch` still settled
 what the orchestrator owed the nodes after 10 + 10 minutes, busy or failing. Since #516 nothing does: the policy
-enforces only `HandInput` and `Wake` (`domain-rules/src/obligation_policy.rs:24-26`). So a node's question to the
+enforces only `HandInput` and `Wake` (`domain-model/src/obligation_policy.rs:24-26`). So a node's question to the
 orchestrator is never reminded nor withdrawn (its node stands still), a stopped node's case is never settled, a
 suggestion never discarded and a held plan review never released, for as long as the state lasts; the only way out is
 the user cancelling each task. The same holds during the 24 hours of failures before it, only bounded by the
@@ -5865,7 +5865,7 @@ the orchestrator skill says to pass it there; `set_priority` only changes it lat
 the older normal task takes the slot).
 **Class**: CONFIRMED (confirms #352 with paths) · **Severity**: S3 · **Probability**: medium · **Overlap**: issue #352 (new path evidence, same failure). #350 (moving tasks with create_task + cancel_task): no new evidence.
 - **Evidence**:
-  1. `Command::CreateTask` has no priority (`domain-rules/src/command.rs:147-163`).
+  1. `Command::CreateTask` has no priority (`domain-model/src/command.rs:147-163`).
   2. `set_priority` is another call (`cli-mcp/src/mcp.rs:580-583`).
   3. `auto_launch::run` wakes on every domain change (`engine-sdk/src/auto_launch.rs:32,48-52`) and launches by the current
      `task.priority` (`:111,150-151`).
@@ -5894,7 +5894,7 @@ after 20 min Alondra settles cases and withdraws questions that the orchestrator
 ("busy or failing"), but combined with F-ORCH-1 it turns a restart into automatic decisions. It overlaps phase 4 of
 the stalled-node recovery work (`AnswerSkipped`). Missing: an end-to-end run of F-ORCH-1 followed by the deadline.
 **Status**: no longer reachable since #516 (commit `e10b2839e`): there is no `Answer` deadline any more
-(`domain-rules/src/obligation_policy.rs:13-27` at `68770a298`; `obligation_watch` has no `Action::Answer`), and Alondra
+(`domain-model/src/obligation_policy.rs:13-27` at `68770a298`; `obligation_watch` has no `Action::Answer`), and Alondra
 settles what the orchestrator owes only after a turn of it ends handled, from reminders a handled batch was handed
 (M-ORCH-5). The opposite now holds: while the orchestrator is blocked, nothing settles (F-ORCH-1 status, F-ORCH-3
 status).
@@ -6163,7 +6163,7 @@ truth = ["memory"]
 
 ```toml state-machine
 id = "M-PROV-12"
-code = ["crates/core/src/accounts.rs::AccountState", "crates/core/src/accounts.rs::AccountsConfig", "crates/daemon-engine/src/accounts.rs::check_current", "crates/domain-rules/src/account_login.rs::AccountLoginPhase"]
+code = ["crates/core/src/accounts.rs::AccountState", "crates/core/src/accounts.rs::AccountsConfig", "crates/daemon-engine/src/accounts.rs::check_current", "crates/domain-model/src/account_login.rs::AccountLoginPhase"]
 truth = ["file:options.toml", "sqlite:account_configuration", "sqlite:account_distribution", "sqlite:account_logins", "sqlite:account_model_catalogs", "sqlite:accounts", "sqlite:model_profiles", "sqlite:task_accounts", "sqlite:settings_projection_receipts"]
 states = "crates/core/src/accounts.rs::AccountState"
 variants = ["Unchecked", "SignedIn", "SignedOut", "Unavailable", "Disabled", "PolicyRefused"]
@@ -6183,7 +6183,7 @@ code = ["crates/core/src/usage.rs::AccountUsage", "crates/core/src/usage.rs::rec
 truth = ["derived", "sqlite:account_usage"]
 ```
 
-- **Kind**: implicit, derived from readings. **Defined in**: `crates/core/src/usage.rs:198-300` (`AccountUsage`, `ran_out`, `exhausted_until`), `:329-358` (`record`); `crates/domain-rules/src/rules.rs:3442-3453` (`RecordAccountUsage`).
+- **Kind**: implicit, derived from readings. **Defined in**: `crates/core/src/usage.rs:198-300` (`AccountUsage`, `ran_out`, `exhausted_until`), `:329-358` (`record`); `crates/domain-model/src/rules.rs:3442-3453` (`RecordAccountUsage`).
 - **States per window**: Unmeasured, then With margin (`used < FULL`, not `exhausted`), then Exhausted until `resets_at` (`exhausted` or `used == FULL`, with a future reset), then Exhausted with no known time, then With margin again (`resets_at` passes, another reading arrives, or in Codex a working turn, `native_turn_worked`).
 - **Writers**: `usage_probe::measure_account` (full reading, always `exhausted:false`, `usage_probe.rs:100-121`), `usage_probe::record_limit` (orchestrator), turn observations (`store-sqlite/src/owner.rs:301-323`, `:486-497`; a turn that failed for usage holds a Codex account, and an Antigravity one only when its access reads usage with `agy -p /usage`, as a session window until its reset or that account's next reading; a key billed per use is never held, its limits being per minute), `accounts::check_current` (Codex). Codex's account check reads `account/rateLimits/read` through `ProbeReport::usage_reading` (`crates/core/src/codex_account.rs`): with `ordinaryUsageAllowed: true` it records the percentages; with `false` it records them too, plus the exhausted native-limit mark, so the account shows its current reading and stays held until a later check says `true`; with `null` (the provider does not know) it records nothing and the last reading stands. No reset time ends that hold: only Codex's answer does.
 - **Invariants**: enforced in `record`: an older reading does not overwrite a newer one. A window measured after the reading's `at` stays, and a complete reading removes only windows measured before it (F-PROV-1, fixed). Readings an ended host's journal commits on adoption still carry the commit time (see F-PROV-1).
@@ -6215,7 +6215,7 @@ so ordering it needs the host to stamp its events, which is the provider adapter
   1. `measure_account` takes `measured_at` before launching the probe (`crates/daemon-engine/src/usage_probe.rs:333-334`) and the reading is always `complete: true` with `exhausted: false` (`:108-119`).
   2. Meanwhile a node of that account receives `rate_limit_event` with `status: rejected`: the normalizer produces a window `exhausted: true` (`crates/provider-claude/src/normalizer.rs:1104-1116`) which the store records with `at = now` (`crates/store-sqlite/src/owner.rs:486-495`). In the orchestrator, `record_limit` does the same with `used: FULL, exhausted: true` (`crates/engine-orchestrator/src/orchestrator_provider.rs:80-93`).
   3. The probe finishes and publishes with `at = measured_at` (`usage_probe.rs:336-337`). The `commit_probe` fence compares accounts, versions and `options.toml`, not `account_usage` (`crates/daemon-engine/src/accounts.rs:339-345`), so the commit passes.
-  4. `record` replaces the window of the same dimension without looking at `measured_at` (`crates/core/src/usage.rs:334-342`); it only protects the native-limit mark of Codex (`:331-333`). `RecordAccountUsage` applies it as is (`crates/domain-rules/src/rules.rs:3442-3453`).
+  4. `record` replaces the window of the same dimension without looking at `measured_at` (`crates/core/src/usage.rs:334-342`); it only protects the native-limit mark of Codex (`:331-333`). `RecordAccountUsage` applies it as is (`crates/domain-model/src/rules.rs:3442-3453`).
   5. `plan_exhausted`/`plan_exhausted_until` no longer see the exhausted window (`usage.rs:258-300`).
 - **Minimal sequence**:
   1. The probe of account A starts at t0.
@@ -6223,7 +6223,7 @@ so ordering it needs the host to stamp its events, which is the provider adapter
   3. At t2 the probe publishes Session `used = 0.97`, `exhausted:false`, measured at t0.
   4. A reads as having margin until the next rejection or the next probe (15 min).
   - Variant with the same origin: events of an ended host are committed on adoption, maybe hours later (`sdk_owner.rs:999-1007`), and their usage readings are recorded with `at = now` (`owner.rs:492`): an old reading from the journal overwrites a recent one.
-- **Impact**: `out_of_quota` stops moving the task (`crates/domain-rules/src/task_selection.rs:82-88`), selection picks A again for new starts, and `usage_resets_by_task` loses the return time of held tasks that have none of their own (`crates/domain-rules/src/claude_access.rs:221-229`). Work starts, hits the limit and waits again; nothing is corrupted.
+- **Impact**: `out_of_quota` stops moving the task (`crates/domain-model/src/task_selection.rs:82-88`), selection picks A again for new starts, and `usage_resets_by_task` loses the return time of held tasks that have none of their own (`crates/domain-model/src/claude_access.rs:221-229`). Work starts, hits the limit and waits again; nothing is corrupted.
 - **Deterministic test and ablation**: a pure domain test on `DomainState`: `RecordAccountUsage` with Session exhausted at `at = 200`, then a complete `RecordAccountUsage` with Session `used 9700`, `exhausted:false` and `at = 100`; assert `plan_exhausted(150)` is true. Today it fails (returns false). Ablation: remove the `measured_at` comparison in `record`.
 - **Expected fix and files**: `record` ignores, window by window, a reading whose `at` is lower than the stored `measured_at` (and the probe fence includes the `account_usage` revision of that account); readings from an ended journal carry the event time, not the commit time. Files: `crates/core/src/usage.rs`, `crates/daemon-engine/src/usage_probe.rs`, `crates/store-sqlite/src/owner.rs`.
 

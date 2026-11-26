@@ -4,7 +4,7 @@
 use alondra_engine_kernel::domain_runtime::RuntimeRecords;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
-use alondra_domain_rules::{Command, DomainState, PrAddressVerdict, PrIdentity, PrRead, ProviderPrKey, PullRequest};
+use alondra_domain_model::{Command, DomainState, PrAddressVerdict, PrIdentity, PrRead, ProviderPrKey, PullRequest};
 use alondra_engine_ports::github::{GhFailure, PrObserver, ReadIdentity};
 use anyhow::Result;
 use std::collections::BTreeSet;
@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 pub type Answer<'a> = Result<(Option<&'a ReadIdentity>, &'a str), &'a GhFailure>;
 
 /// A start time the domain accepts for a read beginning now.
-pub fn read_start() -> alondra_domain_rules::Millis {
+pub fn read_start() -> alondra_domain_model::Millis {
     alondra_core::clock::now_millis().max(1)
 }
 
@@ -54,13 +54,13 @@ fn settled(pr: &PullRequest, read_repository: &str, verdict: &PrAddressVerdict) 
 /// A verdict that would change nothing the domain keeps: no answer, a confirmation it already
 /// holds, another miss of a record nobody can check, or a miss within the hour of the last one
 /// that counted.
-fn pointless(pr: &PullRequest, read_repository: &str, started: alondra_domain_rules::Millis, verdict: &PrAddressVerdict) -> bool {
+fn pointless(pr: &PullRequest, read_repository: &str, started: alondra_domain_model::Millis, verdict: &PrAddressVerdict) -> bool {
     match verdict {
         PrAddressVerdict::Unreachable => true,
         PrAddressVerdict::Confirmed { .. } => settled(pr, read_repository, verdict),
         _ if pr.identity.is_unresolvable() => true,
         PrAddressVerdict::NotFound => pr.identity.locator().is_none()
-            && pr.missing.is_some_and(|missing| started < missing.last.saturating_add(alondra_domain_rules::STRIKE_GAP)),
+            && pr.missing.is_some_and(|missing| started < missing.last.saturating_add(alondra_domain_model::STRIKE_GAP)),
         PrAddressVerdict::NamesAnotherPr => false,
     }
 }
@@ -69,7 +69,7 @@ fn pointless(pr: &PullRequest, read_repository: &str, started: alondra_domain_ru
 /// about which pull request it is, and gives back the record as it stands then with the key every
 /// change to it must carry: only when the read confirmed that the record is that pull request at
 /// the address it has now.
-pub fn identify(domain: &DomainRuntime, pr: &PullRequest, read_repository: &str, started: alondra_domain_rules::Millis, answer: Answer<'_>)
+pub fn identify(domain: &DomainRuntime, pr: &PullRequest, read_repository: &str, started: alondra_domain_model::Millis, answer: Answer<'_>)
     -> Result<Option<(PullRequest, ProviderPrKey)>> {
     let state = domain.state()?;
     let pr_id = state.surviving_pr(&pr.id).clone();
@@ -101,7 +101,7 @@ pub fn expected(pr: &PullRequest) -> Option<&ProviderPrKey> {
 
 /// Finds again, by their locator, the pull requests whose address no longer leads to them, and
 /// tells the domain where each is now, or that it is gone for certain.
-pub async fn relocate(domain: &DomainRuntime, observer: &impl PrObserver, asked: &mut std::collections::BTreeMap<alondra_domain_rules::PrId, alondra_domain_rules::Millis>) -> Result<()> {
+pub async fn relocate(domain: &DomainRuntime, observer: &impl PrObserver, asked: &mut std::collections::BTreeMap<alondra_domain_model::PrId, alondra_domain_model::Millis>) -> Result<()> {
     let state = domain.state()?;
     let lost: Vec<PullRequest> = state.pull_requests.values()
         .filter(|pr| pr.is_tracked() && pr.relocation_asked_at.is_some() && pr.identity.locator().is_some()).cloned().collect();

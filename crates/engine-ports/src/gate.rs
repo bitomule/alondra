@@ -3,7 +3,7 @@
 use crate::Runtime;
 use crate::admission::{AdmissionGate, Hold, Key, Paused, Pauses, Reason, Waiting};
 use alondra_core::Millis;
-use alondra_domain_rules::{DomainState, TaskId};
+use alondra_domain_model::{DomainState, TaskId};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::watch;

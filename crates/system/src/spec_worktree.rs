@@ -1,6 +1,6 @@
 //! The spec files of a task's own worktree, read and written with git and the disk.
-use alondra_domain_rules::specs::{self, Files, SpecFiles};
-use alondra_domain_rules::{DomainState, TaskId, WorktreeOrigin};
+use alondra_domain_model::specs::{self, Files, SpecFiles};
+use alondra_domain_model::{DomainState, TaskId, WorktreeOrigin};
 use alondra_engine_ports::spec_worktrees::{SpecSource, SpecWorktrees};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

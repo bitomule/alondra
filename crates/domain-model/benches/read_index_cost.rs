@@ -1,4 +1,4 @@
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use std::{alloc::{GlobalAlloc, Layout, System}, collections::BTreeSet, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, time::Instant};
 mod inbox_graphs;
 mod read_index;
@@ -64,7 +64,7 @@ fn profile_task_actions() {
     let mut state = DomainState::new("synthetic-projection-epoch");
     commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent".into(), name: "Synthetic agent".into(), at: 0 });
     commit(&mut state, user(), Command::CreateRequest { request_id: "request".into(), body: "Synthetic request".into(), auto_merge: false, maintenance: false, message: false });
-    commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Synthetic task".into(), agent_id: Some("agent".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
+    commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Synthetic task".into(), agent_id: Some("agent".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")) });
     for index in 0..500 {
         commit(&mut state, Actor::System, Command::PublishInformation { interaction_id: format!("information-{index}").into(), scope: Scope::Task { task_id: "task".into() }, recipient: Recipient::User,
             body: format!("Synthetic item {index}. {}", "Synthetic measurement content. ".repeat(256)), attachments: vec![], card: CardSpec::derived(CardKind::Know, "Read synthetic update") });
@@ -108,7 +108,7 @@ fn inbox_fixture(count: usize, body_size: usize, history: usize) -> DomainState 
     commit(&mut state, user(), Command::CreateRequest { request_id: "request".into(), body: "Synthetic request".into(), auto_merge: false, maintenance: false, message: false });
     commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task".into(), request_id: "request".into(), title: "Synthetic task".into(), agent_id: Some("agent".into()),
-        review_prs: true, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic")),
+        review_prs: true, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/synthetic")),
     });
     commit(&mut state, Actor::System, Command::PublishInformation {
         interaction_id: "template".into(), scope: Scope::Task { task_id: "task".into() }, recipient: Recipient::User,

@@ -12,7 +12,7 @@ mod tasks;
 
 use crate::auth::Signed;
 use crate::domain_runtime::DomainRuntime;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     AgentId, DomainError, DomainState, InteractionPayload, Recipient, Scope, TaskId,
 };
 use axum::extract::rejection::JsonRejection;
@@ -381,7 +381,7 @@ impl Client {
         if !body.as_object().is_some_and(|fields| fields.is_empty()) {
             return Reply::error(DomainError::new("invalid_input", "invalid request"));
         }
-        let user = alondra_domain_rules::Actor::User { user_id: user_id.to_owned() };
+        let user = alondra_domain_model::Actor::User { user_id: user_id.to_owned() };
         match crate::domain_messages::resolve_conflicts(&*self.domain, &self.home, &user, &crate::domain_messages::user_name(), &pr.into()).await {
             Ok(answer) => Reply::ok(answer),
             Err(error) => Reply::error(error),
@@ -454,7 +454,7 @@ impl Client {
     fn runtime(&self) -> Response {
         let read = self.domain.read();
         let state = read.state();
-        let orders: Vec<(String, alondra_domain_rules::Revision)> = read.index().queue().iter()
+        let orders: Vec<(String, alondra_domain_model::Revision)> = read.index().queue().iter()
             .filter_map(|id| state.interactions.get(id).map(|card| (format!("interaction:{}", id.0), card.order)))
             .collect();
         let revisions: Vec<_> = orders.iter().map(|(_, order)| *order).collect();

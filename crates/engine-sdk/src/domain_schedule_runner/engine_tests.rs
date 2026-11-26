@@ -6,7 +6,7 @@ use alondra_engine_admission::AdmissionOf as _;
 use alondra_store_sqlite::AsSqlite as _;
 use crate::live::LiveOf as _;
 use crate::model_fixture::SdkLaunches;
-use alondra_domain_rules::InteractionId;
+use alondra_domain_model::InteractionId;
 
 
 #[tokio::test(flavor = "multi_thread")]
@@ -115,7 +115,7 @@ async fn a_launch_left_waiting_by_a_cancelled_task_never_passes_the_gate_and_end
     assert_eq!(state.tasks[&task].state, TaskState::Cancelled);
     let waiting = alondra_engine_ports::admission::Waiting {
         key: alondra_engine_ports::admission::Key::Run("stuck".into()),
-        priority: alondra_domain_rules::TaskPriority::High,
+        priority: alondra_domain_model::TaskPriority::High,
         resuming: false,
         since: 0,
     };
@@ -126,7 +126,7 @@ async fn a_launch_left_waiting_by_a_cancelled_task_never_passes_the_gate_and_end
     let run = &state.schedule.runs[&ScheduleRunId::from("stuck")];
     assert_eq!(run.state, ScheduleRunState::Failed);
     assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
-    assert_eq!(run.error.as_deref(), Some(alondra_domain_rules::SCHEDULED_TASK_CANCELLED));
+    assert_eq!(run.error.as_deref(), Some(alondra_domain_model::SCHEDULED_TASK_CANCELLED));
     assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-stuck")), "no Problem on a cancelled Task");
     let revision = state.revision;
     run_cycle(&restarted, &fixture.home, false).await.unwrap();

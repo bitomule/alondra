@@ -2,7 +2,7 @@ use super::*;
 use crate::domain_runtime::DomainRuntime;
 use crate::machine_watch::step;
 use alondra_core::Machine;
-use alondra_domain_rules::{Actor, AgentId, Command, CommandEnvelope, RuntimeObservation, PROTOCOL_VERSION};
+use alondra_domain_model::{Actor, AgentId, Command, CommandEnvelope, RuntimeObservation, PROTOCOL_VERSION};
 
 const MIN: Millis = 60_000;
 const SAMPLE: Millis = 10_000;
@@ -347,7 +347,7 @@ fn create(domain: &DomainRuntime, id: &str) {
     run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
     });
 }
 
@@ -527,19 +527,19 @@ fn a_node_waiting_for_the_user_to_approve_its_plan_leaves_its_slot_to_the_queue_
     let t2 = Waiting { key: Key::Task("t2".into()), priority: TaskPriority::Normal, resuming: false, since: now };
     assert!(matches!(gate.ask(&*domain, t2.clone(), now), Err(Hold::Slots { working: 1, limit: 1 })), "t1 is at work");
 
-    let plan: alondra_domain_rules::InteractionId = "plan-call".into();
+    let plan: alondra_domain_model::InteractionId = "plan-call".into();
     run(&domain, Actor::System, Command::HoldHook {
-        interaction_id: plan.clone(), task_id: "t1".into(), agent_id: "agent-t1".into(), hold: alondra_domain_rules::Hold::Plan,
-        body: "- [ ] Fix it".into(), options: alondra_domain_rules::Hold::Plan.options(),
-        card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Review, "Task t1")
-            .content(alondra_domain_rules::ContentKind::Plan, "- [ ] Fix it"),
+        interaction_id: plan.clone(), task_id: "t1".into(), agent_id: "agent-t1".into(), hold: alondra_domain_model::Hold::Plan,
+        body: "- [ ] Fix it".into(), options: alondra_domain_model::Hold::Plan.options(),
+        card: alondra_domain_model::CardSpec::new(alondra_domain_model::CardKind::Review, "Task t1")
+            .content(alondra_domain_model::ContentKind::Plan, "- [ ] Fix it"),
     });
     assert_eq!(gate.snapshot(&*domain, now).unwrap().working, 0, "t1 waits for the user to approve its plan");
     assert_eq!(gate.ask(&*domain, t2, now), Ok(()), "its slot goes to the queue");
     start(&domain, "t2", now);
 
     run(&domain, Actor::User { user_id: "u".into() }, Command::AnswerQuestion {
-        attachments: vec![], interaction_id: plan, option_id: alondra_domain_rules::Hold::APPROVE.into(), inputs: Default::default() });
+        attachments: vec![], interaction_id: plan, option_id: alondra_domain_model::Hold::APPROVE.into(), inputs: Default::default() });
     let t3 = Waiting { key: Key::Task("t3".into()), priority: TaskPriority::Normal, resuming: false, since: now };
     assert!(matches!(gate.ask(&*domain, t3, now), Err(Hold::Slots { working: 2, limit: 1 })), "approved, t1 counts again");
 }
@@ -592,11 +592,11 @@ fn end_turn(domain: &DomainRuntime, id: &str) {
 /// with no turn running already rests.
 fn finish(domain: &DomainRuntime, id: &str, now: Millis) {
     let Some(turn) = domain.state().unwrap().lifecycle_of(&id.into()).unwrap().turn().map(|turn| turn.as_str().to_owned()) else { return };
-    let options = vec![alondra_domain_rules::QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }];
+    let options = vec![alondra_domain_model::QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }];
     run(domain, Actor::Agent { agent_id: AgentId(format!("agent-{id}")) }, Command::AskQuestion {
-        attachments: vec![], interaction_id: format!("q-{id}-{now}").into(), scope: alondra_domain_rules::Scope::Task { task_id: id.into() },
-        recipient: alondra_domain_rules::Recipient::User, body: "Ship it?".into(), blocking: false,
-        card: alondra_domain_rules::CardSpec::question("Ship it?", &options), options,
+        attachments: vec![], interaction_id: format!("q-{id}-{now}").into(), scope: alondra_domain_model::Scope::Task { task_id: id.into() },
+        recipient: alondra_domain_model::Recipient::User, body: "Ship it?".into(), blocking: false,
+        card: alondra_domain_model::CardSpec::question("Ship it?", &options), options,
     });
     run(domain, Actor::System, Command::RecordTurnBoundary { task_id: id.into(), generation: 1, turn, failure: None, failed: None });
     crate::wiring::engine(domain).working(&format!("agent-{id}"), None);
@@ -746,7 +746,7 @@ fn memory_coming_and_going_for_an_hour_tells_the_orchestrator_nothing() {
         now += SAMPLE;
     }
     let state = domain.state().unwrap();
-    let told: Vec<_> = state.interactions.values().filter(|i| i.recipient == alondra_domain_rules::Recipient::Orchestrator).map(|i| i.id.0.clone()).collect();
+    let told: Vec<_> = state.interactions.values().filter(|i| i.recipient == alondra_domain_model::Recipient::Orchestrator).map(|i| i.id.0.clone()).collect();
     assert!(told.is_empty(), "{told:?}");
 }
 
@@ -814,10 +814,10 @@ fn a_started_node_already_waiting_on_the_user_leaves_its_slot_although_it_was_ad
     assert_eq!(gate.ask(&*domain, t1, now), Ok(()));
     start(&domain, "t1", now);
     run(&domain, Actor::Agent { agent_id: "agent-t1".into() }, Command::AskQuestion {
-        attachments: vec![], interaction_id: "question".into(), scope: alondra_domain_rules::Scope::Task { task_id: "t1".into() },
-        recipient: alondra_domain_rules::Recipient::User, body: "Which format?".into(), blocking: true,
-        options: ["plain", "markdown"].map(|id| alondra_domain_rules::QuestionOption { id: id.into(), label: id.into(), description: None }).to_vec(),
-        card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Decide, "Choose the format"),
+        attachments: vec![], interaction_id: "question".into(), scope: alondra_domain_model::Scope::Task { task_id: "t1".into() },
+        recipient: alondra_domain_model::Recipient::User, body: "Which format?".into(), blocking: true,
+        options: ["plain", "markdown"].map(|id| alondra_domain_model::QuestionOption { id: id.into(), label: id.into(), description: None }).to_vec(),
+        card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Decide, "Choose the format"),
     });
     assert_eq!(gate.snapshot(&*domain, now).unwrap().working, 0, "t1's node waits on the user, a second after its admission");
     let t2 = Waiting { key: Key::Task("t2".into()), priority: TaskPriority::Normal, resuming: false, since: now };
@@ -1146,7 +1146,7 @@ fn nodes_the_user_resumed_still_wait_for_a_slot_after_the_daemon_restarts() {
 const GB: u64 = 1_000_000_000;
 
 fn create_in(domain: &DomainRuntime, id: &str, project: &str) {
-    let mut launch = alondra_domain_rules::LaunchPlan::new("node", "/tmp");
+    let mut launch = alondra_domain_model::LaunchPlan::new("node", "/tmp");
     launch.project = Some(project.into());
     run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,

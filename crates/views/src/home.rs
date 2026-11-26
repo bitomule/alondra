@@ -3,7 +3,7 @@ use super::{
     card::{self, from_item, plain_id, public_id},
     text::t,
 };
-use alondra_domain_rules::InboxItem;
+use alondra_domain_model::InboxItem;
 
 pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     if !matches!(context.client, Client::Ios | Client::Tui) {

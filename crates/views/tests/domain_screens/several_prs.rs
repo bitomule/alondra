@@ -3,7 +3,7 @@
 //! step, in `the_second_pr_of_the_mobile_menu_fix_reaches_the_user_with_its_merge`. Each PR of the
 //! delivery is its own card, and the task closes once none is open and one merged: a delivery of
 //! nine PRs on one card is `a_delivery_of_several_prs_is_one_card_per_pr_each_with_only_its_merge`.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_views as views;
 use crate::inbox_items;
 use alondra_views::{Client, Lang, LiveSnapshot, RenderContext, Transport};
@@ -109,7 +109,7 @@ fn card_actions(s: &DomainState, card: &str) -> Vec<(String, String)> {
 }
 
 fn view_json(s: &DomainState, key: &str) -> serde_json::Value {
-    let index = alondra_domain_rules::ReadIndex::build(s);
+    let index = alondra_domain_model::ReadIndex::build(s);
     let view = alondra_views::build(key, RenderContext {
         domain: s, index: &index, live: &LiveSnapshot::default(), client: Client::Mac, lang: Lang::Es,
         transport: Transport::Loopback, cursor: "", rendered_at: "",
@@ -162,7 +162,7 @@ fn a_closed_pr_link_says_closed_even_when_another_pr_of_the_delivery_merged() {
 fn a_delivery_of_several_prs_is_one_card_per_pr_each_with_only_its_merge() {
     let s = two_open_prs();
     assert_eq!(cards(&s), [PUBLIC, CLOUD]);
-    let index = alondra_domain_rules::ReadIndex::build(&s);
+    let index = alondra_domain_model::ReadIndex::build(&s);
     assert_eq!(alondra_views::inbox_badge(&index), 2, "the badge counts the cards the user sees");
     assert_eq!(alondra_views::waiting_cards(&index), ["final"], "one notice for the delivery, not one per PR");
     for item in index.cards() {
@@ -735,7 +735,7 @@ fn observe(s: &mut DomainState, pr: &str, head: &str, state: PrState) {
 
 /// Waiting for You, by the id each card is opened with.
 fn cards(s: &DomainState) -> Vec<String> {
-    alondra_domain_rules::ReadIndex::build(s).cards().iter().map(|item| {
+    alondra_domain_model::ReadIndex::build(s).cards().iter().map(|item| {
         let InboxSubject::Interaction { interaction_id, pr_id } = &item.subject;
         pr_id.as_ref().map_or_else(|| interaction_id.0.clone(), |pr| pr.0.clone())
     }).collect()

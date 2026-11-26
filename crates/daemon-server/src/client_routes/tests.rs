@@ -8,7 +8,7 @@ use alondra_daemon_engine::live::LiveOf as _;
 use super::*;
 use crate::auth::Auth;
 use crate::domain_bootstrap::DomainDaemon;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, AttachmentRef, Command, CommandEnvelope, CommandOutcome, PROTOCOL_VERSION, Recipient, Scope,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -189,12 +189,12 @@ fn seed_work(fixture: &Fixture) {
     fixture.orchestrator("task-1", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-1".into(), request_id: "request-1".into(), title: "Readable editor colours".into(),
         agent_id: Some("agent-a".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan { project: Some("Editor".into()), ..alondra_domain_rules::LaunchPlan::new("node", "/tmp") }),
+        launch: Some(alondra_domain_model::LaunchPlan { project: Some("Editor".into()), ..alondra_domain_model::LaunchPlan::new("node", "/tmp") }),
     });
     fixture.command(Actor::System, "answer-2", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-2".into(),
         scope: Scope::Orchestrator { request_id: Some("request-2".into()) }, recipient: Recipient::User,
-        body: "Nothing to change: it already works".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
+        body: "Nothing to change: it already works".into(), card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"),
     });
     fixture.user("close-2", Command::CloseRequest { covered_by: vec![], outcome: None, request_id: "request-2".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None });
     fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false });
@@ -202,7 +202,7 @@ fn seed_work(fixture: &Fixture) {
     fixture.agent("agent-a", "pr-1", Command::RegisterPr {
         task_id: "task-1".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "me/app".into(),
         number: 7, head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
-        allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
+        allowed_methods: vec![alondra_domain_model::MergeMethod::Squash],
     });
 }
 
@@ -293,7 +293,7 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
 
     fixture.command(Actor::System, "ask", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-1".into(),
-        scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
+        scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(), card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"),
     });
     let informed = fixture.runtime_json().await;
     assert_eq!(informed["tasks"]["task-1"]["state_since"], before["tasks"]["task-1"]["state_since"], "information does not move the task's state");
@@ -301,7 +301,7 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
     assert!(appeared >= started, "the inbox row carries the time of the commit that added it");
 
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
-    fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
+    fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_domain_model::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
     let cancelled = fixture.runtime_json().await;
     assert!(cancelled["tasks"]["task-1"]["state_since"].as_i64().unwrap() >= appeared, "a change of state is timed by the commit that made it");
     let history = fixture.domain.store.lock().unwrap().task_history(&"task-1".into()).unwrap();
@@ -422,7 +422,7 @@ async fn closing_a_background_session_runs_claude_rm_and_closes_it() {
     assert_eq!(answer["interactive"], false);
     let calls = sessions.calls.lock().unwrap().clone();
     assert!(calls.iter().any(|call| call == &["rm".to_string(), short.clone()]), "{calls:?}");
-    assert_eq!(fixture.domain.state().unwrap().agents[&"agent-a".into()].phase, alondra_domain_rules::NodePhase::Closed, "the domain sees the session gone");
+    assert_eq!(fixture.domain.state().unwrap().agents[&"agent-a".into()].phase, alondra_domain_model::NodePhase::Closed, "the domain sees the session gone");
     assert!(fixture.domain.resolve_bearer(&bearer).is_err(), "its capability is revoked");
     let runtime = fixture.runtime_json().await;
     assert!(runtime["nodes"].as_array().unwrap().iter().all(|node| node["session_id"] != "agent-a"), "what was observed of it is forgotten");
@@ -474,7 +474,7 @@ async fn closing_a_node_that_runs_through_the_sdk_is_refused_because_it_ends_wit
     fixture.orchestrator("task-sdk", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-sdk".into(), request_id: "request-sdk".into(), title: "Write the release notes".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", worktree.to_str().unwrap())),
     });
     let launched = crate::sdk_owner::launch(&*fixture.domain, crate::sdk_owner::Launch {
         task: "task-sdk".into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
@@ -614,10 +614,10 @@ impl Github for FakeGithub {
         })
     }
 
-    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a alondra_domain_rules::ProviderPrKey, _: &'a str) -> close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
+    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a alondra_domain_model::ProviderPrKey, _: &'a str) -> close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
         Box::pin(async { Err("closing is not available here".into()) })
     }
-    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
+    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_domain_model::PrState, String>> {
         Box::pin(async { Err("unexpected PR state".into()) })
     }
 
@@ -737,7 +737,7 @@ async fn a_new_request_keeps_what_the_user_chose_in_the_same_commit_as_the_reque
     fixture.orchestrator("task-9", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-9".into(), request_id: "request-9".into(), title: "Ship".into(), agent_id: None,
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan { project: Some("App".into()), ..alondra_domain_rules::LaunchPlan::new("node", "/tmp") }), });
+        launch: Some(alondra_domain_model::LaunchPlan { project: Some("App".into()), ..alondra_domain_model::LaunchPlan::new("node", "/tmp") }), });
     let runtime = fixture.runtime_json().await;
     assert_eq!((runtime["tasks"]["task-9"]["project"].as_str(), runtime["tasks"]["task-9"]["effort"].as_str()), (Some("App"), Some("hard")), "its tasks carry what it asked for");
 }
@@ -857,11 +857,11 @@ async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_i
     fixture.agent("agent-a", "ask", Command::AskQuestion {
         attachments: vec![], interaction_id: "q-1".into(), scope: Scope::Task { task_id: "task-1".into() },
         recipient: Recipient::User, body: "Which colour?\nThe blue or the green one.".into(), blocking: true,
-        options: vec![alondra_domain_rules::QuestionOption { id: "blue".into(), label: "Blue".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+        options: vec![alondra_domain_model::QuestionOption { id: "blue".into(), label: "Blue".into(), description: None }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
     });
     fixture.user("answer", Command::AnswerQuestion { attachments: vec![], interaction_id: "q-1".into(), option_id: "blue".into(), inputs: Default::default() });
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
-    fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
+    fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_domain_model::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
     let expected = fixture_json("requests.json");
     let request = &expected["history"];
     let history = fixture.get_json(request["path"].as_str().unwrap()).await;
@@ -928,7 +928,7 @@ async fn an_uncertain_delivery_is_resolved_on_this_mac_by_the_paired_device() {
     seed_work(&fixture);
     fixture.command(Actor::System, "info-1", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-1".into(), scope: Scope::Task { task_id: "task-1".into() },
-        recipient: Recipient::User, body: "FYI".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
+        recipient: Recipient::User, body: "FYI".into(), card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"),
     });
     let (attempt, message) = {
         let mut store = fixture.domain.store.lock().unwrap();
@@ -963,7 +963,7 @@ async fn resolving_conflicts_is_refused_before_anything_is_typed_when_it_cannot_
     assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
     fixture.command(Actor::System, "closed", Command::ObservePrState {
         pr_id: "pr-1".into(), head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
-        state: alondra_domain_rules::PrState::Closed, merged_head: None });
+        state: alondra_domain_model::PrState::Closed, merged_head: None });
     let (status, error) = fixture.local_send(path, &json!({})).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));
     let unsigned = reqwest::Client::new().post(format!("{}{path}", fixture.base)).json(&json!({})).send().await.unwrap();
@@ -1067,17 +1067,17 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
     alondra_daemon_engine::domain_store::admit_through_sdk(&fixture.domain, &"task-1".into(), "agent-a");
     let input = fixture.domain.state().unwrap().lifecycle_of(&"task-1".into()).unwrap().pending_inputs()[0].as_str().to_owned();
     fixture.command(Actor::System, "turn-1", Command::RecordRuntimeFacts { task_id: "task-1".into(), generation: 2, facts: vec![
-        alondra_domain_rules::RuntimeObservation::ResourceAvailable,
-        alondra_domain_rules::RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
+        alondra_domain_model::RuntimeObservation::ResourceAvailable,
+        alondra_domain_model::RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
     ] });
     fixture.user("title-1", Command::TitleRequest { request_id: "request-1".into(), title: "Editor".into() });
     fixture.orchestrator("task-9", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-9".into(), request_id: "request-1".into(), title: "Faster search".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
     });
     let watch = &fixture.domain.machine_watch();
-    let ask = || fixture.domain.admission().ask(&*fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_domain_rules::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
+    let ask = || fixture.domain.admission().ask(&*fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_domain_model::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
     watch.measure_disk(alondra_engine_ports::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
     assert_eq!(ask(), Err(Hold::Disk { free: 6 * GB, needed: 21 * GB }),
         "projects never measured: 8 GB for the build of the node at work and 8 GB for this one, on top of the 5 GB line");
@@ -1203,13 +1203,13 @@ async fn a_node_whose_session_ended_with_its_task_open_leaves_the_tasks_in_progr
     run(Actor::Orchestrator { generation: 0 }, "task-stopped", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
         task_id: "task-stopped".into(), request_id: "request-stopped".into(), title: "Probe".into(), agent_id: Some("stopped".into()),
         review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
     });
     let mods = &domain;
     let connection = mods.connect_node(serde_json::from_value(json!({"session_id": "stopped", "version": "2.1.287"})).unwrap(), alondra_core::now_millis());
     mods.report(serde_json::from_value(json!({"session_id": "stopped", "event": "session.end"})).unwrap(), alondra_core::now_millis());
     mods.live().mods.disconnect("stopped", connection);
-    crate::domain_agent_lifecycle::move_instance(&**domain, &"stopped".into(), alondra_domain_rules::NodeEvent::SessionClosed,
+    crate::domain_agent_lifecycle::move_instance(&**domain, &"stopped".into(), alondra_domain_model::NodeEvent::SessionClosed,
         &crate::domain_agent_lifecycle::prepare_event(&**domain, "end-stopped").unwrap()).unwrap();
 
     assert!(!in_progress(&fixture, "task-stopped").await, "no session, not in progress");
@@ -1261,10 +1261,10 @@ impl Github for HeldIssueSearch {
     fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> close::Answer<'a, Result<Value, String>> {
         Box::pin(async { Err("unexpected issue detail".into()) })
     }
-    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a alondra_domain_rules::ProviderPrKey, _: &'a str) -> close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
+    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a alondra_domain_model::ProviderPrKey, _: &'a str) -> close::Answer<'a, Result<(), crate::domain_github::GhFailure>> {
         Box::pin(async { Err("unexpected PR close".into()) })
     }
-    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
+    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_domain_model::PrState, String>> {
         Box::pin(async { Err("unexpected PR state".into()) })
     }
 }
@@ -1511,7 +1511,7 @@ fn the_client_asks_the_registered_github() {
     let url = "https://github.com/me/app/pull/7";
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
-        assert_eq!(client.github().pr_state("github.com", "me/app", 7).await, Ok(alondra_domain_rules::PrState::Merged));
+        assert_eq!(client.github().pr_state("github.com", "me/app", 7).await, Ok(alondra_domain_model::PrState::Merged));
         assert_eq!(client.pr_view().view(url).await, Some(serde_json::json!({"state": "MERGED"})));
     });
     assert_eq!(*reads.0.lock().unwrap(), [format!("view {url}"), format!("view {url}")]);

@@ -6,7 +6,7 @@ use crate::Runtime;
 use crate::domain_runtime::RuntimeRecords as _;
 use crate::domain_store::metrics_fold::Spent;
 use alondra_core::Millis;
-use alondra_domain_rules::AgentId;
+use alondra_domain_model::AgentId;
 use alondra_core::metrics::steps::{StepCounts, Tool};
 use alondra_core::metrics::{Role, Usage, micros};
 use serde_json::Value;

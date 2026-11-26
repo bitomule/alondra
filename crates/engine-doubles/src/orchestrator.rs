@@ -5,7 +5,7 @@
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
-use alondra_domain_rules::{AgentId, DomainError, DomainState};
+use alondra_domain_model::{AgentId, DomainError, DomainState};
 use alondra_engine_ports::Runtime;
 use alondra_engine_ports::extensions::extension;
 use alondra_engine_ports::orchestrator::{AccountWait, Exhausted, OrchestratorEngine};
@@ -91,7 +91,7 @@ impl OrchestratorEngine for Engine {
     fn render_message(&self, state: &DomainState, message: &OutboxMessage) -> String {
         message.interaction_id.as_ref()
             .and_then(|id| state.interactions.get(&id.as_str().into()))
-            .filter(|interaction| interaction.recipient == alondra_domain_rules::Recipient::Orchestrator)
+            .filter(|interaction| interaction.recipient == alondra_domain_model::Recipient::Orchestrator)
             .map_or_else(|| message.message.clone(), |interaction| interaction.body.clone())
     }
 

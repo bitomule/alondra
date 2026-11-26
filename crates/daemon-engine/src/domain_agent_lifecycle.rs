@@ -10,7 +10,7 @@ use alondra_engine_ports::Runtime;
 #[cfg(test)]
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, AgentId, Command, CommandEnvelope, CommandId, CommandOutcome, DataEpoch, DomainError, DomainState,
     Millis, NodeEvent, Revision, PROTOCOL_VERSION,
 };
@@ -150,7 +150,7 @@ fn submit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_domain_rules::NodePhase;
+    use alondra_domain_model::NodePhase;
 
     struct Fixture(crate::test_support::Directory);
     impl Fixture {

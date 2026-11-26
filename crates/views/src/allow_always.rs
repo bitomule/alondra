@@ -127,7 +127,7 @@ pub(super) fn section(context: &super::RenderContext<'_>) -> Option<super::Secti
         if !added.is_empty() {
             facts.push(tf!(lang, "added {added}", "añadido {added}"));
         }
-        if let Some(task) = rule.task_id.as_ref().and_then(|id| context.domain.tasks.get(&alondra_domain_rules::TaskId(id.clone()))) {
+        if let Some(task) = rule.task_id.as_ref().and_then(|id| context.domain.tasks.get(&alondra_domain_model::TaskId(id.clone()))) {
             let title = &task.title;
             facts.push(tf!(lang, "task «{title}»", "tarea «{title}»"));
         }

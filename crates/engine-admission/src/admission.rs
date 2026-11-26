@@ -23,7 +23,7 @@ use crate::pauses::{Pauses, Paused, Reason};
 pub use alondra_engine_ports::admission::{FILE, Hold, Key, PREVIOUS_FILE, Waiting, open_task_of, priority_of, run_priority};
 use crate::machine_state::{MacState, NoRoom, WARNING_SPACING};
 use alondra_engine_ports::journal::{AutoLaunchReason, AutoLaunchState};
-use alondra_domain_rules::{AgentId, Command, CommandEnvelope, DomainState, NodeEvent, PROTOCOL_VERSION, Pause, PauseCleanup, PauseReason, TaskId, TaskPriority, TaskState};
+use alondra_domain_model::{AgentId, Command, CommandEnvelope, DomainState, NodeEvent, PROTOCOL_VERSION, Pause, PauseCleanup, PauseReason, TaskId, TaskPriority, TaskState};
 use alondra_core::machine_incident::bytes_text;
 use alondra_view_model::{Lang, LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
 use alondra_core::Millis;
@@ -833,7 +833,7 @@ fn tell_to_go_on(domain: &dyn Runtime, session: &str, text: &str) -> bool {
 
 /// Whether the task of a node of the Agent SDK already has what it goes on with, as a pause by the
 /// user leaves it.
-fn waiting_input(domain: &dyn Runtime, task: &alondra_domain_rules::TaskId) -> bool {
+fn waiting_input(domain: &dyn Runtime, task: &alondra_domain_model::TaskId) -> bool {
     let read = domain.read();
     read.state().lifecycle_of(task).ok()
         .is_some_and(|lifecycle| !lifecycle.pending_inputs().is_empty())
@@ -1042,12 +1042,12 @@ pub fn working_tasks(domain: &dyn Runtime, state: &DomainState) -> BTreeSet<Task
     if read.index().describes(state) {
         return slot_tasks(state, read.index());
     }
-    slot_tasks(state, &alondra_domain_rules::ReadIndex::build(state))
+    slot_tasks(state, &alondra_domain_model::ReadIndex::build(state))
 }
 
 /// The open tasks whose node holds a slot in `index`, the read index of `state`.
-pub(crate) fn slot_tasks(state: &DomainState, index: &alondra_domain_rules::ReadIndex) -> BTreeSet<TaskId> {
-    let nodes = alondra_domain_rules::NodeTasks::new(state);
+pub(crate) fn slot_tasks(state: &DomainState, index: &alondra_domain_model::ReadIndex) -> BTreeSet<TaskId> {
+    let nodes = alondra_domain_model::NodeTasks::new(state);
     index.slots().iter()
         .filter_map(|agent| nodes.current(agent).filter(|task| !task.over()).map(|task| task.id.clone()))
         .collect()
@@ -1259,7 +1259,7 @@ pub fn hold_queued(domain: &dyn Runtime, task: &TaskId, now: Millis) -> Result<(
     if !queued_now(domain, task) {
         return Err(NOT_QUEUED);
     }
-    if let Err(error) = system_command(domain, alondra_domain_rules::Command::PauseQueuedTask { task_id: task.clone(), at: now }) {
+    if let Err(error) = system_command(domain, alondra_domain_model::Command::PauseQueuedTask { task_id: task.clone(), at: now }) {
         log!("{task} was not paused in the queue: {error:?}");
         return Err(NOT_QUEUED);
     }
@@ -1275,16 +1275,16 @@ pub fn hold_queued(domain: &dyn Runtime, task: &TaskId, now: Millis) -> Result<(
 
 /// The user resumed a queued task they paused: the gate starts it when its turn comes.
 pub fn release_queued(domain: &dyn Runtime, task: &TaskId) -> Result<(), &'static str> {
-    system_command(domain, alondra_domain_rules::Command::ResumeQueuedTask { task_id: task.clone() })
+    system_command(domain, alondra_domain_model::Command::ResumeQueuedTask { task_id: task.clone() })
         .map_err(|_| "This node or task is not paused")?;
     domain.admission().poke();
     Ok(())
 }
 
-fn system_command(domain: &dyn Runtime, command: alondra_domain_rules::Command) -> Result<(), alondra_domain_rules::DomainError> {
+fn system_command(domain: &dyn Runtime, command: alondra_domain_model::Command) -> Result<(), alondra_domain_model::DomainError> {
     let state = domain.state();
-    domain.system_command(alondra_domain_rules::CommandEnvelope {
-        protocol_version: alondra_domain_rules::PROTOCOL_VERSION,
+    domain.system_command(alondra_domain_model::CommandEnvelope {
+        protocol_version: alondra_domain_model::PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
         command_id: format!("queue-pause-{}", crate::auth::random_hex(8)).into(),
         expected_revision: state.revision,
@@ -1337,7 +1337,7 @@ fn hand_queue_pauses(domain: &dyn Runtime, held: BTreeMap<TaskId, crate::pauses:
             }
         }
         drop(store);
-        if let Err(error) = system_command(domain, alondra_domain_rules::Command::PauseQueuedTask { task_id: task.clone(), at: held.since }) {
+        if let Err(error) = system_command(domain, alondra_domain_model::Command::PauseQueuedTask { task_id: task.clone(), at: held.since }) {
             log!("{task}'s pause in the queue was not handed to the domain: {error:?}");
         }
     }
@@ -1469,10 +1469,10 @@ pub async fn pass_at(domain: &dyn Runtime, home: &Path, now: Millis) -> anyhow::
 /// A launch the gate let through and that did not start stays in the queue: a refusal that clears
 /// by itself (usage, disk) is tried again on a later turn, any other is a failed start, tried again
 /// by itself and then put to the user. The launch records the failures it knows.
-fn refused(domain: &dyn Runtime, task: &TaskId, error: &alondra_domain_rules::DomainError, now: Millis) -> anyhow::Result<()> {
+fn refused(domain: &dyn Runtime, task: &TaskId, error: &alondra_domain_model::DomainError, now: Millis) -> anyhow::Result<()> {
     domain.admission().not_started(&Key::Task(task.clone()));
     if domain.engine().is_launching(task) || matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted" | "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "account_unavailable" | "account_check_in_progress"
-        | alondra_domain_rules::capability_capacity_card::CAPABILITY_CAPACITY_CODE) {
+        | alondra_domain_model::capability_capacity_card::CAPABILITY_CAPACITY_CODE) {
         return Ok(());
     }
     let state = domain.state();

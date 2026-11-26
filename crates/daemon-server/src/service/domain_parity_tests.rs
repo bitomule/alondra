@@ -1,7 +1,7 @@
 //! The retained signed loopback and sealed service resource reads see the same
 //! domain state. Everything here runs in a synthetic HOME.
 use super::*;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION, QuestionOption,
     Recipient, Scope,
 };
@@ -160,7 +160,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         },
     );
     let video: Vec<u8> = (0..(crate::service_files::CHUNK * 2 + 7)).map(|n| (n % 251) as u8).collect();
@@ -178,10 +178,10 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
             },
             recipient: Recipient::User,
             body: "Synthetic information".into(),
-            attachments: vec![alondra_domain_rules::AttachmentRef {
+            attachments: vec![alondra_domain_model::AttachmentRef {
                 id: "clip: ñ 1".into(), name: "Video".into(), content_digest: video_digest.clone(),
                 content_reference: home.join("files/clip.mp4").to_string_lossy().into_owned(), bytes: video.len() as u64,
-            }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
+            }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"),
         },
     );
     execute(
@@ -206,7 +206,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
                     description: None,
                 })
                 .collect(),
-            attachments: vec![], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+            attachments: vec![], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         },
     );
     let source = b"# Synthetic design\n";
@@ -244,12 +244,12 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
                 interaction_id: format!("unsafe-{index}").into(),
                 scope: Scope::Task { task_id: "task-parity".into() }, recipient: Recipient::User,
                 body: format!("Unsafe reference {index}"),
-                attachments: vec![alondra_domain_rules::AttachmentRef {
+                attachments: vec![alondra_domain_model::AttachmentRef {
                     id: "private".into(), name: "private.txt".into(), bytes: 15,
                     content_reference: reference.to_string_lossy().into_owned(),
                     content_digest: Sha256::digest(b"private fixture").iter().map(|b| format!("{b:02x}")).collect(),
                 }],
-                card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
+                card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"),
             },
         }, None, || Ok(()));
         let error = refused.err().expect("a file outside Alondra's folders is refused when the card is presented");

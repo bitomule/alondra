@@ -2,7 +2,7 @@
 //! stored beside it, and the checks it must pass when it is given.
 use alondra_engine_kernel::domain_runtime::RuntimeRecords as _;
 use alondra_engine_ports::Runtime;
-use alondra_domain_rules::{Command, DomainError, RequestId, SuggestionDecision};
+use alondra_domain_model::{Command, DomainError, RequestId, SuggestionDecision};
 use std::path::Path;
 
 const MISSION_LIMIT: usize = 32_000;
@@ -10,7 +10,7 @@ const MISSION_LIMIT: usize = 32_000;
 /// to: the launch would refuse it every time.
 pub const EFFORT_WITHOUT_MODEL: &str = "launch.effort needs launch.model: name the model the effort is for (claude/… or codex/…), or leave the effort out so Automatic picks both";
 
-pub use alondra_domain_rules::LaunchPlan;
+pub use alondra_domain_model::LaunchPlan;
 
 /// Whether a plan can start a task of this request: a launch with these fields would be accepted.
 pub fn validate(domain: &dyn Runtime, home: &Path, request_id: &RequestId, plan: &LaunchPlan) -> Result<(), DomainError> {

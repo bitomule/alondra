@@ -1,5 +1,5 @@
 //! A task's move to another account, step by step, as the journal keeps it.
-use alondra_domain_rules::{AgentId, InteractionId, TaskId};
+use alondra_domain_model::{AgentId, InteractionId, TaskId};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 

@@ -4,7 +4,7 @@ use crate::outbox::OutboxMessage;
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
-use alondra_domain_rules::{AgentId, DomainError, DomainState};
+use alondra_domain_model::{AgentId, DomainError, DomainState};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::PoisonError;

@@ -2,7 +2,7 @@
 //! the branch holds later, so the user would accept one commit and Alondra merge another; and a
 //! head that is not a commit never matches what GitHub reports, so the card loses its merge.
 
-use alondra_domain_rules::{DomainError, DomainState, PrId};
+use alondra_domain_model::{DomainError, DomainState, PrId};
 use serde_json::Value;
 
 /// Checks the heads a node sends with `register_pr` and `present_result`. A pull request target
@@ -48,7 +48,7 @@ pub(crate) fn is_sha(head: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_domain_rules::{MergeMethod, PrState, PullRequest};
+    use alondra_domain_model::{MergeMethod, PrState, PullRequest};
     use serde_json::json;
 
     const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";

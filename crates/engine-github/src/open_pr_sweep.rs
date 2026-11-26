@@ -7,7 +7,7 @@ use crate::domain_github::execute_system;
 use crate::pr_identity::{identify, read_start};
 use alondra_engine_ports::github::{AuthoredPr, GitHub};
 use crate::domain_runtime::DomainRuntime;
-use alondra_domain_rules::{Command, DomainState, OpenPrPending, OpenedPr, PrState, PullRequest, TaskState};
+use alondra_domain_model::{Command, DomainState, OpenPrPending, OpenedPr, PrState, PullRequest, TaskState};
 use alondra_core::options::OptionsFile;
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
@@ -19,7 +19,7 @@ const FIRST_SWEEP: Duration = Duration::from_secs(5 * 60);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 fn identity(found: &AuthoredPr) -> Option<OpenedPr> {
-    let repository = alondra_domain_rules::normalize_pr_repository(&found.repository);
+    let repository = alondra_domain_model::normalize_pr_repository(&found.repository);
     let expected = format!("https://github.com/{repository}/pull/{}", found.number);
     (found.url.eq_ignore_ascii_case(&expected) && found.number > 0).then_some(OpenedPr {
         host: "github.com".into(), repository, number: found.number,
@@ -49,7 +49,7 @@ fn checkout_repositories(root: &Path) -> BTreeSet<String> {
     alondra_core::options::projects(&root).into_iter()
         .filter(|(_, path)| path.canonicalize().is_ok_and(|path| path.starts_with(&root)))
         .filter_map(|(_, path)| origin_repository(&path))
-        .map(|repo| alondra_domain_rules::normalize_pr_repository(&repo))
+        .map(|repo| alondra_domain_model::normalize_pr_repository(&repo))
         .collect()
 }
 

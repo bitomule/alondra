@@ -3,7 +3,7 @@
 //! what the gate told it, and moves nodes and tells them in the real domain, as the engine does, so
 //! a test reads the gate's decisions in the domain it opened.
 use alondra_core::Millis;
-use alondra_domain_rules::{AgentId, Command, CommandEnvelope, DomainError, DomainState, NodeEvent, PROTOCOL_VERSION, TaskId};
+use alondra_domain_model::{AgentId, Command, CommandEnvelope, DomainError, DomainState, NodeEvent, PROTOCOL_VERSION, TaskId};
 use alondra_engine_ports::admission::{AdmissionEngine, NodeReport};
 use alondra_engine_ports::api::ApiWatch;
 use alondra_engine_ports::hosts::Launched;

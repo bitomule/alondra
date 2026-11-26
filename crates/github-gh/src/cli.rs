@@ -1,6 +1,6 @@
 //! `gh` itself: running it, reading what it answers, and observing a pull request with it.
 use alondra_core::clock;
-use alondra_domain_rules::{MergeMethod, ProviderLocator, ProviderPrKey};
+use alondra_domain_model::{MergeMethod, ProviderLocator, ProviderPrKey};
 use alondra_engine_ports::github::{Closed, GhFailure, HttpAnswer, Located, Observed, PrObserver, ReadIdentity, address, identity, pr_facts, pr_url};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -57,7 +57,7 @@ impl GhCli {
 impl PrObserver for GhCli {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         Box::pin(async move {
-            let url = format!("https://{}/{repository}/pull/{number}", alondra_domain_rules::normalize_pr_host(host));
+            let url = format!("https://{}/{repository}/pull/{number}", alondra_domain_model::normalize_pr_host(host));
             let run = tokio::process::Command::new(&self.program)
                 .args(["pr", "view", &url, "--json", OBSERVED_FIELDS])
                 .kill_on_drop(true)
@@ -98,7 +98,7 @@ impl PrObserver for GhCli {
     }
     fn relocate<'a>(&'a self, host: &'a str, locator: &'a ProviderLocator) -> Located<'a> {
         Box::pin(async move {
-            let host = alondra_domain_rules::normalize_pr_host(host);
+            let host = alondra_domain_model::normalize_pr_host(host);
             let (query, id) = (format!("query={RELOCATE_QUERY}"), format!("id={}", locator.0));
             let answer = self.api(&["graphql", "--hostname", &host, "-f", &query, "-f", &id], Duration::from_secs(30)).await?;
             located(&answer)
@@ -156,7 +156,7 @@ pub fn located(answer: &HttpAnswer) -> Result<ReadIdentity, GhFailure> {
 impl GhCli {
     /// The merge methods the repository settings allow, squash first; empty when GitHub does not answer.
     async fn repository_methods(&self, host: &str, repository: &str) -> Vec<MergeMethod> {
-        let url = format!("https://{}/{repository}", alondra_domain_rules::normalize_pr_host(host));
+        let url = format!("https://{}/{repository}", alondra_domain_model::normalize_pr_host(host));
         let args = ["repo", "view", url.as_str(), "--json", "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"];
         let Ok(out) = self.run(&args, None, Duration::from_secs(30)).await else { return vec![] };
         let Ok(value) = serde_json::from_slice::<Value>(&out) else { return vec![] };
@@ -230,7 +230,7 @@ impl GhCli {
 
     async fn address_answer(&self, host: &str, repository: &str, number: u64) -> Option<HttpAnswer> {
         let (owner, name) = repository.split_once('/')?;
-        let host = alondra_domain_rules::normalize_pr_host(host);
+        let host = alondra_domain_model::normalize_pr_host(host);
         let (query, owner, name, number) = (format!("query={ADDRESS_QUERY}"), format!("owner={owner}"), format!("name={name}"), format!("number={number}"));
         self.api(&["graphql", "--hostname", &host, "-f", &query, "-f", &owner, "-f", &name, "-F", &number], Duration::from_secs(30)).await.ok()
     }

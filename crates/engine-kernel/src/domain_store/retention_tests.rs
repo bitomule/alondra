@@ -3,7 +3,7 @@ use super::*;
 use crate::domain_store::testing::{Fixture, seeded};
 use crate::domain_store::retention_fixtures::{agent, ended_task, envelope, long};
 use crate::domain_store::DomainStore;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use rusqlite::Connection;
 
 const DAY: i64 = 24 * 60 * 60 * 1_000;

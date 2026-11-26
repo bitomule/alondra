@@ -25,12 +25,12 @@
 use crate::engine::OrchestratorOf as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_engine_ports::Runtime;
-use alondra_domain_rules::obligation_policy::Millis;
-use alondra_domain_rules::{
+use alondra_domain_model::obligation_policy::Millis;
+use alondra_domain_model::{
     Author, CardKind, CardSpec, Command, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PlanReview, PlanReviewOutcome, QuestionOption,
     Request, RequestId, STALL_ATTEMPTS, Scope, StallOutcome, StartProblem, StartProblems, SuggestionDecision, SystemCard, Task, TaskId, UNSETTLED_INSTRUCT,
 };
-use alondra_domain_rules::orchestrator_cards::{
+use alondra_domain_model::orchestrator_cards::{
     DEPENDENCY_CANCELLED_NOTICE_PREFIX, UNANSWERED_NOTICE_PREFIX, UNSETTLED_NOTICE_PREFIX, UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL, UNSPLIT_NOTICE_PREFIX,
     UNSPLIT_PROBLEM_PREFIX, UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL, UnsplitProblem,
     PLAN_REVIEW_NOTICE_PREFIX, PLAN_REFUSED_NOTICE_PREFIX, STALL_NOTICE_PREFIX, TASKS_ENDED_NOTICE_PREFIX,
@@ -306,7 +306,7 @@ fn asked_about(state: &DomainState, request: &RequestId) -> bool {
 }
 
 /// The cards of one kind about `request`, by their number.
-fn numbered<'a>(state: &'a DomainState, kind: InboxCard, of: &str) -> Vec<(u32, &'a alondra_domain_rules::Interaction)> {
+fn numbered<'a>(state: &'a DomainState, kind: InboxCard, of: &str) -> Vec<(u32, &'a alondra_domain_model::Interaction)> {
     state.interactions.values()
         .filter_map(|i| match &i.system_card {
             Some(SystemCard::Inbox { about, subject, number }) if *about == kind && subject == of => Some((*number, i)),
@@ -390,7 +390,7 @@ fn unsplit(state: &DomainState, request: &Request, read: &dyn Fn(&str) -> bool) 
 
 pub(crate) use crate::domain_store::wording::approved_plan_work;
 
-fn task_of<'a>(state: &'a DomainState, i: &Interaction) -> Option<&'a alondra_domain_rules::Task> {
+fn task_of<'a>(state: &'a DomainState, i: &Interaction) -> Option<&'a alondra_domain_model::Task> {
     match &i.scope {
         Scope::Task { task_id } => state.tasks.get(task_id),
         Scope::Orchestrator { .. } => None,
@@ -400,7 +400,7 @@ fn task_of<'a>(state: &'a DomainState, i: &Interaction) -> Option<&'a alondra_do
 /// A node's question or suggestion to the orchestrator still without its answer.
 fn waits(i: &Interaction) -> bool {
     matches!(i.author, Author::Agent { .. })
-        && i.recipient == alondra_domain_rules::Recipient::Orchestrator
+        && i.recipient == alondra_domain_model::Recipient::Orchestrator
         && !i.withdrawn
         && matches!(&i.payload, InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. })
 }
@@ -501,7 +501,7 @@ fn unreviewed(state: &DomainState, id: &InteractionId, held: Vec<TaskId>, read: 
 /// before still asking the user about it is withdrawn.
 fn dependency_cancelled(state: &DomainState, problems: &StartProblems<'_>, task: &Task, rest: u64) -> Option<Step> {
     if let Some(card) = problems.open(&task.id)
-        && let Some(StartProblem::DependencyCancelled { dependency }) = alondra_domain_rules::start_problem::from_body(&card.body)
+        && let Some(StartProblem::DependencyCancelled { dependency }) = alondra_domain_model::start_problem::from_body(&card.body)
         && state.cancelled_dependency(task).as_ref() != Some(&dependency)
     {
         return Some(Step::Withdraw { question: card.id.clone() });
@@ -581,7 +581,7 @@ fn carry_out(runtime: &dyn Runtime, state: &DomainState, step: &Step) -> bool {
         }
         Step::Withdraw { question } => (format!("withdraw-{question}-{}", current.revision), Command::Withdraw { interaction_id: question.clone() }),
         Step::TellPlanReview { id, card, review, number } => {
-            let plan_of = |task: &alondra_domain_rules::TaskId| runtime.launch_plan(task);
+            let plan_of = |task: &alondra_domain_model::TaskId| runtime.launch_plan(task);
             let text = format!("Reminder {number}: these plans are still not reviewed. If this turn ends with them still not reviewed, Alondra starts each with the plan it has and tells its node what the user decided. {}",
                 crate::domain_store::wording::orchestrator_text(state, review, &plan_of));
             (format!("tell-{id}"), told(id, card, text))
@@ -593,10 +593,10 @@ fn carry_out(runtime: &dyn Runtime, state: &DomainState, step: &Step) -> bool {
         Step::Discard { suggestion } => (format!("discard-{suggestion}"), discard(suggestion)),
     };
     let done = if creates_card(step) && current.interactions.contains_key(&InteractionId(card_id(step).to_owned())) {
-        Err(alondra_domain_rules::DomainError::new("invalid_input", "Already told"))
+        Err(alondra_domain_model::DomainError::new("invalid_input", "Already told"))
     } else {
-        runtime.system_command(alondra_domain_rules::CommandEnvelope {
-            protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: current.data_epoch.clone(),
+        runtime.system_command(alondra_domain_model::CommandEnvelope {
+            protocol_version: alondra_domain_model::PROTOCOL_VERSION, data_epoch: current.data_epoch.clone(),
             command_id: command_id.into(), expected_revision: current.revision, command,
         })
     };
@@ -629,8 +629,8 @@ fn card_id(step: &Step) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_domain_rules::{Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION};
-    use alondra_domain_rules::orchestrator_cards::UNANSWERED_NOTICE_PREFIX;
+    use alondra_domain_model::{Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION};
+    use alondra_domain_model::orchestrator_cards::UNANSWERED_NOTICE_PREFIX;
     use alondra_domain::{Owed, Party};
 
     fn run(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
@@ -718,16 +718,16 @@ mod tests {
         request(&domain, "split", true);
         run(&domain, Actor::Orchestrator { generation: 0 }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "q-1".into(), scope: Scope::Orchestrator { request_id: Some("asked".into()) },
-            recipient: alondra_domain_rules::Recipient::User, body: "Which app?".into(), blocking: true,
+            recipient: alondra_domain_model::Recipient::User, body: "Which app?".into(), blocking: true,
             options: vec![
                 QuestionOption { id: "a".into(), label: "A".into(), description: None },
                 QuestionOption { id: "b".into(), label: "B".into(), description: None },
             ],
-            card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Decide, "Pick the app"),
+            card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Decide, "Pick the app"),
         });
         run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "t-1".into(), request_id: "split".into(), title: "Task".into(), agent_id: None, review_prs: false,
-            dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         assert_eq!(steps(&domain.state().unwrap(), &|_| true), []);
         assert!(matches!(domain.state().unwrap().interactions[&"q-1".into()].payload, InteractionPayload::Question { answer: None, .. }));
@@ -751,7 +751,7 @@ mod tests {
         let create = |id: &str, request: &str, dependencies: &[&str]| Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: id.into(), request_id: request.into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
             dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         };
         run(&domain, Actor::Orchestrator { generation: 0 }, "alone", create("alone", "solo", &[]));
         run(&domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "pair".into(), title: "Pair".into() });
@@ -784,7 +784,7 @@ mod tests {
         let create = |id: &str, dependencies: &[&str]| Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: id.into(), request_id: "pair".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
             dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         };
         run(domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "pair".into(), title: "Pair".into() });
         run(domain, Actor::Orchestrator { generation: 0 }, "first", create("first", &[]));
@@ -813,15 +813,15 @@ mod tests {
             let id = InteractionId::from(format!("history-{n}").as_str());
             state.interactions.insert(id.clone(), Interaction { id, ..card.clone() });
         }
-        let before = alondra_domain_rules::measure::cards_read();
+        let before = alondra_domain_model::measure::cards_read();
         assert!(replans(&state, 0).is_empty());
-        let reads = alondra_domain_rules::measure::cards_read() - before;
+        let reads = alondra_domain_model::measure::cards_read() - before;
         assert!(reads <= state.interactions.len() as u64,
             "replanning read {reads} cards for {} tasks and {} historical cards", state.tasks.len(), state.interactions.len());
         for task in state.tasks.values_mut() { task.archived = true; }
-        let before = alondra_domain_rules::measure::cards_read();
+        let before = alondra_domain_model::measure::cards_read();
         assert!(replans(&state, 0).is_empty());
-        assert_eq!(alondra_domain_rules::measure::cards_read() - before, 0,
+        assert_eq!(alondra_domain_model::measure::cards_read() - before, 0,
             "no open task must read no start-problem history");
     }
 
@@ -923,7 +923,7 @@ mod tests {
         run(&domain, Actor::System, "node", Command::RegisterAgent { agent_id: "n".into(), name: "n".into(), at: 0 });
         run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("n".into()), review_prs: false,
-            dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         run(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
         let state = domain.state().unwrap();
@@ -940,7 +940,7 @@ mod tests {
         let state = domain.state().unwrap();
         let request = &state.requests[&"r".into()];
         assert!(request.closed && !request.withdrawn);
-        let done = alondra_domain_rules::request_outcome::DoneCard::id("r");
+        let done = alondra_domain_model::request_outcome::DoneCard::id("r");
         assert!(state.interactions.contains_key(&InteractionId::from(done.as_str())), "the user gets the Done card");
         assert_eq!(cards(&domain, TASKS_ENDED_NOTICE_PREFIX).len(), 2, "no third reminder");
     }
@@ -974,7 +974,7 @@ mod tests {
         run(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Resume the migration".into(), agent_id: Some("a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         run(domain, Actor::Agent { agent_id: "a".into() }, "start", Command::StartTask { task_id: "t".into() });
     }
@@ -982,12 +982,12 @@ mod tests {
     fn ask(domain: &DomainRuntime, id: &str) {
         run(domain, Actor::Agent { agent_id: "a".into() }, &format!("ask-{id}"), Command::AskQuestion {
             attachments: vec![], interaction_id: id.into(), scope: Scope::Task { task_id: "t".into() },
-            recipient: alondra_domain_rules::Recipient::Orchestrator, body: "Create one task per phase of the migration".into(),
+            recipient: alondra_domain_model::Recipient::Orchestrator, body: "Create one task per phase of the migration".into(),
             blocking: true, options: vec![
                 QuestionOption { id: "done".into(), label: "Done".into(), description: None },
                 QuestionOption { id: "no".into(), label: "No".into(), description: None },
             ],
-            card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Decide, "Create the phase tasks").why("The plan needs them"),
+            card: alondra_domain_model::CardSpec::new(alondra_domain_model::CardKind::Decide, "Create the phase tasks").why("The plan needs them"),
         });
     }
 
@@ -1012,11 +1012,11 @@ mod tests {
         run(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Resume the migration".into(), agent_id: None,
             review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         crate::domain_store::admit_through_sdk(domain, &"t".into(), "a");
         run(domain, Actor::System, "available", Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
-            alondra_domain_rules::RuntimeObservation::ResourceAvailable,
+            alondra_domain_model::RuntimeObservation::ResourceAvailable,
         ] });
         node_step(domain);
     }
@@ -1032,7 +1032,7 @@ mod tests {
             });
         } else if let Some(input) = lifecycle.pending_inputs().first() {
             run(domain, Actor::System, &format!("start-{at}"), Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
-                alondra_domain_rules::RuntimeObservation::TurnStarted { turn: format!("turn-{at}"), input: input.as_str().to_owned() },
+                alondra_domain_model::RuntimeObservation::TurnStarted { turn: format!("turn-{at}"), input: input.as_str().to_owned() },
             ] });
         }
     }
@@ -1044,7 +1044,7 @@ mod tests {
 
     fn user_cards(domain: &DomainRuntime) -> Vec<String> {
         domain.state().unwrap().interactions.values()
-            .filter(|i| i.recipient == alondra_domain_rules::Recipient::User).map(|i| i.id.0.clone()).collect()
+            .filter(|i| i.recipient == alondra_domain_model::Recipient::User).map(|i| i.id.0.clone()).collect()
     }
 
     /// 16 October: a node asked the orchestrator to create one task per phase of a migration; the
@@ -1112,9 +1112,9 @@ mod tests {
         node_with_task(&domain);
         run(&domain, Actor::Agent { agent_id: "a".into() }, "suggest", Command::AskQuestion {
             attachments: vec![], interaction_id: "p".into(), scope: Scope::Task { task_id: "t".into() },
-            recipient: alondra_domain_rules::Recipient::Orchestrator, body: "README.md:12".into(), blocking: false,
-            options: alondra_domain_rules::suggestion_options(),
-            card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Propose, "The README names the old flag").why("Not this task"),
+            recipient: alondra_domain_model::Recipient::Orchestrator, body: "README.md:12".into(), blocking: false,
+            options: alondra_domain_model::suggestion_options(),
+            card: alondra_domain_model::CardSpec::new(alondra_domain_model::CardKind::Propose, "The README names the old flag").why("Not this task"),
         });
         let legacy = format!("{UNSETTLED_NOTICE_PREFIX}p");
         let state = domain.state().unwrap();
@@ -1167,9 +1167,9 @@ mod tests {
         let domain = crate::wiring::open(&home).unwrap();
         node_with_task(&domain);
         ask(&domain, "q");
-        let problem = alondra_domain_rules::orchestrator_cards::UnansweredProblem { question_id: "q".into(), task_title: "Task".into(), question: "Create the phase tasks".into() };
+        let problem = alondra_domain_model::orchestrator_cards::UnansweredProblem { question_id: "q".into(), task_title: "Task".into(), question: "Create the phase tasks".into() };
         let (need, why) = problem.text(alondra_view_model::Lang::En);
-        let id = format!("{}q-1", alondra_domain_rules::orchestrator_cards::UNANSWERED_PROBLEM_PREFIX);
+        let id = format!("{}q-1", alondra_domain_model::orchestrator_cards::UNANSWERED_PROBLEM_PREFIX);
         domain.raise_worded_problem_in(Scope::Orchestrator { request_id: None }, &id,
             Some(SystemCard::Inbox { about: InboxCard::UnansweredProblem, subject: "q".into(), number: 1 }), "question_unanswered:q", need, why, problem.to_body(),
             vec![QuestionOption { id: "remind_again".into(), label: "Remind".into(), description: None }], None).unwrap();
@@ -1186,9 +1186,9 @@ mod tests {
         node_with_task(&domain);
         run(&domain, Actor::Agent { agent_id: "a".into() }, "suggest", Command::AskQuestion {
             attachments: vec![], interaction_id: "p".into(), scope: Scope::Task { task_id: "t".into() },
-            recipient: alondra_domain_rules::Recipient::Orchestrator, body: "README.md:12".into(), blocking: false,
-            options: alondra_domain_rules::suggestion_options(),
-            card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Propose, "The README names the old flag").why("Not this task"),
+            recipient: alondra_domain_model::Recipient::Orchestrator, body: "README.md:12".into(), blocking: false,
+            options: alondra_domain_model::suggestion_options(),
+            card: alondra_domain_model::CardSpec::new(alondra_domain_model::CardKind::Propose, "The README names the old flag").why("Not this task"),
         });
         turn_ends(&domain);
         let reminder = format!("{UNSETTLED_NOTICE_PREFIX}p-1");
@@ -1267,12 +1267,12 @@ mod tests {
                 match op {
                     Op::Ask(n) if !exists(n) => execute(Actor::Agent { agent_id: "a".into() }, Command::AskQuestion {
                         attachments: vec![], interaction_id: question(n).as_str().into(), scope: Scope::Task { task_id: "t".into() },
-                        recipient: alondra_domain_rules::Recipient::Orchestrator, body: format!("Where does change {n} go?"),
+                        recipient: alondra_domain_model::Recipient::Orchestrator, body: format!("Where does change {n} go?"),
                         blocking: true, options: vec![
                             QuestionOption { id: "done".into(), label: "Done".into(), description: None },
                             QuestionOption { id: "no".into(), label: "No".into(), description: None },
                         ],
-                        card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Decide, "Where does it go?").why("It decides the branch"),
+                        card: alondra_domain_model::CardSpec::new(alondra_domain_model::CardKind::Decide, "Where does it go?").why("It decides the branch"),
                     }),
                     Op::Answer(n) if exists(n) => execute(Actor::Orchestrator { generation: 0 }, Command::AnswerQuestion {
                         attachments: vec![], interaction_id: question(n).as_str().into(), option_id: "done".into(), inputs: Default::default(),

@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use alondra_domain_rules::{Author, DomainError, DomainState, Interaction, Scope, TaskId};
+use alondra_domain_model::{Author, DomainError, DomainState, Interaction, Scope, TaskId};
 use alondra_core::secret_destination::SecretDestination;
 
 fn git(dir: &Path, args: &[&str]) -> Option<PathBuf> {

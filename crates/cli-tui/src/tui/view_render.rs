@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
-use alondra_domain_rules::CardKind;
+use alondra_domain_model::CardKind;
 use alondra_view_model::{
     Action, Card, CommentKind, Facts, FieldKind, Form, Icon, Input, Item, Label, Link, LocalLink, Notice, Presentation, Row,
     Section, Tone, Trailing, View,
@@ -407,9 +407,9 @@ pub fn card_agent(card: &Card) -> Option<&alondra_view_model::ContextLine> {
     card.context.iter().find(|line| matches!(line.icon, Icon::Task | Icon::Node))
 }
 
-pub fn card_task_id(card: &Card) -> Option<alondra_domain_rules::TaskId> {
+pub fn card_task_id(card: &Card) -> Option<alondra_domain_model::TaskId> {
     match card_agent(card)?.link.as_ref()? {
-        alondra_view_model::Link::View { key } => key.strip_prefix("task:").map(|id| alondra_domain_rules::TaskId(id.to_owned())),
+        alondra_view_model::Link::View { key } => key.strip_prefix("task:").map(|id| alondra_domain_model::TaskId(id.to_owned())),
         _ => None,
     }
 }

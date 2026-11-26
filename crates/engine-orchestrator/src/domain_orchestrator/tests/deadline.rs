@@ -4,10 +4,10 @@
 //! long the clock runs.
 use super::testing::fixture;
 use super::*;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     LaunchPlan, LifecycleRecord, Recipient, TaskId, RuntimeObservation, STALL_ATTEMPTS, StallClosing, StallOutcome, UNSETTLED_INSTRUCT, is_stall_case,
 };
-use alondra_domain_rules::orchestrator_cards::STALL_NOTICE_PREFIX;
+use alondra_domain_model::orchestrator_cards::STALL_NOTICE_PREFIX;
 
 const MINUTE: i64 = 60_000;
 const HOUR: i64 = 60 * MINUTE;

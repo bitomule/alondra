@@ -64,12 +64,12 @@ exports_files(
 
 exports_files(
     ["docs/architecture/cards.md"],
-    visibility = ["//crates/domain-rules:__pkg__"],
+    visibility = ["//crates/domain-model:__pkg__"],
 )
 
 exports_files(
     ["docs/architecture/state-machines.md"],
-    visibility = ["//crates/domain-rules:__pkg__", "//crates/machine-model:__pkg__", "//tools:__pkg__"],
+    visibility = ["//crates/domain-model:__pkg__", "//crates/machine-model:__pkg__", "//tools:__pkg__"],
 )
 
 # What Claude Code writes beside a mod it loads with --plugin-dir: never part of the plugin.

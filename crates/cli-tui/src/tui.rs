@@ -99,7 +99,7 @@ use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::{Duration, Instant};
 
-use alondra_domain_rules::{
+use alondra_domain_model::{
     AgentId, AttachmentRef, AvailableAction, Command, DeliveryTarget, Interaction, InteractionId,
     Revision, TaskId,
 };
@@ -340,7 +340,7 @@ pub struct Reader {
     pub key: Key,
     pub agent: String,
     /// The task the card came from, so comments still reach its node if the card goes away.
-    task_id: Option<alondra_domain_rules::TaskId>,
+    task_id: Option<alondra_domain_model::TaskId>,
     pub title: String,
     pub kind: String,
     pub glyph: &'static str,
@@ -3550,7 +3550,7 @@ impl App {
 }
 
 /// The node working on a task, read from the message action its detail offers.
-fn task_node(client: &Client, task: &alondra_domain_rules::TaskId) -> Result<AgentId, String> {
+fn task_node(client: &Client, task: &alondra_domain_model::TaskId) -> Result<AgentId, String> {
     let view = client.views(&format!("task:{task}"), None).map_err(|e| format!("{e:#}"))?;
     alondra_client_port::views::view_action(&view, |action| action.id.starts_with("msg:") && !action.id.starts_with("msg:view@"))
         .and_then(|action| alondra_view_model::action_id::ActionId::parse(&action.id).ok())

@@ -1,7 +1,7 @@
 //! A node declares the language of each card it sends. The declaration is compared with the user's
 //! language; the text of the card is never read.
 
-use alondra_domain_rules::{Command, DomainError};
+use alondra_domain_model::{Command, DomainError};
 use alondra_view_model::Lang;
 
 pub const MISMATCH: &str = "card_language_mismatch";
@@ -51,7 +51,7 @@ pub fn refusal(command: &Command, user: Lang) -> Option<DomainError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_domain_rules::{CardKind, CardSpec, InteractionId, Recipient, Scope, TaskId};
+    use alondra_domain_model::{CardKind, CardSpec, InteractionId, Recipient, Scope, TaskId};
 
     fn card(language: Option<Lang>) -> CardSpec {
         CardSpec { language, ..CardSpec::new(CardKind::Know, "Release design") }

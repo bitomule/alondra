@@ -6,7 +6,7 @@ use super::{
     common,
     text::{t, tf},
 };
-use alondra_domain_rules::{MergeMethod, PullRequest};
+use alondra_domain_model::{MergeMethod, PullRequest};
 
 /// What the merge button says: GitHub's own words, so the card reads like the web.
 fn button_label(method: MergeMethod, lang: Lang) -> &'static str {

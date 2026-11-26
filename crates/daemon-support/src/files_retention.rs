@@ -8,7 +8,7 @@
 //!   stays while a card that names it is in the inbox or its task is open, or a message of an open
 //!   task or request names it, and `STORED_KEPT_FOR` after.
 //! - Anything else is not Alondra's: it is listed and never deleted.
-use alondra_domain_rules::{DomainState, InteractionId, Scope};
+use alondra_domain_model::{DomainState, InteractionId, Scope};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -283,20 +283,20 @@ mod tests {
         let now = SystemTime::now();
         aged(&image, 31, now);
         let mut state = DomainState::new("epoch");
-        let task = alondra_domain_rules::TaskId::from("t");
-        let open: alondra_domain_rules::Task = serde_json::from_value(serde_json::json!({
+        let task = alondra_domain_model::TaskId::from("t");
+        let open: alondra_domain_model::Task = serde_json::from_value(serde_json::json!({
             "id":"t","request_id":"r","agent_id":null,"title":"T","state":"running","revision":1,"started":true,"review_prs":false,
             "final_presentation":null,"pr_id":null,"later_prs":[],"dependencies":[],"documents":{},"archived":false,
         })).unwrap();
         state.tasks.insert(task.clone(), open);
-        let told = alondra_domain_rules::LifecycleRecord::Told {
+        let told = alondra_domain_model::LifecycleRecord::Told {
             input: "input:t:2".into(), text: Some(format!("Look at this\n\nAttached: {}", image.display())), answers: None,
         };
         state.lifecycle_journal.insert(task.clone(), vec![told]);
         let swept = sweep(&home, &state, now);
         let entry = swept.entries.iter().find(|entry| entry.path == "uploads/u-1").unwrap();
         assert!(!entry.remove, "{entry:?}");
-        state.tasks.get_mut(&task).unwrap().state = alondra_domain_rules::TaskState::Done;
+        state.tasks.get_mut(&task).unwrap().state = alondra_domain_model::TaskState::Done;
         assert!(sweep(&home, &state, now).entries.iter().any(|entry| entry.path == "uploads/u-1" && entry.remove), "it goes once its task ends");
     }
 

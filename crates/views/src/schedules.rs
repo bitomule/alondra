@@ -2,7 +2,7 @@ use super::{
     BuildError, ChoiceItem, Confirm, Field, FieldKind, Form, Icon, Item, Notice, RenderContext,
     Style, Tone, Trailing, View, action_id::Verb, common, text::t,
 };
-use alondra_domain_rules::{ScheduleFrequency, ScheduleId, ScheduleRunState};
+use alondra_domain_model::{ScheduleFrequency, ScheduleId, ScheduleRunState};
 use serde_json::{Value, json};
 
 fn frequency(f: ScheduleFrequency) -> &'static str {
@@ -436,7 +436,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
 #[cfg(test)]
 mod tests {
     use super::super::{Client, Item, Lang, LiveSnapshot, RenderContext, Transport};
-    use alondra_domain_rules::DomainState;
+    use alondra_domain_model::DomainState;
 
     #[test]
     fn schedule_instants_are_absolute_utc() {
@@ -454,7 +454,7 @@ mod tests {
             "schedule:new",
             &RenderContext {
                 domain: &domain,
-                index: &alondra_domain_rules::ReadIndex::build(&domain),
+                index: &alondra_domain_model::ReadIndex::build(&domain),
                 live: &live,
                 client: Client::Ios,
                 lang: Lang::En,
@@ -508,7 +508,7 @@ mod tests {
             "schedule:new",
             &RenderContext {
                 domain: &domain,
-                index: &alondra_domain_rules::ReadIndex::build(&domain),
+                index: &alondra_domain_model::ReadIndex::build(&domain),
                 live: &live,
                 client: Client::Ios,
                 lang: Lang::En,

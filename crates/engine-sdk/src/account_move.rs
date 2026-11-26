@@ -12,7 +12,7 @@ use alondra_engine_ports::Runtime;
 use crate::domain_store::{AccountMove, AccountMovePlan, AccountMoveStep};
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, Policy, Provider};
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use std::sync::Arc;
 use std::time::Duration;
 

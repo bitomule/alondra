@@ -341,16 +341,16 @@ mod tests {
 }
 
 /// The option id that carries why the user asks a card's author to say it again.
-pub fn clarification_name(reason: alondra_domain_rules::ClarificationReason) -> &'static str {
-    use alondra_domain_rules::ClarificationReason::*;
+pub fn clarification_name(reason: alondra_domain_model::ClarificationReason) -> &'static str {
+    use alondra_domain_model::ClarificationReason::*;
     match reason {
         Unclear => "unclear",
         Contradicts => "contradicts",
         MissingContext => "missing_context",
     }
 }
-pub fn clarification_reason(name: &str) -> Option<alondra_domain_rules::ClarificationReason> {
-    use alondra_domain_rules::ClarificationReason::*;
+pub fn clarification_reason(name: &str) -> Option<alondra_domain_model::ClarificationReason> {
+    use alondra_domain_model::ClarificationReason::*;
     match name {
         "unclear" => Some(Unclear),
         "contradicts" => Some(Contradicts),
@@ -369,10 +369,10 @@ pub const ARCHIVE_PLAN: &str = "archive";
 pub const MERGE_ANYWAY: &str = "anyway_";
 
 /// What an accept action's `extra` chooses for a result's proposed plan.
-pub fn plan_choice(extra: &str) -> Option<alondra_domain_rules::PlanChoice> {
+pub fn plan_choice(extra: &str) -> Option<alondra_domain_model::PlanChoice> {
     match extra {
-        APPROVE_PLAN => Some(alondra_domain_rules::PlanChoice::Implement),
-        ARCHIVE_PLAN => Some(alondra_domain_rules::PlanChoice::Archive),
+        APPROVE_PLAN => Some(alondra_domain_model::PlanChoice::Implement),
+        ARCHIVE_PLAN => Some(alondra_domain_model::PlanChoice::Archive),
         _ => None,
     }
 }

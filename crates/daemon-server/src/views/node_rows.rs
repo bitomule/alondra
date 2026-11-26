@@ -1,7 +1,7 @@
 //! A per-language row cache. Every retained boundary is checked again after construction.
 use super::{live::node_row, node_components::Nodes, observation::{Metric, Observation}};
 use alondra_daemon_engine::{live::{LiveChangeKey, LiveOf as _}, contexts::ContextsOf as _};
-use alondra_domain_rules::{AgentId, DomainState, NodeChangeCursor, NodeChanges, ReadSnapshot, RequestId, TaskId};
+use alondra_domain_model::{AgentId, DomainState, NodeChangeCursor, NodeChanges, ReadSnapshot, RequestId, TaskId};
 use alondra_foundation::changes::{Changed, Cursor};
 use alondra_view_model::Lang;
 use std::{collections::{BTreeMap, BTreeSet}, sync::{Arc, Mutex}};

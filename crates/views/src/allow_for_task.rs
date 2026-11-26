@@ -4,7 +4,7 @@
 use super::text::{t, tf};
 use super::Lang;
 use alondra_core::allow_for_task::{AllowForTask, NotForTask};
-use alondra_domain_rules::{AvailableAction, InteractionId, Task};
+use alondra_domain_model::{AvailableAction, InteractionId, Task};
 
 /// Where a command runs, as the user knows the folder: the task's worktree, a folder in it, or the
 /// path itself.

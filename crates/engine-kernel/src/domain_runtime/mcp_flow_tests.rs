@@ -52,7 +52,7 @@ impl Fixture {
     }
 
     fn envelope(&mut self, mut command: Value) -> CommandEnvelope {
-        if let Some(command) = command.as_object_mut() { alondra_domain_rules::derive_wire_card(command); }
+        if let Some(command) = command.as_object_mut() { alondra_domain_model::derive_wire_card(command); }
         self.sequence += 1;
         let state = self.runtime.state().unwrap();
         serde_json::from_value(json!({

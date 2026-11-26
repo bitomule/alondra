@@ -5,7 +5,7 @@ use crate::live::LiveOf as _;
 use super::*;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
 use crate::node_close::Answer;
-use alondra_domain_rules::{
+use alondra_domain_model::{
     Actor, CommandEnvelope, DeliveryTarget, ModelChooser, PROTOCOL_VERSION,
 };
 use alondra_core::{DaemonObservation, Event};
@@ -118,7 +118,7 @@ impl Rig {
         let id = format!("t{n}");
         command(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
             agent_id: Some(session.clone().into()), review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
         if launched {
             self.domain.record_model_decision(&Decision {
                 task_id: id.clone(), request_id: "r".into(), agent_id: Some(session.clone()), at: 1, kind: DecisionKind::Launch,
@@ -132,7 +132,7 @@ impl Rig {
                 command(&self.domain, Actor::Agent { agent_id: session.clone().into() }, Command::PresentResult {
                     checklist: Vec::new(),
                     attachments: vec![], task_id: id.clone().into(), interaction_id: format!("final-{n}").into(), body: "Done".into(),
-                    targets: targets.clone(), is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) });
+                    targets: targets.clone(), is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true) });
                 command(&self.domain, user(), Command::AcceptDelivery { presentation_id: format!("final-{n}").into(), targets });
                 command(&self.domain, Actor::System, Command::RecordNodeEnd { task_id: id.clone().into(), end: NodeEnd::Closed, agent_id: None });
                 self.forget_wrap_up(&id);
@@ -142,7 +142,7 @@ impl Rig {
                 self.forget_wrap_up(&id);
             }
             Task::None => {
-                command(&self.domain, Actor::System, Command::ReleaseTask { task_id: id.clone().into(), reason: "node closed by the user".into(), relaunch: alondra_domain_rules::Relaunch::AskUser, cwd: None });
+                command(&self.domain, Actor::System, Command::ReleaseTask { task_id: id.clone().into(), reason: "node closed by the user".into(), relaunch: alondra_domain_model::Relaunch::AskUser, cwd: None });
             }
             Task::Open => {}
         }
@@ -209,7 +209,7 @@ async fn cleanup_closes_sessions_of_finished_tasks_and_ones_stopped_without_a_ta
     assert_eq!(rig.sessions.removals(), ["a0000001", "a0000002", "a0000003"]);
     let state = rig.domain.state().unwrap();
     for (task, end) in [("t1", NodeEnd::Closed), ("t2", NodeEnd::Closed)] {
-        assert_eq!(state.tasks[&alondra_domain_rules::TaskId::from(task)].wrap_up.node, Some(end), "{task} remembers its node was closed");
+        assert_eq!(state.tasks[&alondra_domain_model::TaskId::from(task)].wrap_up.node, Some(end), "{task} remembers its node was closed");
     }
     let _ = (done, cancelled);
     let again = rig.run(false).await;
@@ -324,7 +324,7 @@ impl Rig {
         let given = assign_as.is_some();
         command(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
             agent_id: (!given).then(|| session.clone().into()), review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
         if let Some(actor) = assign_as {
             command_as(&self.domain, actor, assign_id, Command::AssignTask { task_id: id.clone().into(), agent_id: session.clone().into(), model: None });
         }
@@ -417,7 +417,7 @@ async fn a_node_that_declared_work_after_the_merge_is_neither_cut_nor_closed() {
     command(&rig.domain, agent(), Command::PresentResult {
         checklist: Vec::new(),
         attachments: vec![], task_id: "t1".into(), interaction_id: "final-1".into(), body: "Done".into(), targets: targets.clone(),
-        is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) });
+        is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true) });
     command(&rig.domain, user(), Command::AcceptDelivery { presentation_id: "final-1".into(), targets });
     command(&rig.domain, agent(), Command::DeclarePostMergeWork { task_id: "t1".into(), reason: Some("release.sh publishes 0.2.58".into()), waits_for: vec![] });
     rig.busy(&releasing);
@@ -443,12 +443,12 @@ async fn a_session_stopped_in_claude_agents_while_its_task_was_open_frees_the_ta
     let dry = rig.run(true).await;
     assert_eq!(names(&dry["free"]), ["Node 1"], "a session still connected is not taken as stopped");
     assert_eq!(dry["free"][0]["tasks"], json!(["Task 1"]));
-    assert_eq!(rig.domain.state().unwrap().tasks[&alondra_domain_rules::TaskId::from("t1")].state, alondra_domain_rules::TaskState::Running);
+    assert_eq!(rig.domain.state().unwrap().tasks[&alondra_domain_model::TaskId::from("t1")].state, alondra_domain_model::TaskState::Running);
     let report = rig.run(false).await;
     assert_eq!(names(&report["freed"]), ["Node 1"]);
     let state = rig.domain.state().unwrap();
-    let task = &state.tasks[&alondra_domain_rules::TaskId::from("t1")];
-    assert_eq!((task.state, task.agent_id.clone()), (alondra_domain_rules::TaskState::NotStarted, None), "it waits for a relaunch");
+    let task = &state.tasks[&alondra_domain_model::TaskId::from("t1")];
+    assert_eq!((task.state, task.agent_id.clone()), (alondra_domain_model::TaskState::NotStarted, None), "it waits for a relaunch");
     assert!(rig.sessions.removals().is_empty(), "a stopped session is freed, not removed");
 }
 

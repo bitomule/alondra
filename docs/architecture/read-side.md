@@ -5,7 +5,7 @@ The rules at the end are also in `AGENTS.md`.
 ## The shape in one paragraph
 
 The domain changes only by committing a command. Each commit builds, once, a **read index**
-(`ReadIndex`, `crates/domain-rules/src/read_index.rs`) from the new state and publishes state and
+(`ReadIndex`, `crates/domain-model/src/read_index.rs`) from the new state and publishes state and
 index together as a `ReadSnapshot`. Every screen, the changes feed, the badge, the push gate and
 push content read that snapshot plus a **live snapshot** (what nodes, hooks, GitHub and the machine
 report, `crates/daemon-server/src/views/live.rs`). Nothing on the read side copies the domain, runs a
@@ -87,12 +87,12 @@ doing right now, a pause the machine imposed, PR checks). The view adds those fr
 
 The on-demand rules the index is built from and checked against (`DomainState::inbox_orders`,
 `item`, `attention`, `delivery_blocked_by`, `task_actions`…) still live in
-`crates/domain-rules/src/projection.rs`. The name is historical: `DomainProjection`,
+`crates/domain-model/src/projection.rs`. The name is historical: `DomainProjection`,
 `projection()` and `inbox_projection()` were removed.
 
 ## Buttons: pure guards
 
-`DomainState::guard(actor, envelope)` (`crates/domain-rules/src/guards.rs`) judges a command on
+`DomainState::guard(actor, envelope)` (`crates/domain-model/src/guards.rs`) judges a command on
 `&self`, without copying or changing the state: the envelope checks (protocol, epoch, id, fence,
 expected revision), then the command's own rules. `apply` calls the same guard before it changes
 anything, so a button and its command share one set of rules. Guards read what holds a delivery

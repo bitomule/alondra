@@ -1,5 +1,5 @@
 use crate::locks::Poisonable as _;
-use alondra_domain_rules::{NodeChangeCursor, ReadSnapshot};
+use alondra_domain_model::{NodeChangeCursor, ReadSnapshot};
 use alondra_view_model::{
     BuildError, Client, ClientCapabilities, Lang, LiveSnapshot, RenderContext, Status, Transport, View,
 };
@@ -250,7 +250,7 @@ impl Cache {
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
-    use alondra_domain_rules::DomainState;
+    use alondra_domain_model::DomainState;
     use base64::Engine as _;
 
     fn read(domain: &DomainState) -> ReadSnapshot {

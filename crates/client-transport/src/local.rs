@@ -450,7 +450,7 @@ mod signing_tests {
 mod wire_tests {
     use super::*;
     use crate::client::{Delivery, delivery};
-    use alondra_domain_rules::AttachmentRef;
+    use alondra_domain_model::AttachmentRef;
     use alondra_view_model::VIEWS_PROTOCOL;
     use std::io::{Read, Write};
 

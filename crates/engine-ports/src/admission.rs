@@ -3,7 +3,7 @@
 use crate::Runtime;
 use crate::machine::NoRoom;
 use alondra_core::Millis;
-use alondra_domain_rules::{AgentId, ApiRetry, DomainError, DomainState, NodeEvent, ScheduleRun, TaskId, TaskPriority, TaskState};
+use alondra_domain_model::{AgentId, ApiRetry, DomainError, DomainState, NodeEvent, ScheduleRun, TaskId, TaskPriority, TaskState};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -137,22 +137,22 @@ pub struct Held {
 
 /// The open task a session's node works on.
 pub fn open_task_of(state: &DomainState, session: &str) -> Option<TaskId> {
-    let agent = alondra_domain_rules::AgentId(session.to_owned());
+    let agent = alondra_domain_model::AgentId(session.to_owned());
     state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent) && !task.archived && !task.state.terminal()
         && !matches!(task.state, TaskState::Closing)).map(|task| task.id.clone())
 }
 
 /// Whether `session`'s node wrote the card `id`.
-pub fn asked_by(state: &DomainState, id: &alondra_domain_rules::InteractionId, session_id: &str) -> bool {
+pub fn asked_by(state: &DomainState, id: &alondra_domain_model::InteractionId, session_id: &str) -> bool {
     state.interactions.get(id)
-        .is_some_and(|interaction| matches!(&interaction.author, alondra_domain_rules::Author::Agent { agent_id } if agent_id.0 == session_id))
+        .is_some_and(|interaction| matches!(&interaction.author, alondra_domain_model::Author::Agent { agent_id } if agent_id.0 == session_id))
 }
 
 /// The session has a held card still open: it waits for the user, however silent it is. Read
 /// from the domain, so it holds across a daemon restart that forgot which call the session is in.
 pub fn waits_on_user(state: &DomainState, session_id: &str) -> bool {
     state.holds.keys().any(|id| asked_by(state, id, session_id) && state.interactions.get(id).is_some_and(|interaction| {
-        !interaction.withdrawn && matches!(interaction.payload, alondra_domain_rules::InteractionPayload::Question { answer: None, .. })
+        !interaction.withdrawn && matches!(interaction.payload, alondra_domain_model::InteractionPayload::Question { answer: None, .. })
     }))
 }
 

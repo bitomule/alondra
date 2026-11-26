@@ -242,7 +242,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
                 review_prs: field(task, "review_prs") == true,
                 dependencies,
                 stack: None,
-                launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+                launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
             },
         );
         if field(task, "status") == "running" {
@@ -271,7 +271,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
                 interaction_id: id.into(),
                 scope,
                 recipient,
-                body, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
+                body, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"),
             },
             "question" => {
                 let options = field(interaction, "options")
@@ -296,7 +296,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
                     recipient,
                     body,
                     blocking: field(interaction, "blocking") == true,
-                    options, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+                    options, card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
                 }
             }
             other => panic!("unsupported base Interaction: {other}"),
@@ -350,7 +350,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
                 interaction_id: string(field(variant, "presentation_id")).into(),
                 body: "Synthetic pull request".into(),
                 targets,
-                is_final: field(variant, "final") == true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+                is_final: field(variant, "final") == true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
             },
         );
     } else if name == "authorized-pr" {
@@ -359,9 +359,9 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
         let confirmed = string(field(authorization, "pr_id")).to_owned();
         let pr = store.load().unwrap().pull_requests[&confirmed.as_str().into()].clone();
         setup_command(store, &format!("setup-identity-{name}"), Actor::System, Command::ObservePrAddress {
-            pr_id: pr.id.clone(), read: alondra_domain_rules::PrRead::Address { repository: pr.repository.clone() }, read_started_at: 1_000,
-            verdict: alondra_domain_rules::PrAddressVerdict::Confirmed { key: alondra_domain_rules::ProviderPrKey(pr.id.0.clone()),
-                locator: alondra_domain_rules::ProviderLocator(format!("PR_{}", pr.id)), current_repository: pr.repository.clone() },
+            pr_id: pr.id.clone(), read: alondra_domain_model::PrRead::Address { repository: pr.repository.clone() }, read_started_at: 1_000,
+            verdict: alondra_domain_model::PrAddressVerdict::Confirmed { key: alondra_domain_model::ProviderPrKey(pr.id.0.clone()),
+                locator: alondra_domain_model::ProviderLocator(format!("PR_{}", pr.id)), current_repository: pr.repository.clone() },
         });
         setup_command(
             store,
@@ -370,7 +370,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
             Command::ObserveMergeVerdict {
                 pr_id: string(field(authorization, "pr_id")).into(),
                 head: string(field(authorization, "head")).into(),
-                verdict: alondra_domain_rules::MergeVerdict::mergeable(),
+                verdict: alondra_domain_model::MergeVerdict::mergeable(),
             },
         );
         setup_command(
@@ -459,7 +459,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
                 }
                 .into(),
                 targets,
-                is_final: variant_field(variants, name, "final") == true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+                is_final: variant_field(variants, name, "final") == true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
             },
         );
     } else if name == "unaccepted-text-final" {
@@ -476,7 +476,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
                 interaction_id: string(field(variant, "presentation_id")).into(),
                 body: "Synthetic answer".into(),
                 targets,
-                is_final: field(variant, "final") == true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+                is_final: field(variant, "final") == true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
             },
         );
     } else {
@@ -709,13 +709,13 @@ fn shared_catalog_domain_and_sql_cases() {
             let pr = store.load().unwrap().pull_requests[&pr_id].clone();
             if pr.identity.is_unverified() {
                 run(&mut store, &format!("{case_id}-identity-{pr_id}"), Actor::System, Command::ObservePrAddress {
-                    pr_id: pr_id.clone(), read: alondra_domain_rules::PrRead::Address { repository: pr.repository.clone() }, read_started_at: 1_000,
-                    verdict: alondra_domain_rules::PrAddressVerdict::Confirmed { key: alondra_domain_rules::ProviderPrKey(pr_id.0.clone()),
-                        locator: alondra_domain_rules::ProviderLocator(format!("PR_{pr_id}")), current_repository: pr.repository.clone() },
+                    pr_id: pr_id.clone(), read: alondra_domain_model::PrRead::Address { repository: pr.repository.clone() }, read_started_at: 1_000,
+                    verdict: alondra_domain_model::PrAddressVerdict::Confirmed { key: alondra_domain_model::ProviderPrKey(pr_id.0.clone()),
+                        locator: alondra_domain_model::ProviderLocator(format!("PR_{pr_id}")), current_repository: pr.repository.clone() },
                 }).unwrap();
             }
             run(&mut store, &format!("{case_id}-verdict-{pr_id}"), Actor::System,
-                Command::ObserveMergeVerdict { pr_id, head, verdict: alondra_domain_rules::MergeVerdict::mergeable() }).unwrap();
+                Command::ObserveMergeVerdict { pr_id, head, verdict: alondra_domain_model::MergeVerdict::mergeable() }).unwrap();
         }
         let before = baseline(&mut store);
         let mut last_error = None;
@@ -726,7 +726,7 @@ fn shared_catalog_domain_and_sql_cases() {
                 "command" => {
                     let mut wire = field(step, "command").clone();
                     realize_digests(&mut wire);
-                    alondra_domain_rules::derive_wire_card(wire.as_object_mut().unwrap());
+                    alondra_domain_model::derive_wire_card(wire.as_object_mut().unwrap());
                     let command: Command = serde_json::from_value(wire).unwrap();
                     match &command {
                         Command::LinkInteractionSubject { interaction_id, .. }

@@ -2,7 +2,7 @@ use super::{
     Confirm, Fact, Facts, Icon, Item, Markdown, RenderContext, StepState, Style, Tone, Trailing,
     action_id::Verb, common, text::{t, tf},
 };
-use alondra_domain_rules::{AgentId, TaskId};
+use alondra_domain_model::{AgentId, TaskId};
 
 /// Stopping a node's current turn, offered only while it works: for a node that runs through the
 /// SDK, while its execution runs a turn or work of its own. Once Claude accepted the interrupt and
@@ -49,7 +49,7 @@ fn force_stop_action(id: &str, context: &RenderContext<'_>) -> Option<super::Act
 /// A node works on its task while Alondra runs it on an open task in a session that exists or that it is
 /// restarting: never the orchestrator, a node whose task ended, nor one whose session is lost and
 /// waits for the gate to be restarted.
-pub(super) fn on_open_task(agent: &alondra_domain_rules::Agent, context: &RenderContext<'_>) -> bool {
+pub(super) fn on_open_task(agent: &alondra_domain_model::Agent, context: &RenderContext<'_>) -> bool {
     agent.id.0 != "orchestrator"
         && context.domain.orchestrator_session.as_ref() != Some(&agent.id)
         && match common::sdk_live(&agent.id, context) {
@@ -60,7 +60,7 @@ pub(super) fn on_open_task(agent: &alondra_domain_rules::Agent, context: &Render
 }
 
 /// A node's tasks that are not archived.
-pub(super) fn node_tasks<'a>(agent: &AgentId, context: &RenderContext<'a>) -> impl Iterator<Item = &'a alondra_domain_rules::Task> {
+pub(super) fn node_tasks<'a>(agent: &AgentId, context: &RenderContext<'a>) -> impl Iterator<Item = &'a alondra_domain_model::Task> {
     let domain = context.domain;
     context.index.node(agent).into_iter().flat_map(|node| &node.tasks).filter_map(move |id| domain.tasks.get(id))
 }
@@ -89,7 +89,7 @@ fn context_label(percent: u32, lang: super::Lang) -> super::Label {
 /// A live node says what runs now, alongside its own step; a stopped node quotes its last sentence.
 pub(super) fn doing(node: &super::LiveNode, working: bool, lang: super::Lang) -> Option<(String, Option<String>)> {
     if working {
-        let now = super::now_fact::now_fact(Some(node), &alondra_domain_rules::Doing::Turn,
+        let now = super::now_fact::now_fact(Some(node), &alondra_domain_model::Doing::Turn,
             node.state_since.as_deref().unwrap_or("—"), lang).text(lang);
         return Some((step(node, lang).map_or_else(|| now.clone(), |step| format!("{step} · {now}")), None));
     }
@@ -375,7 +375,7 @@ pub(super) fn last_message_section(node: &super::LiveNode, context: &RenderConte
 /// What a node does right now, one row per running thread, while it is in a turn. A subagent's row
 /// says so, and each names the task it works for by its title, but in that task's own detail
 /// (`shown`).
-pub(super) fn activity_rows(agent: &alondra_domain_rules::Agent, context: &RenderContext<'_>, shown: Option<&TaskId>) -> Option<Vec<Item>> {
+pub(super) fn activity_rows(agent: &alondra_domain_model::Agent, context: &RenderContext<'_>, shown: Option<&TaskId>) -> Option<Vec<Item>> {
     let activity = context.live.activity.get(&agent.id.0).filter(|items| !items.is_empty()
         && matches!(common::sdk_live(&agent.id, context), Some(Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn)))))?;
     Some(activity.iter().map(|entry| {

@@ -40,7 +40,7 @@ CRATE_LAYERS = {
     "crates/scenarios-transcript": FOUNDATION,
     "crates/spec-engine": FOUNDATION,
     "crates/domain": DOMAIN,
-    "crates/domain-rules": DOMAIN,
+    "crates/domain-model": DOMAIN,
     # Mixed: its config, options and home lock still read and write Alondra's home.
     "crates/core": DOMAIN,
     "crates/provider-contract": PORTS,

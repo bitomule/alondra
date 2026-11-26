@@ -2,8 +2,8 @@
 //! are the engine's, read and measured as the daemon does.
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::{accounts, usage_probe};
-use alondra_domain_rules::orchestrator_batch::BATCH_PROBLEM_PREFIX;
-use alondra_domain_rules::*;
+use alondra_domain_model::orchestrator_batch::BATCH_PROBLEM_PREFIX;
+use alondra_domain_model::*;
 use alondra_engine_orchestrator::domain_orchestrator::{self, testing::Fixture};
 use alondra_engine_orchestrator::engine::OrchestratorOf as _;
 use crate::domain_runtime::DomainRuntime;
@@ -42,7 +42,7 @@ fn outbox(domain: &DomainRuntime) -> Vec<(i64, String)> {
 
 /// The orchestrator's inbox without the reminders `settle` sent back to it.
 fn unhandled(domain: &DomainRuntime) -> Vec<(i64, String)> {
-    use alondra_domain_rules::orchestrator_cards::{UNANSWERED_NOTICE_PREFIX, UNSETTLED_NOTICE_PREFIX, UNSPLIT_NOTICE_PREFIX};
+    use alondra_domain_model::orchestrator_cards::{UNANSWERED_NOTICE_PREFIX, UNSETTLED_NOTICE_PREFIX, UNSPLIT_NOTICE_PREFIX};
     domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
         .filter(|m| m.recipient_kind == "orchestrator" && m.interaction_id.as_ref()
             .is_none_or(|id| ![UNANSWERED_NOTICE_PREFIX, UNSETTLED_NOTICE_PREFIX, UNSPLIT_NOTICE_PREFIX].iter().any(|prefix| id.starts_with(prefix))))

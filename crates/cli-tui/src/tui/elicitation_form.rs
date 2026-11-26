@@ -348,7 +348,7 @@ impl ElicitationForm {
 impl App {
     /// Accepting a card whose server sent a form opens the form instead of answering at once.
     pub(super) fn open_elicitation_form(&mut self, card: &alondra_view_model::Card, action: &Action, selected: &Key, epoch: &str) -> bool {
-        let accepts = action.enabled && action.option_id.as_deref() == Some(alondra_domain_rules::Hold::ACCEPT);
+        let accepts = action.enabled && action.option_id.as_deref() == Some(alondra_domain_model::Hold::ACCEPT);
         let Some(form) = card.form.as_ref().filter(|form| accepts && !form.fields.is_empty()) else { return false };
         self.elicitation = Some(ElicitationForm::new(card.id.clone(), form.clone(), action.clone(), selected.clone(), epoch.to_owned()));
         true

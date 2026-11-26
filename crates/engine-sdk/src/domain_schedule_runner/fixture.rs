@@ -2,7 +2,7 @@
 //! `engine_sdk_test`, over the whole engine in `engine_sdk_engine_test`.
 use super::*;
 use crate::domain_runtime::DomainRuntime;
-use alondra_domain_rules::{Schedule, ScheduleFrequency};
+use alondra_domain_model::{Schedule, ScheduleFrequency};
 use std::collections::BTreeMap;
 
 /// The runtime is dropped before the folder it writes in: fields drop in order.

@@ -1,6 +1,6 @@
 use super::*;
 use alondra_engine_ports::github::pr_facts as parse;
-use alondra_domain_rules::{PrId, TaskId};
+use alondra_domain_model::{PrId, TaskId};
 use alondra_engine_ports::github::PrObserver as _;
 
 fn pr(number: u64) -> PullRequest {

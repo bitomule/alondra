@@ -19,7 +19,7 @@ impl GhCli {
     }
 
     async fn image_api(&self, host: &str, endpoint: &str, accept: &str) -> Result<Vec<u8>, Failure> {
-        let host = alondra_domain_rules::normalize_pr_host(host);
+        let host = alondra_domain_model::normalize_pr_host(host);
         let accept = format!("Accept: {accept}");
         let args = ["--hostname", host.as_str(), "-H", accept.as_str(), endpoint];
         match self.api(&args, LIMIT).await {

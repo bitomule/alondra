@@ -265,7 +265,7 @@ fn states() -> Vec<State> {
             app
         })),
         ("inbox, empty", false, Box::new(|| {
-            let domain = alondra_domain_rules::DomainState::new("keys");
+            let domain = alondra_domain_model::DomainState::new("keys");
             app_on(Screen::Inbox, build(&domain, &Default::default(), "home"))
         })),
         ("inbox, loading", false, Box::new(|| {

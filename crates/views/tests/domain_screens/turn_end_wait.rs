@@ -3,7 +3,7 @@
 //! records that wait, no card says it stopped, nobody hears of it, every client says what the task
 //! waits for, and the fact that ends the wait reaches the node and moves the task on. A turn with
 //! nothing of that kind wakes the node once, and the next one is a case for the orchestrator,
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_views as views;
 use crate::inbox_items;
 use alondra_core::text::Lang;

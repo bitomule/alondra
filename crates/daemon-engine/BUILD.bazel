@@ -9,7 +9,7 @@ load("//bazel/rules:rust_sources.bzl", "production_sources")
 WORKSPACE_DEPS = [
     "//crates/engine-ports:engine_ports",
     "//crates/agent-application:agent_application",
-    "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/view-model:view_model",
+    "//crates/core:alondra_core", "//crates/domain-model:domain_model", "//crates/view-model:view_model",
     "//crates/domain:domain",
     "//crates/foundation:foundation",
     "//crates/host:host",

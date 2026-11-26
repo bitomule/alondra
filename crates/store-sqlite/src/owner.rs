@@ -161,7 +161,7 @@ impl<'connection> OwnerTransaction<'connection> {
     }
 
     /// Whether `task` is past its work: delivered, finishing or over.
-    pub fn work_is_over(&self, task: &alondra_domain_rules::TaskId) -> bool {
+    pub fn work_is_over(&self, task: &alondra_domain_model::TaskId) -> bool {
         use alondra_domain::TaskPhase;
         self.draft.state.lifecycle_of(task).is_ok_and(|lifecycle| matches!(lifecycle.phase(), TaskPhase::Delivered | TaskPhase::Finishing | TaskPhase::Completed | TaskPhase::Cancelled))
     }
@@ -312,7 +312,7 @@ impl<'connection> OwnerTransaction<'connection> {
                     if let TurnOutcome::ApiFailed(failure)=outcome
                         && account_fresh
                         && limits_hold(alondra_core::accounts::Provider::from_driver(binding.driver()))
-                        && alondra_domain_rules::classify_sdk(&failure.error,failure.status)==Some(alondra_domain_rules::SdkFailureKind::Usage)
+                        && alondra_domain_model::classify_sdk(&failure.error,failure.status)==Some(alondra_domain_model::SdkFailureKind::Usage)
                     {
                         let account=self.draft.state.tasks.get(&task_id).ok_or_else(||DomainError::new("not_found","Task missing"))?.account_key();
                         let provider=alondra_core::accounts::Provider::from_driver(binding.driver()).ok_or_else(||DomainError::new("unknown_provider","The native quota observation has no supported driver"))?;
@@ -336,7 +336,7 @@ impl<'connection> OwnerTransaction<'connection> {
                     }
                     let (failure, failed) = match outcome {
                         TurnOutcome::Completed => (None, None),
-                        TurnOutcome::ApiFailed(failure) if !account_fresh && alondra_domain_rules::classify_sdk(&failure.error,failure.status)!=Some(alondra_domain_rules::SdkFailureKind::Usage) => (None,Some("stale_native_account_observation".into())),
+                        TurnOutcome::ApiFailed(failure) if !account_fresh && alondra_domain_model::classify_sdk(&failure.error,failure.status)!=Some(alondra_domain_model::SdkFailureKind::Usage) => (None,Some("stale_native_account_observation".into())),
                         TurnOutcome::ApiFailed(failure) => {
                             (Some(SdkApiFailure { error: failure.error.clone(), status: failure.status, resets_at: failure.resets_at, detail: failure.detail.clone(), said: failure.said.clone() }), None)
                         }
@@ -376,11 +376,11 @@ impl<'connection> OwnerTransaction<'connection> {
                     let recorded = (*kind == alondra_provider_contract::DecisionKind::Plan).then(|| {
                         prior.iter().find_map(|(previous, ..)| {
                             self.draft.state.lifecycle_journal.get(&task_id)?.iter().rev()
-                                .take_while(|record| !matches!(record, alondra_domain_rules::LifecycleRecord::Admitted { .. }))
+                                .take_while(|record| !matches!(record, alondra_domain_model::LifecycleRecord::Admitted { .. }))
                                 .any(|record| match record {
-                                    alondra_domain_rules::LifecycleRecord::Decided { card, epoch, .. } => epoch == previous
-                                        && self.draft.state.holds.get(card) == Some(&alondra_domain_rules::Hold::Plan),
-                                    alondra_domain_rules::LifecycleRecord::DecidedByPolicy { epoch, .. } => epoch == previous,
+                                    alondra_domain_model::LifecycleRecord::Decided { card, epoch, .. } => epoch == previous
+                                        && self.draft.state.holds.get(card) == Some(&alondra_domain_model::Hold::Plan),
+                                    alondra_domain_model::LifecycleRecord::DecidedByPolicy { epoch, .. } => epoch == previous,
                                     _ => false,
                                 })
                                 .then_some(*previous)
@@ -416,7 +416,7 @@ impl<'connection> OwnerTransaction<'connection> {
                         tool: asked.tool,
                         input: asked.input,
                         mcp_server: asked.mcp_server,
-                        prompt: recorded.map_or(asked.prompt, |epoch| alondra_domain_rules::DecisionPrompt::RecordedPlan { epoch }),
+                        prompt: recorded.map_or(asked.prompt, |epoch| alondra_domain_model::DecisionPrompt::RecordedPlan { epoch }),
                     });
                 }
                 ObservedFact::Worktree { path, branch, subagent } => {
@@ -507,8 +507,8 @@ impl<'connection> OwnerTransaction<'connection> {
         for (index, command) in commands.into_iter().enumerate() {
             if let Command::RecordDecisionSettled { epoch, .. } | Command::RecordDecisionAborted { epoch, .. } = &command {
                 let ended = self.draft.state.lifecycle_journal.get(&task_id).is_some_and(|records| records.iter().rev()
-                    .take_while(|record| !matches!(record, alondra_domain_rules::LifecycleRecord::Admitted { .. }))
-                    .any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::DecisionSettled { epoch: known } | alondra_domain_rules::LifecycleRecord::DecisionAborted { epoch: known, .. } if known == epoch)));
+                    .take_while(|record| !matches!(record, alondra_domain_model::LifecycleRecord::Admitted { .. }))
+                    .any(|record| matches!(record, alondra_domain_model::LifecycleRecord::DecisionSettled { epoch: known } | alondra_domain_model::LifecycleRecord::DecisionAborted { epoch: known, .. } if known == epoch)));
                 if ended {
                     continue;
                 }
@@ -517,9 +517,9 @@ impl<'connection> OwnerTransaction<'connection> {
                 let mut live=false;
                 for record in self.draft.state.lifecycle_journal.get(&task_id).into_iter().flatten(){
                     match record {
-                        alondra_domain_rules::LifecycleRecord::Admitted{..}|alondra_domain_rules::LifecycleRecord::HostEnded{..}|alondra_domain_rules::LifecycleRecord::HostStopped{..}=>live=false,
-                        alondra_domain_rules::LifecycleRecord::WorkStarted{work:found,..} if found==work.as_str()=>live=true,
-                        alondra_domain_rules::LifecycleRecord::WorkEnded{work:found,..} if found==work.as_str()=>live=false,
+                        alondra_domain_model::LifecycleRecord::Admitted{..}|alondra_domain_model::LifecycleRecord::HostEnded{..}|alondra_domain_model::LifecycleRecord::HostStopped{..}=>live=false,
+                        alondra_domain_model::LifecycleRecord::WorkStarted{work:found,..} if found==work.as_str()=>live=true,
+                        alondra_domain_model::LifecycleRecord::WorkEnded{work:found,..} if found==work.as_str()=>live=false,
                         _=>{},
                     }
                 }
@@ -568,7 +568,7 @@ impl<'connection> OwnerTransaction<'connection> {
             }
             if let Command::RecordTurnBoundary { task_id, generation, turn, failure, failed } = &envelope.command {
                 let hold = failure.as_ref()
-                    .filter(|failure| alondra_domain_rules::classify_sdk(&failure.error, failure.status).and_then(alondra_domain_rules::ClaudeHold::for_failure).is_some())
+                    .filter(|failure| alondra_domain_model::classify_sdk(&failure.error, failure.status).and_then(alondra_domain_model::ClaudeHold::for_failure).is_some())
                     .map(|failure| CommandEnvelope {
                         command_id: format!("{}:hold", envelope.command_id.0).as_str().into(),
                         command: Command::RecordClaudeHold { task_id: task_id.clone(), generation: *generation, failure: failure.clone() },

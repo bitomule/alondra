@@ -4,7 +4,7 @@ use alondra_store_sqlite::DomainStore;
 use alondra_store_sqlite::testing::{Fixture, seeded};
 use crate::live::LiveOf as _;
 use crate::metrics_capture::node_turn;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_core::metrics::steps::StepCounts;
 use serde_json::{Value, json};
 

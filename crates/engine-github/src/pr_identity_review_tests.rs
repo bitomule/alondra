@@ -6,7 +6,7 @@ use crate::domain_github::{ObservationFailures, catch_up_task_using, reconcile};
 use crate::domain_merges::Merger;
 use crate::domain_runtime::DomainRuntime;
 use crate::github_world::GithubWorld;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use std::collections::BTreeSet;
 use std::time::Duration;
 

@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 alondra-core.workspace = true
-alondra-domain-rules.workspace = true
+alondra-domain-model.workspace = true
 alondra-foundation.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -8,7 +8,7 @@ use alondra_core::clock;
 use alondra_engine_ports::Runtime;
 use crate::domain_store::{Handover, HandoverStep};
 use crate::node_push::Unreachable;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 pub use alondra_engine_kernel::bg_sessions::{
     BgSessions, ClaudeSessions, EVERY, Handovers, HandoversOf, handover_of, identity, member, still_running, successor,
 };

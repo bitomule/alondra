@@ -1,4 +1,4 @@
-use alondra_domain_rules::DomainError;
+use alondra_domain_model::DomainError;
 use alondra_view_model::{BuildError, Client, ClientCapabilities, Lang, Transport, VIEWS_PROTOCOL};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;

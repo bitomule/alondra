@@ -107,7 +107,7 @@ kernel has no cycle and the engine's main cycle measures 39 modules on `main` at
 
 `engine-ports` holds the ports the pieces of the engine call each other through, the values they
 speak in, and the registry that holds one implementation of each. It depends only on `core` and
-`domain-rules`, and on `foundation` and `process-group` below them: every piece depends on it, and
+`domain-model`, and on `foundation` and `process-group` below them: every piece depends on it, and
 none on the piece that implements a port it uses.
 
 - The ports: `AdmissionGate` and `AdmissionEngine` (`admission.rs`), `OrchestratorEngine` and
@@ -1676,3 +1676,15 @@ compile actions in the build:
   sources again, naming each one.
 - `//tools:low_opt_rust_tests_test` is unchanged: the budgets stay the one `rust_test` at the build's
   opt-level.
+
+## `domain-rules` renamed `domain-model` (phase 7a, 2026-11-26)
+
+The crate that held the domain's types, reads and rules is `crates/domain-model` (`alondra_domain_model`)
+now, with every caller, check and catalog entry renamed and nothing else changed: the same sources, the
+same 320 test targets. The measurements above keep the name the crate had when they ran.
+
+Phase 7b takes the application of commands and the decisions on cards out of it into a new
+`crates/domain-rules`, behind a `DomainRules` port that only the roots wire. The types, the reads and
+the guards stay in `domain-model`, because every screen computes its buttons with the same guard as the
+command they send (`read-side.md`). A rules edit then reopens the tests that apply commands, not the
+about 95 test targets of today's 131 that only read the model.

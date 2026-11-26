@@ -1,9 +1,9 @@
 //! Every request the user made hears how it ended from Alondra, once: its answer when it needed no
 //! task, «Done» when its tasks are over. Nobody else's requests get a card, and the orchestrator
 //! cannot send a second one.
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_views as views;
-use alondra_domain_rules::request_outcome::DoneCard;
+use alondra_domain_model::request_outcome::DoneCard;
 use std::collections::BTreeSet;
 
 /// Case 9: retain the beta's version, build and destination when closing does not repeat them.
@@ -105,7 +105,7 @@ fn merged(s: &mut DomainState, task_id: &str, number: u64) {
 }
 
 fn close(s: &mut DomainState, request: &str, answer: Option<&str>, headline: Option<&str>) -> CommandOutcome {
-    let outcome = if s.tasks.values().any(|task| task.request_id.0 == request) { alondra_domain_rules::CloseOutcome::TasksEnded } else { alondra_domain_rules::CloseOutcome::Answered };
+    let outcome = if s.tasks.values().any(|task| task.request_id.0 == request) { alondra_domain_model::CloseOutcome::TasksEnded } else { alondra_domain_model::CloseOutcome::Answered };
     ok(s, orchestrator(), Command::CloseRequest { covered_by: vec![], outcome: Some(outcome),
         request_id: request.into(), answer: answer.map(String::from), withdrawn: false, title: None, headline: headline.map(String::from), folded_into: None })
 }

@@ -2,7 +2,7 @@
 //! the daemon's restarts, the Mac and the clock did before the machine rested.
 use super::world::{self, History, Host, MINUTE, history, history_with_a_dependency};
 use super::*;
-use alondra_domain_rules::{AlondraStep, Delivery, Situation, WaitsFor};
+use alondra_domain_model::{AlondraStep, Delivery, Situation, WaitsFor};
 use alondra_domain::Party;
 use proptest::prelude::*;
 
@@ -21,8 +21,8 @@ fn known_gaps_is_empty() {
 /// The delivery deadline is no gap: the model runs the real watch, which enforces it.
 #[test]
 fn the_hand_input_deadline_is_enforced_by_the_real_policy() {
-    assert!(alondra_domain_rules::obligation_policy::enforced(&Owed::HandInput));
-    assert!(!alondra_domain_rules::obligation_policy::enforced(&Owed::ReadInput));
+    assert!(alondra_domain_model::obligation_policy::enforced(&Owed::HandInput));
+    assert!(!alondra_domain_model::obligation_policy::enforced(&Owed::ReadInput));
 }
 
 /// How many times a step may be owed again as the one before it, with nobody acting in between: a
@@ -38,7 +38,7 @@ pub(super) fn slot_tasks(state: &DomainState) -> BTreeSet<TaskId> {
 /// Alondra's from it, not ending, their node not paused, and their execution holding a slot.
 fn tasks_shown_on_a_slot(state: &DomainState, index: &ReadIndex) -> BTreeSet<TaskId> {
     state.tasks.values()
-        .filter(|task| !task.over() && task.state != alondra_domain_rules::TaskState::Closing && task.wrap_up.asked_at.is_none())
+        .filter(|task| !task.over() && task.state != alondra_domain_model::TaskState::Closing && task.wrap_up.asked_at.is_none())
         .filter(|task| task.agent_id.as_ref().is_some_and(|agent| state.through_sdk(agent) && state.node_pause(agent).is_none()))
         .filter(|task| matches!(situation(index, &task.id), Situation::Working(_) | Situation::Waiting(WaitsFor::Step(AlondraStep::Starting | AlondraStep::Delivering | AlondraStep::Waking))))
         .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot()))
@@ -79,7 +79,7 @@ fn within_its_deadlines(machine: &Machine, state: &DomainState, task: &TaskId) -
     let Some(owed) = state.obligation_of(task).map(|obligation| obligation.owed) else { return false };
     let bound = match owed {
         Owed::Answer => 2 * 10 * MINUTE + 2 * world::PASS,
-        owed => alondra_domain_rules::obligation_policy::deadline(&owed).unwrap_or(MINUTE) * 2 + world::PASS,
+        owed => alondra_domain_model::obligation_policy::deadline(&owed).unwrap_or(MINUTE) * 2 + world::PASS,
     };
     machine.owed_for(task) < bound
 }
@@ -199,7 +199,7 @@ fn each_step(machine: &Machine, verdicts: &mut Verdicts, when: &str) {
     keep(&mut verdicts.counts, counts_differ(&state, &index));
     keep(&mut verdicts.unlisted, unlisted_wait(&state, &index));
     keep(&mut verdicts.owed_answers, unowed_answer(machine, &state));
-    keep(&mut verdicts.invariants, Some(alondra_domain_rules::invariants::violations(&state).join("; ")).filter(|broken| !broken.is_empty()));
+    keep(&mut verdicts.invariants, Some(alondra_domain_model::invariants::violations(&state).join("; ")).filter(|broken| !broken.is_empty()));
 }
 
 /// Runs `history` once, through its rest, and judges it by every property.
@@ -221,7 +221,7 @@ fn judge(history: &History) -> Verdicts {
         verdicts.ends = failed(stuck.join("; "));
     }
     let unhanded: Vec<TaskId> = open_tasks(&state).into_iter().filter(|task| replanned(&state, task))
-        .filter(|task| !state.interactions.values().any(|i| matches!(&i.system_card, Some(alondra_domain_rules::SystemCard::Inbox { subject, .. }) if subject.contains(&task.0))))
+        .filter(|task| !state.interactions.values().any(|i| matches!(&i.system_card, Some(alondra_domain_model::SystemCard::Inbox { subject, .. }) if subject.contains(&task.0))))
         .collect();
     if !unhanded.is_empty() {
         verdicts.unhanded = failed(format!("{unhanded:?} wait for the orchestrator to re-plan them and it was never handed them"));
@@ -396,7 +396,7 @@ fn the_states_move_only_as_the_inventory_declares() {
     for histories in [Histories::Plain, Histories::WithCleanups, Histories::WithADependency] {
         histories.judged_beforehand();
     }
-    let declared = alondra_domain_rules::transition_table::declared(include_str!("../../../docs/architecture/state-machines.md"));
+    let declared = alondra_domain_model::transition_table::declared(include_str!("../../../docs/architecture/state-machines.md"));
     let runs: Vec<Run> = RUNS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().cloned().collect();
     let made: BTreeSet<(String, String, String)> = runs.iter().filter_map(|run| run.get())
         .flat_map(|verdicts| verdicts.transitions.iter().cloned())
@@ -577,7 +577,7 @@ fn a_task_waiting_for_a_cancelled_one_waits_for_the_orchestrator_and_is_handed_t
     assert_eq!((owed.party, owed.owed), (Party::Alondra, Owed::Replan), "the lifecycle alone says nobody owes it");
     machine.rest(|_| {});
     let state = machine.state();
-    let notices = state.interactions.values().filter(|i| i.id.0.starts_with(alondra_domain_rules::orchestrator_cards::DEPENDENCY_CANCELLED_NOTICE_PREFIX)).count();
+    let notices = state.interactions.values().filter(|i| i.id.0.starts_with(alondra_domain_model::orchestrator_cards::DEPENDENCY_CANCELLED_NOTICE_PREFIX)).count();
     assert_eq!(notices, alondra_engine_orchestrator::orchestrator_inbox::REPLAN_REMINDERS, "one at each rest, up to the last reminder, however long it rests: {notices}");
     assert!(state.open_start_problem(&waiting).is_none() && machine.seen.clock_cards.is_empty(), "no card for the user");
     assert!(!state.tasks[&waiting].cancelled(), "Alondra never cancels it");

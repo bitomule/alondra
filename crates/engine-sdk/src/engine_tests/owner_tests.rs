@@ -2,7 +2,7 @@
 use alondra_store_sqlite::AsSqlite as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::domain_store::*;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -217,7 +217,7 @@ fn settling_the_case_of_a_stopped_node_tells_the_task_how_to_go_on_in_one_commit
     let instruct = Command::SettleStall {
         case_id: stall_case_of("turn-2"),
         task_id: task(),
-        outcome: alondra_domain_rules::StallOutcome::Instruct { text: "Add the tests first".into() },
+        outcome: alondra_domain_model::StallOutcome::Instruct { text: "Add the tests first".into() },
     };
     let ordinary = store.execute_filling_revision(&orchestrator(), &envelope(&state, "instruct", instruct)).unwrap();
     let permits = &ordinary.sealed.as_ref().unwrap().permits;
@@ -282,8 +282,8 @@ fn work_observed_after_the_delivery_is_recorded_once() {
     let state = runtime.state().unwrap();
     let delivery = Command::PresentResult {
         attachments: vec![], task_id: task(), interaction_id: "delivery".into(), body: "Done".into(), is_final: true, nothing_to_review: false,
-        targets: vec![alondra_domain_rules::DeliveryTarget::Text { text: "Done".into() }], checklist: vec![],
-        card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+        targets: vec![alondra_domain_model::DeliveryTarget::Text { text: "Done".into() }], checklist: vec![],
+        card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
     };
     runtime.execute(&agent(), &CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "deliver", delivery) }, None, || Ok(())).unwrap();
     assert!(runtime.read().state().lifecycle_of(&task()).unwrap().phase() == alondra_domain::TaskPhase::Delivered);

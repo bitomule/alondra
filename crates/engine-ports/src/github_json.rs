@@ -3,7 +3,7 @@
 //! GitHub that answers in `gh`'s JSON reads it the same way, the real one and a scenario's.
 use super::{PrFacts, ReadIdentity};
 use alondra_core::pr::{self as card, Check, CheckState, PullRequest as PrCard};
-use alondra_domain_rules::{PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey};
+use alondra_domain_model::{PrChecks, PrMergeable, PrState, ProviderLocator, ProviderPrKey};
 use serde_json::Value;
 
 /// What `gh pr view --json` reports of a pull request, without the merge methods its repository
@@ -55,7 +55,7 @@ pub fn address(url: &str) -> Option<(String, String, u64)> {
     let (host, path) = url.split_once("://")?.1.split_once('/')?;
     let (repository, number) = path.split_once("/pull/")?;
     let number = number.trim_end_matches('/').parse().ok()?;
-    (repository.split('/').count() == 2).then(|| (alondra_domain_rules::normalize_pr_host(host), alondra_domain_rules::normalize_pr_repository(repository), number))
+    (repository.split('/').count() == 2).then(|| (alondra_domain_model::normalize_pr_host(host), alondra_domain_model::normalize_pr_repository(repository), number))
 }
 
 fn mergeable(value: &Value) -> PrMergeable {

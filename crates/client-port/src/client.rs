@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use alondra_core::config::Config;
-use alondra_domain_rules::{AttachmentRef, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, PROTOCOL_VERSION, Revision};
+use alondra_domain_model::{AttachmentRef, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, PROTOCOL_VERSION, Revision};
 use alondra_view_model::{View as ViewDocument, VIEWS_PROTOCOL};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
@@ -438,7 +438,7 @@ fn content_via(route: &str, mut get: impl FnMut(&str) -> Result<Value>) -> Resul
     let mut bytes = Vec::new();
     let mut version: Option<String> = None;
     let sep = if route.contains('?') { '&' } else { '?' };
-    let limit = if route.starts_with("/interactions/") { alondra_domain_rules::MAX_ATTACHMENT_BYTES } else { MAX_ATTACHMENT_BYTES };
+    let limit = if route.starts_with("/interactions/") { alondra_domain_model::MAX_ATTACHMENT_BYTES } else { MAX_ATTACHMENT_BYTES };
     loop {
         let path = match &version {
             Some(v) => format!("{route}{sep}offset={}&version={}", bytes.len(), crate::routes::urlencode(v)),
@@ -818,7 +818,7 @@ mod tests {
         let thirty = 30 * 1024 * 1024;
         assert_eq!(content_via(video, first(thirty)).unwrap_err().to_string(), "second chunk asked");
         assert_eq!(content_via("/files/chunk?path=a", first(thirty)).unwrap_err().to_string(), "the file is larger than 20 MB");
-        assert_eq!(content_via(video, first(alondra_domain_rules::MAX_ATTACHMENT_BYTES + 1)).unwrap_err().to_string(), "the file is larger than 64 MB");
+        assert_eq!(content_via(video, first(alondra_domain_model::MAX_ATTACHMENT_BYTES + 1)).unwrap_err().to_string(), "the file is larger than 64 MB");
     }
 
     #[test]

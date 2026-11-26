@@ -1,5 +1,5 @@
 use super::*;
-use alondra_domain_rules::{DomainState, ReadIndex};
+use alondra_domain_model::{DomainState, ReadIndex};
 use alondra_core::metrics::fold::Outcome;
 use alondra_core::metrics::report::{DAY_MS, DayRow, Metric, Release, Spend, TaskRow, Tokens, Unit, Value};
 use crate::{Client, Item, LiveSnapshot, Transport, build as build_view};

@@ -1,7 +1,7 @@
 use alondra_store_sqlite::AsSqlite as _;
 use super::*;
 use crate::views::observation::{Serialization, Totals};
-use alondra_domain_rules::{Actor, Agent, Command, CommandEnvelope, NodePhase, Task, PROTOCOL_VERSION};
+use alondra_domain_model::{Actor, Agent, Command, CommandEnvelope, NodePhase, Task, PROTOCOL_VERSION};
 use serde_json::json;
 
 const NOW: i64 = 1_800_000_000_000;

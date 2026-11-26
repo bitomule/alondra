@@ -1,6 +1,6 @@
 use super::{action_id::{ActionId, Verb}, common, text::{t, tf}, Action, BuildError, ChoiceItem, Condition, Field, FieldKind, Form, Icon, Item, RenderContext, Style, View};
 use alondra_core::accounts::Provider;
-use alondra_domain_rules::{ModelChooser, TaskId};
+use alondra_domain_model::{ModelChooser, TaskId};
 use alondra_core::model_selection::{ModelCandidate, ModelKey, ModelProfile, PendingTaskSelection, RoleModelPolicy, TaskSelection};
 use serde_json::json;
 pub use alondra_view_model::model_controls::{PROFILES, parse_profile};
@@ -58,7 +58,7 @@ fn field(id: &str, label: String, kind: FieldKind, value: serde_json::Value) -> 
     Field { id: id.into(), label, kind, value, required: false, help: None, visible_when: None, reload_on_change: false }
 }
 
-fn guarded(mut action: Action, available: alondra_domain_rules::AvailableAction, lang: super::Lang) -> Action {
+fn guarded(mut action: Action, available: alondra_domain_model::AvailableAction, lang: super::Lang) -> Action {
     action.enabled = available.enabled;
     action.disabled_reason = available.refusal.map(|refusal| super::messages::refusal_text(&refusal, lang));
     action

@@ -6,7 +6,7 @@
 use alondra_core::clock;
 use alondra_engine_ports::Runtime;
 use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountBilling, Provider};
-use alondra_domain_rules::{
+use alondra_domain_model::{
     ClaudeHeld, ClaudeHold, Command, CommandEnvelope, Millis, OUTAGE_PROBE, PROTOCOL_VERSION, QUIET_RETRY,
 };
 use std::collections::BTreeMap;
@@ -104,14 +104,14 @@ pub fn probe(domain: &dyn Runtime, hold: ClaudeHold, account: Option<AccountId>)
     probe_for(domain,Provider::Claude,hold,account)
 }
 
-pub(crate) fn native_capacity_ready(state: &alondra_domain_rules::DomainState, key: &AccountKey, since: Millis) -> bool {
+pub(crate) fn native_capacity_ready(state: &alondra_domain_model::DomainState, key: &AccountKey, since: Millis) -> bool {
     if !state.accounts.iter().any(|account| account.provider==key.provider && account.id==key.account && account.state==AccountState::SignedIn && !matches!(account.billing,AccountBilling::PayPerUse)) { return false; }
     if !alondra_core::usage::eligible_account_keys(std::slice::from_ref(key),&state.accounts,&state.account_usage,since).contains(key) { return false; }
     native_capacity_for_existing(state, key, since)
 }
 
 /// Window evidence only: the current-task probe supplies native identity and original billing authority.
-pub(crate) fn native_capacity_for_existing(state: &alondra_domain_rules::DomainState, key: &AccountKey, since: Millis) -> bool {
+pub(crate) fn native_capacity_for_existing(state: &alondra_domain_model::DomainState, key: &AccountKey, since: Millis) -> bool {
     if key.provider != Provider::Codex { return false; }
     let Some(usage) = state.account_usage.iter().find(|usage| usage.provider == key.provider && usage.account == key.account) else { return false; };
     if usage.plan_exhausted_until(since).is_some() { return false; }
@@ -152,7 +152,7 @@ pub(crate) fn probe_for(domain: &dyn Runtime, provider: Provider, hold: ClaudeHo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_domain_rules::{InteractionId, TaskId};
+    use alondra_domain_model::{InteractionId, TaskId};
 
     fn held(task: &str, hold: ClaudeHold, card: &str) -> ClaudeHeld {
         on(task, hold, card, AccountId::DEFAULT)
@@ -196,7 +196,7 @@ mod tests {
     fn codex_probe_requires_fresh_positive_native_capacity_not_only_a_sign_in() {
         use alondra_core::accounts::AccountStatus;
         use alondra_core::usage::{AccountUsage,UsageWindow,WindowReading,WindowKind,Share};
-        let key=AccountKey::native(Provider::Codex); let mut state=alondra_domain_rules::DomainState::new("epoch");
+        let key=AccountKey::native(Provider::Codex); let mut state=alondra_domain_model::DomainState::new("epoch");
         state.accounts.push(AccountStatus { antigravity: None,provider:key.provider,id:key.account.clone(),name:"Personal".into(),state:AccountState::SignedIn,email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None,native_identity:None});
         assert!(!native_capacity_ready(&state,&key,100));
         let window=|name:&str|UsageWindow {measured_at:100,reading:WindowReading {kind:WindowKind::Other(format!("codex:account:{name}:300")),used:Share::NONE,resets_at:Some(200),exhausted:false}};
@@ -215,7 +215,7 @@ mod tests {
         use alondra_core::accounts::AccountStatus;
         use alondra_core::usage::{AccountUsage, Share, UsageWindow, WindowKind, WindowReading};
         let key = AccountKey::native(Provider::Codex);
-        let mut state = alondra_domain_rules::DomainState::new("epoch");
+        let mut state = alondra_domain_model::DomainState::new("epoch");
         state.accounts.push(AccountStatus { antigravity: None, provider: key.provider, id: key.account.clone(), name: "Personal".into(),
             state: AccountState::Disabled, email: Some("same@example.invalid".into()), plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None, native_identity: None });
         let window = |name: &str| UsageWindow { measured_at: 100, reading: WindowReading { kind: WindowKind::Other(format!("codex:account:{name}:300")),

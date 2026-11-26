@@ -21,7 +21,7 @@ use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::domain_runtime::DomainRuntime;
 use crate::service::Service;
-use alondra_domain_rules::ActivityCounts;
+use alondra_domain_model::ActivityCounts;
 use alondra_view_model::{Client, Lang, RenderContext, Transport};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;

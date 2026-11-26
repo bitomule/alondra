@@ -6,7 +6,7 @@ use crate::live::LiveOf as _;
 use super::*;
 use alondra_engine_admission::AdmissionOf as _;
 use crate::obligation_watch::{Watch, pass};
-use alondra_domain_rules::obligation_policy::Millis;
+use alondra_domain_model::obligation_policy::Millis;
 use alondra_domain::{Owed, Party};
 use crate::sdk_owner::fixtures::untaken::*;
 use crate::sdk_owner::fixtures::untaken::drive_by_hand;

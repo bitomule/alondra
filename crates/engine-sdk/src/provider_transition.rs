@@ -12,7 +12,7 @@ use crate::domain_store::{Attached,OwnerJournal,StoreError};
 use crate::domain_store::provider_transition::{Kind,Plan,Phase,Transition,prepared_facts};
 use alondra_engine_ports::agent_host::{EndedHost,Retained};
 use alondra_core::accounts::AccountKey;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_core::model_selection::{ModelSelection,MoveRefused,PendingTaskSelection,TaskSelection};
 use alondra_core::selection_transition::{ActiveSelection,SelectionTransition,TransitionCapabilities,classify_transition};
 use alondra_domain::ActivityView;
@@ -122,7 +122,7 @@ pub(crate) fn holds_source_inputs(domain:&dyn Runtime,task:&TaskId,instance:&str
 }
 /// Whether the task owes a change of role its current execution does not play: nothing reaches
 /// that execution, and nothing takes it up again, until the new one starts.
-pub(crate) fn owes_role_change(task:&alondra_domain_rules::Task)->bool{
+pub(crate) fn owes_role_change(task:&alondra_domain_model::Task)->bool{
     task.stages.handover.as_ref().is_some_and(|handover|task.stages.role()!=Some(handover.to))
 }
 pub(crate) fn holds_execution(domain:&dyn Runtime,task:&TaskId)->bool{
@@ -192,7 +192,7 @@ fn drained(domain:&dyn Runtime,plan:&Plan)->Result<bool,DomainError>{
         && lifecycle.cards().iter().all(|(card,_)|lifecycle.card_callback(card).is_none()) && lifecycle.doubts().is_empty())
 }
 /// The task's canonical context, or why it cannot move: Alondra no longer has part of it.
-pub(crate) fn critical_context(state:&DomainState,task:&alondra_domain_rules::Task)->Result<String,DomainError>{
+pub(crate) fn critical_context(state:&DomainState,task:&alondra_domain_model::Task)->Result<String,DomainError>{
     let canonical=alondra_engine_kernel::launches::canonical_task_context(state,task);
     if !canonical.missing_sources.is_empty(){return Err(failure(format!("Critical task context is missing: {}",canonical.missing_sources.join(", "))))}
     Ok(canonical.text)
@@ -319,7 +319,7 @@ fn record_stage_launch(domain:&dyn Runtime,plan:&Plan){
     let decision=crate::domain_store::model_metrics::Decision{
         task_id:task.id.0.clone(),request_id:task.request_id.0.clone(),agent_id:task.agent_id.as_ref().map(|agent|agent.0.clone()),at:alondra_core::now_millis(),
         kind:crate::domain_store::model_metrics::DecisionKind::Launch,model:Some(plan.target_model.model.wire_id()),effort:plan.target_model.reasoning_effort.clone(),
-        approach:None,chosen_by:alondra_domain_rules::ModelChooser::Orchestrator,reason:Some(plan.reason.clone()),title:task.title.clone(),provider:Some(plan.target_account.provider),tags:None,
+        approach:None,chosen_by:alondra_domain_model::ModelChooser::Orchestrator,reason:Some(plan.reason.clone()),title:task.title.clone(),provider:Some(plan.target_account.provider),tags:None,
     };
     drop(read);
     if let Err(error)=domain.record_model_decision(&decision){log!("could not record the model of {}'s new stage: {error:#}",plan.task);}
@@ -443,7 +443,7 @@ fn retry_refused(domain:&dyn Runtime,change:&Transition)->Result<bool,DomainErro
         let read=domain.read();let state=read.state();
         state.open_start_problem(&change.plan.task).is_none() && state.last_start_problem(&change.plan.task).is_some_and(|card|!card.withdrawn && matches!(&card.payload,
             InteractionPayload::Question{answer:Some(answer),..} if answer.option_id==START_RETRY)
-            && matches!(alondra_domain_rules::start_problem::from_body(&card.body),Some(StartProblem::MoveStartRefused{..})))
+            && matches!(alondra_domain_model::start_problem::from_body(&card.body),Some(StartProblem::MoveStartRefused{..})))
     };
     if !retry{return Ok(false)}
     log!("{} tries again to start on {}, as the user asked",change.plan.task,change.plan.target_account.wire_id());

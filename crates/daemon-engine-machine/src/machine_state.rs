@@ -11,7 +11,7 @@
 //!
 //! A daemon that just started judges the samples it has. The CPU load holds nothing.
 use std::collections::{BTreeMap, VecDeque};
-use alondra_domain_rules::AgentId;
+use alondra_domain_model::AgentId;
 
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure, Millis};
 pub use alondra_engine_ports::machine::NoRoom;

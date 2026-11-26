@@ -288,10 +288,10 @@ pub enum Expect {
     GhCalls { calls: Vec<String> },
     PrMergedInto { pr: u64, branch: String },
     /// Pull request `pr` of `repository` is `state` (`open`, `closed` or `merged`) on GitHub.
-    PrStateIn { repository: String, pr: u64, state: alondra_domain_rules::PrState },
+    PrStateIn { repository: String, pr: u64, state: alondra_domain_model::PrState },
     /// The searches of open PRs and reads of their branches the daemon made, in order.
     SweepReads { reads: Vec<String> },
-    TaskState { task: String, state: alondra_domain_rules::TaskState },
+    TaskState { task: String, state: alondra_domain_model::TaskState },
     /// Each start-problem decision pass reads at most this many times the card population.
     StartProblemReads { max_passes: u64 },
     /// Building the committed read index scans card history at most this many times.

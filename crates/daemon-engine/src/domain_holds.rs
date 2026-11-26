@@ -9,7 +9,7 @@
 //! settings hook keeps waiting and a hook that goes away withdraws its card.
 use alondra_engine_ports::Runtime;
 use crate::hook_text::{card_subject, elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
-use alondra_domain_rules::{
+use alondra_domain_model::{
     clip, without_recommended_suffix, Actor, AgentId, Answer, CardKind, CardSpec, Command, CommandEnvelope,
     ContentKind, DecisionPrompt, DomainState, GroupQuestion, Hold, InputValue, InteractionId, InteractionPayload,
     McpServerOrigin, QuestionGroup, QuestionOption, PROTOCOL_VERSION, plan_checklist_problem, include_linked_files,
@@ -19,7 +19,7 @@ use alondra_core::allow_always::AllowAlways;
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use alondra_domain_rules::cited_file::read_cited_file;
+use alondra_domain_model::cited_file::read_cited_file;
 use std::path::{Path, PathBuf};
 
 pub(crate) struct Held {

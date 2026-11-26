@@ -4,7 +4,7 @@ use alondra_core::clock;
 use alondra_engine_sdk::domain_runtime::DomainRuntime;
 use alondra_engine_sdk::domain_store::model_metrics::{Decision, DecisionKind};
 use alondra_engine_ports::worktrees::Workplace;
-use alondra_domain_rules::{Actor, AgentId, DomainError, DomainState, RequestId, TaskId};
+use alondra_domain_model::{Actor, AgentId, DomainError, DomainState, RequestId, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -22,7 +22,7 @@ use alondra_daemon_engine::sdk_handover::BgSessions;
 use alondra_daemon_engine_model::LaunchOptions;
 use crate::engine_tests::SdkLaunches;
 use crate::test_support::Directory;
-use alondra_domain_rules::{AttachmentRef, Command, CommandEnvelope, ModelChooser, PROTOCOL_VERSION, TaskModel, TaskState};
+use alondra_domain_model::{AttachmentRef, Command, CommandEnvelope, ModelChooser, PROTOCOL_VERSION, TaskModel, TaskState};
 use alondra_core::options::OptionsFile;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -87,7 +87,7 @@ pub fn bare_world() -> Fixture {
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
     command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")), });
     Fixture { sdk: None, sessions, root, home, project, domain }
 }
 
@@ -186,16 +186,16 @@ pub fn refused_plan(f: &Fixture) -> alondra_daemon_engine_model::LaunchPlan {
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) }
 }
 
-pub async fn refuse_its_start(f: &Fixture) -> alondra_domain_rules::Interaction {
+pub async fn refuse_its_start(f: &Fixture) -> alondra_domain_model::Interaction {
     alondra_engine_sdk::auto_launch::pass(&*f.domain, &f.home).await.unwrap();
     assert!(f.sdk().starts().is_empty());
     assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty(), "no retry is promised for a start that cannot work");
     let state = f.domain.state().unwrap();
     let card = state.open_plan_refusal(&"t".into()).cloned().expect("the orchestrator is handed the refused plan at once");
-    assert_eq!(card.recipient, alondra_domain_rules::Recipient::Orchestrator);
+    assert_eq!(card.recipient, alondra_domain_model::Recipient::Orchestrator);
     assert!(card.body.contains("Choose a model before its native reasoning effort"), "{}", card.body);
-    assert!(state.interactions.values().all(|i| i.recipient != alondra_domain_rules::Recipient::User
-        || !matches!(&i.scope, alondra_domain_rules::Scope::Task { task_id } if task_id.0 == "t")), "nothing reaches the user's inbox");
+    assert!(state.interactions.values().all(|i| i.recipient != alondra_domain_model::Recipient::User
+        || !matches!(&i.scope, alondra_domain_model::Scope::Task { task_id } if task_id.0 == "t")), "nothing reaches the user's inbox");
     let messages = f.domain.store.lock().unwrap().pending_messages().unwrap();
     assert!(messages.iter().any(|m| m.recipient_kind == "orchestrator" && m.interaction_id.as_deref() == Some(card.id.0.as_str())),
         "the orchestrator hears of it in its next batch: {messages:?}");

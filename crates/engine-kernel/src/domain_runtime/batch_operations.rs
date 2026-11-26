@@ -240,8 +240,8 @@ mod tests {
     /// committed is still answered with its receipt.
     #[test]
     fn a_turn_creates_at_most_ten_tasks_and_the_eleventh_is_refused_before_any_effect() {
-        use alondra_domain_rules::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
-        use alondra_domain_rules::orchestrator_batch::{TURN_TASK_LIMIT, TURN_TASK_LIMIT_CODE};
+        use alondra_domain_model::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
+        use alondra_domain_model::orchestrator_batch::{TURN_TASK_LIMIT, TURN_TASK_LIMIT_CODE};
         let home = Directory::new();
         std::fs::create_dir_all(&*home).unwrap();
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open_unwired_at(&home,&home.join("domain.db")).unwrap());

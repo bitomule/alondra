@@ -5,7 +5,7 @@
 //! A commit of the normal command path hands its permits here too.
 use alondra_core::clock;
 use crate::locks::{Poisonable as _, AfterPanic as _};
-use alondra_domain_rules::{AgentId, TaskId};
+use alondra_domain_model::{AgentId, TaskId};
 use alondra_foundation::ExecutionStamp;
 use alondra_store::Committed;
 

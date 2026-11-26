@@ -3,7 +3,7 @@
 //! under Seatbelt, so its target is `manual` and the release's tests name it.
 use alondra_core::accounts::Provider;
 use alondra_domain::ActivityView;
-use alondra_domain_rules::Scope;
+use alondra_domain_model::Scope;
 use alondra_store_sqlite::domain_database_migration::DATABASE;
 use engine_fixtures::owner::codex::{configured, launch, transcript};
 use engine_fixtures::owner::{DECISION_CARDS, HostRoot, ProcessHosts, Slice, TASK, advance, owner_generation, runfile};

@@ -5,7 +5,7 @@ use crate::hosts::HostsOf as _;
 use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use alondra_engine_ports::Runtime;
-use alondra_domain_rules::{body_title, Agent, AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, Recipient, Scope, TaskActivity};
+use alondra_domain_model::{body_title, Agent, AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, Recipient, Scope, TaskActivity};
 use alondra_domain::{Capacity, LiveState, Step, Worker};
 use alondra_core::Node;
 use serde_json::{Value, json};

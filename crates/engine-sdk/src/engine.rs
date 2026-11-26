@@ -4,7 +4,7 @@
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
 use alondra_core::{Millis, Node};
-use alondra_domain_rules::{AgentId, DomainError, DomainState, NodeEvent, StartFacts, Task, TaskId};
+use alondra_domain_model::{AgentId, DomainError, DomainState, NodeEvent, StartFacts, Task, TaskId};
 use alondra_engine_ports::Runtime;
 use alondra_engine_ports::admission::AdmissionEngine;
 use alondra_engine_ports::node_close::{CloseOutcome, Sessions};

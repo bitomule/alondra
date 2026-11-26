@@ -6,7 +6,7 @@ use crate::domain_api::DomainHost as _;
 use crate::domain_authority::Principal;
 use axum::http::StatusCode;
 use std::net::SocketAddr;
-use alondra_domain_rules::{Actor, Command, CommandEnvelope, DeliveryTarget, InteractionPayload, PrId, PROTOCOL_VERSION, TaskState};
+use alondra_domain_model::{Actor, Command, CommandEnvelope, DeliveryTarget, InteractionPayload, PrId, PROTOCOL_VERSION, TaskState};
 use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -152,7 +152,7 @@ impl Fixture {
     }
 
     fn envelope(&mut self, mut command: Value) -> Value {
-        if let Some(command) = command.as_object_mut() { alondra_domain_rules::derive_wire_card(command); }
+        if let Some(command) = command.as_object_mut() { alondra_domain_model::derive_wire_card(command); }
         self.next_id += 1;
         let state = self.domain.state().unwrap();
         json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":state.data_epoch,
@@ -591,7 +591,7 @@ impl crate::client_routes::PrView for WatcherRecordsPush {
         if self.0.state().unwrap().pull_requests[&self.1].head != PUSHED {
             crate::domain_github::execute_system(&*self.0, Command::ObservePrState {
                 pr_id: self.1.clone(), head: PUSHED.into(), base: "main".into(),
-                state: alondra_domain_rules::PrState::Open, merged_head: None,
+                state: alondra_domain_model::PrState::Open, merged_head: None,
             }).unwrap();
         }
         Box::pin(async { Some(github_at(PUSHED)) })
@@ -664,7 +664,7 @@ async fn http_a_pr_closed_just_before_delivery_is_refused_without_a_card_or_push
     let (status, refused) = fixture.present_as_mcp(json!({"kind":"pull_request"})).await;
     assert_eq!((status, refused["code"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")), "{refused}");
     assert_eq!(refused["contract"]["rule"], "pr_not_open");
-    assert_eq!(fixture.domain.state().unwrap().pull_requests[&fixture.pr_id()].state, alondra_domain_rules::PrState::Closed);
+    assert_eq!(fixture.domain.state().unwrap().pull_requests[&fixture.pr_id()].state, alondra_domain_model::PrState::Closed);
     assert!(!fixture.domain.state().unwrap().interactions.contains_key(&"pr-delivery".into()));
     assert_eq!(user_pushes(&fixture.domain), pushes_before);
     fixture.finish().await;
@@ -673,7 +673,7 @@ async fn http_a_pr_closed_just_before_delivery_is_refused_without_a_card_or_push
 #[tokio::test]
 async fn http_an_accepted_pr_is_merged_by_alondra_and_a_node_can_neither_claim_nor_complete() {
     use crate::domain_merges::{Checks, FakeGithub, Merger};
-    use alondra_domain_rules::MergeAttemptState;
+    use alondra_domain_model::MergeAttemptState;
     use std::time::Duration;
     let mut fixture = Fixture::start().await;
     fixture.task("merge-task", true).await;
@@ -882,7 +882,7 @@ impl Fixture {
 
     fn deliveries(&self, task: &str) -> usize {
         self.domain.state().unwrap().interactions.values()
-            .filter(|interaction| matches!(&interaction.scope, alondra_domain_rules::Scope::Task { task_id } if *task_id == task.into())
+            .filter(|interaction| matches!(&interaction.scope, alondra_domain_model::Scope::Task { task_id } if *task_id == task.into())
                 && matches!(interaction.payload, InteractionPayload::Delivery { .. }))
             .count()
     }

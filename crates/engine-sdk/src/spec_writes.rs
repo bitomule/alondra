@@ -5,7 +5,7 @@
 //! them, so a new implementer always starts from the approved files.
 use crate::domain_store::{Attached, OwnerJournal as _, StoreError};
 use alondra_domain::ActivityView;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_engine_ports::Runtime;
 use alondra_foundation::log;
 use alondra_store::AuthorityScope;

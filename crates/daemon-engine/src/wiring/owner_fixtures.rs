@@ -6,7 +6,7 @@
 //! committed state before it acknowledges. Lifecycle fixtures are not native SDK observations.
 use alondra_engine_kernel::domain_store::*;
 use alondra_store_sqlite::DomainStore;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -188,7 +188,7 @@ pub fn running() -> (Fixture, DomainStore, ExecutionStamp) {
 pub fn running_with(binding: &ProviderBinding) -> (Fixture, DomainStore, ExecutionStamp) {
     let (fixture, mut store) = installed();
     let state = store.load().unwrap();
-    let release = Command::ReleaseTask { task_id: task(), reason: "The SDK host takes it".into(), relaunch: alondra_domain_rules::Relaunch::ByItself, cwd: None };
+    let release = Command::ReleaseTask { task_id: task(), reason: "The SDK host takes it".into(), relaunch: alondra_domain_model::Relaunch::ByItself, cwd: None };
     store.execute_filling_revision(&Actor::System, &envelope(&state, "fixture-release", release)).unwrap();
     let state = store.load().unwrap();
     let (execution, _) = store
@@ -265,7 +265,7 @@ pub fn pending_input(store: &mut DomainStore) -> InputId {
 }
 /// The case the orchestrator gets when turn `turn` of the running execution ends as a stop.
 pub fn stall_case_of(turn: &str) -> InteractionId {
-    alondra_domain_rules::stalled_card_id(&task(), 2, turn)
+    alondra_domain_model::stalled_card_id(&task(), 2, turn)
 }
 /// Ends the first turn of the running execution with nothing that explains its next step (the
 /// fixture's question withdrawn first), which wakes its node, ends empty the turns of its other

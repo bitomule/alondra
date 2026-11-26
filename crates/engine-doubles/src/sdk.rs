@@ -6,7 +6,7 @@
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, Provider};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
-use alondra_domain_rules::{AgentId, DomainError, DomainState, StartFacts, Task, TaskId};
+use alondra_domain_model::{AgentId, DomainError, DomainState, StartFacts, Task, TaskId};
 use alondra_engine_ports::hosts::Launched;
 use alondra_engine_ports::node_close::{Answer, CloseOutcome, Sessions};
 use alondra_engine_ports::sdk::{LastRequest, SdkEngine, SessionStart, StartKind, Work};

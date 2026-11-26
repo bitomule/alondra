@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 alondra-core.workspace = true
-alondra-domain-rules.workspace = true
+alondra-domain-model.workspace = true
 alondra-engine-ports.workspace = true
 alondra-foundation.workspace = true
 alondra-process-group.workspace = true

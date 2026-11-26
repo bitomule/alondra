@@ -1,5 +1,5 @@
 use super::*;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use alondra_engine_ports::github::{DiffError, GhFailure, MAX_PR_DIFF_BYTES, PrDiff, Read};
 use serde_json::json;
 use std::collections::HashMap;

@@ -3,8 +3,8 @@
 //! user's approval. Both read what the branch committed, from git's objects, never a file put on
 //! the disk. The rules are the domain's; this only hands it the files.
 use crate::domain_runtime::DomainRuntime;
-use alondra_domain_rules::specs::{self, Overlay, SpecCheck, SpecFiles, SpecLevel, SpecMode};
-use alondra_domain_rules::{Command, DomainError, DomainState, Task, TaskId};
+use alondra_domain_model::specs::{self, Overlay, SpecCheck, SpecFiles, SpecLevel, SpecMode};
+use alondra_domain_model::{Command, DomainError, DomainState, Task, TaskId};
 
 fn unreadable(error: impl std::fmt::Display) -> DomainError {
     DomainError::new("worktree_unreadable", format!(

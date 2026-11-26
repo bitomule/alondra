@@ -3,7 +3,7 @@ use alondra_core::clock;
 use super::observation::{Observation, Metric};
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
-use alondra_domain_rules::DomainError;
+use alondra_domain_model::DomainError;
 use alondra_view_model::{Client, ClientCapabilities, Lang, Transport, VIEWS_PROTOCOL};
 use axum::{
     Json,
@@ -101,7 +101,7 @@ impl Feeds {
         keys
     }
 
-    fn cached_current(&self, key: &str, epoch: &str, revision: u64, wake: u64, domain: &alondra_domain_rules::NodeChangeCursor) -> Option<Current> {
+    fn cached_current(&self, key: &str, epoch: &str, revision: u64, wake: u64, domain: &alondra_domain_model::NodeChangeCursor) -> Option<Current> {
         self.cache.lock_or_recover("the feed cache").get(key)
             .filter(|current| &current.domain == domain && same_input_revision(
                 &current.epoch, current.clock.1, current.wake, epoch, revision, wake,
@@ -187,7 +187,7 @@ pub(crate) fn sample_changed(
 
 pub(crate) async fn sample_live(
     client: &crate::client_routes::Client,
-    read: &Arc<alondra_domain_rules::ReadSnapshot>,
+    read: &Arc<alondra_domain_model::ReadSnapshot>,
     last: &mut Option<Sample>,
 ) -> bool {
     let keys = client.feeds.live_keys();
@@ -211,7 +211,7 @@ struct Reply {
 
 #[derive(Clone)]
 struct Current {
-    domain: alondra_domain_rules::NodeChangeCursor,
+    domain: alondra_domain_model::NodeChangeCursor,
     cursor: String,
     status: alondra_view_model::Status,
     stale: Vec<String>,
@@ -574,7 +574,7 @@ fn remove_waiter(client: &crate::client_routes::Client, device: &str, generation
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
     use super::*;
-    use alondra_domain_rules::{
+    use alondra_domain_model::{
         Actor, Command, CommandEnvelope, QuestionOption, Recipient, Scope,
     };
     use std::{fs, sync::Arc};
@@ -663,7 +663,7 @@ mod tests {
                         review_prs: false,
                         dependencies: Default::default(),
                         stack: None,
-                        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+                        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
                     },
                 },
                 None,
@@ -693,7 +693,7 @@ mod tests {
                         review_prs: false,
                         dependencies: Default::default(),
                         stack: None,
-                        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+                        launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
                     },
                 },
                 None,
@@ -718,7 +718,7 @@ mod tests {
                             id: "yes".into(),
                             label: "Yes".into(),
                             description: None,
-                        }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+                        }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
                     },
                 },
                 None,
@@ -788,7 +788,7 @@ mod tests {
     #[test]
     fn cached_feed_input_is_invalidated_by_domain_or_live_changes() {
         let feeds = Feeds::default();
-        let read = alondra_domain_rules::ReadSnapshot::build(Arc::new(alondra_domain_rules::DomainState::new("epoch")));
+        let read = alondra_domain_model::ReadSnapshot::build(Arc::new(alondra_domain_model::DomainState::new("epoch")));
         let current = Current {
             domain: read.node_cursor(),
             cursor: "cursor-1".into(),
@@ -806,7 +806,7 @@ mod tests {
         assert!(feeds.cached_current("ios/en/home", "epoch", 5, 8, &current.domain).is_none(), "domain revision invalidates the stored view");
         assert!(feeds.cached_current("ios/en/home", "epoch", 4, 9, &current.domain).is_none(), "live wake invalidates the stored view");
         assert!(feeds.cached_current("ios/en/home", "new-epoch", 4, 8, &current.domain).is_none(), "new epoch invalidates the stored view");
-        let reloaded = alondra_domain_rules::ReadSnapshot::build(read.state().clone());
+        let reloaded = alondra_domain_model::ReadSnapshot::build(read.state().clone());
         assert!(feeds.cached_current("ios/en/home", "epoch", 4, 8, &reloaded.node_cursor()).is_none(),
             "a reload invalidates the stored view even when its epoch, revision and wake match");
     }
@@ -966,7 +966,7 @@ mod tests {
     }
 
     fn poll_sample(
-        domain_changes: &mut watch::Receiver<alondra_domain_rules::Revision>,
+        domain_changes: &mut watch::Receiver<alondra_domain_model::Revision>,
         hook_changes: &mut watch::Receiver<()>,
         report_changes: &mut watch::Receiver<()>,
     ) -> std::task::Poll<Option<bool>> {
@@ -1003,7 +1003,7 @@ mod tests {
             assert!(sample_live(&fixture.client, &after, &mut last).await);
             let live = super::super::live::gather(&fixture.client, &after, Lang::En, &[], false, false).await;
             assert_eq!(live.nodes.iter().find(|node| node.agent_id == agent).unwrap().name, "Reloaded node");
-            assert_eq!(before.state().agents[&alondra_domain_rules::AgentId::from(agent.as_str())].name, "Unseen agent");
+            assert_eq!(before.state().agents[&alondra_domain_model::AgentId::from(agent.as_str())].name, "Unseen agent");
         });
     }
 

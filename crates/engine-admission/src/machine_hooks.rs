@@ -1,7 +1,7 @@
 //! What the model of the whole machine (`crates/machine-model`) runs of the gate: its decisions,
 //! called as they are, which the gate itself keeps crate-private.
 use alondra_core::Millis;
-use alondra_domain_rules::{DomainState, ReadIndex, TaskId};
+use alondra_domain_model::{DomainState, ReadIndex, TaskId};
 use std::collections::BTreeSet;
 
 pub mod admission {

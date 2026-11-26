@@ -1,5 +1,5 @@
 use super::*;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use crate::github_world::GithubWorld;
 use alondra_engine_ports::github::{Closed, Gh, GhFailure, Observed, PrObserver, Read};
 use std::sync::Mutex;
@@ -60,7 +60,7 @@ impl PrObserver for Authored {
         self.calls.lock().unwrap().push(format!("pr view {number} status"));
         self.world.observe(host, repository, number)
     }
-    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_rules::ProviderPrKey, comment: &'a str) -> Closed<'a> {
+    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, expected: &'a alondra_domain_model::ProviderPrKey, comment: &'a str) -> Closed<'a> {
         self.world.close(host, repository, number, expected, comment)
     }
 }
@@ -309,8 +309,8 @@ async fn adopting_delivers_pending_checks_without_starting_a_node() {
     assert_eq!(task.state, TaskState::ForYourReview);
     assert!(task.agent_id.is_none());
     let delivery = &state.interactions[task.final_presentation.as_ref().unwrap()];
-    assert_eq!(alondra_domain_rules::open_pr_delivery::OpenPrDelivery::from_body(&delivery.body).unwrap().readiness,
-        alondra_domain_rules::open_pr_delivery::PrReadiness::ChecksRunning { names: vec!["test".into()] });
+    assert_eq!(alondra_domain_model::open_pr_delivery::OpenPrDelivery::from_body(&delivery.body).unwrap().readiness,
+        alondra_domain_model::open_pr_delivery::PrReadiness::ChecksRunning { names: vec!["test".into()] });
 
 }
 

@@ -131,7 +131,7 @@ fn card_contract() -> &'static str {
 }
 
 fn title_schema() -> Value {
-    json!({"type":"string","minLength":1,"maxLength":alondra_domain_rules::CardSpec::TITLE_MAX,"pattern":r"^[^\r\n]+$","description":"The subject of this card, shown once as its large content heading; never repeat it as the first heading in content.body"})
+    json!({"type":"string","minLength":1,"maxLength":alondra_domain_model::CardSpec::TITLE_MAX,"pattern":r"^[^\r\n]+$","description":"The subject of this card, shown once as its large content heading; never repeat it as the first heading in content.body"})
 }
 
 fn domain_tool(name: &str, description: &str, mut fields: Value, required: &[&str]) -> Value {
@@ -200,7 +200,7 @@ fn files_schema() -> Value {
 fn content_schema() -> Value {
     json!({"type":"object","description":"The long part of the card, shown only in its detail: the document, diff, command, report, steps, options, diagnosis or attachments. It holds the whole thing being decided, never a summary of it. Put anything longer than a sentence here, never in why. A separate document (a plan, a design, a spec) is never pasted here: list its Markdown path in files, which the card shows as a document of its own, or send it as an Alondra document. Use steps for an ordered list and report for prose; the plan kind belongs to a plan Claude Code holds for approval, never to a card you send","properties":{
         "kind":{"type":"string","enum":["document","diff","command","report","steps","options","diagnosis","attachments"]},
-        "summary":{"type":"string","maxLength":alondra_domain_rules::CardSpec::SUMMARY_MAX,"pattern":r"^[^\r\n]*$","description":"Optional one-line label such as \"6 files · +120 −40\"; Alondra computes one when you leave it out"},
+        "summary":{"type":"string","maxLength":alondra_domain_model::CardSpec::SUMMARY_MAX,"pattern":r"^[^\r\n]*$","description":"Optional one-line label such as \"6 files · +120 −40\"; Alondra computes one when you leave it out"},
         "body":{"type":"string","minLength":1,"description":"Complete content only; do not repeat title as the first heading"}
     },"required":["kind","body"],"additionalProperties":false})
 }
@@ -214,22 +214,22 @@ fn blocks_schema() -> Value {
 }
 
 fn checklist_schema() -> Value {
-    json!({"type":"array","maxItems":alondra_domain_rules::CHECKLIST_MAX_ITEMS,"description":"Only in a final result with an approved plan: completed points, numbered from 1 in plan order, each with evidence. When delivering an open PR after declaring post_merge_work, omit points that remain for after the merge: they stay pending. After the merge, present every point with evidence before ending post_merge_work or calling cleanup_done. A point that no longer applies needs a revised plan approved by the user","items":{"type":"object","properties":{
+    json!({"type":"array","maxItems":alondra_domain_model::CHECKLIST_MAX_ITEMS,"description":"Only in a final result with an approved plan: completed points, numbered from 1 in plan order, each with evidence. When delivering an open PR after declaring post_merge_work, omit points that remain for after the merge: they stay pending. After the merge, present every point with evidence before ending post_merge_work or calling cleanup_done. A point that no longer applies needs a revised plan approved by the user","items":{"type":"object","properties":{
         "item":{"type":"string","description":"The number of the point in the approved plan, from 1"},
-        "evidence":{"type":"array","minItems":1,"maxItems":alondra_domain_rules::EVIDENCE_MAX_PER_ITEM,"items":{"type":"object","properties":{
-            "kind":{"type":"string","enum":alondra_domain_rules::EvidenceKind::ALL.map(alondra_domain_rules::EvidenceKind::as_str)},
-            "value":{"type":"string","minLength":1,"maxLength":alondra_domain_rules::EVIDENCE_MAX_TEXT,"description":"commit: its sha, in your branch's history; test or command: what you ran; screenshot: the id of one of this result's attachments; pr: your PR's number; file: its path; link: the URL"},
-            "detail":{"type":"string","maxLength":alondra_domain_rules::EVIDENCE_MAX_TEXT,"description":"What it showed, such as \"713 passed\""}
+        "evidence":{"type":"array","minItems":1,"maxItems":alondra_domain_model::EVIDENCE_MAX_PER_ITEM,"items":{"type":"object","properties":{
+            "kind":{"type":"string","enum":alondra_domain_model::EvidenceKind::ALL.map(alondra_domain_model::EvidenceKind::as_str)},
+            "value":{"type":"string","minLength":1,"maxLength":alondra_domain_model::EVIDENCE_MAX_TEXT,"description":"commit: its sha, in your branch's history; test or command: what you ran; screenshot: the id of one of this result's attachments; pr: your PR's number; file: its path; link: the URL"},
+            "detail":{"type":"string","maxLength":alondra_domain_model::EVIDENCE_MAX_TEXT,"description":"What it showed, such as \"713 passed\""}
         },"required":["kind","value"],"additionalProperties":false}}
     },"required":["item","evidence"],"additionalProperties":false}})
 }
 
 fn need_schema() -> Value {
-    json!({"type":"string","minLength":1,"maxLength":alondra_domain_rules::CardSpec::NEED_MAX,"pattern":r"^[^\r\n]+$","description":"What you need from the reader, in the imperative and on one line (at most 90 characters). Clear on its own: the work or the decision itself, never process steps Alondra takes (merging, authorizing, retrying) or internal ids"})
+    json!({"type":"string","minLength":1,"maxLength":alondra_domain_model::CardSpec::NEED_MAX,"pattern":r"^[^\r\n]+$","description":"What you need from the reader, in the imperative and on one line (at most 90 characters). Clear on its own: the work or the decision itself, never process steps Alondra takes (merging, authorizing, retrying) or internal ids"})
 }
 
 fn why_schema() -> Value {
-    json!({"type":"string","maxLength":alondra_domain_rules::CardSpec::WHY_MAX,"description":"Why, and whom it holds back, in one or two sentences (at most 240 characters). Name tasks and PRs by their title or number, never by an internal id such as t-foo. Long text goes in content, never here"})
+    json!({"type":"string","maxLength":alondra_domain_model::CardSpec::WHY_MAX,"description":"Why, and whom it holds back, in one or two sentences (at most 240 characters). Name tasks and PRs by their title or number, never by an internal id such as t-foo. Long text goes in content, never here"})
 }
 
 fn language_schema() -> Value {
@@ -344,7 +344,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         let scope = interaction["scope"].clone();
         tools.push(domain_tool(
             "suggest",
-            &format!("Tell the orchestrator about something you saw outside your task (an unrelated bug, an improvement) as soon as you see it, and keep working: it never blocks you, never goes to {user} and never touches your delivery. The orchestrator answers with one decision: it is part of your plan (do it in this task), discarded (with the reason), or a new task it created (with its id). At most {} suggestions wait at a time per task. what supplies the card title and Alondra supplies the short need; why_not_mine supplies why, and where plus detail form the content. Correct: what=Missing keyboard focus, detail=Tab skips the reply field. Incorrect: detail=# Missing keyboard focus followed by the same title.", alondra_domain_rules::OPEN_SUGGESTIONS_MAX),
+            &format!("Tell the orchestrator about something you saw outside your task (an unrelated bug, an improvement) as soon as you see it, and keep working: it never blocks you, never goes to {user} and never touches your delivery. The orchestrator answers with one decision: it is part of your plan (do it in this task), discarded (with the reason), or a new task it created (with its id). At most {} suggestions wait at a time per task. what supplies the card title and Alondra supplies the short need; why_not_mine supplies why, and where plus detail form the content. Correct: what=Missing keyboard focus, detail=Tab skips the reply field. Incorrect: detail=# Missing keyboard focus followed by the same title.", alondra_domain_model::OPEN_SUGGESTIONS_MAX),
             json!({"interaction_id":{"type":"string"},"scope":scope,
                 "what":{"type":"string","maxLength":90,"description":"What you saw, on one line"},
                 "where":{"type":"string","description":"Where it is: file and line, screen, PR, command"},
@@ -702,9 +702,9 @@ fn call_timeout(tool: &str) -> Duration {
 fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
     match name {
         "request_plan_mode" => execute_tool(client,name,args),
-        "publish_information" | "propose" => anyhow::bail!("forbidden: {}", alondra_domain_rules::NODES_DO_NOT_NOTIFY),
+        "publish_information" | "propose" => anyhow::bail!("forbidden: {}", alondra_domain_model::NODES_DO_NOT_NOTIFY),
         "answer_clarification" if args.get("text").is_some() => {
-            anyhow::bail!("forbidden: {} Settle a clarification with replacement, the corrected card.", alondra_domain_rules::NODES_DO_NOT_NOTIFY)
+            anyhow::bail!("forbidden: {} Settle a clarification with replacement, the corrected card.", alondra_domain_model::NODES_DO_NOT_NOTIFY)
         }
         "read_skill" | "task_context" => execute_tool(client, name, args),
         "start_task"
@@ -799,7 +799,7 @@ fn carry_attachment_images(args: &mut Value, cwd: &std::path::Path, home: &std::
 fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String> {
     match name {
         "read_file" | "glob_files" | "search_files" | "read_skill" | "batch_outcomes" => execute_tool(client, name, args),
-        "propose" => anyhow::bail!("forbidden: {}", alondra_domain_rules::NODES_DO_NOT_NOTIFY),
+        "propose" => anyhow::bail!("forbidden: {}", alondra_domain_model::NODES_DO_NOT_NOTIFY),
         "create_request"
         | "close_request"
         | "title_request"
@@ -1325,11 +1325,11 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
     attach_card(name, &mut command)?;
     if name == "register_pr" {
         if let Some(host) = command.get("host").and_then(Value::as_str) {
-            let host = alondra_domain_rules::normalize_pr_host(host);
+            let host = alondra_domain_model::normalize_pr_host(host);
             command.insert("host".into(), Value::String(host));
         }
         if let Some(repository) = command.get("repository").and_then(Value::as_str) {
-            let repository = alondra_domain_rules::normalize_pr_repository(repository);
+            let repository = alondra_domain_model::normalize_pr_repository(repository);
             command.insert("repository".into(), Value::String(repository));
         }
         if let (Some(host), Some(repository), Some(number)) = (
@@ -1337,14 +1337,14 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
             command.get("repository").and_then(Value::as_str),
             command.get("number").and_then(Value::as_u64),
         ) {
-            let id = alondra_domain_rules::hosted_pr_id(host, repository, number);
+            let id = alondra_domain_model::hosted_pr_id(host, repository, number);
             command.insert("pr_id".into(), Value::String(id.0));
         }
     }
     if name == "post_merge_work" && let Some(waits) = command.get_mut("waits_for").and_then(Value::as_array_mut) {
         for wait in waits.iter_mut() {
             if let Some(text) = wait.as_str() {
-                *wait = serde_json::to_value(alondra_domain_rules::WaitTarget::parse(text))?;
+                *wait = serde_json::to_value(alondra_domain_model::WaitTarget::parse(text))?;
             }
         }
     }
@@ -1361,7 +1361,7 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
             }
         }
     }
-    serde_json::from_value::<alondra_domain_rules::CommandEnvelope>(typed).map_err(|error| {
+    serde_json::from_value::<alondra_domain_model::CommandEnvelope>(typed).map_err(|error| {
         let error = error.to_string();
         let reason = error.split(", expected").next().unwrap_or(&error);
         anyhow::anyhow!("invalid_input: {reason}. Fix the arguments of {name} to match its schema and call it again")
@@ -1413,7 +1413,7 @@ fn with_steps(content: Option<Value>, steps: &str) -> Value {
 /// The worktree Markdown files a card lists in `files`, read from where the agent works and
 /// included at the end of `text`: the user cannot open a file from the app.
 fn with_files(text: &str, files: &[String], cwd: Option<&std::path::Path>) -> Result<String> {
-    alondra_domain_rules::include_files(text, files, |path| alondra_domain_rules::cited_file::read_cited_file(cwd, path))
+    alondra_domain_model::include_files(text, files, |path| alondra_domain_model::cited_file::read_cited_file(cwd, path))
         .map_err(|fix| anyhow::anyhow!("invalid_input: files: {fix}"))
 }
 
@@ -1438,7 +1438,7 @@ fn take_text(command: &mut serde_json::Map<String, Value>, key: &str) -> String 
 fn recommend_marked(options: Option<&mut Value>, recommended: &mut Option<Value>) {
     let Some(options) = options.and_then(Value::as_array_mut) else { return };
     for option in options {
-        let bare = option["label"].as_str().and_then(alondra_domain_rules::without_recommended_suffix);
+        let bare = option["label"].as_str().and_then(alondra_domain_model::without_recommended_suffix);
         if let Some(bare) = bare {
             if recommended.is_none() {
                 *recommended = Some(option["id"].clone()).filter(|id| id.is_string());
@@ -1565,7 +1565,7 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
                 anyhow::bail!("invalid_input: where and what are required: say where to test it (build, version, screen) and what to look at");
             }
             if why.is_empty() {
-                why = alondra_domain_rules::clip(&format!("{place}: {what}"), alondra_domain_rules::CardSpec::WHY_MAX);
+                why = alondra_domain_model::clip(&format!("{place}: {what}"), alondra_domain_model::CardSpec::WHY_MAX);
             }
             content = content.or_else(|| Some(json!({"kind":"steps","body":format!("Where: {place}\nWhat to look at: {what}")})));
             command.insert("options".into(), json!([choice("works", "Works"), choice("fails", "Doesn't work")]));
@@ -1631,7 +1631,7 @@ fn suggestion_fields(command: &mut serde_json::Map<String, Value>) -> Result<()>
     command.insert("content".into(), json!({"kind":"report","body":body}));
     command.insert("recipient".into(), json!({"kind":"orchestrator"}));
     command.insert("blocking".into(), json!(false));
-    command.insert("options".into(), serde_json::to_value(alondra_domain_rules::suggestion_options())?);
+    command.insert("options".into(), serde_json::to_value(alondra_domain_model::suggestion_options())?);
     Ok(())
 }
 
@@ -2191,8 +2191,8 @@ mod tests {
         let envelope = domain_envelope("wait_for_tasks", &args, "epoch", "one").unwrap();
         assert_eq!(envelope["command"]["kind"], "wait_for_tasks");
         assert_eq!(envelope["command"]["tasks"], args["tasks"]);
-        let command: alondra_domain_rules::Command = serde_json::from_value(envelope["command"].clone()).unwrap();
-        assert!(matches!(command, alondra_domain_rules::Command::WaitForTasks { .. }));
+        let command: alondra_domain_model::Command = serde_json::from_value(envelope["command"].clone()).unwrap();
+        assert!(matches!(command, alondra_domain_model::Command::WaitForTasks { .. }));
         assert!(instructions(Role::Node, "Ana").contains("wait_for_tasks"));
         assert!(skill_text(Role::Node).contains("never open a question, action request or review card"));
     }
@@ -2251,8 +2251,8 @@ mod tests {
         assert_eq!(close["inputSchema"]["properties"]["folded_into"]["type"], "string");
         let args = json!({"request_id": "r-waiting", "answer": "Task «Release an idle node» carries it.", "headline": "Added to an open task", "folded_into": "t-idle", "outcome": "folded"});
         let envelope = domain_envelope("close_request", &args, "epoch", "one").unwrap();
-        let command: alondra_domain_rules::Command = serde_json::from_value(envelope["command"].clone()).unwrap();
-        assert!(matches!(command, alondra_domain_rules::Command::CloseRequest { folded_into: Some(ref task), .. } if task.0 == "t-idle"), "{command:?}");
+        let command: alondra_domain_model::Command = serde_json::from_value(envelope["command"].clone()).unwrap();
+        assert!(matches!(command, alondra_domain_model::Command::CloseRequest { folded_into: Some(ref task), .. } if task.0 == "t-idle"), "{command:?}");
         assert!(skill_text(Role::Orchestrator).contains("close it with `close_request` and `folded_into`"));
     }
 
@@ -2264,9 +2264,9 @@ mod tests {
         assert_eq!(close["inputSchema"]["required"], json!(["request_id", "outcome"]), "every close says what came of the request");
         let args = json!({"request_id": "r-again", "answer": "Task «Release an idle node» already did it.", "headline": "Already done", "covered_by": ["t-idle"], "outcome": "covered"});
         let envelope = domain_envelope("close_request", &args, "epoch", "one").unwrap();
-        let command: alondra_domain_rules::Command = serde_json::from_value(envelope["command"].clone()).unwrap();
-        assert!(matches!(command, alondra_domain_rules::Command::CloseRequest { ref covered_by, outcome: Some(alondra_domain_rules::CloseOutcome::Covered), .. }
-            if covered_by == &[alondra_domain_rules::TaskId::from("t-idle")]), "{command:?}");
+        let command: alondra_domain_model::Command = serde_json::from_value(envelope["command"].clone()).unwrap();
+        assert!(matches!(command, alondra_domain_model::Command::CloseRequest { ref covered_by, outcome: Some(alondra_domain_model::CloseOutcome::Covered), .. }
+            if covered_by == &[alondra_domain_model::TaskId::from("t-idle")]), "{command:?}");
         assert!(skill_text(Role::Orchestrator).contains("`covered_by`"));
     }
 
@@ -2694,7 +2694,7 @@ mod tests {
 #[cfg(test)]
 mod card_tool_tests {
     use super::*;
-    use alondra_domain_rules::DomainError;
+    use alondra_domain_model::DomainError;
 
     fn tool(role: Role, name: &str) -> Value {
         tools(role, "Ana").as_array().unwrap().iter().find(|t| t["name"] == name)
@@ -2727,7 +2727,7 @@ mod card_tool_tests {
         for role in [Role::Node, Role::Orchestrator] {
             for tool in tools(role, "User").as_array().unwrap() {
                 if tool["inputSchema"]["properties"].get("need").is_none() { continue; }
-                assert_eq!(tool["inputSchema"]["properties"]["title"]["maxLength"], alondra_domain_rules::CardSpec::TITLE_MAX);
+                assert_eq!(tool["inputSchema"]["properties"]["title"]["maxLength"], alondra_domain_model::CardSpec::TITLE_MAX);
                 let help = tool["description"].as_str().unwrap();
                 assert!(help.contains("Correct:") && help.contains("Incorrect:") && help.contains("never wording"));
             }
@@ -3001,10 +3001,10 @@ mod card_tool_tests {
             "a missing need is not read from the body: alondrad refuses it with the field and the fix");
         assert!(without["card"].get("content").is_none());
 
-        let parsed: alondra_domain_rules::CommandEnvelope = serde_json::from_value(
+        let parsed: alondra_domain_model::CommandEnvelope = serde_json::from_value(
             domain_envelope("ask", &with(json!({"need":"Pick a name","why":"Why","options":options(),"blocking":false})), "epoch", "id").unwrap(),
         ).unwrap();
-        assert!(matches!(parsed.command, alondra_domain_rules::Command::AskQuestion { .. }));
+        assert!(matches!(parsed.command, alondra_domain_model::Command::AskQuestion { .. }));
     }
 
     #[test]
@@ -3026,8 +3026,8 @@ mod card_tool_tests {
             (Some("Which name?"), Some("It goes on the tag"), Some("a")));
         assert_eq!(questions[1]["options"][0]["label"], "Yes", "the mark is taken off the label");
         assert_eq!(questions[1]["recommended"], "y", "and becomes the recommendation");
-        let parsed: alondra_domain_rules::CommandEnvelope = serde_json::from_value(envelope).unwrap();
-        let alondra_domain_rules::Command::AskQuestions { questions, blocking, .. } = parsed.command else { panic!("ask questions") };
+        let parsed: alondra_domain_model::CommandEnvelope = serde_json::from_value(envelope).unwrap();
+        let alondra_domain_model::Command::AskQuestions { questions, blocking, .. } = parsed.command else { panic!("ask questions") };
         assert_eq!((questions.len(), blocking), (2, true));
     }
 
@@ -3060,9 +3060,9 @@ mod card_tool_tests {
         let (method, path, body) = command_request("settle_suggestion", &args, "epoch").unwrap();
         assert_eq!((method, path.as_str()), ("POST", "/interactions/p-1/settlement"));
         assert_eq!(body["decision"]["task_id"], "t-readme");
-        let parsed: alondra_domain_rules::CommandEnvelope = serde_json::from_value(domain_envelope("settle_suggestion", &args, "epoch", "id").unwrap()).unwrap();
-        assert!(matches!(parsed.command, alondra_domain_rules::Command::SettleSuggestion {
-            decision: alondra_domain_rules::SuggestionDecision::NewTask { .. }, .. }));
+        let parsed: alondra_domain_model::CommandEnvelope = serde_json::from_value(domain_envelope("settle_suggestion", &args, "epoch", "id").unwrap()).unwrap();
+        assert!(matches!(parsed.command, alondra_domain_model::Command::SettleSuggestion {
+            decision: alondra_domain_model::SuggestionDecision::NewTask { .. }, .. }));
         let words = json!({"interaction_id":"p-1","decision":{"kind":"later","text":"It goes as a separate task"}});
         assert!(domain_envelope("settle_suggestion", &words, "epoch", "id").unwrap_err().to_string().starts_with("invalid_input"));
         let reasonless = json!({"interaction_id":"p-1","decision":{"kind":"discard"}});
@@ -3078,9 +3078,9 @@ mod card_tool_tests {
         let (method, path, body) = command_request("settle_plan_review", &args, "epoch").unwrap();
         assert_eq!((method, path.as_str()), ("POST", "/tasks/t-c/plan-review"));
         assert_eq!(body["outcome"]["launch"]["mission"], "Use 512 px prints");
-        let parsed: alondra_domain_rules::CommandEnvelope = serde_json::from_value(domain_envelope("settle_plan_review", &args, "epoch", "id").unwrap()).unwrap();
-        assert!(matches!(parsed.command, alondra_domain_rules::Command::SettlePlanReview {
-            outcome: alondra_domain_rules::PlanReviewOutcome::PlanChanged { .. }, .. }));
+        let parsed: alondra_domain_model::CommandEnvelope = serde_json::from_value(domain_envelope("settle_plan_review", &args, "epoch", "id").unwrap()).unwrap();
+        assert!(matches!(parsed.command, alondra_domain_model::Command::SettlePlanReview {
+            outcome: alondra_domain_model::PlanReviewOutcome::PlanChanged { .. }, .. }));
         let reasonless = json!({"task_id":"t-c","review_id":"q-1","outcome":{"kind":"unchanged"}});
         assert!(domain_envelope("settle_plan_review", &reasonless, "epoch", "id").is_err());
         let kept = json!({"task_id":"t-c","review_id":"q-1","outcome":{"kind":"later","reason":"Ask the user"}});
@@ -3095,9 +3095,9 @@ mod card_tool_tests {
         let (method, path, body) = command_request("settle_stall", &args, "epoch").unwrap();
         assert_eq!((method, path.as_str()), ("POST", "/tasks/t/stall-settlement"));
         assert_eq!(body["outcome"]["text"], "Present PR #12");
-        let parsed: alondra_domain_rules::CommandEnvelope = serde_json::from_value(domain_envelope("settle_stall", &args, "epoch", "id").unwrap()).unwrap();
-        assert!(matches!(parsed.command, alondra_domain_rules::Command::SettleStall {
-            outcome: alondra_domain_rules::StallOutcome::Instruct { .. }, .. }));
+        let parsed: alondra_domain_model::CommandEnvelope = serde_json::from_value(domain_envelope("settle_stall", &args, "epoch", "id").unwrap()).unwrap();
+        assert!(matches!(parsed.command, alondra_domain_model::Command::SettleStall {
+            outcome: alondra_domain_model::StallOutcome::Instruct { .. }, .. }));
         let words = json!({"case_id":"stalled-t-1-turn-2","task_id":"t","outcome":{"kind":"ask_the_user","text":"What next?"}});
         assert!(domain_envelope("settle_stall", &words, "epoch", "id").unwrap_err().to_string().starts_with("invalid_input"), "no free-text outcome");
         let resultless = json!({"case_id":"stalled-t-1-turn-2","task_id":"t","outcome":{"kind":"close"}});

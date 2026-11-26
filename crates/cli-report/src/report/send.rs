@@ -19,7 +19,7 @@ pub const TITLE_PREFIX: &str = "Crash report r-";
 
 
 pub use alondra_client_port::report::send::Kind;
-pub use alondra_domain_rules::report_held_card::Held;
+pub use alondra_domain_model::report_held_card::Held;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

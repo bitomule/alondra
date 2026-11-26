@@ -12,7 +12,7 @@ WORKSPACE_DEPS = [
     "//crates/foundation:foundation",
     "//crates/engine-ports:engine_ports",
     "//crates/core:alondra_core",
-    "//crates/domain-rules:domain_rules",
+    "//crates/domain-model:domain_model",
     "//crates/view-model:view_model",
     "//crates/domain:domain",
     "//crates/process-group:process_group",

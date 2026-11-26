@@ -1,7 +1,7 @@
 //! A task's move to another model or account through the provider, as the journal keeps it.
 use alondra_core::accounts::AccountKey;
 use alondra_core::model_selection::{ModelSelection, TaskSelection};
-use alondra_domain_rules::{AgentId, TaskId};
+use alondra_domain_model::{AgentId, TaskId};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -50,7 +50,7 @@ pub struct Plan {
     pub conversation_file: Option<std::path::PathBuf>,
     /// The role a stage's new execution takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<alondra_domain_rules::ExecutionRole>,
+    pub role: Option<alondra_domain_model::ExecutionRole>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) struct Fixture {

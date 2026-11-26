@@ -283,7 +283,7 @@ fn unescape(text: &str) -> String {
 /// crates it runs whose `eprintln!` also land in `alondrad.log`.
 pub const LOG_SOURCES: &[&str] =
     &["crates/alondrad/src", "crates/daemon-server/src", "crates/alondrad/launcher", "crates/daemon-support/src", "crates/system/src", "crates/foundation/src", "crates/daemon-engine/src", "crates/daemon-engine-model/src", "crates/store-sqlite/src", "crates/daemon-engine-machine/src", "crates/engine-admission/src", "crates/engine-github/src", "crates/engine-live/src", "crates/engine-mcp/src", "crates/engine-worktrees/src", "crates/engine-kernel/src", "crates/engine-orchestrator/src", "crates/engine-sdk/src", "crates/core/src",
-        "crates/domain-rules/src", "crates/view-model/src", "crates/views/src", "crates/provider-claude/src"];
+        "crates/domain-model/src", "crates/view-model/src", "crates/views/src", "crates/provider-claude/src"];
 
 /// Functions that word a whole log line, which the daemon then logs as `log!("{line}")`: each of
 /// their `format!` texts is a template too.
@@ -311,7 +311,7 @@ pub const VOCABULARY_SOURCES: &[&str] = &[
     "crates/system/src",
     "crates/daemon-engine/src", "crates/daemon-engine-model/src", "crates/store-sqlite/src", "crates/daemon-engine-machine/src", "crates/engine-admission/src", "crates/engine-github/src", "crates/engine-live/src", "crates/engine-mcp/src", "crates/engine-worktrees/src", "crates/engine-kernel/src", "crates/engine-orchestrator/src", "crates/engine-sdk/src",
     "crates/core/src",
-    "crates/domain-rules/src",
+    "crates/domain-model/src",
     "crates/view-model/src",
     "crates/views/src",
     "crates/domain/src",

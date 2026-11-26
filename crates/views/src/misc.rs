@@ -379,8 +379,8 @@ pub(super) fn search(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
         .values()
         .filter(|task| task.title.to_ascii_lowercase().contains(&q))
         .chain(context.live.search_matches.iter().flatten()
-            .filter_map(|agent| common::current_task(context, &alondra_domain_rules::AgentId(agent.clone()))))
-        .fold(Vec::<&alondra_domain_rules::Task>::new(), |mut found, task| {
+            .filter_map(|agent| common::current_task(context, &alondra_domain_model::AgentId(agent.clone()))))
+        .fold(Vec::<&alondra_domain_model::Task>::new(), |mut found, task| {
             if !found.iter().any(|seen| seen.id == task.id) { found.push(task); }
             found
         })

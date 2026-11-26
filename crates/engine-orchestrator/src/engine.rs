@@ -2,7 +2,7 @@
 //! the engine through the port of engine-ports.
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
-use alondra_domain_rules::{AgentId, DomainError, DomainState};
+use alondra_domain_model::{AgentId, DomainError, DomainState};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
 use alondra_engine_kernel::domain_store::OutboxMessage;
 use alondra_engine_ports::orchestrator::{AccountWait, Exhausted, OrchestratorEngine};
@@ -18,7 +18,7 @@ pub struct Orchestrator {
     pub host: Mutex<Option<(String, alondra_engine_ports::agent_host::HostStop)>>,
     /// Retain a logical stop while storage is unavailable, until its finalization commits.
     /// Recovered after panic: one complete stop is assigned, cloned or cleared.
-    pub stop: Mutex<Option<(crate::domain_orchestrator::Run, alondra_domain_rules::orchestrator_batch::BatchProblem)>>,
+    pub stop: Mutex<Option<(crate::domain_orchestrator::Run, alondra_domain_model::orchestrator_batch::BatchProblem)>>,
     /// Recovered after panic: each holder inserts or removes one completed-run marker.
     pub runs: Mutex<BTreeSet<String>>,
     /// Held around each write of `orchestrator.json`, and around the whole read, change and write

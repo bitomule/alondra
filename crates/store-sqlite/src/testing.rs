@@ -112,7 +112,7 @@ pub fn seeded(store: &mut DomainStore) {
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         },
     );
 }

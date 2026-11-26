@@ -8,7 +8,7 @@
 //! exclusive lock is released and parks the rest behind that waiter's lock.
 use crate::approval_lease::ApprovalLease;
 use crate::domain_runtime::DomainRuntime;
-use alondra_domain_rules::*;
+use alondra_domain_model::*;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 

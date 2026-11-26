@@ -3,7 +3,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use alondra_domain_rules::{ChecklistMark, DeliveryTarget, DomainError, DomainState, EvidenceKind, TaskId};
+use alondra_domain_model::{ChecklistMark, DeliveryTarget, DomainError, DomainState, EvidenceKind, TaskId};
 use serde_json::Value;
 use tokio::process::Command;
 
@@ -246,7 +246,7 @@ async fn within(limit: Duration, dir: &Path, what: &str, check: impl Future<Outp
 pub(crate) fn node_worktree(claude_home: &Path, state: &DomainState, session_id: &str, task: &TaskId) -> Option<PathBuf> {
     worktree_of(claude_home, session_id).or_else(|| {
         let task = state.tasks.get(task)?;
-        task.open_worktrees().find(|(_, worktree)| worktree.origin == alondra_domain_rules::WorktreeOrigin::Task).map(|(path, _)| PathBuf::from(path))
+        task.open_worktrees().find(|(_, worktree)| worktree.origin == alondra_domain_model::WorktreeOrigin::Task).map(|(path, _)| PathBuf::from(path))
     })
 }
 
@@ -918,7 +918,7 @@ mod tests {
     /// worktree its task recorded as its own.
     #[tokio::test]
     async fn an_sdk_final_delivery_with_a_dirty_worktree_is_refused() {
-        use alondra_domain_rules::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION, WorktreeOrigin};
+        use alondra_domain_model::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION, WorktreeOrigin};
         let root = crate::test_support::Directory::new();
         let dir = testing::task_worktree(&root, "t");
         let mut state = DomainState::new("e");
@@ -1080,7 +1080,7 @@ mod tests {
         let root = crate::test_support::Directory::new();
         let dir = testing::task_worktree(&root, "t-evidence");
         let head = git(&dir, &["rev-parse", "HEAD"]).await.unwrap();
-        let cite = |sha: &str| vec![ChecklistMark { item: "2".into(), evidence: vec![alondra_domain_rules::Evidence { kind: EvidenceKind::Commit, value: sha.into(), detail: None }] }];
+        let cite = |sha: &str| vec![ChecklistMark { item: "2".into(), evidence: vec![alondra_domain_model::Evidence { kind: EvidenceKind::Commit, value: sha.into(), detail: None }] }];
         assert_eq!(evidence_refusal_in(&dir, &cite(&head)).await, None);
         assert_eq!(evidence_refusal_in(&dir, &cite(&head[..7])).await, None, "an abbreviated sha is the same commit");
         let refused = evidence_refusal_in(&dir, &cite("0123456789abcdef0123456789abcdef01234567")).await.unwrap();

@@ -1,6 +1,6 @@
 //! Rows the journal keeps for the engine that are not domain state.
 use alondra_core::{Millis, accounts::AccountKey, model_selection::ModelSelection, options::WorktreesRoot};
-use alondra_domain_rules::InteractionId;
+use alondra_domain_model::InteractionId;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 

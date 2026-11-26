@@ -1,7 +1,7 @@
 //! A message the user sends to a task never takes back a merge they authorized, and a merge they
 //! press while the task still works on a message of theirs asks first instead of being refused.
 use super::*;
-use alondra_domain_rules::{Actor, Command, DeliveryTarget, DomainError, Instruction, MergeMethod, Refusal, TaskId};
+use alondra_domain_model::{Actor, Command, DeliveryTarget, DomainError, Instruction, MergeMethod, Refusal, TaskId};
 use proptest::prelude::*;
 
 const MESSAGE: &str = "Rename the button too";
@@ -11,7 +11,7 @@ fn user() -> Actor {
 }
 
 fn run(state: &mut DomainState, actor: Actor, command: Command) -> Result<(), DomainError> {
-    let envelope = alondra_domain_rules::CommandEnvelope {
+    let envelope = alondra_domain_model::CommandEnvelope {
         protocol_version: 2, data_epoch: state.data_epoch.clone(),
         command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command,
     };
@@ -43,7 +43,7 @@ fn feedback(presentation: &str, instruction: Instruction) -> Command {
 
 fn told_texts(state: &DomainState) -> Vec<String> {
     state.lifecycle_journal[&TaskId::from("t")].iter().filter_map(|record| match record {
-        alondra_domain_rules::LifecycleRecord::Told { text: Some(text), .. } => Some(text.clone()),
+        alondra_domain_model::LifecycleRecord::Told { text: Some(text), .. } => Some(text.clone()),
         _ => None,
     }).collect()
 }
@@ -68,7 +68,7 @@ fn a_message_right_after_authorizing_a_merge_never_takes_the_merge_back() {
     assert!(told_texts(&state).iter().any(|text| text == MESSAGE), "the node still gets the message: {:?}", told_texts(&state));
     let task = &state.tasks[&TaskId::from("t")];
     assert!(!task.pending_user_inputs.is_empty(), "the message is still owed an answer after the merge");
-    assert_ne!(task.state, alondra_domain_rules::TaskState::Done, "the task does not close over an unanswered message");
+    assert_ne!(task.state, alondra_domain_model::TaskState::Done, "the task does not close over an unanswered message");
 }
 
 /// Pressing merge while the task still works on a message of the user asks first; confirmed, the
@@ -175,14 +175,14 @@ impl World {
             Act::Present => run(state, Actor::Agent { agent_id: "a".into() }, Command::PresentResult {
                 checklist: vec![], attachments: vec![], task_id: "t".into(), interaction_id: format!("d-{n}").into(), body: "Ready".into(),
                 targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }], is_final: true,
-                nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
+                nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
             }),
             Act::TurnStarts => {
                 let lifecycle = state.lifecycle_of(&"t".into()).ok();
                 let start = lifecycle.as_ref().and_then(|lifecycle| Some((lifecycle.pending_inputs().first()?.as_str().to_owned(), lifecycle.execution()?.generation())));
                 match start {
                     Some((input, generation)) => run(state, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation,
-                        facts: vec![alondra_domain_rules::RuntimeObservation::ResourceAvailable, alondra_domain_rules::RuntimeObservation::TurnStarted { turn: format!("turn-{n}"), input }] }),
+                        facts: vec![alondra_domain_model::RuntimeObservation::ResourceAvailable, alondra_domain_model::RuntimeObservation::TurnStarted { turn: format!("turn-{n}"), input }] }),
                     None => Ok(()),
                 }
             }
@@ -195,9 +195,9 @@ impl World {
                 }
             }
             Act::Pause => {
-                let pause = alondra_domain_rules::Pause { reason: alondra_domain_rules::PauseReason::Memory, since: 2, cut: None, turn_since: Some(1),
+                let pause = alondra_domain_model::Pause { reason: alondra_domain_model::PauseReason::Memory, since: 2, cut: None, turn_since: Some(1),
                     cleanup: Default::default(), released: false };
-                run(state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: alondra_domain_rules::NodeEvent::Paused { pause } })
+                run(state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: alondra_domain_model::NodeEvent::Paused { pause } })
             }
         };
     }
@@ -205,10 +205,10 @@ impl World {
     /// Every open delivery card of a PR offers its merge or says why it cannot, on every client
     /// and in both languages.
     fn every_open_delivery_offers_or_explains(&self) -> Result<(), String> {
-        let index = alondra_domain_rules::ReadIndex::build(&self.state);
+        let index = alondra_domain_model::ReadIndex::build(&self.state);
         let live = LiveSnapshot::default();
         for card in index.cards().iter().filter(|card| card.pending && card.kind == "delivery") {
-            let alondra_domain_rules::InboxSubject::Interaction { interaction_id, .. } = &card.subject;
+            let alondra_domain_model::InboxSubject::Interaction { interaction_id, .. } = &card.subject;
             if self.state.pull_requests[&"pr".into()].state != PrState::Open {
                 continue;
             }

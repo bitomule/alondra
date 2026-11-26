@@ -7,7 +7,7 @@ load("//bazel/rules:rust.bzl", "rust_binary")
 load("//bazel/rules:rust_sources.bzl", "production_sources")
 load("//bazel/rules:rust_inputs_test.bzl", "rust_inputs_test")
 
-DOMAIN_RULES_DEPS = all_crate_deps(normal = True) + [
+DOMAIN_MODEL_DEPS = all_crate_deps(normal = True) + [
     "//crates/core:alondra_core",
     "//crates/domain:domain",
     "//crates/foundation:foundation",
@@ -16,30 +16,30 @@ DOMAIN_RULES_DEPS = all_crate_deps(normal = True) + [
 
 # The rules of the domain: every command, the state it changes and the cards it raises.
 domain_crate(
-    name = "domain_rules",
+    name = "domain_model",
     srcs = production_sources(),
-    crate_name = "alondra_domain_rules",
+    crate_name = "alondra_domain_model",
     version = "0.1.0",
     test_visibility = ["//crates/engine-doubles:__pkg__", "//crates/machine-model:__pkg__"],
-    deps = DOMAIN_RULES_DEPS,
+    deps = DOMAIN_MODEL_DEPS,
 )
 
 # The lifecycle authority cannot be cloned, deserialized or made from the Task DTO.
 rust_doc_test(
     name = "lifecycle_construction_test",
     size = "small",
-    crate = ":domain_rules",
+    crate = ":domain_model",
     deps = ["//crates/domain:domain", "@crates//:serde_json"],
 )
 
 low_opt_rust_test(
-    name = "domain_rules_test",
+    name = "domain_model_test",
     timeout = "moderate",
     srcs = glob(["src/**/*.rs"]),
     compile_data = ["fixtures/inbox_order.json", "//:docs/architecture/cards.md", "//:docs/architecture/state-machines.md"],
-    crate_name = "alondra_domain_rules",
+    crate_name = "alondra_domain_model",
     crate_root = "src/lib.rs",
-    deps = DOMAIN_RULES_DEPS + all_crate_deps(normal_dev = True),
+    deps = DOMAIN_MODEL_DEPS + all_crate_deps(normal_dev = True),
     edition = "2024",
     version = "0.1.0",
 )
@@ -50,7 +50,7 @@ rust_binary(
     testonly = True,
     srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
     edition = "2024",
-    deps = [":domain_rules", "@crates//:libc"] + all_crate_deps(normal = True),
+    deps = [":domain_model", "@crates//:libc"] + all_crate_deps(normal = True),
 )
 
 low_opt_rust_test(
@@ -59,7 +59,7 @@ low_opt_rust_test(
     crate_root = "benches/read_index_cost.rs",
     srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
     edition = "2024",
-    deps = [":domain_rules", "@crates//:libc"] + all_crate_deps(normal = True),
+    deps = [":domain_model", "@crates//:libc"] + all_crate_deps(normal = True),
 )
 
 # The library compiles only production sources: a test file among its inputs would rebuild every
@@ -67,10 +67,10 @@ low_opt_rust_test(
 rust_inputs_test(
     name = "production_inputs_test",
     size = "small",
-    required_sources = ["crates/domain-rules/src/lib.rs", "crates/domain-rules/src/rules.rs"],
-    source_dir = "crates/domain-rules/src/",
-    target_under_test = ":domain_rules",
-    test_only_sources = ["crates/domain-rules/src/tests.rs", "crates/domain-rules/src/lifecycle_tests.rs"],
+    required_sources = ["crates/domain-model/src/lib.rs", "crates/domain-model/src/rules.rs"],
+    source_dir = "crates/domain-model/src/",
+    target_under_test = ":domain_model",
+    test_only_sources = ["crates/domain-model/src/tests.rs", "crates/domain-model/src/lifecycle_tests.rs"],
     test_sources = False,
 )
 

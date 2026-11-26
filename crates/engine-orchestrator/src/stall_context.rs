@@ -2,7 +2,7 @@
 //! last words and its worktree, read when the case reaches it.
 use crate::engine::OrchestratorOf as _;
 use crate::domain_runtime::DomainRuntime;
-use alondra_domain_rules::{DomainState, Interaction, Scope, Task, WorktreeOrigin};
+use alondra_domain_model::{DomainState, Interaction, Scope, Task, WorktreeOrigin};
 use std::path::Path;
 
 const MISSION_SHOWN: usize = 4_000;

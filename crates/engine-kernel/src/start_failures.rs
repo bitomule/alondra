@@ -7,7 +7,7 @@ use alondra_engine_ports::gate::GateOf as _;
 use crate::locks::Poisonable as _;
 use crate::Runtime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use alondra_domain_rules::{
+use alondra_domain_model::{
     AfterFailure, Command, CommandEnvelope, StartProblem, TaskId,
     PROTOCOL_VERSION, after_failure,
 };
@@ -86,7 +86,7 @@ pub fn ended(domain: &dyn Runtime, task: &TaskId) -> Result<bool> {
 /// choices is the same on every try.
 pub fn problem_of(accounts: &dyn alondra_engine_ports::accounts::Accounts, code: &str, message: &str, cwd: Option<&str>) -> Option<StartProblem> {
     match code {
-        "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "conflict" | alondra_domain_rules::capability_capacity_card::CAPABILITY_CAPACITY_CODE => None,
+        "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "conflict" | alondra_domain_model::capability_capacity_card::CAPABILITY_CAPACITY_CODE => None,
         "invalid_input" | "model_is_binding" | "unsupported_capability" | "selection_transition_required" | "active_account_immutable" =>
             Some(StartProblem::PlanRefused { error: message.trim().to_owned() }),
         "workspace_untrusted" => {
