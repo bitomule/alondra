@@ -56,7 +56,7 @@ fn preflight_reports_a_rejected_journal_event_without_changing_the_home() {
     drop(store);
     let before = fs::read(&path).unwrap();
     let config = alondra_core::config::Config::resolve(fixture.0.to_path_buf(), &Default::default(), |_| None, || Some("Test".into()));
-    let diagnostic = format!("{:#}", alondra_daemon_server::preflight::run(&config, &alondra_store_sqlite::Sqlite, alondrad::wiring::open, alondrad::wire_machine).unwrap_err());
+    let diagnostic = format!("{:#}", alondrad::preflight::run(&config, &alondra_store_sqlite::Sqlite, alondrad::wiring::open, alondrad::wire_machine).unwrap_err());
     let output = std::process::Command::new(std::env::var("FIXTURE_DAEMON").unwrap())
         .arg("--preflight").env_clear().env("HOME", &*fixture.0).env("ALONDRA_HOME", &*fixture.0)
         .env("TMPDIR", &*fixture.0).envs(alondra_daemon_engine::test_support::xcrun_cache()).output().unwrap();

@@ -9,7 +9,13 @@ use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::test_support;
 
 pub mod assemble;
+pub mod preflight;
+mod sidecar;
 pub mod wiring;
+use alondra_engine_admission::{admission, machine_watch};
+use alondra_engine_orchestrator::domain_orchestrator;
+use alondra_engine_sdk::{account_move, auto_launch, bg_handover, domain_schedule_runner, idle_release, provider_transition, sdk_owner, task_closer};
+use sidecar::{ensure_domain_protocol, retire_empty_older_sidecar};
 pub use alondra_daemon_server::push_transport;
 pub use alondra_daemon_server::service::scenario_phone;
 #[cfg(test)]
@@ -21,6 +27,12 @@ use std::sync::Arc;
 
 use alondra_core::config::Config;
 use anyhow::{Context, Result, anyhow};
+
+/// The daemon over the engine a test opens on its thread (`wiring::open_with`), on `files`.
+pub fn open_daemon(home: &Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> Result<Arc<domain_bootstrap::DomainDaemon>> {
+    domain_bootstrap::require_database(home)?;
+    domain_bootstrap::DomainDaemon::over(home, alondra_daemon_engine::wiring::open_on(home, &alondra_daemon_engine::domain_store::active_path(home), files)?)
+}
 
 /// Registers what the root alone sees: the hosts of agents, through the real launcher unless the
 /// daemon's seams already gave another, and the screens, which it hands to the server.
@@ -628,7 +640,7 @@ mod argument_tests {
         legacy_home::refuse_legacy_home(&home).unwrap();
         ensure_domain_protocol(&home).unwrap();
         let _domain = crate::engine::open(&home).unwrap();
-        domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        crate::open_daemon(&home, &alondra_store_sqlite::Sqlite).unwrap();
         assert!(home.join("domain.db").is_file());
         assert!(!home.join("alondra.db").exists());
         std::fs::remove_dir_all(home).unwrap();
@@ -710,7 +722,12 @@ mod engine {
 
     /// `open_at` at the home's active database; the engine's fixtures this thread opens open the same.
     pub fn open(home: &std::path::Path) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
+        open_on(home, &alondra_store_sqlite::Sqlite)
+    }
+
+    /// `open`, on `files`.
+    pub fn open_on(home: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
         wired();
-        open_at(home, &alondra_engine_ports::journal::active_path(home), &alondra_store_sqlite::Sqlite)
+        open_at(home, &alondra_engine_ports::journal::active_path(home), files)
     }
 }

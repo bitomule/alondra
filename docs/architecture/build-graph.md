@@ -132,7 +132,7 @@ none on the piece that implements a port it uses.
 - Each piece that implements a port exposes `pub fn wire(&Registry)`: `daemon-engine`
   (`wiring::wire`), `engine-sdk` (`wiring::wire`), `engine-admission`, `engine-orchestrator` and
   the adapter `github-gh`.
-  `alondrad` calls all of them (`domain_bootstrap::wire`), and its test
+  `alondrad` calls all of them (`wiring::wire_engine`), and its test
   `the_daemon_implements_every_port` fails when a port is left without an implementation.
 - Every port is called on a `&dyn Runtime`, the context the engine keeps its state in, as
   rust-analyzer's queries take `db: &dyn HirDatabase`. The trait (`engine-ports/src/runtime.rs`)
@@ -1761,3 +1761,50 @@ SDK's hosts is `agent-runtime`, behind `AgentHost` since phase 3b.
   directly (9 of the 49 exceptions).
 - **The hosts' adapter** (`agent-runtime`) stays within the target: 24 s to build, 62 s to build and
   test.
+
+## The server reaches the engine through `DomainApi` (phase 7c, 2026-11-26)
+
+`daemon-server` named three pieces of the engine (`engine-sdk`, `engine-admission`,
+`engine-orchestrator`) and held the concrete runtime, so an edit of any of them recompiled the
+server library and everything after it.
+
+What changed:
+
+- **The port `DomainApi`** (`engine-ports/src/domain_api.rs`) bundles four `dyn` parts: the
+  runtime's operations (`daemon-engine/src/runtime_api.rs`), schedules and the SDK
+  (`engine-sdk/src/sdk_api.rs`), admission and the orchestrator. Each piece gives its part to the
+  registry in its `wire`; the server takes the bundle from the registry and holds an
+  `Arc<dyn Runtime>`, not `Arc<DomainRuntime>`, in `DomainDaemon`, `Client`, `Service`,
+  `PushAlerts` and the push loops. The schedule routes' values those parts take and return moved
+  down to `engine-ports` (`schedule_routes`).
+- **The root opens the daemon.** `wiring::wire_engine`, the opening of the store, `--preflight` and
+  the sidecar's migration helpers moved from the server to `alondrad`.
+- The server's two test crates still link the engine, as tests (`test_visibility` on the engine's
+  crates).
+- The layer exceptions fall by three (`EXCEPTION_CEILING` 49 → 46, on top of phases 7e and 5f); the server
+  keeps only `daemon-engine` (phase 7d).
+
+`edit_bench --profile --edit crates/engine-orchestrator/src/domain_orchestrator.rs` on the shared
+Mac, before on main at b6a2fbd49 (load average 20 to 21) and after on this change on the same
+commit, both before phase 7e and the `domain-model` rename reached main:
+
+| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Build: critical path | Edit + build | Longest test target | Critical path | Edit + build or test |
+|---|---:|---:|---|---:|---:|---|---:|---:|
+| `engine-orchestrator/src/domain_orchestrator.rs`, before | 11 | 55 | 158 (16 / 8 / 133) | 19 s | 31 s | `doctor_service_test` 19 s | 50 s | 96 s |
+| `engine-orchestrator/src/domain_orchestrator.rs`, after | 10 | 53 | 157 (15 / 8 / 132) | 18 s | 29 s | `doctor_service_test` 22 s | 41 s | 78 s |
+
+- The edit no longer recompiles the server library: the build's critical path was
+  `engine_orchestrator` 2.2 s → `daemon_server` 6.1 s → `alondrad_test` 10.0 s and is
+  `engine_orchestrator` 1.9 s → `daemon_server_test` 15.1 s, the server's test crate, which links
+  the engine on purpose.
+- Edit + build or test: 96 → 78 s. Most of the cut is the critical path (50 → 41 s); the longest
+  test target, `doctor_service_test`, does not depend on the server and took 19 and 22 s.
+
+**Guards**, each broken by hand and put back:
+
+- `//tools/layers:crate_layers_test` and `//crates/daemon-server:daemon_server_layer_test` fail in
+  analysis when the server depends on any of the three again (`//crates/daemon-server:daemon_server
+  depends on //crates/engine-orchestrator:engine_orchestrator: a crate of layer adapter-in may
+  depend only on layers foundation, domain, ports`).
+- `alondrad`'s `the_daemons_wiring_alone_implements_every_port` fails when a piece leaves its part
+  out of its `wire` (`a port the daemon's wiring leaves to nothing … ["OrchestratorApi"]`).

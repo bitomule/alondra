@@ -162,7 +162,8 @@ fn opened(state: &DomainState, target: &Target, task: &TaskId, server: &McpServe
 /// Connect: the open sign-in of a waiting node whose Claude still waits for it, or a new one on
 /// the node of the oldest waiting task that can open it. A node that has not said how its
 /// servers are since the daemon started is asked first.
-pub async fn connect(domain: &DomainRuntime, target: &Target) -> Result<Opened, DomainError> {
+pub async fn connect(domain: &dyn alondra_engine_ports::Runtime, target: &Target) -> Result<Opened, DomainError> {
+    let domain = DomainRuntime::of(domain);
     let mut name = String::new();
     for asked in [false, true] {
         let snapshot = domain.read();
@@ -205,7 +206,8 @@ pub async fn connect(domain: &DomainRuntime, target: &Target) -> Result<Opened, 
 
 /// Where the browser came back to after the user signed in on another device: it reaches the
 /// node's Claude in memory, never written down, and the node then says how its servers are.
-pub async fn give_back(domain: &Arc<DomainRuntime>, target: &Target, address: String) -> Result<(), DomainError> {
+pub async fn give_back(domain: Arc<dyn alondra_engine_ports::Runtime>, target: &Target, address: String) -> Result<(), DomainError> {
+    let domain = &DomainRuntime::shared(domain);
     let state = domain.read();
     let (key, waiting) = acting(state.state(), target)?;
     let name = key.name.clone();
@@ -237,7 +239,8 @@ pub async fn give_back(domain: &Arc<DomainRuntime>, target: &Target, address: St
 }
 
 /// Reconnect: every acting node that can reads its sign-in to the server again.
-pub fn reconnect(domain: &DomainRuntime, target: &Target) -> Result<usize, DomainError> {
+pub fn reconnect(domain: &dyn alondra_engine_ports::Runtime, target: &Target) -> Result<usize, DomainError> {
+    let domain = DomainRuntime::of(domain);
     let (key, tasks) = acting(domain.read().state(), target)?;
     let reconnected = tasks.iter()
         .filter(|task| system(domain, Command::ReconnectMcp { task_id: (*task).clone(), server: key.name.clone() }).is_ok())
@@ -250,7 +253,8 @@ pub fn reconnect(domain: &DomainRuntime, target: &Target) -> Result<usize, Domai
 
 /// Sign out: the first node that can has its Claude forget and revoke its sign-in to the server,
 /// and every other node that uses it connects it again, so none keeps using a revoked sign-in.
-pub fn sign_out(domain: &DomainRuntime, target: &Target) -> Result<String, DomainError> {
+pub fn sign_out(domain: &dyn alondra_engine_ports::Runtime, target: &Target) -> Result<String, DomainError> {
+    let domain = DomainRuntime::of(domain);
     let (key, tasks) = acting(domain.read().state(), target)?;
     let clear = |task: &TaskId| Command::ClearMcpSignIn { task_id: task.clone(), server: key.name.clone() };
     let Some(cleared) = tasks.iter().find(|task| allowed(domain.read().state(), clear(task))).cloned() else {

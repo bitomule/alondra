@@ -2,7 +2,7 @@
 //! delivery: the engine's reading of a proposal, and the spec files a branch changed without the
 //! user's approval. Both read what the branch committed, from git's objects, never a file put on
 //! the disk. The rules are the domain's; this only hands it the files.
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_model::specs::{self, Overlay, SpecCheck, SpecFiles, SpecLevel, SpecMode};
 use alondra_domain_model::{Command, DomainError, DomainState, Task, TaskId};
 
@@ -14,7 +14,7 @@ fn unreadable(error: impl std::fmt::Display) -> DomainError {
 /// What the engine reads of the task's own worktree with `changes` over it: its last commit, the
 /// approved files Alondra wrote into it, then `changes`. What each file held before comes from
 /// where the branch leaves its base. Off where nothing reads worktrees or the task has none.
-pub(crate) fn read(domain: &DomainRuntime, state: &DomainState, task: &TaskId, changes: &SpecFiles) -> Result<SpecCheck, DomainError> {
+pub(crate) fn read(domain: &dyn Runtime, state: &DomainState, task: &TaskId, changes: &SpecFiles) -> Result<SpecCheck, DomainError> {
     let Some(port) = domain.ports().spec_worktrees() else { return Ok(SpecCheck::default()) };
     let Some(root) = port.own(state, task) else { return Ok(SpecCheck::default()) };
     let head = port.head(&root).map_err(unreadable)?;
@@ -32,8 +32,8 @@ pub(crate) fn read(domain: &DomainRuntime, state: &DomainState, task: &TaskId, c
 
 /// Fills in a spec command what Alondra reads of the worktree, in place of whatever its sender
 /// put there: an agent's proposal as a device's edit.
-pub(crate) fn stamp(domain: &DomainRuntime, command: &mut Command) -> Result<(), DomainError> {
-    let state = domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state could not be read"))?;
+pub(crate) fn stamp(domain: &dyn Runtime, command: &mut Command) -> Result<(), DomainError> {
+    let state = domain.state();
     match command {
         Command::ProposeSpecs { task_id, level, files, check } | Command::ReviseSpecs { task_id, level, files, check, .. } => {
             *check = match specs::proposal(*level, files) {
@@ -89,7 +89,7 @@ fn allowed(state: &DomainState, task: &Task) -> SpecFiles {
 /// of the task, the settings cannot be read, the branch changed a spec, boundary or decision the
 /// user never approved, or holds an approved one otherwise than approved. A worktree git cannot
 /// read is refused too, unless what it committed shows a project without specs.
-pub(crate) fn delivery_refusal(domain: &DomainRuntime, state: &DomainState, task_id: &TaskId) -> Option<DomainError> {
+pub(crate) fn delivery_refusal(domain: &dyn Runtime, state: &DomainState, task_id: &TaskId) -> Option<DomainError> {
     let port = domain.ports().spec_worktrees()?;
     let task = state.tasks.get(task_id)?;
     let allowed = allowed(state, task);

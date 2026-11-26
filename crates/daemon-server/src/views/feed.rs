@@ -573,6 +573,7 @@ fn remove_waiter(client: &crate::client_routes::Client, device: &str, generation
 #[cfg(test)]
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
+    use crate::engine_tests::Kernel as _;
     use super::*;
     use alondra_domain_model::{
         Actor, Command, CommandEnvelope, QuestionOption, Recipient, Scope,
@@ -603,7 +604,7 @@ mod tests {
         }
 
         fn create_request(&self, command_id: &str, body: &str) {
-            let state = self.client.domain.state().unwrap();
+            let state = self.client.domain.state();
             let envelope = CommandEnvelope {
                 protocol_version: 2,
                 data_epoch: state.data_epoch.clone(),
@@ -624,7 +625,7 @@ mod tests {
         }
 
         fn register_agent(&self, command_id: &str) {
-            let state = self.client.domain.state().unwrap();
+            let state = self.client.domain.state();
             let envelope = CommandEnvelope {
                 protocol_version: 2,
                 data_epoch: state.data_epoch.clone(),
@@ -647,7 +648,7 @@ mod tests {
         fn node_on_task(&self, name: &str) -> (String, String) {
             self.register_agent(name);
             self.create_request(name, "Work");
-            let state = self.client.domain.state().unwrap();
+            let state = self.client.domain.state();
             self.client.domain.execute(
                 &Actor::Orchestrator { generation: 0 },
                 &CommandEnvelope {
@@ -677,7 +678,7 @@ mod tests {
             self.create_request(&format!("request-{suffix}"), "Visible request");
             let request_id = format!("request-request-{suffix}");
             let agent_id = format!("agent-agent-{suffix}");
-            let state = self.client.domain.state().unwrap();
+            let state = self.client.domain.state();
             self.client.domain.execute(
                 &Actor::Orchestrator { generation: 0 },
                 &CommandEnvelope {
@@ -699,7 +700,7 @@ mod tests {
                 None,
                 || Ok(()),
             ).unwrap();
-            let state = self.client.domain.state().unwrap();
+            let state = self.client.domain.state();
             self.client.domain.execute(
                 &Actor::Agent { agent_id: agent_id.into() },
                 &CommandEnvelope {
@@ -994,7 +995,7 @@ mod tests {
             assert!(poll_sample(&mut snapshots, &mut hooks, &mut reports).is_pending());
             let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&fixture.home)).unwrap();
             assert_eq!(connection.execute("UPDATE agents SET name='Reloaded node' WHERE id=?1", [&agent]).unwrap(), 1);
-            fixture.client.domain.reload();
+            fixture.client.domain.kernel().reload();
             assert!(!revisions.has_changed().unwrap());
             assert_eq!(poll_sample(&mut snapshots, &mut hooks, &mut reports), std::task::Poll::Ready(Some(true)));
             let after = fixture.client.domain.read();
@@ -1049,7 +1050,7 @@ mod tests {
             for index in 0..64 {
                 fixture.client.domain.report(report(&format!("echo burst-{index}")), 1_700_000_000_001 + index);
             }
-            assert_eq!(fixture.client.domain.state().unwrap().revision, state.revision,
+            assert_eq!(fixture.client.domain.state().revision, state.revision,
                 "tool reports must not need a domain commit to publish");
             let triggered = poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes);
             println!("reports=64 trigger={triggered:?} domain_commits=0 periodic_ticks=0");

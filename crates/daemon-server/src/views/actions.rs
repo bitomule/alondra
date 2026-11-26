@@ -4,9 +4,8 @@
 //! every submission is checked against the current domain snapshot and then committed through
 //! the same command path as the resource API.
 use alondra_daemon_engine::sdk_backend::SdkOf as _;
-use alondra_engine_admission::AdmissionOf as _;
+use alondra_engine_ports::gate::GateOf as _;
 
-use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::local_actions::LocalActionsOf as _;
 use alondra_core::clock;
@@ -93,12 +92,13 @@ pub(crate) async fn local(
     let Ok(request) = serde_json::from_slice::<ActionRequest>(&body) else { return error("invalid_input", "invalid action request"); };
     let domain = state.domain();
     let external = ActionId::parse(&request.action_id).is_ok_and(|action| is_external(action.verb));
-    let work = if external { domain.external_work.clone() } else { domain.command_work.clone() };
+    let lane = if external { alondra_engine_ports::domain_api::Lane::External } else { alondra_engine_ports::domain_api::Lane::Command };
+    let work = state.client().api.runtime.work(&*domain, lane).clone();
     let runtime = tokio::runtime::Handle::current();
     let (action_id, client, started) = (request.action_id.clone(), request.client.clone(), clock::instant());
     match work.run(move || runtime.block_on(async move {
         let client_routes = state.client();
-        let response = super::action_results::execute_recorded(&domain, &client_routes, &home, &device, &body, request, || {
+        let response = super::action_results::execute_recorded(&*domain, &client_routes, &home, &device, &body, request, || {
             crate::domain_bootstrap::signed_device(&home, &signed)
                 .map(|_| ())
                 .ok_or_else(|| anyhow::anyhow!("device approval was revoked"))
@@ -166,13 +166,13 @@ pub(crate) async fn relay(
     // Relay request receipts already deduplicate the transport command. Domain receipts still
     // bind the submitted command_id to the semantic action and actor.
     let (action_id, client_name, started) = (request.action_id.clone(), request.client.clone(), clock::instant());
-    let response = execute_action(&client.domain, client, client.home(), sender, request, Some(identity), authorize).await?;
+    let response = execute_action(&*client.domain, client, client.home(), sender, request, Some(identity), authorize).await?;
     log_result(&action_id, &client_name, 200, &response, alondra_core::clock::since(started));
     Ok(json!({"status":200,"body":response}))
 }
 
 pub(super) async fn execute(
-    domain: &crate::domain_runtime::DomainRuntime,
+    domain: &dyn alondra_engine_ports::Runtime,
     client: &crate::client_routes::Client,
     home: &std::path::Path,
     device: &str,
@@ -223,7 +223,7 @@ pub(super) async fn execute(
     let (_resources, _worker) = if gate.is_some() {
         loop {
             let requested = action.as_ref().map_or_else(Vec::new,
-                |action| resources_of(&domain.state().expect("domain snapshot unavailable"), action));
+                |action| resources_of(&domain.state(), action));
             let mut held = Vec::with_capacity(requested.len());
             for (key, exclusive) in &requested {
                 let resource = domain.local_actions().resource(key.clone());
@@ -235,7 +235,7 @@ pub(super) async fn execute(
             }
             let worker = domain.local_actions().workers.acquire().await.expect("local action workers closed");
             let current = action.as_ref().map_or_else(Vec::new,
-                |action| resources_of(&domain.state().expect("domain snapshot unavailable"), action));
+                |action| resources_of(&domain.state(), action));
             if current == requested { break (held, Some(worker)); }
         }
     } else { (Vec::new(), None) };
@@ -332,7 +332,7 @@ fn is_external(verb: Verb) -> bool {
 }
 
 pub(crate) async fn execute_action(
-    domain: &crate::domain_runtime::DomainRuntime,
+    domain: &dyn alondra_engine_ports::Runtime,
     client: &crate::client_routes::Client,
     home: &std::path::Path,
     device: &str,
@@ -342,13 +342,13 @@ pub(crate) async fn execute_action(
 ) -> anyhow::Result<Value> {
     let lang = if request.lang == "es" { Lang::Es } else { Lang::En };
     let action = ActionId::parse(&request.action_id).ok();
-    let accepted = domain.state().ok().zip(action.as_ref()).map_or(Accepted::Result, |(state, action)| Accepted::of(&state, action));
+    let accepted = Some(domain.state()).zip(action.as_ref()).map_or(Accepted::Result, |(state, action)| Accepted::of(&state, action));
     let reply = execute_inner(domain, client, home, device, request, identity, authorize).await?;
     Ok(with_result(reply, lang, action.as_ref(), accepted))
 }
 
 async fn execute_inner(
-    domain: &crate::domain_runtime::DomainRuntime,
+    domain: &dyn alondra_engine_ports::Runtime,
     client: &crate::client_routes::Client,
     home: &std::path::Path,
     device: &str,
@@ -371,7 +371,7 @@ async fn execute_inner(
         Ok(attachments) => attachments,
         Err(_) => return Ok(rejected_field(lang, "attachments", "An attachment is no longer available")),
     };
-    let state = domain.state()?;
+    let state = domain.state();
     if state.data_epoch.0 != request.data_epoch {
         return Ok(no_longer_available(lang, "This item is no longer available"));
     }
@@ -402,7 +402,7 @@ async fn execute_inner(
 }
 
 async fn execute_external(
-    domain: &crate::domain_runtime::DomainRuntime,
+    domain: &dyn alondra_engine_ports::Runtime,
     client: &crate::client_routes::Client,
     home: &std::path::Path,
     device: &str,
@@ -416,7 +416,7 @@ async fn execute_external(
     use crate::client_routes::Write;
     use alondra_domain_model::{AgentId, PrId, Scope};
 
-    let state = domain.state()?;
+    let state = domain.state();
     if authorize().is_err() {
         return Ok(device_not_approved_value(lang));
     }
@@ -560,7 +560,7 @@ async fn execute_external(
             // The close is recorded at once, and the domain decides what it does to the task: its
             // other PRs stay on their cards, one that merged ends it, and with nothing left it is
             // cancelled.
-            let now = domain.state()?;
+            let now = domain.state();
             let task_now = now.tasks.get(&task_id);
             let over = task_now.is_none_or(|task| task.over());
             if over || task_now.is_some_and(|task| now.open_prs(task).any(|other| other.id != pr.id) || now.merged_pr(task).is_some()) {
@@ -575,7 +575,7 @@ async fn execute_external(
                 };
                 return Ok(json!({"protocol": VIEWS_PROTOCOL, "outcome": "applied", "revision": now.revision, "result": Outcome::done(text)}));
             }
-            let cancel = ActionId::new(Verb::Cancel, task_id.0.clone(), domain.state()?.revision, None)
+            let cancel = ActionId::new(Verb::Cancel, task_id.0.clone(), domain.state().revision, None)
                 .map_err(|_| anyhow::anyhow!("invalid cancel id"))?;
             let mut request = request.clone();
             request.action_id = cancel.to_string();
@@ -689,9 +689,9 @@ async fn execute_external(
         Verb::Pause => {
             let now = alondra_core::now_millis();
             let paused = if state.agents.contains_key(&AgentId(action.subject.clone())) {
-                domain.admission().pause_by_user(domain, &action.subject, now)
+                domain.gate().pause_by_user(&action.subject, now)
             } else {
-                crate::admission::hold_queued(domain, &TaskId(action.subject.clone()), now)
+                client.api.admission.hold_queued(domain, &TaskId(action.subject.clone()), now)
             };
             match paused {
                 Ok(()) => Ok(to_applied(200, json!({"paused": action.subject}))),
@@ -700,10 +700,10 @@ async fn execute_external(
         }
         Verb::Resume => {
             let now = alondra_core::now_millis();
-            if domain.admission().resume_now(domain, &action.subject, now) {
+            if domain.gate().resume_now(&action.subject, now) {
                 return Ok(to_applied(200, json!({"resumed": action.subject})));
             }
-            match crate::admission::release_queued(domain, &TaskId(action.subject.clone())) {
+            match client.api.admission.release_queued(domain, &TaskId(action.subject.clone())) {
                 Ok(()) => Ok(to_applied(200, json!({"resumed": action.subject}))),
                 Err(why) => Ok(error_value_lang(lang, "conflict", why)),
             }
@@ -712,12 +712,12 @@ async fn execute_external(
             let limit = match request.option_id.as_deref() {
                 Some(alondra_core::options::AUTO) => alondra_core::options::NodeLimit::Auto,
                 Some(count) => match count.parse::<u32>() {
-                    Ok(count) if (1..=crate::admission::most_working_nodes(&*domain)).contains(&count) => alondra_core::options::NodeLimit::Fixed(count),
+                    Ok(count) if (1..=client.api.admission.most_working_nodes(domain)).contains(&count) => alondra_core::options::NodeLimit::Fixed(count),
                     _ => return Ok(rejected_field(lang, "option_id", "Choose an option")),
                 },
                 None => return Ok(rejected_field(lang, "option_id", "Choose an option")),
             };
-            match crate::admission::set_node_limit(home, limit) {
+            match client.api.admission.set_node_limit(home, limit) {
                 Ok(()) => Ok(to_applied(200, json!({"max_working_nodes": limit}))),
                 Err(why) => Ok(error_value_lang(lang, "conflict", why)),
             }
@@ -772,8 +772,8 @@ async fn execute_external(
             let intent = match model_input::task(&request.input.fields, base, &task.account_key()) { Ok(value) => value, Err(message) => return Ok(rejected_field(lang, "model", message)) };
             let chosen = match crate::accounts::select_for_active_model(domain, &task_id, &intent) { Ok(chosen) => chosen, Err(error) => return Ok(error_value(&error.code, &error.message)) };
             let actor = Actor::User { user_id: user_id.clone() };
-            match crate::provider_transition::request(domain, &actor, &task_id, chosen.account, chosen.selection, intent, "User changed model selection", expected,
-                || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked"))) {
+            match client.api.sdk.change_provider(domain, &actor, &task_id, chosen.account, chosen.selection, intent, "User changed model selection", expected,
+                Box::new(|| authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked")))) {
                 Ok(value) => Ok(to_applied(202, value)),
                 Err(error) => Ok(error_value(&error.code, &error.message)),
             }
@@ -785,8 +785,8 @@ async fn execute_external(
                 return Ok(rejected_field(lang, "account", "Choose the account to move the task to"));
             };
             let actor = Actor::User { user_id: user_id.clone() };
-            match crate::provider_transition::request_move(domain, &actor, &task_id, account, expected,
-                || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked"))) {
+            match client.api.sdk.move_task(domain, &actor, &task_id, account, expected,
+                Box::new(|| authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked")))) {
                 Ok(value) if value["status"] == "moved" => Ok(applied(action.verb, lang, if lang == Lang::Es { "Movida" } else { "Moved" }, state.revision, 200, value)),
                 Ok(value) => Ok(to_applied(202, value)),
                 Err(error) => Ok(domain_refusal_value(&error, lang)),
@@ -938,15 +938,15 @@ async fn execute_external(
             }
         }
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => {
-            let runtime = crate::domain_orchestrator::load(home)?;
-            let Some((run_id, decision)) = orchestrator_decision(&runtime, action) else {
+            let run = client.api.orchestrator.active_run(home)?;
+            let Some((run_id, decision)) = orchestrator_decision(&run, action) else {
                 return Ok(no_longer_available(lang, "This run is no longer active"));
             };
-            let reply = crate::domain_bootstrap::apply_orchestrator_decision(client.domain.clone(), home, decision, Some(&json!({"run_id":run_id})));
+            let reply = crate::domain_bootstrap::apply_orchestrator_decision(&client.api, client.domain.clone(), home, decision, Some(&json!({"run_id":run_id})));
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
         Verb::SchedRun | Verb::SchedToggle | Verb::SchedDelete | Verb::SchedSave | Verb::ScheduleSelection => {
-            schedule_action(domain, home, request, action, identity, &authorize, lang, stamp).await
+            schedule_action(domain, &client.api, home, request, action, identity, &authorize, lang, stamp).await
         }
         Verb::NewRequest | Verb::NewRequestSelection => {
             let fields = &request.input.fields;
@@ -985,28 +985,30 @@ fn relaunch_reply(result: Result<Value, DomainError>) -> (u16, Value) {
 }
 
 fn orchestrator_decision<'a>(
-    runtime: &crate::domain_orchestrator::Runtime,
+    run: &alondra_engine_ports::orchestrator::ActiveRun,
     action: &'a ActionId,
-) -> Option<(&'a str, crate::domain_orchestrator::Decision)> {
+) -> Option<(&'a str, alondra_engine_ports::orchestrator::Decision)> {
     if action.subject != "orchestrator" {
         return None;
     }
     let run_id = action.extra.as_deref()?;
-    let ambiguous = runtime.active_run.is_some() && runtime.last_error.is_some();
-    if runtime.active_run.as_ref().is_none_or(|run| run.id != run_id) {
+    let ambiguous = run.run_id.is_some() && run.failed;
+    if run.run_id.as_deref() != Some(run_id) {
         return None;
     }
     let decision = match action.verb {
-        Verb::OrchRetry if ambiguous => crate::domain_orchestrator::Decision::Retry,
-        Verb::OrchAck if ambiguous => crate::domain_orchestrator::Decision::Acknowledge,
-        Verb::OrchStop if !ambiguous => crate::domain_orchestrator::Decision::Cancel,
+        Verb::OrchRetry if ambiguous => alondra_engine_ports::orchestrator::Decision::Retry,
+        Verb::OrchAck if ambiguous => alondra_engine_ports::orchestrator::Decision::Acknowledge,
+        Verb::OrchStop if !ambiguous => alondra_engine_ports::orchestrator::Decision::Cancel,
         _ => return None,
     };
     Some((run_id, decision))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn schedule_action(
-    domain: &crate::domain_runtime::DomainRuntime,
+    domain: &dyn alondra_engine_ports::Runtime,
+    api: &alondra_engine_ports::domain_api::DomainApi,
     home: &std::path::Path,
     request: &ActionRequest,
     action: &ActionId,
@@ -1016,14 +1018,14 @@ async fn schedule_action(
     stamp: &str,
 ) -> anyhow::Result<Value> {
     use alondra_domain_model::ScheduleId;
-    let state = domain.state()?;
+    let state = domain.state();
     if matches!(action.verb, Verb::SchedSave | Verb::ScheduleSelection) && action.subject == "view" {
         let options = schedule_option_specs(home, &request.input.fields, None);
         let body = schedule_draft(&request.input.fields, None, &options);
         if let Some(rejection) = schedule_field_rejection(&request.input.fields, &body, lang) {
             return Ok(rejection);
         }
-        let result = crate::domain_schedule_api::mutation(domain, home, "POST", "/schedules", Some(&body), identity, authorize);
+        let result = api.sdk.schedule_mutation(domain, home, "POST", "/schedules", Some(&body), identity, authorize);
         return Ok(schedule_reply(result, lang, stamp, state.revision));
     }
     let Some(raw_id) = action.subject.strip_prefix("s-") else {
@@ -1054,7 +1056,7 @@ async fn schedule_action(
         },
         _ => return Ok(no_longer_available(lang, "This schedule action is unavailable")),
     };
-    let result = crate::domain_schedule_api::mutation(domain, home, method, &path,
+    let result = api.sdk.schedule_mutation(domain, home, method, &path,
         body.as_ref(), identity, authorize);
     Ok(schedule_reply(result, lang, stamp, state.revision))
 }
@@ -1212,7 +1214,7 @@ fn schedule_reply(result: Value, lang: Lang, stamp: &str, revision: u64) -> Valu
 }
 
 fn execute_value(
-    domain: &crate::domain_runtime::DomainRuntime,
+    domain: &dyn alondra_engine_ports::Runtime,
     device: &str,
     mut request: ActionRequest,
     attachments: &[alondra_domain_model::AttachmentRef],
@@ -1234,10 +1236,7 @@ fn execute_value(
         return Ok(error_value_lang(lang, "invalid_input", "command_id must be a supported operation ID"));
     }
     let command_id = CommandId(request.command_id.clone());
-    let state = match domain.state() {
-        Ok(state) => state,
-        Err(error) => return Err(error),
-    };
+    let state = domain.state();
     if state.data_epoch.0 != request.data_epoch {
         return Ok(no_longer_available(lang, "This item is no longer available"));
     }
@@ -1382,7 +1381,7 @@ struct Closing {
 }
 
 /// Asks the engine to find `pr` again by its locator: its address answered with another pull request.
-fn look_for_by_locator(domain: &crate::domain_runtime::DomainRuntime, pr: &alondra_domain_model::PullRequest) {
+fn look_for_by_locator(domain: &dyn alondra_engine_ports::Runtime, pr: &alondra_domain_model::PullRequest) {
     let command = Command::ObservePrAddress { pr_id: pr.id.clone(), read: alondra_domain_model::PrRead::Address { repository: pr.repository.clone() },
         read_started_at: crate::pr_identity::read_start(), verdict: alondra_domain_model::PrAddressVerdict::NamesAnotherPr };
     if let Err(error) = crate::domain_github::execute_system(domain, command) {
@@ -2262,6 +2261,8 @@ fn head_prefix(head: &str) -> &str {
 #[cfg(test)]
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
+    use crate::engine_tests::Kernel as _;
+    use alondra_engine_admission::AdmissionOf as _;
     use super::*;
 
     #[test]
@@ -2345,12 +2346,12 @@ mod tests {
     }
 
     fn apply_seed_command(
-        domain: &crate::domain_runtime::DomainRuntime,
+        domain: &dyn alondra_engine_ports::Runtime,
         actor: Actor,
         command_id: &str,
         command: Command,
     ) {
-        let state = domain.state().unwrap();
+        let state = domain.state();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: 2,
             data_epoch: state.data_epoch.clone(),
@@ -2392,12 +2393,12 @@ mod tests {
         let device = auth.pair(&auth.new_pairing_code(), "Fixture phone", &public_key).unwrap();
         let signed = Some(Extension(crate::auth::Signed { device_id: device.id, name: device.name, public_key }));
         let domain = daemon.domain();
-        let request = pacing_request(&domain.state().unwrap(), Verb::SetLimit, "limit", "4", "en");
+        let request = pacing_request(&domain.state(), Verb::SetLimit, "limit", "4", "en");
         let body: axum::body::Bytes = serde_json::to_vec(&request).unwrap().into();
         let driver = std::thread::current().id();
         let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let running = threads.clone();
-        domain.external_work.on_start(move || {
+        domain.kernel().external_work.on_start(move || {
             let thread = std::thread::current().id();
             assert_ne!(thread, driver, "local action occupied the async worker");
             running.lock().unwrap().push(thread);
@@ -2432,10 +2433,10 @@ mod tests {
         drop(crate::engine_tests::open(&directory).unwrap());
         let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
         let domain = daemon.domain();
-        apply_seed_command(&domain, Actor::User { user_id: "fixture".into() }, "request", Command::CreateRequest {
+        apply_seed_command(&*domain, Actor::User { user_id: "fixture".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        apply_seed_command(&*domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: None,
             review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_model::LaunchPlan::new("node", directory.to_string_lossy().into_owned())),
         });
@@ -2444,13 +2445,13 @@ mod tests {
         let auth = daemon.auth();
         let device = auth.pair(&auth.new_pairing_code(), "Fixture phone", &public_key).unwrap();
         let signed = Some(Extension(crate::auth::Signed { device_id: device.id, name: device.name, public_key }));
-        let request = pacing_request(&domain.state().unwrap(), Verb::SetPriority, "task", "high", "en");
+        let request = pacing_request(&domain.state(), Verb::SetPriority, "task", "high", "en");
         let body: axum::body::Bytes = serde_json::to_vec(&request).unwrap().into();
         let (entered, started) = tokio::sync::oneshot::channel();
         let (fast_release, fast_held) = std::sync::mpsc::channel();
         let entered = std::sync::Mutex::new(Some(entered));
         let fast_held = std::sync::Mutex::new(fast_held);
-        domain.command_work.on_start(move || {
+        domain.kernel().command_work.on_start(move || {
             entered.lock().unwrap().take().unwrap().send(()).unwrap();
             fast_held.lock().unwrap().recv().unwrap();
         });
@@ -2460,7 +2461,7 @@ mod tests {
             let mut holders = Vec::new();
             let mut releases = ReleaseJobs(Vec::new());
             for _ in 0..2 {
-                let lane = domain.external_work.clone();
+                let lane = domain.kernel().external_work.clone();
                 let (entered, started) = tokio::sync::oneshot::channel();
                 let (release, held) = std::sync::mpsc::channel();
                 holders.push(tokio::spawn(async move { lane.run(move || { entered.send(()).unwrap(); held.recv().unwrap(); }).await.unwrap() }));
@@ -2469,7 +2470,7 @@ mod tests {
             }
             let mut pending = Box::pin(local(State(daemon), signed, body));
             assert!(pending.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
-            assert_eq!(domain.command_work.available(), 1, "the action enters the fast lane even with both external jobs held");
+            assert_eq!(domain.kernel().command_work.available(), 1, "the action enters the fast lane even with both external jobs held");
             started.await.unwrap();
             drop(fast_release);
             let reply = pending.await;
@@ -2477,8 +2478,8 @@ mod tests {
             let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20).await.unwrap();
             let reply: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(reply["outcome"], "applied", "{reply}");
-            assert_eq!(domain.state().unwrap().tasks[&"task".into()].priority, alondra_domain_model::TaskPriority::High);
-            assert_eq!(domain.external_work.available(), 0, "both slow jobs are still physically held");
+            assert_eq!(domain.state().tasks[&"task".into()].priority, alondra_domain_model::TaskPriority::High);
+            assert_eq!(domain.kernel().external_work.available(), 0, "both slow jobs are still physically held");
             drop(releases);
             for holder in holders { holder.await.unwrap(); }
             println!("external_jobs_held=2 fast_action=applied physical_jobs_drained=true");
@@ -2531,13 +2532,13 @@ for line in sys.stdin:
         };
 
         for (verb, extra) in [(Verb::AccountLogin, "codex"), (Verb::AccountLoginCancel, "attempt")] {
-            let reply = execute_action(&domain, &client, &home, "test-device", request(verb, "default", Some(extra)), None, || Ok(())).await.unwrap();
+            let reply = execute_action(&*domain, &client, &home, "test-device", request(verb, "default", Some(extra)), None, || Ok(())).await.unwrap();
             assert_eq!(reply["outcome"], "no_longer_available", "{reply}");
         }
         assert!(domain.state().unwrap().account_logins.is_empty(), "no sign-in was started");
         assert!(!user.join("calls").exists(), "Codex was never run to sign in");
 
-        let reply = execute_action(&domain, &client, &home, "test-device", request(Verb::ProviderConnect, "codex", None), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", request(Verb::ProviderConnect, "codex", None), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert!(crate::accounts::config(&home).unwrap().is_connected(Provider::Codex));
         let state = domain.state().unwrap();
@@ -2565,54 +2566,54 @@ for line in sys.stdin:
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let state = domain.state().unwrap();
 
-        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "4", "es"), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "4", "es"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert_eq!(fs::read_to_string(&options).unwrap(), "# mine\nmax_working_nodes = 4\n\n[defaults]\neffort = \"light\"\n");
         assert_eq!(domain.admission().live(&*domain, alondra_core::now_millis()).unwrap().fixed, Some(4));
-        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "auto", "en"), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "auto", "en"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert!(fs::read_to_string(&options).unwrap().contains("max_working_nodes = \"auto\""));
         let most = crate::admission::most_working_nodes(&*domain);
-        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", &most.to_string(), "es"), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", &most.to_string(), "es"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
-        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", &(most + 1).to_string(), "es"), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", &(most + 1).to_string(), "es"), None, || Ok(())).await.unwrap();
         assert_ne!(reply["outcome"], "applied", "{reply}");
         fs::write(&options, "[defaults\n").unwrap();
-        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "3", "es"), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "3", "es"), None, || Ok(())).await.unwrap();
         assert!(reply.to_string().contains("options.toml tiene un error: corrígelo primero"), "{reply}");
         assert_eq!(fs::read_to_string(&options).unwrap(), "[defaults\n", "a broken file is never overwritten");
 
-        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
+        apply_seed_command(&*domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        apply_seed_command(&*domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Work".into(),
             agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
         let state = domain.state().unwrap();
-        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetPriority, "task-a", "high", "es"), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", pacing_request(&state, Verb::SetPriority, "task-a", "high", "es"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         let task = &domain.state().unwrap().tasks[&TaskId("task-a".into())];
         assert_eq!(task.priority, alondra_domain_model::TaskPriority::High);
 
         let state = domain.state().unwrap();
-        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetMergeMethod, "merge_method", "rebase", "es"), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", pacing_request(&state, Verb::SetMergeMethod, "merge_method", "rebase", "es"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert_eq!(reply["result"]["title"], "Modo de merge cambiado: las PR se mergean así desde ahora.", "{reply}");
         assert_eq!(domain.state().unwrap().merge_method, MergeMethod::Rebase);
-        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetMergeMethod, "merge_method", "octopus", "en"), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", pacing_request(&state, Verb::SetMergeMethod, "merge_method", "octopus", "en"), None, || Ok(())).await.unwrap();
         assert_ne!(reply["outcome"], "applied", "{reply}");
         assert_eq!(domain.state().unwrap().merge_method, MergeMethod::Rebase);
 
         use alondra_domain_model::BranchUpdate;
         let state = domain.state().unwrap();
         assert_eq!(state.branch_update, BranchUpdate::Rebase, "nodes rebase until the user picks otherwise");
-        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetBranchUpdate, "branch_update", "merge", "es"), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", pacing_request(&state, Verb::SetBranchUpdate, "branch_update", "merge", "es"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert_eq!(reply["result"]["title"], "Modo de actualizar la rama cambiado: los nodos traen main a la rama de su PR así desde ahora.", "{reply}");
         assert_eq!(domain.state().unwrap().branch_update, BranchUpdate::Merge);
-        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetBranchUpdate, "branch_update", "squash", "en"), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", pacing_request(&state, Verb::SetBranchUpdate, "branch_update", "squash", "en"), None, || Ok(())).await.unwrap();
         assert_ne!(reply["outcome"], "applied", "{reply}");
         assert_eq!(domain.state().unwrap().branch_update, BranchUpdate::Merge);
     }
@@ -2632,38 +2633,38 @@ for line in sys.stdin:
         let _home = TestHome(home.to_path_buf());
         let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+        apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
-        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
+        apply_seed_command(&*domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "title-request", Command::TitleRequest {
+        apply_seed_command(&*domain, Actor::User { user_id: "user".into() }, "title-request", Command::TitleRequest {
             request_id: "request".into(), title: "Work".into(),
         });
         for task_id in ["task-a", "task-b"] {
             let agent = format!("agent-{task_id}");
-            apply_seed_command(&domain, Actor::System, &format!("register-{task_id}"), Command::RegisterAgent {
+            apply_seed_command(&*domain, Actor::System, &format!("register-{task_id}"), Command::RegisterAgent {
                 agent_id: agent.clone().into(), name: agent.clone(), at: 0
             });
-            apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{task_id}"), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+            apply_seed_command(&*domain, Actor::Orchestrator { generation: 0 }, &format!("create-{task_id}"), Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: task_id.into(), request_id: "request".into(), title: task_id.into(),
                 agent_id: Some(agent.clone().into()), review_prs: false,
                 dependencies: Default::default(), stack: None,
                 launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
             });
             let delivery_id = format!("delivery-{task_id}");
-            apply_seed_command(&domain, Actor::Agent { agent_id: agent.clone().into() }, &format!("present-{task_id}"), Command::PresentResult {
+            apply_seed_command(&*domain, Actor::Agent { agent_id: agent.clone().into() }, &format!("present-{task_id}"), Command::PresentResult {
                 checklist: Vec::new(),
                 attachments: vec![], task_id: task_id.into(), interaction_id: delivery_id.clone().into(),
                 body: "Complete".into(), targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
                 is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
             });
-            apply_seed_command(&domain, Actor::User { user_id: "user".into() }, &format!("accept-{task_id}"), Command::AcceptDelivery {
+            apply_seed_command(&*domain, Actor::User { user_id: "user".into() }, &format!("accept-{task_id}"), Command::AcceptDelivery {
                 presentation_id: delivery_id.clone().into(),
                 targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
             });
-            apply_seed_command(&domain, Actor::System, &format!("end-{task_id}"), Command::RecordNodeEnd {
+            apply_seed_command(&*domain, Actor::System, &format!("end-{task_id}"), Command::RecordNodeEnd {
                 task_id: task_id.into(), end: alondra_domain_model::NodeEnd::Closed, agent_id: None,
             });
         }
@@ -2681,7 +2682,7 @@ for line in sys.stdin:
             input: ActionInput::default(),
         };
         let receipts_before = semantic_receipt_count(&home);
-        let first = execute_action(&domain, &client, &home, "test-device", request.clone(), None, || Ok(())).await.unwrap();
+        let first = execute_action(&*domain, &client, &home, "test-device", request.clone(), None, || Ok(())).await.unwrap();
         assert_eq!(first["outcome"], "applied", "{first}");
         let archived = domain.state().unwrap();
         assert!(archived.tasks.values().all(|task| task.archived));
@@ -2689,7 +2690,7 @@ for line in sys.stdin:
         assert_eq!(semantic_receipt_count(&home), receipts_before + 1,
             "the first application commits one durable clear command");
 
-        let second = execute_action(&domain, &client, &home, "test-device", request.clone(), None, || Ok(())).await.unwrap();
+        let second = execute_action(&*domain, &client, &home, "test-device", request.clone(), None, || Ok(())).await.unwrap();
         assert_eq!(second["outcome"], "applied", "{second}");
         let repeated = domain.state().unwrap();
         assert_eq!(repeated.revision, archived.revision, "repeating the action changes no domain revision");
@@ -2697,7 +2698,7 @@ for line in sys.stdin:
             "the repeated action creates no duplicate durable commands");
 
         let again = ActionRequest { command_id: "7a1d3e5f-2b4c-4d6e-8f01-23456789abcd".into(), ..request };
-        let third = execute_action(&domain, &client, &home, "test-device", again, None, || Ok(())).await.unwrap();
+        let third = execute_action(&*domain, &client, &home, "test-device", again, None, || Ok(())).await.unwrap();
         assert_ne!(third["outcome"], "applied", "nothing is left to clear: {third}");
         assert_eq!(domain.state().unwrap().revision, archived.revision);
     }
@@ -2800,25 +2801,19 @@ for line in sys.stdin:
 
     #[test]
     fn a_disabled_action_is_not_executed() {
-        use crate::domain_orchestrator::{Decision, Run, Runtime};
+        use alondra_engine_ports::orchestrator::{ActiveRun, Decision};
 
         let retry = ActionId::new(Verb::OrchRetry, "orchestrator", 1, Some("run-1".into())).unwrap();
         let acknowledge = ActionId::new(Verb::OrchAck, "orchestrator", 1, Some("run-1".into())).unwrap();
         let stop = ActionId::new(Verb::OrchStop, "orchestrator", 1, Some("run-1".into())).unwrap();
-        assert!(orchestrator_decision(&Runtime::default(), &retry).is_none(),
+        assert!(orchestrator_decision(&ActiveRun::default(), &retry).is_none(),
             "a retry that is not rendered for an active run must not execute");
 
-        let mut runtime = Runtime {
-            active_run: Some(Run {
-                id: "run-1".into(), message_ids: vec![], attempts: vec![],
-                started_at: 0, spawned: false, replans_only: false,
-            }),
-            ..Default::default()
-        };
+        let mut runtime = ActiveRun { run_id: Some("run-1".into()), failed: false };
         assert!(orchestrator_decision(&runtime, &retry).is_none());
         assert_eq!(orchestrator_decision(&runtime, &stop).map(|(_, decision)| decision), Some(Decision::Cancel));
 
-        runtime.last_error = Some("uncertain".into());
+        runtime.failed = true;
         assert_eq!(orchestrator_decision(&runtime, &retry).map(|(_, decision)| decision), Some(Decision::Retry));
         assert_eq!(orchestrator_decision(&runtime, &acknowledge).map(|(_, decision)| decision), Some(Decision::Acknowledge));
         assert!(orchestrator_decision(&runtime, &stop).is_none());
@@ -3078,7 +3073,7 @@ for line in sys.stdin:
         fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
     }
 
-    fn action_home() -> (ActionHome, std::sync::Arc<crate::domain_runtime::DomainRuntime>, std::sync::Arc<crate::client_routes::Client>) {
+    fn action_home() -> (ActionHome, std::sync::Arc<dyn alondra_engine_ports::Runtime>, std::sync::Arc<crate::client_routes::Client>) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
@@ -3086,12 +3081,12 @@ for line in sys.stdin:
         (ActionHome(home), domain, client)
     }
 
-    fn action_request(domain: &crate::domain_runtime::DomainRuntime, command_id: &str, lang: &str,
+    fn action_request(domain: &dyn alondra_engine_ports::Runtime, command_id: &str, lang: &str,
         action_id: String, option_id: Option<&str>, fields: Value) -> ActionRequest {
         ActionRequest {
             protocol: VIEWS_PROTOCOL,
             command_id: command_id.into(),
-            data_epoch: domain.state().unwrap().data_epoch.0.clone(),
+            data_epoch: domain.state().data_epoch.0.clone(),
             client: "ios".into(),
             lang: lang.into(),
             action_id,
@@ -3114,20 +3109,20 @@ for line in sys.stdin:
             assert!(std::path::PathBuf::from(home).starts_with(&test_root));
         }
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+        apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         let mut node = domain.live().pushes.attach("agent-a", 1);
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let mut message = pacing_request(&state, Verb::Msg, "agent-a", "", "en");
         message.input.text = Some("A message for the isolated test peer".into());
-        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", message,
+        let mut first = Box::pin(execute(&*domain, &client, &home.0, "test-device", message,
             None, || Ok(())));
         let mut context = Context::from_waker(Waker::noop());
         assert!(first.as_mut().poll(&mut context).is_pending());
         let sent: Value = serde_json::from_str(&node.try_recv().expect("message was dispatched before waiting")).unwrap();
         let limit = pacing_request(&state, Verb::SetLimit, "limit", "4", "en");
-        let mut independent = Box::pin(execute(&domain, &client, &home.0, "test-device", limit,
+        let mut independent = Box::pin(execute(&*domain, &client, &home.0, "test-device", limit,
             None, || Ok(())));
         let Poll::Ready(reply) = independent.as_mut().poll(&mut context) else {
             panic!("a message waiting for its peer must not block an independent local action");
@@ -3145,30 +3140,30 @@ for line in sys.stdin:
     #[tokio::test]
     async fn a_message_to_a_task_with_no_node_is_kept_in_order_for_the_node_that_starts_it() {
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
+        apply_seed_command(&*domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        apply_seed_command(&*domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Work".into(),
             agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
-        apply_seed_command(&domain, Actor::System, "unrelated-node", Command::RegisterAgent {
+        apply_seed_command(&*domain, Actor::System, "unrelated-node", Command::RegisterAgent {
             agent_id: "task-a".into(), name: "Unrelated node".into(), at: 0,
         });
         let mut unrelated = domain.live().pushes.attach("task-a", 1);
         for (text, lang, stamp) in [("Keep the old API", "en", "Message kept: the task's node reads it when it starts"),
             ("Then update the docs", "es", "Mensaje guardado: el nodo de la tarea lo lee al arrancar")] {
-            let mut request = pacing_request(&domain.state().unwrap(), Verb::TaskMsg, "task-a", "", lang);
+            let mut request = pacing_request(&domain.state(), Verb::TaskMsg, "task-a", "", lang);
             request.input.text = Some(text.into());
-            let reply = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+            let reply = execute(&*domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
             let bytes = axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap();
-            let retry = execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await;
+            let retry = execute(&*domain, &client, &home.0, "test-device", request, None, || Ok(())).await;
             assert_eq!(axum::body::to_bytes(retry.into_body(), 1024 * 1024).await.unwrap(), bytes, "a retry returns the receipt");
             let reply: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!((reply["outcome"].as_str(), reply["stamp"].as_str()), (Some("applied"), Some(stamp)), "{reply}");
         }
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let task = TaskId("task-a".into());
         assert!(state.tasks[&task].agent_id.is_none(), "a message starts no node");
         let told: Vec<&str> = state.lifecycle_journal[&task].iter().filter_map(|record| match record {
@@ -3181,12 +3176,12 @@ for line in sys.stdin:
         assert!(matches!(unrelated.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)), "a node with the same identifier receives nothing");
         let mut stale = pacing_request(&state, Verb::TaskMsg, "task-a", "", "es");
         stale.input.text = Some("Too late".into());
-        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "cancel-task", Command::CancelTask { task_id: task.clone(), reason: None });
-        let before = domain.state().unwrap().lifecycle_journal[&task].clone();
-        let reply = execute_action(&domain, &client, &home.0, "test-device", stale, None, || Ok(())).await.unwrap();
+        apply_seed_command(&*domain, Actor::User { user_id: "user".into() }, "cancel-task", Command::CancelTask { task_id: task.clone(), reason: None });
+        let before = domain.state().lifecycle_journal[&task].clone();
+        let reply = execute_action(&*domain, &client, &home.0, "test-device", stale, None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "no_longer_available", "{reply}");
         assert_eq!(reply["message"], "Esta tarea ya terminó o se canceló.", "it says why: the task ended");
-        assert_eq!(domain.state().unwrap().lifecycle_journal[&task], before, "a stale action cannot tell an ended task");
+        assert_eq!(domain.state().lifecycle_journal[&task], before, "a stale action cannot tell an ended task");
     }
 
     #[tokio::test]
@@ -3194,14 +3189,14 @@ for line in sys.stdin:
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+        apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         let mut node = domain.live().pushes.attach("agent-a", 1);
-        let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
+        let mut request = pacing_request(&domain.state(), Verb::Msg, "agent-a", "", "en");
         request.input.text = Some("One message".into());
-        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
-        let mut retry = Box::pin(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
+        let mut first = Box::pin(execute(&*domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
+        let mut retry = Box::pin(execute(&*domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
         let mut context = Context::from_waker(Waker::noop());
         assert!(first.as_mut().poll(&mut context).is_pending());
         let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
@@ -3213,10 +3208,10 @@ for line in sys.stdin:
         let Poll::Ready(reply) = retry.as_mut().poll(&mut context) else { panic!("coalesced retry not completed"); };
         assert_eq!(reply.status(), StatusCode::OK);
         let reply = axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap();
-        let replay = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+        let replay = execute(&*domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
         assert_eq!(axum::body::to_bytes(replay.into_body(), 1024 * 1024).await.unwrap(), reply);
         request.input.text = Some("Different input".into());
-        let conflict = execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await;
+        let conflict = execute(&*domain, &client, &home.0, "test-device", request, None, || Ok(())).await;
         assert_eq!(conflict.status(), StatusCode::CONFLICT);
         assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
     }
@@ -3224,9 +3219,9 @@ for line in sys.stdin:
     #[tokio::test]
     async fn a_cached_local_action_rechecks_device_approval() {
         let (home, domain, client) = action_home();
-        let request = pacing_request(&domain.state().unwrap(), Verb::SetLimit, "limit", "4", "en");
-        assert_eq!(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await.status(), StatusCode::OK);
-        let denied = execute(&domain, &client, &home.0, "test-device", request, None,
+        let request = pacing_request(&domain.state(), Verb::SetLimit, "limit", "4", "en");
+        assert_eq!(execute(&*domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await.status(), StatusCode::OK);
+        let denied = execute(&*domain, &client, &home.0, "test-device", request, None,
             || anyhow::bail!("device approval was revoked")).await;
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
     }
@@ -3235,11 +3230,11 @@ for line in sys.stdin:
     async fn local_receipts_do_not_cross_domain_homes() {
         let (first_home, first_domain, first_client) = action_home();
         let (second_home, second_domain, second_client) = action_home();
-        let request = pacing_request(&first_domain.state().unwrap(), Verb::SetLimit, "limit", "4", "en");
-        assert_eq!(execute(&first_domain, &first_client, &first_home.0, "test-device", request.clone(), None, || Ok(())).await.status(), StatusCode::OK);
-        let mut other = pacing_request(&second_domain.state().unwrap(), Verb::SetLimit, "limit", "6", "en");
+        let request = pacing_request(&first_domain.state(), Verb::SetLimit, "limit", "4", "en");
+        assert_eq!(execute(&*first_domain, &first_client, &first_home.0, "test-device", request.clone(), None, || Ok(())).await.status(), StatusCode::OK);
+        let mut other = pacing_request(&second_domain.state(), Verb::SetLimit, "limit", "6", "en");
         other.command_id = request.command_id;
-        assert_eq!(execute(&second_domain, &second_client, &second_home.0, "test-device", other, None, || Ok(())).await.status(), StatusCode::OK);
+        assert_eq!(execute(&*second_domain, &second_client, &second_home.0, "test-device", other, None, || Ok(())).await.status(), StatusCode::OK);
         assert!(std::fs::read_to_string(alondra_core::options::path_in(&second_home.0)).unwrap().contains("max_working_nodes = 6"));
     }
 
@@ -3248,24 +3243,24 @@ for line in sys.stdin:
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+        apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         let mut node = domain.live().pushes.attach("agent-a", 1);
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let mut message = pacing_request(&state, Verb::Msg, "agent-a", "", "en");
         message.input.text = Some("First".into());
         let mut another = pacing_request(&state, Verb::Msg, "agent-a", "", "en");
         another.input.text = Some("Second".into());
-        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", message, None, || Ok(())));
-        let mut second = Box::pin(execute(&domain, &client, &home.0, "test-device", another, None, || Ok(())));
+        let mut first = Box::pin(execute(&*domain, &client, &home.0, "test-device", message, None, || Ok(())));
+        let mut second = Box::pin(execute(&*domain, &client, &home.0, "test-device", another, None, || Ok(())));
         let mut context = Context::from_waker(Waker::noop());
         assert!(first.as_mut().poll(&mut context).is_pending());
         let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
         assert!(second.as_mut().poll(&mut context).is_pending());
         let other: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
         let limit = pacing_request(&state, Verb::SetLimit, "limit", "4", "en");
-        let mut queued = Box::pin(execute(&domain, &client, &home.0, "test-device", limit, None, || Ok(())));
+        let mut queued = Box::pin(execute(&*domain, &client, &home.0, "test-device", limit, None, || Ok(())));
         assert!(queued.as_mut().poll(&mut context).is_pending());
         assert!(!alondra_core::options::path_in(&home.0).exists());
         domain.live().pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
@@ -3282,14 +3277,14 @@ for line in sys.stdin:
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+        apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         let mut node = domain.live().pushes.attach("agent-a", 1);
-        let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
+        let mut request = pacing_request(&domain.state(), Verb::Msg, "agent-a", "", "en");
         request.input.text = Some("One message".into());
-        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
-        let mut retry = Box::pin(execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())));
+        let mut first = Box::pin(execute(&*domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
+        let mut retry = Box::pin(execute(&*domain, &client, &home.0, "test-device", request, None, || Ok(())));
         let mut context = Context::from_waker(Waker::noop());
         assert!(first.as_mut().poll(&mut context).is_pending());
         let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
@@ -3310,39 +3305,39 @@ for line in sys.stdin:
     #[tokio::test]
     async fn different_commands_cannot_reply_to_the_same_stale_information_card() {
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+        apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
-        apply_seed_command(&domain, Actor::User { user_id:"user".into() }, "request", Command::CreateRequest {
+        apply_seed_command(&*domain, Actor::User { user_id:"user".into() }, "request", Command::CreateRequest {
             request_id:"request".into(), body:"Work".into(), message:false, auto_merge:false, maintenance:false,
         });
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        apply_seed_command(&*domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id:"task".into(), request_id:"request".into(), title:"Work".into(), agent_id:Some("agent-a".into()),
             review_prs:false, dependencies:Default::default(), stack:None,
             launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
-        alondra_daemon_engine::domain_store::admit_through_sdk_with_host(&domain, &"task".into(), "agent-a", "alondra-sdk");
-        apply_seed_command(&domain, Actor::System, "info", Command::PublishInformation {
+        alondra_daemon_engine::domain_store::admit_through_sdk_with_host(domain.kernel(), &"task".into(), "agent-a", "alondra-sdk");
+        apply_seed_command(&*domain, Actor::System, "info", Command::PublishInformation {
             attachments:vec![], interaction_id:"info".into(), scope:alondra_domain_model::Scope::Task { task_id:"task".into() },
             recipient:alondra_domain_model::Recipient::User, body:"Update".into(),
             card:alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Know, "Read the update"),
         });
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let mut request = pacing_request(&state, Verb::Reply, "info", "", "en");
         request.input.text = Some("First reply".into());
         let mut other = pacing_request(&state, Verb::Reply, "info", "", "en");
         other.input.text = Some("Stale reply".into());
-        let reply = execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await;
+        let reply = execute(&*domain, &client, &home.0, "test-device", request, None, || Ok(())).await;
         let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
         assert_eq!(body["outcome"], "applied", "{body}");
-        let after = domain.state().unwrap();
+        let after = domain.state();
         let pending = after.tasks[&alondra_domain_model::TaskId::from("task")].pending_user_inputs.clone();
         assert_eq!(pending.len(), 1);
         assert!(alondra_domain_model::ReadIndex::build(&after).waiting_card(&"info".into()).is_none(), "the reply read the update");
-        let reply = execute(&domain, &client, &home.0, "test-device", other, None, || Ok(())).await;
+        let reply = execute(&*domain, &client, &home.0, "test-device", other, None, || Ok(())).await;
         let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
         assert_eq!(body["outcome"], "no_longer_available");
-        assert_eq!(domain.state().unwrap().tasks[&alondra_domain_model::TaskId::from("task")].pending_user_inputs, pending);
+        assert_eq!(domain.state().tasks[&alondra_domain_model::TaskId::from("task")].pending_user_inputs, pending);
     }
 
     struct HeldClose {
@@ -3376,22 +3371,22 @@ for line in sys.stdin:
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+        apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id:"agent-a".into(), name:"Agent A".into(), at: 0
         });
         let sessions = std::sync::Arc::new(HeldClose { removes:Default::default(), listed:true.into(), release:tokio::sync::Semaphore::new(0) });
         client.use_sessions(sessions.clone());
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let first_request = pacing_request(&state, Verb::Close, "agent-a", "", "en");
         let second_request = pacing_request(&state, Verb::Close, "agent-a", "", "en");
-        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", first_request, None, || Ok(())));
-        let mut second = Box::pin(execute(&domain, &client, &home.0, "test-device", second_request, None, || Ok(())));
+        let mut first = Box::pin(execute(&*domain, &client, &home.0, "test-device", first_request, None, || Ok(())));
+        let mut second = Box::pin(execute(&*domain, &client, &home.0, "test-device", second_request, None, || Ok(())));
         let mut context = Context::from_waker(Waker::noop());
         assert!(first.as_mut().poll(&mut context).is_pending());
         assert!(second.as_mut().poll(&mut context).is_pending());
         assert_eq!(sessions.removes.load(std::sync::atomic::Ordering::Relaxed), 1, "both commands entered node removal");
         let limit = pacing_request(&state, Verb::SetLimit, "limit", "4", "en");
-        let mut independent = Box::pin(execute(&domain, &client, &home.0, "test-device", limit, None, || Ok(())));
+        let mut independent = Box::pin(execute(&*domain, &client, &home.0, "test-device", limit, None, || Ok(())));
         assert!(matches!(independent.as_mut().poll(&mut context), Poll::Ready(_)), "waiting for a node close consumed another executor");
         sessions.release.add_permits(1);
         assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(_)));
@@ -3419,7 +3414,7 @@ for line in sys.stdin:
             ..Default::default()
         };
         std::fs::write(home.0.join(crate::domain_orchestrator::FILE), serde_json::to_vec(&runtime).unwrap()).unwrap();
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let mut first_request = pacing_request(&state, Verb::OrchStop, "orchestrator", "", "en");
         first_request.action_id = ActionId::new(Verb::OrchStop, "orchestrator", state.revision, Some("run".into())).unwrap().to_string();
         let mut second_request = first_request.clone();
@@ -3431,7 +3426,7 @@ for line in sys.stdin:
             let calls = std::sync::atomic::AtomicUsize::new(0);
             let resume = std::sync::Mutex::new(resume_rx);
             tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(execute(
-                &thread_domain, &thread_client, &thread_home, "test-device", first_request, None, || {
+                &*thread_domain, &thread_client, &thread_home, "test-device", first_request, None, || {
                     if calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 1 {
                         entered_tx.send(()).unwrap();
                         resume.lock().unwrap().recv().unwrap();
@@ -3441,7 +3436,7 @@ for line in sys.stdin:
         });
         let mut owner = DecisionThread { resume:Some(resume_tx), thread:Some(thread) };
         entered_rx.recv().unwrap();
-        let mut second = Box::pin(execute(&domain, &client, &home.0, "test-device", second_request, None, || Ok(())));
+        let mut second = Box::pin(execute(&*domain, &client, &home.0, "test-device", second_request, None, || Ok(())));
         let mut context = Context::from_waker(Waker::noop());
         assert!(second.as_mut().poll(&mut context).is_pending(), "a second decision entered the shared runtime transaction");
         owner.resume.take().unwrap().send(()).unwrap();
@@ -3455,12 +3450,12 @@ for line in sys.stdin:
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
+        apply_seed_command(&*domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
         let mut node = domain.live().pushes.attach("agent-a", 1);
         let full = domain.local_actions().slots.clone().acquire_many_owned(1024).await.unwrap();
-        let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
+        let mut request = pacing_request(&domain.state(), Verb::Msg, "agent-a", "", "en");
         request.input.text = Some("Not admitted".into());
-        let mut pending = Box::pin(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
+        let mut pending = Box::pin(execute(&*domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
         let mut context = Context::from_waker(Waker::noop());
         let Poll::Ready(reply) = pending.as_mut().poll(&mut context) else { panic!("capacity created an unregistered ambiguous wait"); };
         assert_eq!(reply.status(), StatusCode::OK);
@@ -3470,7 +3465,7 @@ for line in sys.stdin:
         assert_eq!(body["result"]["kind"], "refused");
         assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
         drop(full);
-        let mut retry = Box::pin(execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())));
+        let mut retry = Box::pin(execute(&*domain, &client, &home.0, "test-device", request, None, || Ok(())));
         assert!(retry.as_mut().poll(&mut context).is_pending());
         let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
         domain.live().pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
@@ -3482,22 +3477,22 @@ for line in sys.stdin:
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
+        apply_seed_command(&*domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
         let sessions = std::sync::Arc::new(HeldClose { removes:Default::default(), listed:true.into(), release:tokio::sync::Semaphore::new(0) });
         client.use_sessions(sessions.clone());
         let mut node = domain.live().pushes.attach("agent-a", 1);
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let close = pacing_request(&state, Verb::Close, "agent-a", "", "en");
         let mut message = pacing_request(&state, Verb::Msg, "agent-a", "", "en");
         message.input.text = Some("Do not send into removal".into());
-        let mut closing = Box::pin(execute(&domain, &client, &home.0, "test-device", close, None, || Ok(())));
-        let mut sending = Box::pin(execute(&domain, &client, &home.0, "test-device", message, None, || Ok(())));
+        let mut closing = Box::pin(execute(&*domain, &client, &home.0, "test-device", close, None, || Ok(())));
+        let mut sending = Box::pin(execute(&*domain, &client, &home.0, "test-device", message, None, || Ok(())));
         let mut context = Context::from_waker(Waker::noop());
         assert!(closing.as_mut().poll(&mut context).is_pending());
         assert!(sending.as_mut().poll(&mut context).is_pending());
         assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)), "a message entered a node during removal");
         let limit = pacing_request(&state, Verb::SetLimit, "limit", "4", "en");
-        let mut independent = Box::pin(execute(&domain, &client, &home.0, "test-device", limit, None, || Ok(())));
+        let mut independent = Box::pin(execute(&*domain, &client, &home.0, "test-device", limit, None, || Ok(())));
         assert!(matches!(independent.as_mut().poll(&mut context), Poll::Ready(_)));
         sessions.release.add_permits(1);
         assert!(matches!(closing.as_mut().poll(&mut context), Poll::Ready(_)));
@@ -3532,15 +3527,15 @@ for line in sys.stdin:
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
-        present_again(&domain, "result-latest");
+        presented_pr(&*domain);
+        present_again(&*domain, "result-latest");
         let github = std::sync::Arc::new(HeldPrClose { calls:Default::default(), release:tokio::sync::Semaphore::new(0) });
         client.use_github(github.clone());
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let old = pacing_request(&state, Verb::CloseUnmerged, "result", "", "en");
         let current = pacing_request(&state, Verb::CloseUnmerged, "result-latest", "", "en");
-        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", old, None, || Ok(())));
-        let mut second = Box::pin(execute(&domain, &client, &home.0, "test-device", current, None, || Ok(())));
+        let mut first = Box::pin(execute(&*domain, &client, &home.0, "test-device", old, None, || Ok(())));
+        let mut second = Box::pin(execute(&*domain, &client, &home.0, "test-device", current, None, || Ok(())));
         let mut context = Context::from_waker(Waker::noop());
         assert!(first.as_mut().poll(&mut context).is_pending());
         assert!(second.as_mut().poll(&mut context).is_pending());
@@ -3551,7 +3546,7 @@ for line in sys.stdin:
         let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
         assert_eq!(body["outcome"], "no_longer_available");
         assert_eq!(github.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled());
+        assert!(domain.state().tasks[&"task".into()].cancelled());
     }
 
     #[tokio::test]
@@ -3559,12 +3554,12 @@ for line in sys.stdin:
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
+        apply_seed_command(&*domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
         let mut node = domain.live().pushes.attach("agent-a", 1);
         domain.live().mark_closed("agent-a");
-        let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
+        let mut request = pacing_request(&domain.state(), Verb::Msg, "agent-a", "", "en");
         request.input.text = Some("Do not reach a closed node".into());
-        let mut pending = Box::pin(execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())));
+        let mut pending = Box::pin(execute(&*domain, &client, &home.0, "test-device", request, None, || Ok(())));
         let mut context = Context::from_waker(Waker::noop());
         let Poll::Ready(reply) = pending.as_mut().poll(&mut context) else { panic!("closed node accepted a message on its lingering connection"); };
         let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
@@ -3576,19 +3571,19 @@ for line in sys.stdin:
     #[tokio::test]
     async fn completed_local_receipts_replay_under_full_admission_with_conflict_and_approval_checks() {
         let (home, domain, client) = action_home();
-        let request = pacing_request(&domain.state().unwrap(), Verb::SetLimit, "limit", "4", "en");
-        let original = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+        let request = pacing_request(&domain.state(), Verb::SetLimit, "limit", "4", "en");
+        let original = execute(&*domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
         let bytes = axum::body::to_bytes(original.into_body(), 1024 * 1024).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["outcome"], "applied");
         let _full = domain.local_actions().slots.clone().acquire_many_owned(1024).await.unwrap();
-        let recovered = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+        let recovered = execute(&*domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
         assert_eq!(axum::body::to_bytes(recovered.into_body(), 1024 * 1024).await.unwrap(), bytes,
             "admission must not replace an available applied receipt with busy");
         let mut different = request.clone();
         different.option_id = Some("6".into());
-        assert_eq!(execute(&domain, &client, &home.0, "test-device", different, None, || Ok(())).await.status(), StatusCode::CONFLICT);
-        assert_eq!(execute(&domain, &client, &home.0, "test-device", request, None,
+        assert_eq!(execute(&*domain, &client, &home.0, "test-device", different, None, || Ok(())).await.status(), StatusCode::CONFLICT);
+        assert_eq!(execute(&*domain, &client, &home.0, "test-device", request, None,
             || anyhow::bail!("revoked")).await.status(), StatusCode::FORBIDDEN);
         assert!(std::fs::read_to_string(alondra_core::options::path_in(&home.0)).unwrap().contains("max_working_nodes = 4"));
     }
@@ -3598,46 +3593,46 @@ for line in sys.stdin:
         use alondra_domain_model::{Recipient, Scope, QuestionOption};
         let (home, domain, client) = action_home();
         let user = Actor::User { user_id: "user".into() };
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+        apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
-        apply_seed_command(&domain, user.clone(), "create-request", Command::CreateRequest {
+        apply_seed_command(&*domain, user.clone(), "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        apply_seed_command(&*domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_model::LaunchPlan::new("node", "/tmp")),
         });
-        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
+        apply_seed_command(&*domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Ship it?".into(), blocking: true,
             options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let revision = state.interactions[&"question".into()].revision;
         let action = ActionId::new(Verb::Ans, "question", revision, None).unwrap().to_string();
-        let first = action_request(&domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", "en", action.clone(), Some("yes"), json!({}));
-        let applied = execute_action(&domain, &client, &home.0, "test-device", first, None, || Ok(())).await.unwrap();
+        let first = action_request(&*domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", "en", action.clone(), Some("yes"), json!({}));
+        let applied = execute_action(&*domain, &client, &home.0, "test-device", first, None, || Ok(())).await.unwrap();
         assert_eq!(applied["outcome"], "applied", "{applied}");
-        let revision_after_answer = domain.state().unwrap().revision;
-        let second = action_request(&domain, "7a1d3c5e-2b4f-4a6c-8d9e-0f1a2b3c4d5e", "en", action, Some("yes"), json!({}));
-        let stale = execute_action(&domain, &client, &home.0, "test-device", second, None, || Ok(())).await.unwrap();
+        let revision_after_answer = domain.state().revision;
+        let second = action_request(&*domain, "7a1d3c5e-2b4f-4a6c-8d9e-0f1a2b3c4d5e", "en", action, Some("yes"), json!({}));
+        let stale = execute_action(&*domain, &client, &home.0, "test-device", second, None, || Ok(())).await.unwrap();
         assert_eq!(stale["outcome"], "no_longer_available", "{stale}");
-        assert_eq!(domain.state().unwrap().revision, revision_after_answer, "the second answer changes nothing");
+        assert_eq!(domain.state().revision, revision_after_answer, "the second answer changes nothing");
     }
 
     #[tokio::test]
     async fn a_superseded_question_ends_repeated_answers_without_new_work_or_duplicate_cards() {
         use alondra_domain_model::{Recipient, Scope, QuestionOption, CardSpec, CardKind, ReadIndex};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+        apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0,
         });
-        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
+        apply_seed_command(&*domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(),
+        apply_seed_command(&*domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(),
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: None,
             launch: Some(alondra_domain_model::LaunchPlan::new("node", "/synthetic/repository")),
@@ -3652,30 +3647,30 @@ for line in sys.stdin:
                     QuestionOption { id: "borealis".into(), label: "Borealis".into(), description: Some("Use Borealis".into()) },
                 ], card }
         };
-        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-old", ask("old", None));
-        let revision = domain.state().unwrap().interactions[&InteractionId::from("old")].revision;
+        apply_seed_command(&*domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-old", ask("old", None));
+        let revision = domain.state().interactions[&InteractionId::from("old")].revision;
         let action = ActionId::new(Verb::Ans, "old", revision, None).unwrap().to_string();
-        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-new", ask("new", Some("old")));
-        let before = domain.state().unwrap().revision;
+        apply_seed_command(&*domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-new", ask("new", Some("old")));
+        let before = domain.state().revision;
         for index in 1..=67 {
-            let request = action_request(&domain, &format!("10000000-0000-4000-8000-{index:012}"), "es",
+            let request = action_request(&*domain, &format!("10000000-0000-4000-8000-{index:012}"), "es",
                 action.clone(), Some("atlas"), json!({}));
-            let reply = execute_action(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
+            let reply = execute_action(&*domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
             assert_eq!(reply["outcome"], "no_longer_available", "{reply}");
-            assert_eq!(domain.state().unwrap().revision, before);
+            assert_eq!(domain.state().revision, before);
         }
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let index = ReadIndex::build(&state);
         assert_eq!(index.waiting().iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["interaction:new"]);
         assert!(state.interactions[&InteractionId::from("old")].withdrawn);
-        assert!(!domain.store.lock().unwrap().pending_messages().unwrap().iter()
+        assert!(!domain.store().lock().unwrap().pending_messages().unwrap().iter()
             .any(|message| message.recipient_kind == "agent" && message.interaction_id.as_deref() == Some("old")));
     }
 
     /// A read of GitHub confirmed which pull request each registered one is, at its own address:
     /// what the watcher's first round leaves before anyone acts on a card.
-    fn checked_on_github(domain: &crate::domain_runtime::DomainRuntime) {
-        let state = domain.state().unwrap();
+    fn checked_on_github(domain: &dyn alondra_engine_ports::Runtime) {
+        let state = domain.state();
         for pr in state.pull_requests.values().filter(|pr| pr.is_tracked() && pr.identity.is_unverified()) {
             apply_seed_command(domain, Actor::System, &format!("checked-{}", pr.id), Command::ObservePrAddress { pr_id: pr.id.clone(),
                 read: alondra_domain_model::PrRead::Address { repository: pr.repository.clone() }, read_started_at: 1_000,
@@ -3684,7 +3679,7 @@ for line in sys.stdin:
         }
     }
 
-    fn presented_pr(domain: &crate::domain_runtime::DomainRuntime) {
+    fn presented_pr(domain: &dyn alondra_engine_ports::Runtime) {
         use alondra_domain_model::DeliveryTarget;
         let user = Actor::User { user_id: "user".into() };
         let agent = Actor::Agent { agent_id: "agent-a".into() };
@@ -3715,25 +3710,25 @@ for line in sys.stdin:
         });
     }
 
-    fn waits_for_the_user(domain: &crate::domain_runtime::DomainRuntime) -> bool {
+    fn waits_for_the_user(domain: &dyn alondra_engine_ports::Runtime) -> bool {
         !domain.read().index().waiting().is_empty()
     }
 
     #[tokio::test]
     async fn interrupting_a_node_writes_one_interrupt_down_its_connection_and_is_refused_when_it_is_gone() {
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+        apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         let interrupt = |command_id: &str| {
-            let action = ActionId::new(Verb::Interrupt, "agent-a", domain.state().unwrap().revision, None).unwrap().to_string();
-            action_request(&domain, command_id, "es", action, None, json!({}))
+            let action = ActionId::new(Verb::Interrupt, "agent-a", domain.state().revision, None).unwrap().to_string();
+            action_request(&*domain, command_id, "es", action, None, json!({}))
         };
-        let refused = execute_action(&domain, &client, &home.0, "test-device", interrupt("0b6f9a52-3c1e-4d7a-9f20-6a1b2c3d4e5f"), None, || Ok(())).await.unwrap();
+        let refused = execute_action(&*domain, &client, &home.0, "test-device", interrupt("0b6f9a52-3c1e-4d7a-9f20-6a1b2c3d4e5f"), None, || Ok(())).await.unwrap();
         assert_eq!((refused["outcome"].as_str(), refused["code"].as_str()), (Some("rejected"), Some("session_unreachable")), "{refused}");
 
         let node = crate::node_push::testing::Node::connect(domain.clone(), "agent-a");
-        let applied = execute_action(&domain, &client, &home.0, "test-device", interrupt("1c7f0b63-4d2f-4e8b-8a31-7b2c3d4e5f60"), None, || Ok(())).await.unwrap();
+        let applied = execute_action(&*domain, &client, &home.0, "test-device", interrupt("1c7f0b63-4d2f-4e8b-8a31-7b2c3d4e5f60"), None, || Ok(())).await.unwrap();
         assert_eq!((applied["outcome"].as_str(), applied["stamp"].as_str()), (Some("applied"), Some("Interrumpido")), "{applied}");
         tokio::task::yield_now().await;
         assert_eq!(node.interrupts(), 1);
@@ -3745,18 +3740,18 @@ for line in sys.stdin:
         for (verb, text, author, instruction) in [(Verb::Conflicts, None, Feedback::ALONDRA, Instruction::Conflicts),
             (Verb::AskPr, Some("Why a new table?"), "device:test-device", Instruction::Question)] {
             let (home, domain, client) = action_home();
-            presented_pr(&domain);
-            assert!(waits_for_the_user(&domain));
-            let action = ActionId::new(verb, "pr", domain.state().unwrap().revision, None).unwrap().to_string();
-            let mut request = action_request(&domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", "es", action, None, json!({}));
+            presented_pr(&*domain);
+            assert!(waits_for_the_user(&*domain));
+            let action = ActionId::new(verb, "pr", domain.state().revision, None).unwrap().to_string();
+            let mut request = action_request(&*domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", "es", action, None, json!({}));
             request.input.text = text.map(str::to_owned);
-            let applied = execute_action(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
+            let applied = execute_action(&*domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
             assert_eq!(applied["outcome"], "applied", "{applied}");
-            let state = domain.state().unwrap();
+            let state = domain.state();
             let InteractionPayload::Delivery { feedback, .. } = &state.interactions[&"result".into()].payload else { unreachable!() };
             assert_eq!(feedback.iter().map(|f| (f.user_id.as_str(), f.instruction)).collect::<Vec<_>>(), [(author, instruction)]);
             assert_eq!(state.task_handed_back(&"task".into()), Some(instruction));
-            assert!(!waits_for_the_user(&domain), "{verb:?} takes the card out of Waiting for You");
+            assert!(!waits_for_the_user(&*domain), "{verb:?} takes the card out of Waiting for You");
         }
     }
 
@@ -3764,19 +3759,19 @@ for line in sys.stdin:
     async fn asking_for_more_context_answers_the_question_so_its_card_leaves() {
         use alondra_domain_model::{Recipient, Scope, QuestionOption};
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
-        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
+        presented_pr(&*domain);
+        apply_seed_command(&*domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which API?".into(), blocking: true,
             options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None }], card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
-        let revision = domain.state().unwrap().interactions[&"question".into()].revision;
+        let revision = domain.state().interactions[&"question".into()].revision;
         let action = ActionId::new(Verb::Ctx, "question", revision, None).unwrap().to_string();
-        let mut request = action_request(&domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", "en", action, None, json!({}));
+        let mut request = action_request(&*domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", "en", action, None, json!({}));
         request.input.text = Some("the cost".into());
-        let applied = execute_action(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
+        let applied = execute_action(&*domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
         assert_eq!((applied["outcome"].as_str(), applied["stamp"].as_str()), (Some("applied"), Some("Context requested")), "{applied}");
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"question".into()].payload else { unreachable!() };
         assert_eq!(answer.inputs["text"], alondra_domain_model::InputValue::Text(context_request("the cost")));
         assert!(alondra_domain_model::ReadIndex::build(&state).waiting_card(&"question".into()).is_none());
@@ -3806,7 +3801,7 @@ for line in sys.stdin:
     #[tokio::test]
     async fn sched_save_rejects_with_the_field() {
         let (home, domain, client) = action_home();
-        let save = ActionId::new(Verb::SchedSave, "view", domain.state().unwrap().revision, None).unwrap().to_string();
+        let save = ActionId::new(Verb::SchedSave, "view", domain.state().revision, None).unwrap().to_string();
         let valid = json!({"name":"Morning", "mission":"Review work", "repeat":"daily", "time":"09:00"});
         let cases = [
             (json!({"name":"  "}), "name", "Enter a name of up to 120 characters.", "Escribe un nombre de hasta 120 caracteres."),
@@ -3821,13 +3816,13 @@ for line in sys.stdin:
             for (lang, message) in [("en", english), ("es", spanish)] {
                 let mut fields = valid.as_object().unwrap().clone();
                 fields.extend(change.as_object().unwrap().clone());
-                let request = action_request(&domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", lang, save.clone(), None, Value::Object(fields));
-                let revision = domain.state().unwrap().revision;
-                let reply = execute_action(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
+                let request = action_request(&*domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", lang, save.clone(), None, Value::Object(fields));
+                let revision = domain.state().revision;
+                let reply = execute_action(&*domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
                 assert_eq!(reply["outcome"], "rejected", "{reply}");
                 assert_eq!(reply["field"], field, "{reply}");
                 assert_eq!(reply["message"], message, "{reply}");
-                assert_eq!(domain.state().unwrap().revision, revision, "a rejected save changes nothing");
+                assert_eq!(domain.state().revision, revision, "a rejected save changes nothing");
             }
         }
     }
@@ -3867,7 +3862,7 @@ for line in sys.stdin:
 
     async fn act(
         home: &ActionHome,
-        domain: &crate::domain_runtime::DomainRuntime,
+        domain: &dyn alondra_engine_ports::Runtime,
         client: &crate::client_routes::Client,
         command_id: &str,
         action: ActionId,
@@ -3879,7 +3874,7 @@ for line in sys.stdin:
         execute_action(domain, client, &home.0, "test-device", request, None, || Ok(())).await.unwrap()
     }
 
-    fn present_again(domain: &crate::domain_runtime::DomainRuntime, interaction: &str) {
+    fn present_again(domain: &dyn alondra_engine_ports::Runtime, interaction: &str) {
         use alondra_domain_model::DeliveryTarget;
         apply_seed_command(domain, Actor::Agent { agent_id: "agent-a".into() }, interaction, Command::PresentResult {
             checklist: Vec::new(),
@@ -3889,7 +3884,7 @@ for line in sys.stdin:
         });
     }
 
-    fn presented_plan(domain: &crate::domain_runtime::DomainRuntime) {
+    fn presented_plan(domain: &dyn alondra_engine_ports::Runtime) {
         use alondra_domain_model::DeliveryTarget;
         apply_seed_command(domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 });
         apply_seed_command(domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
@@ -3911,18 +3906,18 @@ for line in sys.stdin:
     #[tokio::test]
     async fn approving_a_proposed_plan_hands_it_on_and_an_old_only_archive_button_closes_nothing() {
         let (home, domain, client) = action_home();
-        presented_plan(&domain);
-        let id = ActionId::new(Verb::Accept, "result", domain.state().unwrap().revision, Some("archive".into())).unwrap();
-        let reply = act(&home, &domain, &client, FIRST, id, None, None).await;
+        presented_plan(&*domain);
+        let id = ActionId::new(Verb::Accept, "result", domain.state().revision, Some("archive".into())).unwrap();
+        let reply = act(&home, &*domain, &client, FIRST, id, None, None).await;
         assert_ne!(reply["outcome"], "applied", "{reply}");
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert!(matches!(&state.interactions[&"result".into()].payload, InteractionPayload::Delivery { acceptance: None, .. }));
         assert!(!state.requests.contains_key(&"implement-result".into()));
 
         let id = ActionId::new(Verb::Accept, "result", state.revision, Some("implement".into())).unwrap();
-        let reply = act(&home, &domain, &client, FIRST, id, None, None).await;
+        let reply = act(&home, &*domain, &client, FIRST, id, None, None).await;
         assert_eq!(reply["outcome"], "applied", "{reply}");
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert!(matches!(&state.interactions[&"result".into()].payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid));
         assert!(state.requests.contains_key(&"implement-result".into()));
     }
@@ -3930,36 +3925,36 @@ for line in sys.stdin:
     #[tokio::test]
     async fn a_plain_accept_never_decides_a_result_that_proposes_a_plan() {
         let (home, domain, client) = action_home();
-        presented_plan(&domain);
-        let id = ActionId::new(Verb::Accept, "result", domain.state().unwrap().revision, None).unwrap();
-        let reply = act(&home, &domain, &client, FIRST, id, None, None).await;
+        presented_plan(&*domain);
+        let id = ActionId::new(Verb::Accept, "result", domain.state().revision, None).unwrap();
+        let reply = act(&home, &*domain, &client, FIRST, id, None, None).await;
         assert_ne!(reply["outcome"], "applied", "{reply}");
-        assert!(matches!(&domain.state().unwrap().interactions[&"result".into()].payload, InteractionPayload::Delivery { acceptance: None, .. }));
+        assert!(matches!(&domain.state().interactions[&"result".into()].payload, InteractionPayload::Delivery { acceptance: None, .. }));
     }
 
     #[tokio::test]
     async fn changes_on_a_pr_apply_to_its_current_delivery_after_three_redeliveries() {
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
-        let seen = domain.state().unwrap().revision;
+        presented_pr(&*domain);
+        let seen = domain.state().revision;
         let first_card = ActionId::new(Verb::Changes, "pr", seen, Some("01234567".into())).unwrap();
-        present_again(&domain, "result-2");
-        present_again(&domain, "result-3");
-        present_again(&domain, "result-4");
-        let current = ActionId::new(Verb::Changes, "pr", domain.state().unwrap().revision, Some("01234567".into())).unwrap();
+        present_again(&*domain, "result-2");
+        present_again(&*domain, "result-3");
+        present_again(&*domain, "result-4");
+        let current = ActionId::new(Verb::Changes, "pr", domain.state().revision, Some("01234567".into())).unwrap();
         for (command_id, action) in [(FIRST, first_card), (SECOND, current)] {
-            let reply = act(&home, &domain, &client, command_id, action, None, Some("Rename the table")).await;
+            let reply = act(&home, &*domain, &client, command_id, action, None, Some("Rename the table")).await;
             assert_eq!(reply["outcome"], "applied", "{reply}");
-            let state = domain.state().unwrap();
+            let state = domain.state();
             let final_delivery = state.tasks[&"task".into()].final_presentation.clone().unwrap();
             let InteractionPayload::Delivery { feedback, .. } = &state.interactions[&final_delivery].payload else { unreachable!() };
             assert!(!feedback.is_empty(), "the changes reached the delivery the task has now");
-            present_again(&domain, &format!("again-{}", &command_id[..4]));
+            present_again(&*domain, &format!("again-{}", &command_id[..4]));
         }
     }
 
     /// A task with two PRs in two repositories, both in its final delivery, `result`.
-    fn presented_two_prs(domain: &crate::domain_runtime::DomainRuntime) -> (PrId, PrId) {
+    fn presented_two_prs(domain: &dyn alondra_engine_ports::Runtime) -> (PrId, PrId) {
         apply_seed_command(domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 });
         let agent = Actor::Agent { agent_id: "agent-a".into() };
         apply_seed_command(domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
@@ -3992,12 +3987,12 @@ for line in sys.stdin:
     #[tokio::test]
     async fn a_merge_on_a_delivery_of_several_prs_merges_the_pr_it_names() {
         let (home, domain, client) = action_home();
-        let (_, site) = presented_two_prs(&domain);
-        let revision = domain.state().unwrap().revision;
+        let (_, site) = presented_two_prs(&*domain);
+        let revision = domain.state().revision;
         let id = ActionId::new(Verb::Merge, &site.0, revision, Some("fedcba98-result".into())).unwrap();
-        let merged = act(&home, &domain, &client, FIRST, id, None, None).await;
+        let merged = act(&home, &*domain, &client, FIRST, id, None, None).await;
         assert_eq!(merged["outcome"], "applied", "{merged}");
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let authorized: Vec<_> = state.merge_authorizations.values().map(|a| (a.pr_id.clone(), a.head.as_str())).collect();
         assert_eq!(authorized, [(site, "fedcba9876543210")], "the PR the button names, at the commit presented");
     }
@@ -4005,35 +4000,35 @@ for line in sys.stdin:
     #[tokio::test]
     async fn a_merge_confirmed_over_an_unanswered_message_merges_and_records_it() {
         let (home, domain, client) = action_home();
-        let (_, site) = presented_two_prs(&domain);
-        apply_seed_command(&domain, Actor::System, "message", Command::TellNode {
+        let (_, site) = presented_two_prs(&*domain);
+        apply_seed_command(&*domain, Actor::System, "message", Command::TellNode {
             task_id: "task".into(), text: "Rename the button too".into(), from_user: true, answers: None,
         });
-        let revision = domain.state().unwrap().revision;
+        let revision = domain.state().revision;
         let unconfirmed = ActionId::new(Verb::Merge, &site.0, revision, Some("fedcba98-result".into())).unwrap();
-        let refused = act(&home, &domain, &client, FIRST, unconfirmed, None, None).await;
+        let refused = act(&home, &*domain, &client, FIRST, unconfirmed, None, None).await;
         assert_ne!(refused["outcome"], "applied", "{refused}");
-        assert!(domain.state().unwrap().merge_authorizations.is_empty());
-        let revision = domain.state().unwrap().revision;
+        assert!(domain.state().merge_authorizations.is_empty());
+        let revision = domain.state().revision;
         let confirmed = ActionId::new(Verb::Merge, &site.0, revision,
             Some(format!("{}fedcba98-result", alondra_view_model::action_id::MERGE_ANYWAY))).unwrap();
-        let merged = act(&home, &domain, &client, FIRST, confirmed, None, None).await;
+        let merged = act(&home, &*domain, &client, FIRST, confirmed, None, None).await;
         assert_eq!(merged["outcome"], "applied", "{merged}");
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert!(state.merge_authorizations.values().all(|a| a.pr_id == site && a.despite_pending_message), "{:?}", state.merge_authorizations);
     }
 
     #[test]
     fn a_final_delivery_of_three_prs_reaches_the_inbox_as_three_cards_and_one_notice() {
         let (_home, domain, _client) = action_home();
-        let (app, site) = presented_two_prs(&domain);
+        let (app, site) = presented_two_prs(&*domain);
         let docs = alondra_domain_model::hosted_pr_id("github.com", "me/docs", 3);
         let agent = Actor::Agent { agent_id: "agent-a".into() };
-        apply_seed_command(&domain, agent.clone(), "docs", Command::RegisterPr {
+        apply_seed_command(&*domain, agent.clone(), "docs", Command::RegisterPr {
             task_id: "task".into(), pr_id: docs.clone(), host: "github.com".into(), repository: "me/docs".into(),
             number: 3, head: "abcdefabcdefabcd".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
         });
-        apply_seed_command(&domain, agent, "present-again", Command::PresentResult {
+        apply_seed_command(&*domain, agent, "present-again", Command::PresentResult {
             checklist: Vec::new(), attachments: vec![], task_id: "task".into(), interaction_id: "result-2".into(), body: "Ready".into(),
             targets: vec![alondra_domain_model::DeliveryTarget::PullRequest { pr_id: app.clone(), head: String::new() }],
             is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
@@ -4053,20 +4048,20 @@ for line in sys.stdin:
         let (home, domain, client) = action_home();
         let github = std::sync::Arc::new(ClosesPrs(Default::default(), None, None, None));
         client.use_github(github.clone());
-        let (app, site) = presented_two_prs(&domain);
-        let close = |pr: &PrId| ActionId::new(Verb::CloseUnmerged, &pr.0, domain.state().unwrap().revision, None).unwrap();
-        let reply = act(&home, &domain, &client, FIRST, close(&site), None, None).await;
+        let (app, site) = presented_two_prs(&*domain);
+        let close = |pr: &PrId| ActionId::new(Verb::CloseUnmerged, &pr.0, domain.state().revision, None).unwrap();
+        let reply = act(&home, &*domain, &client, FIRST, close(&site), None, None).await;
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert_eq!(reply["result"]["title"], "PR #6 cerrada sin hacer merge.");
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert_eq!(state.pull_requests[&site].state, alondra_domain_model::PrState::Closed, "recorded at once, before the watcher's round");
         assert_eq!(state.pull_requests[&app].state, alondra_domain_model::PrState::Open);
         assert!(!state.tasks[&"task".into()].over(), "the other PR still waits on its card");
         assert_eq!(github.0.lock().unwrap().iter().map(|(number, _)| *number).collect::<Vec<_>>(), [6]);
 
-        let reply = act(&home, &domain, &client, SECOND, close(&app), None, None).await;
+        let reply = act(&home, &*domain, &client, SECOND, close(&app), None, None).await;
         assert_eq!(reply["outcome"], "applied", "{reply}");
-        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled(), "nothing merged and nothing left open");
+        assert!(domain.state().tasks[&"task".into()].cancelled(), "nothing merged and nothing left open");
     }
 
     /// The domain state alone, as the commands leave it: what storage cannot keep yet is still there.
@@ -4229,15 +4224,15 @@ for line in sys.stdin:
     #[tokio::test]
     async fn a_merge_method_the_pr_does_not_allow_is_refused_saying_which_it_does() {
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
-        let revision = domain.state().unwrap().revision;
+        presented_pr(&*domain);
+        let revision = domain.state().revision;
         let id = |rev| ActionId::new(Verb::Merge, "result", rev, Some("01234567-result".into())).unwrap();
-        let refused = act(&home, &domain, &client, FIRST, id(revision), Some("merge"), None).await;
+        let refused = act(&home, &*domain, &client, FIRST, id(revision), Some("merge"), None).await;
         assert_eq!(refused["outcome"], "rejected", "{refused}");
         assert_eq!(refused["message"], "Esta PR solo admite: squash.");
         assert_eq!(refused["result"]["kind"], "refused");
-        assert_eq!(domain.state().unwrap().revision, revision, "nothing was authorized");
-        let preset = act(&home, &domain, &client, SECOND, id(revision), None, None).await;
+        assert_eq!(domain.state().revision, revision, "nothing was authorized");
+        let preset = act(&home, &*domain, &client, SECOND, id(revision), None, None).await;
         assert_eq!(preset["outcome"], "applied", "a PR with one method needs no choice: {preset}");
         assert_eq!(preset["result"]["kind"], "started");
     }
@@ -4245,27 +4240,27 @@ for line in sys.stdin:
     #[tokio::test]
     async fn merging_an_accepted_task_presses_again_while_it_waits_and_is_told_when_the_merge_is_in_flight() {
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
-        let revision = domain.state().unwrap().revision;
+        presented_pr(&*domain);
+        let revision = domain.state().revision;
         let accept = ActionId::new(Verb::Accept, "result", revision, None).unwrap();
-        assert_eq!(act(&home, &domain, &client, FIRST, accept, None, None).await["outcome"], "applied");
-        let state = domain.state().unwrap();
+        assert_eq!(act(&home, &*domain, &client, FIRST, accept, None, None).await["outcome"], "applied");
+        let state = domain.state();
         assert_eq!(state.tasks[&"task".into()].state, alondra_domain_model::TaskState::WaitingDependency);
         assert!(crate::domain_merges::due(&state).iter().any(|item| item.pr.id.0 == "pr" && item.method == MergeMethod::Squash),
             "accepting already queued the merge");
         // Alondra has not claimed it yet (it waits for the checks): pressing again makes it look now.
         let merge = ActionId::new(Verb::Merge, "result", state.revision, Some("01234567-result".into())).unwrap();
-        let waiting = act(&home, &domain, &client, SECOND, merge.clone(), Some("squash"), None).await;
+        let waiting = act(&home, &*domain, &client, SECOND, merge.clone(), Some("squash"), None).await;
         assert_eq!(waiting["outcome"], "applied", "{waiting}");
         assert_eq!(waiting["result"]["kind"], "started");
         // Once GitHub has been asked (the attempt is claimed) there is nothing to press: it says so.
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let authorization = state.merge_authorizations.values().find(|a| a.valid).unwrap().id.clone();
-        apply_seed_command(&domain, Actor::System, "claim", Command::ClaimMergeAuthorization {
+        apply_seed_command(&*domain, Actor::System, "claim", Command::ClaimMergeAuthorization {
             authorization_id: authorization, remote_head: "0123456789abcdef".into(), remote_base: "main".into(), base_verified: true,
         });
-        let again = ActionId::new(Verb::Merge, "result", domain.state().unwrap().revision, Some("01234567-result".into())).unwrap();
-        let in_flight = act(&home, &domain, &client, "9b2e4d6f-1a3c-4e5b-8f70-a1b2c3d4e5f6", again, Some("squash"), None).await;
+        let again = ActionId::new(Verb::Merge, "result", domain.state().revision, Some("01234567-result".into())).unwrap();
+        let in_flight = act(&home, &*domain, &client, "9b2e4d6f-1a3c-4e5b-8f70-a1b2c3d4e5f6", again, Some("squash"), None).await;
         assert_eq!(in_flight["result"]["kind"], "refused", "{in_flight}");
         assert_eq!(in_flight["message"], "Alondra ya está haciendo merge de la PR #7; espera a que GitHub lo confirme.");
     }
@@ -4273,46 +4268,46 @@ for line in sys.stdin:
     #[tokio::test]
     async fn a_second_merge_while_the_checks_wait_makes_the_merger_look_at_the_pr_at_once() {
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
+        presented_pr(&*domain);
         let github = crate::domain_merges::FakeGithub::new();
         github.open(7, "0123456789abcdef", crate::domain_merges::Checks::Pending);
         github.required.lock().unwrap().insert(7, Ok(vec!["build".into()]));
-        let accept = ActionId::new(Verb::Accept, "result", domain.state().unwrap().revision, None).unwrap();
-        act(&home, &domain, &client, FIRST, accept, None, None).await;
+        let accept = ActionId::new(Verb::Accept, "result", domain.state().revision, None).unwrap();
+        act(&home, &*domain, &client, FIRST, accept, None, None).await;
         let mut merger = crate::domain_merges::Merger::with(std::time::Duration::from_secs(3600), std::time::Duration::from_secs(3600));
-        assert!(merger.merge_due(&domain, &github).await.unwrap(), "the required check is pending: it waits");
+        assert!(merger.merge_due(domain.kernel(), &github).await.unwrap(), "the required check is pending: it waits");
         github.open(7, "0123456789abcdef", crate::domain_merges::Checks::Passed);
-        assert!(merger.merge_due(&domain, &github).await.unwrap(), "and keeps waiting out its poll");
-        let merge = ActionId::new(Verb::Merge, "result", domain.state().unwrap().revision, Some("01234567-result".into())).unwrap();
-        let pressed = act(&home, &domain, &client, SECOND, merge, Some("squash"), None).await;
+        assert!(merger.merge_due(domain.kernel(), &github).await.unwrap(), "and keeps waiting out its poll");
+        let merge = ActionId::new(Verb::Merge, "result", domain.state().revision, Some("01234567-result".into())).unwrap();
+        let pressed = act(&home, &*domain, &client, SECOND, merge, Some("squash"), None).await;
         assert_eq!(pressed["outcome"], "applied", "{pressed}");
-        merger.merge_due(&domain, &github).await.unwrap();
+        merger.merge_due(domain.kernel(), &github).await.unwrap();
         assert_eq!(github.merged.lock().unwrap().len(), 1, "pressing again merged it without waiting for the next poll");
     }
 
     #[tokio::test]
     async fn merging_from_an_old_card_whose_pr_got_new_commits_is_refused_not_offered_again() {
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
-        let old_card = ActionId::new(Verb::Merge, "result", domain.state().unwrap().revision, Some("01234567-result".into())).unwrap();
+        presented_pr(&*domain);
+        let old_card = ActionId::new(Verb::Merge, "result", domain.state().revision, Some("01234567-result".into())).unwrap();
         let moved = "fedcba9876543210";
-        apply_seed_command(&domain, Actor::System, "observed", Command::ObservePrState {
+        apply_seed_command(&*domain, Actor::System, "observed", Command::ObservePrState {
             pr_id: "pr".into(), head: moved.into(), base: "main".into(),
             state: alondra_domain_model::PrState::Open, merged_head: None,
         });
-        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "present-moved", Command::PresentResult {
+        apply_seed_command(&*domain, Actor::Agent { agent_id: "agent-a".into() }, "present-moved", Command::PresentResult {
             checklist: Vec::new(),
             attachments: vec![], task_id: "task".into(), interaction_id: "result-2".into(), body: "Pushed again".into(),
             targets: vec![alondra_domain_model::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: moved.into() }],
             is_final: true, nothing_to_review: false, card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true),
         });
-        let revision = domain.state().unwrap().revision;
-        let reply = act(&home, &domain, &client, FIRST, old_card, Some("squash"), None).await;
+        let revision = domain.state().revision;
+        let reply = act(&home, &*domain, &client, FIRST, old_card, Some("squash"), None).await;
         assert_eq!(reply["outcome"], "no_longer_available", "{reply}");
         assert_eq!(reply["result"]["kind"], "refused", "never \"send anyway\": {reply}");
         assert!(reply["result"].get("next").is_none(), "{reply}");
         assert_eq!(reply["message"], "Hay un resultado más nuevo: revísalo.");
-        assert_eq!(domain.state().unwrap().revision, revision, "nothing was authorized");
+        assert_eq!(domain.state().revision, revision, "nothing was authorized");
     }
 
     #[tokio::test]
@@ -4325,10 +4320,10 @@ for line in sys.stdin:
         ] {
             let (home, domain, client) = action_home();
             client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), Some(error), None, Some(state))));
-            presented_pr(&domain);
-            let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
-            let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
-            let state = domain.state().unwrap();
+            presented_pr(&*domain);
+            let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().revision, None).unwrap();
+            let reply = act(&home, &*domain, &client, FIRST, close, None, None).await;
+            let state = domain.state();
             assert_eq!(state.tasks[&"task".into()].cancelled(), cancelled, "{reply}");
             let said = if cancelled { reply["result"]["title"].clone() } else { reply["message"].clone() };
             assert_eq!(said, title, "{error} with GitHub saying {state:?}: {reply}");
@@ -4339,18 +4334,18 @@ for line in sys.stdin:
     async fn replying_to_a_question_answers_it_with_its_own_words() {
         use alondra_domain_model::{Recipient, Scope, QuestionOption};
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
-        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
+        presented_pr(&*domain);
+        apply_seed_command(&*domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which API?".into(), blocking: true,
             options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None }],
             card: alondra_domain_model::CardSpec::derived(alondra_domain_model::CardKind::Provide, "Answer the question"),
         });
-        let revision = domain.state().unwrap().interactions[&"question".into()].revision;
+        let revision = domain.state().interactions[&"question".into()].revision;
         let reply = ActionId::new(Verb::Reply, "question", revision, None).unwrap();
-        let applied = act(&home, &domain, &client, FIRST, reply, None, Some("Neither: keep the old one")).await;
+        let applied = act(&home, &*domain, &client, FIRST, reply, None, Some("Neither: keep the old one")).await;
         assert_eq!(applied["outcome"], "applied", "{applied}");
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"question".into()].payload else {
             panic!("the reply answered the question: {applied}")
         };
@@ -4364,18 +4359,18 @@ for line in sys.stdin:
     async fn a_reply_to_the_orchestrators_information_reads_it_and_reaches_the_orchestrator() {
         use alondra_domain_model::{CardKind, CardSpec, Recipient, Scope};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "notice", Command::PublishInformation {
+        apply_seed_command(&*domain, Actor::Orchestrator { generation: 0 }, "notice", Command::PublishInformation {
             attachments: vec![], interaction_id: "notice".into(), scope: Scope::Orchestrator { request_id: None },
             recipient: Recipient::User, body: "The weekly report is ready.".into(),
             card: CardSpec::derived(CardKind::Know, "Read the weekly report"),
         });
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert!(alondra_domain_model::ReadIndex::build(&state).waiting_card(&"notice".into()).is_some());
         let reply = ActionId::new(Verb::Reply, "notice", state.interactions[&"notice".into()].revision, None).unwrap();
         assert!(alondra_view_model::resolves_card(&state, &reply), "the client takes the card out as it sends the reply");
-        let applied = act(&home, &domain, &client, FIRST, reply, None, Some("Why so late?")).await;
+        let applied = act(&home, &*domain, &client, FIRST, reply, None, Some("Why so late?")).await;
         assert_eq!(applied["outcome"], "applied", "{applied}");
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert!(alondra_domain_model::ReadIndex::build(&state).waiting_card(&"notice".into()).is_none(), "the reply read the notice");
         let request = state.requests.values().find(|request| request.reply_to.is_some()).expect("the reply is a request to the orchestrator");
         assert_eq!(request.body, "Why so late?");
@@ -4393,26 +4388,26 @@ for line in sys.stdin:
             (Actor::Agent { agent_id: "agent-a".into() }, Scope::Task { task_id: "task".into() }, "agent"),
         ] {
             let (home, domain, client) = action_home();
-            presented_pr(&domain);
-            apply_seed_command(&domain, asker, "ask", Command::AskQuestion {
+            presented_pr(&*domain);
+            apply_seed_command(&*domain, asker, "ask", Command::AskQuestion {
                 attachments: vec![], interaction_id: "decide".into(), scope, recipient: Recipient::User,
                 body: "Who fixes the memory pauses?".into(), blocking: false, options: vec![option("mine"), option("new_task")],
                 card: CardSpec::derived(CardKind::Decide, "Decide who fixes the memory pauses"),
             });
-            let requests = domain.state().unwrap().requests.len();
-            let revision = domain.state().unwrap().interactions[&"decide".into()].revision;
+            let requests = domain.state().requests.len();
+            let revision = domain.state().interactions[&"decide".into()].revision;
             let reply = ActionId::new(Verb::Reply, "decide", revision, None).unwrap();
-            assert!(alondra_view_model::resolves_card(&domain.state().unwrap(), &reply), "{recipient_kind}: the card leaves the queue");
-            let applied = act(&home, &domain, &client, FIRST, reply, None, Some("Hazlo tú")).await;
+            assert!(alondra_view_model::resolves_card(&domain.state(), &reply), "{recipient_kind}: the card leaves the queue");
+            let applied = act(&home, &*domain, &client, FIRST, reply, None, Some("Hazlo tú")).await;
             assert_eq!(applied["outcome"], "applied", "{recipient_kind}: {applied}");
             assert_eq!(applied["stamp"], "Respondiste · Hazlo tú", "{recipient_kind}: {applied}");
-            let state = domain.state().unwrap();
+            let state = domain.state();
             let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"decide".into()].payload else {
                 panic!("{recipient_kind}: the words answered the card: {applied}")
             };
             assert_eq!(answer.inputs["text"], alondra_domain_model::InputValue::Text("Hazlo tú".into()));
             assert_eq!(state.requests.len(), requests, "{recipient_kind}: no loose request");
-            let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            let message = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
                 .find(|message| message.interaction_id.as_deref() == Some("decide") && message.recipient_kind == recipient_kind)
                 .unwrap_or_else(|| panic!("{recipient_kind} is told the card was answered"));
             let told = crate::domain_transport::render(&state, &message);
@@ -4445,28 +4440,28 @@ for line in sys.stdin:
         use alondra_core::secret_destination::SecretDestination;
         const SECRET: &str = "sk_live_never_in_the_domain_42";
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
+        presented_pr(&*domain);
         let root = crate::test_support::Directory::new();
         let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "secret");
         let main = root.join("repo");
         std::fs::write(main.join(".git/info/exclude"), ".env\n").unwrap();
-        apply_seed_command(&domain, Actor::System, "worktree", Command::RecordTaskWorktree {
+        apply_seed_command(&*domain, Actor::System, "worktree", Command::RecordTaskWorktree {
             task_id: "task".into(), path: worktree.to_str().unwrap().into(), origin: WorktreeOrigin::Task, branch: None });
         let destination = SecretDestination { file: ".env".into(), variable: "STRIPE_KEY".into() };
         let not_ignored = SecretDestination { file: "config.env".into(), variable: "STRIPE_KEY".into() };
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let refused = domain.ports().worktrees().secret_refusal(&state, "agent-a", &"task".into(), &not_ignored).expect("a file git keeps is refused");
         assert!(refused.message.contains("does not ignore"), "{}", refused.message);
         assert!(domain.ports().worktrees().secret_refusal(&state, "agent-a", &"task".into(), &destination).is_none());
-        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-secret", Command::AskQuestion {
+        apply_seed_command(&*domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-secret", Command::AskQuestion {
             attachments: vec![], interaction_id: "secret".into(), scope: Scope::Task { task_id: "task".into() }, recipient: Recipient::User,
             body: "Send the Stripe key".into(), blocking: false,
             options: vec![QuestionOption { id: "skip".into(), label: "I can't provide it".into(), description: None }],
             card: CardSpec { secret_destination: Some(destination), ..CardSpec::new(CardKind::Provide, "Send the Stripe key").why("The payments test needs it") },
         });
-        let revision = domain.state().unwrap().interactions[&"secret".into()].revision;
+        let revision = domain.state().interactions[&"secret".into()].revision;
         let reply = ActionId::new(Verb::Reply, "secret", revision, None).unwrap();
-        let applied = act(&home, &domain, &client, FIRST, reply, None, Some(SECRET)).await;
+        let applied = act(&home, &*domain, &client, FIRST, reply, None, Some(SECRET)).await;
         assert_eq!(applied["outcome"], "applied", "{applied}");
         assert!(!applied.to_string().contains(SECRET), "{applied}");
         for checkout in [&worktree, &main] {
@@ -4474,10 +4469,10 @@ for line in sys.stdin:
             assert_eq!(std::fs::read_to_string(&env).unwrap(), format!("STRIPE_KEY={SECRET}\n"), "{}", env.display());
             assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&env).unwrap().permissions()) & 0o777, 0o600);
         }
-        let state = domain.state().unwrap();
+        let state = domain.state();
         let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"secret".into()].payload else { panic!("unanswered") };
         assert_eq!(answer.inputs["text"], alondra_domain_model::InputValue::Text("STRIPE_KEY written to .env".into()));
-        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        let message = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("secret")).expect("the node is told");
         let told = crate::domain_transport::render(&state, &message);
         assert!(told.ends_with("STRIPE_KEY written to .env") && !told.contains(SECRET), "{told}");
@@ -4513,15 +4508,15 @@ for line in sys.stdin:
             request.input.text = text.map(str::to_owned);
             request
         };
-        let reply = execute_action(&domain, &client, &home, "test-device", request(Verb::ProviderConnect, "antigravity", None, None, None), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", request(Verb::ProviderConnect, "antigravity", None, None, None), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
-        let reply = execute_action(&domain, &client, &home, "test-device", request(Verb::AccountAdd, "antigravity", None, Some("api_key"), Some("Studio")), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", request(Verb::AccountAdd, "antigravity", None, Some("api_key"), Some("Studio")), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         let studio = AccountKey::new(Provider::Antigravity, AccountId::parse("studio").unwrap());
         let folder = alondra_core::accounts::provider_folder(&home, &studio).unwrap();
         assert!(folder.is_dir(), "the named account has its folder");
 
-        let reply = execute_action(&domain, &client, &home, "test-device", request(Verb::AccountCredential, "studio", Some("antigravity"), None, Some(SECRET)), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", request(Verb::AccountCredential, "studio", Some("antigravity"), None, Some(SECRET)), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert!(!reply.to_string().contains(SECRET), "{reply}");
         let file = folder.join(alondra_core::antigravity_account::KEY_FILE);
@@ -4541,12 +4536,12 @@ for line in sys.stdin:
         assert!(!screen.contains(SECRET), "the accounts reply never shows it");
         assert_eq!(files_holding(&home, SECRET.as_bytes()), vec![file.clone()], "no other file of Alondra's holds the key");
 
-        let reply = execute_action(&domain, &client, &home, "test-device", request(Verb::AccountCredential, "studio", Some("antigravity"), Some("clear"), None), None, || Ok(())).await.unwrap();
+        let reply = execute_action(&*domain, &client, &home, "test-device", request(Verb::AccountCredential, "studio", Some("antigravity"), Some("clear"), None), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert!(!file.exists());
         let state = domain.state().unwrap();
         assert!(!state.accounts.iter().find(|account| account.id == studio.account).unwrap().antigravity.as_ref().unwrap().key_set);
-        let default = execute_action(&domain, &client, &home, "test-device", request(Verb::AccountCredential, "default", Some("antigravity"), None, Some(SECRET)), None, || Ok(())).await.unwrap();
+        let default = execute_action(&*domain, &client, &home, "test-device", request(Verb::AccountCredential, "default", Some("antigravity"), None, Some(SECRET)), None, || Ok(())).await.unwrap();
         assert_eq!(default["outcome"], "rejected", "the default account is agy's own sign-in: {default}");
         assert!(!default.to_string().contains(SECRET), "{default}");
         assert_eq!(files_holding(&home, SECRET.as_bytes()), Vec::<std::path::PathBuf>::new());
@@ -4558,24 +4553,24 @@ for line in sys.stdin:
     async fn a_secret_whose_file_git_no_longer_ignores_is_refused_and_written_nowhere() {
         use alondra_domain_model::{CardKind, CardSpec, Recipient, Scope, WorktreeOrigin};
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
+        presented_pr(&*domain);
         let root = crate::test_support::Directory::new();
         let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "secret");
-        apply_seed_command(&domain, Actor::System, "worktree", Command::RecordTaskWorktree {
+        apply_seed_command(&*domain, Actor::System, "worktree", Command::RecordTaskWorktree {
             task_id: "task".into(), path: worktree.to_str().unwrap().into(), origin: WorktreeOrigin::Task, branch: None });
         let destination = alondra_core::secret_destination::SecretDestination { file: ".env".into(), variable: "STRIPE_KEY".into() };
-        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-secret", Command::AskQuestion {
+        apply_seed_command(&*domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-secret", Command::AskQuestion {
             attachments: vec![], interaction_id: "secret".into(), scope: Scope::Task { task_id: "task".into() }, recipient: Recipient::User,
             body: "Send the Stripe key".into(), blocking: false,
             options: vec![alondra_domain_model::QuestionOption { id: "skip".into(), label: "I can't provide it".into(), description: None }],
             card: CardSpec { secret_destination: Some(destination), ..CardSpec::new(CardKind::Provide, "Send the Stripe key").why("The payments test needs it") },
         });
-        let revision = domain.state().unwrap().interactions[&"secret".into()].revision;
+        let revision = domain.state().interactions[&"secret".into()].revision;
         let reply = ActionId::new(Verb::Reply, "secret", revision, None).unwrap();
-        let refused = act(&home, &domain, &client, FIRST, reply, None, Some("sk_live_1")).await;
+        let refused = act(&home, &*domain, &client, FIRST, reply, None, Some("sk_live_1")).await;
         assert_eq!((refused["outcome"].as_str(), refused["field"].as_str()), (Some("rejected"), Some("text")), "{refused}");
         assert!(!worktree.join(".env").exists() && !root.join("repo/.env").exists());
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert!(matches!(&state.interactions[&"secret".into()].payload, InteractionPayload::Question { answer: None, .. }));
     }
 
@@ -4584,38 +4579,38 @@ for line in sys.stdin:
         let (home, domain, client) = action_home();
         let github = std::sync::Arc::new(ClosesPrs(Default::default(), None, None, None));
         client.use_github(github.clone());
-        presented_pr(&domain);
-        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
-        let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
+        presented_pr(&*domain);
+        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().revision, None).unwrap();
+        let reply = act(&home, &*domain, &client, FIRST, close, None, None).await;
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert_eq!(*github.0.lock().unwrap(), [(7, "Cancelled in Alondra: Task".to_owned())], "closed with the reason, as every PR Alondra closes");
-        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled());
+        assert!(domain.state().tasks[&"task".into()].cancelled());
     }
 
     #[tokio::test]
     async fn closing_a_pr_when_github_does_not_answer_keeps_the_task_and_hides_the_raw_error() {
         let (home, domain, client) = action_home();
         client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), Some("GitHub is down: raw gh error"), None, None)));
-        presented_pr(&domain);
-        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
-        let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
+        presented_pr(&*domain);
+        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().revision, None).unwrap();
+        let reply = act(&home, &*domain, &client, FIRST, close, None, None).await;
         assert_eq!(reply["result"]["kind"], "failed", "{reply}");
         assert_eq!(reply["message"], "Alondra no pudo contactar con GitHub. No cambió nada; inténtalo de nuevo.");
         assert!(!reply.to_string().contains("raw gh error"), "{reply}");
-        assert!(!domain.state().unwrap().tasks[&"task".into()].cancelled());
+        assert!(!domain.state().tasks[&"task".into()].cancelled());
     }
 
     #[tokio::test]
     async fn closing_cancels_the_task_as_it_is_after_a_change_during_the_close() {
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
+        presented_pr(&*domain);
         let moved = domain.clone();
         client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), None,
-            Some(Box::new(move || present_again(&moved, "result-2"))), None)));
-        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
-        let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
+            Some(Box::new(move || present_again(&*moved, "result-2"))), None)));
+        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().revision, None).unwrap();
+        let reply = act(&home, &*domain, &client, FIRST, close, None, None).await;
         assert_eq!(reply["outcome"], "applied", "the task moved while GitHub answered and is still cancelled: {reply}");
-        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled());
+        assert!(domain.state().tasks[&"task".into()].cancelled());
     }
 
     #[tokio::test]
@@ -4623,15 +4618,15 @@ for line in sys.stdin:
         let (home, domain, client) = action_home();
         let github = std::sync::Arc::new(ClosesPrs(Default::default(), None, None, None));
         client.use_github(github.clone());
-        presented_pr(&domain);
-        apply_seed_command(&domain, Actor::System, "closed-on-github", Command::ObservePrState {
+        presented_pr(&*domain);
+        apply_seed_command(&*domain, Actor::System, "closed-on-github", Command::ObservePrState {
             pr_id: "pr".into(), head: "0123456789abcdef".into(), base: "main".into(),
             state: alondra_domain_model::PrState::Closed, merged_head: None,
         });
-        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled(), "nothing is left to review");
+        assert!(domain.state().tasks[&"task".into()].cancelled(), "nothing is left to review");
         assert!(domain.read().index().cards().is_empty());
-        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
-        let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
+        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().revision, None).unwrap();
+        let reply = act(&home, &*domain, &client, FIRST, close, None, None).await;
         assert_eq!(reply["result"]["kind"], "refused", "{reply}");
         assert!(github.0.lock().unwrap().is_empty(), "nothing to close on GitHub");
     }
@@ -4639,51 +4634,51 @@ for line in sys.stdin:
     #[tokio::test]
     async fn accepting_or_merging_from_an_old_card_never_takes_a_newer_delivery() {
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
-        let seen = domain.state().unwrap().revision;
+        presented_pr(&*domain);
+        let seen = domain.state().revision;
         let accept_old = ActionId::new(Verb::Accept, "result", seen, None).unwrap();
         let merge_old = ActionId::new(Verb::Merge, "result", seen, Some("01234567-result".into())).unwrap();
-        present_again(&domain, "result-2");
-        let revision = domain.state().unwrap().revision;
+        present_again(&*domain, "result-2");
+        let revision = domain.state().revision;
         for (command_id, action, option) in [(FIRST, accept_old, None), (SECOND, merge_old, Some("squash"))] {
-            let reply = act(&home, &domain, &client, command_id, action, option, None).await;
+            let reply = act(&home, &*domain, &client, command_id, action, option, None).await;
             assert_eq!(reply["result"]["kind"], "refused", "{reply}");
             assert_eq!(reply["message"], "Hay un resultado más nuevo: revísalo.");
         }
-        let state = domain.state().unwrap();
+        let state = domain.state();
         assert_eq!(state.revision, revision, "nothing was accepted or authorized");
         assert!(state.merge_authorizations.is_empty());
         let accept_new = ActionId::new(Verb::Accept, "result-2", state.revision, None).unwrap();
-        let reply = act(&home, &domain, &client, "9b2e4d6f-1a3c-4e5b-8f70-a1b2c3d4e5f6", accept_new, None, None).await;
+        let reply = act(&home, &*domain, &client, "9b2e4d6f-1a3c-4e5b-8f70-a1b2c3d4e5f6", accept_new, None, None).await;
         assert_eq!(reply["outcome"], "applied", "the delivery the user saw can be accepted: {reply}");
     }
 
     #[tokio::test]
     async fn changes_from_a_card_whose_pr_got_new_commits_ask_before_sending() {
         let (home, domain, client) = action_home();
-        presented_pr(&domain);
-        let seen = domain.state().unwrap().revision;
+        presented_pr(&*domain);
+        let seen = domain.state().revision;
         let old_card = ActionId::new(Verb::Changes, "pr", seen, Some("deadbeef".into())).unwrap();
-        let reply = act(&home, &domain, &client, FIRST, old_card, None, Some("Rename the table")).await;
+        let reply = act(&home, &*domain, &client, FIRST, old_card, None, Some("Rename the table")).await;
         assert_eq!(reply["outcome"], "changed", "{reply}");
         assert_eq!(reply["result"]["kind"], "changed");
         assert_eq!(reply["result"]["title"], "La PR #7 tiene commits nuevos");
         let next = reply["result"]["next"]["id"].as_str().unwrap();
-        let sent = act(&home, &domain, &client, SECOND, ActionId::parse(next).unwrap(), None, Some("Rename the table")).await;
+        let sent = act(&home, &*domain, &client, SECOND, ActionId::parse(next).unwrap(), None, Some("Rename the table")).await;
         assert_eq!(sent["outcome"], "applied", "Send anyway applies the changes: {sent}");
     }
 
     #[tokio::test]
     async fn a_device_that_lost_its_approval_and_a_node_that_is_not_connected_are_refused_in_words() {
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 });
-        let interrupt = ActionId::new(Verb::Interrupt, "agent-a", domain.state().unwrap().revision, None).unwrap();
-        let request = action_request(&domain, FIRST, "es", interrupt.to_string(), None, json!({}));
-        let gone = execute_action(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
+        apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 });
+        let interrupt = ActionId::new(Verb::Interrupt, "agent-a", domain.state().revision, None).unwrap();
+        let request = action_request(&*domain, FIRST, "es", interrupt.to_string(), None, json!({}));
+        let gone = execute_action(&*domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
         assert_eq!(gone["code"], "session_unreachable", "{gone}");
         assert_eq!(gone["message"], "«Agent A» no está conectado: su sesión se detuvo. No se envió nada.");
-        let request = action_request(&domain, SECOND, "es", interrupt.to_string(), None, json!({}));
-        let revoked = execute_action(&domain, &client, &home.0, "test-device", request, None, || Err(anyhow::anyhow!("revoked"))).await.unwrap();
+        let request = action_request(&*domain, SECOND, "es", interrupt.to_string(), None, json!({}));
+        let revoked = execute_action(&*domain, &client, &home.0, "test-device", request, None, || Err(anyhow::anyhow!("revoked"))).await.unwrap();
         assert_eq!(revoked["message"], "Este dispositivo ya no está aprobado. Vuelve a aprobarlo desde el Mac.");
     }
 
@@ -4731,8 +4726,8 @@ async fn replaying_changes_from_an_older_pr_card_applies_once_to_the_current_del
     use alondra_domain_model::{CardSpec, DeliveryTarget, InboxSubject, ReadIndex};
     use alondra_view_model::{Client, Input, Item, LiveSnapshot, Outcome, OutcomeKind, RenderContext, Transport};
 
-    fn painted_reply(domain: &crate::domain_runtime::DomainRuntime, interaction: &str) -> String {
-        let state = domain.state().unwrap();
+    fn painted_reply(domain: &dyn alondra_engine_ports::Runtime, interaction: &str) -> String {
+        let state = domain.state();
         let index = ReadIndex::build(&state);
         let live = LiveSnapshot::default();
         let view = alondra_views::build(&format!("card:{interaction}"), RenderContext {
@@ -4750,19 +4745,19 @@ async fn replaying_changes_from_an_older_pr_card_applies_once_to_the_current_del
 
     let (home, domain, client) = action_home();
     let node = Actor::Agent { agent_id: "agent-a".into() };
-    apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+    apply_seed_command(&*domain, Actor::System, "register-agent", Command::RegisterAgent {
         agent_id: "agent-a".into(), name: "Agent A".into(), at: 0,
     });
-    apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
+    apply_seed_command(&*domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
         request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
     });
-    apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(),
+    apply_seed_command(&*domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(),
         task_id: "task".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
         review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: None,
         launch: Some(alondra_domain_model::LaunchPlan::new("node", "/synthetic/repository")),
     });
     let head = "1".repeat(40);
-    apply_seed_command(&domain, node.clone(), "register-pr", Command::RegisterPr {
+    apply_seed_command(&*domain, node.clone(), "register-pr", Command::RegisterPr {
         task_id: "task".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "acme/widgets".into(),
         number: 7, head: head.clone(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     });
@@ -4771,19 +4766,19 @@ async fn replaying_changes_from_an_older_pr_card_applies_once_to_the_current_del
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.clone() }],
         is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
     };
-    apply_seed_command(&domain, node.clone(), "present-old", present("old-delivery", "The first explanation"));
-    let old_action = painted_reply(&domain, "old-delivery");
+    apply_seed_command(&*domain, node.clone(), "present-old", present("old-delivery", "The first explanation"));
+    let old_action = painted_reply(&*domain, "old-delivery");
     let parsed_old = ActionId::parse(&old_action).unwrap();
     assert_eq!(parsed_old.verb, Verb::Changes);
     assert_eq!(parsed_old.subject, "pr");
     assert_eq!(parsed_old.extra.as_deref(), Some(&head[..8]));
 
-    apply_seed_command(&domain, node, "present-new", present("new-delivery", "The revised explanation"));
-    let parsed_new = ActionId::parse(&painted_reply(&domain, "new-delivery")).unwrap();
+    apply_seed_command(&*domain, node, "present-new", present("new-delivery", "The revised explanation"));
+    let parsed_new = ActionId::parse(&painted_reply(&*domain, "new-delivery")).unwrap();
     assert_eq!((parsed_new.verb, &parsed_new.subject, &parsed_new.extra),
         (parsed_old.verb, &parsed_old.subject, &parsed_old.extra));
     assert!(parsed_new.revision > parsed_old.revision);
-    let before = domain.state().unwrap();
+    let before = domain.state();
     assert!(before.interactions[&InteractionId::from("old-delivery")].withdrawn);
     assert!(!before.interactions[&InteractionId::from("new-delivery")].withdrawn);
     let index = ReadIndex::build(&before);
@@ -4791,17 +4786,17 @@ async fn replaying_changes_from_an_older_pr_card_applies_once_to_the_current_del
     assert!(matches!(&index.cards()[0].subject, InboxSubject::Interaction { interaction_id, .. }
         if *interaction_id == InteractionId::from("new-delivery")));
     assert_eq!(before.pull_requests[&PrId::from("pr")].head, head);
-    let old_agent_messages = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+    let old_agent_messages = domain.store().lock().unwrap().pending_messages().unwrap().into_iter()
         .filter(|message| message.recipient_kind == "agent").count();
 
-    let mut request = action_request(&domain, "20000000-0000-4000-8000-000000000001", "es",
+    let mut request = action_request(&*domain, "20000000-0000-4000-8000-000000000001", "es",
         old_action, None, json!({}));
     request.input.text = Some("Rename the table".into());
-    let first = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+    let first = execute(&*domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
     assert_eq!(first.status(), StatusCode::OK);
     let first: Value = serde_json::from_slice(&axum::body::to_bytes(first.into_body(), 1024 * 1024).await.unwrap()).unwrap();
     assert_eq!(first["outcome"], "applied", "the older action applies to the current delivery: {first}");
-    let applied = domain.state().unwrap();
+    let applied = domain.state();
     let InteractionPayload::Delivery { feedback, .. } = &applied.interactions[&InteractionId::from("new-delivery")].payload else {
         panic!("the current presentation remains a delivery")
     };
@@ -4814,14 +4809,14 @@ async fn replaying_changes_from_an_older_pr_card_applies_once_to_the_current_del
     assert!(older.is_empty());
     assert_eq!(applied.tasks[&TaskId::from("task")].final_presentation, Some("new-delivery".into()));
     let inputs = applied.lifecycle_of(&"task".into()).unwrap().pending_inputs().into_iter().cloned().collect::<Vec<_>>();
-    let pending = domain.store.lock().unwrap().pending_messages().unwrap();
+    let pending = domain.store().lock().unwrap().pending_messages().unwrap();
     let agent_messages: Vec<_> = pending.iter().filter(|message| message.recipient_kind == "agent").collect();
     assert_eq!(agent_messages.len(), old_agent_messages + 1, "the new user message is kept for the node once");
     assert_eq!(agent_messages.last().unwrap().interaction_id.as_deref(), Some("new-delivery"));
     let outbox: Vec<_> = pending.into_iter().map(|message| message.id).collect();
 
     for attempt in 1..=67 {
-        let replay = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+        let replay = execute(&*domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
         assert_eq!(replay.status(), StatusCode::OK, "replay {attempt}");
         let replay: Value = serde_json::from_slice(&axum::body::to_bytes(replay.into_body(), 1024 * 1024).await.unwrap()).unwrap();
         let result: Outcome = serde_json::from_value(replay["result"].clone()).unwrap();
@@ -4829,10 +4824,10 @@ async fn replaying_changes_from_an_older_pr_card_applies_once_to_the_current_del
             "replay {attempt} finishes without asking to send again: {replay}");
         assert!(replay["outcome"] == "applied" || replay["outcome"] == "no_longer_available", "{replay}");
         assert!(replay.get("confirm").is_none());
-        let after = domain.state().unwrap();
+        let after = domain.state();
         assert_eq!(after, applied, "replay {attempt} changed the domain instead of replaying the first result");
         assert_eq!(after.lifecycle_of(&"task".into()).unwrap().pending_inputs().into_iter().cloned().collect::<Vec<_>>(), inputs);
-        assert_eq!(domain.store.lock().unwrap().pending_messages().unwrap().into_iter().map(|message| message.id).collect::<Vec<_>>(),
+        assert_eq!(domain.store().lock().unwrap().pending_messages().unwrap().into_iter().map(|message| message.id).collect::<Vec<_>>(),
             outbox, "replay {attempt} duplicated an outbox message");
     }
 }

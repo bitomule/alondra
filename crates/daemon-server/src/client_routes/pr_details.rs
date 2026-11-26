@@ -430,7 +430,7 @@ impl super::Client {
     /// its push would only reach the user to be handed back a minute later.
     pub(crate) async fn verify_presentation(&self, command: &Command) -> Result<(), DomainError> {
         let Command::PresentResult { task_id, targets, interaction_id, .. } = command else { return Ok(()) };
-        let Ok(state) = self.domain.state() else { return Ok(()) };
+        let state = self.domain.state();
         if state.interactions.contains_key(interaction_id) {
             return Ok(());
         }
@@ -450,7 +450,7 @@ impl super::Client {
             }
             if let Some(github) = self.domain.ports().port::<alondra_engine_ports::github::GitHub>() {
                 if let Ok(verdict) = github.merger.verdict(pr).await {
-                    let _ = alondra_daemon_engine::domain_verdicts::record(&self.domain, pr, verdict);
+                    let _ = alondra_daemon_engine::domain_verdicts::record(&*self.domain, pr, verdict);
                 }
             }
         }
@@ -460,13 +460,13 @@ impl super::Client {
     /// A node presenting a result is judged on every PR of its task, the ones it just opened too.
     pub(crate) async fn catch_up_task(&self, command: &Command) -> Result<(), DomainError> {
         let Command::PresentResult { task_id, interaction_id, is_final, .. } = command else { return Ok(()) };
-        if self.domain.state().is_ok_and(|state| state.interactions.contains_key(interaction_id)) {
+        if self.domain.state().interactions.contains_key(interaction_id) {
             return Ok(());
         }
         let source = PrViewObserver(self.pr_view());
         let github = self.domain.ports().port::<alondra_engine_ports::github::GitHub>()
             .ok_or_else(|| DomainError::new("github_unreachable", "Alondra has no GitHub to confirm the task's pull requests"))?;
-        if let Err(error) = crate::domain_github::catch_up_task_using(&self.domain, &github, &source, task_id, *is_final).await {
+        if let Err(error) = crate::domain_github::catch_up_task_using(&*self.domain, &github, &source, task_id, *is_final).await {
             log!("could not read the PRs of {task_id} from GitHub: {error:#}");
             return Err(DomainError::new("github_unreachable", "GitHub could not confirm the task's pull requests: present the result again when it answers"));
         }
@@ -479,7 +479,7 @@ impl super::Client {
     /// PR after a push, so it is asked again while it still reports another commit.
     pub(crate) async fn catch_up_heads(&self, command: &Command) {
         let Command::PresentResult { targets, interaction_id, .. } = command else { return };
-        let Ok(state) = self.domain.state() else { return };
+        let state = self.domain.state();
         if state.interactions.contains_key(interaction_id) {
             return;
         }
@@ -496,7 +496,7 @@ impl super::Client {
                     alondra_core::clock::sleep(HEAD_PAUSE).await;
                 }
                 let Some(facts) = view.view(&url).await.and_then(|answer| alondra_engine_ports::github::pr_facts(&answer).ok()) else { continue };
-                if let Err(error) = crate::domain_github::observe(&self.domain, pr_id, &facts) {
+                if let Err(error) = crate::domain_github::observe(&*self.domain, pr_id, &facts) {
                     log!("could not record what GitHub reports of {}: {error}", pr.id);
                     return;
                 }
@@ -536,10 +536,10 @@ fn missing_images_text(pr: &PullRequest, missing: &[PrImage]) -> String {
 /// A presented PR that GitHub says conflicts goes back to its Agent with the words of the user's
 /// Resolve conflicts, once per head and without a card: the user only hears of it if the Agent
 /// asks.
-pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime, details: &PrDetails, name: &str) {
-    let Ok(state) = domain.state() else { return };
+pub(crate) fn hand_back_conflicts(domain: &dyn alondra_engine_ports::Runtime, details: &PrDetails, name: &str) {
+    let state = domain.state();
     for pr_id in state.pull_requests.keys() {
-        let Ok(state) = domain.state() else { return };
+        let state = domain.state();
         let Some(pr) = state.pull_requests.get(pr_id) else { continue };
         if !details.get(&pr.id.0).is_some_and(|details| details.conflicts && details.matches_revision(&pr.head, &pr.base)) || conflicts_sent(&state, pr) {
             continue;
@@ -614,20 +614,20 @@ mod tests {
         fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
     }
 
-    fn run(domain: &crate::domain_runtime::DomainRuntime, actor: Actor, id: &str, command: Command) {
-        let state = domain.state().unwrap();
+    fn run(domain: &dyn alondra_engine_ports::Runtime, actor: Actor, id: &str, command: Command) {
+        let state = domain.state();
         domain.execute(&actor, &CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(),
             command_id: id.into(), expected_revision: state.revision, command }, None, || Ok(())).unwrap();
     }
 
-    fn present(domain: &crate::domain_runtime::DomainRuntime, id: &str, head: &str) {
+    fn present(domain: &dyn alondra_engine_ports::Runtime, id: &str, head: &str) {
         run(domain, Actor::Agent { agent_id: "agent".into() }, id, Command::PresentResult { checklist: Vec::new(), attachments: vec![],
             task_id: "task".into(), interaction_id: id.into(), body: "Ready".into(), is_final: true, nothing_to_review: false,
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }], card: alondra_domain_model::CardSpec::delivery("Review the result", &[], true) });
     }
 
-    fn conflicts_told(domain: &crate::domain_runtime::DomainRuntime) -> Vec<(String, String)> {
-        domain.state().unwrap().interactions.values().flat_map(|interaction| match &interaction.payload {
+    fn conflicts_told(domain: &dyn alondra_engine_ports::Runtime) -> Vec<(String, String)> {
+        domain.state().interactions.values().flat_map(|interaction| match &interaction.payload {
             InteractionPayload::Delivery { feedback, .. } => feedback.iter()
                 .filter(|f| f.instruction == Instruction::Conflicts)
                 .map(|f| (interaction.id.0.clone(), f.body.clone())).collect(),
@@ -827,16 +827,16 @@ mod tests {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
-        run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Fixture".into(), at: 0 });
-        run(&domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
+        run(&*domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Fixture".into(), at: 0 });
+        run(&*domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Review".into(), auto_merge: false, maintenance: false, message: false,
         });
-        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+        run(&*domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Review".into(), agent_id: Some("agent".into()),
             review_prs: true, dependencies: Default::default(), stack: None,
             launch: Some(alondra_domain_model::LaunchPlan::new("node", "/synthetic")),
         });
-        run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr {
+        run(&*domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr {
             task_id: "task".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "fixture/repo".into(),
             number: 1, head: "a".repeat(40), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
         });
@@ -889,7 +889,7 @@ mod tests {
     async fn provider_later_failed_background_read_preserves_a_valid_foreground_answer() {
         for (mergeable, expected) in [("MERGEABLE", super::Merge::Clean), ("CONFLICTING", super::Merge::Conflicts)] {
             let (_home, client, pr) = foreground_fixture();
-            let state = client.domain.state().unwrap();
+            let state = client.domain.state();
             let source = std::sync::Arc::new(ControlledView { mergeable, ..ControlledView::new(false) });
             client.use_pr_view(source.clone());
             let previous = client.details.get(&pr.id.0).unwrap();
@@ -903,14 +903,14 @@ mod tests {
             assert_eq!(accepted.merge(), expected);
             assert_eq!(accepted.title.as_deref(), Some("Provider PR 1"));
             assert!(accepted.observed_at.is_some() && accepted.matches_revision(&pr.head, &pr.base));
-            assert_eq!(client.domain.state().unwrap(), state);
+            assert_eq!(client.domain.state(), state);
         }
     }
 
     #[tokio::test]
     async fn provider_later_failed_background_read_cannot_hide_foreground_presentation_conflicts() {
         let (_home, client, pr) = foreground_fixture();
-        let state = client.domain.state().unwrap();
+        let state = client.domain.state();
         let source = std::sync::Arc::new(ControlledView { mergeable: "CONFLICTING", ..ControlledView::new(false) });
         client.use_pr_view(source.clone());
         let command = foreground_presentation(&pr);
@@ -921,7 +921,7 @@ mod tests {
         assert_eq!(foreground.await.unwrap_err().code, "pr_conflicts", "known conflicts must still refuse the presentation");
         let accepted = client.details.get(&pr.id.0).unwrap();
         assert!(accepted.conflicts && accepted.observed_at.is_some());
-        assert_eq!(client.domain.state().unwrap(), state, "no presentation or effect is committed by readonly verification");
+        assert_eq!(client.domain.state(), state, "no presentation or effect is committed by readonly verification");
     }
 
     #[tokio::test]
@@ -933,7 +933,7 @@ mod tests {
             ("MERGEABLE", "CONFLICTING", "a".repeat(40), "release", super::Merge::Unknown),
         ] {
             let (_home, client, pr) = foreground_fixture();
-            let state = client.domain.state().unwrap();
+            let state = client.domain.state();
             let source = std::sync::Arc::new(ControlledView { mergeable: foreground_merge, ..ControlledView::new(false) });
             client.use_pr_view(source.clone());
             let mut foreground = Box::pin(client.merge_state(&pr, &pr.head, 1, std::time::Duration::ZERO));
@@ -947,14 +947,14 @@ mod tests {
             source.release();
             assert_eq!(foreground.await, expected, "a losing foreground read uses only matching accepted authority");
             assert_eq!(client.details.get(&pr.id.0).unwrap(), newest, "the newer successful answer and timestamp survive the older completion");
-            assert_eq!(client.domain.state().unwrap(), state);
+            assert_eq!(client.domain.state(), state);
         }
     }
 
     #[tokio::test]
     async fn provider_later_successful_background_conflicts_still_refuse_a_presentation() {
         let (_home, client, pr) = foreground_fixture();
-        let state = client.domain.state().unwrap();
+        let state = client.domain.state();
         let source = std::sync::Arc::new(ControlledView::new(false));
         client.use_pr_view(source.clone());
         let command = foreground_presentation(&pr);
@@ -967,7 +967,7 @@ mod tests {
         source.release();
         assert_eq!(foreground.await.unwrap_err().code, "pr_conflicts", "newer accepted conflicts cannot become Unknown");
         assert_eq!(client.details.get(&pr.id.0).unwrap(), newest);
-        assert_eq!(client.domain.state().unwrap(), state);
+        assert_eq!(client.domain.state(), state);
     }
 
     struct CacheView {
@@ -1015,7 +1015,7 @@ mod tests {
     #[tokio::test]
     async fn freshness_expired_clean_revalidates_and_failure_retains_data_without_authority() {
         let (_home, client, pr) = foreground_fixture();
-        let state = client.domain.state().unwrap();
+        let state = client.domain.state();
         let clock = cache_clock(&client.details);
         let source = std::sync::Arc::new(CacheView::new(None));
         client.use_pr_view(source.clone());
@@ -1033,13 +1033,13 @@ mod tests {
         assert_eq!(source.metrics(), (1, 1, 0));
         assert_eq!(client.details.get(&pr.id.0).unwrap(), previous, "failure preserves body and provenance without renewing it");
         assert_eq!(previous.observed_at, Some(1000));
-        assert_eq!(client.domain.state().unwrap(), state);
+        assert_eq!(client.domain.state(), state);
     }
 
     #[tokio::test]
     async fn freshness_expired_clean_fetches_current_conflicts_before_presentation() {
         let (_home, client, pr) = foreground_fixture();
-        let state = client.domain.state().unwrap();
+        let state = client.domain.state();
         let clock = cache_clock(&client.details);
         let source = std::sync::Arc::new(CacheView::new(Some("CONFLICTING")));
         client.use_pr_view(source.clone());
@@ -1052,7 +1052,7 @@ mod tests {
         let accepted = client.details.get(&pr.id.0).unwrap();
         assert!(accepted.conflicts && accepted.matches_revision(&pr.head, &pr.base));
         assert_eq!(accepted.observed_at, Some(61_000));
-        assert_eq!(client.domain.state().unwrap(), state);
+        assert_eq!(client.domain.state(), state);
     }
 
     #[tokio::test]
@@ -1091,7 +1091,7 @@ mod tests {
     #[tokio::test]
     async fn freshness_losing_foreground_cannot_certify_an_expired_background_clean() {
         let (_home, client, pr) = foreground_fixture();
-        let state = client.domain.state().unwrap();
+        let state = client.domain.state();
         let clock = cache_clock(&client.details);
         let source = std::sync::Arc::new(ControlledView::new(false));
         client.use_pr_view(source.clone());
@@ -1104,13 +1104,13 @@ mod tests {
         source.release();
         assert_eq!(foreground.await, super::Merge::Unknown, "losing-completion fallback cannot bypass clean expiry");
         assert_eq!(client.details.get(&pr.id.0).unwrap(), previous);
-        assert_eq!(client.domain.state().unwrap(), state);
+        assert_eq!(client.domain.state(), state);
     }
 
     #[tokio::test]
     async fn freshness_boundary_expired_clean_cannot_hide_a_returned_foreground_conflict() {
         let (_home, client, pr) = foreground_fixture();
-        let state = client.domain.state().unwrap();
+        let state = client.domain.state();
         let clock = cache_clock(&client.details);
         let source = std::sync::Arc::new(ControlledView { mergeable: "CONFLICTING", ..ControlledView::new(false) });
         client.use_pr_view(source.clone());
@@ -1124,13 +1124,13 @@ mod tests {
         assert_eq!(foreground.await.unwrap_err().code, "pr_conflicts", "expired clean is not contradictory authority for matching live conflicts");
         assert_eq!(client.details.get(&pr.id.0).unwrap(), newest, "rejection need not replace or renew the newer cache row");
         assert_eq!(newest.observed_at, Some(1000));
-        assert_eq!(client.domain.state().unwrap(), state);
+        assert_eq!(client.domain.state(), state);
     }
 
     #[tokio::test]
     async fn freshness_boundary_fresh_unknown_cannot_hide_a_returned_foreground_conflict() {
         let (_home, client, pr) = foreground_fixture();
-        let state = client.domain.state().unwrap();
+        let state = client.domain.state();
         let clock = cache_clock(&client.details);
         let source = std::sync::Arc::new(ControlledView { mergeable: "CONFLICTING", ..ControlledView::new(false) });
         client.use_pr_view(source.clone());
@@ -1144,13 +1144,13 @@ mod tests {
         assert_eq!(foreground.await.unwrap_err().code, "pr_conflicts", "Unknown does not contradict matching live conflicts");
         assert_eq!(client.details.get(&pr.id.0).unwrap(), newest);
         assert_eq!(newest.observed_at, Some(61_000));
-        assert_eq!(client.domain.state().unwrap(), state);
+        assert_eq!(client.domain.state(), state);
     }
 
     #[tokio::test]
     async fn freshness_boundary_newer_fresh_clean_still_supersedes_foreground_conflicts() {
         let (_home, client, pr) = foreground_fixture();
-        let state = client.domain.state().unwrap();
+        let state = client.domain.state();
         let clock = cache_clock(&client.details);
         let source = std::sync::Arc::new(ControlledView { mergeable: "CONFLICTING", ..ControlledView::new(false) });
         client.use_pr_view(source.clone());
@@ -1164,14 +1164,14 @@ mod tests {
         assert!(foreground.await.is_ok(), "fresh matching later clean remains authoritative");
         assert_eq!(client.details.get(&pr.id.0).unwrap(), newest);
         assert_eq!(newest.observed_at, Some(61_000));
-        assert_eq!(client.domain.state().unwrap(), state);
+        assert_eq!(client.domain.state(), state);
     }
 
     #[tokio::test]
     async fn freshness_boundary_wrong_head_or_base_still_returns_unknown() {
         for (field, value) in [("headRefOid", "b".repeat(40)), ("baseRefName", "release".into())] {
             let (_home, client, pr) = foreground_fixture();
-            let state = client.domain.state().unwrap();
+            let state = client.domain.state();
             cache_clock(&client.details);
             let source = std::sync::Arc::new(ControlledView { mergeable: "CONFLICTING", ..ControlledView::new(false) });
             client.use_pr_view(source.clone());
@@ -1184,7 +1184,7 @@ mod tests {
             source.release();
             assert_eq!(foreground.await, super::Merge::Unknown);
             assert_eq!(client.details.get(&pr.id.0).unwrap(), newest);
-            assert_eq!(client.domain.state().unwrap(), state);
+            assert_eq!(client.domain.state(), state);
         }
     }
 
@@ -1315,16 +1315,16 @@ mod tests {
             let agent = format!("agent-{number}");
             let request = format!("request-{number}");
             let task = format!("task-{number}");
-            run(&domain, Actor::System, &agent, Command::RegisterAgent { agent_id: agent.clone().into(), name: "Fixture".into(), at: 0 });
-            run(&domain, Actor::User { user_id: "user".into() }, &request, Command::CreateRequest {
+            run(&*domain, Actor::System, &agent, Command::RegisterAgent { agent_id: agent.clone().into(), name: "Fixture".into(), at: 0 });
+            run(&*domain, Actor::User { user_id: "user".into() }, &request, Command::CreateRequest {
                 request_id: request.clone().into(), body: "Review".into(), auto_merge: false, maintenance: false, message: false,
             });
-            run(&domain, Actor::Orchestrator { generation: 0 }, &task, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
+            run(&*domain, Actor::Orchestrator { generation: 0 }, &task, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None,
                 task_id: task.clone().into(), request_id: request.into(), title: "Review".into(),
                 agent_id: Some(agent.clone().into()), review_prs: true, dependencies: Default::default(), stack: None,
                 launch: Some(alondra_domain_model::LaunchPlan::new("node", "/synthetic")),
             });
-            run(&domain, Actor::Agent { agent_id: agent.into() }, &format!("pr-{number}"), Command::RegisterPr {
+            run(&*domain, Actor::Agent { agent_id: agent.into() }, &format!("pr-{number}"), Command::RegisterPr {
                 task_id: task.into(), pr_id: format!("pr-{number}").into(), host: "github.com".into(),
                 repository: format!("fixture/repo-{number}"), number, head: "a".repeat(40),
                 base: "main".into(), allowed_methods: vec![MergeMethod::Squash],

@@ -5,6 +5,7 @@ use crate::admission::{AdmissionEngine, AdmissionGate};
 use crate::agent_host::AgentHost;
 use crate::agent_workers::AgentProviders;
 use crate::disk::Disk;
+use crate::domain_api::{AdmissionApi, OrchestratorApi, RuntimeApi, SdkApi};
 use crate::github::GitHub;
 use crate::hosts::SdkHosts;
 use crate::machine::MachineProbe;
@@ -102,19 +103,23 @@ impl Registry {
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 17] {
+fn every_port() -> [(TypeId, &'static str); 21] {
     [
         (TypeId::of::<dyn Accounts>(), "Accounts"),
         (TypeId::of::<AgentProviders>(), "AgentProviders"),
         (TypeId::of::<dyn AgentHost>(), "AgentHost"),
         (TypeId::of::<dyn AdmissionEngine>(), "AdmissionEngine"),
         (TypeId::of::<dyn AdmissionGate>(), "AdmissionGate"),
+        (TypeId::of::<dyn AdmissionApi>(), "AdmissionApi"),
         (TypeId::of::<dyn Disk>(), "Disk"),
         (TypeId::of::<GitHub>(), "GitHub"),
         (TypeId::of::<dyn MachineProbe>(), "MachineProbe"),
         (TypeId::of::<dyn OrchestratorEngine>(), "OrchestratorEngine"),
+        (TypeId::of::<dyn OrchestratorApi>(), "OrchestratorApi"),
         (TypeId::of::<dyn Plugins>(), "Plugins"),
         (TypeId::of::<dyn Processes>(), "Processes"),
+        (TypeId::of::<dyn RuntimeApi>(), "RuntimeApi"),
+        (TypeId::of::<dyn SdkApi>(), "SdkApi"),
         (TypeId::of::<dyn SdkEngine>(), "SdkEngine"),
         (TypeId::of::<dyn SdkHosts>(), "SdkHosts"),
         (TypeId::of::<dyn Screens>(), "Screens"),
@@ -151,7 +156,7 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["Accounts", "AgentProviders", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "Plugins", "Processes", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "Worktrees"]);
+        assert_eq!(registry.missing(), ["Accounts", "AgentProviders", "AgentHost", "AdmissionEngine", "AdmissionGate", "AdmissionApi", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "OrchestratorApi", "Plugins", "Processes", "RuntimeApi", "SdkApi", "SdkEngine", "SdkHosts", "Screens", "SessionWorktrees", "SignInReturns", "Worktrees"]);
         struct Greeter;
         impl Greets for Greeter {
             fn greet(&self) -> &'static str {
@@ -159,6 +164,6 @@ mod tests {
             }
         }
         registry.provide::<dyn Greets>(Arc::new(Greeter));
-        assert_eq!(registry.missing().len(), 17, "a port outside the required ones never counts");
+        assert_eq!(registry.missing().len(), 21, "a port outside the required ones never counts");
     }
 }

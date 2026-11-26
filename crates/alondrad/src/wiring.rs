@@ -1,7 +1,7 @@
 //! Where the engine is put together: the domain runtime of `engine-kernel` opens with the decisions
 //! of the cards a node's mod holds, with every subsystem that hears of its commits, in the order
 //! they hear of each one, and with the ports the engine's crates ask each other through. The kernel
-//! itself knows none of them; the server adds the orchestrator's.
+//! itself knows none of them.
 use alondra_engine_sdk::domain_runtime::{CommitObserver, DomainRuntime};
 use alondra_engine_ports::journal::JournalFiles;
 use anyhow::Result;
@@ -13,11 +13,19 @@ pub fn open(home: &Path, files: &dyn JournalFiles) -> Result<DomainRuntime> {
 
 pub fn open_at(home: &Path, database: &Path, files: &dyn JournalFiles) -> Result<DomainRuntime> {
     let runtime = DomainRuntime::open_observed(home, database, files, Some(alondra_daemon_engine::wiring::held_cards()), observers())?;
-    alondra_daemon_engine::wiring::wire(runtime.ports());
-    alondra_engine_sdk::wiring::wire(runtime.ports());
-    alondra_engine_admission::wire(runtime.ports());
+    wire_engine(runtime.ports());
     crate::wire_providers(runtime.ports());
     Ok(runtime)
+}
+
+/// Gives the registry every port's implementation the engine's pieces provide, the parts of
+/// `DomainApi` the server asks among them. The hosts of agents, GitHub and the screens are the
+/// root's seams.
+pub fn wire_engine(registry: &alondra_engine_ports::Registry) {
+    alondra_daemon_engine::wiring::wire(registry);
+    alondra_engine_sdk::wiring::wire(registry);
+    alondra_engine_admission::wire(registry);
+    alondra_engine_orchestrator::wire(registry);
 }
 
 /// Every subsystem that hears of the runtime's commits, in the order they hear of each one. The

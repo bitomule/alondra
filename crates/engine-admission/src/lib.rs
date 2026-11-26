@@ -69,9 +69,36 @@ pub fn for_tests(domain: &dyn Runtime) {
     domain.machine_watch().launch_on_measured_disk();
 }
 
-/// Gives the registry the gate the rest of the engine asks.
+/// Gives the registry the gate the rest of the engine asks, and its controls the server asks.
 pub fn wire(registry: &Registry) {
     registry.provide::<dyn AdmissionGate>(Arc::new(Gate));
+    registry.provide::<dyn alondra_engine_ports::domain_api::AdmissionApi>(Arc::new(Gate));
+}
+
+impl alondra_engine_ports::domain_api::AdmissionApi for Gate {
+    fn pacing(&self, runtime: &dyn Runtime, now: Millis) -> Option<alondra_view_model::LivePacing> {
+        runtime.admission().live(runtime, now)
+    }
+
+    fn hold_queued(&self, runtime: &dyn Runtime, task: &TaskId, now: Millis) -> Result<(), &'static str> {
+        admission::hold_queued(runtime, task, now)
+    }
+
+    fn release_queued(&self, runtime: &dyn Runtime, task: &TaskId) -> Result<(), &'static str> {
+        admission::release_queued(runtime, task)
+    }
+
+    fn most_working_nodes(&self, runtime: &dyn Runtime) -> u32 {
+        admission::most_working_nodes(runtime)
+    }
+
+    fn set_node_limit(&self, home: &Path, limit: alondra_core::options::NodeLimit) -> Result<(), &'static str> {
+        admission::set_node_limit(home, limit)
+    }
+
+    fn declare_machine_wait(&self, runtime: &dyn Runtime, session: &str, resource: Option<alondra_core::machine_incident::MachineResource>, reason: &str, turn: u64, now: Millis) {
+        runtime.machine_watch().declare(session, resource, reason, turn, now);
+    }
 }
 
 struct Gate;

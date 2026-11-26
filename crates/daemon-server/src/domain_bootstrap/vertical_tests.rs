@@ -1,6 +1,7 @@
 //! Local HTTP producer/read integration over a fresh SQL store. User decisions use
 //! the runtime boundary because local HTTP user mutations require user presence.
 use super::*;
+use crate::domain_runtime::DomainRuntime;
 use crate::auth::Auth;
 use crate::domain_api::DomainHost as _;
 use crate::principal::Principal;
@@ -72,7 +73,7 @@ impl Fixture {
             )
             .unwrap();
         let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
-        let domain = state.domain();
+        let domain = DomainRuntime::shared(state.domain());
         let pr_view = Arc::new(crate::client_routes::FakePrView::default());
         pr_view.answer(Some(github_at(REGISTERED)));
         state.client().use_pr_view(pr_view.clone());

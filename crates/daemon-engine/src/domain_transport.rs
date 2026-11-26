@@ -28,7 +28,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use alondra_daemon_support::blocking_work::BlockingWork;
+use alondra_foundation::blocking_work::BlockingWork;
 
 /// The one worker the hooks' writes run on, in the order they arrive.
 struct HookWork(BlockingWork);

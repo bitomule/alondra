@@ -29,7 +29,8 @@ pub fn watched(state: &DomainState) -> Vec<PullRequest> {
 }
 
 /// Records what GitHub says of merging `pr` at its head, unless the domain already holds it.
-pub fn record(domain: &DomainRuntime, pr: &PullRequest, verdict: MergeVerdict) -> Result<()> {
+pub fn record(domain: &dyn alondra_engine_ports::Runtime, pr: &PullRequest, verdict: MergeVerdict) -> Result<()> {
+    let domain = DomainRuntime::of(domain);
     let state = domain.state()?;
     let known = state.merge_verdicts.get(&pr.id).is_some_and(|observed| observed.head == pr.head && observed.verdict == verdict);
     if known {

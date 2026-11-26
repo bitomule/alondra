@@ -64,4 +64,5 @@ pub mod spec_writes;
 pub mod sdk_owner;
 pub mod start_retries;
 pub mod task_closer;
+pub mod sdk_api;
 pub mod wiring;

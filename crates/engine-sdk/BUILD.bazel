@@ -53,7 +53,7 @@ application_crate(
     srcs = production_sources(test_only = TEST_ONLY),
     crate_name = "alondra_engine_sdk",
     version = VERSION,
-    test_visibility = ["//crates/machine-model:__pkg__"],
+    test_visibility = ["//crates/daemon-server:__pkg__", "//crates/machine-model:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",

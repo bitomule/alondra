@@ -19,7 +19,7 @@
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use crate::service::Service;
 use alondra_domain_model::ActivityCounts;
 use alondra_view_model::{Client, Lang, RenderContext, Transport};
@@ -276,7 +276,7 @@ fn mac_name() -> String {
 }
 
 /// What the status header says right now: the counts the phone's Live Activity shows.
-async fn current(domain: &DomainRuntime, client: &crate::client_routes::Client) -> ActivityCounts {
+async fn current(domain: &dyn Runtime, client: &crate::client_routes::Client) -> ActivityCounts {
     let read = domain.read();
     let live = crate::views::live::gather(client, &read, Lang::En, &[], false, false).await;
     crate::screens::get().activity_counts(&RenderContext {
@@ -285,15 +285,15 @@ async fn current(domain: &DomainRuntime, client: &crate::client_routes::Client) 
     })
 }
 
-pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>, client: Arc<crate::client_routes::Client>) {
+pub async fn run(domain: Arc<dyn Runtime>, service: Arc<Service>, client: Arc<crate::client_routes::Client>) {
     let mac_name = mac_name();
     let mut changed = domain.subscribe();
-    let mut schedule = Schedule::new(current(&domain, &client).await, clock::instant());
+    let mut schedule = Schedule::new(current(&*domain, &client).await, clock::instant());
     let mut seq = now_ms();
     let mut failing = false;
     loop {
         let now = clock::instant();
-        schedule.observe(current(&domain, &client).await, now);
+        schedule.observe(current(&*domain, &client).await, now);
         match service.activity_phones() {
             Ok(phones) => schedule.phones(phones),
             Err(error) => log!("could not list the phones for the Live Activity: {error:#}"),

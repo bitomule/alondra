@@ -31,8 +31,8 @@ struct Daemon {
 impl Daemon {
     async fn start(home: &Path) -> Self {
         drop(crate::engine::open(home).unwrap());
-        let state = DomainDaemon::open(home, &alondra_store_sqlite::Sqlite).unwrap();
-        let domain = state.domain();
+        let state = alondrad::open_daemon(home, &alondra_store_sqlite::Sqlite).unwrap();
+        let domain = DomainRuntime::shared(state.domain());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let auth = state.auth();

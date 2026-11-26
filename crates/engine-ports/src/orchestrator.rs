@@ -83,3 +83,25 @@ impl AccountWait {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).take().is_some()
     }
 }
+
+/// The user's decision on an orchestrator execution that failed or runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decision { Cancel, Acknowledge, Retry }
+
+/// `POST /orchestrator/{cancel,acknowledge,retry}`, the user's decision on an execution.
+pub fn decision_route(path: &str) -> Option<Decision> {
+    match path {
+        "/orchestrator/cancel" => Some(Decision::Cancel),
+        "/orchestrator/acknowledge" => Some(Decision::Acknowledge),
+        "/orchestrator/retry" => Some(Decision::Retry),
+        _ => None,
+    }
+}
+
+/// The execution the orchestrator runs now, as its record says.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActiveRun {
+    pub run_id: Option<String>,
+    /// The execution failed and waits for the user to retry or accept it.
+    pub failed: bool,
+}

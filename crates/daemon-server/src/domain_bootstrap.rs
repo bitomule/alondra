@@ -1,12 +1,12 @@
 //! Local HTTP bootstrap: the routes are the shared domain handlers.
 use alondra_daemon_engine::sdk_backend::SdkOf as _;
-use alondra_engine_admission::AdmissionOf as _;
-use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::auth::{Signed, is_local};
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
+use alondra_engine_ports::domain_api::Lane;
+use alondra_engine_ports::gate::GateOf as _;
 use alondra_domain_model::{AttachmentRef, DomainError};
 use anyhow::{Context, Result, ensure};
 use axum::extract::{ConnectInfo, Path as RoutePath, Query, RawQuery, State, rejection::JsonRejection};
@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub struct DomainDaemon {
-    domain: Arc<DomainRuntime>,
+    domain: Arc<dyn Runtime>,
+    api: alondra_engine_ports::domain_api::DomainApi,
     home: PathBuf,
     gauges: crate::machine::Gauges,
     /// The one approval list the guard verifies against and the pairing routes extend.
@@ -33,7 +34,7 @@ pub struct DomainDaemon {
     observation_gate: std::sync::Mutex<()>,
 }
 
-fn require_database(home: &Path) -> Result<()> {
+pub fn require_database(home: &Path) -> Result<()> {
     let database = crate::domain_store::active_path(home);
     let metadata = std::fs::symlink_metadata(&database).with_context(|| {
         format!("committed domain database missing: {}", database.display())
@@ -45,35 +46,19 @@ fn require_database(home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Gives the registry every port's implementation the server reaches: each piece of the engine
-/// wires its own. The hosts of agents, GitHub and the screens are the root's to wire.
-pub fn wire(registry: &alondra_engine_ports::Registry) {
-    alondra_daemon_engine::wiring::wire(registry);
-    alondra_engine_sdk::wiring::wire(registry);
-    alondra_engine_admission::wire(registry);
-}
-
 impl DomainDaemon {
-    /// The daemon over the engine as a test opens it on its thread (`wiring::open_with`), on `files`.
-    pub fn open(home: &Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> Result<Arc<Self>> {
-        require_database(home)?;
-        #[cfg(test)]
-        crate::engine_tests::wired();
-        Self::over(home, alondra_daemon_engine::wiring::open_on(home, &alondra_daemon_engine::domain_store::active_path(home), files)?)
-    }
-
     /// The daemon over the domain its start already opened, so the journal is replayed once.
-    pub fn over(home: &Path, domain: DomainRuntime) -> Result<Arc<Self>> {
-        Self::over_shared(home,Arc::new(domain))
+    pub fn over(home: &Path, domain: impl Runtime) -> Result<Arc<Self>> {
+        Self::over_shared(home, Arc::new(domain))
     }
 
-    pub fn over_shared(home: &Path, domain: Arc<DomainRuntime>) -> Result<Arc<Self>> {
+    pub fn over_shared(home: &Path, domain: Arc<dyn Runtime>) -> Result<Arc<Self>> {
         require_database(home)?;
-        wire(domain.ports());
         let gauges = crate::machine::Gauges::default();
         Ok(Arc::new(Self {
             home: home.to_owned(),
             client: crate::client_routes::Client::open(domain.clone(), home, gauges.clone()),
+            api: alondra_engine_ports::domain_api::DomainApi::of(domain.ports()),
             domain,
             gauges,
             auth: Arc::new(crate::auth::Auth::open(home)?),
@@ -111,7 +96,7 @@ impl DomainDaemon {
         self.auth.clone()
     }
 
-    pub fn domain(&self) -> Arc<DomainRuntime> {
+    pub fn domain(&self) -> Arc<dyn Runtime> {
         self.domain.clone()
     }
 
@@ -125,8 +110,11 @@ impl DomainDaemon {
 }
 
 impl crate::domain_api::DomainHost for DomainDaemon {
-    fn domain(&self) -> &DomainRuntime {
-        &self.domain
+    fn domain(&self) -> &dyn Runtime {
+        &*self.domain
+    }
+    fn api(&self) -> &alondra_engine_ports::domain_api::DomainApi {
+        &self.api
     }
     fn home(&self) -> &Path {
         &self.home
@@ -715,8 +703,8 @@ async fn metrics(
     let Some(query) = alondra_core::metrics::report::Query::parse(query.as_deref().unwrap_or_default()) else {
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "the metrics query names an unknown period, comparison or filter"));
     };
-    let domain = state.domain();
-    match alondra_core::clock::spawn_blocking(move || domain.metrics_inputs(alondra_core::now_millis())).await {
+    let (domain, api) = (state.domain(), state.api.clone());
+    match alondra_core::clock::spawn_blocking(move || api.runtime.metrics_inputs(&*domain, alondra_core::now_millis())).await {
         Ok(Ok(inputs)) => Json(alondra_core::metrics::report::report(&inputs, &query)).into_response(),
         _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the metrics could not be read")),
     }
@@ -732,8 +720,8 @@ async fn sdk_handover(
     if let Some(refused) = local_only(&peer, &headers) {
         return refused;
     }
-    let domain = state.domain();
-    match alondra_core::clock::spawn_blocking(move || crate::bg_handover::dry_run(&*domain).map(|rows| (domain.sdk().is_some(), rows))).await {
+    let (domain, api) = (state.domain(), state.api.clone());
+    match alondra_core::clock::spawn_blocking(move || api.sdk.handover_rows(&*domain).map(|rows| (domain.sdk().is_some(), rows))).await {
         Ok(Ok((backend, rows))) => Json(json!({"sdk_backend": backend, "tasks": rows})).into_response(),
         _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the tasks in progress could not be read")),
     }
@@ -751,7 +739,7 @@ async fn files_sweep(
     }
     let (domain, home) = (state.domain(), state.home.clone());
     match alondra_core::clock::spawn_blocking(move || {
-        let snapshot = domain.state()?;
+        let snapshot = domain.state();
         Ok::<_, anyhow::Error>(crate::files_retention::sweep(&home, &snapshot, clock::system_time()))
     }).await {
         Ok(Ok(report)) => Json(report).into_response(),
@@ -886,16 +874,16 @@ async fn orchestrator_decision(
     if signed_device(&state.home, &signed).is_none() {
         return forbidden("signed user device required");
     }
-    let Some(decision) = crate::domain_orchestrator::decision_route(uri.path()) else {
+    let Some(decision) = alondra_engine_ports::orchestrator::decision_route(uri.path()) else {
         return crate::domain_api::domain_error(DomainError::new(
             "not_found",
             "unknown orchestrator decision",
         ));
     };
     let body = body.map(|Json(body)| body);
-    let domain = state.domain();
+    let (domain, api) = (state.domain(), state.api.clone());
     let home = state.home.clone();
-    match alondra_core::clock::spawn_blocking(move || apply_orchestrator_decision(domain, &home, decision, body.as_ref()))
+    match alondra_core::clock::spawn_blocking(move || apply_orchestrator_decision(&api, domain, &home, decision, body.as_ref()))
     .await
     {
         Ok(answer) => {
@@ -911,7 +899,7 @@ async fn orchestrator_decision(
 
 /// Shared adapter used by `/agents/{id}/messages` and the views action dispatcher.
 pub(crate) async fn send_agent_message(
-    domain: &DomainRuntime,
+    domain: &dyn Runtime,
     home: &Path,
     sender: &str,
     agent: &alondra_domain_model::AgentId,
@@ -922,12 +910,13 @@ pub(crate) async fn send_agent_message(
 
 /// Shared adapter used by explicit orchestrator routes and the views action dispatcher.
 pub(crate) fn apply_orchestrator_decision(
-    domain: Arc<DomainRuntime>,
+    api: &alondra_engine_ports::domain_api::DomainApi,
+    domain: Arc<dyn Runtime>,
     home: &Path,
-    decision: crate::domain_orchestrator::Decision,
+    decision: alondra_engine_ports::orchestrator::Decision,
     body: Option<&Value>,
 ) -> Value {
-    crate::domain_orchestrator::decide(&crate::domain_orchestrator::executor(domain, home), decision, body)
+    api.orchestrator.decide(domain, home, decision, body)
 }
 
 /// The orchestrator execution calling a tool route: local, with its current bearer.
@@ -970,7 +959,7 @@ async fn orchestrator_outcomes(
     if let Err(refused)=tool_caller(&state,&peer,&headers,None) {return refused;}
     let Ok(Json(query))=body else {return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid outcome query"));};
     let bearer=headers.get("authorization").and_then(|header|header.to_str().ok()).and_then(|header|header.strip_prefix("Bearer ")).unwrap_or_default();
-    tool_answer(state.domain.read_batch_outcomes(bearer,query.run_id.as_deref(),query.list_runs,&query.after,query.limit.unwrap_or(32)))
+    tool_answer(state.api.runtime.read_batch_outcomes(&*state.domain,bearer,query.run_id.as_deref(),query.list_runs,&query.after,query.limit.unwrap_or(32)))
 }
 
 async fn orchestrator_read(
@@ -982,7 +971,7 @@ async fn orchestrator_read(
     if let Err(refused) = tool_caller(&state, &peer, &headers, None) { return refused; }
     let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid bounded read request")); };
     let home = state.home.clone();
-    let result = state.domain.read_work.run(move || {
+    let result = state.api.runtime.work(&*state.domain, Lane::Read).run(move || {
         let options = crate::options::options_at(&home).map_err(|_| DomainError::new("invalid_input", "Project settings could not be read"))?;
         let root = options.projects_root(&crate::options::user_home());
         crate::scoped_reads::execute(&root, query).map_err(|error| DomainError::new("read_unavailable", format!("{error}")))
@@ -1018,7 +1007,7 @@ async fn read_role_skill(
         _ => return crate::domain_api::domain_error(DomainError::new("forbidden", "Only the current role's installed skill may be read")),
     };
     let Some(root) = root else { return crate::domain_api::domain_error(DomainError::new("not_found", "The role's Alondra integration assets are not installed")); };
-    let result = state.domain.read_work.run(move || {
+    let result = state.api.runtime.work(&*state.domain, Lane::Read).run(move || {
         let request = serde_json::from_value(serde_json::json!({"operation":"read_file","arguments":{"path":format!("skills/{name}/SKILL.md"),"start_line":query.start_line,"max_lines":400}}))
             .map_err(|_| DomainError::new("invalid_input", "Invalid skill page"))?;
         crate::scoped_reads::execute(&root, request).map_err(|error| DomainError::new("read_unavailable", format!("{error}")))
@@ -1039,7 +1028,7 @@ async fn read_task_context(
     let bearer = bearer.to_owned();
     let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid task context page")); };
     let domain = state.domain();
-    let result = state.domain.read_work.run(move || crate::task_context::read(&*domain, &bearer, query)).await;
+    let result = state.api.runtime.work(&*state.domain, Lane::Read).run(move || crate::task_context::read(&*domain, &bearer, query)).await;
     tool_answer(result.unwrap_or_else(|_| Err(DomainError::new("storage_unavailable", "The task context could not be read"))))
 }
 
@@ -1055,8 +1044,8 @@ async fn request_plan_mode(
     let Some(bearer) = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer ")) else { return forbidden("A current node capability is required"); };
     let Some(operation) = headers.get("x-alondra-mcp-operation").and_then(|value| value.to_str().ok()) else { return crate::domain_api::domain_error(DomainError::new("incompatible_protocol","Update the node's Alondra MCP integration before requesting plan mode")); };
     let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid plan mode request")); };
-    let domain = state.domain(); let bearer = bearer.to_owned(); let operation = operation.to_owned();
-    let result = state.domain.command_work.run(move || domain.request_plan_mode(&bearer,&query.task_id,&operation)).await;
+    let (domain, api) = (state.domain(), state.api.clone()); let bearer = bearer.to_owned(); let operation = operation.to_owned();
+    let result = state.api.runtime.work(&*state.domain, Lane::Command).run(move || api.runtime.request_plan_mode(&*domain,&bearer,&query.task_id,&operation)).await;
     match result {
         Ok(Ok(_)) => Json(json!({"pending":true,"instruction":"End this turn now. Alondra applies plan mode before the next turn. Produce the full checklist plan in native planning mode and wait for Alondra approval before implementation."})).into_response(),
         Ok(Err(crate::domain_store::StoreError::Domain(error))) => crate::domain_api::domain_error(error),
@@ -1181,9 +1170,9 @@ async fn orchestrator_schedule(
 ) -> Response {
     if let Err(refused) = tool_caller(&state,&peer,&headers,None) { return refused; }
     let Ok(Json(request)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input","Invalid schedule draft")); };
-    let body = request.clone(); let home = state.home.clone(); let domain = state.domain();
+    let body = request.clone(); let home = state.home.clone(); let (domain, api) = (state.domain(), state.api.clone());
     let work = async move {
-        let value = alondra_core::clock::spawn_blocking(move || crate::domain_schedule_api::orchestrator_mutation(&*domain,&home,"POST","/schedules",Some(&body),None,|| Ok(()))).await
+        let value = alondra_core::clock::spawn_blocking(move || api.sdk.orchestrator_schedule_mutation(&*domain,&home,"POST","/schedules",Some(&body),None,&|| Ok(()))).await
             .map_err(|_| DomainError::new("operation_uncertain","Schedule creation stopped before returning its result"))?;
         match value["status"].as_u64() {
             Some(200..=299) => Ok(value),
@@ -1191,7 +1180,7 @@ async fn orchestrator_schedule(
         }
     };
     match tracked_tool(&state,&headers,"schedule_create",request,work).await {
-        Ok(value) => crate::domain_schedule_api::response(value),
+        Ok(value) => crate::domain_api::schedule_response(value),
         Err(error) => crate::domain_api::domain_error(error),
     }
 }
@@ -1276,8 +1265,8 @@ async fn agent_waiting_machine(
     let live = state.domain.live();
     let turn = live.node(&session_id).map_or(0, |node| node.turn);
     let now = alondra_core::now_millis();
-    state.domain.machine_watch().declare(&session_id, body.resource, &body.reason, turn, now);
-    state.domain.admission().hold_back(&*state.domain, &session_id, crate::pauses::Reason::Declared { reason: body.reason.clone() }, now);
+    state.api.admission.declare_machine_wait(&*state.domain, &session_id, body.resource, &body.reason, turn, now);
+    state.domain.gate().hold_back(&session_id, alondra_engine_ports::admission::Reason::Declared { reason: body.reason.clone() }, now);
     live.apply(&alondra_core::Event::WaitingMachine {
         session_id,
         reason: body.reason,
@@ -1318,10 +1307,7 @@ async fn open_cards(
         (Some(bound), Some(asked)) if bound != asked => return forbidden("this node is bound to another task"),
         (bound, asked) => asked.or(bound).map(alondra_domain_model::TaskId),
     };
-    match state.domain.state() {
-        Ok(domain) => Json(json!({"cards": domain.open_card_rows(&reader, task.as_ref())})).into_response(),
-        Err(error) => crate::domain_api::domain_error(DomainError::new("unavailable", error.to_string())),
-    }
+    Json(json!({"cards": state.domain.state().open_card_rows(&reader, task.as_ref())})).into_response()
 }
 
 /// Machine capacity and the subscription's usage, as the `/daemon` gauges hold them.
@@ -1337,8 +1323,8 @@ async fn orchestrator_machine(
         Some((machine, usage, _)) => (json!(machine), json!(usage)),
         None => (Value::Null, Value::Null),
     };
-    let domain = state.domain();
-    let tasks = match alondra_core::clock::spawn_blocking(move || domain.metrics_inputs(alondra_core::now_millis())).await {
+    let (domain, api) = (state.domain(), state.api.clone());
+    let tasks = match alondra_core::clock::spawn_blocking(move || api.runtime.metrics_inputs(&*domain, alondra_core::now_millis())).await {
         Ok(Ok(inputs)) => inputs.tasks,
         _ => vec![],
     };
@@ -1471,6 +1457,8 @@ fn storage() -> Response {
 #[cfg(test)]
 #[cfg(not(feature = "real-hosts"))]
 mod tests {
+    use crate::engine_tests::Kernel as _;
+    use alondra_engine_admission::AdmissionOf as _;
     use super::*;
     use crate::auth::Auth;
     use axum::http::StatusCode;
@@ -1951,7 +1939,7 @@ mod tests {
         conn.pragma_update(None, "user_version", crate::domain_store::SCHEMA_VERSION).unwrap();
         drop(conn);
         let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
-        assert_eq!(state.domain().state().unwrap(), expected);
+        assert_eq!(state.domain().state(), expected);
         drop(state);
         std::fs::remove_dir_all(&home).unwrap();
     }
@@ -1982,7 +1970,7 @@ mod tests {
                 .header("x-alondra-timestamp", timestamp)
                 .header("x-alondra-signature", STANDARD.encode(signature.to_der().as_bytes()))
         };
-        let writer = domain.store.lock().unwrap();
+        let writer = domain.store().lock().unwrap();
         let mut answers = Vec::new();
         for path in [
             "/views/home?protocol=1&client=tui&lang=en",
@@ -2031,7 +2019,7 @@ mod tests {
                 let mut attempt = 0u8;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     {
-                        let mut store = domain.store.lock().unwrap();
+                        let mut store = domain.store().lock().unwrap();
                         attempt = attempt.wrapping_add(1).max(1);
                         store.set_start_retry(&"task-110".into(), Some((attempt, 0))).unwrap();
                         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -2091,7 +2079,7 @@ mod tests {
         let domain = state.domain();
         let auth = state.auth();
         let capability = domain
-            .issue(crate::principal::Principal::Agent {
+            .kernel().issue(crate::principal::Principal::Agent {
                 session_id: "test-agent".into(),
                 task_binding: None,
                 provider_agent_id: None,
@@ -2292,7 +2280,7 @@ mod tests {
             StatusCode::FORBIDDEN,
             "an Agent's bearer is not the orchestrator's"
         );
-        let orchestrator = domain.bind_orchestrator("execution-1").unwrap();
+        let orchestrator = domain.kernel().bind_orchestrator("execution-1").unwrap();
         let machine = client
             .get(format!("{base}/orchestrator/machine"))
             .bearer_auth(orchestrator.expose_for_child_environment())
@@ -2379,7 +2367,7 @@ mod tests {
         assert_eq!(
             domain
                 .state()
-                .unwrap()
+
                 .schedule
                 .schedules
                 .values()
@@ -2417,15 +2405,15 @@ mod tests {
         assert_eq!(missing_update.status(), StatusCode::NOT_FOUND);
         use alondra_domain_model::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
         let execute = |actor, command| {
-            let state = domain.state().unwrap();
-            domain.execute_fixture(&actor, CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            let state = domain.state();
+            domain.kernel().execute_fixture(&actor, CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
                 command_id: crate::auth::random_hex(8).into(), expected_revision: state.revision, command }).unwrap();
         };
         execute(Actor::User { user_id: "user".into() }, Command::CreateRequest { request_id: "plan-read".into(), body: "Review stored work".into(),
             auto_merge: false, maintenance: false, message: false });
         let plan = LaunchPlan { mission: Some("The saved mission\n\nAdditional context stays here.".into()),
             model: Some("sonnet".into()), reason: Some("Implementation".into()), ..LaunchPlan::new("stored-node", home.to_str().unwrap()) };
-        execute(Actor::Orchestrator { generation: domain.state().unwrap().orchestrator_generation }, Command::CreateTask { priority: Default::default(),
+        execute(Actor::Orchestrator { generation: domain.state().orchestrator_generation }, Command::CreateTask { priority: Default::default(),
             task_id: "plan-read".into(), request_id: "plan-read".into(), title: "Stored work".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(plan.clone()), plan_items: None, continues: None });
         let stored = orchestrator_get("/orchestrator/launch-plan?task_id=plan-read").await.unwrap();
@@ -2663,7 +2651,7 @@ mod tests {
             .status(),
             StatusCode::UNAUTHORIZED
         );
-        assert!(domain.state().unwrap().requests.is_empty());
+        assert!(domain.state().requests.is_empty());
 
         let response = signed(
             &client,
@@ -2683,7 +2671,7 @@ mod tests {
         assert!(
             domain
                 .state()
-                .unwrap()
+
                 .requests
                 .contains_key(&"request-one".into())
         );
@@ -2713,17 +2701,17 @@ mod tests {
             StatusCode::OK,
             "the same command id replays its receipt"
         );
-        assert_eq!(domain.state().unwrap().requests.len(), 1);
+        assert_eq!(domain.state().requests.len(), 1);
 
         // Producers use the same Request resource with the flat, typed command
         // fields. The HTTP adapter supplies the CommandEnvelope metadata itself.
         let producer = domain
-            .issue(crate::principal::Principal::Orchestrator {
+            .kernel().issue(crate::principal::Principal::Orchestrator {
                 generation: 0,
                 execution_id: "exec-1".into(),
             })
             .unwrap();
-        let current = domain.state().unwrap();
+        let current = domain.state();
         let typed_request = json!({"request_id":"request-mcp", "body":"Define work", "auto_merge":false,
             "data_epoch":current.data_epoch, "command_id":"mcp-create-request", "expected_revision":current.revision});
         drop(current);
@@ -2738,7 +2726,7 @@ mod tests {
         assert!(
             domain
                 .state()
-                .unwrap()
+
                 .requests
                 .contains_key(&"request-mcp".into())
         );
@@ -2783,7 +2771,7 @@ mod tests {
         assert_eq!(created.status(), StatusCode::CREATED);
         let created: serde_json::Value = created.json().await.unwrap();
         let schedule_id = created["id"].as_str().unwrap().to_owned();
-        assert_eq!(domain.state().unwrap().schedule.schedules.len(), 1);
+        assert_eq!(domain.state().schedule.schedules.len(), 1);
         let mut update = draft.clone();
         update["title"] = json!("Nightly review");
         update["revision"] = json!(1);
@@ -2819,7 +2807,7 @@ mod tests {
             .status(),
             StatusCode::ACCEPTED
         );
-        assert_eq!(domain.state().unwrap().schedule.runs.len(), 1);
+        assert_eq!(domain.state().schedule.runs.len(), 1);
         assert_eq!(
             signed(
                 &client,
@@ -3130,7 +3118,7 @@ mod tests {
             .status(),
             StatusCode::FORBIDDEN
         );
-        assert_eq!(domain.state().unwrap().requests.len(), 3);
+        assert_eq!(domain.state().requests.len(), 3);
         server.abort();
         let _ = server.await;
         drop(domain);

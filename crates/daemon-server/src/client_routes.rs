@@ -11,7 +11,7 @@ mod reports;
 mod tasks;
 
 use crate::auth::Signed;
-use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_model::{
     AgentId, DomainError, DomainState, InteractionPayload, Recipient, Scope, TaskId,
 };
@@ -45,7 +45,8 @@ const DETAILS_INTERVAL: Duration = Duration::from_secs(60);
 pub struct Client {
     shared: std::sync::Weak<Self>,
     pub(crate) read_work: crate::blocking_work::BlockingWork,
-    pub(crate) domain: Arc<DomainRuntime>,
+    pub(crate) domain: Arc<dyn Runtime>,
+    pub(crate) api: alondra_engine_ports::domain_api::DomainApi,
     home: PathBuf,
     pub(crate) gauges: crate::machine::Gauges,
     /// A holder that panics leaves it whole, so it is recovered: `views::live` empties it instead.
@@ -268,7 +269,7 @@ impl Client {
         self.issue_cache.lock().await.clone()
     }
 
-    pub(crate) fn open(domain: Arc<DomainRuntime>, home: &Path, gauges: crate::machine::Gauges) -> Arc<Self> {
+    pub(crate) fn open(domain: Arc<dyn Runtime>, home: &Path, gauges: crate::machine::Gauges) -> Arc<Self> {
         let seconds = std::env::var("ALONDRA_VIEW_OBSERVE_SECONDS").ok();
         let delay = std::env::var("ALONDRA_VIEW_OBSERVE_DELAY_SECONDS").ok();
         let window = crate::views::observation::window(seconds.as_deref(), delay.as_deref());
@@ -285,7 +286,7 @@ impl Client {
         self.view_observation.start_window(seconds, delay_seconds)
     }
 
-    pub(crate) fn open_observed(domain: Arc<DomainRuntime>, home: &Path, gauges: crate::machine::Gauges,
+    pub(crate) fn open_observed(domain: Arc<dyn Runtime>, home: &Path, gauges: crate::machine::Gauges,
         view_observation: crate::views::observation::Observation) -> Arc<Self> {
         let device_languages_path = home.join("device-languages.json");
         let device_languages = match std::fs::read(&device_languages_path) {
@@ -302,12 +303,14 @@ impl Client {
                 Default::default()
             }
         };
-        let read_work = domain.read_work.clone();
+        let api = alondra_engine_ports::domain_api::DomainApi::of(domain.ports());
+        let read_work = api.runtime.work(&*domain, alondra_engine_ports::domain_api::Lane::Read).clone();
         let machine = Arc::new(crate::node_close::Machine(domain.ports().worktrees()));
         let client = Arc::new_cyclic(|shared| Self {
             shared: shared.clone(),
             read_work,
             domain,
+            api,
             home: home.to_owned(),
             gauges,
             views_gauges: Default::default(),
@@ -396,14 +399,10 @@ impl Client {
     pub async fn run(self: Arc<Self>, source: Arc<dyn PrView>) {
         self.use_pr_view(source.clone());
         loop {
-            match self.domain.state() {
-                Ok(state) => {
-                    self.details.refresh(&state, &*source).await;
-                    self.bring_pr_images(&state).await;
-                    pr_details::hand_back_conflicts(&self.domain, &self.details, &crate::domain_messages::user_name());
-                }
-                Err(error) => log!("could not read pull requests for their details: {error:#}"),
-            }
+            let state = self.domain.state();
+            self.details.refresh(&state, &*source).await;
+            self.bring_pr_images(&state).await;
+            pr_details::hand_back_conflicts(&*self.domain, &self.details, &crate::domain_messages::user_name());
             alondra_core::clock::sleep(DETAILS_INTERVAL).await;
         }
     }
@@ -443,7 +442,7 @@ impl Client {
     /// A stored copy in verified chunks, for the relay.
     async fn file_chunk(&self, reference: String, offset: u64, version: Option<String>) -> Response {
         let home = self.home.clone();
-        let reads = self.domain.stored_reads.clone();
+        let reads = crate::runtime_api::stored_reads(&*self.domain);
         let chunk = alondra_core::clock::spawn_blocking(move || reads.stored(&home, &reference, offset, version)).await;
         match chunk {
             Ok(Ok(chunk)) => Json(chunk).into_response(),
@@ -490,15 +489,12 @@ impl Client {
             "machine": machine, "usage": usage, "update": crate::updates::status(&self.home),
             "nodes": nodes, "tasks": tasks, "requests": requests,
             "pull_requests": pull_requests, "inbox_times": inbox_times,
-            "orchestrator": crate::domain_orchestrator::status(&crate::domain_orchestrator::executor(self.domain.clone(), &self.home)).ok(),
+            "orchestrator": self.api.orchestrator.status(self.domain.clone(), &self.home).ok(),
         })).into_response()
     }
 
     fn activity(&self, id: &str) -> Response {
-        let state = match self.domain.state() {
-            Ok(state) => state,
-            Err(_) => return storage(),
-        };
+        let state = self.domain.state();
         let agent = AgentId(id.to_owned());
         if !state.agents.contains_key(&agent) {
             return crate::domain_api::domain_error(DomainError::new("not_found", "agent does not exist"));
@@ -515,10 +511,7 @@ impl Client {
     }
 
     fn search(&self, query: &str) -> Response {
-        let state = match self.domain.state() {
-            Ok(state) => state,
-            Err(_) => return storage(),
-        };
+        let state = self.domain.state();
         let nodes = self.domain.live().nodes();
         let candidates: Vec<(String, String)> = state.agents.values().map(|agent| {
             let node = nodes.iter().find(|node| node.session_id == agent.id.0);
@@ -584,9 +577,10 @@ async fn write(
             Err(_) => storage(),
         };
     }
-    let work = if matches!(&route, Write::Presence | Write::CancelReason(_)) {
-        client.domain.command_work.clone()
-    } else { client.domain.external_work.clone() };
+    let lane = if matches!(&route, Write::Presence | Write::CancelReason(_)) {
+        alondra_engine_ports::domain_api::Lane::Command
+    } else { alondra_engine_ports::domain_api::Lane::External };
+    let work = client.api.runtime.work(&*client.domain, lane).clone();
     let runtime = tokio::runtime::Handle::current();
     match work.run(move || runtime.block_on(async move {
         let authorize = || {
@@ -636,7 +630,7 @@ async fn resolve_delivery(
     let request = format!("local-{}", crate::auth::random_hex(16));
     let domain = client.domain.clone();
     let resolved = alondra_core::clock::spawn_blocking(move || crate::domain_api::encrypted_resolve_delivery_runtime(
-        &domain, &home.clone(), &device.device_id, attempt, Some(&body), (&device.device_id, &request, &digest),
+        &*domain, &home.clone(), &device.device_id, attempt, Some(&body), (&device.device_id, &request, &digest),
         || crate::domain_bootstrap::signed_device(&home, &signed).map(|_| ()).ok_or_else(|| anyhow::anyhow!("device approval was revoked")))).await;
     match resolved {
         Ok(Ok(result)) => {

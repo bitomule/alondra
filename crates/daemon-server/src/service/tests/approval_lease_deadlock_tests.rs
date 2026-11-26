@@ -7,7 +7,6 @@
 //! The shared lease waited behind another shared lease because macOS wakes one waiter when an
 //! exclusive lock is released and parks the rest behind that waiter's lock.
 use crate::approval_lease::ApprovalLease;
-use crate::domain_runtime::DomainRuntime;
 use alondra_domain_model::*;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
