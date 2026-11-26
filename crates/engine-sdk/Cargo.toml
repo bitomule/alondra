@@ -42,6 +42,7 @@ url = "2.5"
 tempfile.workspace = true
 
 [dev-dependencies]
+alondra-domain-rules.workspace = true
 alondra-provider-antigravity.workspace = true
 alondra-provider-claude.workspace = true
 alondra-provider-codex.workspace = true

@@ -67,7 +67,7 @@ fn counts(connection: &Connection) -> [i64; 5] {
 #[test]
 fn staged_command_does_not_commit_or_publish_and_drop_rolls_back_every_effect() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let envelope = information(&mut store);
     let before = store.load().unwrap();
@@ -76,7 +76,7 @@ fn staged_command_does_not_commit_or_publish_and_drop_rolls_back_every_effect() 
     let mut transaction = journal(&store);
     let staged = stage(
         &store.conn,
-        Base::Stored(&store.cached), &store.protected,
+        Base::Stored(&store.cached), &store.protected, &alondra_domain_rules::Rules,
         &Actor::System,
         &envelope,
         Some(("phone", "transaction-op", &[7; 32])),
@@ -106,7 +106,7 @@ fn staged_command_does_not_commit_or_publish_and_drop_rolls_back_every_effect() 
     assert_eq!(store.load().unwrap(), before);
     drop(reader);
     drop(store);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(reopened.load().unwrap(), before);
     assert_eq!(counts(&reopened.conn), before_counts);
 }
@@ -114,7 +114,7 @@ fn staged_command_does_not_commit_or_publish_and_drop_rolls_back_every_effect() 
 #[test]
 fn replay_transport_receipt_waits_for_the_callers_commit() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let envelope = information(&mut store);
     let first = store
@@ -130,7 +130,7 @@ fn replay_transport_receipt_waits_for_the_callers_commit() {
     let mut transaction = journal(&store);
     let staged = stage(
         &store.conn,
-        Base::Stored(&store.cached), &store.protected,
+        Base::Stored(&store.cached), &store.protected, &alondra_domain_rules::Rules,
         &Actor::System,
         &envelope,
         Some(("phone", "replayed-op", &[2; 32])),
@@ -150,7 +150,7 @@ fn replay_transport_receipt_waits_for_the_callers_commit() {
     let mut transaction = journal(&store);
     let transported = stage(
         &store.conn,
-        Base::Stored(&store.cached), &store.protected,
+        Base::Stored(&store.cached), &store.protected, &alondra_domain_rules::Rules,
         &Actor::System,
         &envelope,
         Some(("phone", "first-op", &[1; 32])),
@@ -172,7 +172,7 @@ fn replay_transport_receipt_waits_for_the_callers_commit() {
 #[test]
 fn rejected_command_leaves_the_callers_transaction_owned_and_rollbackable() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let mut envelope = information(&mut store);
     envelope.expected_revision += 1;
@@ -188,7 +188,7 @@ fn rejected_command_leaves_the_callers_transaction_owned_and_rollbackable() {
         .execute("INSERT INTO command_outer_witness VALUES(1)", [])
         .unwrap();
     assert!(
-        matches!(stage(&store.conn, Base::Stored(&store.cached), &store.protected, &user(), &envelope, None, false, Attached::None, &mut transaction), Err(StoreError::Domain(error)) if error.code == "stale_revision")
+        matches!(stage(&store.conn, Base::Stored(&store.cached), &store.protected, &alondra_domain_rules::Rules, &user(), &envelope, None, false, Attached::None, &mut transaction), Err(StoreError::Domain(error)) if error.code == "stale_revision")
     );
     assert!(!store.conn.is_autocommit());
     assert_eq!(rows(&store.conn, "command_outer_witness"), 1);
@@ -201,7 +201,7 @@ fn rejected_command_leaves_the_callers_transaction_owned_and_rollbackable() {
 #[test]
 fn receipt_failure_after_core_writes_cannot_escape_the_outer_rollback() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let envelope = information(&mut store);
     store.conn.execute_batch("CREATE TRIGGER reject_staged_receipt BEFORE INSERT ON semantic_receipts BEGIN SELECT RAISE(ABORT,'fixture receipt refusal'); END").unwrap();
@@ -211,7 +211,7 @@ fn receipt_failure_after_core_writes_cannot_escape_the_outer_rollback() {
     let mut transaction = journal(&store);
     let error = stage(
         &store.conn,
-        Base::Stored(&store.cached), &store.protected,
+        Base::Stored(&store.cached), &store.protected, &alondra_domain_rules::Rules,
         &Actor::System,
         &envelope,
         None,
@@ -237,7 +237,7 @@ fn receipt_failure_after_core_writes_cannot_escape_the_outer_rollback() {
 #[test]
 fn failed_nested_begin_does_not_commit_or_destroy_the_existing_transaction() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let envelope = information(&mut store);
     let reader = Connection::open(fixture.path()).unwrap();
@@ -249,7 +249,7 @@ fn failed_nested_begin_does_not_commit_or_destroy_the_existing_transaction() {
     assert!(!store.conn.is_autocommit());
     let staged = stage(
         &store.conn,
-        Base::Stored(&store.cached), &store.protected,
+        Base::Stored(&store.cached), &store.protected, &alondra_domain_rules::Rules,
         &Actor::System,
         &envelope,
         None,
@@ -266,7 +266,7 @@ fn failed_nested_begin_does_not_commit_or_destroy_the_existing_transaction() {
 #[test]
 fn multiple_guarded_commands_commit_together_and_publish_only_the_final_state() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let first_envelope = information(&mut store);
     let before = store.load().unwrap();
@@ -275,7 +275,7 @@ fn multiple_guarded_commands_commit_together_and_publish_only_the_final_state() 
     let mut transaction = journal(&store);
     let first = stage(
         &store.conn,
-        Base::Stored(&store.cached), &store.protected,
+        Base::Stored(&store.cached), &store.protected, &alondra_domain_rules::Rules,
         &Actor::System,
         &first_envelope,
         None,
@@ -299,7 +299,7 @@ fn multiple_guarded_commands_commit_together_and_publish_only_the_final_state() 
     }
     let second = stage(
         &store.conn,
-        Base::Stored(&store.cached), &store.protected,
+        Base::Stored(&store.cached), &store.protected, &alondra_domain_rules::Rules,
         &Actor::System,
         &second_envelope,
         None,
@@ -334,14 +334,14 @@ fn multiple_guarded_commands_commit_together_and_publish_only_the_final_state() 
     assert_eq!(store.load().unwrap(), second.commit.state);
     drop(reader);
     drop(store);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(reopened.load().unwrap(), second.commit.state);
 }
 
 #[test]
 fn deferred_commit_failure_rolls_back_staged_core_effects_without_publication() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let envelope = information(&mut store);
     let before = store.load().unwrap();
@@ -358,7 +358,7 @@ fn deferred_commit_failure_rolls_back_staged_core_effects_without_publication() 
         .unwrap();
     let staged = stage(
         &store.conn,
-        Base::Stored(&store.cached), &store.protected,
+        Base::Stored(&store.cached), &store.protected, &alondra_domain_rules::Rules,
         &Actor::System,
         &envelope,
         None,
@@ -387,7 +387,7 @@ fn deferred_commit_failure_rolls_back_staged_core_effects_without_publication() 
 #[test]
 fn a_new_command_that_changes_nothing_is_refused_and_a_repeated_one_answers_its_first_effect() {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let information = information(&mut store);
     store.execute_authenticated(&Actor::System, &information, None).unwrap();

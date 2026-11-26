@@ -5,6 +5,7 @@ use alondra_domain_model::*;
 use alondra_views as views;
 use alondra_domain_model::request_outcome::DoneCard;
 use std::collections::BTreeSet;
+use alondra_domain_rules::Apply as _;
 
 /// Case 9: retain the beta's version, build and destination when closing does not repeat them.
 #[test]

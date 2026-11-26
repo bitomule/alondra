@@ -17,7 +17,7 @@ use alondra_core::Millis;
 use alondra_core::metrics::report::MetricsInputs;
 use alondra_domain_model::{
     AttachmentRef,
-    Actor, AgentId, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, DomainState, InteractionId, LaunchPlan,
+    Actor, AgentId, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, DomainRules, DomainState, InteractionId, LaunchPlan,
     RequestId, Revision, TaskId,
 };
 use alondra_store::AuthorityScope;
@@ -87,6 +87,8 @@ pub trait Journal: Send {
     /// The adapter behind the port, for the tests that read its tables.
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+    /// The rules this journal applies commands with: what anticipates a command without applying it.
+    fn rules(&self) -> &'static dyn DomainRules;
     /// Stages commands and observations in one transaction and commits them together.
     fn own_with(&mut self, scope: AuthorityScope, stage: &mut dyn FnMut(&mut dyn OwnerJournal) -> std::result::Result<(), StoreError>) -> std::result::Result<OwnerCommit, StoreError>;
     fn launched_tasks_of(&self, tasks: &mut dyn Iterator<Item = &TaskId>) -> Result<std::collections::BTreeSet<TaskId>>;

@@ -32,7 +32,7 @@ fn a_test_opens_the_engine_as_it_said_on_its_own_thread_only() {
 #[should_panic(expected = "the daemon gives the runtime its admission gate")]
 fn a_runtime_given_no_gate_says_so_instead_of_letting_everything_through() {
     let home = home();
-    let runtime = open_engine_at(&home, &crate::domain_store::active_path(&home), &alondra_store_sqlite::Sqlite).unwrap();
+    let runtime = open_engine_at(&home, &crate::domain_store::active_path(&home), &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
     drop(runtime.gate());
 }
 
@@ -40,6 +40,6 @@ fn a_runtime_given_no_gate_says_so_instead_of_letting_everything_through() {
 #[should_panic(expected = "the daemon gives the runtime the owner of its SDK hosts")]
 fn a_runtime_given_no_owner_of_its_hosts_says_so_instead_of_running_none() {
     let home = home();
-    let runtime = open_engine_at(&home, &crate::domain_store::active_path(&home), &alondra_store_sqlite::Sqlite).unwrap();
+    let runtime = open_engine_at(&home, &crate::domain_store::active_path(&home), &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
     drop(runtime.hosts());
 }

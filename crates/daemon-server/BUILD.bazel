@@ -37,7 +37,7 @@ adapter_in_crate(
 TEST_COMPILE_DATA = [
     "//crates/core:fixtures/ctrl_trivial_2.jsonl",
     "//crates/core:fixtures/quill.jsonl",
-    "//crates/domain-model:src/tests.rs",
+    "//crates/domain-rules:src/tests.rs",
     "//crates/store-sqlite:src/schedule_acceptance_tests.rs",
     "//crates/store-sqlite:src/tests.rs",
     "//crates/daemon-support:src/domain_authority.rs",
@@ -94,7 +94,7 @@ incremental_rust_test(
         "HOME": ".",
         "TEST_EXECS": "/bin/cat /bin/ls /bin/sh /bin/sleep /usr/bin/defaults /usr/bin/head /usr/bin/id /usr/bin/python3 /usr/bin/touch /usr/bin/true /usr/bin/wc tmpdir",
     },
-    deps = TEST_DEPS + ["//crates/provider-claude:claude_host_model", "//crates/provider-codex:codex_host_model"],
+    deps = ["//crates/domain-rules:domain_rules"] + TEST_DEPS + ["//crates/provider-claude:claude_host_model", "//crates/provider-codex:codex_host_model"],
     data = [
         "//fixtures/client-v2",
         "//fixtures/views:all",
@@ -130,7 +130,7 @@ incremental_rust_test(
         "FIXTURE_CODEX_MCP_NATIVE": "$(rootpath //agent-host:fake-codex-mcp.py)",
         "TEST_EXECS": "$(rootpath //agent-host:alondra-host) /usr/bin/git /usr/bin/python3 tmpdir",
     },
-    deps = TEST_DEPS + ["//crates/agent-runtime:agent_runtime"],
+    deps = ["//crates/domain-rules:domain_rules"] + TEST_DEPS + ["//crates/agent-runtime:agent_runtime"],
     data = [
         "//agent-host:persistent-fake-claude.py",
         "//agent-host:alondra-host",

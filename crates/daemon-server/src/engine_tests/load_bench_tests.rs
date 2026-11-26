@@ -19,10 +19,10 @@ async fn repeated_card_requests() {
     std::fs::create_dir_all(&home).unwrap();
     let database = crate::domain_store::active_path(&home);
     {
-        let mut store = alondra_store_sqlite::DomainStore::open(&database).unwrap();
+        let mut store = alondra_store_sqlite::DomainStore::open(&database, &alondra_domain_rules::Rules).unwrap();
         seed(&mut store, 20);
     }
-    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
     let signing = SigningKey::from_slice(&[9; 32]).unwrap();
     let auth = daemon.auth();
     let device = auth.pair(&auth.new_pairing_code(), "Request benchmark",
@@ -155,10 +155,10 @@ async fn trace_card_live_store_reads() {
     std::fs::create_dir_all(&home).unwrap();
     {
         let database = crate::domain_store::active_path(&home);
-        let mut store = alondra_store_sqlite::DomainStore::open(&database).unwrap();
+        let mut store = alondra_store_sqlite::DomainStore::open(&database, &alondra_domain_rules::Rules).unwrap();
         seed(&mut store, 20);
     }
-    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
     let client = daemon.client();
     let read = client.domain.read();
     let before = process_resources();

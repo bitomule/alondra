@@ -12,7 +12,7 @@ impl DomainState {
     }
 
     /// The same rules, reading what holds a delivery back from `holds`.
-    pub(in crate) fn guard_given(&self, actor: &Actor, envelope: &CommandEnvelope, holds: &dyn Holds) -> Result<()> {
+    pub fn guard_given(&self, actor: &Actor, envelope: &CommandEnvelope, holds: &dyn Holds) -> Result<()> {
         self.admit(actor, envelope)?;
         self.refuse_untracked_prs(&envelope.command)?;
         match &envelope.command {
@@ -74,7 +74,7 @@ impl DomainState {
 
     /// The checks every command passes before its own rules: protocol, epoch, command id, the
     /// actor's fence, and whether the client saw the last change to what it decides on.
-    pub(super) fn admit(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<()> {
+    pub fn admit(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<()> {
         if envelope.protocol_version != PROTOCOL_VERSION {
             return fail("incompatible_protocol", "Protocol version 2 is required");
         };
@@ -101,7 +101,7 @@ impl DomainState {
     }
 
     /// Who sends the feedback and the task it goes to.
-    pub(super) fn feedback_guard(
+    pub fn feedback_guard(
         &self,
         actor: &Actor,
         presentation_id: &InteractionId,
@@ -125,7 +125,7 @@ impl DomainState {
         Ok((u, t.id.clone()))
     }
 
-    pub(super) fn feedback_target(current: &[DeliveryTarget], submitted: &[DeliveryTarget]) -> Result<FeedbackTarget> {
+    pub fn feedback_target(current: &[DeliveryTarget], submitted: &[DeliveryTarget]) -> Result<FeedbackTarget> {
         if current == submitted {
             return Ok(FeedbackTarget::Delivery);
         }
@@ -139,7 +139,7 @@ impl DomainState {
 
     /// Who accepts. Every PR the delivery carries that is neither merged at its head nor
     /// already authorized is authorized with it, so each must pass the merge rules too.
-    pub(super) fn accept_delivery_guard(
+    pub fn accept_delivery_guard(
         &self,
         actor: &Actor,
         presentation_id: &InteractionId,
@@ -165,7 +165,7 @@ impl DomainState {
     }
 
     /// The PRs accepting a delivery authorizes, each with its head and the method it merges by.
-    pub(super) fn accepted_merges<'a>(
+    pub fn accepted_merges<'a>(
         &self,
         presentation_id: &InteractionId,
         targets: &'a [DeliveryTarget],
@@ -189,13 +189,13 @@ impl DomainState {
         Ok(merges)
     }
 
-    pub(super) fn acceptance_authorization(&self, pr_id: &PrId) -> AuthorizationId {
+    pub fn acceptance_authorization(&self, pr_id: &PrId) -> AuthorizationId {
         AuthorizationId(format!("accept-{}-{}", self.revision + 1, pr_id.0))
     }
 
     /// Accepting records a decision on every document revision the delivery carries, which
     /// needs that document's review.
-    pub(super) fn acceptance_guard(&self, presentation: &InteractionId) -> Result<()> {
+    pub fn acceptance_guard(&self, presentation: &InteractionId) -> Result<()> {
         let (p, t, targets) = self.presentation(presentation)?;
         if !t.pending_user_inputs.is_empty() {
             return fail("pending_user_message", "The user sent new work after this result: a new final delivery must address it or explain why it cannot be done");
@@ -214,7 +214,7 @@ impl DomainState {
     }
 
     /// Who decides, and the plan the delivery proposes.
-    pub(super) fn decide_plan_guard(
+    pub fn decide_plan_guard(
         &self,
         actor: &Actor,
         presentation_id: &InteractionId,
@@ -247,7 +247,7 @@ impl DomainState {
 
     /// Who authorizes: the user, or Alondra on its own for an untouched delivery of an
     /// auto-merge Request.
-    pub(super) fn merge_guard(
+    pub fn merge_guard(
         &self,
         actor: &Actor,
         authorization_id: &AuthorizationId,
@@ -279,7 +279,7 @@ impl DomainState {
     /// The go-ahead to merge one presented PR head. An attempt at an older head cannot be in
     /// flight while the PR is open at a newer one, so only an attempt at the current head holds
     /// a new authorization back.
-    pub(super) fn authorize_merge_guard(
+    pub fn authorize_merge_guard(
         &self,
         authorization_id: &AuthorizationId,
         presentation_id: &InteractionId,
@@ -343,7 +343,7 @@ impl DomainState {
     /// The user, or Alondra, stops the turn or the work the node's SDK task runs now, or what
     /// holds Claude while the task waits for its background work to wake it or for Claude to take
     /// what it was handed.
-    pub(super) fn interrupt_guard(&self, actor: &Actor, agent_id: &AgentId) -> Result<(TaskId, LifecycleRecord)> {
+    pub fn interrupt_guard(&self, actor: &Actor, agent_id: &AgentId) -> Result<(TaskId, LifecycleRecord)> {
         if !matches!(actor, Actor::User { .. } | Actor::System) {
             return fail("forbidden", "Only the user or Alondra interrupts a node");
         }
@@ -375,7 +375,7 @@ impl DomainState {
 
     /// The user, or Alondra, ends Claude's process when the turn the node's SDK task runs stayed
     /// open after Claude accepted its interrupt: never before, and only once.
-    pub(super) fn force_stop_guard(&self, actor: &Actor, agent_id: &AgentId) -> Result<(TaskId, LifecycleRecord)> {
+    pub fn force_stop_guard(&self, actor: &Actor, agent_id: &AgentId) -> Result<(TaskId, LifecycleRecord)> {
         if !matches!(actor, Actor::User { .. } | Actor::System) {
             return fail("forbidden", "Only the user or Alondra force-stops a node");
         }
@@ -412,7 +412,7 @@ impl DomainState {
     }
 
     /// Alondra runs an operation on the task's SDK execution.
-    pub(super) fn control_guard(&self, actor: &Actor, task_id: &TaskId, operation: ControlRecord) -> Result<LifecycleRecord> {
+    pub fn control_guard(&self, actor: &Actor, task_id: &TaskId, operation: ControlRecord) -> Result<LifecycleRecord> {
         system(actor)?;
         let lifecycle = self.sdk_lifecycle(task_id)?;
         let control = format!("control-{task_id}-{}", lifecycle.revision() + 1);
@@ -420,7 +420,7 @@ impl DomainState {
     }
 
     /// Alondra cancels on its own only a task nothing has started; anyone else must manage it.
-    pub(super) fn cancel_guard(&self, actor: &Actor, task_id: &TaskId) -> Result<()> {
+    pub fn cancel_guard(&self, actor: &Actor, task_id: &TaskId) -> Result<()> {
         let unstarted = self.tasks.get(task_id).is_some_and(|task| {
             matches!(task.state, TaskState::NotStarted | TaskState::WaitingDependency) && !task.started && task.agent_id.is_none()
         });
@@ -436,7 +436,7 @@ impl DomainState {
         self.delivered_pr_stays(actor, task_id, self.lifecycle_of(task_id)?.phase())
     }
 
-    pub(super) fn reopen_guard(&self, actor: &Actor, task_id: &TaskId) -> Result<()> {
+    pub fn reopen_guard(&self, actor: &Actor, task_id: &TaskId) -> Result<()> {
         self.manager(actor)?;
         let task = self.task(task_id)?;
         if !task.state.terminal() {
@@ -459,7 +459,7 @@ impl DomainState {
         Ok(())
     }
 
-    pub(super) fn revoke_grant_guard(&self, actor: &Actor, task_id: &TaskId, card: &InteractionId) -> Result<()> {
+    pub fn revoke_grant_guard(&self, actor: &Actor, task_id: &TaskId, card: &InteractionId) -> Result<()> {
         user(actor)?;
         if !self.task(task_id)?.allowed.contains_key(card) {
             return fail("not_found", "That permission is no longer allowed in this task");
@@ -467,7 +467,7 @@ impl DomainState {
         Ok(())
     }
 
-    pub(super) fn report_failure_guard(&self, actor: &Actor, task_id: &TaskId) -> Result<ReportedFailure> {
+    pub fn report_failure_guard(&self, actor: &Actor, task_id: &TaskId) -> Result<ReportedFailure> {
         user(actor)?;
         self.task(task_id)?;
         match self.task_failure(task_id) {
@@ -476,7 +476,7 @@ impl DomainState {
         }
     }
 
-    pub(super) fn archive_guard(&self, actor: &Actor, task_id: &TaskId, archived: bool) -> Result<()> {
+    pub fn archive_guard(&self, actor: &Actor, task_id: &TaskId, archived: bool) -> Result<()> {
         user(actor)?;
         let task = self.task(task_id)?;
         if archived && !task.state.terminal() {
@@ -489,7 +489,7 @@ impl DomainState {
         Ok(())
     }
 
-    pub(super) fn merge_method_guard(&self, actor: &Actor, method: MergeMethod) -> Result<()> {
+    pub fn merge_method_guard(&self, actor: &Actor, method: MergeMethod) -> Result<()> {
         user(actor)?;
         if self.merge_method == method {
             return fail("no_effect", &format!("set_merge_method changed nothing: PRs already merge with {}. Nothing was recorded.", method.id()));
@@ -497,7 +497,7 @@ impl DomainState {
         Ok(())
     }
 
-    pub(super) fn branch_update_guard(&self, actor: &Actor, update: BranchUpdate) -> Result<()> {
+    pub fn branch_update_guard(&self, actor: &Actor, update: BranchUpdate) -> Result<()> {
         user(actor)?;
         if self.branch_update == update {
             return fail("no_effect", &format!("set_branch_update changed nothing: branches are already updated with {}. Nothing was recorded.", update.id()));
@@ -508,7 +508,7 @@ impl DomainState {
     /// What clearing the completed work takes off the lists: the ended Tasks the user saw at
     /// revision `seen`, and the closed Requests listed without Tasks (an answered one is not listed) or whose
     /// last Task is still ending.
-    pub(super) fn clear_guard(&self, actor: &Actor, seen: Revision) -> Result<(Vec<TaskId>, Vec<RequestId>)> {
+    pub fn clear_guard(&self, actor: &Actor, seen: Revision) -> Result<(Vec<TaskId>, Vec<RequestId>)> {
         user(actor)?;
         if seen > self.revision {
             return fail("invalid_input", "The list was seen at a revision the state has not reached");
@@ -529,7 +529,7 @@ impl DomainState {
 
     /// A closed Request whose Tasks are all over but one still ending: that Task cannot be archived yet,
     /// so the Request leaves the list in its place and the Task follows it.
-    fn closed_with_tasks_still_ending(&self, request: &Request) -> bool {
+    pub fn closed_with_tasks_still_ending(&self, request: &Request) -> bool {
         let mut tasks = self.tasks.values().filter(|t| t.request_id == request.id).peekable();
         request.closed && !request.cleared && !request.message && tasks.peek().is_some()
             && tasks.all(|t| t.over() || t.archived)
@@ -538,6 +538,6 @@ impl DomainState {
 }
 
 /// The Request that implementing a proposed plan creates.
-pub(super) fn implementation_request(presentation_id: &InteractionId) -> RequestId {
+pub fn implementation_request(presentation_id: &InteractionId) -> RequestId {
     RequestId(format!("implement-{}", presentation_id.0))
 }

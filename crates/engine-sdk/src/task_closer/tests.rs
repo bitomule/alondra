@@ -153,7 +153,7 @@ async fn a_user_message_saved_before_removal_keeps_the_task_and_session_open() {
     rig.pass(T0 + MINUTE).await;
     assert_eq!(rig.sessions.removals(), 0);
     assert!(!rig.domain.state().unwrap().tasks[&TaskId::from("t")].over());
-    let mut reopened = alondra_store_sqlite::DomainStore::open(&rig._home.0.join("domain.db")).unwrap();
+    let mut reopened = alondra_store_sqlite::DomainStore::open(&rig._home.0.join("domain.db"), &alondra_domain_rules::Rules).unwrap();
     let state = reopened.load().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t")].pending_user_inputs.len(), 1, "the obligation survives reopening SQLite");
     assert!(!reopened.claim_task_removal(&"t".into(), T0 + MINUTE).unwrap());

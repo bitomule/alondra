@@ -24,7 +24,7 @@ fn result() -> Value {
 /// Runs `test` on a daemon whose store holds task-1 running on agent-1.
 fn with_a_running_task(test: impl FnOnce(&crate::domain_runtime::DomainRuntime)) {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let state = store.load().unwrap();
     let start = CommandEnvelope {

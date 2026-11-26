@@ -3,6 +3,7 @@ use super::*;
 use std::collections::BTreeSet;
 use std::os::unix::fs::DirBuilderExt;
 use std::time::Instant;
+use alondra_domain_rules::Apply as _;
 
 const TASKS: usize = 200;
 const DELIVERIES: usize = 10;
@@ -44,7 +45,7 @@ fn delivery(t: usize, n: usize) -> Command {
 /// `tasks` started tasks whose nodes delivered `deliveries` times each, the last one `long` times more.
 fn seeded(root: &Path, tasks: usize, deliveries: usize, long: usize) -> DomainStore {
     std::fs::DirBuilder::new().mode(0o700).create(root).unwrap();
-    let mut store = DomainStore::open(&root.join("alondra.db")).unwrap();
+    let mut store = DomainStore::open(&root.join("alondra.db"), &alondra_domain_rules::Rules).unwrap();
     run(&mut store, &Actor::User { user_id: "device:phone".into() }, Command::CreateRequest {
         request_id: "r-cost".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
     });
@@ -133,7 +134,7 @@ fn a_command_on_a_long_journal_writes_and_replays_only_its_new_records() {
         "beyond the store reading the journal from its rows, a delivery to a task with {LONG} more records costs what it costs a short one");
     let state = store.load().unwrap();
     drop(store);
-    let reopened = DomainStore::open(&root.join("alondra.db")).unwrap().load().unwrap();
+    let reopened = DomainStore::open(&root.join("alondra.db"), &alondra_domain_rules::Rules).unwrap().load().unwrap();
     assert_eq!(reopened.lifecycle_journal, state.lifecycle_journal);
     assert_eq!(reopened.tasks, state.tasks);
 }
@@ -142,17 +143,17 @@ fn a_command_on_a_long_journal_writes_and_replays_only_its_new_records() {
 fn a_store_reads_what_another_store_of_the_same_database_committed() {
     let root = crate::test_support::Directory::new();
     let mut first = seeded(&root, 1, 2, 0);
-    let mut second = DomainStore::open(&root.join("alondra.db")).unwrap();
+    let mut second = DomainStore::open(&root.join("alondra.db"), &alondra_domain_rules::Rules).unwrap();
     run(&mut second, &node(0), delivery(0, 10));
     run(&mut first, &node(0), delivery(0, 11));
     run(&mut second, &node(0), delivery(0, 12));
     run(&mut first, &node(0), delivery(0, 13));
     drop(first);
     run(&mut second, &node(0), delivery(0, 14));
-    let mut reopened = DomainStore::open(&root.join("alondra.db")).unwrap();
+    let mut reopened = DomainStore::open(&root.join("alondra.db"), &alondra_domain_rules::Rules).unwrap();
     run(&mut reopened, &node(0), delivery(0, 15));
     let state = reopened.load().unwrap();
     drop(reopened);
     drop(second);
-    assert_eq!(DomainStore::open(&root.join("alondra.db")).unwrap().load().unwrap().lifecycle_journal, state.lifecycle_journal);
+    assert_eq!(DomainStore::open(&root.join("alondra.db"), &alondra_domain_rules::Rules).unwrap().load().unwrap().lifecycle_journal, state.lifecycle_journal);
 }

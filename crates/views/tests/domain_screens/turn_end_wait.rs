@@ -10,6 +10,7 @@ use alondra_core::text::Lang;
 use alondra_views::{Client, RenderContext, Transport, build, live::LiveSnapshot};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
+use alondra_domain_rules::Apply as _;
 
 fn render(s: &DomainState, screen: &str, client: Client) -> String {
     let index = ReadIndex::build(s);

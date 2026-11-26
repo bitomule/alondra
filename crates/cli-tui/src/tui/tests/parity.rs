@@ -1,6 +1,7 @@
 //! Views terminal contract tests against synthetic server documents.
 
 use super::*;
+use alondra_domain_rules::Apply as _;
 
 fn fixtures_dir() -> std::path::PathBuf {
     views_fixtures("cards")

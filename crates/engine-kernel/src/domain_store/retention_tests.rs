@@ -24,7 +24,7 @@ fn present() -> Command {
 }
 /// Four commits: the three of `seeded`, ten days old, and a delivery of today.
 fn store_with_history(fixture: &Fixture) -> (DomainStore, CommandEnvelope, CommandEnvelope, i64) {
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     let old = store.conn.query_row("SELECT max(revision) FROM command_audit", [], |row| row.get::<_, i64>(0)).unwrap();
     let request = Command::CreateRequest { request_id: "request-1".into(), body: "Do useful work".into(), auto_merge: false, maintenance: false, message: false };
@@ -137,7 +137,7 @@ fn a_command_older_than_a_week_keeps_its_revision_and_time_and_loses_its_body_an
     assert_eq!(drain(&mut store, now, 1), [0, 0, 0, 0, 0, 0, 0, 0], "a second run finds nothing left");
     store.integrity_check().unwrap();
     drop(store);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(clock(&mut reopened, now), clock_before);
 }
 
@@ -253,9 +253,9 @@ fn a_store_of_the_previous_release_opens_into_the_schema_of_a_new_one_with_its_r
     let rows = (audit(&old), receipts(&old));
     drop(old);
     let fresh = Fixture::new();
-    drop(DomainStore::open(&fresh.path()).unwrap());
+    drop(DomainStore::open(&fresh.path(), &alondra_domain_rules::Rules).unwrap());
 
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
 
     assert_eq!(schema(&store.conn), schema(&Connection::open(fresh.path()).unwrap()));
     assert_eq!((audit(&store.conn), receipts(&store.conn)), rows);
@@ -267,7 +267,7 @@ fn a_store_of_the_previous_release_opens_into_the_schema_of_a_new_one_with_its_r
     assert_eq!(receipts(&store.conn), ["present"]);
     store.integrity_check().unwrap();
     drop(store);
-    DomainStore::open(&fixture.path()).unwrap();
+    DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
 }
 
 #[test]
@@ -292,14 +292,14 @@ fn a_store_whose_audit_rows_held_their_bodies_is_rebuilt_once_they_all_moved() {
 #[test]
 fn an_audit_table_of_unknown_shape_is_refused() {
     let fixture = Fixture::new();
-    let store = DomainStore::open(&fixture.path()).unwrap();
+    let store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let version: i64 = store.conn.pragma_query_value(None, "schema_version", |row| row.get(0)).unwrap();
     store.conn.execute_batch("PRAGMA writable_schema=ON").unwrap();
     store.conn.execute("UPDATE sqlite_schema SET sql=replace(sql,'at INTEGER NOT NULL','at INTEGER') WHERE type='table' AND name='command_audit'", []).unwrap();
     store.conn.pragma_update(None, "schema_version", version + 1).unwrap();
     store.conn.execute_batch("PRAGMA writable_schema=OFF").unwrap();
     drop(store);
-    let refused = DomainStore::open(&fixture.path()).err().map(|error| format!("{error:#}"));
+    let refused = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).err().map(|error| format!("{error:#}"));
     assert!(refused.as_deref().is_some_and(|error| error.contains("unexpected command_audit definition")), "{refused:?}");
 }
 
@@ -307,7 +307,7 @@ fn an_audit_table_of_unknown_shape_is_refused() {
 /// Runs `test` on a daemon whose store holds a done task with cards to compact.
 pub fn with_an_ended_task(test: impl FnOnce(&crate::domain_runtime::DomainRuntime)) {
     let fixture = Fixture::new();
-    drop(ended_task(&fixture));
+    drop(ended_task(&fixture, &alondra_domain_rules::Rules));
     let runtime = crate::domain_runtime::DomainRuntime::open_unwired_at(&fixture.0, &fixture.path()).unwrap();
     test(&runtime);
 }
@@ -315,7 +315,7 @@ pub fn with_an_ended_task(test: impl FnOnce(&crate::domain_runtime::DomainRuntim
 #[test]
 fn the_daemon_compacts_an_ended_tasks_cards_and_messages() {
     let fixture = Fixture::new();
-    let store = ended_task(&fixture);
+    let store = ended_task(&fixture, &alondra_domain_rules::Rules);
     store.conn.execute("UPDATE domain_outbox SET state='handed'", []).unwrap();
     store.conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM;").unwrap();
     let messages: i64 = store.conn.query_row("SELECT count(*) FROM domain_messages WHERE task_id='task-1' AND message<>''", [], |row| row.get(0)).unwrap();
@@ -345,7 +345,7 @@ fn the_daemon_compacts_an_ended_tasks_cards_and_messages() {
     let again = runtime.retain(now).unwrap();
     assert_eq!(again.compacted, 0);
     drop(runtime);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(*reopened.load().unwrap(), *after, "what the daemon holds is what the store keeps");
     let reopen = CommandEnvelope { expected_revision: before.revision, ..envelope(&mut reopened, "reopen", Command::ReopenTask { task_id: "task-1".into() }) };
     reopened.execute_authenticated(&Actor::User { user_id: "user-1".into() }, &reopen, None).expect("a button shown before the compaction still works");
@@ -354,23 +354,23 @@ fn the_daemon_compacts_an_ended_tasks_cards_and_messages() {
 #[test]
 fn a_result_compacted_before_interactions_knew_they_were_shortened_is_marked_once_on_opening() {
     let fixture = Fixture::new();
-    drop(ended_task(&fixture));
+    drop(ended_task(&fixture, &alondra_domain_rules::Rules));
     let runtime = crate::domain_runtime::DomainRuntime::open_unwired_at(&fixture.0, &fixture.path()).unwrap();
     assert_eq!(runtime.retain(alondra_core::now_millis()).unwrap().compacted, 1);
     assert!(runtime.state().unwrap().interactions[&InteractionId::from("delivery-1")].shortened);
     drop(runtime);
-    let store = DomainStore::open(&fixture.path()).unwrap();
+    let store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     store.conn.execute_batch("ALTER TABLE interactions DROP COLUMN shortened;").unwrap();
     store.conn.execute("UPDATE interactions SET body=body||char(10)||'[shortened]' WHERE id='ask-1'", []).unwrap();
     drop(store);
 
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     let state = store.load().unwrap();
     assert!(state.interactions[&InteractionId::from("delivery-1")].shortened, "the excerpt Alondra wrote is marked");
     assert!(!state.interactions[&InteractionId::from("ask-1")].shortened, "a marker in a card that is not a final result marks nothing");
     store.conn.execute("UPDATE interactions SET shortened=0 WHERE id='delivery-1'", []).unwrap();
     drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert!(!store.load().unwrap().interactions[&InteractionId::from("delivery-1")].shortened, "the text is read once, never again");
 }
 

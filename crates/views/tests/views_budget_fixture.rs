@@ -3,6 +3,7 @@
 //! building the domain copies it through JSON, which generates the code that reads and writes all of
 //! it: in the budgets' crate, every edit below it would generate that code again from scratch
 //! (docs/architecture/build-graph.md).
+use alondra_domain_rules::Apply as _;
 use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
 use alondra_core::metrics::fold::Outcome;
 use alondra_core::metrics::report::{DayRow, MetricsInputs, Release, Spend, Sums, TaskRow, Tokens, WeekRow};

@@ -4,7 +4,7 @@ use alondra_domain_model::*;
 
 fn store() -> (Fixture, DomainStore) {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     (fixture, store)
 }
@@ -39,7 +39,7 @@ fn a_store_made_before_routing_gains_provider_and_tags_empty_for_its_old_rows() 
         ALTER TABLE task_metrics DROP COLUMN provider; ALTER TABLE task_metrics DROP COLUMN kind;").unwrap();
     drop(store);
 
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(reopened.model_decision_routing().unwrap(), [(None, None, None, None)], "the old row keeps its place, without provider or tags");
     let tags = serde_json::from_value(serde_json::json!({"kind": "migration", "risks": ["data_migration", "concurrency"]})).unwrap();
     reopened.record_model_decision(&Decision { provider: Some(alondra_core::accounts::Provider::Codex), tags: Some(tags), ..sonnet_launch() }).unwrap();
@@ -57,7 +57,7 @@ fn a_store_made_before_model_metrics_opens_in_place_and_keeps_its_rows() {
     store.conn.execute_batch("DROP TABLE model_decisions; CREATE TABLE IF NOT EXISTS node_costs(session_id TEXT PRIMARY KEY);").unwrap();
     drop(store);
 
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(reopened.load().unwrap(), before, "the domain is as it was");
     assert_eq!(reopened.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), crate::SCHEMA_VERSION);
     assert!(!fixture.0.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".old-")), "nothing was moved aside");
@@ -68,6 +68,6 @@ fn a_store_made_before_model_metrics_opens_in_place_and_keeps_its_rows() {
     assert!(reopened.conn.execute("DELETE FROM model_decisions", []).is_err(), "the recreated table is guarded too");
     drop(reopened);
 
-    let again = DomainStore::open(&fixture.path()).unwrap();
+    let again = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
     assert_eq!(again.model_decision_rows().unwrap().len(), 1, "a reopen keeps recorded decisions");
 }

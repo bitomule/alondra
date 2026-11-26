@@ -320,6 +320,7 @@ pub fn recover(action: Recovery, run_id: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use alondra_domain_rules::Apply as _;
     use super::*;
     #[test]
     fn a_read_the_daemon_answers_late_is_asked_again_instead_of_failing() {

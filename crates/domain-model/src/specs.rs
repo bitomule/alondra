@@ -271,7 +271,7 @@ impl ApprovedSpecs {
             .map(|(path, text)| (path.clone(), text.clone())).collect()
     }
 
-    pub(crate) fn merge(&mut self, files: &SpecFiles, before: &BTreeMap<String, Option<String>>) {
+    pub fn merge(&mut self, files: &SpecFiles, before: &BTreeMap<String, Option<String>>) {
         for (path, text) in files {
             self.before.entry(path.clone()).or_insert_with(|| before.get(path).cloned().flatten());
             self.files.insert(path.clone(), text.clone());
@@ -384,7 +384,7 @@ impl TaskSpecs {
         self.approved.as_ref().map(ApprovedSpecs::due).unwrap_or_default()
     }
 
-    pub(crate) fn approve(&mut self, card: &InteractionId, revision: Revision, level: SpecLevel, mode: SpecMode, dirs: &SpecDirs,
+    pub fn approve(&mut self, card: &InteractionId, revision: Revision, level: SpecLevel, mode: SpecMode, dirs: &SpecDirs,
         files: &SpecFiles, before: &BTreeMap<String, Option<String>>) {
         let approved = self.approved.get_or_insert_with(|| ApprovedSpecs {
             card: card.clone(), revision, level, mode, files: SpecFiles::new(), before: BTreeMap::new(), dirs: dirs.clone(), unwritten: BTreeSet::new(),
@@ -392,14 +392,14 @@ impl TaskSpecs {
         approved.merge(files, before);
     }
 
-    pub(crate) fn answered(&mut self, answer: DecisionAnswer) {
+    pub fn answered(&mut self, answer: DecisionAnswer) {
         self.decisions.retain(|known| known.id != answer.id || known.card != answer.card);
         self.decisions.push(answer);
         let over = self.decisions.len().saturating_sub(MAX_SPEC_HISTORY);
         self.decisions.drain(..over);
     }
 
-    pub(crate) fn amended(&mut self, amendment: SpecAmendment) {
+    pub fn amended(&mut self, amendment: SpecAmendment) {
         self.amendments.push(amendment);
         while self.amendments.len() > MAX_SPEC_HISTORY {
             let Some(settled) = self.amendments.iter().position(|a| matches!(a.state, AmendmentState::Approved | AmendmentState::Rejected)) else { break };
@@ -409,7 +409,7 @@ impl TaskSpecs {
 
     /// Records that Alondra wrote `written` (path and fingerprint of what it wrote): a path leaves
     /// the files to write only when what was written is still what is approved for it.
-    pub(crate) fn written(&mut self, written: &BTreeMap<String, String>) -> Vec<String> {
+    pub fn written(&mut self, written: &BTreeMap<String, String>) -> Vec<String> {
         let Some(approved) = self.approved.as_mut() else { return vec![] };
         let done: Vec<String> = approved.unwritten.iter()
             .filter(|path| written.get(*path).is_some_and(|print| approved.files.get(*path).is_some_and(|text| *print == fingerprint(text.as_deref()))))

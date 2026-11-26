@@ -1471,7 +1471,7 @@ mod tests {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&*home).unwrap();
         drop(crate::engine_tests::open(&home).unwrap());
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         clock::VirtualRuntime::new(0).unwrap().block_on(async {
             let mut headers = HeaderMap::new();
             headers.insert("host", "127.0.0.1:4000".parse().unwrap());
@@ -1525,7 +1525,7 @@ mod tests {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&*home).unwrap();
         drop(crate::engine_tests::open(&home).unwrap());
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let app = router(state.clone())
             .layer(axum::middleware::from_fn_with_state(state.auth(), crate::auth::guard))
             .layer(MockConnectInfo("127.0.0.1:4000".parse::<SocketAddr>().unwrap()));
@@ -1590,7 +1590,7 @@ mod tests {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&*home).unwrap();
         drop(crate::engine_tests::open(&home).unwrap());
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let key = STANDARD.encode(SigningKey::from_slice(&[7u8; 32]).unwrap().verifying_key().to_sec1_bytes());
         state.auth.pair(&state.auth.new_pairing_code(), "iPhone", &key).unwrap();
         let id = state.auth.list()[0].id.clone();
@@ -1613,7 +1613,7 @@ mod tests {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&*home).unwrap();
         drop(crate::engine_tests::open(&home).unwrap());
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let pair = |name: &str, seed: u8| {
             let key = STANDARD.encode(SigningKey::from_slice(&[seed; 32]).unwrap().verifying_key().to_sec1_bytes());
             state.auth.pair(&state.auth.new_pairing_code(), name, &key).unwrap().id
@@ -1655,7 +1655,7 @@ mod tests {
         let home = scratch_directory.parent().unwrap().join(format!("alondra-cleanup-route-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         drop(crate::engine_tests::open(&home).unwrap());
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let sessions = Arc::new(Untouchable(Default::default()));
         state.client().use_sessions(sessions.clone());
         let ask = |peer: &str| cleanup(
@@ -1681,7 +1681,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         drop(crate::engine_tests::open(&home).unwrap());
         for (peer, refused) in [("192.168.1.5:5000", true), ("127.0.0.1:5000", false)] {
-            let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+            let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
             let auth = state.auth();
             let app = router(state)
                 .layer(axum::middleware::from_fn_with_state(auth, crate::auth::guard))
@@ -1710,7 +1710,7 @@ mod tests {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         drop(crate::engine_tests::open(&home).unwrap());
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let auth = state.auth();
         let app = router(state)
             .layer(axum::middleware::from_fn_with_state(auth.clone(), crate::auth::guard))
@@ -1789,7 +1789,7 @@ mod tests {
         std::fs::write(home.join("service-keys/public.json"), json!({"mac_id": "mac-test",
             "signing_key": URL_SAFE_NO_PAD.encode(mac.verifying_key().to_sec1_bytes())}).to_string()).unwrap();
         drop(crate::engine_tests::open(&home).unwrap());
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let auth = state.auth();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -1843,7 +1843,7 @@ mod tests {
         );
         std::fs::write(home.join("service.toml"), config("devices = []\n")).unwrap();
         drop(crate::engine_tests::open(&home).unwrap());
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let auth = state.auth();
         let service = Arc::new(crate::service::Service::open(&home, 0, auth.clone()).unwrap().unwrap());
         state.attach_service(service.clone());
@@ -1925,7 +1925,7 @@ mod tests {
         conn.pragma_update(None, "user_version", 99).unwrap();
         drop(conn);
         let bytes = std::fs::read(&path).unwrap();
-        let error = match DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite) {
+        let error = match DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)) {
             Ok(_) => panic!("bootstrap must refuse an unsupported domain schema"),
             Err(error) => error,
         };
@@ -1938,7 +1938,7 @@ mod tests {
             row.get::<_, i64>(0)).unwrap(), 99);
         conn.pragma_update(None, "user_version", crate::domain_store::SCHEMA_VERSION).unwrap();
         drop(conn);
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         assert_eq!(state.domain().state(), expected);
         drop(state);
         std::fs::remove_dir_all(&home).unwrap();
@@ -1953,7 +1953,7 @@ mod tests {
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let pairing = auth.new_pairing_code();
         let device = auth.pair(&pairing, "test-device", &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let domain = state.domain();
         let app = router(state.clone()).layer(axum::middleware::from_fn_with_state(state.auth(), crate::auth::guard));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1999,12 +1999,12 @@ mod tests {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         alondra_store_sqlite::load_bench::seed(&mut alondra_store_sqlite::DomainStore::open(
-            &crate::domain_store::active_path(&home)).unwrap(), 20);
+            &crate::domain_store::active_path(&home), &alondra_domain_rules::Rules).unwrap(), 20);
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let pairing = auth.new_pairing_code();
         let device = auth.pair(&pairing, "test-device", &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let domain = state.domain();
         let app = router(state.clone()).layer(axum::middleware::from_fn_with_state(state.auth(), crate::auth::guard));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2075,7 +2075,7 @@ mod tests {
                 &STANDARD.encode(key.verifying_key().to_sec1_bytes()),
             )
             .unwrap();
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let domain = state.domain();
         let auth = state.auth();
         let capability = domain
@@ -2588,7 +2588,7 @@ mod tests {
             )
             .unwrap();
         let stranger = SigningKey::from_slice(&[22u8; 32]).unwrap();
-        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).unwrap();
         let domain = state.domain();
         let gauges = state.gauges();
         let auth = state.auth();
@@ -3133,7 +3133,7 @@ mod tests {
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
-        assert!(DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).is_err());
+        assert!(DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules)).is_err());
         assert!(
             !home.join("domain.db").exists(),
             "must not create an empty authority on missing stage"

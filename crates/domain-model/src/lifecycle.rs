@@ -4,7 +4,7 @@
 //! no other writer can move them. Every task has a journal; the store keeps it as the events these
 //! records stand for, and `journal_writes`/`records_from_events` are the two ways across.
 use super::*;
-use super::rules::{stalled_before, stalled_in_place_of};
+use super::checks::{stalled_before, stalled_in_place_of};
 use alondra_domain::{
     ActivityView, Await, CLAUDE_BG_HOST, EMPTY_TURN_WAKES, CallbackId, Capacity, LiveState, Owner, Several, Worker, ContinuationId, Control, ConversationId, Decision, DrainObligation, Event,
     FinishIntent, HostId, InputId, InstanceId, OperationId, PermissionMode, PlanReviewOutcome as ReviewSettlement,
@@ -235,7 +235,7 @@ pub enum TurnAwait {
     Tasks { tasks: Vec<TaskId> },
 }
 impl TurnAwait {
-    pub(in crate) fn of(awaits: &Await) -> Self {
+    pub fn of(awaits: &Await) -> Self {
         match awaits {
             Await::Instruction => Self::Instruction,
             Await::User(card) => Self::User { card: card.clone() },
@@ -549,7 +549,7 @@ pub struct Lifecycles {
 }
 
 impl Lifecycles {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self { replayed: BTreeMap::new() }
     }
 }
@@ -1220,7 +1220,7 @@ impl DomainState {
 
     /// The input a task waits with, named after the revision that queued it: an identity of
     /// Alondra's own, never one of the SDK's.
-    pub(super) fn next_input(&self, task: &TaskId) -> String {
+    pub fn next_input(&self, task: &TaskId) -> String {
         format!("input:{task}:{}", self.revision + 1)
     }
     /// Whether the host of `task` ended since its last pause: nothing of what it ran is left to stop.
@@ -1242,7 +1242,7 @@ impl DomainState {
         format!("{kind}:{task}:{}", self.revision + 1)
     }
 
-    pub(super) fn lifecycle<'a>(&self, lifecycles: &'a mut Lifecycles, task: &TaskId) -> Result<&'a TaskLifecycle> {
+    pub fn lifecycle<'a>(&self, lifecycles: &'a mut Lifecycles, task: &TaskId) -> Result<&'a TaskLifecycle> {
         if !lifecycles.replayed.contains_key(task) {
             lifecycles.replayed.insert(task.clone(), self.lifecycle_of(task)?);
         }
@@ -1287,7 +1287,7 @@ impl DomainState {
     }
 
     /// Opens the journal of a task that was just created: from here on only decisions move it.
-    pub(super) fn plan_lifecycle(&mut self, lifecycles: &mut Lifecycles, task: &TaskId) -> Result<()> {
+    pub fn plan_lifecycle(&mut self, lifecycles: &mut Lifecycles, task: &TaskId) -> Result<()> {
         let record = LifecycleRecord::Planned { input: self.next_input(task) };
         let lifecycle = Arc::new(replay(task, std::slice::from_ref(&record))?);
         self.lifecycle_journal.insert(task.clone(), vec![record]);
@@ -1298,7 +1298,7 @@ impl DomainState {
 
     /// A lifecycle decision on a task: the aggregate validates it, the journal keeps it and
     /// the task's DTO reads it, in one step. A refusal changes nothing.
-    pub(super) fn decide(&mut self, lifecycles: &mut Lifecycles, task: &TaskId, record: LifecycleRecord) -> Result<()> {
+    pub fn decide(&mut self, lifecycles: &mut Lifecycles, task: &TaskId, record: LifecycleRecord) -> Result<()> {
         let lifecycle = self.lifecycle(lifecycles, task)?;
         let event = event(task, &record, lifecycle)?;
         let next = Arc::new(lifecycle.advanced(lifecycle.revision(), event).map_err(|refusal| refused(task, &record, lifecycle, refusal))?);
@@ -1410,7 +1410,7 @@ impl DomainState {
 
     /// The aggregate rules: a task's DTO agrees with the replay of its journal, or the transition
     /// is refused. Checked for every task a transition touched.
-    pub(super) fn validate_lifecycles<'a>(&self, tasks: impl Iterator<Item = &'a TaskId>) -> Result<()> {
+    pub fn validate_lifecycles<'a>(&self, tasks: impl Iterator<Item = &'a TaskId>) -> Result<()> {
         for task in tasks {
             self.validate_lifecycle(task, &*self.lifecycle_of(task)?)?;
         }
@@ -1512,7 +1512,7 @@ impl DomainState {
             .map(|id| self.tasks.get(id).map_or_else(|| id.0.clone(), |t| format!("“{}”", t.title)))
             .collect()
     }
-    pub(super) fn admit_node(&mut self, task: &TaskId, node: &AgentId, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn admit_node(&mut self, task: &TaskId, node: &AgentId, lifecycles: &mut Lifecycles) -> Result<()> {
         let waited = self.awaited_by(self.lifecycle(lifecycles, task)?);
         if !waited.is_empty() {
             return Err(DomainError::new("dependency_not_done", format!(
@@ -1528,13 +1528,13 @@ impl DomainState {
 
     /// The current SDK execution of `generation`: facts about another, or about one of the
     /// `claude --bg` backend, are refused.
-    pub(super) fn sdk_execution(&self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn sdk_execution(&self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
         current_sdk(task, generation, self.lifecycle(lifecycles, task)?)
     }
 
     /// The task's lifecycle, when its current execution is the SDK execution of `generation`: what
     /// a guard judges facts about that execution on.
-    pub(super) fn sdk_lifecycle_at(&self, task: &TaskId, generation: u64) -> Result<Arc<TaskLifecycle>> {
+    pub fn sdk_lifecycle_at(&self, task: &TaskId, generation: u64) -> Result<Arc<TaskLifecycle>> {
         let lifecycle = self.lifecycle_of(task)?;
         current_sdk(task, generation, &lifecycle)?;
         Ok(lifecycle)
@@ -1562,7 +1562,7 @@ impl DomainState {
     /// it is not held, it is a stop like an empty turn. A turn Claude Code ended as `failed`, the
     /// API refused asks for intervention. An interruption waits for a new instruction, without a card.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn record_turn_boundary(&mut self, task: &TaskId, generation: u64, turn: &str, failure: Option<&SdkApiFailure>, failed: Option<&str>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn record_turn_boundary(&mut self, task: &TaskId, generation: u64, turn: &str, failure: Option<&SdkApiFailure>, failed: Option<&str>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         if self.turn_end_recorded(task, turn) || self.interactions.contains_key(&turn_ended_card_id(task, generation, turn)) || self.interactions.contains_key(&stalled_card_id(task, generation, turn)) {
             return Err(DomainError::new("conflict", format!("The end of turn {turn} of task {task} is already recorded")));
@@ -1576,7 +1576,7 @@ impl DomainState {
     }
 
     /// The wait `failure` asks for, when it asks for one.
-    pub(super) fn hold_after_failure(&mut self, task: &TaskId, failure: &SdkApiFailure, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn hold_after_failure(&mut self, task: &TaskId, failure: &SdkApiFailure, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         match self.sdk_failure_kind(task, failure).and_then(ClaudeHold::for_failure) {
             Some(hold) => self.hold_on_claude(task, hold, failure, effects, lifecycles),
             None => Ok(()),
@@ -1767,7 +1767,7 @@ impl DomainState {
     /// empty after all: the node is woken, or the orchestrator gets the case, as for a turn that
     /// ends empty. A wait the node is told the end of (an answer, the machine's room, a dependency
     /// done) ends with what it is told.
-    pub(super) fn end_lapsed_awaits(&mut self, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn end_lapsed_awaits(&mut self, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         let candidates: Vec<(TaskId, InteractionId)> = self.lifecycle_journal.iter()
             .filter(|(task, _)| self.tasks.get(*task).is_some_and(|t| !t.state.terminal()))
             .filter_map(|(task, journal)| journal.iter().rev().find_map(|record| match record {
@@ -2009,7 +2009,7 @@ impl DomainState {
 
     /// The user answered `card`, one the lifecycle of the task requires: cancelling ends the
     /// task, any other answer tells it how to go on. False for a card the lifecycle does not hold.
-    pub(super) fn answer_lifecycle_card(&mut self, actor: &Actor, card: &InteractionId, option: &str, written: Option<&str>, effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<bool> {
+    pub fn answer_lifecycle_card(&mut self, actor: &Actor, card: &InteractionId, option: &str, written: Option<&str>, effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<bool> {
         let Some(Scope::Task { task_id }) = self.interactions.get(card).map(|i| i.scope.clone()) else { return Ok(false) };
         if !self.lifecycle_journal.contains_key(&task_id) || !self.lifecycle(lifecycles, &task_id)?.cards().iter().any(|(held, _)| *held == card) {
             return Ok(false);
@@ -2071,7 +2071,7 @@ impl DomainState {
     /// The resumed session is told which background work (`ended_work`) ended with the host, so
     /// it never waits for a notification no process will send.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn record_host_ended(&mut self, task: &TaskId, generation: u64, resumes: bool, by_alondra: bool, ended_work: &[String], effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn record_host_ended(&mut self, task: &TaskId, generation: u64, resumes: bool, by_alondra: bool, ended_work: &[String], effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let forced = self.lifecycle_journal[task].iter().rev()
             .take_while(|record| !matches!(record, LifecycleRecord::HostEnded { .. } | LifecycleRecord::HostStopped { .. }
@@ -2156,13 +2156,13 @@ impl DomainState {
 
     /// The task's resting SDK execution of `generation` has no host any more: nothing changes for
     /// the task, and its next input resumes the session.
-    pub(super) fn record_host_released(&mut self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn record_host_released(&mut self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         self.decide(lifecycles, task, LifecycleRecord::HostReleased)
     }
 
     /// A host that resumes the released session of `generation` takes over.
-    pub(super) fn record_host_retaken(&mut self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn record_host_retaken(&mut self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         self.decide(lifecycles, task, LifecycleRecord::HostRetaken)
     }
@@ -2201,7 +2201,7 @@ impl DomainState {
 
     /// Claude accepted the interrupt of `turn`, which is still open: from now on the user can force
     /// it to stop.
-    pub(super) fn record_interrupt_accepted(&mut self, task: &TaskId, generation: u64, turn: &str, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn record_interrupt_accepted(&mut self, task: &TaskId, generation: u64, turn: &str, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         if self.lifecycle(lifecycles, task)?.turn().map(|open| open.as_str()) != Some(turn) {
             return Err(DomainError::new("conflict", format!("Turn {turn} of task {task} is no longer open")));
@@ -2211,7 +2211,7 @@ impl DomainState {
 
     /// An uncertain handoff is retried with its original text and a transcript warning. The
     /// owner bounds host recovery; a failed recovery still asks for intervention on its own card.
-    pub(super) fn record_doubtful_handoff(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, _resumes: bool, _effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn record_doubtful_handoff(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, _resumes: bool, _effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let moving = self.moving_to(task).is_some();
         let noted = self.lifecycle_journal[task].iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { resent, .. } if resent == input));
@@ -2224,7 +2224,7 @@ impl DomainState {
     /// A card that only asked how the task goes on becomes this one, so the task has one card.
     /// When the provider refused the account for want of a sign-in, the account is signed out, so
     /// no other work starts on it, and the card asks to sign in before trying again.
-    pub(super) fn record_host_lost(&mut self, task: &TaskId, reason: &str, quiet: bool, signed_out: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn record_host_lost(&mut self, task: &TaskId, reason: &str, quiet: bool, signed_out: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         if self.tasks.get(task).is_some_and(|task| self.node_closing(task)) {
             return self.reconcile_recovery_cards(task, lifecycles);
         }
@@ -2289,7 +2289,7 @@ impl DomainState {
             .map(|card| card.id.clone()).collect()
     }
 
-    pub(super) fn reconcile_recovery_cards(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn reconcile_recovery_cards(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
         let cards = self.closing_recovery_cards(self.task(task)?);
         for card in cards {
             let lifecycle = self.lifecycle(lifecycles, task)?;
@@ -2305,7 +2305,7 @@ impl DomainState {
 
     /// The provider explicitly refused `input`, told `text`: it will never read it, so the same text
     /// goes again at once as a new input, with no card for anyone.
-    pub(super) fn record_dropped_input(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn record_dropped_input(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         if !self.lifecycle(lifecycles, task)?.pending_inputs().iter().any(|pending| pending.as_str() == input) {
             return Err(DomainError::new("conflict", format!("The input {input} of task {task} is not pending: it cannot be refused")));
@@ -2317,7 +2317,7 @@ impl DomainState {
     /// The user answered the card of a task whose host was lost: «Try again» lets it go on, told to
     /// carry on with what they wrote after it, and the daemon takes its execution over again. False
     /// for any other card, or for «Cancel the task», which cancels it as any lifecycle card does.
-    pub(super) fn settle_host_lost(&mut self, card: &InteractionId, option: &str, written: Option<&str>, lifecycles: &mut Lifecycles) -> Result<bool> {
+    pub fn settle_host_lost(&mut self, card: &InteractionId, option: &str, written: Option<&str>, lifecycles: &mut Lifecycles) -> Result<bool> {
         if option != RETAKE {
             return Ok(false);
         }
@@ -2379,7 +2379,7 @@ impl DomainState {
 
     /// `input`, told `text`, provably never reached the ended host: the same text goes to the next
     /// host in its place, without asking anyone.
-    pub(super) fn resend_untaken(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn resend_untaken(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         let record = LifecycleRecord::HandoffResent { input: input.into(), resent: self.next_input(task), text: Some(text.into()) };
         self.decide(lifecycles, task, record)
@@ -2417,7 +2417,7 @@ impl DomainState {
     }
 
     /// The SDK host takes the task with an execution of its own, after releasing one it still had.
-    pub(super) fn admit_execution(&mut self, task: &TaskId, node: &AgentId, identity: ExecutionIdentity, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn admit_execution(&mut self, task: &TaskId, node: &AgentId, identity: ExecutionIdentity, lifecycles: &mut Lifecycles) -> Result<()> {
         if identity.host == CLAUDE_BG_HOST {
             return Err(DomainError::new("invalid_input", "An execution of the claude --bg backend is admitted by assigning its node"));
         }
@@ -2435,7 +2435,7 @@ impl DomainState {
 
     /// What the SDK observed of the task's execution of `generation`, applied in order. Facts about
     /// another execution, or about one of the `claude --bg` backend, are refused.
-    pub(super) fn record_runtime_facts(&mut self, task: &TaskId, generation: u64, facts: &[RuntimeObservation], effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn record_runtime_facts(&mut self, task: &TaskId, generation: u64, facts: &[RuntimeObservation], effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
         if facts.is_empty() {
             return Err(DomainError::new("invalid_input", "An observation without facts records nothing"));
@@ -2527,14 +2527,14 @@ impl DomainState {
     }
 
     /// The task's node is gone and left nothing behind: the task waits for another.
-    pub(super) fn release(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn release(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
         let record = LifecycleRecord::ExecutionReleased { input: self.next_input(task) };
         self.decide(lifecycles, task, record)
     }
 
     /// The execution a deferred move ends leaves the task: a delivery the user reviews rests with
     /// the user until it is sent back, and anything else waits for its next execution.
-    pub(super) fn leave_for_the_move(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn leave_for_the_move(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
         if self.lifecycle(lifecycles, task)?.in_review() {
             return self.decide(lifecycles, task, LifecycleRecord::ExecutionLeftForReview);
         }
@@ -2544,7 +2544,7 @@ impl DomainState {
     /// A receipt of an ending task discharges what its ending still owes among `which`. A task
     /// that is not ending owes nothing yet, and its cleanup is owed while one of its worktrees is
     /// still there.
-    pub(super) fn drain(&mut self, task: &TaskId, lifecycles: &mut Lifecycles, which: impl Fn(&Drained) -> bool) -> Result<()> {
+    pub fn drain(&mut self, task: &TaskId, lifecycles: &mut Lifecycles, which: impl Fn(&Drained) -> bool) -> Result<()> {
         if !self.tasks[task].ending() {
             return Ok(());
         }
@@ -2560,7 +2560,7 @@ impl DomainState {
 
     /// The node declared work it runs after its PR merges: the lifecycle owes it from now until a
     /// fact ends it. Declaring again only updates what Alondra shows.
-    pub(super) fn declare_post_merge(&mut self, task: &TaskId, work: PostMergeWork, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn declare_post_merge(&mut self, task: &TaskId, work: PostMergeWork, lifecycles: &mut Lifecycles) -> Result<()> {
         if self.lifecycle(lifecycles, task)?.post_merge().is_none() {
             if self.tasks[task].ending() {
                 return Err(DomainError::new("task_not_active", format!("Task {} is ending: no work after the merge starts now", task.0)));
@@ -2574,7 +2574,7 @@ impl DomainState {
 
     /// The work after the merge ends, with the fact that ended it. A task that owes none is left
     /// as it is.
-    pub(super) fn end_post_merge(&mut self, task: &TaskId, fact: PostMergeEnd, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn end_post_merge(&mut self, task: &TaskId, fact: PostMergeEnd, lifecycles: &mut Lifecycles) -> Result<()> {
         self.tasks.get_mut(task).unwrap().wrap_up.post_merge_work = None;
         let Some(operation) = self.lifecycle(lifecycles, task)?.post_merge().map(|operation| operation.as_str().to_owned()) else {
             return Ok(());
@@ -2595,7 +2595,7 @@ impl DomainState {
 
     /// Work after the merge a node declared under a daemon from before the lifecycle owed it: the
     /// lifecycle takes it over, so from then on only a fact ends it.
-    pub(super) fn adopt_declared_post_merge(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn adopt_declared_post_merge(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
         let declared: Vec<TaskId> = self.tasks.values()
             .filter(|t| t.wrap_up.post_merge_work.is_some() && !t.over())
             .map(|t| t.id.clone())
@@ -2613,7 +2613,7 @@ impl DomainState {
     /// before: dependencies that have not landed, deliveries it needs, a stack upstream that is not
     /// ready. Each change is recorded: the wait begins, changes, or ends when they land, are
     /// cancelled out of it, or stop being its dependencies.
-    pub(super) fn record_start_waits(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn record_start_waits(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
         let open: Vec<TaskId> = self.tasks.values()
             .filter(|t| !t.over() && !t.archived && t.agent_id.is_none())
             .map(|t| t.id.clone())
@@ -2651,7 +2651,7 @@ impl DomainState {
     /// The node ran with what it was given: its `claude --bg` process is up and its turn took
     /// every input the task had queued for it. An SDK execution reports its own facts instead. Known when the launcher reports the start, when a
     /// turn of the node begins and when the node delivers or has a delivery taken back.
-    pub(super) fn node_has_run(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn node_has_run(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
         let lifecycle = self.lifecycle(lifecycles, task)?;
         if lifecycle.execution().is_none_or(|stamp| stamp.host().as_str() != CLAUDE_BG_HOST)
             || matches!(lifecycle.phase(), TaskPhase::Finishing | TaskPhase::Completed | TaskPhase::Cancelled)
@@ -2679,7 +2679,7 @@ impl DomainState {
     /// gone or it never had one: the task is done. The acceptance, the end and its receipts are
     /// one decision, because until the node's end is recorded the user can still take the
     /// delivery back with feedback, and the aggregate records no acceptance that can be undone.
-    pub(super) fn finish_task(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn finish_task(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
         if self.tasks.get(task).is_some_and(|task| !task.pending_user_inputs.is_empty()) {
             return Err(DomainError::new("pending_user_message", "A user message still needs a final delivery"));
         }
@@ -2710,7 +2710,7 @@ impl DomainState {
     /// Every task whose final delivery settled with nothing left for the user, and whose
     /// node is over, is done now. One whose node still winds up stays delivered and closing, and
     /// so does one that still owes work after its merge, even while a move leaves it without a node.
-    pub(super) fn finish_settled_deliveries(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub fn finish_settled_deliveries(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
         let settled: Vec<TaskId> = self.tasks.values()
             .filter(|t| !t.over() && !t.archived)
             .filter(|t| self.finished(t) && !self.unanswered(&t.id) && !self.blockers(&t.id) && !self.wraps_up(t) && !self.works_after_merge(t))
@@ -2887,7 +2887,7 @@ pub fn decision_cancelled_card_id(task: &TaskId, generation: u64, epoch: u64) ->
 }
 const DECISION_CANCELLED_WHY: &str = "Claude Code stopped waiting for the decision it asked you for. Tell it to go on, write to it what to do, or cancel the task.";
 
-pub(super) fn decision_cancelled_card(id: InteractionId, task: &TaskId, title: &str, revision: u64) -> Interaction {
+pub fn decision_cancelled_card(id: InteractionId, task: &TaskId, title: &str, revision: u64) -> Interaction {
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped waiting for your decision: tell it how to go on"));
     asks_how_it_goes_on(id, task, need, DECISION_CANCELLED_WHY, SystemCard::DecisionCancelled, revision)
 }
@@ -3074,11 +3074,9 @@ const HOST_RESUMED_INSTRUCTION: &str = "Your session was cut off when its host s
 const RESENT_NOTE: &str = "Your session was cut off when its host stopped, and Alondra resumed it. The message below was sent to you just before, and your conversation may already have it: if it does, do not act on it twice.";
 pub const RESEND: &str = "resend";
 pub const RESEND_LABEL: &str = "Send it again";
-#[cfg(test)]
 const RESEND_MEANS: &str = "It gets the message again; if it had read it, it sees it twice";
 pub const TAKE_AS_RECEIVED: &str = "take_as_received";
 pub const TAKE_AS_RECEIVED_LABEL: &str = "Take it as received";
-#[cfg(test)]
 const TAKE_AS_RECEIVED_MEANS: &str = "The message is not sent again and the task goes on";
 
 fn session_ended_card_id(task: &TaskId, generation: u64, cursor: u64) -> InteractionId {
@@ -3158,7 +3156,7 @@ fn capitalized(text: &str) -> String {
 impl DomainState {
     /// What the node said it runs after its PR merged, once its delivery is settled and waits for
     /// that work to end: a host that ends then leaves the task on a card about that work.
-    pub(super) fn work_after_merge(&self, task: &TaskId, lifecycle: &TaskLifecycle) -> Option<String> {
+    pub fn work_after_merge(&self, task: &TaskId, lifecycle: &TaskLifecycle) -> Option<String> {
         if lifecycle.phase() != TaskPhase::Delivered || lifecycle.post_merge().is_none() {
             return None;
         }
@@ -3252,8 +3250,8 @@ const SESSION_ENDED_WHY: &str = "Its session closed mid-way, as when the Mac shu
 const HOST_LOST_WHY: &str = "Its session could not be started again; the details say why. Try again once that is fixed, or cancel the task.";
 pub const SESSION_ENDED_AGAIN_WHY: &str = "Alondra resumed its session after it closed, and it closed again before it could finish a turn. It resumes with all its context if you tell it to go on.";
 
-#[cfg(test)]
-pub(super) fn handoff_doubt_card(id: InteractionId, task: &TaskId, title: &str, text: &str, launch: bool, revision: u64) -> Interaction {
+#[doc(hidden)]
+pub fn handoff_doubt_card(id: InteractionId, task: &TaskId, title: &str, text: &str, launch: bool, revision: u64) -> Interaction {
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” closed before confirming it read your message: send it again?"));
     let mut options = vec![QuestionOption { id: RESEND.into(), label: RESEND_LABEL.into(), description: Some(RESEND_MEANS.into()) }];
     options.push(if launch {
@@ -3310,7 +3308,7 @@ pub fn dropped_card_id(task: &TaskId, generation: u64, input: &str) -> Interacti
     InteractionId(format!("{DROPPED_PREFIX}{task}-{generation}-{input}"))
 }
 
-pub(super) fn dropped_card(id: InteractionId, task: &TaskId, text: &str, revision: u64) -> Interaction {
+pub fn dropped_card(id: InteractionId, task: &TaskId, text: &str, revision: u64) -> Interaction {
     let need = "Claude didn't get to read your message".to_owned();
     Interaction {
         attachments: vec![],

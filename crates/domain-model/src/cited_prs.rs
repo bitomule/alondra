@@ -30,7 +30,7 @@ fn citations(text: &str) -> impl Iterator<Item = Citation> + '_ {
 }
 
 impl DomainState {
-    pub(super) fn cited_pr_targets(&self, task_id: &TaskId, body: &str, targets: &[DeliveryTarget], card: &CardSpec) -> Result<(), DomainError> {
+    pub fn cited_pr_targets(&self, task_id: &TaskId, body: &str, targets: &[DeliveryTarget], card: &CardSpec) -> Result<(), DomainError> {
         let fields = [("body", Some(body)), ("card.title", card.title.as_deref()), ("card.need", Some(card.need.as_str())),
             ("card.why", Some(card.why.as_str())), ("card.content.body", card.content.as_ref().map(|c| c.body.as_str())),
             ("card.content.summary", card.content.as_ref().and_then(|c| c.summary.as_deref()))];

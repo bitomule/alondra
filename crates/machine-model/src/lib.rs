@@ -18,6 +18,7 @@
 //! provider and an aborted decision. The gate's slots, the hosts and the in-flight starts are the
 //! model's own bookkeeping around the real decisions, so a fault in the daemon's bookkeeping of
 //! them is outside it too.
+use alondra_domain_rules::Apply as _;
 mod tests;
 mod world;
 

@@ -235,7 +235,7 @@ fn historical_policy_and_failed_launch_survive_restart() {
 #[test]
 fn sent_run_request_task_policy_and_receipt_commit_together() {
     let (directory, path) = temporary_database("atomic");
-    let mut store = super::super::DomainStore::open(&path).unwrap();
+    let mut store = super::super::DomainStore::open(&path, &alondra_domain_rules::Rules).unwrap();
     let mut definition = schedule();
     definition.revision = 1;
     definition.next_run = Some(1_000);
@@ -344,7 +344,7 @@ fn sent_run_request_task_policy_and_receipt_commit_together() {
         .unwrap();
     assert_eq!(receipt_count, 1);
     drop(store);
-    let mut reopened = super::super::DomainStore::open(&path).unwrap();
+    let mut reopened = super::super::DomainStore::open(&path, &alondra_domain_rules::Rules).unwrap();
     assert_eq!(reopened.load().unwrap(), commit.state);
     execute(
         &mut reopened,

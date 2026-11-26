@@ -17,7 +17,7 @@ root_library(
     crate_name = "alondrad",
     crate_root = "src/lib.rs",
     version = VERSION,
-    deps = all_crate_deps(normal = True) + [
+    deps = ["//crates/domain-rules:domain_rules"] + all_crate_deps(normal = True) + [
         "//crates/agent-runtime:agent_runtime",
         "//crates/core:alondra_core",
         "//crates/system:system",
@@ -96,7 +96,7 @@ low_opt_rust_test(
     crate_root = "src/lib.rs",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {"HOME": "."},
-    deps = all_crate_deps(normal = True, normal_dev = True) + [
+    deps = ["//crates/domain-rules:domain_rules"] + all_crate_deps(normal = True, normal_dev = True) + [
         "//crates/agent-runtime:agent_runtime",
         "//crates/core:alondra_core",
         "//crates/system:system",
@@ -185,7 +185,7 @@ low_opt_rust_test(
     },
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + [
+    deps = ["//crates/domain-rules:domain_rules"] + all_crate_deps(normal = True, normal_dev = True) + [
         ":alondrad_lib",
         "//crates/agent-runtime:agent_runtime",
         "//crates/core:alondra_core",
@@ -248,7 +248,7 @@ low_opt_rust_test(
     ],
     target_compatible_with = ["@platforms//os:macos"],
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + [
+    deps = ["//crates/domain-rules:domain_rules"] + all_crate_deps(normal = True, normal_dev = True) + [
         ":alondrad_lib",
         "//crates/core:alondra_core",
         "//crates/domain:domain",

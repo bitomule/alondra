@@ -27,5 +27,6 @@ sha2 = "0.11.0"
 tempfile.workspace = true
 
 [dev-dependencies]
+alondra-domain-rules.workspace = true
 alondra-engine-doubles.workspace = true
 proptest.workspace = true

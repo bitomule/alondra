@@ -35,7 +35,7 @@ low_opt_rust_test(
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondra_views",
     crate_root = "src/lib.rs",
-    deps = VIEWS_DEPS + all_crate_deps(normal_dev = True),
+    deps = ["//crates/domain-rules:domain_rules"] + VIEWS_DEPS + all_crate_deps(normal_dev = True),
     edition = "2024",
     version = "0.1.0",
 )
@@ -63,7 +63,7 @@ low_opt_rust_test(
     size = "small",
     crate_root = "tests/hook_deduction_boundary.rs",
     srcs = ["tests/hook_deduction_boundary.rs"],
-    data = [":report_sources", "//crates/domain-model:report_sources", "//crates/view-model:report_sources"],
+    data = [":report_sources", "//crates/domain-model:report_sources", "//crates/domain-rules:report_sources", "//crates/view-model:report_sources"],
     edition = "2024",
     rustc_env = {"CARGO_MANIFEST_DIR": "crates"},
 )
@@ -75,7 +75,7 @@ low_opt_rust_test(
     crate_root = "tests/domain_screens/main.rs",
     srcs = glob(["tests/domain_screens/*.rs"]),
     edition = "2024",
-    deps = [
+    deps = ["//crates/domain-rules:domain_rules"] + [
         ":views",
         "//crates/core:alondra_core",
         "//crates/domain:domain",
@@ -94,7 +94,7 @@ rust_library(
     crate_root = "tests/views_budget_fixture.rs",
     edition = "2024",
     version = "0.1.0",
-    deps = [
+    deps = ["//crates/domain-rules:domain_rules"] + [
         ":views",
         "//crates/core:alondra_core",
         "//crates/domain-model:domain_model",
@@ -116,7 +116,7 @@ rust_test(
     args = ["--test-threads=1"],
     edition = "2024",
     version = "0.1.0",
-    deps = [
+    deps = ["//crates/domain-rules:domain_rules"] + [
         ":budget_fixture",
         ":views",
         "//crates/core:alondra_core",

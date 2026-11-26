@@ -136,6 +136,7 @@ dependencies = [
  "alondra-client-transport",
  "alondra-core",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-e2e",
  "alondra-host",
  "alondra-spec-engine",
@@ -213,6 +214,7 @@ dependencies = [
  "alondra-client-transport",
  "alondra-core",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-host",
  "alondra-view-model",
  "alondra-views",
@@ -316,6 +318,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-engine-doubles",
  "alondra-engine-github",
  "alondra-engine-kernel",
@@ -398,6 +401,7 @@ dependencies = [
  "alondra-daemon-engine-model",
  "alondra-domain",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-e2e",
  "alondra-engine-admission",
  "alondra-engine-doubles",
@@ -489,6 +493,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-domain-rules"
+version = "0.3.69"
+dependencies = [
+ "alondra-core",
+ "alondra-domain",
+ "alondra-domain-model",
+ "alondra-foundation",
+ "alondra-spec-engine",
+ "libc",
+ "proptest",
+ "rpds",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "alondra-e2e"
 version = "0.3.69"
 dependencies = [
@@ -512,6 +535,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-engine-doubles",
  "alondra-engine-kernel",
  "alondra-engine-ports",
@@ -536,6 +560,7 @@ dependencies = [
  "alondra-core",
  "alondra-domain",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-engine-ports",
  "alondra-foundation",
  "alondra-process-group",
@@ -556,6 +581,7 @@ dependencies = [
  "alondra-daemon-engine-model",
  "alondra-daemon-support",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-engine-doubles",
  "alondra-engine-kernel",
  "alondra-engine-ports",
@@ -583,6 +609,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-engine-doubles",
  "alondra-engine-ports",
  "alondra-foundation",
@@ -658,6 +685,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-engine-doubles",
  "alondra-engine-kernel",
  "alondra-engine-ports",
@@ -717,6 +745,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-engine-admission",
  "alondra-engine-doubles",
  "alondra-engine-github",
@@ -935,6 +964,7 @@ dependencies = [
  "alondra-daemon-server",
  "alondra-daemon-support",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-engine-admission",
  "alondra-engine-doubles",
  "alondra-engine-kernel",
@@ -1002,6 +1032,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-engine-doubles",
  "alondra-engine-ports",
  "alondra-foundation",
@@ -1025,6 +1056,7 @@ version = "0.3.69"
 dependencies = [
  "alondra-core",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-engine-doubles",
  "alondra-engine-ports",
  "alondra-foundation",
@@ -1062,6 +1094,7 @@ dependencies = [
  "alondra-core",
  "alondra-domain",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-engine-ports",
  "alondra-foundation",
  "alondra-view-model",
@@ -1084,6 +1117,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-model",
+ "alondra-domain-rules",
  "alondra-e2e",
  "alondra-engine-admission",
  "alondra-engine-doubles",

@@ -41,7 +41,7 @@ low_opt_rust_test(
     data = ["//fixtures/cli"],
     edition = "2024",
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+    deps = ["//crates/domain-rules:domain_rules"] + all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/client-transport:client_transport",
         "//crates/views:views",
     ],

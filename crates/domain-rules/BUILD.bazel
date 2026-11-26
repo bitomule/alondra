@@ -1,0 +1,84 @@
+load("//tools/layers:crates.bzl", "rules_crate")
+load("//bazel/rules:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//bazel/rules:rust_test.bzl", "low_opt_rust_test")
+load("//bazel/rules:rust_sources.bzl", "production_sources")
+load("//bazel/rules:rust_inputs_test.bzl", "rust_inputs_test")
+
+DOMAIN_RULES_DEPS = all_crate_deps(normal = True) + [
+    "//crates/core:alondra_core",
+    "//crates/domain:domain",
+    "//crates/domain-model:domain_model",
+    "//crates/foundation:foundation",
+    "//crates/spec-engine:spec_engine",
+]
+
+# What each command changes in the domain's state. Only the roots link it; the rest reaches it
+# through the model's `DomainRules` port, which the root hands to the store.
+rules_crate(
+    name = "domain_rules",
+    srcs = production_sources(),
+    crate_name = "alondra_domain_rules",
+    version = "0.1.0",
+    test_visibility = [
+        "//crates/cli:__pkg__",
+        "//crates/cli-tui:__pkg__",
+        "//crates/daemon-engine:__pkg__",
+        "//crates/daemon-server:__pkg__",
+        "//crates/domain-model:__pkg__",
+        "//crates/engine-admission:__pkg__",
+        "//crates/engine-doubles:__pkg__",
+        "//crates/engine-github:__pkg__",
+        "//crates/engine-kernel:__pkg__",
+        "//crates/engine-orchestrator:__pkg__",
+        "//crates/engine-sdk:__pkg__",
+        "//crates/machine-model:__pkg__",
+        "//crates/store-sqlite:__pkg__",
+        "//crates/system:__pkg__",
+        "//crates/views:__pkg__",
+    ],
+    deps = DOMAIN_RULES_DEPS,
+)
+
+low_opt_rust_test(
+    name = "domain_rules_test",
+    timeout = "moderate",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = [
+        "fixtures/inbox_order.json",
+        "//:docs/architecture/cards.md",
+        "//:docs/architecture/state-machines.md",
+        "//crates/domain-model:scanned_sources",
+    ],
+    crate_name = "alondra_domain_rules",
+    crate_root = "src/lib.rs",
+    deps = DOMAIN_RULES_DEPS + all_crate_deps(normal_dev = True),
+    edition = "2024",
+    version = "0.1.0",
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/domain-rules/src/lib.rs", "crates/domain-rules/src/rules.rs"],
+    source_dir = "crates/domain-rules/src/",
+    target_under_test = ":domain_rules",
+    test_only_sources = ["crates/domain-rules/src/tests.rs", "crates/domain-rules/src/lifecycle_tests.rs"],
+    test_sources = False,
+)
+
+exports_files(["src/tests.rs"])
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them.
+filegroup(
+    name = "report_sources",
+    srcs = production_sources(),
+    visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/views:__pkg__"],
+)
+
+repo_tree()

@@ -104,7 +104,7 @@ fn the_daemon_implements_every_port() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     drop(crate::engine::open(&home).unwrap());
-    alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules));
     let runtime = domain_runtime::DomainRuntime::open_unwired_at(&home, &alondra_engine_ports::journal::active_path(&home)).unwrap();
     crate::wiring::wire_engine(runtime.ports());
     crate::wire(runtime.ports());
@@ -124,7 +124,7 @@ fn the_ports_run_on_a_runtime_that_is_not_the_kernels() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     drop(crate::engine::open(&home).unwrap());
-    alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules));
     let runtime = domain_runtime::DomainRuntime::open_unwired_at(&home, &alondra_engine_ports::journal::active_path(&home)).unwrap();
     crate::wiring::wire_engine(runtime.ports());
     crate::wire(runtime.ports());

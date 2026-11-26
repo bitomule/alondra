@@ -3,6 +3,7 @@
 use super::*;
 use alondra_domain_model::{Actor, Command, DeliveryTarget, DomainError, Instruction, MergeMethod, Refusal, TaskId};
 use proptest::prelude::*;
+use alondra_domain_rules::Apply as _;
 
 const MESSAGE: &str = "Rename the button too";
 

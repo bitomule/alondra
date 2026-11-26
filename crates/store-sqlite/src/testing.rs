@@ -117,9 +117,9 @@ pub fn seeded(store: &mut DomainStore) {
     );
 }
 /// A task with an approved checklist and a worktree at `worktree`, and the command that continues it.
-pub fn continuation_fixture(worktree: &Path) -> (Fixture, DomainStore, CommandEnvelope, Checklist) {
+pub fn continuation_fixture(worktree: &Path, rules: &'static dyn DomainRules) -> (Fixture, DomainStore, CommandEnvelope, Checklist) {
     let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut store = DomainStore::open(&fixture.path(), rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest {
         request_id: "request-1".into(), title: "The answer".into(),

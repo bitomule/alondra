@@ -689,7 +689,7 @@ fn shared_catalog_domain_and_sql_cases() {
             .find(|case| field(case, "id") == case_id)
             .unwrap();
         let temporary = TemporaryStore::new();
-        let mut store = DomainStore::open(&temporary.database()).unwrap();
+        let mut store = DomainStore::open(&temporary.database(), &alondra_domain_rules::Rules).unwrap();
         setup_base(&mut store, field(&catalog, "base"));
         for arrangement in field(case, "arrange").as_array().unwrap() {
             if let Some(name) = arrangement.get("fixture") {
@@ -818,7 +818,7 @@ fn shared_catalog_domain_and_sql_cases() {
         store.integrity_check().unwrap();
         let original = store.load().unwrap();
         drop(store);
-        let mut restarted = DomainStore::open(&temporary.database()).unwrap();
+        let mut restarted = DomainStore::open(&temporary.database(), &alondra_domain_rules::Rules).unwrap();
         assert_eq!(
             restarted.load().unwrap(),
             original,

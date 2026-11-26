@@ -62,15 +62,3 @@ pub fn declared(inventory: &str) -> BTreeSet<(String, String, String)> {
     }
     declared
 }
-
-#[cfg(test)]
-static DECLARED: std::sync::LazyLock<BTreeSet<(String, String, String)>> =
-    std::sync::LazyLock::new(|| declared(include_str!("../../../docs/architecture/state-machines.md")));
-
-/// In this crate's tests, a command that makes a move the inventory does not declare panics.
-#[cfg(test)]
-pub(super) fn assert_declared(before: &DomainState, after: &DomainState, command: &Command) {
-    let undeclared: Vec<String> = moves(before, after).into_iter().filter(|made| !DECLARED.contains(made))
-        .map(|(machine, from, to)| format!("{machine}: {from} -> {to}")).collect();
-    assert!(undeclared.is_empty(), "{command:?} made moves docs/architecture/state-machines.md does not declare:\n{}", undeclared.join("\n"));
-}

@@ -2,7 +2,7 @@
 /// Opens every runtime the engine's fixtures open on this thread as the daemon does, with the gate
 /// of a test.
 pub fn wired() {
-    alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules));
     alondra_daemon_engine::wiring::open_with(open_at);
 }
 
@@ -19,6 +19,6 @@ pub fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn a
 /// `open_at` at the home's active database; the engine's fixtures this thread opens open the same.
 pub fn open(home: &std::path::Path) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
     wired();
-    open_at(home, &alondra_engine_ports::journal::active_path(home), &alondra_store_sqlite::Sqlite)
+    open_at(home, &alondra_engine_ports::journal::active_path(home), &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules))
 }
 

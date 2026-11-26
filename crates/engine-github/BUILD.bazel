@@ -38,7 +38,7 @@ low_opt_rust_test(
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {"HOME": ".", "TEST_EXECS": "/bin/cat /bin/sh /usr/bin/git /usr/bin/head /usr/bin/touch /usr/bin/wc tmpdir"},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+    deps = ["//crates/domain-rules:domain_rules"] + all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
         "//crates/engine-doubles:engine_doubles",

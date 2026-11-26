@@ -63,7 +63,7 @@ fn a_continuation_storage_failure_rolls_back_the_transfer_and_publication() {
         let root = crate::test_support::Directory::new();
         let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "original");
         alondra_store_sqlite::testing::wire_stores_with(|ports| alondra_engine_doubles::machine::wire(ports, alondra_daemon_support::watcher::claude_home));
-        let (fixture, store, command, _) = continuation_fixture(&worktree);
+        let (fixture, store, command, _) = continuation_fixture(&worktree, &alondra_domain_rules::Rules);
         drop(store);
         let runtime = crate::domain_runtime::DomainRuntime::open_unwired_at(&fixture.0, &fixture.path()).unwrap();
         let observer = Connection::open(fixture.path()).unwrap();
@@ -96,7 +96,7 @@ fn a_continuation_storage_failure_rolls_back_the_transfer_and_publication() {
         assert!(Arc::ptr_eq(runtime.read().state(), before.state()), "no partial state is published");
         assert!(!changes.has_changed().unwrap(), "no failed change is announced");
         assert!(runtime.take_acknowledgements().is_empty());
-        let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+        let mut reopened = DomainStore::open(&fixture.path(), &alondra_domain_rules::Rules).unwrap();
         assert_eq!(&*reopened.load().unwrap(), &**before.state(), "rollback also survives reopening");
     }
 }

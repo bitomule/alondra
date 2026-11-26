@@ -3,6 +3,7 @@ use alondra_domain_model::*;
 use alondra_views as views;
 use crate::inbox_items;
 use std::collections::BTreeSet;
+use alondra_domain_rules::Apply as _;
 
 #[test]
 fn a_suggestion_goes_to_the_orchestrator_and_never_to_the_users_inbox() {

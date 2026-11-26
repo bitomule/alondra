@@ -9,7 +9,7 @@ use alondra_engine_ports::agent_host::{AdoptedEndpoint, AgentHost, EndedHost, Ho
 use alondra_engine_ports::disk::Disk;
 use alondra_engine_ports::machine::MachineProbe;
 use alondra_core::secret_destination::SecretDestination;
-use alondra_domain_model::{Actor, Command, CommandEnvelope, DomainState, LaunchPlan, PROTOCOL_VERSION, TaskId, WorktreeOrigin};
+use alondra_domain_model::{Actor, Command, CommandEnvelope, DomainRules, DomainState, LaunchPlan, PROTOCOL_VERSION, TaskId, WorktreeOrigin};
 use alondra_engine_ports::worktrees::{LaunchError, Protected, TaskWorktree, Workplace, Worktrees, CHECK_LIMIT};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -196,8 +196,9 @@ pub fn worktrees(worktrees: &dyn Worktrees, repository: &dyn Fn(&Path)) {
 
 /// The checks of a final delivery in the worktree a task recorded as its own: clean passes, a file
 /// not committed is refused, and a check slower than its limit is refused as not finished, never
-/// taken as clean. `slow` makes every check in the worktree it is given take that long.
-pub fn final_checks(worktrees: &dyn Worktrees, repository: &dyn Fn(&Path), slow: &dyn Fn(&Path, Duration)) {
+/// taken as clean. `slow` makes every check in the worktree it is given take that long; `rules`
+/// apply the commands that give the task its worktree.
+pub fn final_checks(worktrees: &dyn Worktrees, repository: &dyn Fn(&Path), slow: &dyn Fn(&Path, Duration), rules: &dyn DomainRules) {
     let scratch = Directory::new();
     let repo = scratch.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -208,7 +209,7 @@ pub fn final_checks(worktrees: &dyn Worktrees, repository: &dyn Fn(&Path), slow:
     let mut run = |actor: Actor, command: Command| {
         let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command };
-        state.execute(&actor, &envelope).unwrap();
+        state = rules.transition(&state, &actor, &envelope).unwrap().0;
     };
     run(Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { priority: Default::default(), plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(),

@@ -13,7 +13,7 @@ impl DomainState {
         Some(sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect())
     }
 
-    pub(super) fn task_selection_guard(&self, actor: &Actor, task_id: &TaskId, expected_selection: &str, selection: &TaskSelection, pending: &PendingTaskSelection) -> Result<()> {
+    pub fn task_selection_guard(&self, actor: &Actor, task_id: &TaskId, expected_selection: &str, selection: &TaskSelection, pending: &PendingTaskSelection) -> Result<()> {
         user(actor)?;
         self.not_ending(task_id)?;
         let task = self.active(task_id)?;
@@ -90,7 +90,7 @@ impl DomainState {
 
     /// The account the task runs on, or will start on: its execution's, or the one its selection
     /// pins while it has never run.
-    fn current_account(&self, task: &Task) -> Option<AccountKey> {
+    pub fn current_account(&self, task: &Task) -> Option<AccountKey> {
         if task.started || task.agent_id.is_some() { Some(task.account_key()) } else { task.selection.as_ref().and_then(|selection| selection.account.clone()) }
     }
 
@@ -119,7 +119,7 @@ impl DomainState {
         Ok((intent, pending))
     }
 
-    pub(super) fn move_task_guard(&self, actor: &Actor, task_id: &TaskId, expected_selection: &str, account: &AccountKey) -> Result<(TaskSelection, Option<PendingTaskSelection>)> {
+    pub fn move_task_guard(&self, actor: &Actor, task_id: &TaskId, expected_selection: &str, account: &AccountKey) -> Result<(TaskSelection, Option<PendingTaskSelection>)> {
         if !matches!(actor, Actor::System) { user(actor)?; }
         self.not_ending(task_id)?;
         let task = self.active(task_id)?;

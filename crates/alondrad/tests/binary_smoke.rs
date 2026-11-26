@@ -18,7 +18,7 @@ mod engine {
     /// Opens every runtime the server opens on this thread as `open_at` does.
     pub fn wired() {
         alondra_foundation::durability::relax();
-        alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+        alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules));
         alondra_daemon_engine::wiring::open_with(open_at);
     }
 
@@ -38,7 +38,7 @@ mod engine {
     /// `open_at` at the home's active database; what the server opens on this thread opens the same.
     pub fn open(home: &Path) -> anyhow::Result<DomainRuntime> {
         wired();
-        open_at(home, &alondra_engine_ports::journal::active_path(home), &alondra_store_sqlite::Sqlite)
+        open_at(home, &alondra_engine_ports::journal::active_path(home), &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules))
     }
 }
 
@@ -46,7 +46,7 @@ mod engine {
 fn preflight_reports_a_rejected_journal_event_without_changing_the_home() {
     let fixture = Fixture::new();
     let path = fixture.0.join("domain.db");
-    let mut store = DomainStore::open(&path).unwrap();
+    let mut store = DomainStore::open(&path, &alondra_domain_rules::Rules).unwrap();
     seeded(&mut store);
     execute(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
     let trigger: String = store.conn.query_row("SELECT sql FROM sqlite_master WHERE name='lifecycle_event_immutable'", [], |row| row.get(0)).unwrap();
@@ -56,7 +56,7 @@ fn preflight_reports_a_rejected_journal_event_without_changing_the_home() {
     drop(store);
     let before = fs::read(&path).unwrap();
     let config = alondra_core::config::Config::resolve(fixture.0.to_path_buf(), &Default::default(), |_| None, || Some("Test".into()));
-    let diagnostic = format!("{:#}", alondrad::preflight::run(&config, &alondra_store_sqlite::Sqlite, alondrad::wiring::open, alondrad::wire_machine).unwrap_err());
+    let diagnostic = format!("{:#}", alondrad::preflight::run(&config, &alondra_store_sqlite::Sqlite(&alondra_domain_rules::Rules), alondrad::wiring::open, alondrad::wire_machine).unwrap_err());
     let output = std::process::Command::new(std::env::var("FIXTURE_DAEMON").unwrap())
         .arg("--preflight").env_clear().env("HOME", &*fixture.0).env("ALONDRA_HOME", &*fixture.0)
         .env("TMPDIR", &*fixture.0).envs(alondra_daemon_engine::test_support::xcrun_cache()).output().unwrap();

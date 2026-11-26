@@ -8,7 +8,7 @@ use alondra_domain_model::{DomainState, ReadIndex};
 #[test]
 fn compacting_an_ended_task_leaves_what_the_apps_show_the_same() {
     let fixture = Fixture::new();
-    drop(ended_task(&fixture));
+    drop(ended_task(&fixture, &alondra_domain_rules::Rules));
     rusqlite::Connection::open(fixture.path()).unwrap().execute("UPDATE domain_outbox SET state='handed'", []).unwrap();
     let runtime = DomainRuntime::open_unwired_at(&fixture.0, &fixture.path()).unwrap();
     let before = runtime.state().unwrap();

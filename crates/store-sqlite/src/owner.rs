@@ -23,6 +23,7 @@ use alondra_store::{
 pub struct OwnerTransaction<'connection> {
     conn: &'connection Connection,
     protected: &'connection alondra_engine_ports::worktrees::WorktreeRules,
+    rules: &'static dyn DomainRules,
     pub(crate) journal: LifecycleTransaction<'connection>,
     draft: OwnerDraft,
     /// What the host observed that moves the task's lifecycle and the domain refused to record,
@@ -116,6 +117,7 @@ impl<'connection> OwnerTransaction<'connection> {
         conn: &'connection Connection,
         cached: &'connection Option<Cached>,
         protected: &'connection alondra_engine_ports::worktrees::WorktreeRules,
+        rules: &'static dyn DomainRules,
         aggregates: &'connection alondra_store::AggregateCache,
         scope: AuthorityScope,
     ) -> std::result::Result<Self, StoreError> {
@@ -129,6 +131,7 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(Self {
             conn,
             protected,
+            rules,
             journal,
             draft: OwnerDraft {
                 state,
@@ -177,7 +180,7 @@ impl<'connection> OwnerTransaction<'connection> {
         if let Some(refusal) = refused_for_test(&envelope.command, true) {
             return Err(refusal);
         }
-        let (conn, protected, state, version) = (self.conn, self.protected, &self.draft.state, self.draft.version);
+        let (conn, protected, rules, state, version) = (self.conn, self.protected, self.rules, &self.draft.state, self.draft.version);
         let prepared = self.journal.inspect_mut(|journal| {
             if matches!(envelope.command, Command::CreateDocument { .. } | Command::ReviseDocument { .. }) {
                 return Err(DomainError::new(
@@ -186,7 +189,7 @@ impl<'connection> OwnerTransaction<'connection> {
                 )
                 .into());
             }
-            command::stage(conn, command::Base::Draft(state, version), protected, actor, envelope, None, true, attached, journal)
+            command::stage(conn, command::Base::Draft(state, version), protected, rules, actor, envelope, None, true, attached, journal)
         })?;
         self.draft.record(&envelope.command, &envelope.command_id, prepared.commit);
         Ok(&self.draft.outcomes.last().expect("outcome just recorded").outcome)
@@ -652,7 +655,7 @@ impl<'connection> OwnerTransaction<'connection> {
             return Some(refusal);
         }
         let envelope = CommandEnvelope { expected_revision: self.draft.state.revision, ..envelope.clone() };
-        self.draft.state.transition(&Actor::System, &envelope).err()
+        self.rules.transition(&self.draft.state, &Actor::System, &envelope).err()
     }
 
     /// Whether `reading` says something new of `account`: the same windows and plan again within
@@ -914,7 +917,7 @@ impl DomainStore {
         stage: impl FnOnce(&mut OwnerTransaction<'_>) -> std::result::Result<T, StoreError>,
     ) -> std::result::Result<(T, OwnerCommit), StoreError> {
         let (value, committed) = {
-            let mut owner = OwnerTransaction::begin(&self.conn, &self.cached, &self.protected, &self.aggregates, scope)?;
+            let mut owner = OwnerTransaction::begin(&self.conn, &self.cached, &self.protected, self.rules, &self.aggregates, scope)?;
             owner.decisions = self.decisions.clone();
             let value = stage(&mut owner)?;
             (value, owner.commit()?)

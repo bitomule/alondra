@@ -5,6 +5,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use alondra_domain_rules::Apply as _;
 
 const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 const NAME: &str = "example-private-project";

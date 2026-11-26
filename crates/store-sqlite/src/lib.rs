@@ -386,6 +386,8 @@ pub struct DomainStore {
     protected: alondra_engine_ports::worktrees::WorktreeRules,
     decisions: Option<Arc<dyn wording::SdkDecisions>>,
     after_commit: Option<Box<dyn FnMut() + Send>>,
+    /// The rules that apply commands, which the root hands over when it opens the store.
+    rules: &'static dyn DomainRules,
 }
 /// The generation of the credential new executions on `account` run with: one more each time it
 /// was signed in again after its sign-in expired.
@@ -641,7 +643,7 @@ impl DomainStore {
         }
     }
 
-    pub fn open(path: &Path) -> Result<Self> {
+    pub fn open(path: &Path, rules: &'static dyn DomainRules) -> Result<Self> {
         let (conn, database) = connection::open(path)?;
         let found: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if found == PREVIOUS_SCHEMA_VERSION {
@@ -797,7 +799,7 @@ impl DomainStore {
         } else {
             tx.commit()?;
         }
-        let store = Self::from_connection(conn);
+        let store = Self::from_connection(conn, rules);
         if version != SCHEMA_VERSION {
             store.integrity_check()?;
         } else if let Some(tables) = migrated_tables {
@@ -812,12 +814,17 @@ impl DomainStore {
     pub fn protected(&self) -> &alondra_engine_ports::worktrees::WorktreeRules {
         &self.protected
     }
+    /// The rules this store applies commands with.
+    pub fn rules(&self) -> &'static dyn DomainRules {
+        self.rules
+    }
     pub fn with_decisions(mut self, decisions: Arc<dyn wording::SdkDecisions>) -> Self {
         self.decisions = Some(decisions);
         self
     }
-    fn from_connection(conn: Connection) -> Self {
+    fn from_connection(conn: Connection, rules: &'static dyn DomainRules) -> Self {
         Self {
+            rules,
             conn,
             read_identity: Default::default(),
             cached: None,
@@ -833,7 +840,7 @@ impl DomainStore {
         }
     }
     /// No schema creation, no restart recovery and no write of any kind.
-    pub fn open_readonly(path: &Path) -> Result<Self> {
+    pub fn open_readonly(path: &Path, rules: &'static dyn DomainRules) -> Result<Self> {
         use std::os::unix::fs::MetadataExt;
         let parent = std::fs::canonicalize(path.parent().context("database parent required")?)?;
         let path = parent.join(path.file_name().context("database filename required")?);
@@ -849,7 +856,7 @@ impl DomainStore {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "query_only", "ON")?;
         check_schema(&conn)?;
-        Ok(Self::from_connection(conn))
+        Ok(Self::from_connection(conn, rules))
     }
     pub fn on_commit(&mut self, hook: impl FnMut() + Send + 'static) {
         self.after_commit = Some(Box::new(hook));
@@ -954,9 +961,9 @@ impl DomainStore {
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(anyhow::Error::from)?;
         let scope = alondra_store::AuthorityScope::new(epoch_of(&self.conn)?)?;
         let mut journal = alondra_store::LifecycleTransaction::attach_cached(tx, scope, &self.aggregates)?;
-        let (conn, cached, protected) = (&self.conn, &self.cached, &self.protected);
+        let (conn, cached, protected, rules) = (&self.conn, &self.cached, &self.protected, self.rules);
         let staged = journal.inspect_mut(|journal| {
-            command::stage(conn, command::Base::Stored(cached), protected, actor, envelope, transport, fill_revision, attached, journal)
+            command::stage(conn, command::Base::Stored(cached), protected, rules, actor, envelope, transport, fill_revision, attached, journal)
         })?;
         let mut staged = staged;
         staged.commit.sealed = Some(journal.commit()?);

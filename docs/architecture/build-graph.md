@@ -1808,3 +1808,60 @@ commit, both before phase 7e and the `domain-model` rename reached main:
   depend only on layers foundation, domain, ports`).
 - `alondrad`'s `the_daemons_wiring_alone_implements_every_port` fails when a piece leaves its part
   out of its `wire` (`a port the daemon's wiring leaves to nothing … ["OrchestratorApi"]`).
+
+## The rules behind the `DomainRules` port (phase 7b, 2026-11-26)
+
+What a command changes left `domain-model` for a new `crates/domain-rules` (`alondra_domain_rules`):
+the big `apply` of every command, the passes every command runs after it, the decisions on SDK cards
+and the halves of `node_machine`, `claude_access`, `stage_rules`, `account_settings`, `mcp`,
+`mcp_wait`, `compaction` and `account_login` that change the state, about 6,400 lines. Rust lets no
+crate add methods to a type of another, so they are functions of the rules crate over
+`&mut DomainState`.
+
+`domain-model` keeps the types (with the same serde format), every read, the guards (`guard`,
+`guard_given`, `admit` and each command's own), `ReadIndex` and `projection`, the journal's codec
+and its replay, and the lifecycle authority: `decide` and `judge` still judge every record, and what
+they change on the way (closing a task, opening a stall's case, retiring a card, deriving the
+states) stays with them. Loading a stored state applies no rule, so the store loads without the
+port.
+
+The port is `DomainRules` in `domain-model`: `transition` applies a command to a copy of the state
+and `anticipate` says what a command would do without applying it. `domain_rules::Rules` implements
+it. The root hands it to the store when it opens it (`alondra_store_sqlite::Sqlite(&Rules)`, in
+`alondrad` and its preflight), the store applies every command with it, and `engine-sdk`'s closer
+asks the store's `Journal` for it to anticipate a node's end.
+
+`domain-rules` has a layer of its own, `domain-rules`, that only the roots may depend on: a production crate
+of any other layer that links it fails the analysis (`crate_layers_test`). The tests that apply
+commands link it: those that open a store, and those that run commands on a state directly (`views`,
+`cli`, `system`, `machine-model`, `engine-doubles`).
+
+Nearly every test of the old crate builds its state by running commands, so 50 test files moved to
+`//crates/domain-rules:domain_rules_test` with their names; `//crates/domain-model:domain_model_test`
+keeps the tests that need no rule (the card codecs, the checklist and file parsers, the schedule).
+Every button the rules' tests project is still checked against its command
+(`check_every_button`): the model calls a check the rules' tests install.
+
+`edit_bench --profile --edit crates/domain-rules/src/rules.rs`, one run on the shared Mac (load
+average about 13 to 20). Before is the same edit of `domain-model/src/rules.rs` measured on 26-11
+for the plan of this phase:
+
+| Edit of the rules | Crates reopened | Test targets reopened | Build: critical path | Edit + build or test | Longest test target |
+|---|---:|---:|---:|---:|---|
+| Before (`domain-model/src/rules.rs`) | 44 | 131 | 48 s | 192-220 s | - |
+| After (`domain-rules/src/rules.rs`) | 12 | 68 | 50 s | 179 s | `domain_rules_test` 48 s |
+| Goal of the phase | - | about 36 | ≤ 30 s | ≤ 120 s | - |
+
+- **What it reopens.** 12 crates: the rules and the roots that link them. 41 of the 68 test targets
+  reach the rules through `deps`: the ones that open a store or run commands on a state (the plan
+  counted 36; `cli`, `cli-tui`, `system`, `domain_screens_test` and `read_index_cost_test` run
+  commands too). The other 27 read the edited file as data, the guards over the repository's
+  sources (prose decisions, the inventory, the log catalog …), which every edit of any Rust source
+  reopens.
+- **The build's critical path did not fall.** It was `domain_rules` 13 s → 9 libraries →
+  `engine_sdk_engine_test` 24 s; it is now `domain_rules` 6 s → `store_sqlite_test` 43 s. The
+  libraries left the path, but the test crates that apply commands compile from scratch, and
+  `store_sqlite_test`, the largest of them, takes the place of the chain. The goal of 30 s needs those
+  test crates faster (incremental, or split as the budgets were), which this phase does not do.
+- **Edit and tests**, 179 s, under 192-220 s but over the goal of 120 s. The longest test target is
+  `domain_rules_test` (48 s), which now holds almost every test of the old crate.
