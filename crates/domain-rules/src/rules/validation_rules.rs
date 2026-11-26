@@ -29,7 +29,7 @@ if text.chars().count() > MAX_VALIDATION_TEXT {
 Ok(Some(text.to_owned()))
 }
 
-fn open_validation_round(domain: &DomainState, task_id: &TaskId) -> Result<&ValidationRound> {
+fn open_validation_round<'a>(domain: &'a DomainState, task_id: &TaskId) -> Result<&'a ValidationRound> {
     match domain.tasks.get(task_id).and_then(|task| task.validation.current()) {
         Some(round) if round.state == RoundState::Validating => Ok(round),
         _ => refuse("no_validation", "task_id",

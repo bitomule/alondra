@@ -1111,7 +1111,7 @@ transitions = ["Requested -> Proposed", "Proposed -> Approved", "Proposed -> Rej
 
 ```toml state-machine
 id = "M-LIFE-17"
-code = ["crates/domain-model/src/validation.rs::TaskValidation", "crates/domain-model/src/rules/validation_rules.rs::ready_for_validation", "crates/domain-model/src/rules/validation_rules.rs::end_validation", "crates/domain-model/src/rules/validation_rules.rs::settle_validation_card", "crates/daemon-server/src/validation_checks.rs::gate_with"]
+code = ["crates/domain-model/src/validation.rs::TaskValidation", "crates/domain-rules/src/rules/validation_rules.rs::ready_for_validation", "crates/domain-rules/src/rules/validation_rules.rs::end_validation", "crates/domain-rules/src/rules/validation_rules.rs::settle_validation_card", "crates/daemon-server/src/validation_checks.rs::gate_with"]
 truth = ["sqlite:task_validations"]
 states = "crates/domain-model/src/validation.rs::RoundState"
 variants = ["Requested", "Validating", "Interrupted", "Failed", "Delivered"]
@@ -1160,7 +1160,7 @@ transitions = ["Requested -> Validating", "Validating -> Interrupted", "Interrup
 
 ```toml state-machine
 id = "M-LIFE-18"
-code = ["crates/domain-model/src/validation.rs::RoundItem", "crates/domain-model/src/rules/validation_rules.rs::record_validation", "crates/daemon-server/src/validation_checks.rs::stamp_with"]
+code = ["crates/domain-model/src/validation.rs::RoundItem", "crates/domain-rules/src/rules/validation_rules.rs::record_validation", "crates/daemon-server/src/validation_checks.rs::stamp_with"]
 truth = ["sqlite:task_validations"]
 states = "crates/domain-model/src/validation.rs::ValidationState"
 variants = ["Running", "Met", "Unmet", "Incomplete"]
